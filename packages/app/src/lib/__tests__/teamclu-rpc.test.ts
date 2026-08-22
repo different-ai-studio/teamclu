@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { create, toBinary } from '@bufbuild/protobuf'
-import { RpcResponseSchema, RuntimeStartResultSchema } from '@/lib/proto/teamclu_pb'
+import {
+  AgentCapabilityAction,
+  AgentCapabilityKind,
+  AgentCapabilityManagementResultSchema,
+  RpcResponseSchema,
+  RuntimeStartResultSchema,
+} from '@/lib/proto/teamclu_pb'
 
 const mockPublish = vi.fn().mockResolvedValue(undefined)
 const mockSubscribe = vi.fn().mockResolvedValue(undefined)
@@ -40,6 +46,42 @@ afterEach(() => {
 })
 
 describe('teamclu-rpc', () => {
+  it('sends capability management with the grant and exact action', async () => {
+    const { fromBinary } = await import('@bufbuild/protobuf')
+    const { RpcRequestSchema } = await import('@/lib/proto/teamclu_pb')
+    const { manageAgentCapability } = await import('../teamclu-rpc')
+    await acquireTeamcluRpcForTest('team-1', 'member-1')
+
+    const promise = manageAgentCapability({
+      targetActorId: 'agent-1',
+      managementGrant: 'signed-grant',
+      kind: AgentCapabilityKind.AGENT_SKILL,
+      action: AgentCapabilityAction.INSTALL_TEAM_ITEM,
+      itemId: 'research',
+      version: 3,
+    })
+    const [topic, bytes] = mockPublish.mock.calls[0] as [string, Uint8Array]
+    const request = fromBinary(RpcRequestSchema, bytes)
+    expect(topic).toBe('amux/team-1/agent-1/rpc/req')
+    expect(request.method.case).toBe('agentCapabilityManagement')
+    if (request.method.case !== 'agentCapabilityManagement') throw new Error('wrong method')
+    expect(request.method.value.managementGrant).toBe('signed-grant')
+    expect(request.method.value.action).toBe(AgentCapabilityAction.INSTALL_TEAM_ITEM)
+    expect(request.method.value.itemId).toBe('research')
+    expect(request.method.value.version).toBe(3n)
+
+    const result = create(AgentCapabilityManagementResultSchema, { status: 'ok' })
+    envelopeHandler!({
+      topic: 'amux/team-1/agent-1/rpc/res',
+      bytes: Array.from(toBinary(RpcResponseSchema, create(RpcResponseSchema, {
+        requestId: request.requestId,
+        success: true,
+        result: { case: 'agentCapabilityManagementResult', value: result },
+      }))),
+    })
+    await expect(promise).resolves.toMatchObject({ status: 'ok' })
+  })
+
   it('runtimeStart publishes RpcRequest and resolves on matching RpcResponse', async () => {
     const { runtimeStart } = await import('../teamclu-rpc')
     await acquireTeamcluRpcForTest('team-1', 'member-1')

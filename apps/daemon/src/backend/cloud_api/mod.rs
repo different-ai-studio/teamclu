@@ -846,6 +846,11 @@ impl Backend for CloudApiBackend {
         self.put_no_content(&path, &Body { version }).await
     }
 
+    async fn remove_team_skill_install(&self, team_id: &str, slug: &str) -> BackendResult<()> {
+        self.delete_no_content(&format!("/v1/teams/{team_id}/skills/{slug}/install"))
+            .await
+    }
+
     async fn ensure_llm_member_key(&self, team_id: &str) -> BackendResult<()> {
         #[derive(serde::Serialize)]
         struct Empty {}
@@ -1658,6 +1663,27 @@ impl Backend for CloudApiBackend {
             .get(&format!("/v1/agents/{agent_actor_id}/admin-members"))
             .await?;
         Ok(r.items)
+    }
+
+    async fn verify_agent_management_grant(
+        &self,
+        grant: &str,
+        scope: &str,
+        requester_actor_id: &str,
+    ) -> BackendResult<()> {
+        let actor_id = self.actor_id();
+        let _: serde_json::Value = self
+            .post(
+                &format!("/v1/agents/{actor_id}/management-grants/verify"),
+                &serde_json::json!({
+                    "grant": grant,
+                    "scope": scope,
+                    "requesterActorId": requester_actor_id,
+                }),
+                None,
+            )
+            .await?;
+        Ok(())
     }
 
     async fn get_agent_defaults(&self, agent_id: &str) -> BackendResult<AgentDefaults> {

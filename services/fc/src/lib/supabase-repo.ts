@@ -451,6 +451,26 @@ export function createSupabaseBusinessRepository(options) {
 
 
   return {
+    async authorizeAgentManagement(agentActorId) {
+      const { data: target, error } = await supabase
+        .from("actor_directory")
+        .select("id, team_id, actor_type, owner_member_id")
+        .eq("id", agentActorId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!target || target.actor_type !== "agent") {
+        throw new ApiError(404, "not_found", "agent not found");
+      }
+      const teamId = target.team_id;
+      const requesterActorId = (await this.resolveCallerActorForTeam(teamId))?.id ?? null;
+      if (!requesterActorId) throw new ApiError(403, "forbidden", "team membership required");
+      const permission = await this.checkAgentPermission(agentActorId, requesterActorId);
+      if (target.owner_member_id !== requesterActorId && permission.role !== "admin") {
+        throw new ApiError(403, "forbidden", "agent owner or admin access required");
+      }
+      return { teamId, requesterActorId };
+    },
+
     async listTeams({ limit = 50 } = {}) {
       // ACTOR-SCOPED "my current teams". RLS (teams_org_guard) already scopes
       // rows to the caller's current org, but an org can contain teams the

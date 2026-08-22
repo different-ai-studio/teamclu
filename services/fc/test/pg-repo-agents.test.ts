@@ -529,3 +529,23 @@ test("listConnectedAgents marks owner and shows owner's personal agent", async (
   assert.ok(found, "owner can see their own personal agent");
   assert.equal(found.isOwner, true, "isOwner is true for the owner");
 });
+
+test("listConnectedAgents exposes a personal Agent to an explicit admin", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const owner = await seedMemberActor(db, team.id);
+  const admin = await seedMemberActor(db, team.id);
+  const agentActor = await seedAgentActor(db, team.id, owner.id, "personal");
+  await db.insert(agentMemberAccess).values({
+    agentId: agentActor.id,
+    memberId: admin.id,
+    permissionLevel: "admin",
+  });
+
+  const repo = createPgBusinessRepository({ db, callerActorId: admin.id });
+  const result = await repo.listConnectedAgents(team.id);
+  const found = result.items.find((item: any) => item.id === agentActor.id);
+  assert.ok(found, "an explicit admin can select the personal Agent");
+  assert.equal(found.permissionLevel, "admin");
+  assert.equal(found.isOwner, false);
+});

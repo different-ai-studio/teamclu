@@ -3,6 +3,171 @@
 
 use super::*;
 
+async fn skill_inventory(
+    backend: &dyn crate::backend::Backend,
+    team_id: &str,
+) -> Result<Vec<crate::proto::teamclu::AgentSkillInventoryItem>, String> {
+    use crate::proto::teamclu::AgentSkillInventoryItem;
+    let desired = backend
+        .team_skills(team_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let root = crate::runtime::team_skills::team_cloud_skills_dir(team_id);
+    let mut items = Vec::new();
+    for row in desired.into_iter().filter(|row| row.installed) {
+        let origin = teamclu_skillpack::read_origin(&root.join(&row.slug));
+        let actual_version = origin
+            .as_ref()
+            .and_then(|value| value.installed_version.parse::<i64>().ok())
+            .unwrap_or_default();
+        let wanted = row.installed_version.unwrap_or(row.latest_version.max(1));
+        let installed = actual_version == wanted;
+        items.push(AgentSkillInventoryItem {
+            id: row.slug.clone(),
+            name: row.slug,
+            source: "team".into(),
+            version: actual_version,
+            team_item: true,
+            read_only: false,
+            health: if installed { "installed" } else { "drift" }.into(),
+            error_code: if installed {
+                String::new()
+            } else {
+                "team_skill_missing_or_wrong_version".into()
+            },
+        });
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        let personal_root = home.join(".agents/skills");
+        if let Ok(entries) = std::fs::read_dir(personal_root) {
+            for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+                let Some(slug) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                // A registry origin means this is desktop/member managed, not an
+                // Agent personal skill. Never merge it into the daemon inventory.
+                if teamclu_skillpack::read_origin(&entry.path()).is_some() {
+                    continue;
+                }
+                let read_only = matches!(
+                    slug.as_str(),
+                    "create-role" | "macos-control" | "windows-control"
+                );
+                items.push(AgentSkillInventoryItem {
+                    id: format!("personal:{slug}"),
+                    name: slug,
+                    source: if read_only { "builtin" } else { "personal" }.into(),
+                    version: 0,
+                    team_item: false,
+                    read_only,
+                    health: "installed".into(),
+                    error_code: String::new(),
+                });
+            }
+        }
+    }
+    items.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(items)
+}
+
+fn remove_personal_skill(item_id: &str) -> Result<(), (&'static str, String)> {
+    let slug = item_id
+        .strip_prefix("personal:")
+        .filter(|slug| !slug.is_empty() && !slug.contains('/') && !slug.contains('\\'))
+        .ok_or(("invalid_item", "personal skill id is invalid".into()))?;
+    if matches!(slug, "create-role" | "macos-control" | "windows-control") {
+        return Err((
+            "builtin_read_only",
+            "built-in skills cannot be removed".into(),
+        ));
+    }
+    let root = dirs::home_dir()
+        .ok_or((
+            "personal_skill_unavailable",
+            "home directory is unavailable".into(),
+        ))?
+        .join(".agents/skills");
+    let path = root.join(slug);
+    if !path.starts_with(&root) {
+        return Err((
+            "invalid_item",
+            "personal skill id escapes the global skill root".into(),
+        ));
+    }
+    if teamclu_skillpack::read_origin(&path).is_some() {
+        return Err((
+            "not_personal_skill",
+            "team or registry skills require uninstall".into(),
+        ));
+    }
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(("personal_skill_remove_failed", e.to_string())),
+    }
+}
+
+fn mcp_inventory(team_id: &str) -> Vec<crate::proto::teamclu::AgentMcpInventoryItem> {
+    use crate::proto::teamclu::AgentMcpInventoryItem;
+    let workspace = crate::config::global_team_store::default_workspace_dir(team_id);
+    let mut items: Vec<_> = crate::config::team_mcp::scan_team_mcp(&workspace)
+        .into_iter()
+        .map(|(name, config)| {
+            let mut env_keys: Vec<_> = config.environment.keys().cloned().collect();
+            let mut header_keys: Vec<_> = config.headers.keys().cloned().collect();
+            env_keys.sort();
+            header_keys.sort();
+            // This response crosses an RPC trust boundary. Arguments and URL
+            // paths/query strings can contain literal credentials, so expose
+            // only an executable name or URL origin as the configuration
+            // summary. Secret-backed env/header fields are names-only below.
+            let command_or_url = config.url.as_deref().map_or_else(
+                || config.command.first().cloned().unwrap_or_default(),
+                |url| {
+                    let without_query = url
+                        .split(|character| character == '?' || character == '#')
+                        .next()
+                        .unwrap_or_default();
+                    let Some((scheme, remainder)) = without_query.split_once("://") else {
+                        return "<remote>".to_string();
+                    };
+                    let authority = remainder.split('/').next().unwrap_or_default();
+                    let host = authority.rsplit('@').next().unwrap_or_default();
+                    if scheme.is_empty() || host.is_empty() {
+                        "<remote>".to_string()
+                    } else {
+                        format!("{scheme}://{host}")
+                    }
+                },
+            );
+            AgentMcpInventoryItem {
+                id: name.clone(),
+                name,
+                source: "team".into(),
+                transport: if config.url.is_some() {
+                    "http"
+                } else {
+                    "stdio"
+                }
+                .into(),
+                command_or_url,
+                config_status: "installed".into(),
+                runtime_status: "unknown".into(),
+                configured_env_keys: env_keys,
+                missing_env_keys: vec![],
+                configured_header_keys: header_keys,
+                missing_header_keys: vec![],
+                error_code: String::new(),
+                sanitized_error: String::new(),
+                read_only: false,
+            }
+        })
+        .collect();
+    items.sort_by(|a, b| a.name.cmp(&b.name));
+    items
+}
+
 impl DaemonServer {
     /// Server-level RPC dispatch. Decodes the wire payload, matches on Method,
     /// delegates session/idea methods to SessionManager, and handles non-session
@@ -128,6 +293,10 @@ impl DaemonServer {
             Some(Method::RuntimeCommand(c)) => {
                 self.handle_runtime_command_rpc(&request, c.clone()).await
             }
+            Some(Method::AgentCapabilityManagement(m)) => {
+                self.handle_agent_capability_management(&request, m.clone())
+                    .await
+            }
             Some(Method::RemoteToolInvoke(_)) => not_yet_implemented(
                 &request,
                 "RemoteToolInvoke is handled by clients, not daemon",
@@ -141,6 +310,282 @@ impl DaemonServer {
                 result: None,
             },
         }
+    }
+
+    async fn handle_agent_capability_management(
+        &mut self,
+        request: &crate::proto::teamclu::RpcRequest,
+        management: crate::proto::teamclu::AgentCapabilityManagementRequest,
+    ) -> crate::proto::teamclu::RpcResponse {
+        use crate::proto::teamclu::{
+            rpc_response, AgentCapabilityAction, AgentCapabilityKind,
+            AgentCapabilityManagementResult, AgentManagementCapabilities, AgentMcpInventoryItem,
+            AgentSkillInventoryItem, RpcResponse,
+        };
+
+        const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+        const CACHE_LIMIT: usize = 256;
+        let cache_key = format!("{}:{}", request.requester_actor_id, request.request_id);
+        self.agent_management_results
+            .retain(|_, (created, _)| created.elapsed() < CACHE_TTL);
+        if let Some((_, cached)) = self.agent_management_results.get(&cache_key) {
+            return cached.clone();
+        }
+
+        let action = AgentCapabilityAction::try_from(management.action)
+            .unwrap_or(AgentCapabilityAction::Unspecified);
+        let kind = AgentCapabilityKind::try_from(management.kind)
+            .unwrap_or(AgentCapabilityKind::Unspecified);
+        let scope = match (action, kind) {
+            (AgentCapabilityAction::GetCapabilities, _) => "capabilities:read",
+            (AgentCapabilityAction::ListInventory, AgentCapabilityKind::AgentSkill) => {
+                "skills:list"
+            }
+            (AgentCapabilityAction::InstallTeamItem, AgentCapabilityKind::AgentSkill) => {
+                "skills:install"
+            }
+            (AgentCapabilityAction::UninstallTeamItem, AgentCapabilityKind::AgentSkill) => {
+                "skills:uninstall"
+            }
+            (AgentCapabilityAction::RetryItem, AgentCapabilityKind::AgentSkill) => "skills:retry",
+            (AgentCapabilityAction::RemovePersonalSkill, AgentCapabilityKind::AgentSkill) => {
+                "skills:remove-personal"
+            }
+            (AgentCapabilityAction::ListInventory, AgentCapabilityKind::AgentMcp) => "mcp:list",
+            (AgentCapabilityAction::InstallTeamItem, AgentCapabilityKind::AgentMcp) => {
+                "mcp:install"
+            }
+            (AgentCapabilityAction::UninstallTeamItem, AgentCapabilityKind::AgentMcp) => {
+                "mcp:uninstall"
+            }
+            (AgentCapabilityAction::RetryItem, AgentCapabilityKind::AgentMcp) => "mcp:retry",
+            _ => "",
+        };
+
+        let result = async {
+            if request.request_id.trim().is_empty() {
+                return Err(("invalid_request", "request_id is required".to_string()));
+            }
+            if scope.is_empty() {
+                return Err((
+                    "unsupported_operation",
+                    "unsupported capability operation".to_string(),
+                ));
+            }
+            self.backend
+                .verify_agent_management_grant(
+                    &management.management_grant,
+                    scope,
+                    &request.requester_actor_id,
+                )
+                .await
+                .map_err(|e| ("management_forbidden", e.to_string()))?;
+
+            let capabilities = AgentManagementCapabilities {
+                protocol_version: 1,
+                skill_actions: vec![
+                    AgentCapabilityAction::ListInventory as i32,
+                    AgentCapabilityAction::InstallTeamItem as i32,
+                    AgentCapabilityAction::UninstallTeamItem as i32,
+                    AgentCapabilityAction::RetryItem as i32,
+                    AgentCapabilityAction::RemovePersonalSkill as i32,
+                ],
+                mcp_actions: vec![
+                    AgentCapabilityAction::ListInventory as i32,
+                    AgentCapabilityAction::InstallTeamItem as i32,
+                    AgentCapabilityAction::UninstallTeamItem as i32,
+                    AgentCapabilityAction::RetryItem as i32,
+                ],
+            };
+
+            if action == AgentCapabilityAction::GetCapabilities {
+                return Ok(AgentCapabilityManagementResult {
+                    capabilities: Some(capabilities),
+                    skills: vec![],
+                    mcp_servers: vec![],
+                    status: "ok".into(),
+                    error_code: String::new(),
+                });
+            }
+
+            let team_id = self.backend.team_id().trim().to_string();
+            if team_id.is_empty() {
+                return Err((
+                    "agent_not_onboarded",
+                    "Agent is not onboarded to a team".to_string(),
+                ));
+            }
+
+            match (action, kind) {
+                (AgentCapabilityAction::InstallTeamItem, AgentCapabilityKind::AgentSkill) => {
+                    if management.item_id.trim().is_empty() || management.version < 1 {
+                        return Err((
+                            "invalid_item",
+                            "skill id and version are required".to_string(),
+                        ));
+                    }
+                    self.backend
+                        .record_team_skill_install(
+                            &team_id,
+                            &management.item_id,
+                            management.version,
+                        )
+                        .await
+                        .map_err(|e| ("desired_state_write_failed", e.to_string()))?;
+                    let outcome = self.team_skill_reconciler.reconcile_now(&team_id).await;
+                    crate::runtime::team_skills::apply_team_skill_outcome(
+                        &team_id,
+                        outcome,
+                        Some(&self.backend),
+                        self.refresh_coordinator.as_ref(),
+                    )
+                    .await;
+                }
+                (AgentCapabilityAction::UninstallTeamItem, AgentCapabilityKind::AgentSkill) => {
+                    self.backend
+                        .remove_team_skill_install(&team_id, &management.item_id)
+                        .await
+                        .map_err(|e| ("desired_state_write_failed", e.to_string()))?;
+                    let outcome = self.team_skill_reconciler.reconcile_now(&team_id).await;
+                    crate::runtime::team_skills::apply_team_skill_outcome(
+                        &team_id,
+                        outcome,
+                        Some(&self.backend),
+                        self.refresh_coordinator.as_ref(),
+                    )
+                    .await;
+                }
+                (AgentCapabilityAction::RetryItem, AgentCapabilityKind::AgentSkill) => {
+                    let outcome = self.team_skill_reconciler.reconcile_now(&team_id).await;
+                    crate::runtime::team_skills::apply_team_skill_outcome(
+                        &team_id,
+                        outcome,
+                        Some(&self.backend),
+                        self.refresh_coordinator.as_ref(),
+                    )
+                    .await;
+                }
+                (AgentCapabilityAction::RemovePersonalSkill, AgentCapabilityKind::AgentSkill) => {
+                    remove_personal_skill(&management.item_id)?;
+                }
+                (AgentCapabilityAction::InstallTeamItem, AgentCapabilityKind::AgentMcp) => {
+                    self.backend
+                        .install_team_mcp(&team_id, &management.item_id)
+                        .await
+                        .map_err(|e| ("desired_state_write_failed", e.to_string()))?;
+                    let outcome = crate::runtime::team_cloud_config::TeamCloudConfigResolver::new(
+                        self.backend.clone(),
+                    )
+                    .reconcile_now(&team_id)
+                    .await;
+                    crate::runtime::team_cloud_config::apply_team_cloud_outcome(
+                        &team_id,
+                        outcome,
+                        Some(&self.backend),
+                        self.refresh_coordinator.as_ref(),
+                    )
+                    .await;
+                }
+                (AgentCapabilityAction::UninstallTeamItem, AgentCapabilityKind::AgentMcp) => {
+                    self.backend
+                        .uninstall_team_mcp(&team_id, &management.item_id)
+                        .await
+                        .map_err(|e| ("desired_state_write_failed", e.to_string()))?;
+                    let outcome = crate::runtime::team_cloud_config::TeamCloudConfigResolver::new(
+                        self.backend.clone(),
+                    )
+                    .reconcile_now(&team_id)
+                    .await;
+                    crate::runtime::team_cloud_config::apply_team_cloud_outcome(
+                        &team_id,
+                        outcome,
+                        Some(&self.backend),
+                        self.refresh_coordinator.as_ref(),
+                    )
+                    .await;
+                }
+                (AgentCapabilityAction::RetryItem, AgentCapabilityKind::AgentMcp) => {
+                    let outcome = crate::runtime::team_cloud_config::TeamCloudConfigResolver::new(
+                        self.backend.clone(),
+                    )
+                    .reconcile_now(&team_id)
+                    .await;
+                    crate::runtime::team_cloud_config::apply_team_cloud_outcome(
+                        &team_id,
+                        outcome,
+                        Some(&self.backend),
+                        self.refresh_coordinator.as_ref(),
+                    )
+                    .await;
+                }
+                (AgentCapabilityAction::ListInventory, _) => {}
+                _ => {
+                    return Err((
+                        "unsupported_operation",
+                        "unsupported capability operation".to_string(),
+                    ))
+                }
+            }
+
+            let (skills, mcp_servers) = match kind {
+                AgentCapabilityKind::AgentSkill => (
+                    skill_inventory(self.backend.as_ref(), &team_id)
+                        .await
+                        .map_err(|e| ("inventory_failed", e))?,
+                    vec![],
+                ),
+                AgentCapabilityKind::AgentMcp => (vec![], mcp_inventory(&team_id)),
+                _ => (vec![], vec![]),
+            };
+            Ok(AgentCapabilityManagementResult {
+                capabilities: Some(capabilities),
+                skills,
+                mcp_servers,
+                status: "ok".into(),
+                error_code: String::new(),
+            })
+        }
+        .await;
+
+        let response = match result {
+            Ok(value) => RpcResponse {
+                request_id: request.request_id.clone(),
+                success: true,
+                error: String::new(),
+                requester_client_id: request.requester_client_id.clone(),
+                requester_actor_id: request.requester_actor_id.clone(),
+                result: Some(rpc_response::Result::AgentCapabilityManagementResult(value)),
+            },
+            Err((code, message)) => RpcResponse {
+                request_id: request.request_id.clone(),
+                success: false,
+                error: message,
+                requester_client_id: request.requester_client_id.clone(),
+                requester_actor_id: request.requester_actor_id.clone(),
+                result: Some(rpc_response::Result::AgentCapabilityManagementResult(
+                    AgentCapabilityManagementResult {
+                        capabilities: None,
+                        skills: vec![],
+                        mcp_servers: vec![],
+                        status: "failed".into(),
+                        error_code: code.into(),
+                    },
+                )),
+            },
+        };
+        if self.agent_management_results.len() >= CACHE_LIMIT {
+            if let Some(oldest) = self
+                .agent_management_results
+                .iter()
+                .min_by_key(|(_, (created, _))| *created)
+                .map(|(id, _)| id.clone())
+            {
+                self.agent_management_results.remove(&oldest);
+            }
+        }
+        self.agent_management_results
+            .insert(cache_key, (std::time::Instant::now(), response.clone()));
+        response
     }
 
     pub(crate) fn session_title_for_log(&self, session_id: &str) -> String {

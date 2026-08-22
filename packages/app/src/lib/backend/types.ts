@@ -692,6 +692,16 @@ export interface ActorsBackend {
   getActorDirectoryEntry(actorId: string): Promise<ActorDirectoryEntry | null>;
   getDaemonAgentDirectoryEntry(teamId: string, agentId: string): Promise<ActorDirectoryEntry | null>;
   listConnectedAgents(teamId: string): Promise<ConnectedAgentRow[]>;
+  createAgentManagementGrant(
+    agentId: string,
+    scopes: string[],
+  ): Promise<{
+    grant: string;
+    expiresAt: string;
+    requesterActorId: string;
+    targetAgentId: string;
+    scopes: string[];
+  }>;
   /**
    * This machine's agent in this team, if the caller already owns one. Read-only:
    * the desktop asks this first so it only interrupts the user for a name when

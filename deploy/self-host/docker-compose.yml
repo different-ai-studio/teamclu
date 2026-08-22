@@ -238,6 +238,7 @@ services:
       SUPABASE_PUBLIC_URL: "${FC_SUPABASE_PUBLIC_URL:-https://${SUPABASE_DOMAIN}}"
       SUPABASE_ANON_KEY: "${FC_SUPABASE_ANON_KEY:-${ANON_KEY}}"
       TRUSTED_EXTERNAL_JWT_SECRET: "${TRUSTED_EXTERNAL_JWT_SECRET:-}"
+      AGENT_MANAGEMENT_GRANT_SECRET: "${AGENT_MANAGEMENT_GRANT_SECRET:-${TRUSTED_EXTERNAL_JWT_SECRET:-}}"
       SUPABASE_SERVICE_ROLE_KEY: "${FC_SUPABASE_SERVICE_ROLE_KEY:-${SERVICE_ROLE_KEY}}"
       # Private Supabase Storage buckets holding client-encrypted blobs: team
       # file-sync bodies and skill packages. This map is an allowlist, so a var

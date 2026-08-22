@@ -3263,6 +3263,91 @@ paths:
                       format: uuid
         "401":
           $ref: "#/components/responses/Error"
+  /v1/agents/{agentActorId}/management-grants:
+    post:
+      operationId: createAgentManagementGrant
+      summary: Mint a short-lived grant for managing one Agent
+      description: >-
+        Owner/admin only. The grant is bound to the authenticated requester,
+        target Agent, requested scopes, nonce and a short expiry. User bearer
+        tokens are never forwarded to the target Agent.
+      tags: [Actors]
+      parameters:
+        - name: agentActorId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scopes]
+              properties:
+                scopes:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items:
+                    type: string
+                    enum:
+                      - capabilities:read
+                      - skills:list
+                      - skills:install
+                      - skills:uninstall
+                      - skills:retry
+                      - skills:remove-personal
+                      - mcp:list
+                      - mcp:install
+                      - mcp:uninstall
+                      - mcp:retry
+      responses:
+        "200":
+          description: Short-lived management grant.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [grant, expiresAt, requesterActorId, targetAgentId, scopes]
+                properties:
+                  grant: { type: string, writeOnly: true }
+                  expiresAt: { type: string, format: date-time }
+                  requesterActorId: { type: string, format: uuid }
+                  targetAgentId: { type: string, format: uuid }
+                  scopes: { type: array, items: { type: string } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/agents/{agentActorId}/management-grants/verify:
+    post:
+      operationId: verifyAgentManagementGrant
+      summary: Verify a management grant as its target Agent
+      description: The authenticated Cloud caller must be the target Agent itself.
+      tags: [Actors]
+      parameters:
+        - name: agentActorId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [grant, scope, requesterActorId]
+              properties:
+                grant: { type: string, writeOnly: true }
+                scope: { type: string }
+                requesterActorId: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Grant is valid and bound to this request.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/agents/runtimes:
     get:
       operationId: getAgentRuntime

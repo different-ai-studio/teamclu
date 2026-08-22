@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use teamclu_transport::MessagePublisher;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
@@ -193,6 +193,8 @@ pub struct DaemonServer {
     session_remote_targets: Arc<AsyncMutex<crate::remote_tools::SessionRemoteTargetStore>>,
     remote_tool_turn_contexts: Arc<AsyncMutex<crate::remote_tools::RemoteToolTurnContextStore>>,
     rpc_client: Arc<AsyncMutex<crate::teamclu::rpc::RpcClient>>,
+    team_skill_reconciler: Arc<crate::runtime::team_skills::TeamSkillReconciler>,
+    agent_management_results: HashMap<String, (Instant, crate::proto::teamclu::RpcResponse)>,
     /// Sender for completed cron turns. `handle_prompt_await` runs the (long)
     /// ACP turn on a background task; when it finishes the task sends the result
     /// here so the active run loop can persist the AgentReply and reply to the
@@ -755,6 +757,9 @@ impl DaemonServer {
         // backpressure to the turn.
         let (cron_turn_event_tx, cron_turn_event_rx) = mpsc::channel(1024);
 
+        let team_skill_reconciler = Arc::new(
+            crate::runtime::team_skills::TeamSkillReconciler::new(backend.clone()),
+        );
         Ok(Self {
             config,
             config_path: config_path.to_path_buf(),
@@ -797,6 +802,8 @@ impl DaemonServer {
                 crate::remote_tools::RemoteToolTurnContextStore::default(),
             )),
             rpc_client,
+            team_skill_reconciler,
+            agent_management_results: HashMap::new(),
             cron_turn_done_tx,
             cron_turn_done_rx: Some(cron_turn_done_rx),
             cron_turn_event_tx,
@@ -1044,9 +1051,7 @@ impl DaemonServer {
         // Escapes the HTTP-setup block so the prewarm notifier can be installed
         // once the sock command channel exists (below).
         let mut supervisor_for_prewarm: Option<Arc<crate::runtime::RuntimeSupervisor>> = None;
-        let team_skill_reconciler = Arc::new(
-            crate::runtime::team_skills::TeamSkillReconciler::new(self.backend.clone()),
-        );
+        let team_skill_reconciler = self.team_skill_reconciler.clone();
         let _http_handle = {
             let mut meta = crate::http::server::metadata(self.actor_id.clone(), "amuxd");
             // Expose configured backends so the model-catalog endpoint can
@@ -3740,7 +3745,7 @@ pub(crate) mod tests {
                     crate::mqtt::MqttSnapshot::default(),
                 )),
                 managed_llm: Arc::new(crate::runtime::managed_llm::ManagedLlmResolver::new(
-                    backend,
+                    backend.clone(),
                 )),
                 live_tee: tokio::sync::broadcast::channel(64).0,
                 session_remote_targets: Arc::new(AsyncMutex::new(
@@ -3754,6 +3759,10 @@ pub(crate) mod tests {
                     "team-1".to_string(),
                     "agent-actor".to_string(),
                 ))),
+                team_skill_reconciler: Arc::new(
+                    crate::runtime::team_skills::TeamSkillReconciler::new(backend),
+                ),
+                agent_management_results: HashMap::new(),
                 cron_turn_done_tx,
                 cron_turn_done_rx: Some(cron_turn_done_rx),
                 cron_turn_event_tx,

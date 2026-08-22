@@ -334,6 +334,10 @@ pub trait Backend: Send + Sync {
         Ok(())
     }
 
+    async fn remove_team_skill_install(&self, _team_id: &str, _slug: &str) -> BackendResult<()> {
+        Ok(())
+    }
+
     /// Idempotently ensure the caller's LiteLLM member key is provisioned via
     /// `POST /v1/teams/:id/litellm/member-key`. The key value itself is
     /// deterministic (`sk-tc-{actor_id[..40]}`) and derived locally; this call
@@ -659,6 +663,22 @@ pub trait Backend: Send + Sync {
         &self,
         agent_actor_id: &str,
     ) -> BackendResult<Vec<String>>;
+
+    /// Ask Cloud API to validate a short-lived management grant. The Cloud
+    /// caller is this daemon's own Agent identity, so the server can also prove
+    /// the verifier is the grant's target instead of trusting the RPC payload.
+    async fn verify_agent_management_grant(
+        &self,
+        _grant: &str,
+        _scope: &str,
+        _requester_actor_id: &str,
+    ) -> BackendResult<()> {
+        Err(BackendError::Provider {
+            provider: "backend",
+            code: Some("agent_management_unsupported".into()),
+            message: "agent management grants are unsupported by this backend".into(),
+        })
+    }
 
     /// Update a session's title. Default is a no-op so test doubles and
     /// backends without session storage don't have to care.

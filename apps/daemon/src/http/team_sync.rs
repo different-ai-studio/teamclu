@@ -349,6 +349,25 @@ pub async fn install_team_skill(
     reconcile_team_skills_for_state(&state, team_id).await
 }
 
+/// `DELETE /v1/team/skills/:slug/install` — remove the desired assignment for
+/// this daemon's own Agent and reconcile disk immediately.
+pub async fn uninstall_team_skill(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Path(slug): Path<String>,
+) -> Result<Json<TeamSkillReconcileResponse>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+    if slug.trim().is_empty() {
+        return Err(HttpError::validation("skill slug must not be empty"));
+    }
+    let (backend, team_id) = daemon_backend_and_team(&state)?;
+    backend
+        .remove_team_skill_install(&team_id, &slug)
+        .await
+        .map_err(|e| HttpError::internal(e.to_string()))?;
+    reconcile_team_skills_for_state(&state, team_id).await
+}
+
 /// `POST /v1/team/skills/reconcile` — force the same reconciler used by the
 /// daemon's periodic task to run now.
 pub async fn reconcile_team_skills(

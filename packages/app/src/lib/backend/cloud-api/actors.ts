@@ -135,6 +135,15 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
       const out = await client.get<{ items: CloudConnectedAgent[] }>(`/v1/teams/${encodeURIComponent(teamId)}/agents/connected`);
       return out.items.map((row) => mapConnectedAgent(row, teamId));
     },
+    async createAgentManagementGrant(agentId, scopes) {
+      return client.post<{
+        grant: string;
+        expiresAt: string;
+        requesterActorId: string;
+        targetAgentId: string;
+        scopes: string[];
+      }>(`/v1/agents/${encodeURIComponent(agentId)}/management-grants`, { scopes });
+    },
     async findAgentForDevice(input) {
       return await client.get<{ agentId: string | null; displayName: string | null }>(
         `/v1/teams/${encodeURIComponent(input.teamId)}/agents/for-device?deviceId=${encodeURIComponent(input.deviceId)}`,

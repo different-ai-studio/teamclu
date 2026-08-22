@@ -7,6 +7,10 @@ import {
   RuntimeStopRequestSchema,
   RuntimeCommandRequestSchema,
   SetModelRequestSchema,
+  AgentCapabilityManagementRequestSchema,
+  AgentCapabilityAction,
+  AgentCapabilityKind,
+  type AgentCapabilityManagementResult,
   type FetchWorkspacesResult,
   type RpcRequest,
   type RpcResponse,
@@ -457,6 +461,37 @@ export async function probeAgentRpcReachability(args: {
     }
     return 'indeterminate'
   }
+}
+
+export async function manageAgentCapability(args: {
+  targetActorId: string
+  managementGrant: string
+  kind: AgentCapabilityKind
+  action: AgentCapabilityAction
+  itemId?: string
+  version?: number
+  timeoutMs?: number
+}): Promise<AgentCapabilityManagementResult> {
+  const response = await sendRequest((req) => {
+    req.method = {
+      case: 'agentCapabilityManagement',
+      value: create(AgentCapabilityManagementRequestSchema, {
+        managementGrant: args.managementGrant,
+        kind: args.kind,
+        action: args.action,
+        itemId: args.itemId ?? '',
+        version: BigInt(args.version ?? 0),
+      }),
+    }
+  }, args.targetActorId, args.timeoutMs)
+  if (response.result.case !== 'agentCapabilityManagementResult') {
+    throw new Error(`unexpected result variant: ${response.result.case}`)
+  }
+  if (!response.success) {
+    const code = response.result.value.errorCode
+    throw new Error(code ? `${code}: ${response.error}` : response.error || 'agent management rejected')
+  }
+  return response.result.value
 }
 
 // ---------------------------------------------------------------------------

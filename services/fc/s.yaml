@@ -90,6 +90,7 @@ resources:
         APPS_PUBLIC_DOMAIN: ${env('APPS_PUBLIC_DOMAIN', '')}
         PUSH_WEBHOOK_SECRET: ${env('PUSH_WEBHOOK_SECRET')}
         MARKETPLACE_ADMIN_SECRET: ${env('MARKETPLACE_ADMIN_SECRET', '')}
+        AGENT_MANAGEMENT_GRANT_SECRET: ${env('AGENT_MANAGEMENT_GRANT_SECRET', '')}
         CRON_TRIGGER_SECRET: ${env('CRON_TRIGGER_SECRET', '')}
         # Raw-TCP address for clients whose MQTT stack can't do WebSocket (iOS
         # CocoaMQTT, Expo). Keep in step with the compose `environment:` map —
