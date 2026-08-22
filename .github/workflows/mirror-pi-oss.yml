@@ -44,7 +44,7 @@ jobs:
           VERSION: ${{ steps.pi.outputs.version }}
         run: |
           set -euo pipefail
-          SERVED=$(curl -fsSL "$OSS_BASE/latest.json" 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" 2>/dev/null || true)
+          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/latest.json" 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" 2>/dev/null || true)
           if [ "$SERVED" = "$VERSION" ]; then
             echo "Pi OSS mirror already serves $VERSION"
             echo "skip=true" >> "$GITHUB_OUTPUT"
