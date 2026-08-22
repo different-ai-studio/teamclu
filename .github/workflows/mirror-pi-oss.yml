@@ -139,7 +139,7 @@ jobs:
             let s=""; process.stdin.on("data", x => s += x).on("end", () => {
               const m = JSON.parse(s)
               if (m.version !== process.env.VERSION || !m.asset || !/^[a-f0-9]{64}$/.test(m.sha256)) process.exit(1)
-              console.log(m.version + ' ' + m.asset)
+              console.log(m.version + " " + m.asset)
             })'
           ASSET=$(echo "$MANIFEST" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).asset")
           curl -fsI "$OSS_BASE/$VERSION/$ASSET" >/dev/null
