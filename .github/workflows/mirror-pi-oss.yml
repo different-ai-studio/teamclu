@@ -30,6 +30,12 @@ jobs:
         with:
           node-version: 22
 
+      # npm bundled with the Node 22 runner image crashes while resolving Pi's
+      # production dependency tree ("edgesOut" is null). npm 11 handles the
+      # same official tarball successfully.
+      - name: Use npm 11 for Pi dependency bundling
+        run: npm install --global npm@11
+
       - name: Resolve the required official Pi version
         id: pi
         run: |
