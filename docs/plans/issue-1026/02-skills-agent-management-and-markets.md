@@ -2,7 +2,7 @@
 
 父 Issue：#1026
 
-依赖：子 Issue 1「amuxd Agent 能力管理 RPC」
+依赖：#1030「amuxd Agent 能力管理 RPC」
 
 ## 背景
 

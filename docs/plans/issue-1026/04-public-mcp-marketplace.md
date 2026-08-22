@@ -2,7 +2,7 @@
 
 父 Issue：#1026
 
-依赖：子 Issue 3「MCP 按 Agent 管理」
+依赖：#1032「MCP 按 Agent 管理」
 
 ## 背景
 

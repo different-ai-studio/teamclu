@@ -2,9 +2,9 @@
 
 父 Issue：#1026
 
-依赖：子 Issue 1「amuxd Agent 能力管理 RPC」
+依赖：#1030「amuxd Agent 能力管理 RPC」
 
-可与子 Issue 2 的 Skills UI 并行，但必须复用同一个 Agent 选择器和布局状态。
+可与 #1031 的 Skills UI 并行，但必须复用同一个 Agent 选择器和布局状态。
 
 ## 背景
 
