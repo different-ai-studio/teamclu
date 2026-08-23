@@ -370,6 +370,18 @@ impl PiProcessPool {
                 None
             }
         };
+        // The extension degrades to "no MCP servers" without the SDK (its
+        // import is guarded), which otherwise shows up only as tools quietly
+        // missing from the model's list. Say so where it is diagnosable.
+        if extension.is_some() && !crate::pi_install::mcp_sdk::satisfied() {
+            warn!(
+                dir = %crate::pi_install::mcp_sdk::deps_dir().display(),
+                required = %crate::pi_install::required_mcp_sdk_version(),
+                installed = ?crate::pi_install::mcp_sdk::installed_version(),
+                "MCP SDK missing or too old; pi will start with no MCP tools. \
+                 Run `amuxd pi install` to repair"
+            );
+        }
 
         let (program, mode) = match &launch.mode {
             LaunchMode::Host { node, package_root } => {
@@ -683,8 +695,16 @@ fn amuxd_pi_dir() -> PathBuf {
     crate::config::layout::cache_dir().join("pi")
 }
 
+/// Where the extension is materialized. Also an npm root: the extension's MCP
+/// bridge imports `@modelcontextprotocol/sdk`, and pi resolves an extension's
+/// bare imports from a `node_modules/` next to it, so
+/// `pi_install::mcp_sdk` installs into this same directory.
+pub(crate) fn extension_dir() -> PathBuf {
+    amuxd_pi_dir().join("extensions")
+}
+
 pub(crate) fn extension_path() -> PathBuf {
-    amuxd_pi_dir().join("extensions").join("teamclu.ts")
+    extension_dir().join("teamclu.ts")
 }
 
 pub(crate) fn host_script_path() -> PathBuf {
@@ -714,6 +734,12 @@ fn materialize(path: PathBuf, content: &str) -> std::io::Result<PathBuf> {
 }
 
 fn materialize_extension() -> std::io::Result<PathBuf> {
+    // The manifest travels with the extension: it is what makes a hand-run
+    // `npm install` in this directory repair a missing SDK, and what pi reads
+    // when the directory is loaded as a package.
+    if let Err(e) = crate::pi_install::mcp_sdk::materialize_package_json() {
+        warn!(error = %e, "pi extension package.json write failed");
+    }
     materialize(extension_path(), TEAMCLU_EXTENSION_TS)
 }
 
