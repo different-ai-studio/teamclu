@@ -451,21 +451,22 @@ export function createSupabaseBusinessRepository(options) {
 
 
   return {
-    async authorizeAgentManagement(agentActorId) {
-      const { data: target, error } = await supabase
-        .from("actor_directory")
-        .select("id, team_id, actor_type, owner_member_id")
-        .eq("id", agentActorId)
-        .maybeSingle();
+    async authorizeAgentManagement(agentActorId, teamId) {
+      if (!teamId) throw new ApiError(400, "validation_failed", "teamId is required");
+      // `list_connected_agents` rather than `actor_directory`: the view's agent
+      // predicate is `visibility = 'team' OR owner_member_id = me`, with no
+      // agent_member_access clause, so a personal Agent someone granted the
+      // caller explicit admin on is invisible there — exactly the Agent the
+      // picker offers and this endpoint then 404s on. The RPC is SECURITY
+      // DEFINER, carries the `ama.member_id is not null` arm, and computes
+      // is_owner / permission_level for the caller in the same pass.
+      const { data, error } = await supabase.rpc("list_connected_agents", { p_team_id: teamId });
       if (error) throw error;
-      if (!target || target.actor_type !== "agent") {
-        throw new ApiError(404, "not_found", "agent not found");
-      }
-      const teamId = target.team_id;
+      const target = (data ?? []).find((row) => row.agent_id === agentActorId);
+      if (!target) throw new ApiError(404, "not_found", "agent not found");
       const requesterActorId = (await this.resolveCallerActorForTeam(teamId))?.id ?? null;
       if (!requesterActorId) throw new ApiError(403, "forbidden", "team membership required");
-      const permission = await this.checkAgentPermission(agentActorId, requesterActorId);
-      if (target.owner_member_id !== requesterActorId && permission.role !== "admin") {
+      if (target.is_owner !== true && target.permission_level !== "admin") {
         throw new ApiError(403, "forbidden", "agent owner or admin access required");
       }
       return { teamId, requesterActorId };

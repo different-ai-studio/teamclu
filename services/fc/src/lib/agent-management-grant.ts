@@ -10,15 +10,23 @@ export type AgentManagementGrantClaims = {
   requesterActorId: string;
   targetAgentId: string;
   scopes: string[];
+  /**
+   * The RPC `request_id` this grant may be spent on, chosen by FC and handed
+   * back to the requester. The target Agent refuses the grant on any other
+   * request id, and deduplicates repeats of the same one — so a captured grant
+   * replays into the Agent's cached response instead of a second mutation.
+   * That is the single-use property; there is no server-side nonce ledger.
+   */
   nonce: string;
 };
 
 function signingKey(): Uint8Array {
-  // Dedicated key is preferred. Trusted-external JWT deployments already
-  // provision a high-entropy HMAC secret; accepting it as a migration fallback
-  // keeps existing self-hosts working while issuer+audience domain-separate the
-  // resulting tokens from external login JWTs.
-  const secret = (process.env.AGENT_MANAGEMENT_GRANT_SECRET || process.env.TRUSTED_EXTERNAL_JWT_SECRET)?.trim();
+  // Dedicated key only. This secret authorizes capability management on every
+  // Agent in every team, so it must not be shared with the trusted-external
+  // login HMAC: whoever can mint external login JWTs would otherwise be able to
+  // mint management grants too, and issuer/audience separation does nothing
+  // against a holder of the key itself.
+  const secret = process.env.AGENT_MANAGEMENT_GRANT_SECRET?.trim();
   if (!secret || secret.length < 32) {
     throw new ApiError(503, "agent_management_unavailable", "agent management grant signing is not configured");
   }
@@ -27,7 +35,7 @@ function signingKey(): Uint8Array {
 
 export async function mintAgentManagementGrant(
   claims: AgentManagementGrantClaims,
-): Promise<{ grant: string; expiresAt: string }> {
+): Promise<{ grant: string; expiresAt: string; nonce: string }> {
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + TTL_SECONDS;
   const grant = await new SignJWT({
@@ -43,7 +51,7 @@ export async function mintAgentManagementGrant(
     .setIssuedAt(now)
     .setExpirationTime(expiresAt)
     .sign(signingKey());
-  return { grant, expiresAt: new Date(expiresAt * 1000).toISOString() };
+  return { grant, expiresAt: new Date(expiresAt * 1000).toISOString(), nonce: claims.nonce };
 }
 
 export async function verifyAgentManagementGrant(grant: string): Promise<AgentManagementGrantClaims> {

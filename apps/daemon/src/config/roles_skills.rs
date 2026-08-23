@@ -79,6 +79,13 @@ pub struct RolesSkillsStateDto {
 const ROLE_SKILL_DIR: &str = "skills";
 const INHERENT_SKILL_NAMES: &[&str] = &["create-role", "macos-control", "windows-control"];
 
+/// Skills that ship with the binary. They are read-only everywhere — the
+/// scanner classifies them as `builtin`, and the agent-management RPC refuses
+/// to delete them — so the list has exactly one home.
+pub fn is_inherent_skill(name: &str) -> bool {
+    INHERENT_SKILL_NAMES.contains(&name)
+}
+
 fn process_brand() -> String {
     teamclu_runtime_env::brand_short_name_from_env()
 }
@@ -297,7 +304,7 @@ fn load_skills_from_dir(dir: &Path, source: &str) -> Result<Vec<RawSkill>, Works
 }
 
 fn classify_teamclu_skill(filename: &str, clawhub_slugs: &HashSet<String>) -> &'static str {
-    if INHERENT_SKILL_NAMES.contains(&filename) {
+    if is_inherent_skill(filename) {
         "builtin"
     } else if clawhub_slugs.contains(filename) {
         "clawhub"

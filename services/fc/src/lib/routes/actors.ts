@@ -231,6 +231,10 @@ export function registerActors(router) {
   router.post("/v1/agents/:agentActorId/management-grants", async (ctx) => {
     const targetAgentId = decodeURIComponent(ctx.params.agentActorId);
     const body = ctx.json ?? {};
+    // Team-scoped on purpose: authorization resolves the target through the
+    // caller's own team membership, which is the only lookup that can see a
+    // personal Agent the caller reaches through an explicit access grant.
+    const teamId = requireString(body.teamId, "teamId");
     if (!Array.isArray(body.scopes) || body.scopes.length === 0) {
       throw new ApiError(400, "validation_failed", "scopes must be a non-empty array");
     }
@@ -238,12 +242,14 @@ export function registerActors(router) {
     if (scopes.some((scope) => !AGENT_MANAGEMENT_SCOPES.has(scope))) {
       throw new ApiError(400, "validation_failed", "unsupported agent management scope");
     }
-    const principal = await ctx.repository.authorizeAgentManagement(targetAgentId);
+    const principal = await ctx.repository.authorizeAgentManagement(targetAgentId, teamId);
     const result = await mintAgentManagementGrant({
       teamId: principal.teamId,
       requesterActorId: principal.requesterActorId,
       targetAgentId,
       scopes,
+      // FC picks the request id the grant may be spent on; the requester must
+      // send this back as the RPC `request_id` (see `nonce` on the claims).
       nonce: randomUUID(),
     });
     return { body: { ...result, requesterActorId: principal.requesterActorId, targetAgentId, scopes } };
@@ -255,10 +261,16 @@ export function registerActors(router) {
     requireString(body.grant, "grant");
     requireString(body.scope, "scope");
     requireString(body.requesterActorId, "requesterActorId");
+    // The request id is part of what the grant authorizes. Without it a
+    // captured grant would be a bearer token good for arbitrarily many
+    // mutations until it expires; bound to one request id, a replay can only
+    // re-ask for the call the Agent has already answered and cached.
+    requireString(body.requestId, "requestId");
     const claims = await verifyAgentManagementGrant(body.grant);
     if (
       claims.targetAgentId !== targetAgentId ||
       claims.requesterActorId !== body.requesterActorId ||
+      claims.nonce !== body.requestId ||
       !claims.scopes.includes(body.scope)
     ) {
       throw new ApiError(403, "agent_management_grant_mismatch", "agent management grant does not match this request");

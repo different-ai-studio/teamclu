@@ -51,14 +51,17 @@ export function makeAgentsRepo(db: DbLike, ctx: AgentsCtx = {}) {
       return id ? { id } : null;
     },
 
-    async authorizeAgentManagement(agentId: string) {
+    async authorizeAgentManagement(agentId: string, teamId: string) {
+      if (!teamId) throw new ApiError(400, "validation_failed", "teamId is required");
       const [target] = await db
         .select({ teamId: actors.teamId, ownerMemberId: agents.ownerMemberId })
         .from(agents)
         .innerJoin(actors, eq(actors.id, agents.id))
         .where(eq(agents.id, agentId))
         .limit(1);
-      if (!target) throw new ApiError(404, "not_found", "agent not found");
+      // Scoped to the team the caller named, so this cannot be used to probe
+      // agent ids in teams the caller is not a member of.
+      if (!target || target.teamId !== teamId) throw new ApiError(404, "not_found", "agent not found");
       const requesterActorId = ctx.callerActorId ?? (ctx.userId ? await resolveActorForTeam(db, ctx.userId, target.teamId) : undefined);
       if (!requesterActorId) throw new ApiError(403, "forbidden", "team membership required");
       const role = await authzCheckAgentPermission(db, requesterActorId, agentId);

@@ -101,11 +101,12 @@ jobs:
             # explicitly so a stale server .env cannot select the postgres mode.
             upsert_env BACKEND_KIND "supabase"
             upsert_env TRUSTED_EXTERNAL_JWT_SECRET "$TRUSTED_EXTERNAL_JWT_SECRET"
-            if [ -n "$AGENT_MANAGEMENT_GRANT_SECRET" ]; then
-              upsert_env AGENT_MANAGEMENT_GRANT_SECRET "$AGENT_MANAGEMENT_GRANT_SECRET"
-            else
-              upsert_env AGENT_MANAGEMENT_GRANT_SECRET "$TRUSTED_EXTERNAL_JWT_SECRET"
-            fi
+            # Deliberately NOT defaulted to TRUSTED_EXTERNAL_JWT_SECRET. That
+            # secret is shared with the external login provider, and this one
+            # signs grants that authorize capability management on every Agent
+            # in every team. sync_env so clearing the GitHub secret clears the
+            # server value instead of leaving a stale key signing grants.
+            sync_env AGENT_MANAGEMENT_GRANT_SECRET "$AGENT_MANAGEMENT_GRANT_SECRET"
             sync_env FC_SUPABASE_URL "$FC_SUPABASE_URL"
             sync_env FC_SUPABASE_PUBLIC_URL "$FC_SUPABASE_PUBLIC_URL"
             sync_env FC_SUPABASE_ANON_KEY "$FC_SUPABASE_ANON_KEY"

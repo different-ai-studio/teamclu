@@ -273,6 +273,11 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     void loadSection(section, { force: true, withTools: section === 'mcp' })
   }, [section, loadSection])
 
+  // `subjectActorId` is read, not depended on: this effect WRITES it, so
+  // listing it here made every auto-select re-run the effect and refetch
+  // listConnectedAgents — and, through setSubjectActor, mint two more grants
+  // and do two more MQTT round trips — for nothing, on every mount, team
+  // switch, and skills/mcp toggle.
   React.useEffect(() => {
     if ((section !== 'skills' && section !== 'mcp') || !currentTeamId) return
     let cancelled = false
@@ -285,10 +290,11 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         )
         if (cancelled) return
         setManageableAgents(rows)
-        const selectedStillValid = rows.some((row) => row.id === subjectActorId)
+        const selected = useTeamShareBrowserStore.getState().subjectActorId
+        const selectedStillValid = rows.some((row) => row.id === selected)
         if (rows.length === 1 && !selectedStillValid) {
           await setSubjectActor(rows[0].id)
-        } else if (!selectedStillValid && subjectActorId) {
+        } else if (!selectedStillValid && selected) {
           await setSubjectActor(null)
         }
       } catch {
@@ -296,7 +302,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       }
     })()
     return () => { cancelled = true }
-  }, [section, currentTeamId, setSubjectActor, subjectActorId])
+  }, [section, currentTeamId, setSubjectActor])
 
   const { available: syncAvailable, syncing, syncNow } = useTeamCloudSync()
 

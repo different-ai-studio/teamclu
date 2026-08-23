@@ -194,7 +194,11 @@ pub struct DaemonServer {
     remote_tool_turn_contexts: Arc<AsyncMutex<crate::remote_tools::RemoteToolTurnContextStore>>,
     rpc_client: Arc<AsyncMutex<crate::teamclu::rpc::RpcClient>>,
     team_skill_reconciler: Arc<crate::runtime::team_skills::TeamSkillReconciler>,
-    agent_management_results: HashMap<String, (Instant, crate::proto::teamclu::RpcResponse)>,
+    /// Answered capability-management requests, keyed on the authorized
+    /// (requester, request_id) pair. Shared rather than owned so the handler
+    /// can run on its own task instead of on the message pump.
+    agent_management_results:
+        Arc<AsyncMutex<HashMap<String, (Instant, crate::proto::teamclu::RpcResponse)>>>,
     /// Sender for completed cron turns. `handle_prompt_await` runs the (long)
     /// ACP turn on a background task; when it finishes the task sends the result
     /// here so the active run loop can persist the AgentReply and reply to the
@@ -803,7 +807,7 @@ impl DaemonServer {
             )),
             rpc_client,
             team_skill_reconciler,
-            agent_management_results: HashMap::new(),
+            agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
             cron_turn_done_tx,
             cron_turn_done_rx: Some(cron_turn_done_rx),
             cron_turn_event_tx,
@@ -3762,7 +3766,7 @@ pub(crate) mod tests {
                 team_skill_reconciler: Arc::new(
                     crate::runtime::team_skills::TeamSkillReconciler::new(backend),
                 ),
-                agent_management_results: HashMap::new(),
+                agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
                 cron_turn_done_tx,
                 cron_turn_done_rx: Some(cron_turn_done_rx),
                 cron_turn_event_tx,

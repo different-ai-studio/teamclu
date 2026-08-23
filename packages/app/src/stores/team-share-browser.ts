@@ -83,6 +83,7 @@ import { SKILLS_CHANGED_EVENT } from '@/hooks/useAppInit'
 import { AgentCapabilityAction, AgentCapabilityKind } from '@/lib/proto/teamclu_pb'
 import { manageAgentCapability } from '@/lib/teamclu-rpc'
 import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
+import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
 
 function requireAgentOnline(actorId: string): void {
   if (resolveAgentDevicePresenceSync(actorId) === 'offline') {
@@ -92,9 +93,55 @@ function requireAgentOnline(actorId: string): void {
 
 function agentManagementError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
-  return /timeout|timed out|unexpected result variant|agent_management_unsupported/i.test(message)
+  // A timeout is NOT an old amuxd. An install runs a full reconcile on the
+  // Agent — it downloads every drifted team skill pack, not just the requested
+  // one — so a slow link or a first onboarding routinely outlives the wait
+  // while the work goes on to succeed. Telling that user to upgrade sends them
+  // after a version that was never the problem.
+  if (/timeout|timed out/i.test(message)) {
+    return 'Agent 还没有回应，操作可能仍在进行。稍后刷新查看结果'
+  }
+  return /unexpected result variant|agent_management_unsupported/i.test(message)
     ? '此 Agent 的 amuxd 不支持能力管理，请升级 Agent 后重试'
     : message
+}
+
+/**
+ * Reconciling on the Agent can mean downloading every drifted skill pack, which
+ * is not a 30s job on a cold or slow machine. Reads keep the default.
+ */
+const AGENT_MUTATION_TIMEOUT_MS = 120_000
+
+/**
+ * One management call: mint a grant for exactly this request, then spend it.
+ *
+ * The grant's `nonce` IS the RPC request id — Cloud API mints the grant for one
+ * call and the Agent refuses it on any other id — so the pairing here is load
+ * bearing, not incidental.
+ */
+async function manageAgent(args: {
+  teamId: string
+  actorId: string
+  scope: string
+  kind: AgentCapabilityKind
+  action: AgentCapabilityAction
+  itemId?: string
+  version?: number
+  timeoutMs?: number
+}) {
+  const grant = await getBackend().actors.createAgentManagementGrant(args.actorId, args.teamId, [
+    args.scope,
+  ])
+  return manageAgentCapability({
+    targetActorId: args.actorId,
+    managementGrant: grant.grant,
+    requestId: grant.nonce,
+    kind: args.kind,
+    action: args.action,
+    ...(args.itemId !== undefined ? { itemId: args.itemId } : {}),
+    ...(args.version !== undefined ? { version: args.version } : {}),
+    ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+  })
 }
 
 /** The four browsable team-shared content kinds. */
@@ -177,16 +224,6 @@ export interface TeamKnowledgeItem {
   name: string
 }
 
-export interface TeamSkillShareInput {
-  slug: string
-  summary: string
-  category: TeamSkillCategory
-  whenToUse: string
-  whenNotToUse: string
-  changelog: string
-  requires?: string[] | null
-}
-
 type SectionState<T> = {
   items: T[]
   loading: boolean
@@ -240,9 +277,6 @@ interface TeamShareBrowserState {
   toggleMcp: (id: string, enabled: boolean) => Promise<void>
   /** Publish a personal MCP into the team catalog and install it for yourself. */
   sharePersonalMcp: (name: string, input?: Pick<TeamMcpServerWrite, 'description'>) => Promise<void>
-  /** Copy-publish a personal skill to the team registry, then auto-install. */
-  /** Returns where the personal original was retired to, if it was. */
-  sharePersonalSkill: (slug: string, input: TeamSkillShareInput) => Promise<string | null>
   /** Publish the local edits of an already-shared skill as the next version. */
   publishSkillVersion: (slug: string, input: TeamSkillVersionInput) => Promise<void>
   /**
@@ -436,17 +470,16 @@ async function listTeamSkills(
   // remote Agent page silently show the desktop user's filesystem.
   if (!teamId || !actorId) return { items: [], registryError: null }
   try {
-    const backend = getBackend()
-    const [registry, grant] = await Promise.all([
-      backend.teamSkills.listTeamSkills(teamId, { actorId }),
-      backend.actors.createAgentManagementGrant(actorId, ['skills:list']),
+    const [registry, result] = await Promise.all([
+      getBackend().teamSkills.listTeamSkills(teamId, { actorId }),
+      manageAgent({
+        teamId,
+        actorId,
+        scope: 'skills:list',
+        kind: AgentCapabilityKind.AGENT_SKILL,
+        action: AgentCapabilityAction.LIST_INVENTORY,
+      }),
     ])
-    const result = await manageAgentCapability({
-      targetActorId: actorId,
-      managementGrant: grant.grant,
-      kind: AgentCapabilityKind.AGENT_SKILL,
-      action: AgentCapabilityAction.LIST_INVENTORY,
-    })
     const bySlug = new Map(registry.map((skill) => [skill.slug, skill]))
     const items = result.skills.map((inventory): TeamSkillItem => {
       const skill = bySlug.get(inventory.id)
@@ -623,23 +656,22 @@ export function applyMcpProbes(
 }
 
 async function listTeamMcp(
-  wsPath: string,
+  wsPath: string | null,
   teamId: string | null,
   previousItems: TeamMcpItem[] = [],
   actorId?: string,
 ): Promise<TeamMcpItem[]> {
   if (teamId && actorId) {
-    const backend = getBackend()
-    const [catalog, grant] = await Promise.all([
-      backend.teamMcp.listTeamMcpServers(teamId).catch(() => []),
-      backend.actors.createAgentManagementGrant(actorId, ['mcp:list']),
+    const [catalog, result] = await Promise.all([
+      getBackend().teamMcp.listTeamMcpServers(teamId).catch(() => []),
+      manageAgent({
+        teamId,
+        actorId,
+        scope: 'mcp:list',
+        kind: AgentCapabilityKind.AGENT_MCP,
+        action: AgentCapabilityAction.LIST_INVENTORY,
+      }),
     ])
-    const result = await manageAgentCapability({
-      targetActorId: actorId,
-      managementGrant: grant.grant,
-      kind: AgentCapabilityKind.AGENT_MCP,
-      action: AgentCapabilityAction.LIST_INVENTORY,
-    })
     const actual = Object.fromEntries(
       result.mcpServers.map((item) => [item.id, {
         type: item.transport === 'http' ? 'remote' : 'local',
@@ -652,10 +684,13 @@ async function listTeamMcp(
         headers: Object.fromEntries(item.configuredHeaderKeys.map((key) => [key, ''])),
       } satisfies DaemonMcpServerConfig]),
     )
+    // NOT filtered to installed rows. `planMcpItems` marks a catalog entry the
+    // Agent has not installed as `team-available`, and those rows are the only
+    // place the install action is reachable from — dropping them made the whole
+    // `mcp:install` path (scope, RPC action, daemon handler) unreachable.
     return mergeTeamMcpCatalogAndDaemon(catalog, actual, previousItems)
-      .filter((item) => item.installed)
   }
-  if (!actorId) return []
+  if (!actorId || !wsPath) return []
   const wid = encodeWorkspaceId(wsPath)
   const daemonConfig = await getDaemonMcp(wid).catch(() => ({}) as Record<string, DaemonMcpServerConfig>)
 
@@ -682,14 +717,6 @@ export function isSkillDirtyConflict(e: unknown): boolean {
 }
 
 const isDirtyConflict = isSkillDirtyConflict
-
-/** The team registry already has this name. Raised before any upload happens. */
-export class SkillSlugTakenError extends Error {
-  constructor(readonly slug: string) {
-    super(`${slug} already exists in the team registry`)
-    this.name = 'SkillSlugTakenError'
-  }
-}
 
 /**
  * The local edits were moved aside, but the clean copy did not land.
@@ -963,14 +990,15 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
           .find((item) => item.slug === slug)
     if (!listed && !catalog) throw new Error(`${slug} is not a registry skill`)
     const version = listed?.latestVersion ?? catalog?.latestVersion ?? 1
-    const grant = await getBackend().actors.createAgentManagementGrant(subjectActorId, ['skills:install'])
-    await manageAgentCapability({
-      targetActorId: subjectActorId,
-      managementGrant: grant.grant,
+    await manageAgent({
+      teamId,
+      actorId: subjectActorId,
+      scope: 'skills:install',
       kind: AgentCapabilityKind.AGENT_SKILL,
       action: AgentCapabilityAction.INSTALL_TEAM_ITEM,
       itemId: slug,
       version,
+      timeoutMs: AGENT_MUTATION_TIMEOUT_MS,
     })
     await get().loadSection('skills', { force: true })
   },
@@ -981,19 +1009,22 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const subjectActorId = get().subjectActorId
     if (!subjectActorId) throw new Error('请先选择 Agent')
     requireAgentOnline(subjectActorId)
-    const grant = await getBackend().actors.createAgentManagementGrant(subjectActorId, ['skills:uninstall'])
-    await manageAgentCapability({
-      targetActorId: subjectActorId,
-      managementGrant: grant.grant,
+    await manageAgent({
+      teamId,
+      actorId: subjectActorId,
+      scope: 'skills:uninstall',
       kind: AgentCapabilityKind.AGENT_SKILL,
       action: AgentCapabilityAction.UNINSTALL_TEAM_ITEM,
       itemId: slug,
+      timeoutMs: AGENT_MUTATION_TIMEOUT_MS,
     })
     closeSkillTabs(slug)
     await get().loadSection('skills', { force: true })
   },
 
   deletePersonalSkill: async (slug) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
     const subjectActorId = get().subjectActorId
     if (!subjectActorId) throw new Error('请先选择 Agent')
     requireAgentOnline(subjectActorId)
@@ -1001,13 +1032,14 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     if (!skill || skill.kind !== 'personal') {
       throw new Error(`${slug} is not a personal skill`)
     }
-    const grant = await getBackend().actors.createAgentManagementGrant(subjectActorId, ['skills:remove-personal'])
-    await manageAgentCapability({
-      targetActorId: subjectActorId,
-      managementGrant: grant.grant,
+    await manageAgent({
+      teamId,
+      actorId: subjectActorId,
+      scope: 'skills:remove-personal',
       kind: AgentCapabilityKind.AGENT_SKILL,
       action: AgentCapabilityAction.REMOVE_PERSONAL_SKILL,
       itemId: skill.id.startsWith('personal:') ? skill.id : `personal:${skill.slug}`,
+      timeoutMs: AGENT_MUTATION_TIMEOUT_MS,
     })
 
     closeSkillTabs(slug)
@@ -1016,34 +1048,40 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   },
 
   installMcp: async (name) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
     const actorId = get().subjectActorId
     if (!actorId) throw new Error('请先选择 Agent')
     requireAgentOnline(actorId)
-    const grant = await getBackend().actors.createAgentManagementGrant(actorId, ['mcp:install'])
-    await manageAgentCapability({
-      targetActorId: actorId,
-      managementGrant: grant.grant,
+    await manageAgent({
+      teamId,
+      actorId,
+      scope: 'mcp:install',
       kind: AgentCapabilityKind.AGENT_MCP,
       action: AgentCapabilityAction.INSTALL_TEAM_ITEM,
       itemId: name,
+      timeoutMs: AGENT_MUTATION_TIMEOUT_MS,
     })
     await get().loadSection('mcp', { force: true, withTools: true })
   },
 
   uninstallMcp: async (id) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
     const item = get().mcp.items.find((candidate) => candidate.id === id)
     if (!item) throw new Error(`mcp server ${id} not found`)
     const actorId = get().subjectActorId
     if (!actorId) throw new Error('请先选择 Agent')
     requireAgentOnline(actorId)
     if (item.kind === 'personal') throw new Error('远程个人 MCP 一期只读')
-    const grant = await getBackend().actors.createAgentManagementGrant(actorId, ['mcp:uninstall'])
-    await manageAgentCapability({
-      targetActorId: actorId,
-      managementGrant: grant.grant,
+    await manageAgent({
+      teamId,
+      actorId,
+      scope: 'mcp:uninstall',
       kind: AgentCapabilityKind.AGENT_MCP,
       action: AgentCapabilityAction.UNINSTALL_TEAM_ITEM,
       itemId: item.name,
+      timeoutMs: AGENT_MUTATION_TIMEOUT_MS,
     })
     await get().loadSection('mcp', { force: true, withTools: true })
   },
@@ -1135,108 +1173,6 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     }
     closeTeamShareTabs((t) => t === encodeTeamShareTarget({ kind: 'mcp', name }))
     await get().loadSection('mcp', { force: true, withTools: true })
-  },
-
-  sharePersonalSkill: async (slug, input) => {
-    const teamId = currentTeamId()
-    if (!teamId) throw new Error('no current team')
-    const wsPath = workspacePath()
-    const skill = get().skills.items.find((s) => s.slug === slug)
-    if (!skill || skill.kind !== 'personal') {
-      throw new Error(`${slug} is not a personal skill`)
-    }
-    if (!skill.dirPath || !skill.filename) {
-      throw new Error('personal skill has no directory on disk')
-    }
-    // skill-loader stores parent dir in dirPath and folder name in filename.
-    const sourceDir = `${skill.dirPath}/${skill.filename}`
-
-    // Check the name before anything is uploaded. The server rejects a
-    // duplicate slug too, but only after `team_skill_pack_and_upload` has
-    // pushed the package — so the user paid for an upload, got a 409, and left
-    // an orphaned blob behind, for a condition visible from the list they were
-    // looking at. The server check stays as the backstop for a name that
-    // appeared since this list was loaded.
-    if (get().skills.items.some((s) => s.origin === 'registry' && s.slug === input.slug)) {
-      throw new SkillSlugTakenError(input.slug)
-    }
-
-    const { getEffectiveServerConfig } = await import('@/lib/server-config')
-    const { cloudApiUrl } = await getEffectiveServerConfig()
-    if (!cloudApiUrl) throw new Error('Cloud API URL is not configured')
-    const accessToken = await getFreshAccessToken()
-    if (!accessToken) throw new Error('Not signed in')
-
-    const packed = await invoke<{ contentHash: string; size: number }>('team_skill_pack_and_upload', {
-      dirPath: sourceDir,
-      slug: input.slug,
-      teamId,
-      cloudApiUrl,
-      accessToken,
-    })
-
-    const backend = getBackend()
-    const published = await backend.teamSkills.publishTeamSkill(teamId, {
-      slug: input.slug,
-      summary: input.summary,
-      category: input.category,
-      whenToUse: input.whenToUse,
-      whenNotToUse: input.whenNotToUse,
-      changelog: input.changelog,
-      contentHash: packed.contentHash,
-      size: packed.size,
-      requires: input.requires ?? null,
-    })
-
-    // Copy-publish: keep the personal dir; materialise the team install under
-    // ~/.agents/skills so OpenCode / Claude / Pi all see the same pack.
-    //
-    // `owner` comes from the row the server just created, not from the personal
-    // item — a personal skill has no owner actor, and passing its `null` here
-    // stamps the publisher's own copy without the `owner:` field that every
-    // other member's copy gets. The pack would then differ from itself
-    // depending on who installed it, and the publisher's conflict diff would
-    // show a phantom deleted line they never touched.
-    await invoke('team_skill_install_from_dir', {
-      request: {
-        workspacePath: wsPath,
-        slug: input.slug,
-        teamId,
-        sourceDir,
-        version: 1,
-        owner: published.ownerActorId,
-        category: input.category,
-        summary: input.summary,
-        whenToUse: input.whenToUse,
-        whenNotToUse: input.whenNotToUse,
-        requires: input.requires ?? null,
-        isGlobal: true,
-      },
-    })
-    await ensureAgentsSkillsPaths(wsPath)
-
-    await backend.teamSkills.installTeamSkill(teamId, input.slug, { version: 1 })
-
-    // Retire the original now that the pack exists and the server knows about
-    // it. Leaving it produces two files answering to one name, and the pack
-    // root ranks below nearly every other skills root — so the copy the author
-    // keeps editing is the one that is no longer the team's, while publish and
-    // dirty detection read the one they never touch.
-    //
-    // Only when the names match: a deliberate rename on share means the author
-    // wants both. And only after everything above succeeded, so a failed upload
-    // never costs them the original.
-    let retiredPath: string | null = null
-    if (input.slug === skill.filename) {
-      retiredPath = await invoke<string>('team_skill_retire_personal', {
-        dirPath: sourceDir,
-        slug: input.slug,
-      }).catch(() => null)
-    }
-
-    await get().loadSection('skills', { force: true })
-    get().select('skills', input.slug)
-    return retiredPath
   },
 
   publishSkillVersion: async (slug, input) => {
@@ -1334,11 +1270,13 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   reconcileSkills: async () => {
     const teamId = currentTeamId()
     if (!teamId) return
-    // Installing onto a team agent is bookkeeping on someone else's machine;
-    // reconciling this disk against that actor's set would install their skills
-    // here. Auto-follow is always about the signed-in member.
-    if (get().subjectActorId) return
-
+    // Deliberately independent of `subjectActorId`. Auto-follow is always about
+    // the signed-in member's own disk — it fetches the member's desired set
+    // (`listTeamSkills(teamId)`, no actorId) no matter which Agent the browser
+    // pane happens to be pointed at. Bailing out when a subject was selected
+    // meant the Agent picker, which auto-selects the sole manageable Agent the
+    // moment the Skills or MCP section opens, silently switched local
+    // auto-follow off for the rest of the session.
     const backend = getBackend()
     let desired
     let listed: OnDiskSkill[]
@@ -1570,9 +1508,16 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         const items = wsPath ? await listTeamKnowledge(wsPath) : []
         set({ knowledgeRoot: root, knowledge: { items, loading: false, loaded: true, error: null } })
       } else if (section === 'mcp') {
-        const items = wsPath
-          ? await listTeamMcp(wsPath, currentTeamId(), get().mcp.items, get().subjectActorId ?? undefined)
-          : []
+        // Not gated on `wsPath`: with an Agent selected this goes over RPC to
+        // that Agent and never touches the local workspace. Requiring one made
+        // a remote Agent's servers render as an empty list, with no error, on
+        // any client with no folder open.
+        const items = await listTeamMcp(
+          wsPath,
+          currentTeamId(),
+          get().mcp.items,
+          get().subjectActorId ?? undefined,
+        )
         set({ mcp: { items, loading: false, loaded: true, error: null } })
         if (opts?.withTools) await get().loadMcpTools()
       }
@@ -1592,6 +1537,14 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   loadMcpTools: async (opts) => {
     const wsPath = workspacePath()
     if (!wsPath) return
+    // The probe asks the LOCAL daemon about the LOCAL workspace. Applying that
+    // to a remote Agent's rows by name reports this machine's health and tool
+    // lists for servers running somewhere else — a server crash-looping on the
+    // Agent renders as connected, one missing here renders as "0 tools" — and
+    // the user makes install/uninstall decisions from it. Only probe when the
+    // subject IS this machine's daemon.
+    const subjectActorId = get().subjectActorId
+    if (!subjectActorId || subjectActorId !== getKnownLocalDaemonActorId()) return
     try {
       const probes = await getDaemonMcpTools(encodeWorkspaceId(wsPath), opts)
       set((s) => ({

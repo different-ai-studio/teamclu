@@ -1670,6 +1670,7 @@ impl Backend for CloudApiBackend {
         grant: &str,
         scope: &str,
         requester_actor_id: &str,
+        request_id: &str,
     ) -> BackendResult<()> {
         let actor_id = self.actor_id();
         let _: serde_json::Value = self
@@ -1679,6 +1680,7 @@ impl Backend for CloudApiBackend {
                     "grant": grant,
                     "scope": scope,
                     "requesterActorId": requester_actor_id,
+                    "requestId": request_id,
                 }),
                 None,
             )

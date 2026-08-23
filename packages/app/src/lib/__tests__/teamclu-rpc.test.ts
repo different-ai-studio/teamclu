@@ -55,6 +55,7 @@ describe('teamclu-rpc', () => {
     const promise = manageAgentCapability({
       targetActorId: 'agent-1',
       managementGrant: 'signed-grant',
+      requestId: 'grant-nonce-1',
       kind: AgentCapabilityKind.AGENT_SKILL,
       action: AgentCapabilityAction.INSTALL_TEAM_ITEM,
       itemId: 'research',
@@ -63,6 +64,9 @@ describe('teamclu-rpc', () => {
     const [topic, bytes] = mockPublish.mock.calls[0] as [string, Uint8Array]
     const request = fromBinary(RpcRequestSchema, bytes)
     expect(topic).toBe('amux/team-1/agent-1/rpc/req')
+    // The grant is minted for exactly one request id; sending any other id
+    // makes the Agent reject the grant.
+    expect(request.requestId).toBe('grant-nonce-1')
     expect(request.method.case).toBe('agentCapabilityManagement')
     if (request.method.case !== 'agentCapabilityManagement') throw new Error('wrong method')
     expect(request.method.value.managementGrant).toBe('signed-grant')

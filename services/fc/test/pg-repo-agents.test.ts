@@ -549,3 +549,50 @@ test("listConnectedAgents exposes a personal Agent to an explicit admin", async 
   assert.equal(found.permissionLevel, "admin");
   assert.equal(found.isOwner, false);
 });
+
+test("authorizeAgentManagement admits an explicit admin and rejects a plain member", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const owner = await seedMemberActor(db, team.id);
+  const admin = await seedMemberActor(db, team.id);
+  const bystander = await seedMemberActor(db, team.id);
+  const agentActor = await seedAgentActor(db, team.id, owner.id, "personal");
+  await db.insert(agentMemberAccess).values({
+    agentId: agentActor.id,
+    memberId: admin.id,
+    permissionLevel: "admin",
+  });
+
+  const asAdmin = createPgBusinessRepository({ db, callerActorId: admin.id });
+  assert.deepEqual(await asAdmin.authorizeAgentManagement(agentActor.id, team.id), {
+    teamId: team.id,
+    requesterActorId: admin.id,
+  });
+
+  const asOwner = createPgBusinessRepository({ db, callerActorId: owner.id });
+  assert.deepEqual(await asOwner.authorizeAgentManagement(agentActor.id, team.id), {
+    teamId: team.id,
+    requesterActorId: owner.id,
+  });
+
+  const asBystander = createPgBusinessRepository({ db, callerActorId: bystander.id });
+  await assert.rejects(
+    asBystander.authorizeAgentManagement(agentActor.id, team.id),
+    /owner or admin access required/,
+  );
+});
+
+test("authorizeAgentManagement is scoped to the team the caller named", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const other = await seedTeam(db);
+  const owner = await seedMemberActor(db, team.id);
+  const agentActor = await seedAgentActor(db, team.id, owner.id, "personal");
+
+  const repo = createPgBusinessRepository({ db, callerActorId: owner.id });
+  await assert.rejects(
+    repo.authorizeAgentManagement(agentActor.id, other.id),
+    /agent not found/,
+  );
+  await assert.rejects(repo.authorizeAgentManagement(agentActor.id, ""), /teamId is required/);
+});

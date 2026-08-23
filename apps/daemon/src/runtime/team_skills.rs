@@ -86,6 +86,22 @@ pub struct TeamSkillReconciler {
     reconcile_lock: AsyncMutex<()>,
 }
 
+/// The version auto-follow will put on disk for a desired row.
+///
+/// The registry's `installed_version` records what an agent last *reported*, so
+/// it is behind by one tick after every publish and can be stale forever if a
+/// writeback failed. Only `latest_version` says what the team wants. Anything
+/// that reports install health has to compute the target the same way the
+/// reconciler does, or it calls a pending update "installed" and a completed
+/// one "drift".
+pub(crate) fn desired_version(row: &TeamSkillRow) -> i64 {
+    if row.latest_version > 0 {
+        row.latest_version
+    } else {
+        1
+    }
+}
+
 impl TeamSkillReconciler {
     pub fn new(backend: Arc<dyn Backend>) -> Self {
         Self {
@@ -153,11 +169,7 @@ impl TeamSkillReconciler {
         let mut on_disk = installed_versions(root);
 
         for row in rows.iter().filter(|r| r.installed) {
-            let want = if row.latest_version > 0 {
-                row.latest_version
-            } else {
-                1
-            };
+            let want = desired_version(row);
             // A pack whose recorded version we cannot read is reinstalled
             // rather than trusted: one redundant download beats leaving content
             // of unknown provenance in front of an agent.

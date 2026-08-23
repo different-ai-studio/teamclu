@@ -667,11 +667,16 @@ pub trait Backend: Send + Sync {
     /// Ask Cloud API to validate a short-lived management grant. The Cloud
     /// caller is this daemon's own Agent identity, so the server can also prove
     /// the verifier is the grant's target instead of trusting the RPC payload.
+    ///
+    /// `request_id` is part of what is verified: a grant is minted for exactly
+    /// one RPC request id, so a captured grant cannot be spent on a second
+    /// call — the repeat lands on the id the Agent has already answered.
     async fn verify_agent_management_grant(
         &self,
         _grant: &str,
         _scope: &str,
         _requester_actor_id: &str,
+        _request_id: &str,
     ) -> BackendResult<()> {
         Err(BackendError::Provider {
             provider: "backend",
