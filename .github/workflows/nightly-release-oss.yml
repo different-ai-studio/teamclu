@@ -86,7 +86,63 @@ jobs:
           TAG: v${{ steps.ver.outputs.next }}
         run: |
           set -euo pipefail
-          for brand in teamclu copilot361; do
+
+          # Both brands' releases call the SAME reusable mirror-pi-oss workflow,
+          # which serializes every caller on one global concurrency group.
+          # Dispatching them back to back put two callers in that single group
+          # and GitHub killed one mid-flight: teamclu's mirror-pi was cancelled
+          # 11 seconds in, one second after copilot361's was created. Because
+          # build-macos (and through it publish-manifest) is gated on mirror-pi,
+          # that skipped both and cost the brand its entire release -- while the
+          # nightly version bump had already landed on main, so the version
+          # number moved and nothing shipped behind it.
+          #
+          # Keep the serialization rather than giving each brand its own group:
+          # the mirror drops the upstream shrinkwrap and runs `npm install
+          # --omit=dev` with no lockfile, so two concurrent mirrors can resolve
+          # different dependency trees. Interleaved asset/manifest writes would
+          # then leave latest.json advertising a sha256 for bytes that are no
+          # longer at that key, which every client rejects as a checksum
+          # mismatch. Stagger the callers instead.
+          dispatch_and_wait() {
+            local brand="$1" before after run_id state
+            before=$(gh run list --workflow release-oss.yml --limit 1 \
+              --json databaseId --jq '.[0].databaseId // 0')
+
             echo "Dispatching release-oss for $brand @ $TAG"
             gh workflow run release-oss.yml --ref main -f brand="$brand" -f tag="$TAG"
+
+            # `gh workflow run` does not report the run it created, so wait for a
+            # new id to show up. We dispatch one brand at a time, so the newest
+            # release-oss run is unambiguously ours.
+            run_id=""
+            for _ in $(seq 1 30); do
+              after=$(gh run list --workflow release-oss.yml --limit 1 \
+                --json databaseId --jq '.[0].databaseId // 0')
+              if [ "$after" != "$before" ]; then run_id="$after"; break; fi
+              sleep 5
+            done
+            if [ -z "$run_id" ]; then
+              echo "::warning::could not identify the $brand run — dispatching the next brand without waiting"
+              return 0
+            fi
+            echo "  -> run $run_id; waiting for its mirror-pi to release the group"
+
+            # Wait on mirror-pi only, not the whole release. Everything after it
+            # shares no group with the other brand and is meant to overlap, so
+            # blocking on the full run would serialize two ~30-minute builds.
+            for _ in $(seq 1 120); do
+              state=$(gh run view "$run_id" --json jobs \
+                --jq '[.jobs[] | select(.name | startswith("mirror-pi")) | .status] | first // ""')
+              if [ "$state" = "completed" ]; then
+                echo "  -> mirror-pi finished; group is free"
+                return 0
+              fi
+              sleep 10
+            done
+            echo "::warning::timed out waiting for $brand mirror-pi — dispatching the next brand anyway"
+          }
+
+          for brand in teamclu copilot361; do
+            dispatch_and_wait "$brand"
           done
