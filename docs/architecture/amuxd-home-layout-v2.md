@@ -197,25 +197,37 @@ panic、init 前的 print、子进程输出。managed.log 由桌面端在每次 
 
 ### 3.4 `mcp.json`
 
-设备级 MCP server：`amuxd-send`（本机 daemon 的 socket）、`playwright`、
+设备级 MCP server：`teamclu-introspect`（随 app 分发的 sidecar）、`playwright`、
 `chrome-control`、`autoui`。形状是 opencode 自己的
 `{ "mcp": { name: { type, enabled, command: [...] } } }`，**不是**团队那份用的
 Cursor `mcpServers` 形状——Cursor 形状没地方放 `enabled`（playwright 默认关），
 而这个形状每个消费者本来就已经在为工作区配置解析了。
 
-三个消费者与团队 MCP 完全对称：`config::team_mcp::load_merged_mcp`（设置页的合并
-视图）、`runtime/sidecar/mcp.rs`（cursor / claude-agent / pi）、
-`runtime::team_cloud_config::sync_opencode_generated`（opencode，经 `OPENCODE_CONFIG`）。
+消费者与团队 MCP 完全对称：`config::team_mcp::load_merged_mcp`（设置页的合并视图
+与 MCP 面板的清单）、`runtime/sidecar/mcp.rs`（cursor）、
+`runtime::team_cloud_config::sync_opencode_generated`（opencode，经 `OPENCODE_CONFIG`）、
+`runtime/pi_rpc`（pi，经 `TEAMCLU_MCP_SERVERS`）。
 合并顺序：设备 → 团队 → 工作区，后者覆盖前者。
 
 放在根目录而不是 `teams/<id>/state/` 或 `cache/`：它描述的是**这台机器**的工具
 （本机 socket、本机 npx 桥），换团队不该变，也不是缓存——里面有用户的开关状态。
 
-这四个 server 以前是被物化进**每一个** `<workspace>/opencode.json` 的，每份都带着
+这些 server 以前是被物化进**每一个** `<workspace>/opencode.json` 的，每份都带着
 本机的绝对二进制路径：换台机器打开同一个仓库就会被重写，提交进 git 就永久冲突，
-而且工作区那份的优先级高于设备那份，所以重装 app 之后 `amuxd-send` 会指向一个已经
-不存在的二进制。`teamclu-introspect` 不在这里——它的 argv 带
-`--workspace <绝对路径>`，是唯一真正按工作区变的 inherent server。
+而且工作区那份的优先级高于设备那份，所以重装 app 之后它们会指向已经不存在的二进制。
+
+`teamclu-introspect` 是最后一个搬进来的（2026-08-23）。它一直留在工作区，只因为
+argv 里带 `--workspace <绝对路径>`——而这个参数它并不需要：默认值就是 `.`，各
+runtime 生成 MCP 子进程时的 cwd 就是 worktree。留在工作区的代价不只是冗余，而是
+**任意**：条目是某个 runtime 第一次准备该工作区时才写的，所以一个没跑过东西的
+工作区干脆就没有 introspect，MCP 面板上也就看不到它。
+
+`amuxd-send` 已退役（2026-08-23）。它是 daemon 的第二个 MCP server，只为一个
+`send` 工具而存在，而模型面前因此同时摆着两个发送工具。它的能力现在是
+`teamclu-introspect` 的 `send_channel_message` 的 `reply_token` 分支——由 daemon
+经 `--sock` 路由（token 只有 daemon 解得开），所以无人值守的定时任务照样能回消息。
+`RETIRED_DEVICE_MCP_NAMES` 负责把设备文件里的旧条目删掉，`LEGACY_MCP_NAMES` 负责
+清工作区里的残留副本。
 
 ---
 

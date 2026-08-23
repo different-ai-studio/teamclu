@@ -53,6 +53,7 @@ import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
 import {
   useTeamShareBrowserStore,
+  type TeamMcpKind,
   type TeamShareSection,
   type TeamSkillKind,
 } from '@/stores/team-share-browser'
@@ -457,6 +458,14 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
 
   const otherRows = React.useMemo(() => {
     if (section === 'mcp') {
+      // Where a server comes from is the thing worth seeing at a glance: a team
+      // server is someone else's decision arriving on your machine, a personal
+      // or built-in one is yours. Coral is what team-owned content already uses
+      // in this column (knowledge), so provenance reads the same way twice.
+      const tintFor = (kind: TeamMcpKind): string =>
+        kind === 'team-installed' || kind === 'team-available'
+          ? 'bg-coral/10 text-coral'
+          : 'bg-muted text-muted-foreground'
       return mcp.items
         .filter((m) => !q || m.name.toLowerCase().includes(q))
         .map((m) => {
@@ -467,7 +476,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
               id: m.id,
               kind: m.kind,
               icon: Plug,
-              iconTint: 'bg-muted text-muted-foreground',
+              iconTint: tintFor(m.kind),
               title: m.name,
               subtitle:
                 m.catalog?.description ||
@@ -495,7 +504,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             id: m.id,
             kind: m.kind,
             icon: Plug,
-            iconTint: 'bg-muted text-muted-foreground',
+            iconTint: tintFor(m.kind),
             title: m.name,
             subtitle: disabled
               ? statusLabel
@@ -588,8 +597,11 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     () => mcp.items.filter((m) => m.kind === 'team-installed').length,
     [mcp.items],
   )
+  // The header reads "<installed>/<team catalog>". Built-ins are this machine's,
+  // not the team's — counting them here would inflate the catalog with servers
+  // the team never published.
   const mcpRegistryCount = React.useMemo(
-    () => mcp.items.filter((m) => m.kind !== 'personal').length,
+    () => mcp.items.filter((m) => m.kind !== 'personal' && m.kind !== 'builtin').length,
     [mcp.items],
   )
 

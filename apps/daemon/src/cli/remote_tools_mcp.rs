@@ -152,7 +152,7 @@ fn handle_tool_call(sock_path: &Path, params: Option<&Value>) -> Result<Value, S
         "arguments": args,
     });
 
-    let resp = super::mcp_server::sock_roundtrip_with_read_timeout(
+    let resp = super::sock::sock_roundtrip_with_read_timeout(
         sock_path,
         &payload.to_string(),
         Duration::from_millis(DEFAULT_TIMEOUT_MS.max(1) as u64 + 12_000),

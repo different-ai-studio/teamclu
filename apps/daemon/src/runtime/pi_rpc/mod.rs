@@ -339,6 +339,28 @@ fn mcp_servers_from_value(root: &serde_json::Value) -> Option<String> {
 
 fn mcp_servers_from_opencode_json(worktree: &str) -> Option<String> {
     let mut mcp = serde_json::Map::new();
+    // Device layer first, team over it, workspace last — the precedence
+    // `team_mcp::load_merged_mcp` applies, so pi ends up with the same servers
+    // the settings view and the other runtimes report.
+    //
+    // pi used to skip this layer entirely, which was survivable only because
+    // every device server also had a stale copy in some workspace config. It
+    // stops being survivable the moment one of them exists *only* here:
+    // `teamclu-introspect` moved to this file, `amuxd-send` has always lived
+    // here, and without it a cron run on pi is told to call a `send` tool that
+    // was never registered.
+    //
+    // Same `{"mcp": …}` shape as a workspace config, so the entries go in
+    // verbatim.
+    if let Ok(body) = std::fs::read_to_string(crate::config::device_mcp::device_mcp_file()) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            if let Some(servers) = json.get("mcp").and_then(|v| v.as_object()) {
+                for (name, server) in servers {
+                    mcp.insert(name.clone(), server.clone());
+                }
+            }
+        }
+    }
     if let Some(team_id) = crate::config::team_mcp::onboarded_team_id() {
         let path = crate::runtime::team_cloud_config::team_cloud_mcp_file(&team_id);
         if let Ok(body) = std::fs::read_to_string(&path) {
@@ -1716,6 +1738,42 @@ mod tests {
         assert!(
             result.is_err(),
             "expected spawn attempt to fail, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn the_device_layer_reaches_pi_and_the_workspace_still_outranks_it() {
+        // pi read only team + workspace, so a server that lives only in the
+        // device file — `amuxd-send`, and now `teamclu-introspect` — never
+        // reached it. A cron run told to call `send` found no such tool.
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        std::fs::write(
+            crate::config::device_mcp::device_mcp_file(),
+            r#"{"mcp":{"amuxd-send":{"type":"local","command":["amuxd","mcp-server"]},
+                       "shared":{"type":"local","command":["device","version"]}}}"#,
+        )
+        .unwrap();
+
+        let worktree = tempfile::tempdir().unwrap();
+        std::fs::write(
+            worktree.path().join("opencode.json"),
+            r#"{"mcp":{"shared":{"type":"local","command":["workspace","version"]}}}"#,
+        )
+        .unwrap();
+
+        let payload =
+            mcp_servers_from_opencode_json(worktree.path().to_str().unwrap()).expect("payload");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(
+            parsed["amuxd-send"]["command"],
+            serde_json::json!(["amuxd", "mcp-server"]),
+            "device-only server must reach pi"
+        );
+        // Device first, workspace last: a local override still wins.
+        assert_eq!(
+            parsed["shared"]["command"],
+            serde_json::json!(["workspace", "version"])
         );
     }
 

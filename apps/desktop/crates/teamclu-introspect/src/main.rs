@@ -1,6 +1,7 @@
 mod capabilities;
 mod channels;
 mod config;
+mod daemon_sock;
 mod cron;
 mod env_vars;
 mod knowledge;
@@ -38,6 +39,12 @@ struct Args {
     #[arg(long, default_value_t = 1420)]
     api_port: u16,
 
+    /// amuxd control socket. Used for token-addressed sends, which only the
+    /// daemon can route — and which must keep working with no desktop app,
+    /// as on a cron run. Defaults to `<amuxd home>/run/amuxd.sock`.
+    #[arg(long, default_value = "")]
+    sock: String,
+
 }
 
 // ---------------------------------------------------------------------------
@@ -62,10 +69,18 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "send_channel_message",
-            "description": "Send a text or image message via a configured channel gateway.",
+            "description": "Send a text and/or file to a chat. Two ways to address it: pass `reply_token` \
+    to answer the chat you are already talking to — the token comes from this run's prompt and is the only \
+    way to reply during an unattended run such as a scheduled job — or pass `channel` (plus `target`) to \
+    send somewhere specific. Use this when you have generated a file, or want to follow up without waiting \
+    to be asked.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "reply_token": {
+                        "type": "string",
+                        "description": "Reply token from this chat's prompt. Identifies the destination, so `channel` and `target` are not needed; pass them only to narrow the destination within that chat."
+                    },
                     "channel": {
                         "type": "string",
                         "description": "The channel to send through, or 'all' to broadcast to all configured channels.",
@@ -84,7 +99,7 @@ fn tool_definitions() -> Value {
                         "description": "Absolute path to a media file to send. The file will be uploaded and sent natively. Type is auto-detected from extension: image (jpg/png/gif/webp), voice (mp3/amr/wav), video (mp4/mov), or file (any other)."
                     }
                 },
-                "required": ["channel"]
+                "anyOf": [{ "required": ["reply_token"] }, { "required": ["channel"] }]
             }
         },
         {
@@ -441,7 +456,12 @@ fn tool_err(text: &str) -> Value {
 // Main dispatch
 // ---------------------------------------------------------------------------
 
-async fn handle_request(req: &Value, workspace: &str, api_port: u16) -> Option<Value> {
+async fn handle_request(
+    req: &Value,
+    workspace: &str,
+    api_port: u16,
+    sock: &std::path::Path,
+) -> Option<Value> {
     let method = req.get("method")?.as_str()?;
     let id = req.get("id").cloned().unwrap_or(Value::Null);
 
@@ -497,7 +517,7 @@ async fn handle_request(req: &Value, workspace: &str, api_port: u16) -> Option<V
                     Err(e) => tool_err(&e),
                 },
                 "send_channel_message" => {
-                    match send::handle(workspace, api_port, &arguments).await {
+                    match send::handle(workspace, api_port, sock, &arguments).await {
                         Ok(v) => {
                             let text = serde_json::to_string_pretty(&v).unwrap_or_default();
                             tool_ok(&text)
@@ -619,6 +639,7 @@ async fn main() {
 
     let workspace = args.workspace.clone();
     let api_port = args.api_port;
+    let sock = daemon_sock::resolve_sock_path(&args.sock);
 
     eprintln!(
         "[introspect] Starting MCP server (workspace={}, api_port={})",
@@ -659,7 +680,7 @@ async fn main() {
             }
         };
 
-        if let Some(response) = handle_request(&req, &workspace, api_port).await {
+        if let Some(response) = handle_request(&req, &workspace, api_port, &sock).await {
             let mut out = stdout.lock();
             let _ = writeln!(out, "{}", response);
             let _ = out.flush();

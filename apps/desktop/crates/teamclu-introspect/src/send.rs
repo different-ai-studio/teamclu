@@ -1,11 +1,11 @@
 use serde_json::{json, Value};
 
-pub async fn handle(workspace: &str, api_port: u16, arguments: &Value) -> Result<Value, String> {
-    let channel = arguments
-        .get("channel")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "Missing required parameter: channel".to_string())?;
-
+pub async fn handle(
+    workspace: &str,
+    api_port: u16,
+    sock: &std::path::Path,
+    arguments: &Value,
+) -> Result<Value, String> {
     let message = arguments
         .get("message")
         .and_then(|v| v.as_str())
@@ -13,6 +13,43 @@ pub async fn handle(workspace: &str, api_port: u16, arguments: &Value) -> Result
 
     let target = arguments.get("target").and_then(|v| v.as_str());
     let file_path = arguments.get("file_path").and_then(|v| v.as_str());
+
+    // A reply token addresses the chat this run is already talking to, and only
+    // the daemon can resolve one (it is derived from a binding and salted with
+    // the device id). Taking that branch first is also what keeps unattended
+    // sends working: cron and gateway runs have a daemon but no desktop app,
+    // and the `wecom` path below goes through the app's local API.
+    if let Some(token) = arguments
+        .get("reply_token")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        if message.is_empty() && file_path.is_none() {
+            return Err("At least one of 'message' or 'file_path' is required.".to_string());
+        }
+        return crate::daemon_sock::send_via_daemon(
+            sock.to_path_buf(),
+            token.to_string(),
+            (!message.is_empty()).then(|| message.to_string()),
+            file_path.map(str::to_string),
+            target.map(str::to_string),
+            arguments
+                .get("channel")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        )
+        .await
+        .map(|_| json!({ "content": [{ "type": "text", "text": "Message sent." }] }));
+    }
+
+    let channel = arguments
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            "Missing required parameter: channel (or pass 'reply_token' to reply to this chat)"
+                .to_string()
+        })?;
 
     // Read media file if provided
     let image_data = if let Some(path) = file_path {

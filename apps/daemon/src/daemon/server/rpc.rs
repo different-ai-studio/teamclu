@@ -135,7 +135,32 @@ fn remove_personal_skill(item_id: &str) -> Result<(), (&'static str, String)> {
 fn mcp_inventory(team_id: &str) -> Vec<crate::proto::teamclu::AgentMcpInventoryItem> {
     use crate::proto::teamclu::AgentMcpInventoryItem;
     let workspace = crate::config::global_team_store::default_workspace_dir(team_id);
-    let mut items: Vec<_> = crate::config::team_mcp::scan_team_mcp(&workspace)
+    // Seed the device file first, the way the sibling HTTP read path does
+    // (`get_mcp` calls `ensure_inherent_mcp`). Without it this list reports
+    // whatever a previous runtime spawn happened to have written: a machine
+    // whose device file predates `teamclu-introspect` moving there would show
+    // no introspect until something *else* triggered a spawn. Idempotent, and a
+    // no-op once the entries are present.
+    crate::runtime::supervisor::ensure_device_mcp_for_inventory();
+    // The merged view, not `scan_team_mcp`: device (`~/.amuxd/mcp.json`), team,
+    // and workspace layers with provenance stamped on each entry.
+    //
+    // Scanning only the team layer and hardcoding `source: "team"` made the two
+    // groups the UI renders for the other layers — Built-in and Personal —
+    // unreachable by construction, so a machine running four device MCP servers
+    // reported an empty inventory and the panel said "No MCP servers yet".
+    let merged = match crate::config::team_mcp::load_merged_mcp(&workspace) {
+        Ok(merged) => merged,
+        Err(e) => {
+            warn!(
+                workspace = %workspace.display(),
+                error = %e,
+                "mcp inventory: merged read failed; reporting team layer only"
+            );
+            crate::config::team_mcp::scan_team_mcp(&workspace)
+        }
+    };
+    let mut items: Vec<_> = merged
         .into_iter()
         .map(|(name, config)| {
             let mut env_keys: Vec<_> = config.environment.keys().cloned().collect();
@@ -165,10 +190,20 @@ fn mcp_inventory(team_id: &str) -> Vec<crate::proto::teamclu::AgentMcpInventoryI
                     }
                 },
             );
+            // Same vocabulary the skill inventory above uses, which is what
+            // the client already branches on: team / builtin / personal.
+            // Inherent servers are machine-level and rewritten by
+            // `ensure_device_mcp`, and this RPC has no update action for them,
+            // so they are reported read-only rather than offered as editable.
+            let (source, read_only) = match config.source.as_deref() {
+                Some("team") => ("team", false),
+                Some("inherent") => ("builtin", true),
+                _ => ("personal", false),
+            };
             AgentMcpInventoryItem {
                 id: name.clone(),
                 name,
-                source: "team".into(),
+                source: source.into(),
                 transport: if config.url.is_some() {
                     "http"
                 } else {
@@ -184,7 +219,7 @@ fn mcp_inventory(team_id: &str) -> Vec<crate::proto::teamclu::AgentMcpInventoryI
                 missing_header_keys: vec![],
                 error_code: String::new(),
                 sanitized_error: String::new(),
-                read_only: false,
+                read_only,
             }
         })
         .collect();
@@ -1736,7 +1771,7 @@ impl DaemonServer {
 
 #[cfg(test)]
 mod agent_management_tests {
-    use super::personal_skill_dir_name;
+    use super::{mcp_inventory, personal_skill_dir_name};
 
     #[test]
     fn personal_skill_ids_address_exactly_one_directory() {
@@ -1764,5 +1799,53 @@ mod agent_management_tests {
         ] {
             assert_eq!(personal_skill_dir_name(id), None, "{id} must be rejected");
         }
+    }
+
+    /// The device layer, the workspace layer, and their provenance all have to
+    /// survive the trip through the RPC — the panel renders one group per
+    /// source, and a hardcoded `source: "team"` made two of those groups
+    /// unreachable no matter what the machine actually had installed.
+    #[test]
+    fn mcp_inventory_reports_device_and_workspace_servers_with_their_source() {
+        // Not a bare `set_var("HOME", …)`: this guard holds the same lock and
+        // restores the previous value on drop. Leaking an amuxd home that
+        // points at a deleted tempdir breaks whichever unrelated test runs
+        // next — it cost the pi catalog-probe test one red run to find that.
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+
+        let team_id = "team-mcp-inventory";
+        std::fs::create_dir_all(home.path()).unwrap();
+        std::fs::write(
+            crate::config::device_mcp::device_mcp_file(),
+            r#"{"mcp":{"playwright":{"type":"local","command":["npx","@playwright/mcp"]}}}"#,
+        )
+        .unwrap();
+
+        let workspace = crate::config::global_team_store::default_workspace_dir(team_id);
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            workspace.join("opencode.json"),
+            r#"{"mcp":{"my-own":{"type":"local","command":["node","server.js"]}}}"#,
+        )
+        .unwrap();
+
+        let items = mcp_inventory(team_id);
+        let by_name: std::collections::HashMap<_, _> =
+            items.iter().map(|i| (i.name.as_str(), i)).collect();
+
+        let playwright = by_name
+            .get("playwright")
+            .expect("device server must reach the inventory");
+        assert_eq!(playwright.source, "builtin");
+        // `ensure_device_mcp` rewrites this file and the RPC has no update
+        // action for it, so offering it as editable would be a lie.
+        assert!(playwright.read_only);
+
+        let own = by_name
+            .get("my-own")
+            .expect("workspace server must reach the inventory");
+        assert_eq!(own.source, "personal");
+        assert!(!own.read_only);
     }
 }

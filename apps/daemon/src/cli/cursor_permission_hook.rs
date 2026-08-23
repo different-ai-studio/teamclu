@@ -54,7 +54,7 @@ fn decide(sock_path: &Path, worktree: &str, stdin_body: &str) -> Value {
         "request": request,
     });
 
-    let raw = match super::mcp_server::sock_roundtrip_with_read_timeout(
+    let raw = match super::sock::sock_roundtrip_with_read_timeout(
         sock_path,
         &payload.to_string(),
         SOCK_TIMEOUT,

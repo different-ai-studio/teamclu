@@ -14,13 +14,19 @@ use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 
 /// Matches `apps/desktop/src/commands/introspect_api.rs` — desktop Tauri hosts the API.
-const INTROSPECT_API_PORT: u16 = 13144;
+pub(crate) const INTROSPECT_API_PORT: u16 = 13144;
 const TEAM_SKILLS_PATH: &str = "teamclu-team/skills";
 const REMOTE_TOOLS_MCP_SERVER_NAME: &str = "amuxd-remote-tools";
 
 /// Inherent MCP servers that older builds wrote into workspace configs under a
 /// name this build no longer maintains. Removed on sight — see the call site.
-const LEGACY_MCP_NAMES: &[&str] = &["teamclaw-introspect"];
+/// Names no runtime should load any more. `teamclaw-introspect` is the
+/// pre-rename sidecar; `amuxd-send` is the retired second daemon MCP server
+/// whose `send` tool now lives in `teamclu-introspect`. Both are removed from
+/// any workspace config that still carries a copy — leaving one means spawning
+/// a server that no longer exists, and under pi a failed bridge spawn used to
+/// take the whole runtime down.
+const LEGACY_MCP_NAMES: &[&str] = &["teamclaw-introspect", "amuxd-send"];
 const INSTRUCTION_PLUGIN_TEMPLATE: &str = include_str!(
     "../../../../packages/app/src/lib/opencode/templates/teamclu-instruction-plugin.mjs.txt"
 );
@@ -183,7 +189,7 @@ fn mutate_inherent_mcp(
         }
     }
 
-    ensure_extended_inherent_config(workspace_path, config, &mut changed)?;
+    ensure_extended_inherent_config(config, &mut changed)?;
     Ok(changed)
 }
 
@@ -251,6 +257,18 @@ pub fn materialize_inherent_mcp_for_spawn(
     })
     .map_err(map_store_err)?;
     Ok(())
+}
+
+/// Seed the device MCP file for a read that is not a spawn.
+///
+/// The MCP inventory RPC reports what this machine has; `ensure_device_mcp` is
+/// what puts the device servers there. Exposed separately from
+/// [`ensure_device_layers`] because an inventory read has no business touching
+/// the team's `skills.paths`.
+pub(crate) fn ensure_device_mcp_for_inventory() {
+    if let Err(e) = crate::config::device_mcp::ensure_device_mcp() {
+        warn!(error = %e, "seeding device MCP config failed");
+    }
 }
 
 /// Seed the two device-level layers the workspace config no longer carries:
@@ -399,7 +417,7 @@ fn find_introspect_in_installed_app_bundles() -> Option<PathBuf> {
     None
 }
 
-fn resolve_introspect_binary() -> Option<String> {
+pub(crate) fn resolve_introspect_binary() -> Option<String> {
     // Desktop-managed mode injects the bundled sidecar absolute path.
     if let Ok(path) = std::env::var("TEAMCLU_INTROSPECT_BIN") {
         let trimmed = path.trim();
@@ -461,7 +479,7 @@ fn resolve_introspect_binary() -> Option<String> {
     None
 }
 
-fn introspect_command_stale(existing: &serde_json::Value) -> bool {
+pub(crate) fn introspect_command_stale(existing: &serde_json::Value) -> bool {
     existing
         .get("command")
         .and_then(|c| c.as_array())
@@ -471,9 +489,10 @@ fn introspect_command_stale(existing: &serde_json::Value) -> bool {
         .unwrap_or(true)
 }
 
-/// Port of desktop `ensure_inherent_config` (teamclu-introspect, autoui, skills.paths).
+/// Port of desktop `ensure_inherent_config`, now down to pruning stale
+/// `skills.paths`: every inherent MCP server it used to seed here is written
+/// once per machine instead, so nothing in it depends on the workspace any more.
 fn ensure_extended_inherent_config(
-    workspace_path: &Path,
     config: &mut serde_json::Value,
     changed: &mut bool,
 ) -> Result<(), WorkspaceControlError> {
@@ -481,44 +500,12 @@ fn ensure_extended_inherent_config(
         WorkspaceControlError::Parse("opencode.json root is not an object".into())
     })?;
 
-    let workspace_path_str = workspace_path.to_string_lossy();
-
-    {
-        let mcp = obj.entry("mcp").or_insert_with(|| serde_json::json!({}));
-        let mcp_obj = mcp
-            .as_object_mut()
-            .ok_or_else(|| WorkspaceControlError::Parse("mcp is not an object".into()))?;
-
-        let needs_introspect = match mcp_obj.get("teamclu-introspect") {
-            Some(existing) => introspect_command_stale(existing),
-            None => true,
-        };
-        if needs_introspect {
-            if let Some(introspect_bin) = resolve_introspect_binary() {
-                mcp_obj.insert(
-                    "teamclu-introspect".to_string(),
-                    serde_json::json!({
-                        "type": "local",
-                        "enabled": true,
-                        "command": [
-                            introspect_bin,
-                            "--workspace", workspace_path_str.as_ref(),
-                            "--api-port", INTROSPECT_API_PORT.to_string()
-                        ]
-                    }),
-                );
-                *changed = true;
-            } else {
-                warn!(
-                    workspace = %workspace_path.display(),
-                    "teamclu-introspect binary not found; skipping MCP registration"
-                );
-            }
-        }
-
-        // autoui / playwright / chrome-control / amuxd-send are seeded once per
-        // machine by `config::device_mcp::ensure_device_mcp`, not here.
-    }
+    // No MCP server is seeded here any more. teamclu-introspect / autoui /
+    // playwright / chrome-control / amuxd-send are all written once per machine
+    // by `config::device_mcp::ensure_device_mcp`. Introspect was the last one
+    // written per workspace, for the sake of a `--workspace` argument it does
+    // not need: the flag defaults to `.` and MCP children are spawned with the
+    // worktree as cwd.
 
     // `skills.paths` is not workspace state either. It used to be seeded here as
     // `["teamclu-team/skills", "<home>/.agents/skills"]`:
@@ -1715,12 +1702,18 @@ mod inherent_mcp_tests {
         let mut config = serde_json::json!({
             "mcp": {
                 "amuxd-send": { "type": "local", "enabled": true, "command": ["/old/amuxd", "mcp-server"] },
-                "chrome-control": { "type": "local", "enabled": true, "command": ["npx", "chrome"] }
+                "chrome-control": { "type": "local", "enabled": true, "command": ["npx", "chrome"] },
+                // Introspect copies additionally pin `--workspace` to whichever
+                // workspace happened to write them.
+                "teamclu-introspect": { "type": "local", "enabled": true, "command": [
+                    "/old/bundle/teamclu-introspect", "--workspace", "/some/other/repo"
+                ] }
             }
         });
         let mcp = inherent_mcp_map(&mut config);
         assert!(!mcp.contains_key("amuxd-send"));
         assert!(!mcp.contains_key("chrome-control"));
+        assert!(!mcp.contains_key("teamclu-introspect"));
     }
 
     #[test]

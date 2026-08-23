@@ -288,7 +288,7 @@ impl Core {
         // 7. Drive the turn, streaming only where it can be seen.
         //
         //    Two ways to attach a file, because runtimes differ in what they
-        //    can do: the `send` tool (MCP, so not everywhere) writes into the
+        //    can do: the send tool (MCP, so not everywhere) writes into the
         //    turn window, and the outbox directory (a file write, so anywhere)
         //    is drained afterwards. Both close on failure too — a file attached
         //    to a turn that never delivers must not wait for the next one.
