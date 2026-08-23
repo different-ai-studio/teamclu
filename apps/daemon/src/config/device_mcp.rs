@@ -1,8 +1,9 @@
 //! Device-level MCP servers — `~/.amuxd/mcp.json`.
 //!
-//! These four servers are identical for every workspace on the machine:
-//! `amuxd-send` (this daemon's own socket), `playwright`, `chrome-control` and
-//! `autoui` (all `npx` tools). They used to be materialized into every
+//! These five servers are identical for every workspace on the machine:
+//! `amuxd-send` (this daemon's own socket), `teamclu-introspect` (the bundled
+//! sidecar), `playwright`, `chrome-control` and `autoui` (all `npx` tools).
+//! They used to be materialized into every
 //! `<workspace>/opencode.json`, which meant N copies of the same thing, each
 //! carrying **this** machine's absolute binary paths — so opening the same repo
 //! on another machine rewrote the file, and a committed copy churned forever.
@@ -32,7 +33,13 @@ use super::workspace_control::{McpServerConfig, WorkspaceControlError};
 
 /// Inherent servers that live at device scope. Order is irrelevant; membership
 /// is what `team_mcp` uses to keep them out of workspace configs.
-pub const DEVICE_MCP_NAMES: &[&str] = &["amuxd-send", "playwright", "chrome-control", "autoui"];
+pub const DEVICE_MCP_NAMES: &[&str] = &[
+    "amuxd-send",
+    "teamclu-introspect",
+    "playwright",
+    "chrome-control",
+    "autoui",
+];
 
 pub fn is_device_scoped(name: &str) -> bool {
     DEVICE_MCP_NAMES.contains(&name)
@@ -103,6 +110,31 @@ fn send_mcp_config() -> Result<serde_json::Value, WorkspaceControlError> {
     }))
 }
 
+/// `teamclu-introspect`, the bundled sidecar.
+///
+/// It was the last of the inherent servers still written per workspace, and the
+/// only reason was its argv: it carried `--workspace <path>`, which cannot be
+/// shared. It does not need to — the flag defaults to `.` and every runtime
+/// spawns MCP children with the worktree as their cwd, so one device entry
+/// serves every workspace and resolves to the right one at run time.
+///
+/// Per-workspace was not merely redundant, it was arbitrary: the entry is
+/// written when a runtime first prepares a workspace, so a workspace nothing
+/// had run in yet simply had no introspect — which is why it was missing from
+/// the MCP panel on a machine that has the sidecar installed.
+fn introspect_mcp_config() -> Option<serde_json::Value> {
+    let binary = crate::runtime::supervisor::resolve_introspect_binary()?;
+    Some(serde_json::json!({
+        "type": "local",
+        "enabled": true,
+        "command": [
+            binary,
+            "--api-port",
+            crate::runtime::supervisor::INTROSPECT_API_PORT.to_string()
+        ]
+    }))
+}
+
 fn autoui_environment() -> serde_json::Value {
     serde_json::json!({
         "QWEN_API_KEY": "${QWEN_API_KEY}",
@@ -111,10 +143,12 @@ fn autoui_environment() -> serde_json::Value {
     })
 }
 
-/// Seed the four device servers, non-destructively.
+/// Seed the device servers, non-destructively.
 ///
-/// `amuxd-send` is compared and refreshed (its argv is machine state), the other
-/// three are only created when absent so a user's `enabled` toggle survives.
+/// `amuxd-send` is compared and refreshed (its argv is machine state) and
+/// `teamclu-introspect` is refreshed when its binary path has gone stale — a
+/// reinstall moves the sidecar. The three `npx` bridges are only created when
+/// absent so a user's `enabled` toggle survives.
 /// Returns whether the file changed.
 pub fn ensure_device_mcp() -> Result<bool, WorkspaceControlError> {
     let mut root = read_raw();
@@ -137,6 +171,33 @@ pub fn ensure_device_mcp() -> Result<bool, WorkspaceControlError> {
     if mcp_obj.get("amuxd-send") != Some(&send) {
         mcp_obj.insert("amuxd-send".to_string(), send);
         changed = true;
+    }
+
+    // Refreshed on a dead path only: a reinstall moves the sidecar, but a user
+    // who disabled introspect should not find it back on after one.
+    let introspect_stale = match mcp_obj.get("teamclu-introspect") {
+        Some(existing) => crate::runtime::supervisor::introspect_command_stale(existing),
+        None => true,
+    };
+    if introspect_stale {
+        match introspect_mcp_config() {
+            Some(mut cfg) => {
+                if let Some(enabled) = mcp_obj
+                    .get("teamclu-introspect")
+                    .and_then(|existing| existing.get("enabled"))
+                    .cloned()
+                {
+                    cfg["enabled"] = enabled;
+                }
+                mcp_obj.insert("teamclu-introspect".to_string(), cfg);
+                changed = true;
+            }
+            None => {
+                tracing::warn!(
+                    "teamclu-introspect binary not found; skipping device MCP registration"
+                );
+            }
+        }
     }
 
     if !mcp_obj.contains_key("playwright") {

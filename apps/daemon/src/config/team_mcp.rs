@@ -399,10 +399,15 @@ pub fn prune_device_mcp(workspace: &Path) -> Result<PruneTeamMcpOutcome, Workspa
             for name in &names {
                 if let Some(raw) = mcp_obj.remove(name) {
                     removed_count += 1;
-                    // Only a *user* difference is worth carrying: `amuxd-send`'s
-                    // argv differs on every reinstall and the device file's copy
-                    // is the fresh one, so never let a stale local copy win.
-                    if name == "amuxd-send" {
+                    // Only a *user* difference is worth carrying. `amuxd-send`
+                    // and `teamclu-introspect` both bake an absolute binary
+                    // path into their argv, which differs on every reinstall and
+                    // (for introspect) still carries the `--workspace` of the
+                    // workspace it was written in. The device file's copy is the
+                    // fresh one, so never let a stale local copy win — carrying
+                    // one back would reintroduce exactly the pinning that moving
+                    // these to the device layer removes.
+                    if name == "amuxd-send" || name == "teamclu-introspect" {
                         continue;
                     }
                     if let Ok(local) = serde_json::from_value::<McpServerConfig>(raw) {
@@ -757,5 +762,42 @@ mod tests {
         assert!(read_persisted_mcp(ws.path())
             .unwrap()
             .contains_key("playwright"));
+    }
+
+    /// `prune_device_mcp` carries a workspace copy back into the device file when
+    /// it differs — which is right for a server a user actually configured, and
+    /// wrong for the two whose argv is machine state. Introspect's copies also
+    /// pin `--workspace`, so carrying one back would make every workspace on the
+    /// machine introspect a directory the user has not opened.
+    #[test]
+    fn a_workspace_copy_of_introspect_is_dropped_rather_than_carried_to_the_device_file() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        std::fs::write(
+            super::super::device_mcp::device_mcp_file(),
+            r#"{"mcp":{"teamclu-introspect":{"type":"local","enabled":true,"command":["/current/teamclu-introspect","--api-port","13144"]}}}"#,
+        )
+        .unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("opencode.json"),
+            r#"{"mcp":{"teamclu-introspect":{"type":"local","enabled":true,"command":["/old/bundle/teamclu-introspect","--workspace","/some/other/repo","--api-port","13144"]}}}"#,
+        )
+        .unwrap();
+
+        let outcome = prune_device_mcp(workspace.path()).unwrap();
+        assert_eq!(
+            outcome.removed_count, 1,
+            "the workspace copy must be removed"
+        );
+
+        let device = super::super::device_mcp::load_device_mcp();
+        let command = device["teamclu-introspect"].command.join(" ");
+        assert!(
+            !command.contains("--workspace"),
+            "the stale workspace-pinned copy won: {command}"
+        );
+        assert!(command.starts_with("/current/"), "got {command}");
     }
 }
