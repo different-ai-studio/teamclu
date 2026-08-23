@@ -54,7 +54,9 @@ fn open_browser(url: &str) -> std::io::Result<()> {
     let mut cmd = std::process::Command::new("xdg-open");
     #[cfg(target_os = "windows")]
     let mut cmd = {
+        use crate::process_util::CommandNoWindow;
         let mut c = std::process::Command::new("cmd");
+        c.no_window();
         c.args(["/C", "start", ""]);
         c
     };

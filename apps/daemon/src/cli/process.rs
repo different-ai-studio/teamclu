@@ -490,6 +490,7 @@ fn reap_opencode_pid_file_windows() {
     }
     // Verify image name looks like opencode before taskkill /T.
     let verified = std::process::Command::new("tasklist")
+        .no_window()
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .output()
         .ok()
@@ -508,6 +509,7 @@ fn reap_opencode_pid_file_windows() {
     }
     println!("amuxd: taskkill /T opencode tree pid {pid}…");
     let _ = std::process::Command::new("taskkill")
+        .no_window()
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .status();
     let _ = fs::remove_file(&path);
@@ -549,7 +551,10 @@ fn force_stop_daemon(pid: i32) {
 
 #[cfg(windows)]
 fn force_stop_daemon(pid: i32) {
+    use crate::process_util::CommandNoWindow;
+
     let _ = std::process::Command::new("taskkill")
+        .no_window()
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .status();
 }

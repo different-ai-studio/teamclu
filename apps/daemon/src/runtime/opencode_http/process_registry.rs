@@ -7,6 +7,9 @@ use std::time::{Duration, Instant};
 
 use tracing::warn;
 
+#[cfg(windows)]
+use crate::process_util::CommandNoWindow;
+
 pub struct ServeProcessRegistry {
     path: PathBuf,
     groups: parking_lot::Mutex<HashMap<String, u32>>,
@@ -245,6 +248,7 @@ fn cmdline_of(pid: i32) -> Option<String> {
 #[cfg(windows)]
 fn reap_verified_group(pid: u32) -> bool {
     let Ok(output) = std::process::Command::new("tasklist")
+        .no_window()
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .output()
     else {
@@ -259,6 +263,7 @@ fn reap_verified_group(pid: u32) -> bool {
         return true;
     }
     let _ = std::process::Command::new("taskkill")
+        .no_window()
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .status();
     let deadline = Instant::now() + Duration::from_millis(300);
@@ -271,6 +276,7 @@ fn reap_verified_group(pid: u32) -> bool {
 #[cfg(windows)]
 fn windows_pid_alive(pid: u32) -> bool {
     std::process::Command::new("tasklist")
+        .no_window()
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .output()
         .ok()

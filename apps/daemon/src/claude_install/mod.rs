@@ -11,6 +11,7 @@
 //! as its primary runtime, which the desktop then labelled "OpenCode 运行时" — a
 //! pass/fail about the wrong program.
 
+use crate::process_util::CommandNoWindow;
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -73,6 +74,7 @@ fn claude_version(binary: &str) -> Option<String> {
     // Same PATH augmentation as the other probes: a node-shebang shim needs
     // node reachable, not just itself.
     let out = std::process::Command::new(binary)
+        .no_window()
         .arg("--version")
         .env("PATH", crate::runtime::well_known_bin::augmented_path())
         .output()

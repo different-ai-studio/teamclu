@@ -116,8 +116,11 @@ fn create_link(link: &Path, target: &Path) -> LinkStatus {
 
 #[cfg(windows)]
 fn junction_create(link: &Path, target: &Path) -> std::io::Result<()> {
+    use crate::process_util::CommandNoWindow;
+
     // `mklink /J` creates a junction without admin rights.
     let status = std::process::Command::new("cmd")
+        .no_window()
         .args(["/C", "mklink", "/J"])
         .arg(link)
         .arg(target)

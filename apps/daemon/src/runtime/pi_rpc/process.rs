@@ -25,6 +25,7 @@ use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{info, warn};
 
+use crate::process_util::CommandNoWindow;
 use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 
 use super::client::PiClient;
@@ -414,6 +415,7 @@ impl PiProcessPool {
             }
         };
         let mut cmd = program;
+        cmd.no_window();
         cmd.current_dir(worktree);
 
         // TeamClu extension env contract: permission gate + MCP bridges.

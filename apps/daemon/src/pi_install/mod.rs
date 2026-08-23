@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::opencode_install::{parse_semver, version_ge};
+use crate::process_util::CommandNoWindow;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +57,7 @@ fn pi_version_of(bin: &str) -> Option<String> {
     // PATH augmented: pi installs as an npm shim whose shebang is
     // `#!/usr/bin/env node`, so finding the file is not enough to run it.
     let out = std::process::Command::new(bin)
+        .no_window()
         .arg("--version")
         .env("PATH", crate::runtime::well_known_bin::augmented_path())
         .output()
@@ -109,6 +111,7 @@ const MIN_NODE_VERSION: &str = "22.19.0";
 
 fn node_version() -> Option<String> {
     let out = std::process::Command::new("node")
+        .no_window()
         .arg("--version")
         .env("PATH", crate::runtime::well_known_bin::augmented_path())
         .output()
@@ -192,6 +195,7 @@ fn npm_package_spec(min_version: &str) -> String {
 
 pub(super) fn command_with_runtime_path(command: &str) -> std::process::Command {
     let mut process = std::process::Command::new(command);
+    process.no_window();
     process.env("PATH", crate::runtime::well_known_bin::augmented_path());
     process
 }

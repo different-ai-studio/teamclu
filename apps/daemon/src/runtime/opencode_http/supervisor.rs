@@ -15,6 +15,7 @@ use tracing::{info, warn};
 
 use super::client::ServeClient;
 use super::process_registry::ServeProcessRegistry;
+use crate::process_util::CommandNoWindow;
 use crate::runtime::execution_context::ProcessEnvRevision;
 
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -337,6 +338,7 @@ impl ServeSupervisor {
         let base = format!("http://127.0.0.1:{port}");
 
         let mut cmd = tokio::process::Command::new(&binary);
+        cmd.no_window();
         cmd.arg("serve")
             .arg("--port")
             .arg(port.to_string())
@@ -526,6 +528,7 @@ fn kill_serve_tree(child: &mut tokio::process::Child, pgid: u32) -> bool {
         // taskkill /T terminates the whole child tree (serve + MCP children);
         // Child::start_kill alone would only hit the leader.
         let _ = std::process::Command::new("taskkill")
+            .no_window()
             .args(["/PID", &pgid.to_string(), "/T", "/F"])
             .output();
         let _ = child.start_kill();
@@ -547,6 +550,7 @@ fn kill_serve_tree(child: &mut tokio::process::Child, pgid: u32) -> bool {
 #[cfg(windows)]
 fn windows_pid_alive(pid: u32) -> bool {
     std::process::Command::new("tasklist")
+        .no_window()
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .output()
         .ok()

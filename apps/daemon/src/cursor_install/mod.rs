@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+use crate::process_util::CommandNoWindow;
 use crate::runtime::cursor_sdk::process::{default_bridge_command, default_bridge_main};
 use crate::runtime::sidecar::bridge_path::sdk_installed_for_main;
 
@@ -42,6 +43,7 @@ fn which_node() -> Option<String> {
     // node is the one dependency of the cursor bridge we can look for
     // ourselves; a Homebrew node is invisible to a GUI-launched daemon's PATH.
     let out = std::process::Command::new("node")
+        .no_window()
         .arg("--version")
         .env("PATH", crate::runtime::well_known_bin::augmented_path())
         .output()

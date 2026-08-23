@@ -8,6 +8,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{info, warn};
 
 use super::{events, Shared};
+use crate::process_util::CommandNoWindow;
 use crate::runtime::sidecar::bridge_path::default_cursor_bridge_main;
 use crate::runtime::sidecar::client::SidecarClient;
 
@@ -189,6 +190,7 @@ impl CursorProcessPool {
             })?;
 
         let mut cmd = tokio::process::Command::new(&bridge[0]);
+        cmd.no_window();
         for arg in bridge.iter().skip(1) {
             cmd.arg(arg);
         }

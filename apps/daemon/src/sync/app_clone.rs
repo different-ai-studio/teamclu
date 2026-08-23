@@ -10,6 +10,7 @@
 //! repo is the user's own project; writing our `AGENTS.md`/`build.mjs` over the
 //! top would rewrite files it may already have.
 
+use crate::process_util::CommandNoWindow;
 use std::path::Path;
 use std::process::Command;
 
@@ -93,6 +94,7 @@ pub fn clone_app_repo(url: &str, workdir: &Path) -> anyhow::Result<()> {
 fn run_clone(remote: &str, workdir: &Path) -> anyhow::Result<()> {
     let git = crate::runtime::well_known_bin::resolve_binary("git", None, &[]);
     let out = Command::new(&git)
+        .no_window()
         .arg("clone")
         .arg("--")
         .arg(remote)
