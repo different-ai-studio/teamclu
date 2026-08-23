@@ -30,6 +30,12 @@ jobs:
         with:
           node-version: 22
 
+      # npm bundled with the Node 22 runner image crashes while resolving Pi's
+      # production dependency tree ("edgesOut" is null). npm 11 handles the
+      # same official tarball successfully.
+      - name: Use npm 11 for Pi dependency bundling
+        run: npm install --global npm@11
+
       - name: Resolve the required official Pi version
         id: pi
         run: |
@@ -67,6 +73,9 @@ jobs:
           # npm include it in the new tarball. Optional native dependencies stay
           # optional: npm may omit an unsupported platform binary, as upstream
           # itself does during a normal install.
+          # The upstream tarball's shrinkwrap includes stale development
+          # entries. It is not usable for a production-only bundle.
+          rm npm-shrinkwrap.json
           npm install --omit=dev --no-audit --no-fund
           node <<'NODE'
           const fs = require('fs')
@@ -125,12 +134,18 @@ jobs:
           VERSION: ${{ steps.pi.outputs.version }}
         run: |
           set -euo pipefail
-          MANIFEST=$(curl -fsSL "$OSS_BASE/latest.json")
+          # Read back through the CDN, which is reachable from GitHub runners
+          # only most of the time. A bare curl has no connect timeout, so one
+          # unreachable edge burned 300s and then failed an otherwise-complete
+          # release (run 32605980446: "Failed to connect to teamclaw.ucar.cc
+          # port 443 after 300450 ms"). Bound the wait and retry instead.
+          RETRY=(--connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 --retry-connrefused)
+          MANIFEST=$(curl -fsSL "${RETRY[@]}" "$OSS_BASE/latest.json")
           echo "$MANIFEST" | node -e '
             let s=""; process.stdin.on("data", x => s += x).on("end", () => {
               const m = JSON.parse(s)
               if (m.version !== process.env.VERSION || !m.asset || !/^[a-f0-9]{64}$/.test(m.sha256)) process.exit(1)
-              console.log(m.version + ' ' + m.asset)
+              console.log(m.version + " " + m.asset)
             })'
           ASSET=$(echo "$MANIFEST" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).asset")
-          curl -fsI "$OSS_BASE/$VERSION/$ASSET" >/dev/null
+          curl -fsI "${RETRY[@]}" "$OSS_BASE/$VERSION/$ASSET" >/dev/null
