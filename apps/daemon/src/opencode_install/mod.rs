@@ -138,6 +138,28 @@ const MIRROR_BASE: &str = "https://teamclaw.ucar.cc/opencode";
 /// would look like a frozen install.
 const MANIFEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How much of the real asset to pull when measuring the upstream route.
+///
+/// 2 MiB rather than a few hundred KB: the first half-megabyte arrives in an
+/// initial burst (server-side buffer plus a grown receive window) and measured
+/// 10 MB/s on a route whose sustained rate was 3 MB/s. Sampling past the burst
+/// is what makes the number mean anything. Still only ~3% of the ~60 MB asset.
+const PROBE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Hard stop for the sample transfer, measured from the first byte. A route
+/// that cannot deliver `PROBE_BYTES` inside this window is already far below
+/// the bar, so there is nothing to learn by waiting longer.
+const PROBE_TRANSFER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// A sample below this says more about handshake jitter than about the route.
+const MIN_PROBE_SAMPLE: u64 = 64 * 1024;
+
+/// Throughput at or above which upstream is worth using. The asset is ~60 MB,
+/// so this is the "upstream finishes in about a minute" line. Below it the OSS
+/// mirror is very likely faster, and being wrong there costs one mirror
+/// download rather than the ten-minute crawl this replaces.
+const MIN_UPSTREAM_BYTES_PER_SEC: f64 = 1024.0 * 1024.0;
+
 /// Official opencode CLI release asset for an (os, arch) pair, using
 /// `std::env::consts` names. Returns None for unsupported targets.
 fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
@@ -163,31 +185,85 @@ fn download_url(asset: &str) -> String {
     format!("{base}/{asset}")
 }
 
-/// Prefer the official release when its CDN is reachable from this network.
-/// A short preflight is enough to avoid sending mainland clients into npm-style
-/// retry loops; download failures still fall back to the OSS mirror below.
-fn official_asset_available(asset: &str) -> bool {
+/// What a route delivered while being sampled.
+#[derive(Debug, Clone, Copy)]
+struct RouteSample {
+    bytes: u64,
+    elapsed: std::time::Duration,
+}
+
+impl RouteSample {
+    fn bytes_per_sec(&self) -> f64 {
+        // Floor the divisor: a sample that came back inside a clock tick would
+        // otherwise divide by zero.
+        self.bytes as f64 / self.elapsed.as_secs_f64().max(0.001)
+    }
+
+    fn mib_per_sec(&self) -> f64 {
+        self.bytes_per_sec() / (1024.0 * 1024.0)
+    }
+
+    /// Is upstream worth using over the mirror?
+    ///
+    /// Pure, so the threshold is testable without a network. A short sample is
+    /// treated as a failure: it means the transfer died early, which is not a
+    /// route we want to hand a 60 MB download to.
+    fn is_fast_enough(&self) -> bool {
+        self.bytes >= MIN_PROBE_SAMPLE && self.bytes_per_sec() >= MIN_UPSTREAM_BYTES_PER_SEC
+    }
+}
+
+/// Measure what the official CDN actually delivers on this network, by ranged
+/// GET of the first `PROBE_BYTES` of the real asset.
+///
+/// This replaces a HEAD reachability check. Reachability was the wrong
+/// question: from mainland China GitHub answers a HEAD in about a second and
+/// then streams the asset at a trickle, so the preflight passed, the OSS
+/// mirror was never consulted, and users watched a 60 MB download crawl. The
+/// mirror was reserved for "GitHub is blocked" when the common case is
+/// "GitHub is slow".
+///
+/// `None` means the route failed outright (blocked, DNS, TLS, non-2xx) — the
+/// same signal the old preflight gave.
+fn measure_upstream_route(asset: &str) -> Option<RouteSample> {
     let url = download_url(asset);
-    tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .ok()
-        .and_then(|runtime| {
-            runtime.block_on(async {
-                reqwest::Client::builder()
-                    .timeout(MANIFEST_TIMEOUT)
-                    .build()
-                    .ok()?
-                    .head(url)
-                    .send()
-                    .await
-                    .ok()?
-                    .error_for_status()
-                    .ok()?;
-                Some(())
-            })
+        .ok()?;
+    runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .connect_timeout(MANIFEST_TIMEOUT)
+            .timeout(MANIFEST_TIMEOUT + PROBE_TRANSFER_DEADLINE)
+            .build()
+            .ok()?;
+        let mut response = client
+            .get(&url)
+            .header(
+                reqwest::header::RANGE,
+                format!("bytes=0-{}", PROBE_BYTES - 1),
+            )
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?;
+        // Clock starts at the first byte: a slow handshake must not read as a
+        // slow pipe, and a fast handshake must not hide one. A server that
+        // ignores Range just gets cut off at PROBE_BYTES.
+        let started = std::time::Instant::now();
+        let mut bytes = 0u64;
+        while let Ok(Some(chunk)) = response.chunk().await {
+            bytes += chunk.len() as u64;
+            if bytes >= PROBE_BYTES || started.elapsed() >= PROBE_TRANSFER_DEADLINE {
+                break;
+            }
+        }
+        Some(RouteSample {
+            bytes,
+            elapsed: started.elapsed(),
         })
-        .is_some()
+    })
 }
 
 /// Download URL for `asset` at `version` on the mirror.
@@ -400,7 +476,8 @@ fn install_command_path() -> String {
 /// the settings "Update" path and always re-fetches.
 ///
 /// Source selection, in order:
-///   * The official GitHub release when its CDN is reachable from this network.
+///   * The official GitHub release when a ranged sample of the real asset
+///     clears `MIN_UPSTREAM_BYTES_PER_SEC` on this network.
 ///   * The versioned OSS mirror when the official route is slow or blocked.
 ///   * macOS/Linux's official opencode.ai installer as a last fallback.
 pub fn run_install(force: bool) -> anyhow::Result<()> {
@@ -417,23 +494,34 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
         progress("upgrade", "updating opencode to the latest release");
     }
 
-    let official_available = current_asset()
-        .map(official_asset_available)
-        .unwrap_or(false);
-    if official_available {
-        progress(
+    let upstream = current_asset().and_then(measure_upstream_route);
+    match upstream {
+        Some(sample) if sample.is_fast_enough() => {
+            progress(
+                "source",
+                &format!(
+                    "official OpenCode release measured at {:.1} MB/s; downloading from upstream",
+                    sample.mib_per_sec()
+                ),
+            );
+            direct_install(None)?;
+            report_installed();
+            return Ok(());
+        }
+        Some(sample) => progress(
             "source",
-            "official OpenCode release is reachable; downloading from upstream",
-        );
-        direct_install(None)?;
-        report_installed();
-        return Ok(());
+            &format!(
+                "official OpenCode release measured at {:.1} MB/s, below the {:.1} MB/s bar; \
+                 trying the OSS mirror",
+                sample.mib_per_sec(),
+                MIN_UPSTREAM_BYTES_PER_SEC / (1024.0 * 1024.0)
+            ),
+        ),
+        None => progress(
+            "source",
+            "official OpenCode release is unreachable; trying the OSS mirror",
+        ),
     }
-
-    progress(
-        "source",
-        "official OpenCode release is unavailable; trying the OSS mirror",
-    );
     // Resolved once and threaded through: the manifest is a network round-trip.
     let mirror_version = mirror_latest_version();
     if let Some(v) = &mirror_version {
@@ -677,6 +765,53 @@ mod tests {
             Some(v) => std::env::set_var("PATH", v),
             None => std::env::remove_var("PATH"),
         }
+    }
+
+    fn sample(bytes: u64, millis: u64) -> RouteSample {
+        RouteSample {
+            bytes,
+            elapsed: std::time::Duration::from_millis(millis),
+        }
+    }
+
+    #[test]
+    fn a_slow_upstream_route_loses_to_the_mirror() {
+        // The regression this whole change is about: GitHub answers, then
+        // trickles. 2 MiB in 4s is ~512 KB/s — a ~2 minute download for the
+        // 60 MB asset, and real CN routes are far worse than that.
+        let slow = sample(PROBE_BYTES, 4_000);
+        assert!(!slow.is_fast_enough());
+        assert!(slow.mib_per_sec() < 1.0);
+    }
+
+    #[test]
+    fn a_fast_upstream_route_is_kept() {
+        // ~2.5 MB/s: upstream is fine here, don't send the user to the mirror.
+        assert!(sample(PROBE_BYTES, 200).is_fast_enough());
+    }
+
+    #[test]
+    fn the_bar_is_one_mib_per_second() {
+        // Straddle the threshold from both sides so a constant change has to
+        // be deliberate.
+        assert!(sample(1024 * 1024, 1_000).is_fast_enough());
+        assert!(!sample(1024 * 1024, 1_100).is_fast_enough());
+    }
+
+    #[test]
+    fn a_truncated_sample_is_not_a_verdict() {
+        // A transfer that died after 8 KiB says nothing useful, however fast
+        // those bytes arrived — treat it as a route not worth 60 MB.
+        let truncated = sample(8 * 1024, 1);
+        assert!(truncated.bytes_per_sec() > MIN_UPSTREAM_BYTES_PER_SEC);
+        assert!(!truncated.is_fast_enough());
+    }
+
+    #[test]
+    fn an_instant_sample_does_not_divide_by_zero() {
+        let instant = sample(PROBE_BYTES, 0);
+        assert!(instant.bytes_per_sec().is_finite());
+        assert!(instant.is_fast_enough());
     }
 
     #[test]
