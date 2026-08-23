@@ -319,9 +319,21 @@ pub(super) fn safe_mirror_asset(asset: &str) -> bool {
     !asset.is_empty() && !asset.contains('/') && !asset.contains('\\') && asset.ends_with(".tgz")
 }
 
+/// Install or upgrade the whole pi runtime: the agent itself, then the MCP SDK
+/// its extension needs.
+///
+/// The two steps are separate functions rather than one body because
+/// `ensure_pi` returns early on every "nothing to do" path, and an early return
+/// there used to skip the SDK — which is the path *every existing install*
+/// takes, so the bridge silently never appeared.
+pub fn run_install(force: bool) -> anyhow::Result<()> {
+    ensure_pi(force)?;
+    mcp_sdk::run_install(force)
+}
+
 /// Install or upgrade pi via `npm install -g @earendil-works/pi-coding-agent@<lock>`
 /// (falls back to `bun add -g` when npm is absent).
-pub fn run_install(force: bool) -> anyhow::Result<()> {
+fn ensure_pi(force: bool) -> anyhow::Result<()> {
     let want = required_version();
     let node = node_version();
     if !node
@@ -413,12 +425,6 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
         );
     }
     progress("ok", &format!("pi installed/upgraded (require >= {want})"));
-
-    // pi has no MCP of its own; the TeamClu extension bridges it, and that
-    // bridge imports `@modelcontextprotocol/sdk`. Installing pi without it
-    // yields a runtime with no remote-tools and no workspace MCP servers, so
-    // the two are installed as one unit.
-    mcp_sdk::run_install(force)?;
     Ok(())
 }
 
