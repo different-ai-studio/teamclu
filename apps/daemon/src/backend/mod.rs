@@ -334,9 +334,11 @@ pub trait Backend: Send + Sync {
         Ok(())
     }
 
-    async fn remove_team_skill_install(&self, _team_id: &str, _slug: &str) -> BackendResult<()> {
-        Ok(())
-    }
+    /// Drop the desired-state record so the reconciler stops reinstalling the
+    /// pack. Required, not defaulted: a defaulted `Ok(())` here is a silent
+    /// no-op that reports a successful uninstall while the server still says
+    /// installed, so the next reconcile puts the pack straight back.
+    async fn remove_team_skill_install(&self, team_id: &str, slug: &str) -> BackendResult<()>;
 
     /// Idempotently ensure the caller's LiteLLM member key is provisioned via
     /// `POST /v1/teams/:id/litellm/member-key`. The key value itself is
@@ -671,19 +673,20 @@ pub trait Backend: Send + Sync {
     /// `request_id` is part of what is verified: a grant is minted for exactly
     /// one RPC request id, so a captured grant cannot be spent on a second
     /// call — the repeat lands on the id the Agent has already answered.
+    ///
+    /// Required, not defaulted. This method sits on the authorization path for
+    /// every capability-management RPC, and `DeferredBackend` — the wrapper the
+    /// daemon actually runs — forwards the trait method by method, by hand. A
+    /// defaulted "unsupported" body there compiles clean and then rejects every
+    /// request at runtime with an error that reads like a version mismatch.
+    /// Leaving it required turns a forgotten forward into a compile error.
     async fn verify_agent_management_grant(
         &self,
-        _grant: &str,
-        _scope: &str,
-        _requester_actor_id: &str,
-        _request_id: &str,
-    ) -> BackendResult<()> {
-        Err(BackendError::Provider {
-            provider: "backend",
-            code: Some("agent_management_unsupported".into()),
-            message: "agent management grants are unsupported by this backend".into(),
-        })
-    }
+        grant: &str,
+        scope: &str,
+        requester_actor_id: &str,
+        request_id: &str,
+    ) -> BackendResult<()>;
 
     /// Update a session's title. Default is a no-op so test doubles and
     /// backends without session storage don't have to care.

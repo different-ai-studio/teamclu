@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useEnvVarsStore, type TeamEnvListing } from '@/stores/env-vars'
 import type { SkillSource } from '@/lib/skills/types'
+import { getSourceLabel } from '@/lib/skills/loader'
+import { frontmatterString } from '@/lib/skills/frontmatter'
 import { resolveTeamDir } from '@/lib/team-skill-paths'
 import { invoke } from '@tauri-apps/api/core'
 import { getBackend } from '@/lib/backend/provider'
@@ -72,6 +74,7 @@ import type { TeamMcpServer, TeamMcpServerWrite } from '@/lib/backend/cloud-api/
 import {
   encodeWorkspaceId,
   getDaemonMcp,
+  getDaemonSkills,
   getDaemonMcpTools,
   putDaemonMcp,
   installDaemonTeamMcp,
@@ -224,6 +227,16 @@ export interface TeamKnowledgeItem {
   name: string
 }
 
+export interface TeamSkillShareInput {
+  slug: string
+  summary: string
+  category: TeamSkillCategory
+  whenToUse: string
+  whenNotToUse: string
+  changelog: string
+  requires?: string[] | null
+}
+
 type SectionState<T> = {
   items: T[]
   loading: boolean
@@ -277,6 +290,14 @@ interface TeamShareBrowserState {
   toggleMcp: (id: string, enabled: boolean) => Promise<void>
   /** Publish a personal MCP into the team catalog and install it for yourself. */
   sharePersonalMcp: (name: string, input?: Pick<TeamMcpServerWrite, 'description'>) => Promise<void>
+  /**
+   * Copy-publish a personal skill to the team registry, then auto-install.
+   * Returns where the personal original was retired to, if it was.
+   *
+   * Local Agent only: it packs the directory the skill actually lives in, and
+   * only the local path knows that. `SkillDetail` hides the entry otherwise.
+   */
+  sharePersonalSkill: (slug: string, input: TeamSkillShareInput) => Promise<string | null>
   /** Publish the local edits of an already-shared skill as the next version. */
   publishSkillVersion: (slug: string, input: TeamSkillVersionInput) => Promise<void>
   /**
@@ -460,8 +481,46 @@ export function planPersonalRow(row: {
  * Legacy wholesale `source: team` dirs are only kept as personal when the
  * registry does not already own that slug (migration period).
  */
+/**
+ * The Agent's own files, but only when the Agent IS this machine.
+ *
+ * The RPC inventory carries no path and no content — a remote Agent's files are
+ * on another disk and there is no way to read them from here — so every item it
+ * describes is read-only. When the selected Agent is this device's daemon the
+ * same packs are sitting in the local workspace, and the daemon's own skills
+ * endpoint hands back `dirPath` / `content` / `source` for them. Merging those
+ * in by slug is what turns the detail pane from a viewer into an editor.
+ *
+ * The inventory stays authoritative for *what is installed*; disk only fills in
+ * *where it is*. An empty map is the correct, non-exceptional answer for a
+ * remote Agent, an unreachable daemon, or no open workspace.
+ */
+async function localSkillFiles(
+  wsPath: string | null,
+  actorId: string,
+): Promise<Map<string, OnDisk>> {
+  if (!wsPath || actorId !== getKnownLocalDaemonActorId()) return new Map()
+  const skills = await getDaemonSkills(encodeWorkspaceId(wsPath)).catch(() => null)
+  const byFilename = new Map<string, OnDisk>()
+  for (const skill of skills ?? []) {
+    // First wins: the daemon returns roots in resolution order.
+    if (byFilename.has(skill.filename)) continue
+    byFilename.set(skill.filename, {
+      content: skill.content,
+      dirPath: skill.dirPath,
+      invocationName: skill.invocationName || skill.filename,
+      source: (skill.source ?? 'global-agent') as SkillSource,
+    })
+  }
+  return byFilename
+}
+
+function frontmatterValue(content: string, key: string): string | null {
+  return frontmatterString(content, key) ?? null
+}
+
 async function listTeamSkills(
-  _wsPath: string | null,
+  wsPath: string | null,
   teamId: string | null,
   actorId?: string,
 ): Promise<{ items: TeamSkillItem[]; registryError: string | null }> {
@@ -470,7 +529,7 @@ async function listTeamSkills(
   // remote Agent page silently show the desktop user's filesystem.
   if (!teamId || !actorId) return { items: [], registryError: null }
   try {
-    const [registry, result] = await Promise.all([
+    const [registry, result, onDisk] = await Promise.all([
       getBackend().teamSkills.listTeamSkills(teamId, { actorId }),
       manageAgent({
         teamId,
@@ -479,35 +538,40 @@ async function listTeamSkills(
         kind: AgentCapabilityKind.AGENT_SKILL,
         action: AgentCapabilityAction.LIST_INVENTORY,
       }),
+      localSkillFiles(wsPath, actorId),
     ])
     const bySlug = new Map(registry.map((skill) => [skill.slug, skill]))
     const items = result.skills.map((inventory): TeamSkillItem => {
       const skill = bySlug.get(inventory.id)
       if (inventory.teamItem && skill) {
         return {
-          ...registryItem(skill, new Map(), 'team-installed', inventory.health === 'installed'),
+          ...registryItem(skill, onDisk, 'team-installed', inventory.health === 'installed'),
           installed: inventory.health === 'installed',
           installedVersion: Number(inventory.version) || null,
           hasUpdate: inventory.health !== 'installed',
         }
       }
       const slug = inventory.id.replace(/^personal:/, '')
+      // Present only when the Agent IS this machine — see `localSkillFiles`.
+      // Everywhere else these stay empty and the pane renders read-only.
+      const local = onDisk.get(slug)
       return {
         id: inventory.id,
         slug,
         name: inventory.name || slug,
-        invocationName: slug,
-        category: null,
-        content: '',
-        dirPath: '',
+        invocationName: local?.invocationName || slug,
+        category: local ? frontmatterValue(local.content, 'category') : null,
+        content: local?.content ?? '',
+        dirPath: local?.dirPath ?? '',
         filename: slug,
         origin: 'personal',
         kind: 'personal',
-        personalSource: inventory.source === 'builtin' ? 'builtin' : 'global-agent',
-        personalSourceLabel: inventory.source === 'builtin' ? '内置' : 'Agent',
-        summary: null,
-        whenToUse: null,
-        whenNotToUse: null,
+        personalSource: inventory.source === 'builtin' ? 'builtin' : local?.source ?? 'global-agent',
+        personalSourceLabel:
+          inventory.source === 'builtin' ? '内置' : local ? getSourceLabel(local.source) : 'Agent',
+        summary: local ? frontmatterValue(local.content, 'description') : null,
+        whenToUse: local ? frontmatterValue(local.content, 'when_to_use') : null,
+        whenNotToUse: local ? frontmatterValue(local.content, 'when_not_to_use') : null,
         requires: null,
         status: null,
         supersededBy: null,
@@ -705,6 +769,25 @@ async function listTeamMcp(
   return mergeTeamMcpCatalogAndDaemon(catalog, daemonConfig, previousItems)
 }
 
+/**
+ * Whether cutting a new team version should also end the marketplace
+ * subscription.
+ *
+ * Publishing off local edits forks this skill from the marketplace copy it was
+ * adopted from. Staying subscribed lets the server's lazy align project the
+ * next upstream release straight over the team's own — the team's edits vanish
+ * on someone else's schedule, with nothing on screen that said it was coming.
+ *
+ * Deliberately one-way and automatic: there is no UI asking "keep following?",
+ * because the answer is already implied by having published. Re-subscribing is
+ * a re-adopt, not a toggle.
+ */
+export function shouldDetachFromMarketplace(
+  item: Pick<TeamSkillItem, 'marketplaceOrigin' | 'upstreamSubscribed'>,
+): boolean {
+  return item.marketplaceOrigin === 'marketplace' && item.upstreamSubscribed === true
+}
+
 /** Raised by the Rust installer instead of overwriting a locally edited pack. */
 const DIRTY_CONFLICT_ERROR = 'team_skill_dirty_conflict'
 
@@ -717,6 +800,14 @@ export function isSkillDirtyConflict(e: unknown): boolean {
 }
 
 const isDirtyConflict = isSkillDirtyConflict
+
+/** The team registry already has this name. Raised before any upload happens. */
+export class SkillSlugTakenError extends Error {
+  constructor(readonly slug: string) {
+    super(`${slug} already exists in the team registry`)
+    this.name = 'SkillSlugTakenError'
+  }
+}
 
 /**
  * The local edits were moved aside, but the clean copy did not land.
@@ -1175,6 +1266,108 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     await get().loadSection('mcp', { force: true, withTools: true })
   },
 
+  sharePersonalSkill: async (slug, input) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    const wsPath = workspacePath()
+    const skill = get().skills.items.find((s) => s.slug === slug)
+    if (!skill || skill.kind !== 'personal') {
+      throw new Error(`${slug} is not a personal skill`)
+    }
+    if (!skill.dirPath || !skill.filename) {
+      throw new Error('personal skill has no directory on disk')
+    }
+    // skill-loader stores parent dir in dirPath and folder name in filename.
+    const sourceDir = `${skill.dirPath}/${skill.filename}`
+
+    // Check the name before anything is uploaded. The server rejects a
+    // duplicate slug too, but only after `team_skill_pack_and_upload` has
+    // pushed the package — so the user paid for an upload, got a 409, and left
+    // an orphaned blob behind, for a condition visible from the list they were
+    // looking at. The server check stays as the backstop for a name that
+    // appeared since this list was loaded.
+    if (get().skills.items.some((s) => s.origin === 'registry' && s.slug === input.slug)) {
+      throw new SkillSlugTakenError(input.slug)
+    }
+
+    const { getEffectiveServerConfig } = await import('@/lib/server-config')
+    const { cloudApiUrl } = await getEffectiveServerConfig()
+    if (!cloudApiUrl) throw new Error('Cloud API URL is not configured')
+    const accessToken = await getFreshAccessToken()
+    if (!accessToken) throw new Error('Not signed in')
+
+    const packed = await invoke<{ contentHash: string; size: number }>('team_skill_pack_and_upload', {
+      dirPath: sourceDir,
+      slug: input.slug,
+      teamId,
+      cloudApiUrl,
+      accessToken,
+    })
+
+    const backend = getBackend()
+    const published = await backend.teamSkills.publishTeamSkill(teamId, {
+      slug: input.slug,
+      summary: input.summary,
+      category: input.category,
+      whenToUse: input.whenToUse,
+      whenNotToUse: input.whenNotToUse,
+      changelog: input.changelog,
+      contentHash: packed.contentHash,
+      size: packed.size,
+      requires: input.requires ?? null,
+    })
+
+    // Copy-publish: keep the personal dir; materialise the team install under
+    // ~/.agents/skills so OpenCode / Claude / Pi all see the same pack.
+    //
+    // `owner` comes from the row the server just created, not from the personal
+    // item — a personal skill has no owner actor, and passing its `null` here
+    // stamps the publisher's own copy without the `owner:` field that every
+    // other member's copy gets. The pack would then differ from itself
+    // depending on who installed it, and the publisher's conflict diff would
+    // show a phantom deleted line they never touched.
+    await invoke('team_skill_install_from_dir', {
+      request: {
+        workspacePath: wsPath,
+        slug: input.slug,
+        teamId,
+        sourceDir,
+        version: 1,
+        owner: published.ownerActorId,
+        category: input.category,
+        summary: input.summary,
+        whenToUse: input.whenToUse,
+        whenNotToUse: input.whenNotToUse,
+        requires: input.requires ?? null,
+        isGlobal: true,
+      },
+    })
+    await ensureAgentsSkillsPaths(wsPath)
+
+    await backend.teamSkills.installTeamSkill(teamId, input.slug, { version: 1 })
+
+    // Retire the original now that the pack exists and the server knows about
+    // it. Leaving it produces two files answering to one name, and the pack
+    // root ranks below nearly every other skills root — so the copy the author
+    // keeps editing is the one that is no longer the team's, while publish and
+    // dirty detection read the one they never touch.
+    //
+    // Only when the names match: a deliberate rename on share means the author
+    // wants both. And only after everything above succeeded, so a failed upload
+    // never costs them the original.
+    let retiredPath: string | null = null
+    if (input.slug === skill.filename) {
+      retiredPath = await invoke<string>('team_skill_retire_personal', {
+        dirPath: sourceDir,
+        slug: input.slug,
+      }).catch(() => null)
+    }
+
+    await get().loadSection('skills', { force: true })
+    get().select('skills', input.slug)
+    return retiredPath
+  },
+
   publishSkillVersion: async (slug, input) => {
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
@@ -1231,6 +1424,21 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       },
     })
     await backend.teamSkills.installTeamSkill(teamId, slug, { version: version.version })
+
+    // Publishing a version off local edits forks this skill from the
+    // marketplace copy it was adopted from. Staying subscribed would let the
+    // server's lazy align project the next upstream release straight over the
+    // team's own release — the team's edits would vanish on somebody else's
+    // schedule, with nothing on screen that said it was coming. Detaching is
+    // the honest end state: the team owns this skill now.
+    //
+    // Best-effort: the version is already published and installed. Failing the
+    // whole publish over the bookkeeping would be a worse outcome than a skill
+    // that stays subscribed and can be detached by hand.
+    if (shouldDetachFromMarketplace(skill)) {
+      await backend.marketplace.detachTeamSkill(teamId, slug).catch(() => {})
+    }
+
     await get().reconcileSkills()
     await get().loadSection('skills', { force: true })
   },
