@@ -30,15 +30,13 @@ pub fn resolve_sock_path(configured: &str) -> PathBuf {
     if !trimmed.is_empty() {
         return PathBuf::from(trimmed);
     }
-    let home = std::env::var(teamclu_runtime_env::AMUXD_HOME_ENV)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            PathBuf::from(home).join(".amuxd")
-        });
-    home.join("run").join("amuxd.sock")
+    // Not hand-assembled: the fallback used to hardcode `~/.amuxd`, which is
+    // the wrong directory on a branded build — the daemon writes its socket
+    // under the brand's home, so introspect would look for it somewhere the
+    // daemon never puts it.
+    teamclu_runtime_env::amuxd_home_from_env()
+        .join("run")
+        .join("amuxd.sock")
 }
 
 #[cfg(unix)]

@@ -476,6 +476,7 @@ fn read_macos_cmdline(pid: i32) -> Option<String> {
 
 #[cfg(windows)]
 fn reap_opencode_pid_file_windows() {
+    use crate::process_util::CommandNoWindow;
     let path = DaemonConfig::opencode_serve_pgid_path();
     let Ok(body) = fs::read_to_string(&path) else {
         return;
