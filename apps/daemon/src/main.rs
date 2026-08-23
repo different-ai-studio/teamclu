@@ -23,6 +23,7 @@ mod process_util;
 mod proto;
 mod provider_config;
 mod remote_tools;
+mod route_probe;
 mod runtime;
 mod service;
 mod sync;
