@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::info;
 
+use crate::process_util::CommandNoWindow;
 use crate::runtime::sidecar::bridge_path::default_claude_bridge_main;
 use crate::runtime::sidecar::client::SidecarClient;
 
@@ -187,6 +188,7 @@ impl ClaudeProcessPool {
         let api_key = self.api_key.lock().clone().filter(|k| !k.trim().is_empty());
 
         let mut cmd = tokio::process::Command::new(&bridge[0]);
+        cmd.no_window();
         for arg in bridge.iter().skip(1) {
             cmd.arg(arg);
         }

@@ -163,7 +163,10 @@ pub fn uninstall_service() -> anyhow::Result<()> {
 
 #[cfg(target_os = "windows")]
 fn schtasks_task_exists() -> bool {
+    use crate::process_util::CommandNoWindow;
+
     std::process::Command::new("schtasks")
+        .no_window()
         .args(["/Query", "/TN", "amuxd"])
         .status()
         .map(|s| s.success())
@@ -175,9 +178,7 @@ fn schtasks_task_exists() -> bool {
 /// Task Scheduler policy).
 #[cfg(target_os = "windows")]
 fn start_daemon_detached(exe: &Path) -> anyhow::Result<()> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    use crate::process_util::CommandNoWindow;
 
     if let Ok(Some((pid, path))) = crate::cli::process::read_pidfile_for_service() {
         if crate::cli::process::pid_is_alive(pid) {
@@ -186,9 +187,17 @@ fn start_daemon_detached(exe: &Path) -> anyhow::Result<()> {
         let _ = std::fs::remove_file(path);
     }
 
+    // CREATE_NO_WINDOW alone — deliberately *not* `| DETACHED_PROCESS`.
+    // CreateProcess ignores CREATE_NO_WINDOW when DETACHED_PROCESS is also set,
+    // and DETACHED_PROCESS leaves the daemon with no console at all, so every
+    // console child it later spawns (opencode serve, node, tasklist, npm) gets
+    // its own *visible* console window. CREATE_NO_WINDOW gives amuxd a private
+    // hidden console instead: still isolated from the launching terminal's
+    // Ctrl+C / close events, nothing is ever drawn, and children inherit the
+    // hidden console.
     std::process::Command::new(exe)
         .arg("start")
-        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        .no_window()
         .spawn()
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("spawn amuxd start: {e}"))
@@ -201,6 +210,7 @@ pub fn install_service() -> anyhow::Result<()> {
 
     if schtasks_task_exists() {
         let _ = std::process::Command::new("schtasks")
+            .no_window()
             .args(["/Run", "/TN", "amuxd"])
             .status();
         start_daemon_detached(&exe)?;
@@ -210,6 +220,7 @@ pub fn install_service() -> anyhow::Result<()> {
     // schtasks /TR wants a bare command line; quote only the exe path (it may
     // contain spaces), not the whole "<exe> start" string.
     let created = std::process::Command::new("schtasks")
+        .no_window()
         .args(["/Create", "/F", "/SC", "ONLOGON", "/TN", "amuxd", "/TR"])
         .arg(format!("\"{}\" start", exe.display()))
         .status()?
@@ -217,6 +228,7 @@ pub fn install_service() -> anyhow::Result<()> {
 
     if created {
         let _ = std::process::Command::new("schtasks")
+            .no_window()
             .args(["/Run", "/TN", "amuxd"])
             .status();
         start_daemon_detached(&exe)?;
@@ -231,7 +243,10 @@ pub fn install_service() -> anyhow::Result<()> {
 
 #[cfg(target_os = "windows")]
 pub fn uninstall_service() -> anyhow::Result<()> {
+    use crate::process_util::CommandNoWindow;
+
     let _ = std::process::Command::new("schtasks")
+        .no_window()
         .args(["/Delete", "/F", "/TN", "amuxd"])
         .status();
     Ok(())

@@ -1,6 +1,7 @@
 //! MCP server tool discovery for workspace HTTP APIs.
 
 use crate::config::workspace_control::McpServerConfig;
+use crate::process_util::CommandNoWindow;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -45,6 +46,7 @@ fn resolve_spawn_program(program: &str) -> String {
         shell_escape(&program)
     );
     let out = match std::process::Command::new("sh")
+        .no_window()
         .arg("-lc")
         .arg(&script)
         .output()
@@ -140,6 +142,7 @@ pub async fn probe_local_stdio(
 
     let spawn_bin = resolve_spawn_program(command);
     let mut cmd = Command::new(&spawn_bin);
+    cmd.no_window();
     cmd.args(&config.command[1..])
         .current_dir(workspace_path)
         .stdin(std::process::Stdio::piped())

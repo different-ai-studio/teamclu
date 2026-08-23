@@ -1160,8 +1160,10 @@ fn is_process_alive(pid: i32) -> bool {
 
 #[cfg(windows)]
 fn is_process_alive(pid: i32) -> bool {
+    use crate::process_util::CommandNoWindow;
     use std::process::Command;
     Command::new("tasklist")
+        .no_window()
         .args(["/FI", &format!("PID eq {pid}")])
         .output()
         .map(|o| {

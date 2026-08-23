@@ -19,6 +19,7 @@ mod onboarding;
 mod opencode_install;
 mod opencode_settings;
 mod pi_install;
+mod process_util;
 mod proto;
 mod provider_config;
 mod remote_tools;

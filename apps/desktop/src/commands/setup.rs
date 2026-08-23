@@ -2,6 +2,8 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::process_util::CommandNoWindow;
+
 /// Tauri event name carrying `SetupProgress` to the first-run wizard UI.
 const SETUP_PROGRESS_EVENT: &str = "setup-progress";
 
@@ -171,6 +173,7 @@ pub async fn setup_list_requirements<R: Runtime>(
             version: amuxd_version.or_else(|| {
                 locate_bundled_amuxd().and_then(|p| {
                     std::process::Command::new(&p)
+                        .no_window()
                         .arg("--version")
                         .output()
                         .ok()

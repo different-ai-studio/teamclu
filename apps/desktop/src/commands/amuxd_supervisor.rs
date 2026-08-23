@@ -17,6 +17,8 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::process_util::CommandNoWindow;
+
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
@@ -288,6 +290,7 @@ async fn wait_until_healthy(timeout: Duration, app_exiting: &AtomicBool) -> Resu
 fn run_bundled_once(args: &[&str]) -> Result<(), String> {
     let bin = bundled_amuxd()?;
     let out = std::process::Command::new(&bin)
+        .no_window()
         .args(args)
         .output()
         .map_err(|e| format!("spawn amuxd {}: {e}", args.join(" ")))?;
@@ -306,6 +309,7 @@ fn run_bundled_once(args: &[&str]) -> Result<(), String> {
 async fn run_bundled_once_async(args: &[&str]) -> Result<(), String> {
     let bin = bundled_amuxd()?;
     let out = tokio::process::Command::new(&bin)
+        .no_window()
         .args(args)
         .output()
         .await
@@ -618,6 +622,12 @@ impl AmuxdSupervisor {
             .ok();
 
         let mut cmd = tokio::process::Command::new(&bin);
+        // amuxd is a console-subsystem binary and the desktop app is GUI-subsystem
+        // (`windows_subsystem = "windows"`), so without this Windows allocates a
+        // console window for the daemon that stays up for the whole session — and
+        // closing it kills amuxd. The hidden console it gets instead is inherited
+        // by amuxd's own children, so opencode/node stay invisible too.
+        cmd.no_window();
         cmd.arg("start").stdin(std::process::Stdio::null());
         if let Some(f) = log_file {
             let stderr = f

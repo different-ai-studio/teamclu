@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::process_util::CommandNoWindow;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -434,6 +435,7 @@ pub(crate) fn resolve_introspect_binary() -> Option<String> {
     }
 
     if std::process::Command::new("sh")
+        .no_window()
         .arg("-lc")
         .arg("command -v teamclu-introspect")
         .output()
@@ -746,6 +748,7 @@ fn binary_available(cfg: &AgentLaunchConfig) -> bool {
         return true;
     }
     std::process::Command::new("sh")
+        .no_window()
         .arg("-lc")
         .arg(format!("command -v {}", shell_escape(&cfg.binary)))
         .output()

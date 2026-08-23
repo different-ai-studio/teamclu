@@ -3,6 +3,7 @@
 //! The async presigned-URL upload lives in the HTTP handler (reqwest is async);
 //! this module stays sync so it can run inside `spawn_blocking`.
 
+use crate::process_util::CommandNoWindow;
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -35,6 +36,7 @@ pub fn zip_dir(dir: &Path) -> anyhow::Result<Vec<u8>> {
 
 fn run(cmd: &str, args: &[&str], cwd: &Path) -> anyhow::Result<()> {
     let out = Command::new(cmd)
+        .no_window()
         .args(args)
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")

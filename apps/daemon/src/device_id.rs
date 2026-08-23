@@ -161,7 +161,10 @@ fn machine_id() -> Option<(&'static str, String)> {
 /// different value than a 64-bit one on the same machine.
 #[cfg(target_os = "windows")]
 fn machine_id() -> Option<(&'static str, String)> {
+    use crate::process_util::CommandNoWindow;
+
     let out = std::process::Command::new("reg")
+        .no_window()
         .args([
             "query",
             r"HKLM\SOFTWARE\Microsoft\Cryptography",

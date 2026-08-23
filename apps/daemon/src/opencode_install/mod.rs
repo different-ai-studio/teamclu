@@ -12,6 +12,7 @@
 //! (`~/.opencode/bin/opencode`) so a background launchd/systemd service finds it
 //! without a login PATH.
 
+use crate::process_util::CommandNoWindow;
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -77,6 +78,7 @@ pub fn version_ge(have: &str, want: &str) -> bool {
 /// `<bin> --version`, returning the first token that looks like a version.
 fn opencode_version_of(bin: &str) -> Option<String> {
     let out = std::process::Command::new(bin)
+        .no_window()
         .arg("--version")
         .output()
         .ok()?;
@@ -528,6 +530,7 @@ pub struct DoctorReport {
 /// `<amuxd> --version` -> the first version-like token (clap prints "amuxd X.Y.Z").
 fn amuxd_installed_version(path: &std::path::Path) -> Option<String> {
     let out = std::process::Command::new(path)
+        .no_window()
         .arg("--version")
         .output()
         .ok()?;
@@ -544,7 +547,11 @@ fn amuxd_installed_version(path: &std::path::Path) -> Option<String> {
 }
 
 fn probe_version(cmd: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(cmd).args(args).output().ok()?;
+    let out = std::process::Command::new(cmd)
+        .no_window()
+        .args(args)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
