@@ -220,13 +220,19 @@ fn remote_tools_cmd_from_mcp_config(path: &Path) -> Option<String> {
 
 /// Build the `TEAMCLU_MCP_SERVERS` payload for the pi extension from a
 /// workspace `opencode.json` (the MCP SSOT: team + inherent + user servers all
-/// merge into its `mcp` map). pi has no native MCP, so the extension spawns each
-/// enabled local server and proxies its tools. Returns `{ "<name>": { "command":
-/// [...], "environment": {...} }, ... }` as a JSON string, or None when there is
-/// nothing to bridge.
+/// merge into its `mcp` map). pi has no native MCP, so the extension connects
+/// to each enabled server with the official MCP SDK and proxies its tools.
 ///
-/// Excluded: disabled servers, non-`local` (remote/url) servers the stdio bridge
-/// can't spawn, and `amuxd-remote-tools` (already bridged via
+/// Returns a JSON string keyed by server name, carrying the same two shapes
+/// opencode understands, normalized so the extension does not have to repeat
+/// opencode's defaulting rules:
+///
+/// - local (stdio):  `{ "type": "local",  "command": [...], "environment": {...} }`
+/// - remote (HTTP):  `{ "type": "remote", "url": "...",     "headers": {...} }`
+///
+/// None when there is nothing to bridge. Excluded: disabled servers, local
+/// servers whose command path does not exist on this machine, remote servers
+/// with no URL, and `amuxd-remote-tools` (already bridged via
 /// `TEAMCLU_REMOTE_TOOLS_CMD`).
 /// The `command[0]` of an MCP server entry when it names a path that does not
 /// exist on this machine.
@@ -246,6 +252,70 @@ fn missing_command_path(command: &[serde_json::Value]) -> Option<String> {
     Some(first.to_string())
 }
 
+/// One `opencode.json` `mcp` entry → the extension's server spec, or None when
+/// it cannot be bridged.
+fn pi_server_spec(
+    name: &str,
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    if obj.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
+        return None;
+    }
+    if obj.get("type").and_then(|v| v.as_str()) == Some("remote") {
+        let url = obj.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+        if url.is_empty() {
+            warn!(server = %name, "remote MCP server has no url; not bridging it into pi");
+            return None;
+        }
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "type".to_string(),
+            serde_json::Value::String("remote".into()),
+        );
+        entry.insert(
+            "url".to_string(),
+            serde_json::Value::String(url.to_string()),
+        );
+        if let Some(headers) = obj.get("headers").and_then(|v| v.as_object()) {
+            entry.insert(
+                "headers".to_string(),
+                serde_json::Value::Object(headers.clone()),
+            );
+        }
+        return Some(serde_json::Value::Object(entry));
+    }
+    let command = match obj.get("command").and_then(|v| v.as_array()) {
+        Some(c) if !c.is_empty() && c.iter().all(|a| a.is_string()) => c.clone(),
+        _ => return None,
+    };
+    if let Some(missing) = missing_command_path(&command) {
+        // A path that is not there cannot become a working bridge, and a
+        // whole workspace was once taken down by one of these: a leftover
+        // `teamclaw-introspect` entry from before the rename, pointing into
+        // an app bundle that no longer has that binary. Drop it here rather
+        // than hand pi a server it can only fail to spawn.
+        warn!(
+            server = %name,
+            path = %missing,
+            "MCP server command not found on this machine; not bridging it into pi"
+        );
+        return None;
+    }
+    let mut entry = serde_json::Map::new();
+    entry.insert(
+        "type".to_string(),
+        serde_json::Value::String("local".into()),
+    );
+    entry.insert("command".to_string(), serde_json::Value::Array(command));
+    if let Some(env) = obj.get("environment").and_then(|v| v.as_object()) {
+        entry.insert(
+            "environment".to_string(),
+            serde_json::Value::Object(env.clone()),
+        );
+    }
+    Some(serde_json::Value::Object(entry))
+}
+
 fn mcp_servers_from_value(root: &serde_json::Value) -> Option<String> {
     let mcp = root.get("mcp")?.as_object()?;
     let mut out = serde_json::Map::new();
@@ -257,39 +327,9 @@ fn mcp_servers_from_value(root: &serde_json::Value) -> Option<String> {
             Some(o) => o,
             None => continue,
         };
-        // Only stdio "local" servers with a command array can be bridged.
-        if obj.get("type").and_then(|v| v.as_str()) == Some("remote") {
-            continue;
+        if let Some(entry) = pi_server_spec(name, obj) {
+            out.insert(name.clone(), entry);
         }
-        if obj.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
-            continue;
-        }
-        let command = match obj.get("command").and_then(|v| v.as_array()) {
-            Some(c) if !c.is_empty() && c.iter().all(|a| a.is_string()) => c.clone(),
-            _ => continue,
-        };
-        if let Some(missing) = missing_command_path(&command) {
-            // A path that is not there cannot become a working bridge, and a
-            // whole workspace was once taken down by one of these: a leftover
-            // `teamclaw-introspect` entry from before the rename, pointing into
-            // an app bundle that no longer has that binary. Drop it here rather
-            // than hand pi a server it can only fail to spawn.
-            warn!(
-                server = %name,
-                path = %missing,
-                "MCP server command not found on this machine; not bridging it into pi"
-            );
-            continue;
-        }
-        let mut entry = serde_json::Map::new();
-        entry.insert("command".to_string(), serde_json::Value::Array(command));
-        if let Some(env) = obj.get("environment").and_then(|v| v.as_object()) {
-            entry.insert(
-                "environment".to_string(),
-                serde_json::Value::Object(env.clone()),
-            );
-        }
-        out.insert(name.clone(), serde_json::Value::Object(entry));
     }
     if out.is_empty() {
         return None;
@@ -1697,6 +1737,51 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert!(parsed.get("gone").is_none(), "dead path must be dropped");
         assert!(parsed.get("bare").is_some(), "bare name must be kept");
+        assert_eq!(parsed["bare"]["type"], serde_json::json!("local"));
+    }
+
+    #[test]
+    fn remote_servers_are_bridged_with_url_and_headers() {
+        // The SDK bridge speaks streamable HTTP / SSE, so a `type: "remote"`
+        // entry is no longer dropped: opencode loads these natively and pi has
+        // to see the same tool set.
+        let root = serde_json::json!({
+            "mcp": {
+                "hosted": {"type": "remote", "url": "https://example.invalid/mcp",
+                           "headers": {"Authorization": "Bearer ${TOKEN}"}},
+                "off": {"type": "remote", "enabled": false, "url": "https://example.invalid/mcp"},
+                "no-url": {"type": "remote"},
+            }
+        });
+        let payload = mcp_servers_from_value(&root).expect("remote server survives");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["hosted"]["type"], serde_json::json!("remote"));
+        assert_eq!(
+            parsed["hosted"]["url"],
+            serde_json::json!("https://example.invalid/mcp")
+        );
+        assert_eq!(
+            parsed["hosted"]["headers"]["Authorization"],
+            serde_json::json!("Bearer ${TOKEN}")
+        );
+        assert!(parsed.get("off").is_none(), "disabled must be dropped");
+        assert!(parsed.get("no-url").is_none(), "url-less must be dropped");
+    }
+
+    #[test]
+    fn untyped_entries_still_bridge_as_local() {
+        // opencode treats a missing `type` with a command as local; the
+        // payload must normalize that rather than leave the extension guessing.
+        let root = serde_json::json!({
+            "mcp": { "bare": {"command": ["npx", "-y", "@scope/server"]} }
+        });
+        let payload = mcp_servers_from_value(&root).expect("untyped server survives");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["bare"]["type"], serde_json::json!("local"));
+        assert_eq!(
+            parsed["bare"]["command"],
+            serde_json::json!(["npx", "-y", "@scope/server"])
+        );
     }
 
     #[test]

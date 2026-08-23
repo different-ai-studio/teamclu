@@ -4,6 +4,12 @@
 //! installed via npm (`npm install -g @earendil-works/pi-coding-agent@<lock>`,
 //! bun fallback); the global `pi` binary is resolved via `~/.pi/bin/pi` when
 //! present, otherwise `pi` on PATH (including `~/.npm-global/bin`).
+//!
+//! The same lock file pins `@modelcontextprotocol/sdk`, which the TeamClu pi
+//! extension imports to bridge MCP servers into pi (pi itself ships no MCP —
+//! see `mcp_sdk`). Installing pi installs that too: they are one runtime.
+
+pub mod mcp_sdk;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,8 +17,14 @@ use sha2::{Digest, Sha256};
 use crate::opencode_install::{parse_semver, version_ge};
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PiLock {
     pub version: String,
+    /// `@modelcontextprotocol/sdk` version the pi extension's MCP bridge is
+    /// written against. Defaulted rather than required so a lock file from an
+    /// older build still parses (the SDK step then simply does not run).
+    #[serde(default)]
+    pub mcp_sdk_version: String,
 }
 
 /// Embedded at compile time from apps/daemon/pi.lock.json
@@ -22,6 +34,14 @@ pub const LOCK_JSON: &str = include_str!("../../pi.lock.json");
 pub fn required_version() -> String {
     serde_json::from_str::<PiLock>(LOCK_JSON)
         .map(|l| l.version.trim().trim_start_matches('v').to_string())
+        .unwrap_or_default()
+}
+
+/// The `@modelcontextprotocol/sdk` version this build's extension requires.
+/// Empty means the lock file does not pin one — treat MCP as unmanaged.
+pub fn required_mcp_sdk_version() -> String {
+    serde_json::from_str::<PiLock>(LOCK_JSON)
+        .map(|l| l.mcp_sdk_version.trim().trim_start_matches('v').to_string())
         .unwrap_or_default()
 }
 
@@ -70,6 +90,15 @@ pub struct PiStatus {
     pub node_version: Option<String>,
     pub node_satisfied: bool,
     pub required_version: String,
+    /// `@modelcontextprotocol/sdk` under the materialized extension directory.
+    /// Reported separately from pi's own version because it is installed
+    /// separately, but folded into `satisfied` — without it the extension
+    /// bridges no MCP servers at all, which costs remote-tools and every team
+    /// tool with it.
+    pub mcp_sdk_present: bool,
+    pub mcp_sdk_version: Option<String>,
+    pub required_mcp_sdk_version: String,
+    pub mcp_sdk_satisfied: bool,
     pub satisfied: bool,
 }
 
@@ -111,6 +140,16 @@ pub fn doctor() -> PiStatus {
         .as_deref()
         .map(|v| version_ge(v, &want))
         .unwrap_or(false);
+    let want_sdk = required_mcp_sdk_version();
+    let sdk_version = mcp_sdk::installed_version();
+    let sdk_satisfied = if want_sdk.is_empty() {
+        true
+    } else {
+        sdk_version
+            .as_deref()
+            .map(|v| version_ge(v, &want_sdk))
+            .unwrap_or(false)
+    };
     PiStatus {
         present,
         version,
@@ -119,11 +158,15 @@ pub fn doctor() -> PiStatus {
         node_version,
         node_satisfied,
         required_version: want,
-        satisfied: pi_satisfied && node_satisfied,
+        mcp_sdk_present: sdk_version.is_some(),
+        mcp_sdk_version: sdk_version,
+        required_mcp_sdk_version: want_sdk,
+        mcp_sdk_satisfied: sdk_satisfied,
+        satisfied: pi_satisfied && node_satisfied && sdk_satisfied,
     }
 }
 
-fn progress(event: &str, message: &str) {
+pub(super) fn progress(event: &str, message: &str) {
     println!(
         "{}",
         serde_json::json!({ "event": event, "message": message })
@@ -133,26 +176,27 @@ fn progress(event: &str, message: &str) {
 const PI_NPM_PKG: &str = "@earendil-works/pi-coding-agent";
 const PI_MIRROR_BASE: &str = "https://teamclaw.ucar.cc/pi";
 const OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
-const NETWORK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+pub(super) const NETWORK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// `latest.json` served next to an OSS-mirrored npm bundle.
 #[derive(Debug, Deserialize)]
-struct PiMirrorManifest {
-    version: String,
-    asset: String,
-    sha256: String,
+pub(super) struct MirrorManifest {
+    pub version: String,
+    pub asset: String,
+    pub sha256: String,
 }
 
 fn npm_package_spec(min_version: &str) -> String {
     format!("{PI_NPM_PKG}@{min_version}")
 }
 
-fn command_with_runtime_path(command: &str) -> std::process::Command {
+pub(super) fn command_with_runtime_path(command: &str) -> std::process::Command {
     let mut process = std::process::Command::new(command);
     process.env("PATH", crate::runtime::well_known_bin::augmented_path());
     process
 }
 
-fn has_command(cmd: &str) -> bool {
+pub(super) fn has_command(cmd: &str) -> bool {
     command_with_runtime_path(cmd)
         .arg("--version")
         .output()
@@ -163,8 +207,8 @@ fn has_command(cmd: &str) -> bool {
 /// The official npm registry is the preferred source. A short probe lets users
 /// on a slow or blocked route fall back to our OSS bundle before npm spends
 /// minutes retrying its own registry requests.
-fn official_registry_available(version: &str) -> bool {
-    let url = format!("{OFFICIAL_REGISTRY}/@earendil-works%2Fpi-coding-agent/{version}");
+pub(super) fn official_registry_available(package: &str, version: &str) -> bool {
+    let url = format!("{OFFICIAL_REGISTRY}/{}/{version}", registry_path(package));
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -187,8 +231,14 @@ fn official_registry_available(version: &str) -> bool {
         .is_some()
 }
 
-fn mirror_manifest() -> Option<PiMirrorManifest> {
-    let url = format!("{}/latest.json", PI_MIRROR_BASE.trim_end_matches('/'));
+/// npm's registry path for a package name: the scope separator is the only
+/// character that has to be encoded (`@scope/name` → `@scope%2Fname`).
+fn registry_path(package: &str) -> String {
+    package.replace('/', "%2F")
+}
+
+pub(super) fn mirror_manifest(base: &str) -> Option<MirrorManifest> {
+    let url = format!("{}/latest.json", base.trim_end_matches('/'));
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -205,12 +255,12 @@ fn mirror_manifest() -> Option<PiMirrorManifest> {
                     .ok()?
                     .error_for_status()
                     .ok()?;
-                response.json::<PiMirrorManifest>().await.ok()
+                response.json::<MirrorManifest>().await.ok()
             })
         })
 }
 
-fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
+pub(super) fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
     let url = url.to_owned();
     let bytes = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -222,35 +272,42 @@ fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
     Ok(bytes.to_vec())
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
 /// Fetch the versioned, dependency-bundled package from OSS and materialize it
 /// as a temporary `.tgz` that npm can install without contacting a registry.
-fn mirrored_bundle(version: &str) -> anyhow::Result<tempfile::NamedTempFile> {
-    let manifest =
-        mirror_manifest().ok_or_else(|| anyhow::anyhow!("Pi OSS mirror is unavailable"))?;
+///
+/// `label` only names the thing in errors and progress lines; `base` is the
+/// OSS prefix that serves `latest.json` and `<version>/<asset>`.
+pub(super) fn mirrored_bundle(
+    label: &str,
+    base: &str,
+    version: &str,
+) -> anyhow::Result<tempfile::NamedTempFile> {
+    let manifest = mirror_manifest(base)
+        .ok_or_else(|| anyhow::anyhow!("{label} OSS mirror is unavailable"))?;
     if manifest.version.trim_start_matches('v') != version {
         anyhow::bail!(
-            "Pi OSS mirror has {}, but this build requires {version}",
+            "{label} OSS mirror has {}, but this build requires {version}",
             manifest.version
         );
     }
     if !safe_mirror_asset(&manifest.asset) {
-        anyhow::bail!("Pi OSS mirror returned an invalid asset name");
+        anyhow::bail!("{label} OSS mirror returned an invalid asset name");
     }
     let url = format!(
         "{}/{}/{}",
-        PI_MIRROR_BASE.trim_end_matches('/'),
+        base.trim_end_matches('/'),
         version,
         manifest.asset
     );
-    progress("mirror", &format!("downloading Pi from OSS: {url}"));
+    progress("mirror", &format!("downloading {label} from OSS: {url}"));
     let bytes = download_bytes(&url)?;
     if sha256_hex(&bytes) != manifest.sha256.to_ascii_lowercase() {
         anyhow::bail!(
-            "Pi OSS bundle checksum mismatch; retry later or use the official npm registry"
+            "{label} OSS bundle checksum mismatch; retry later or use the official npm registry"
         );
     }
     let file = tempfile::Builder::new().suffix(".tgz").tempfile()?;
@@ -258,13 +315,25 @@ fn mirrored_bundle(version: &str) -> anyhow::Result<tempfile::NamedTempFile> {
     Ok(file)
 }
 
-fn safe_mirror_asset(asset: &str) -> bool {
+pub(super) fn safe_mirror_asset(asset: &str) -> bool {
     !asset.is_empty() && !asset.contains('/') && !asset.contains('\\') && asset.ends_with(".tgz")
+}
+
+/// Install or upgrade the whole pi runtime: the agent itself, then the MCP SDK
+/// its extension needs.
+///
+/// The two steps are separate functions rather than one body because
+/// `ensure_pi` returns early on every "nothing to do" path, and an early return
+/// there used to skip the SDK — which is the path *every existing install*
+/// takes, so the bridge silently never appeared.
+pub fn run_install(force: bool) -> anyhow::Result<()> {
+    ensure_pi(force)?;
+    mcp_sdk::run_install(force)
 }
 
 /// Install or upgrade pi via `npm install -g @earendil-works/pi-coding-agent@<lock>`
 /// (falls back to `bun add -g` when npm is absent).
-pub fn run_install(force: bool) -> anyhow::Result<()> {
+fn ensure_pi(force: bool) -> anyhow::Result<()> {
     let want = required_version();
     let node = node_version();
     if !node
@@ -301,7 +370,7 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
     }
 
     let pkg = npm_package_spec(&want);
-    let official_available = official_registry_available(&want);
+    let official_available = official_registry_available(PI_NPM_PKG, &want);
     let (cmd, args, _bundle): (&str, Vec<String>, Option<tempfile::NamedTempFile>) =
         if official_available {
             progress(
@@ -322,7 +391,7 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
                     "official npm registry is unreachable and the Pi OSS fallback requires npm"
                 );
             }
-            let bundle = mirrored_bundle(&want)?;
+            let bundle = mirrored_bundle("Pi", PI_MIRROR_BASE, &want)?;
             let local = bundle.path().to_string_lossy().to_string();
             (
                 "npm",
@@ -374,6 +443,24 @@ mod tests {
     }
 
     #[test]
+    fn lock_pins_the_mcp_sdk_the_extension_imports() {
+        // The extension's MCP bridge is written against the 1.x client API
+        // (`Client`, `StdioClientTransport`, `StreamableHTTPClientTransport`).
+        let v = required_mcp_sdk_version();
+        assert!(!v.is_empty(), "lock must pin an MCP SDK version");
+        assert!(version_ge(&v, "1.29.0"), "MCP SDK lock too old: {v}");
+    }
+
+    #[test]
+    fn registry_path_encodes_only_the_scope_separator() {
+        assert_eq!(
+            registry_path("@modelcontextprotocol/sdk"),
+            "@modelcontextprotocol%2Fsdk"
+        );
+        assert_eq!(registry_path("typescript"), "typescript");
+    }
+
+    #[test]
     fn npm_package_spec_uses_pi_coding_agent() {
         assert_eq!(
             npm_package_spec("0.81.1"),
@@ -383,7 +470,7 @@ mod tests {
 
     #[test]
     fn pi_mirror_manifest_is_versioned_and_uses_a_safe_asset_name() {
-        let manifest: PiMirrorManifest = serde_json::from_str(
+        let manifest: MirrorManifest = serde_json::from_str(
             r#"{"version":"0.84.2","asset":"earendil-works-pi-coding-agent-0.84.2.tgz","sha256":"abc"}"#,
         )
         .unwrap();
@@ -403,11 +490,17 @@ mod tests {
             node_version: Some("v22.19.0".into()),
             node_satisfied: true,
             required_version: "0.81.1".into(),
+            mcp_sdk_present: true,
+            mcp_sdk_version: Some("1.30.0".into()),
+            required_mcp_sdk_version: "1.30.0".into(),
+            mcp_sdk_satisfied: true,
             satisfied: true,
         };
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["requiredVersion"], serde_json::json!("0.81.1"));
         assert_eq!(v["nodeSatisfied"], serde_json::json!(true));
+        assert_eq!(v["mcpSdkVersion"], serde_json::json!("1.30.0"));
+        assert_eq!(v["requiredMcpSdkVersion"], serde_json::json!("1.30.0"));
         assert_eq!(v["satisfied"], serde_json::json!(true));
     }
 }
