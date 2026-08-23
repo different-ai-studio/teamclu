@@ -36,6 +36,11 @@ mod process_util;
 mod proto;
 #[path = "../../src/provider_config.rs"]
 mod provider_config;
+// Same rule as `process_util` above: `opencode_install` and `pi_install` both
+// reach for `crate::route_probe`, and an integration-test crate root only has
+// what it declares here.
+#[path = "../../src/route_probe.rs"]
+mod route_probe;
 #[path = "../../src/runtime/mod.rs"]
 mod runtime;
 #[path = "../../src/sync/mod.rs"]

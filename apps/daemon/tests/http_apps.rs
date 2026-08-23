@@ -40,6 +40,8 @@ mod process_util;
 mod proto;
 #[path = "../src/provider_config.rs"]
 mod provider_config;
+#[path = "../src/route_probe.rs"]
+mod route_probe;
 #[path = "../src/runtime/mod.rs"]
 mod runtime;
 #[path = "../src/sync/mod.rs"]

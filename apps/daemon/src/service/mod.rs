@@ -205,6 +205,7 @@ fn start_daemon_detached(exe: &Path) -> anyhow::Result<()> {
 
 #[cfg(target_os = "windows")]
 pub fn install_service() -> anyhow::Result<()> {
+    use crate::process_util::CommandNoWindow;
     let exe = amuxd_exe_path();
     anyhow::ensure!(exe.exists(), "amuxd binary not found at {}", exe.display());
 

@@ -187,85 +187,28 @@ fn download_url(asset: &str) -> String {
     format!("{base}/{asset}")
 }
 
-/// What a route delivered while being sampled.
-#[derive(Debug, Clone, Copy)]
-struct RouteSample {
-    bytes: u64,
-    elapsed: std::time::Duration,
-}
-
-impl RouteSample {
-    fn bytes_per_sec(&self) -> f64 {
-        // Floor the divisor: a sample that came back inside a clock tick would
-        // otherwise divide by zero.
-        self.bytes as f64 / self.elapsed.as_secs_f64().max(0.001)
-    }
-
-    fn mib_per_sec(&self) -> f64 {
-        self.bytes_per_sec() / (1024.0 * 1024.0)
-    }
-
-    /// Is upstream worth using over the mirror?
-    ///
-    /// Pure, so the threshold is testable without a network. A short sample is
-    /// treated as a failure: it means the transfer died early, which is not a
-    /// route we want to hand a 60 MB download to.
-    fn is_fast_enough(&self) -> bool {
-        self.bytes >= MIN_PROBE_SAMPLE && self.bytes_per_sec() >= MIN_UPSTREAM_BYTES_PER_SEC
+/// How the upstream route is sampled, and the bar it has to clear.
+///
+/// The asset is ~60 MB, so `min_bytes_per_sec` is the "upstream finishes in
+/// about a minute" line. Below it the OSS mirror is very likely faster, and
+/// being wrong there costs one mirror download rather than the ten-minute
+/// crawl this replaces.
+fn upstream_probe() -> crate::route_probe::Probe {
+    crate::route_probe::Probe {
+        bytes: PROBE_BYTES,
+        min_sample: MIN_PROBE_SAMPLE,
+        connect_timeout: MANIFEST_TIMEOUT,
+        transfer_deadline: PROBE_TRANSFER_DEADLINE,
+        min_bytes_per_sec: MIN_UPSTREAM_BYTES_PER_SEC,
     }
 }
 
-/// Measure what the official CDN actually delivers on this network, by ranged
-/// GET of the first `PROBE_BYTES` of the real asset.
+/// Measure what the official CDN actually delivers on this network.
 ///
-/// This replaces a HEAD reachability check. Reachability was the wrong
-/// question: from mainland China GitHub answers a HEAD in about a second and
-/// then streams the asset at a trickle, so the preflight passed, the OSS
-/// mirror was never consulted, and users watched a 60 MB download crawl. The
-/// mirror was reserved for "GitHub is blocked" when the common case is
-/// "GitHub is slow".
-///
-/// `None` means the route failed outright (blocked, DNS, TLS, non-2xx) — the
-/// same signal the old preflight gave.
-fn measure_upstream_route(asset: &str) -> Option<RouteSample> {
-    let url = download_url(asset);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .ok()?;
-    runtime.block_on(async {
-        let client = reqwest::Client::builder()
-            .connect_timeout(MANIFEST_TIMEOUT)
-            .timeout(MANIFEST_TIMEOUT + PROBE_TRANSFER_DEADLINE)
-            .build()
-            .ok()?;
-        let mut response = client
-            .get(&url)
-            .header(
-                reqwest::header::RANGE,
-                format!("bytes=0-{}", PROBE_BYTES - 1),
-            )
-            .send()
-            .await
-            .ok()?
-            .error_for_status()
-            .ok()?;
-        // Clock starts at the first byte: a slow handshake must not read as a
-        // slow pipe, and a fast handshake must not hide one. A server that
-        // ignores Range just gets cut off at PROBE_BYTES.
-        let started = std::time::Instant::now();
-        let mut bytes = 0u64;
-        while let Ok(Some(chunk)) = response.chunk().await {
-            bytes += chunk.len() as u64;
-            if bytes >= PROBE_BYTES || started.elapsed() >= PROBE_TRANSFER_DEADLINE {
-                break;
-            }
-        }
-        Some(RouteSample {
-            bytes,
-            elapsed: started.elapsed(),
-        })
-    })
+/// This replaces a HEAD reachability check — see `crate::route_probe` for why
+/// reachability was the wrong question.
+fn measure_upstream_route(asset: &str) -> Option<crate::route_probe::RouteSample> {
+    upstream_probe().measure(&download_url(asset))
 }
 
 /// Download URL for `asset` at `version` on the mirror.
@@ -498,7 +441,7 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
 
     let upstream = current_asset().and_then(measure_upstream_route);
     match upstream {
-        Some(sample) if sample.is_fast_enough() => {
+        Some(sample) if sample.meets(&upstream_probe()) => {
             progress(
                 "source",
                 &format!(
@@ -774,8 +717,8 @@ mod tests {
         }
     }
 
-    fn sample(bytes: u64, millis: u64) -> RouteSample {
-        RouteSample {
+    fn sample(bytes: u64, millis: u64) -> crate::route_probe::RouteSample {
+        crate::route_probe::RouteSample {
             bytes,
             elapsed: std::time::Duration::from_millis(millis),
         }
@@ -786,39 +729,19 @@ mod tests {
         // The regression this whole change is about: GitHub answers, then
         // trickles. 2 MiB in 4s is ~512 KB/s — a ~2 minute download for the
         // 60 MB asset, and real CN routes are far worse than that.
-        let slow = sample(PROBE_BYTES, 4_000);
-        assert!(!slow.is_fast_enough());
-        assert!(slow.mib_per_sec() < 1.0);
+        assert!(!sample(PROBE_BYTES, 4_000).meets(&upstream_probe()));
     }
 
     #[test]
     fn a_fast_upstream_route_is_kept() {
-        // ~2.5 MB/s: upstream is fine here, don't send the user to the mirror.
-        assert!(sample(PROBE_BYTES, 200).is_fast_enough());
+        // ~10 MB/s: upstream is fine here, don't send the user to the mirror.
+        assert!(sample(PROBE_BYTES, 200).meets(&upstream_probe()));
     }
 
     #[test]
-    fn the_bar_is_one_mib_per_second() {
-        // Straddle the threshold from both sides so a constant change has to
-        // be deliberate.
-        assert!(sample(1024 * 1024, 1_000).is_fast_enough());
-        assert!(!sample(1024 * 1024, 1_100).is_fast_enough());
-    }
-
-    #[test]
-    fn a_truncated_sample_is_not_a_verdict() {
-        // A transfer that died after 8 KiB says nothing useful, however fast
-        // those bytes arrived — treat it as a route not worth 60 MB.
-        let truncated = sample(8 * 1024, 1);
-        assert!(truncated.bytes_per_sec() > MIN_UPSTREAM_BYTES_PER_SEC);
-        assert!(!truncated.is_fast_enough());
-    }
-
-    #[test]
-    fn an_instant_sample_does_not_divide_by_zero() {
-        let instant = sample(PROBE_BYTES, 0);
-        assert!(instant.bytes_per_sec().is_finite());
-        assert!(instant.is_fast_enough());
+    fn the_upstream_bar_is_one_mib_per_second() {
+        assert!(sample(1024 * 1024, 1_000).meets(&upstream_probe()));
+        assert!(!sample(1024 * 1024, 1_100).meets(&upstream_probe()));
     }
 
     #[test]
