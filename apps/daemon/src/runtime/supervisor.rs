@@ -253,6 +253,18 @@ pub fn materialize_inherent_mcp_for_spawn(
     Ok(())
 }
 
+/// Seed the device MCP file for a read that is not a spawn.
+///
+/// The MCP inventory RPC reports what this machine has; `ensure_device_mcp` is
+/// what puts the device servers there. Exposed separately from
+/// [`ensure_device_layers`] because an inventory read has no business touching
+/// the team's `skills.paths`.
+pub(crate) fn ensure_device_mcp_for_inventory() {
+    if let Err(e) = crate::config::device_mcp::ensure_device_mcp() {
+        warn!(error = %e, "seeding device MCP config failed");
+    }
+}
+
 /// Seed the two device-level layers the workspace config no longer carries:
 /// `~/.amuxd/mcp.json` (device MCP) and the active team's global `skills.paths`.
 ///
