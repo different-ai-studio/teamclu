@@ -3263,6 +3263,110 @@ paths:
                       format: uuid
         "401":
           $ref: "#/components/responses/Error"
+  /v1/agents/{agentActorId}/management-grants:
+    post:
+      operationId: createAgentManagementGrant
+      summary: Mint a short-lived grant for managing one Agent
+      description: >-
+        Owner/admin only, resolved inside the team named in the body — the
+        team-scoped lookup is what lets an explicit `agent_member_access` admin
+        manage a personal Agent. The grant is bound to the authenticated
+        requester, the target Agent, the requested scopes, a short expiry, and
+        one RPC request id (returned as `nonce`), which the requester must send
+        as the `request_id` of the call it spends the grant on. User bearer
+        tokens are never forwarded to the target Agent.
+      tags: [Actors]
+      parameters:
+        - name: agentActorId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [teamId, scopes]
+              properties:
+                teamId: { type: string, format: uuid }
+                scopes:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items:
+                    type: string
+                    enum:
+                      - capabilities:read
+                      - skills:list
+                      - skills:install
+                      - skills:uninstall
+                      - skills:retry
+                      - skills:remove-personal
+                      - mcp:list
+                      - mcp:install
+                      - mcp:uninstall
+                      - mcp:retry
+      responses:
+        "200":
+          description: Short-lived management grant.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [grant, expiresAt, nonce, requesterActorId, targetAgentId, scopes]
+                properties:
+                  grant: { type: string, writeOnly: true }
+                  expiresAt: { type: string, format: date-time }
+                  nonce:
+                    type: string
+                    description: >-
+                      The one RPC request id this grant may be spent on. Send it
+                      as `RpcRequest.request_id`; the target Agent rejects any
+                      other id and deduplicates repeats of this one.
+                  requesterActorId: { type: string, format: uuid }
+                  targetAgentId: { type: string, format: uuid }
+                  scopes: { type: array, items: { type: string } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/agents/{agentActorId}/management-grants/verify:
+    post:
+      operationId: verifyAgentManagementGrant
+      summary: Verify a management grant as its target Agent
+      description: >-
+        The authenticated Cloud caller must be the target Agent itself. The
+        grant is refused unless `requestId` matches the id it was minted for,
+        so a captured grant cannot be spent on a second call.
+      tags: [Actors]
+      parameters:
+        - name: agentActorId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [grant, scope, requesterActorId, requestId]
+              properties:
+                grant: { type: string, writeOnly: true }
+                scope: { type: string }
+                requesterActorId: { type: string, format: uuid }
+                requestId:
+                  type: string
+                  description: >-
+                    `RpcRequest.request_id` of the call being authorized. Must
+                    equal the grant's `nonce`.
+      responses:
+        "200":
+          description: Grant is valid and bound to this request.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/agents/runtimes:
     get:
       operationId: getAgentRuntime

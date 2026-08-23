@@ -33,4 +33,15 @@ describe('mergeTeamMcpCatalogAndDaemon', () => {
     expect(item.installed).toBe(true)
     expect(item.config.command).toEqual(['weather-mcp'])
   })
+
+  test('keeps the not-yet-installed catalog row, which is the only install affordance', () => {
+    // The Agent's inventory has no `weather`, so the merged row is
+    // `team-available`. Filtering these out — as the Agent listing briefly did
+    // — leaves nothing in the UI that can call installMcp, and the whole
+    // mcp:install path becomes unreachable.
+    const items = mergeTeamMcpCatalogAndDaemon([catalogEntry(false)], {})
+    expect(items.map((item) => [item.id, item.kind, item.installed])).toEqual([
+      ['weather', 'team-available', false],
+    ])
+  })
 })

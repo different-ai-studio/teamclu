@@ -1,5 +1,20 @@
 import { ApiError } from "../http-utils.js";
 import { requireString } from "../routing-utils.js";
+import { randomUUID } from "node:crypto";
+import { mintAgentManagementGrant, verifyAgentManagementGrant } from "../agent-management-grant.js";
+
+const AGENT_MANAGEMENT_SCOPES = new Set([
+  "capabilities:read",
+  "skills:list",
+  "skills:install",
+  "skills:uninstall",
+  "skills:retry",
+  "skills:remove-personal",
+  "mcp:list",
+  "mcp:install",
+  "mcp:uninstall",
+  "mcp:retry",
+]);
 
 const DEFAULT_ACTOR_LIMIT = 200;
 const MAX_ACTOR_LIMIT = 500;
@@ -211,6 +226,60 @@ export function registerActors(router) {
     const agentActorId = decodeURIComponent(ctx.params.agentActorId);
     const result = await ctx.repository.listAgentAdminMembers(agentActorId);
     return { body: { items: result.items } };
+  });
+
+  router.post("/v1/agents/:agentActorId/management-grants", async (ctx) => {
+    const targetAgentId = decodeURIComponent(ctx.params.agentActorId);
+    const body = ctx.json ?? {};
+    // Team-scoped on purpose: authorization resolves the target through the
+    // caller's own team membership, which is the only lookup that can see a
+    // personal Agent the caller reaches through an explicit access grant.
+    const teamId = requireString(body.teamId, "teamId");
+    if (!Array.isArray(body.scopes) || body.scopes.length === 0) {
+      throw new ApiError(400, "validation_failed", "scopes must be a non-empty array");
+    }
+    const scopes: string[] = [...new Set((body.scopes as unknown[]).map((scope) => String(scope)))];
+    if (scopes.some((scope) => !AGENT_MANAGEMENT_SCOPES.has(scope))) {
+      throw new ApiError(400, "validation_failed", "unsupported agent management scope");
+    }
+    const principal = await ctx.repository.authorizeAgentManagement(targetAgentId, teamId);
+    const result = await mintAgentManagementGrant({
+      teamId: principal.teamId,
+      requesterActorId: principal.requesterActorId,
+      targetAgentId,
+      scopes,
+      // FC picks the request id the grant may be spent on; the requester must
+      // send this back as the RPC `request_id` (see `nonce` on the claims).
+      nonce: randomUUID(),
+    });
+    return { body: { ...result, requesterActorId: principal.requesterActorId, targetAgentId, scopes } };
+  });
+
+  router.post("/v1/agents/:agentActorId/management-grants/verify", async (ctx) => {
+    const targetAgentId = decodeURIComponent(ctx.params.agentActorId);
+    const body = ctx.json ?? {};
+    requireString(body.grant, "grant");
+    requireString(body.scope, "scope");
+    requireString(body.requesterActorId, "requesterActorId");
+    // The request id is part of what the grant authorizes. Without it a
+    // captured grant would be a bearer token good for arbitrarily many
+    // mutations until it expires; bound to one request id, a replay can only
+    // re-ask for the call the Agent has already answered and cached.
+    requireString(body.requestId, "requestId");
+    const claims = await verifyAgentManagementGrant(body.grant);
+    if (
+      claims.targetAgentId !== targetAgentId ||
+      claims.requesterActorId !== body.requesterActorId ||
+      claims.nonce !== body.requestId ||
+      !claims.scopes.includes(body.scope)
+    ) {
+      throw new ApiError(403, "agent_management_grant_mismatch", "agent management grant does not match this request");
+    }
+    const caller = await ctx.repository.resolveCallerActorForTeam(claims.teamId);
+    if (!caller || caller.id !== targetAgentId) {
+      throw new ApiError(403, "agent_management_target_mismatch", "only the target agent may verify this grant");
+    }
+    return { body: { valid: true, ...claims } };
   });
 
   router.post("/v1/actors/by-ids", async (ctx) => {

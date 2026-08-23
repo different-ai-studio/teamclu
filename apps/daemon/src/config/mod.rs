@@ -31,8 +31,8 @@ pub use provider_auth::{
     ProviderAuthMethodType, ProviderAuthMethodsResponse,
 };
 pub use roles_skills::{
-    scan_roles_skills_state, team_skill_roots, ManagedSkillDto, RoleRecordDto, RoleSkillLinkDto,
-    RolesSkillsMetricsDto, RolesSkillsStateDto,
+    is_inherent_skill, scan_roles_skills_state, team_skill_roots, ManagedSkillDto, RoleRecordDto,
+    RoleSkillLinkDto, RolesSkillsMetricsDto, RolesSkillsStateDto,
 };
 pub use session_store::{SessionStore, StoredSession};
 pub use workspace_control::{

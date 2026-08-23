@@ -18,6 +18,8 @@ import {
   RefreshCw,
   ChevronRight,
   Store,
+  Bot,
+  ChevronDown,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -55,6 +57,8 @@ import {
   type TeamSkillKind,
 } from '@/stores/team-share-browser'
 import { detailSelectionForSection } from '@/lib/tabs/teamshare-target'
+import type { ConnectedAgentRow } from '@/lib/backend/types'
+import { useActorPresenceStore } from '@/stores/actor-presence-store'
 
 const SECTION_META: Record<
   TeamShareSection,
@@ -222,38 +226,6 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const setCreating = useTeamShareBrowserStore((s) => s.setCreating)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
-  const [marketplaceAvailable, setMarketplaceAvailable] = React.useState(false)
-
-  /**
-   * Whether to show the "browse marketplace" button at all (design §10.1: a
-   * deployment with no catalog hides the entry rather than offering an empty
-   * one).
-   *
-   * Asks for one row, not the catalog. This used to pull the full listing —
-   * up to 100 rows, plus a requireActorForTeam and a team_skills adoption scan
-   * server-side — on every switch into the Skills section, then throw all of
-   * it away except `length > 0`, while MarketplacePane fetched the same list
-   * again the moment it opened.
-   *
-   * The team id is read reactively; the old `useCurrentTeamStore.getState()`
-   * with deps `[section]` left the button computed for the previous team after
-   * a team switch.
-   */
-  React.useEffect(() => {
-    if (section !== 'skills') return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const items = await getBackend().marketplace.listMarketplaceSkills({ limit: 1 })
-        if (!cancelled) setMarketplaceAvailable(items.length > 0)
-      } catch {
-        if (!cancelled) setMarketplaceAvailable(false)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [section, currentTeamId])
 
   // Which skill packages are showing their files, and which one is being added
   // to. View state, not persisted: it says nothing about the skill itself.
@@ -274,6 +246,10 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   }, [])
 
   const skills = useTeamShareBrowserStore((s) => s.skills)
+  const subjectActorId = useTeamShareBrowserStore((s) => s.subjectActorId)
+  const setSubjectActor = useTeamShareBrowserStore((s) => s.setSubjectActor)
+  const presenceByActor = useActorPresenceStore((s) => s.byActorId)
+  const [manageableAgents, setManageableAgents] = React.useState<ConnectedAgentRow[]>([])
   const localState = useTeamShareBrowserStore((s) => s.skillLocalState)
   const mcp = useTeamShareBrowserStore((s) => s.mcp)
   const knowledge = useTeamShareBrowserStore((s) => s.knowledge)
@@ -296,6 +272,37 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     setRootCreate(null)
     void loadSection(section, { force: true, withTools: section === 'mcp' })
   }, [section, loadSection])
+
+  // `subjectActorId` is read, not depended on: this effect WRITES it, so
+  // listing it here made every auto-select re-run the effect and refetch
+  // listConnectedAgents — and, through setSubjectActor, mint two more grants
+  // and do two more MQTT round trips — for nothing, on every mount, team
+  // switch, and skills/mcp toggle.
+  React.useEffect(() => {
+    if ((section !== 'skills' && section !== 'mcp') || !currentTeamId) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const rows = (await getBackend().actors.listConnectedAgents(currentTeamId)).filter(
+          (row) =>
+            (row.is_owner === true || row.permission_level === 'admin') &&
+            row.agent_status !== 'archived',
+        )
+        if (cancelled) return
+        setManageableAgents(rows)
+        const selected = useTeamShareBrowserStore.getState().subjectActorId
+        const selectedStillValid = rows.some((row) => row.id === selected)
+        if (rows.length === 1 && !selectedStillValid) {
+          await setSubjectActor(rows[0].id)
+        } else if (!selectedStillValid && selected) {
+          await setSubjectActor(null)
+        }
+      } catch {
+        if (!cancelled) setManageableAgents([])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [section, currentTeamId, setSubjectActor])
 
   const { available: syncAvailable, syncing, syncNow } = useTeamCloudSync()
 
@@ -383,12 +390,20 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           // — that is the detail pane's job. What is left is the name plus the
           // one line that differs per row.
           meta: metaParts.filter(Boolean).join(' · ') || undefined,
-          badge:
-            s.status === 'deprecated' ? (
-              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">
-                {t('teamShare.skillDeprecated', 'Deprecated')}
-              </span>
-            ) : undefined,
+          badge: (
+            <span className="flex shrink-0 items-center gap-1">
+              {s.kind === 'team-installed' ? (
+                <span className="rounded border border-border bg-paper px-1.5 py-0.5 text-[9.5px] font-semibold text-muted-foreground">
+                  {t('teamShare.scope.team', '团队')}
+                </span>
+              ) : null}
+              {s.status === 'deprecated' ? (
+                <span className="rounded bg-muted px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t('teamShare.skillDeprecated', 'Deprecated')}
+                </span>
+              ) : null}
+            </span>
+          ),
           dimmed: s.status === 'deprecated',
           // Three states, and only one of them is asking for anything.
           //
@@ -431,24 +446,11 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   }, [section, q, skills.items, localState, t])
 
   const skillGroups = React.useMemo(() => {
-    const available = skillRows.filter((r) => r.kind === 'team-available')
-    const installed = skillRows.filter((r) => r.kind === 'team-installed')
-    const personal = skillRows.filter((r) => r.kind === 'personal')
     return [
       {
-        key: 'available' as const,
-        label: t('teamShare.skillGroupAvailable', 'Team · Available'),
-        rows: available,
-      },
-      {
         key: 'installed' as const,
-        label: t('teamShare.skillGroupInstalled', 'Team · Installed'),
-        rows: installed,
-      },
-      {
-        key: 'personal' as const,
-        label: t('teamShare.skillGroupPersonal', 'Personal'),
-        rows: personal,
+        label: t('teamShare.skillGroupAgentInstalled', 'Agent 已安装'),
+        rows: skillRows,
       },
     ].filter((g) => g.rows.length > 0 || !q)
   }, [skillRows, t, q])
@@ -668,7 +670,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          {section === 'skills' && marketplaceAvailable ? (
+          {section === 'skills' ? (
             <Button
               type="button"
               variant="ghost"
@@ -776,13 +778,16 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             <Loader2 className="h-4 w-4 animate-spin" />
             {t('common.loading', 'Loading…')}
           </div>
+        ) : (section === 'skills' ? skills.error : section === 'mcp' ? mcp.error : null) ? (
+          <div className="px-6 py-10 text-center text-[13px] text-muted-foreground">
+            {section === 'skills' ? skills.error : mcp.error}
+          </div>
         ) : section === 'skills' ? (
           skillRows.length === 0 ? (
             <div className="px-6 py-10 text-center text-[13px] text-muted-foreground">
-              {t(
-                'teamShare.skillsEmptyUnified',
-                'No team or personal skills yet. Add a skill folder on disk, or wait for a teammate to publish.',
-              )}
+              {subjectActorId
+                ? t('teamShare.agentSkillsEmpty', '当前 Agent 没有已安装的 Skills')
+                : t('teamShare.selectAgentFirst', '请先选择 Agent')}
             </div>
           ) : (
             skillGroups.map((group) => (
@@ -989,6 +994,65 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           ))
         )}
       </div>
+      {(section === 'skills' || section === 'mcp') && (
+        <div className="border-t border-border p-3">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-9 w-full justify-between bg-panel px-2.5 text-[12.5px] font-medium"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="truncate">
+                    {manageableAgents.find((agent) => agent.id === subjectActorId)?.display_name ||
+                      t('teamShare.selectAgent', '选择 Agent')}
+                  </span>
+                  {subjectActorId && (
+                    <span
+                      className={cn(
+                        'h-1.5 w-1.5 shrink-0 rounded-full',
+                        presenceByActor[subjectActorId]?.online ? 'bg-emerald-500' : 'bg-faint',
+                      )}
+                    />
+                  )}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 text-faint" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-[240px]">
+              {manageableAgents.length === 0 ? (
+                <DropdownMenuItem disabled>
+                  {t('teamShare.noManageableAgents', '没有可管理的 Agent')}
+                </DropdownMenuItem>
+              ) : (
+                manageableAgents.map((agent) => (
+                  <DropdownMenuItem
+                    key={agent.id}
+                    onSelect={() => void setSubjectActor(agent.id)}
+                    className="flex items-center gap-2"
+                  >
+                    <span
+                      className={cn(
+                        'h-1.5 w-1.5 rounded-full',
+                        presenceByActor[agent.id]?.online ? 'bg-emerald-500' : 'bg-faint',
+                      )}
+                    />
+                    <span className="min-w-0 flex-1 truncate">{agent.display_name || agent.id}</span>
+                    {presenceByActor[agent.id]?.online === false ? (
+                      <span className="font-mono text-[10.5px] text-faint">
+                        {t('common.offline', '离线')}
+                      </span>
+                    ) : null}
+                    {agent.id === subjectActorId && <Check className="h-3.5 w-3.5" />}
+                  </DropdownMenuItem>
+                ))
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
     </div>
   )
 }

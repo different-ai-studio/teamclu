@@ -7,6 +7,10 @@ import {
   RuntimeStopRequestSchema,
   RuntimeCommandRequestSchema,
   SetModelRequestSchema,
+  AgentCapabilityManagementRequestSchema,
+  AgentCapabilityAction,
+  AgentCapabilityKind,
+  type AgentCapabilityManagementResult,
   type FetchWorkspacesResult,
   type RpcRequest,
   type RpcResponse,
@@ -298,6 +302,12 @@ async function sendRequest(
   build: (req: RpcRequest) => void,
   targetActorId: string,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  /**
+   * Override the generated request id. Only agent management uses this: its
+   * grant is minted for one specific request id, so the id has to come from
+   * the grant rather than from here.
+   */
+  fixedRequestId?: string,
 ): Promise<RpcResponse> {
   if (!targetActorId) {
     throw new Error('teamclu-rpc: targetActorId required')
@@ -318,7 +328,7 @@ async function sendRequest(
     recordMqttDiag('teamclu-rpc', 'request:not-initialized', { targetActorId, initialized, teamId })
     throw new TeamcluRpcTransportError('transport-not-ready', 'teamclu-rpc not initialized')
   }
-  const requestId = crypto.randomUUID()
+  const requestId = fixedRequestId ?? crypto.randomUUID()
   const requesterClientId = `teamclu-${requesterActorId.slice(0, 8)}-${requestId.slice(0, 8)}`
 
   const req = create(RpcRequestSchema, {
@@ -457,6 +467,44 @@ export async function probeAgentRpcReachability(args: {
     }
     return 'indeterminate'
   }
+}
+
+export async function manageAgentCapability(args: {
+  targetActorId: string
+  managementGrant: string
+  /**
+   * The grant's `nonce`. Cloud API mints a grant for exactly one RPC request
+   * id and the Agent rejects the grant on any other id, so a captured grant
+   * can only ever be replayed onto the call the Agent already answered and
+   * cached — that is what makes a grant single-use.
+   */
+  requestId: string
+  kind: AgentCapabilityKind
+  action: AgentCapabilityAction
+  itemId?: string
+  version?: number
+  timeoutMs?: number
+}): Promise<AgentCapabilityManagementResult> {
+  const response = await sendRequest((req) => {
+    req.method = {
+      case: 'agentCapabilityManagement',
+      value: create(AgentCapabilityManagementRequestSchema, {
+        managementGrant: args.managementGrant,
+        kind: args.kind,
+        action: args.action,
+        itemId: args.itemId ?? '',
+        version: BigInt(args.version ?? 0),
+      }),
+    }
+  }, args.targetActorId, args.timeoutMs, args.requestId)
+  if (response.result.case !== 'agentCapabilityManagementResult') {
+    throw new Error(`unexpected result variant: ${response.result.case}`)
+  }
+  if (!response.success) {
+    const code = response.result.value.errorCode
+    throw new Error(code ? `${code}: ${response.error}` : response.error || 'agent management rejected')
+  }
+  return response.result.value
 }
 
 // ---------------------------------------------------------------------------

@@ -9,19 +9,11 @@ import {
   Trash2,
   Archive,
   AlertTriangle,
-  Share2,
   Copy,
   Upload,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -37,18 +29,15 @@ import {
   useTeamShareBrowserStore,
   isSkillDirtyConflict,
   SkillDiscardIncompleteError,
-  SkillSlugTakenError,
   type TeamSkillItem,
   type TeamSkillFileDiff,
 } from '@/stores/team-share-browser'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend/provider'
-import {
-  TEAM_SKILL_CATEGORIES,
-  type TeamSkillCategory,
-  type TeamSkillVersion,
-} from '@/lib/backend/cloud-api/team-skills'
+import { type TeamSkillVersion } from '@/lib/backend/cloud-api/team-skills'
 import { useIsDark } from './use-is-dark'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
+import { useActorPresenceStore } from '@/stores/actor-presence-store'
 
 type SkillConfirmAction = 'delete' | 'uninstall'
 
@@ -242,199 +231,6 @@ function VersionHistory({
           ))}
         </ul>
       )}
-    </div>
-  )
-}
-
-function ShareSheet({
-  item,
-  open,
-  onClose,
-  onSubmit,
-  busy,
-  takenSlugs,
-}: {
-  item: TeamSkillItem
-  open: boolean
-  onClose: () => void
-  onSubmit: (input: {
-    slug: string
-    summary: string
-    category: TeamSkillCategory
-    whenToUse: string
-    whenNotToUse: string
-    changelog: string
-  }) => Promise<void>
-  busy: boolean
-  /** Names the team registry already owns. */
-  takenSlugs: ReadonlySet<string>
-}) {
-  const { t } = useTranslation()
-  const [slug, setSlug] = React.useState(item.slug)
-  const [summary, setSummary] = React.useState(item.summary ?? '')
-  const [category, setCategory] = React.useState<TeamSkillCategory>(
-    (TEAM_SKILL_CATEGORIES.includes(item.category as TeamSkillCategory)
-      ? item.category
-      : 'general') as TeamSkillCategory,
-  )
-  const [whenToUse, setWhenToUse] = React.useState(item.whenToUse ?? '')
-  const [whenNotToUse, setWhenNotToUse] = React.useState(item.whenNotToUse ?? '')
-  const [changelog, setChangelog] = React.useState('v1: shared from personal skill')
-
-  React.useEffect(() => {
-    if (!open) return
-    setSlug(item.slug)
-    setSummary(item.summary ?? '')
-    setCategory(
-      (TEAM_SKILL_CATEGORIES.includes(item.category as TeamSkillCategory)
-        ? item.category
-        : 'general') as TeamSkillCategory,
-    )
-    setWhenToUse(item.whenToUse ?? '')
-    setWhenNotToUse(item.whenNotToUse ?? '')
-    setChangelog('v1: shared from personal skill')
-  }, [open, item])
-
-  if (!open) return null
-
-  // The registry rejects a duplicate name, but only after the package has been
-  // uploaded. Everything needed to know that is already in this list, so say it
-  // while they are still typing.
-  const slugTaken = takenSlugs.has(slug.trim())
-
-  // Guidance fields are not gates. Requiring them mostly bought placeholder
-  // text, which reads as guidance without being any — worse than a blank the
-  // author can come back and fill in.
-  const canSubmit = slug.trim() && !slugTaken && summary.trim() && changelog.trim() && !busy
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-[14px] border border-border bg-paper shadow-lg"
-      >
-        <div className="border-b border-border px-5 py-3">
-          <h2 className="text-[15px] font-bold text-foreground">
-            {t('teamShare.skillShareTitle', 'Share to team')}
-          </h2>
-          <p className="mt-1 text-[12px] text-muted-foreground">
-            {t(
-              'teamShare.skillShareHint',
-              'Publishes a copy to the team registry and installs it for you. Your personal folder stays on disk.',
-            )}
-          </p>
-        </div>
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
-          <label className="block space-y-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">
-              {t('teamShare.skillShareSlug', 'Slug')}
-            </span>
-            <input
-              value={slug}
-              onChange={(e) => setSlug(e.target.value)}
-              aria-invalid={slugTaken || undefined}
-              className={cn(
-                'w-full rounded-[8px] border bg-background px-3 py-2 font-mono text-[13px] outline-none',
-                slugTaken ? 'border-foreground' : 'border-border focus:border-coral/60',
-              )}
-            />
-            {slugTaken && (
-              <p className="text-[12px] leading-relaxed text-foreground">
-                {t(
-                  'teamShare.skillShareSlugTaken',
-                  'The team already has a skill called {{slug}}. Pick another name, or publish a new version of the existing one.',
-                  { slug: slug.trim() },
-                )}
-              </p>
-            )}
-          </label>
-          <label className="block space-y-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">
-              {t('teamShare.skillShareSummary', 'Summary')}
-            </span>
-            <input
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              maxLength={200}
-              className="w-full rounded-[8px] border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-coral/60"
-            />
-          </label>
-          <label className="block space-y-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">
-              {t('teamShare.skillShareCategory', 'Category')}
-            </span>
-            <Select value={category} onValueChange={(v) => setCategory(v as TeamSkillCategory)}>
-              <SelectTrigger className="h-auto w-full rounded-[8px] border-border bg-background px-3 py-2 text-[13px] shadow-none">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TEAM_SKILL_CATEGORIES.map((c) => (
-                  <SelectItem key={c} value={c} className="text-[13px]">
-                    {c}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
-          <label className="block space-y-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">
-              {t('teamShare.skillWhenToUse', 'When to use')}
-            </span>
-            <textarea
-              value={whenToUse}
-              onChange={(e) => setWhenToUse(e.target.value)}
-              rows={3}
-              className="w-full rounded-[8px] border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-coral/60"
-            />
-          </label>
-          <label className="block space-y-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">
-              {t('teamShare.skillWhenNotToUse', 'When not to use')}
-            </span>
-            <textarea
-              value={whenNotToUse}
-              onChange={(e) => setWhenNotToUse(e.target.value)}
-              rows={3}
-              className="w-full rounded-[8px] border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-coral/60"
-            />
-          </label>
-          <label className="block space-y-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">
-              {t('teamShare.skillShareChangelog', 'Changelog')}
-            </span>
-            <textarea
-              value={changelog}
-              onChange={(e) => setChangelog(e.target.value)}
-              rows={2}
-              className="w-full rounded-[8px] border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-coral/60"
-            />
-          </label>
-        </div>
-        <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
-          <Button type="button" variant="ghost" onClick={onClose} disabled={busy} className="h-8 text-[13px]">
-            {t('common.cancel', 'Cancel')}
-          </Button>
-          <Button
-            type="button"
-            disabled={!canSubmit}
-            onClick={() =>
-              void onSubmit({
-                slug: slug.trim(),
-                summary: summary.trim(),
-                category,
-                whenToUse: whenToUse.trim(),
-                whenNotToUse: whenNotToUse.trim(),
-                changelog: changelog.trim(),
-              })
-            }
-            className="h-8 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90 disabled:opacity-40"
-          >
-            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Share2 className="h-3.5 w-3.5" />}
-            {t('teamShare.skillShareSubmit', 'Share & install')}
-          </Button>
-        </div>
-      </div>
     </div>
   )
 }
@@ -856,20 +652,12 @@ export function SkillDetail({ slug }: { slug: string }) {
   const installSkill = useTeamShareBrowserStore((s) => s.installSkill)
   const uninstallSkill = useTeamShareBrowserStore((s) => s.uninstallSkill)
   const deletePersonalSkill = useTeamShareBrowserStore((s) => s.deletePersonalSkill)
-  const sharePersonalSkill = useTeamShareBrowserStore((s) => s.sharePersonalSkill)
   const publishSkillVersion = useTeamShareBrowserStore((s) => s.publishSkillVersion)
   const discardLocalSkill = useTeamShareBrowserStore((s) => s.discardLocalSkill)
   const restoreDiscardedSkill = useTeamShareBrowserStore((s) => s.restoreDiscardedSkill)
   const forkSkill = useTeamShareBrowserStore((s) => s.forkSkill)
   const loadSkillDiff = useTeamShareBrowserStore((s) => s.loadSkillDiff)
   const localState = useTeamShareBrowserStore((s) => s.skillLocalState[slug])
-  const allSkills = useTeamShareBrowserStore((s) => s.skills.items)
-  // Derived, not selected: a selector returning a fresh Set re-renders on every
-  // store change, since the reference is new each time it runs.
-  const registrySlugs = React.useMemo(
-    () => new Set(allSkills.filter((x) => x.origin === 'registry').map((x) => x.slug)),
-    [allSkills],
-  )
   const syncError = useTeamShareBrowserStore((s) => s.skillSyncErrors[slug])
   const archivedPath = useTeamShareBrowserStore((s) => s.skillArchived[slug])
   const keepArchivedCopy = useTeamShareBrowserStore((s) => s.keepArchivedCopy)
@@ -879,11 +667,17 @@ export function SkillDetail({ slug }: { slug: string }) {
   const select = useTeamShareBrowserStore((s) => s.select)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const detachMarketplaceSkill = useTeamShareBrowserStore((s) => s.detachMarketplaceSkill)
+  const subjectActorId = useTeamShareBrowserStore((s) => s.subjectActorId)
+  useActorPresenceStore((s) =>
+    subjectActorId ? s.byActorId[subjectActorId]?.online : undefined,
+  )
+  const agentOffline = subjectActorId
+    ? resolveAgentDevicePresenceSync(subjectActorId) === 'offline'
+    : true
 
   const [content, setContent] = React.useState(item?.content ?? '')
   const [saving, setSaving] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
-  const [shareOpen, setShareOpen] = React.useState(false)
   const [publishOpen, setPublishOpen] = React.useState(false)
   const [forkOpen, setForkOpen] = React.useState(false)
   const [diffOpen, setDiffOpen] = React.useState(false)
@@ -1022,64 +816,6 @@ export function SkillDetail({ slug }: { slug: string }) {
       setBusy(false)
     }
   }, [item, busy, deletePersonalSkill, t])
-
-  const runShare = React.useCallback(
-    async (input: {
-      slug: string
-      summary: string
-      category: TeamSkillCategory
-      whenToUse: string
-      whenNotToUse: string
-      changelog: string
-    }) => {
-      if (!item || busy) return
-      setBusy(true)
-      try {
-        const retiredPath = await sharePersonalSkill(item.slug, input)
-        setShareOpen(false)
-        toast.success(
-          retiredPath
-            ? t(
-                'teamShare.skillSharedAndRetired',
-                'Shared. Your personal copy was set aside — the team version is the one that stays up to date.',
-              )
-            : t('teamShare.skillShareSuccess', 'Shared and installed'),
-          retiredPath
-            ? {
-                duration: 30_000,
-                action: {
-                  label: t('teamShare.skillKeepMine', 'Keep mine'),
-                  onClick: () => {
-                    void restoreDiscardedSkill(retiredPath, `${input.slug}-mine`).catch((e) =>
-                      toast.error(
-                        t('teamShare.skillRestoreFailed', 'Restore failed: {{msg}}', {
-                          msg: e instanceof Error ? e.message : String(e),
-                        }),
-                      ),
-                    )
-                  },
-                },
-              }
-            : undefined,
-        )
-      } catch (e) {
-        toast.error(
-          e instanceof SkillSlugTakenError
-            ? t(
-                'teamShare.skillShareSlugTaken',
-                'The team already has a skill called {{slug}}. Pick another name, or publish a new version of the existing one.',
-                { slug: e.slug },
-              )
-            : t('teamShare.skillShareFailed', 'Share failed: {{msg}}', {
-                msg: e instanceof Error ? e.message : String(e),
-              }),
-        )
-      } finally {
-        setBusy(false)
-      }
-    },
-    [item, busy, sharePersonalSkill, t],
-  )
 
   const runPublishVersion = React.useCallback(
     async (input: {
@@ -1246,6 +982,7 @@ export function SkillDetail({ slug }: { slug: string }) {
   const conflicted = localState?.state === 'dirty'
   const isRegistry = item.origin === 'registry'
   const isPersonal = item.kind === 'personal'
+  const isBuiltin = isPersonal && item.personalSource === 'builtin'
   const canEdit = Boolean(item.dirPath && item.filename && (item.kind === 'personal' || item.installed))
   const latestChangelog = [...versions].sort((a, b) => b.version - a.version)[0]?.changelog
   // Any team member can publish and revert: the registry is team property, and
@@ -1331,7 +1068,7 @@ export function SkillDetail({ slug }: { slug: string }) {
           <Button
             type="button"
             onClick={() => void runInstall()}
-            disabled={busy || item.status === 'deprecated'}
+            disabled={busy || agentOffline || item.status === 'deprecated'}
             className={cn(
               'h-8 gap-1.5 text-[13px] font-semibold',
               item.status === 'deprecated'
@@ -1380,7 +1117,7 @@ export function SkillDetail({ slug }: { slug: string }) {
               type="button"
               variant="ghost"
               onClick={() => setConfirmAction('uninstall')}
-              disabled={busy}
+              disabled={busy || agentOffline}
               className="h-8 gap-1.5 text-[13px] text-muted-foreground hover:text-foreground"
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -1391,25 +1128,18 @@ export function SkillDetail({ slug }: { slug: string }) {
 
         {isPersonal && (
           <>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setConfirmAction('delete')}
-              disabled={busy}
-              className="h-8 gap-1.5 text-[13px] text-muted-foreground hover:text-foreground"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              {t('teamShare.skillDelete', 'Delete')}
-            </Button>
-            <Button
-              type="button"
-              onClick={() => setShareOpen(true)}
-              disabled={busy}
-              className="h-8 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90"
-            >
-              <Share2 className="h-3.5 w-3.5" />
-              {t('teamShare.skillShare', 'Share')}
-            </Button>
+            {!isBuiltin ? (
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setConfirmAction('delete')}
+                disabled={busy || agentOffline}
+                className="h-8 gap-1.5 text-[13px] text-muted-foreground hover:text-foreground"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {t('teamShare.skillDelete', 'Delete')}
+              </Button>
+            ) : null}
           </>
         )}
 
@@ -1579,7 +1309,7 @@ export function SkillDetail({ slug }: { slug: string }) {
               <Button
                 type="button"
                 onClick={() => void runInstall()}
-                disabled={busy || item.status === 'deprecated'}
+                disabled={busy || agentOffline || item.status === 'deprecated'}
                 className="mt-1 h-8 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90 disabled:opacity-40"
               >
                 {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
@@ -1589,17 +1319,6 @@ export function SkillDetail({ slug }: { slug: string }) {
           </div>
         )}
       </div>
-
-      {isPersonal && (
-        <ShareSheet
-          item={item}
-          open={shareOpen}
-          onClose={() => setShareOpen(false)}
-          onSubmit={runShare}
-          busy={busy}
-          takenSlugs={registrySlugs}
-        />
-      )}
 
       <PublishVersionSheet
         item={item}

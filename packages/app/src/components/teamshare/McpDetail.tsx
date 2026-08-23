@@ -16,6 +16,8 @@ import { ToggleSwitch } from '@/components/settings/shared'
 import { useTeamShareBrowserStore, type TeamMcpItem } from '@/stores/team-share-browser'
 import { findLiteralSecretKeys, type TeamMcpServerWrite } from '@/lib/backend/cloud-api/team-mcp'
 import { CloudApiError } from '@/lib/backend/cloud-api/http'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
+import { useActorPresenceStore } from '@/stores/actor-presence-store'
 
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -297,6 +299,13 @@ export function McpDetail({ name }: { name: string }) {
   const [editing, setEditing] = React.useState(false)
   const [shareOpen, setShareOpen] = React.useState(false)
   const [shareDescription, setShareDescription] = React.useState('')
+  const subjectActorId = useTeamShareBrowserStore((s) => s.subjectActorId)
+  useActorPresenceStore((s) =>
+    subjectActorId ? s.byActorId[subjectActorId]?.online : undefined,
+  )
+  const agentOffline = subjectActorId
+    ? resolveAgentDevicePresenceSync(subjectActorId) === 'offline'
+    : true
 
   const handleRefresh = React.useCallback(async () => {
     setRefreshing(true)
@@ -393,7 +402,7 @@ export function McpDetail({ name }: { name: string }) {
           {isAvailable && (
             <Button
               type="button"
-              disabled={busy}
+              disabled={busy || agentOffline}
               onClick={() =>
                 void run(
                   () => installMcp(item.name),
@@ -412,7 +421,7 @@ export function McpDetail({ name }: { name: string }) {
             <Button
               type="button"
               variant="outline"
-              disabled={busy}
+              disabled={busy || agentOffline || isPersonal}
               onClick={() =>
                 void run(
                   () => uninstallMcp(item.id),
