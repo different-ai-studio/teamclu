@@ -283,7 +283,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amuxd"
-version = "0.4.1-beta.24"
+version = "0.4.1-beta.25"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -10657,7 +10657,7 @@ dependencies = [
 
 [[package]]
 name = "teamclu"
-version = "0.4.1-beta.24"
+version = "0.4.1-beta.25"
 dependencies = [
  "aes-gcm",
  "anyhow",
