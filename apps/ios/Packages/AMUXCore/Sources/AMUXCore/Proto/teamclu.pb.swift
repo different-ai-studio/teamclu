@@ -205,6 +205,98 @@ public nonisolated enum Teamclu_IdeaStatus: SwiftProtobuf.Enum, Swift.CaseIterab
 
 }
 
+public nonisolated enum Teamclu_AgentCapabilityKind: SwiftProtobuf.Enum, Swift.CaseIterable {
+  public typealias RawValue = Int
+  case unspecified // = 0
+  case agentSkill // = 1
+  case agentMcp // = 2
+  case UNRECOGNIZED(Int)
+
+  public init() {
+    self = .unspecified
+  }
+
+  public init?(rawValue: Int) {
+    switch rawValue {
+    case 0: self = .unspecified
+    case 1: self = .agentSkill
+    case 2: self = .agentMcp
+    default: self = .UNRECOGNIZED(rawValue)
+    }
+  }
+
+  public var rawValue: Int {
+    switch self {
+    case .unspecified: return 0
+    case .agentSkill: return 1
+    case .agentMcp: return 2
+    case .UNRECOGNIZED(let i): return i
+    }
+  }
+
+  // The compiler won't synthesize support with the UNRECOGNIZED case.
+  public static let allCases: [Teamclu_AgentCapabilityKind] = [
+    .unspecified,
+    .agentSkill,
+    .agentMcp,
+  ]
+
+}
+
+public nonisolated enum Teamclu_AgentCapabilityAction: SwiftProtobuf.Enum, Swift.CaseIterable {
+  public typealias RawValue = Int
+  case unspecified // = 0
+  case getCapabilities // = 1
+  case listInventory // = 2
+  case installTeamItem // = 3
+  case uninstallTeamItem // = 4
+  case retryItem // = 5
+  case removePersonalSkill // = 6
+  case UNRECOGNIZED(Int)
+
+  public init() {
+    self = .unspecified
+  }
+
+  public init?(rawValue: Int) {
+    switch rawValue {
+    case 0: self = .unspecified
+    case 1: self = .getCapabilities
+    case 2: self = .listInventory
+    case 3: self = .installTeamItem
+    case 4: self = .uninstallTeamItem
+    case 5: self = .retryItem
+    case 6: self = .removePersonalSkill
+    default: self = .UNRECOGNIZED(rawValue)
+    }
+  }
+
+  public var rawValue: Int {
+    switch self {
+    case .unspecified: return 0
+    case .getCapabilities: return 1
+    case .listInventory: return 2
+    case .installTeamItem: return 3
+    case .uninstallTeamItem: return 4
+    case .retryItem: return 5
+    case .removePersonalSkill: return 6
+    case .UNRECOGNIZED(let i): return i
+    }
+  }
+
+  // The compiler won't synthesize support with the UNRECOGNIZED case.
+  public static let allCases: [Teamclu_AgentCapabilityAction] = [
+    .unspecified,
+    .getCapabilities,
+    .listInventory,
+    .installTeamItem,
+    .uninstallTeamItem,
+    .retryItem,
+    .removePersonalSkill,
+  ]
+
+}
+
 public nonisolated struct Teamclu_Actor: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -685,6 +777,14 @@ public nonisolated struct Teamclu_RpcRequest: Sendable {
     set {method = .runtimeCommand(newValue)}
   }
 
+  public var agentCapabilityManagement: Teamclu_AgentCapabilityManagementRequest {
+    get {
+      if case .agentCapabilityManagement(let v)? = method {return v}
+      return Teamclu_AgentCapabilityManagementRequest()
+    }
+    set {method = .agentCapabilityManagement(newValue)}
+  }
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum OneOf_Method: Equatable, Sendable {
@@ -711,6 +811,7 @@ public nonisolated struct Teamclu_RpcRequest: Sendable {
     case fetchWorkspaces(Teamclu_FetchWorkspacesRequest)
     case remoteToolInvoke(Teamclu_RemoteToolInvokeRequest)
     case runtimeCommand(Teamclu_RuntimeCommandRequest)
+    case agentCapabilityManagement(Teamclu_AgentCapabilityManagementRequest)
 
   }
 
@@ -959,6 +1060,14 @@ public nonisolated struct Teamclu_RpcResponse: @unchecked Sendable {
     set {_uniqueStorage()._result = .runtimeCommandResult(newValue)}
   }
 
+  public var agentCapabilityManagementResult: Teamclu_AgentCapabilityManagementResult {
+    get {
+      if case .agentCapabilityManagementResult(let v)? = _storage._result {return v}
+      return Teamclu_AgentCapabilityManagementResult()
+    }
+    set {_uniqueStorage()._result = .agentCapabilityManagementResult(newValue)}
+  }
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum OneOf_Result: Equatable, Sendable {
@@ -980,12 +1089,145 @@ public nonisolated struct Teamclu_RpcResponse: @unchecked Sendable {
     case fetchWorkspacesResult(Teamclu_FetchWorkspacesResult)
     case remoteToolInvokeResult(Teamclu_RemoteToolInvokeResult)
     case runtimeCommandResult(Teamclu_RuntimeCommandResult)
+    case agentCapabilityManagementResult(Teamclu_AgentCapabilityManagementResult)
 
   }
 
   public init() {}
 
   fileprivate var _storage = _StorageClass.defaultInstance
+}
+
+public nonisolated struct Teamclu_AgentCapabilityManagementRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var managementGrant: String = String()
+
+  public var kind: Teamclu_AgentCapabilityKind = .unspecified
+
+  public var action: Teamclu_AgentCapabilityAction = .unspecified
+
+  /// Stable registry slug/name. Never a filesystem path.
+  public var itemID: String = String()
+
+  public var version: Int64 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public nonisolated struct Teamclu_AgentManagementCapabilities: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var protocolVersion: UInt32 = 0
+
+  public var skillActions: [Teamclu_AgentCapabilityAction] = []
+
+  public var mcpActions: [Teamclu_AgentCapabilityAction] = []
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public nonisolated struct Teamclu_AgentSkillInventoryItem: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var id: String = String()
+
+  public var name: String = String()
+
+  /// builtin | personal | team
+  public var source: String = String()
+
+  public var version: Int64 = 0
+
+  public var teamItem: Bool = false
+
+  public var readOnly: Bool = false
+
+  /// installed | drift | failed
+  public var health: String = String()
+
+  public var errorCode: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public nonisolated struct Teamclu_AgentMcpInventoryItem: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var id: String = String()
+
+  public var name: String = String()
+
+  public var source: String = String()
+
+  public var transport: String = String()
+
+  public var commandOrURL: String = String()
+
+  public var configStatus: String = String()
+
+  public var runtimeStatus: String = String()
+
+  public var configuredEnvKeys: [String] = []
+
+  public var missingEnvKeys: [String] = []
+
+  public var configuredHeaderKeys: [String] = []
+
+  public var missingHeaderKeys: [String] = []
+
+  public var errorCode: String = String()
+
+  public var sanitizedError: String = String()
+
+  public var readOnly: Bool = false
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public nonisolated struct Teamclu_AgentCapabilityManagementResult: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var capabilities: Teamclu_AgentManagementCapabilities {
+    get {_capabilities ?? Teamclu_AgentManagementCapabilities()}
+    set {_capabilities = newValue}
+  }
+  /// Returns true if `capabilities` has been explicitly set.
+  public var hasCapabilities: Bool {self._capabilities != nil}
+  /// Clears the value of `capabilities`. Subsequent reads from it will return its default value.
+  public mutating func clearCapabilities() {self._capabilities = nil}
+
+  public var skills: [Teamclu_AgentSkillInventoryItem] = []
+
+  public var mcpServers: [Teamclu_AgentMcpInventoryItem] = []
+
+  public var status: String = String()
+
+  public var errorCode: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+
+  fileprivate var _capabilities: Teamclu_AgentManagementCapabilities? = nil
 }
 
 public nonisolated struct Teamclu_RemoteToolInvokeResult: Sendable {
@@ -1588,6 +1830,14 @@ nonisolated extension Teamclu_MessageKind: SwiftProtobuf._ProtoNameProviding {
 
 nonisolated extension Teamclu_IdeaStatus: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0IDEA_STATUS_UNKNOWN\0\u{1}OPEN\0\u{1}IN_PROGRESS\0\u{1}DONE\0")
+}
+
+nonisolated extension Teamclu_AgentCapabilityKind: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0AGENT_CAPABILITY_KIND_UNSPECIFIED\0\u{1}AGENT_SKILL\0\u{1}AGENT_MCP\0")
+}
+
+nonisolated extension Teamclu_AgentCapabilityAction: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0AGENT_CAPABILITY_ACTION_UNSPECIFIED\0\u{1}GET_CAPABILITIES\0\u{1}LIST_INVENTORY\0\u{1}INSTALL_TEAM_ITEM\0\u{1}UNINSTALL_TEAM_ITEM\0\u{1}RETRY_ITEM\0\u{1}REMOVE_PERSONAL_SKILL\0")
 }
 
 nonisolated extension Teamclu_Actor: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
@@ -2227,7 +2477,7 @@ nonisolated extension Teamclu_LiveEventEnvelope: SwiftProtobuf.Message, SwiftPro
 
 nonisolated extension Teamclu_RpcRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RpcRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}request_id\0\u{4}\u{2}requester_client_id\0\u{3}requester_actor_id\0\u{4}\u{6}create_session\0\u{3}join_session\0\u{3}fetch_session\0\u{3}add_participant\0\u{3}remove_participant\0\u{3}create_idea\0\u{3}claim_idea\0\u{3}submit_idea\0\u{3}update_idea\0\u{4}\u{2}fetch_session_messages\0\u{4}\u{a}runtime_start\0\u{3}runtime_stop\0\u{3}set_model\0\u{4}\u{8}announce_peer\0\u{3}disconnect_peer\0\u{3}remove_member\0\u{3}add_workspace\0\u{3}remove_workspace\0\u{3}fetch_peers\0\u{3}fetch_workspaces\0\u{3}remote_tool_invoke\0\u{3}runtime_command\0\u{c}\u{2}\u{1}\u{c}\u{5}\u{1}")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}request_id\0\u{4}\u{2}requester_client_id\0\u{3}requester_actor_id\0\u{4}\u{6}create_session\0\u{3}join_session\0\u{3}fetch_session\0\u{3}add_participant\0\u{3}remove_participant\0\u{3}create_idea\0\u{3}claim_idea\0\u{3}submit_idea\0\u{3}update_idea\0\u{4}\u{2}fetch_session_messages\0\u{4}\u{a}runtime_start\0\u{3}runtime_stop\0\u{3}set_model\0\u{4}\u{8}announce_peer\0\u{3}disconnect_peer\0\u{3}remove_member\0\u{3}add_workspace\0\u{3}remove_workspace\0\u{3}fetch_peers\0\u{3}fetch_workspaces\0\u{3}remote_tool_invoke\0\u{3}runtime_command\0\u{3}agent_capability_management\0\u{c}\u{2}\u{1}\u{c}\u{5}\u{1}")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2524,6 +2774,19 @@ nonisolated extension Teamclu_RpcRequest: SwiftProtobuf.Message, SwiftProtobuf._
           self.method = .runtimeCommand(v)
         }
       }()
+      case 49: try {
+        var v: Teamclu_AgentCapabilityManagementRequest?
+        var hadOneofValue = false
+        if let current = self.method {
+          hadOneofValue = true
+          if case .agentCapabilityManagement(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.method = .agentCapabilityManagement(v)
+        }
+      }()
       default: break
       }
     }
@@ -2631,6 +2894,10 @@ nonisolated extension Teamclu_RpcRequest: SwiftProtobuf.Message, SwiftProtobuf._
     case .runtimeCommand?: try {
       guard case .runtimeCommand(let v)? = self.method else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 48)
+    }()
+    case .agentCapabilityManagement?: try {
+      guard case .agentCapabilityManagement(let v)? = self.method else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 49)
     }()
     case nil: break
     }
@@ -2758,7 +3025,7 @@ nonisolated extension Teamclu_RemoteToolInvokeRequest: SwiftProtobuf.Message, Sw
 
 nonisolated extension Teamclu_RpcResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RpcResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}request_id\0\u{1}success\0\u{1}error\0\u{3}requester_client_id\0\u{3}requester_actor_id\0\u{4}\u{5}session_info\0\u{1}idea\0\u{1}claim\0\u{1}submission\0\u{3}session_message_page\0\u{4}\u{6}runtime_start_result\0\u{3}runtime_stop_result\0\u{3}set_model_result\0\u{4}\u{8}announce_peer_result\0\u{3}disconnect_peer_result\0\u{3}remove_member_result\0\u{3}add_workspace_result\0\u{3}remove_workspace_result\0\u{3}fetch_peers_result\0\u{3}fetch_workspaces_result\0\u{3}remote_tool_invoke_result\0\u{3}runtime_command_result\0\u{c}\u{6}\u{1}")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}request_id\0\u{1}success\0\u{1}error\0\u{3}requester_client_id\0\u{3}requester_actor_id\0\u{4}\u{5}session_info\0\u{1}idea\0\u{1}claim\0\u{1}submission\0\u{3}session_message_page\0\u{4}\u{6}runtime_start_result\0\u{3}runtime_stop_result\0\u{3}set_model_result\0\u{4}\u{8}announce_peer_result\0\u{3}disconnect_peer_result\0\u{3}remove_member_result\0\u{3}add_workspace_result\0\u{3}remove_workspace_result\0\u{3}fetch_peers_result\0\u{3}fetch_workspaces_result\0\u{3}remote_tool_invoke_result\0\u{3}runtime_command_result\0\u{3}agent_capability_management_result\0\u{c}\u{6}\u{1}")
 
   fileprivate class _StorageClass {
     var _requestID: String = String()
@@ -3027,6 +3294,19 @@ nonisolated extension Teamclu_RpcResponse: SwiftProtobuf.Message, SwiftProtobuf.
             _storage._result = .runtimeCommandResult(v)
           }
         }()
+        case 39: try {
+          var v: Teamclu_AgentCapabilityManagementResult?
+          var hadOneofValue = false
+          if let current = _storage._result {
+            hadOneofValue = true
+            if case .agentCapabilityManagementResult(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._result = .agentCapabilityManagementResult(v)
+          }
+        }()
         default: break
         }
       }
@@ -3123,6 +3403,10 @@ nonisolated extension Teamclu_RpcResponse: SwiftProtobuf.Message, SwiftProtobuf.
         guard case .runtimeCommandResult(let v)? = _storage._result else { preconditionFailure() }
         try visitor.visitSingularMessageField(value: v, fieldNumber: 38)
       }()
+      case .agentCapabilityManagementResult?: try {
+        guard case .agentCapabilityManagementResult(let v)? = _storage._result else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 39)
+      }()
       case nil: break
       }
     }
@@ -3144,6 +3428,310 @@ nonisolated extension Teamclu_RpcResponse: SwiftProtobuf.Message, SwiftProtobuf.
       }
       if !storagesAreEqual {return false}
     }
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Teamclu_AgentCapabilityManagementRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".AgentCapabilityManagementRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}management_grant\0\u{1}kind\0\u{1}action\0\u{3}item_id\0\u{1}version\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.managementGrant) }()
+      case 2: try { try decoder.decodeSingularEnumField(value: &self.kind) }()
+      case 3: try { try decoder.decodeSingularEnumField(value: &self.action) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.itemID) }()
+      case 5: try { try decoder.decodeSingularInt64Field(value: &self.version) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.managementGrant.isEmpty {
+      try visitor.visitSingularStringField(value: self.managementGrant, fieldNumber: 1)
+    }
+    if self.kind != .unspecified {
+      try visitor.visitSingularEnumField(value: self.kind, fieldNumber: 2)
+    }
+    if self.action != .unspecified {
+      try visitor.visitSingularEnumField(value: self.action, fieldNumber: 3)
+    }
+    if !self.itemID.isEmpty {
+      try visitor.visitSingularStringField(value: self.itemID, fieldNumber: 4)
+    }
+    if self.version != 0 {
+      try visitor.visitSingularInt64Field(value: self.version, fieldNumber: 5)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Teamclu_AgentCapabilityManagementRequest, rhs: Teamclu_AgentCapabilityManagementRequest) -> Bool {
+    if lhs.managementGrant != rhs.managementGrant {return false}
+    if lhs.kind != rhs.kind {return false}
+    if lhs.action != rhs.action {return false}
+    if lhs.itemID != rhs.itemID {return false}
+    if lhs.version != rhs.version {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Teamclu_AgentManagementCapabilities: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".AgentManagementCapabilities"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}protocol_version\0\u{3}skill_actions\0\u{3}mcp_actions\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.protocolVersion) }()
+      case 2: try { try decoder.decodeRepeatedEnumField(value: &self.skillActions) }()
+      case 3: try { try decoder.decodeRepeatedEnumField(value: &self.mcpActions) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.protocolVersion != 0 {
+      try visitor.visitSingularUInt32Field(value: self.protocolVersion, fieldNumber: 1)
+    }
+    if !self.skillActions.isEmpty {
+      try visitor.visitPackedEnumField(value: self.skillActions, fieldNumber: 2)
+    }
+    if !self.mcpActions.isEmpty {
+      try visitor.visitPackedEnumField(value: self.mcpActions, fieldNumber: 3)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Teamclu_AgentManagementCapabilities, rhs: Teamclu_AgentManagementCapabilities) -> Bool {
+    if lhs.protocolVersion != rhs.protocolVersion {return false}
+    if lhs.skillActions != rhs.skillActions {return false}
+    if lhs.mcpActions != rhs.mcpActions {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Teamclu_AgentSkillInventoryItem: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".AgentSkillInventoryItem"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}name\0\u{1}source\0\u{1}version\0\u{3}team_item\0\u{3}read_only\0\u{1}health\0\u{3}error_code\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.id) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.name) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.source) }()
+      case 4: try { try decoder.decodeSingularInt64Field(value: &self.version) }()
+      case 5: try { try decoder.decodeSingularBoolField(value: &self.teamItem) }()
+      case 6: try { try decoder.decodeSingularBoolField(value: &self.readOnly) }()
+      case 7: try { try decoder.decodeSingularStringField(value: &self.health) }()
+      case 8: try { try decoder.decodeSingularStringField(value: &self.errorCode) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.id.isEmpty {
+      try visitor.visitSingularStringField(value: self.id, fieldNumber: 1)
+    }
+    if !self.name.isEmpty {
+      try visitor.visitSingularStringField(value: self.name, fieldNumber: 2)
+    }
+    if !self.source.isEmpty {
+      try visitor.visitSingularStringField(value: self.source, fieldNumber: 3)
+    }
+    if self.version != 0 {
+      try visitor.visitSingularInt64Field(value: self.version, fieldNumber: 4)
+    }
+    if self.teamItem != false {
+      try visitor.visitSingularBoolField(value: self.teamItem, fieldNumber: 5)
+    }
+    if self.readOnly != false {
+      try visitor.visitSingularBoolField(value: self.readOnly, fieldNumber: 6)
+    }
+    if !self.health.isEmpty {
+      try visitor.visitSingularStringField(value: self.health, fieldNumber: 7)
+    }
+    if !self.errorCode.isEmpty {
+      try visitor.visitSingularStringField(value: self.errorCode, fieldNumber: 8)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Teamclu_AgentSkillInventoryItem, rhs: Teamclu_AgentSkillInventoryItem) -> Bool {
+    if lhs.id != rhs.id {return false}
+    if lhs.name != rhs.name {return false}
+    if lhs.source != rhs.source {return false}
+    if lhs.version != rhs.version {return false}
+    if lhs.teamItem != rhs.teamItem {return false}
+    if lhs.readOnly != rhs.readOnly {return false}
+    if lhs.health != rhs.health {return false}
+    if lhs.errorCode != rhs.errorCode {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Teamclu_AgentMcpInventoryItem: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".AgentMcpInventoryItem"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}name\0\u{1}source\0\u{1}transport\0\u{3}command_or_url\0\u{3}config_status\0\u{3}runtime_status\0\u{3}configured_env_keys\0\u{3}missing_env_keys\0\u{3}configured_header_keys\0\u{3}missing_header_keys\0\u{3}error_code\0\u{3}sanitized_error\0\u{3}read_only\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.id) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.name) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.source) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.transport) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.commandOrURL) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.configStatus) }()
+      case 7: try { try decoder.decodeSingularStringField(value: &self.runtimeStatus) }()
+      case 8: try { try decoder.decodeRepeatedStringField(value: &self.configuredEnvKeys) }()
+      case 9: try { try decoder.decodeRepeatedStringField(value: &self.missingEnvKeys) }()
+      case 10: try { try decoder.decodeRepeatedStringField(value: &self.configuredHeaderKeys) }()
+      case 11: try { try decoder.decodeRepeatedStringField(value: &self.missingHeaderKeys) }()
+      case 12: try { try decoder.decodeSingularStringField(value: &self.errorCode) }()
+      case 13: try { try decoder.decodeSingularStringField(value: &self.sanitizedError) }()
+      case 14: try { try decoder.decodeSingularBoolField(value: &self.readOnly) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.id.isEmpty {
+      try visitor.visitSingularStringField(value: self.id, fieldNumber: 1)
+    }
+    if !self.name.isEmpty {
+      try visitor.visitSingularStringField(value: self.name, fieldNumber: 2)
+    }
+    if !self.source.isEmpty {
+      try visitor.visitSingularStringField(value: self.source, fieldNumber: 3)
+    }
+    if !self.transport.isEmpty {
+      try visitor.visitSingularStringField(value: self.transport, fieldNumber: 4)
+    }
+    if !self.commandOrURL.isEmpty {
+      try visitor.visitSingularStringField(value: self.commandOrURL, fieldNumber: 5)
+    }
+    if !self.configStatus.isEmpty {
+      try visitor.visitSingularStringField(value: self.configStatus, fieldNumber: 6)
+    }
+    if !self.runtimeStatus.isEmpty {
+      try visitor.visitSingularStringField(value: self.runtimeStatus, fieldNumber: 7)
+    }
+    if !self.configuredEnvKeys.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.configuredEnvKeys, fieldNumber: 8)
+    }
+    if !self.missingEnvKeys.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.missingEnvKeys, fieldNumber: 9)
+    }
+    if !self.configuredHeaderKeys.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.configuredHeaderKeys, fieldNumber: 10)
+    }
+    if !self.missingHeaderKeys.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.missingHeaderKeys, fieldNumber: 11)
+    }
+    if !self.errorCode.isEmpty {
+      try visitor.visitSingularStringField(value: self.errorCode, fieldNumber: 12)
+    }
+    if !self.sanitizedError.isEmpty {
+      try visitor.visitSingularStringField(value: self.sanitizedError, fieldNumber: 13)
+    }
+    if self.readOnly != false {
+      try visitor.visitSingularBoolField(value: self.readOnly, fieldNumber: 14)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Teamclu_AgentMcpInventoryItem, rhs: Teamclu_AgentMcpInventoryItem) -> Bool {
+    if lhs.id != rhs.id {return false}
+    if lhs.name != rhs.name {return false}
+    if lhs.source != rhs.source {return false}
+    if lhs.transport != rhs.transport {return false}
+    if lhs.commandOrURL != rhs.commandOrURL {return false}
+    if lhs.configStatus != rhs.configStatus {return false}
+    if lhs.runtimeStatus != rhs.runtimeStatus {return false}
+    if lhs.configuredEnvKeys != rhs.configuredEnvKeys {return false}
+    if lhs.missingEnvKeys != rhs.missingEnvKeys {return false}
+    if lhs.configuredHeaderKeys != rhs.configuredHeaderKeys {return false}
+    if lhs.missingHeaderKeys != rhs.missingHeaderKeys {return false}
+    if lhs.errorCode != rhs.errorCode {return false}
+    if lhs.sanitizedError != rhs.sanitizedError {return false}
+    if lhs.readOnly != rhs.readOnly {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Teamclu_AgentCapabilityManagementResult: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".AgentCapabilityManagementResult"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}capabilities\0\u{1}skills\0\u{3}mcp_servers\0\u{1}status\0\u{3}error_code\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularMessageField(value: &self._capabilities) }()
+      case 2: try { try decoder.decodeRepeatedMessageField(value: &self.skills) }()
+      case 3: try { try decoder.decodeRepeatedMessageField(value: &self.mcpServers) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.status) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.errorCode) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._capabilities {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
+    if !self.skills.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.skills, fieldNumber: 2)
+    }
+    if !self.mcpServers.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.mcpServers, fieldNumber: 3)
+    }
+    if !self.status.isEmpty {
+      try visitor.visitSingularStringField(value: self.status, fieldNumber: 4)
+    }
+    if !self.errorCode.isEmpty {
+      try visitor.visitSingularStringField(value: self.errorCode, fieldNumber: 5)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Teamclu_AgentCapabilityManagementResult, rhs: Teamclu_AgentCapabilityManagementResult) -> Bool {
+    if lhs._capabilities != rhs._capabilities {return false}
+    if lhs.skills != rhs.skills {return false}
+    if lhs.mcpServers != rhs.mcpServers {return false}
+    if lhs.status != rhs.status {return false}
+    if lhs.errorCode != rhs.errorCode {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

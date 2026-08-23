@@ -511,9 +511,17 @@ jobs:
           # save of the Windows target/ dir.
           cache-targets: false
 
+      # arduino/setup-protoc pulls a pinned protoc from GitHub Releases. The
+      # chocolatey package it replaces reported success and still left protoc
+      # off PATH for the amuxd build ("Could not find `protoc`" in run
+      # 32607969228, which passed on retry from the very same commit) — and
+      # because publish-manifest is gated on this job, that flake silently cost
+      # a whole brand its release. Same action the linux amuxd job and ci.yml's
+      # daemon-windows job already use.
       - name: Install protoc (for prost_build)
-        shell: bash
-        run: choco install protoc -y
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       # See build-macos: sync all four version sources + Cargo.lock to the tag and
       # enforce the bundled amuxd bump. Runs after Rust + protoc are available

@@ -6,10 +6,10 @@ import {
   Save,
   Loader2,
   Download,
+  Share2,
   Trash2,
   Archive,
   AlertTriangle,
-  Share2,
   Copy,
   Upload,
 } from 'lucide-react'
@@ -49,6 +49,8 @@ import {
   type TeamSkillVersion,
 } from '@/lib/backend/cloud-api/team-skills'
 import { useIsDark } from './use-is-dark'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
+import { useActorPresenceStore } from '@/stores/actor-presence-store'
 
 type SkillConfirmAction = 'delete' | 'uninstall'
 
@@ -856,14 +858,14 @@ export function SkillDetail({ slug }: { slug: string }) {
   const installSkill = useTeamShareBrowserStore((s) => s.installSkill)
   const uninstallSkill = useTeamShareBrowserStore((s) => s.uninstallSkill)
   const deletePersonalSkill = useTeamShareBrowserStore((s) => s.deletePersonalSkill)
-  const sharePersonalSkill = useTeamShareBrowserStore((s) => s.sharePersonalSkill)
   const publishSkillVersion = useTeamShareBrowserStore((s) => s.publishSkillVersion)
   const discardLocalSkill = useTeamShareBrowserStore((s) => s.discardLocalSkill)
   const restoreDiscardedSkill = useTeamShareBrowserStore((s) => s.restoreDiscardedSkill)
+  const sharePersonalSkill = useTeamShareBrowserStore((s) => s.sharePersonalSkill)
+  const allSkills = useTeamShareBrowserStore((s) => s.skills.items)
   const forkSkill = useTeamShareBrowserStore((s) => s.forkSkill)
   const loadSkillDiff = useTeamShareBrowserStore((s) => s.loadSkillDiff)
   const localState = useTeamShareBrowserStore((s) => s.skillLocalState[slug])
-  const allSkills = useTeamShareBrowserStore((s) => s.skills.items)
   // Derived, not selected: a selector returning a fresh Set re-renders on every
   // store change, since the reference is new each time it runs.
   const registrySlugs = React.useMemo(
@@ -879,6 +881,13 @@ export function SkillDetail({ slug }: { slug: string }) {
   const select = useTeamShareBrowserStore((s) => s.select)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const detachMarketplaceSkill = useTeamShareBrowserStore((s) => s.detachMarketplaceSkill)
+  const subjectActorId = useTeamShareBrowserStore((s) => s.subjectActorId)
+  useActorPresenceStore((s) =>
+    subjectActorId ? s.byActorId[subjectActorId]?.online : undefined,
+  )
+  const agentOffline = subjectActorId
+    ? resolveAgentDevicePresenceSync(subjectActorId) === 'offline'
+    : true
 
   const [content, setContent] = React.useState(item?.content ?? '')
   const [saving, setSaving] = React.useState(false)
@@ -1246,7 +1255,14 @@ export function SkillDetail({ slug }: { slug: string }) {
   const conflicted = localState?.state === 'dirty'
   const isRegistry = item.origin === 'registry'
   const isPersonal = item.kind === 'personal'
+  const isBuiltin = isPersonal && item.personalSource === 'builtin'
+  // `dirPath` is only ever populated when the selected Agent is this machine
+  // (see `localSkillFiles` in the store): a remote Agent's files live on another
+  // disk and the RPC inventory carries neither path nor content. So these two
+  // read as "this Agent is local AND the pack is here", which is exactly the
+  // precondition for editing it and for packing it up to publish.
   const canEdit = Boolean(item.dirPath && item.filename && (item.kind === 'personal' || item.installed))
+  const canShare = isPersonal && Boolean(item.dirPath && item.filename)
   const latestChangelog = [...versions].sort((a, b) => b.version - a.version)[0]?.changelog
   // Any team member can publish and revert: the registry is team property, and
   // the gate on a new version is the required fields, not an approver. `owner`
@@ -1331,7 +1347,7 @@ export function SkillDetail({ slug }: { slug: string }) {
           <Button
             type="button"
             onClick={() => void runInstall()}
-            disabled={busy || item.status === 'deprecated'}
+            disabled={busy || agentOffline || item.status === 'deprecated'}
             className={cn(
               'h-8 gap-1.5 text-[13px] font-semibold',
               item.status === 'deprecated'
@@ -1380,7 +1396,7 @@ export function SkillDetail({ slug }: { slug: string }) {
               type="button"
               variant="ghost"
               onClick={() => setConfirmAction('uninstall')}
-              disabled={busy}
+              disabled={busy || agentOffline}
               className="h-8 gap-1.5 text-[13px] text-muted-foreground hover:text-foreground"
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -1391,25 +1407,29 @@ export function SkillDetail({ slug }: { slug: string }) {
 
         {isPersonal && (
           <>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setConfirmAction('delete')}
-              disabled={busy}
-              className="h-8 gap-1.5 text-[13px] text-muted-foreground hover:text-foreground"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              {t('teamShare.skillDelete', 'Delete')}
-            </Button>
-            <Button
-              type="button"
-              onClick={() => setShareOpen(true)}
-              disabled={busy}
-              className="h-8 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90"
-            >
-              <Share2 className="h-3.5 w-3.5" />
-              {t('teamShare.skillShare', 'Share')}
-            </Button>
+            {!isBuiltin ? (
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setConfirmAction('delete')}
+                disabled={busy || agentOffline}
+                className="h-8 gap-1.5 text-[13px] text-muted-foreground hover:text-foreground"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {t('teamShare.skillDelete', 'Delete')}
+              </Button>
+            ) : null}
+            {canShare ? (
+              <Button
+                type="button"
+                onClick={() => setShareOpen(true)}
+                disabled={busy}
+                className="h-8 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90"
+              >
+                <Share2 className="h-3.5 w-3.5" />
+                {t('teamShare.skillShare', 'Share')}
+              </Button>
+            ) : null}
           </>
         )}
 
@@ -1561,10 +1581,21 @@ export function SkillDetail({ slug }: { slug: string }) {
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
             <p className="max-w-sm text-[13px] leading-relaxed text-muted-foreground">
-              {t(
-                'teamShare.skillNotInstalledBody',
-                'Install this skill to read and edit its package contents on disk.',
-              )}
+              {/*
+                An installed skill with no local copy is not "not installed" —
+                it is on the selected Agent's disk, which is another machine.
+                Telling that user to install it is a dead end: installing again
+                changes nothing, and the pane stays read-only either way.
+              */}
+              {item.installed || isPersonal
+                ? t(
+                    'teamShare.skillOnRemoteAgentBody',
+                    '这个 Skill 装在所选 Agent 的机器上，远程暂不支持查看和编辑内容。',
+                  )
+                : t(
+                    'teamShare.skillNotInstalledBody',
+                    'Install this skill to read and edit its package contents on disk.',
+                  )}
             </p>
             {latestChangelog && (
               <p className="max-w-md text-[12px] leading-relaxed text-faint">
@@ -1579,7 +1610,7 @@ export function SkillDetail({ slug }: { slug: string }) {
               <Button
                 type="button"
                 onClick={() => void runInstall()}
-                disabled={busy || item.status === 'deprecated'}
+                disabled={busy || agentOffline || item.status === 'deprecated'}
                 className="mt-1 h-8 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90 disabled:opacity-40"
               >
                 {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
@@ -1590,7 +1621,7 @@ export function SkillDetail({ slug }: { slug: string }) {
         )}
       </div>
 
-      {isPersonal && (
+      {canShare && (
         <ShareSheet
           item={item}
           open={shareOpen}

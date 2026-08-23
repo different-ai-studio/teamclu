@@ -151,6 +151,14 @@ pub struct MockState {
     pub team_skills: HashMap<String, Vec<super::TeamSkillRow>>,
     /// `(team_id, slug, version)` writes made by `record_team_skill_install`.
     pub team_skill_installs: Vec<(String, String, i64)>,
+    /// `(team_id, slug)` removals made by `remove_team_skill_install`.
+    pub team_skill_uninstalls: Vec<(String, String)>,
+    /// `(grant, scope, requester_actor_id, request_id)` tuples that reached
+    /// `verify_agent_management_grant`, so a test can assert the daemon
+    /// authorized before it mutated anything.
+    pub agent_management_verifications: Vec<(String, String, String, String)>,
+    /// When set, `verify_agent_management_grant` rejects with this message.
+    pub agent_management_grant_error: Option<String>,
     /// Per-agent `get_agent_defaults` overrides. Missing entries fall back to
     /// `AgentDefaults::default()` (all `None`).
     pub agent_defaults: HashMap<String, AgentDefaults>,
@@ -270,6 +278,46 @@ impl Backend for MockBackend {
             row.installed_version = Some(version);
         }
         Ok(())
+    }
+
+    async fn remove_team_skill_install(&self, team_id: &str, slug: &str) -> BackendResult<()> {
+        let mut state = self.state.lock().unwrap();
+        state
+            .team_skill_uninstalls
+            .push((team_id.to_string(), slug.to_string()));
+        if let Some(row) = state
+            .team_skills
+            .get_mut(team_id)
+            .and_then(|rows| rows.iter_mut().find(|row| row.slug == slug))
+        {
+            row.installed = false;
+            row.installed_version = None;
+        }
+        Ok(())
+    }
+
+    async fn verify_agent_management_grant(
+        &self,
+        grant: &str,
+        scope: &str,
+        requester_actor_id: &str,
+        request_id: &str,
+    ) -> BackendResult<()> {
+        let mut state = self.state.lock().unwrap();
+        state.agent_management_verifications.push((
+            grant.to_string(),
+            scope.to_string(),
+            requester_actor_id.to_string(),
+            request_id.to_string(),
+        ));
+        match state.agent_management_grant_error.clone() {
+            Some(message) => Err(BackendError::Provider {
+                provider: "mock",
+                code: Some("invalid_agent_management_grant".into()),
+                message,
+            }),
+            None => Ok(()),
+        }
     }
 
     async fn get_effective_default_agent(&self, _team_id: &str) -> BackendResult<Option<String>> {

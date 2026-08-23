@@ -184,6 +184,7 @@ message RpcRequest {
     FetchWorkspacesRequest fetch_workspaces = 46;
     RemoteToolInvokeRequest remote_tool_invoke = 47;
     RuntimeCommandRequest runtime_command = 48;
+    AgentCapabilityManagementRequest agent_capability_management = 49;
   }
 }
 
@@ -248,7 +249,75 @@ message RpcResponse {
     FetchWorkspacesResult fetch_workspaces_result = 36;
     RemoteToolInvokeResult remote_tool_invoke_result = 37;
     RuntimeCommandResult runtime_command_result = 38;
+    AgentCapabilityManagementResult agent_capability_management_result = 39;
   }
+}
+
+enum AgentCapabilityKind {
+  AGENT_CAPABILITY_KIND_UNSPECIFIED = 0;
+  AGENT_SKILL = 1;
+  AGENT_MCP = 2;
+}
+
+enum AgentCapabilityAction {
+  AGENT_CAPABILITY_ACTION_UNSPECIFIED = 0;
+  GET_CAPABILITIES = 1;
+  LIST_INVENTORY = 2;
+  INSTALL_TEAM_ITEM = 3;
+  UNINSTALL_TEAM_ITEM = 4;
+  RETRY_ITEM = 5;
+  REMOVE_PERSONAL_SKILL = 6;
+}
+
+message AgentCapabilityManagementRequest {
+  string management_grant = 1;
+  AgentCapabilityKind kind = 2;
+  AgentCapabilityAction action = 3;
+  // Stable registry slug/name. Never a filesystem path.
+  string item_id = 4;
+  int64 version = 5;
+}
+
+message AgentManagementCapabilities {
+  uint32 protocol_version = 1;
+  repeated AgentCapabilityAction skill_actions = 2;
+  repeated AgentCapabilityAction mcp_actions = 3;
+}
+
+message AgentSkillInventoryItem {
+  string id = 1;
+  string name = 2;
+  string source = 3; // builtin | personal | team
+  int64 version = 4;
+  bool team_item = 5;
+  bool read_only = 6;
+  string health = 7; // installed | drift | failed
+  string error_code = 8;
+}
+
+message AgentMcpInventoryItem {
+  string id = 1;
+  string name = 2;
+  string source = 3;
+  string transport = 4;
+  string command_or_url = 5;
+  string config_status = 6;
+  string runtime_status = 7;
+  repeated string configured_env_keys = 8;
+  repeated string missing_env_keys = 9;
+  repeated string configured_header_keys = 10;
+  repeated string missing_header_keys = 11;
+  string error_code = 12;
+  string sanitized_error = 13;
+  bool read_only = 14;
+}
+
+message AgentCapabilityManagementResult {
+  AgentManagementCapabilities capabilities = 1;
+  repeated AgentSkillInventoryItem skills = 2;
+  repeated AgentMcpInventoryItem mcp_servers = 3;
+  string status = 4;
+  string error_code = 5;
 }
 
 message RemoteToolInvokeResult {

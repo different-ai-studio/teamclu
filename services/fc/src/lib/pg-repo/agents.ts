@@ -46,6 +46,31 @@ interface AgentsCtx {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function makeAgentsRepo(db: DbLike, ctx: AgentsCtx = {}) {
   return {
+    async resolveCallerActorForTeam(teamId: string) {
+      const id = ctx.callerActorId ?? (ctx.userId ? await resolveActorForTeam(db, ctx.userId, teamId) : undefined);
+      return id ? { id } : null;
+    },
+
+    async authorizeAgentManagement(agentId: string, teamId: string) {
+      if (!teamId) throw new ApiError(400, "validation_failed", "teamId is required");
+      const [target] = await db
+        .select({ teamId: actors.teamId, ownerMemberId: agents.ownerMemberId })
+        .from(agents)
+        .innerJoin(actors, eq(actors.id, agents.id))
+        .where(eq(agents.id, agentId))
+        .limit(1);
+      // Scoped to the team the caller named, so this cannot be used to probe
+      // agent ids in teams the caller is not a member of.
+      if (!target || target.teamId !== teamId) throw new ApiError(404, "not_found", "agent not found");
+      const requesterActorId = ctx.callerActorId ?? (ctx.userId ? await resolveActorForTeam(db, ctx.userId, target.teamId) : undefined);
+      if (!requesterActorId) throw new ApiError(403, "forbidden", "team membership required");
+      const role = await authzCheckAgentPermission(db, requesterActorId, agentId);
+      if (target.ownerMemberId !== requesterActorId && role !== "admin") {
+        throw new ApiError(403, "forbidden", "agent owner or admin access required");
+      }
+      return { teamId: target.teamId, requesterActorId };
+    },
+
     /**
      * Idempotent per (team, device): returns the caller-owned agent already bound
      * to this machine in this team, creating it when absent, plus a one-shot
@@ -218,12 +243,31 @@ export function makeAgentsRepo(db: DbLike, ctx: AgentsCtx = {}) {
         .where(eq(actors.teamId, teamId));
 
       const callerActorId = ctx.callerActorId ?? (ctx.userId ? await resolveActorForTeam(db, ctx.userId, teamId) ?? undefined : undefined);
+      const permissionByAgent = new Map<string, string>();
+      if (callerActorId && rows.length > 0) {
+        const accessRows = await db
+          .select({
+            agentId: agentMemberAccess.agentId,
+            permissionLevel: agentMemberAccess.permissionLevel,
+          })
+          .from(agentMemberAccess)
+          .where(
+            and(
+              eq(agentMemberAccess.memberId, callerActorId),
+              inArray(agentMemberAccess.agentId, rows.map((row) => row.id)),
+            ),
+          );
+        for (const access of accessRows) {
+          permissionByAgent.set(access.agentId, access.permissionLevel);
+        }
+      }
       const items = rows
         .filter((r) => isListableAgentStatus(r.status))
         .filter(
           (r) =>
             r.visibility === "team" ||
-            (callerActorId && r.ownerMemberId === callerActorId),
+            (callerActorId && r.ownerMemberId === callerActorId) ||
+            permissionByAgent.has(r.id),
         )
         .map((r) => ({
           id: r.id,
@@ -232,7 +276,7 @@ export function makeAgentsRepo(db: DbLike, ctx: AgentsCtx = {}) {
           displayName: r.displayName,
           avatarUrl: r.avatarUrl ?? null,
           agentKind: r.agentKind,
-          status: r.status ?? null,
+          agentStatus: r.status ?? null,
           visibility: r.visibility ?? null,
           ownerMemberId: r.ownerMemberId ?? null,
           isOwner: callerActorId ? r.ownerMemberId === callerActorId : false,
@@ -240,7 +284,7 @@ export function makeAgentsRepo(db: DbLike, ctx: AgentsCtx = {}) {
           defaultAgentType: r.defaultAgentType ?? null,
           defaultWorkspaceId: r.defaultWorkspaceId ?? null,
           agentId: r.id,
-          permissionLevel: null,
+          permissionLevel: permissionByAgent.get(r.id) ?? null,
           createdAt: iso(r.createdAt),
           updatedAt: iso(r.updatedAt),
         }));

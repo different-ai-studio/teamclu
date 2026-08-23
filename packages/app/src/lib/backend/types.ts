@@ -693,6 +693,24 @@ export interface ActorsBackend {
   getDaemonAgentDirectoryEntry(teamId: string, agentId: string): Promise<ActorDirectoryEntry | null>;
   listConnectedAgents(teamId: string): Promise<ConnectedAgentRow[]>;
   /**
+   * Mint a one-call grant for managing `agentId`. Team-scoped: authorization
+   * resolves the target through the caller's membership in `teamId`, which is
+   * the only lookup that can see a personal Agent reached through an explicit
+   * access grant. `nonce` is the RPC request id the grant may be spent on.
+   */
+  createAgentManagementGrant(
+    agentId: string,
+    teamId: string,
+    scopes: string[],
+  ): Promise<{
+    grant: string;
+    expiresAt: string;
+    nonce: string;
+    requesterActorId: string;
+    targetAgentId: string;
+    scopes: string[];
+  }>;
+  /**
    * This machine's agent in this team, if the caller already owns one. Read-only:
    * the desktop asks this first so it only interrupts the user for a name when
    * the machine is genuinely new to the team.

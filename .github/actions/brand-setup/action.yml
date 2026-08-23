@@ -212,7 +212,20 @@ runs:
             'CDN_BASE': cdn_base.rstrip('/'),
             # Empty => bucket is served straight from the OSS endpoint with no CDN
             # in front, so there is no edge cache to purge.
-            'CDN_REFRESH_REGION': oss.get('cdnRefreshRegion') or os.environ.get('CDN_REFRESH_REGION_DEFAULT', ''),
+            #
+            # A brand that DECLARES the key owns the answer, even when the answer
+            # is null/"" ("I have no CDN"). Only a brand that omits it entirely
+            # inherits the repo-level default. `or` could not tell those apart:
+            # it treats an explicit null as absent, so copilot361 — which is
+            # served straight from OSS and declares cdnRefreshRegion: null —
+            # silently inherited the default the moment one was set, and its
+            # release then failed on `InvalidDomain.NotFound` trying to purge a
+            # domain that is not a CDN domain at all.
+            'CDN_REFRESH_REGION': (
+                (oss.get('cdnRefreshRegion') or '')
+                if 'cdnRefreshRegion' in oss
+                else os.environ.get('CDN_REFRESH_REGION_DEFAULT', '')
+            ),
             'BRAND_MAC_EXTRA_ARGS': (meta.get('build') or {}).get('macExtraArgs') or '',
         }
         with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:

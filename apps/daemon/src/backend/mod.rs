@@ -334,6 +334,12 @@ pub trait Backend: Send + Sync {
         Ok(())
     }
 
+    /// Drop the desired-state record so the reconciler stops reinstalling the
+    /// pack. Required, not defaulted: a defaulted `Ok(())` here is a silent
+    /// no-op that reports a successful uninstall while the server still says
+    /// installed, so the next reconcile puts the pack straight back.
+    async fn remove_team_skill_install(&self, team_id: &str, slug: &str) -> BackendResult<()>;
+
     /// Idempotently ensure the caller's LiteLLM member key is provisioned via
     /// `POST /v1/teams/:id/litellm/member-key`. The key value itself is
     /// deterministic (`sk-tc-{actor_id[..40]}`) and derived locally; this call
@@ -659,6 +665,28 @@ pub trait Backend: Send + Sync {
         &self,
         agent_actor_id: &str,
     ) -> BackendResult<Vec<String>>;
+
+    /// Ask Cloud API to validate a short-lived management grant. The Cloud
+    /// caller is this daemon's own Agent identity, so the server can also prove
+    /// the verifier is the grant's target instead of trusting the RPC payload.
+    ///
+    /// `request_id` is part of what is verified: a grant is minted for exactly
+    /// one RPC request id, so a captured grant cannot be spent on a second
+    /// call — the repeat lands on the id the Agent has already answered.
+    ///
+    /// Required, not defaulted. This method sits on the authorization path for
+    /// every capability-management RPC, and `DeferredBackend` — the wrapper the
+    /// daemon actually runs — forwards the trait method by method, by hand. A
+    /// defaulted "unsupported" body there compiles clean and then rejects every
+    /// request at runtime with an error that reads like a version mismatch.
+    /// Leaving it required turns a forgotten forward into a compile error.
+    async fn verify_agent_management_grant(
+        &self,
+        grant: &str,
+        scope: &str,
+        requester_actor_id: &str,
+        request_id: &str,
+    ) -> BackendResult<()>;
 
     /// Update a session's title. Default is a no-op so test doubles and
     /// backends without session storage don't have to care.

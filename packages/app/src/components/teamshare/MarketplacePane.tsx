@@ -7,6 +7,7 @@ import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
 import { getBackend } from '@/lib/backend/provider'
 import {
   TEAM_SKILL_CATEGORIES,
+  type TeamSkill,
   type TeamSkillCategory,
 } from '@/lib/backend/cloud-api/team-skills'
 import type {
@@ -23,6 +24,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
+import { useActorPresenceStore } from '@/stores/actor-presence-store'
 
 const CACHE_KEY = 'teamclu.marketplace.catalog.v1'
 
@@ -51,14 +54,44 @@ export function MarketplacePane({ slug }: { slug?: string }) {
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const adoptMarketplaceSkill = useTeamShareBrowserStore((s) => s.adoptMarketplaceSkill)
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
+  const installSkill = useTeamShareBrowserStore((s) => s.installSkill)
+  const subjectActorId = useTeamShareBrowserStore((s) => s.subjectActorId)
+  const installedSkills = useTeamShareBrowserStore((s) => s.skills.items)
+  useActorPresenceStore((s) =>
+    subjectActorId ? s.byActorId[subjectActorId]?.online : undefined,
+  )
+  const agentOffline = subjectActorId
+    ? resolveAgentDevicePresenceSync(subjectActorId) === 'offline'
+    : false
 
+  const [market, setMarket] = React.useState<'team' | 'public'>('team')
   const [items, setItems] = React.useState<MarketplaceSkill[]>(() => readCache())
+  const [teamItems, setTeamItems] = React.useState<TeamSkill[]>([])
   const [offline, setOffline] = React.useState(false)
   const [loading, setLoading] = React.useState(true)
   const [q, setQ] = React.useState('')
+  const [teamQ, setTeamQ] = React.useState('')
   const [category, setCategory] = React.useState<TeamSkillCategory | 'all'>('all')
   const [detail, setDetail] = React.useState<MarketplaceSkillDetail | null>(null)
   const [adopting, setAdopting] = React.useState(false)
+  const [installing, setInstalling] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    if (!teamId || market !== 'team') return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const list = await getBackend().teamSkills.listTeamSkills(
+          teamId,
+          subjectActorId ? { actorId: subjectActorId } : {},
+        )
+        if (!cancelled) setTeamItems(list)
+      } catch (error) {
+        if (!cancelled) toast.error(error instanceof Error ? error.message : String(error))
+      }
+    })()
+    return () => { cancelled = true }
+  }, [teamId, subjectActorId, market])
 
   /**
    * `items.length` used to sit in this callback's deps while the body calls
@@ -92,11 +125,12 @@ export function MarketplacePane({ slug }: { slug?: string }) {
   // per keystroke is not free. Category and team changes go through the same
   // timer — a 250ms delay on a dropdown is imperceptible and keeps one path.
   React.useEffect(() => {
+    if (market !== 'public') return
     const timer = setTimeout(() => {
       void reload(q, category)
     }, 250)
     return () => clearTimeout(timer)
-  }, [q, category, reload])
+  }, [q, category, reload, market])
 
   React.useEffect(() => {
     if (!slug) {
@@ -258,16 +292,32 @@ export function MarketplacePane({ slug }: { slug?: string }) {
             ) : null}
           </div>
         </div>
+        <div className="flex rounded-lg bg-panel p-0.5 text-[12px]">
+          <button
+            type="button"
+            className={cn('rounded-md px-3 py-1.5', market === 'team' && 'bg-paper text-foreground')}
+            onClick={() => setMarket('team')}
+          >
+            {t('teamShare.marketTeam', '团队')}
+          </button>
+          <button
+            type="button"
+            className={cn('rounded-md px-3 py-1.5', market === 'public' && 'bg-paper text-foreground')}
+            onClick={() => setMarket('public')}
+          >
+            {t('teamShare.marketPublic', '公共')}
+          </button>
+        </div>
         <div className="relative w-40">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
           <Input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
+            value={market === 'team' ? teamQ : q}
+            onChange={(e) => market === 'team' ? setTeamQ(e.target.value) : setQ(e.target.value)}
             className="h-8 pl-7 text-[12.5px]"
             placeholder={t('common.search', '搜索')}
           />
         </div>
-        <Select
+        {market === 'public' && <Select
           value={category}
           onValueChange={(v) => setCategory(v as TeamSkillCategory | 'all')}
         >
@@ -282,11 +332,54 @@ export function MarketplacePane({ slug }: { slug?: string }) {
               </SelectItem>
             ))}
           </SelectContent>
-        </Select>
+        </Select>}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-        {loading && !items.length ? (
+        {market === 'team' ? (
+          <ul className="space-y-1">
+            {teamItems
+              .filter((item) => !teamQ.trim() || `${item.slug} ${item.summary ?? ''}`.toLowerCase().includes(teamQ.trim().toLowerCase()))
+              .map((item) => {
+                const installed = installedSkills.some(
+                  (actual) => actual.slug === item.slug && actual.installed,
+                )
+                return (
+                  <li key={item.slug} className="flex items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-selected">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[13px] font-semibold text-foreground">{item.slug}</div>
+                      <div className="line-clamp-1 text-[12px] text-muted-foreground">{item.summary}</div>
+                    </div>
+                    {installed ? (
+                      <span className="inline-flex items-center gap-1 text-[11.5px] text-muted-foreground">
+                        <Check className="h-3.5 w-3.5" />{t('teamShare.skillInstalled', '已安装')}
+                      </span>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-[12px]"
+                        disabled={!subjectActorId || agentOffline || installing === item.slug}
+                        onClick={() => void (async () => {
+                          setInstalling(item.slug)
+                          try { await installSkill(item.slug) }
+                          catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
+                          finally { setInstalling(null) }
+                        })()}
+                      >
+                        {!subjectActorId
+                          ? t('teamShare.selectAgentFirst', '先选择 Agent')
+                          : agentOffline
+                            ? t('common.offline', '离线')
+                            : t('teamShare.installToAgent', '安装到 Agent')}
+                      </Button>
+                    )}
+                  </li>
+                )
+              })}
+          </ul>
+        ) : loading && !items.length ? (
           <div className="flex justify-center py-10 text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>

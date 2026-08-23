@@ -10,6 +10,7 @@ mod roles;
 mod send;
 mod session;
 mod sync;
+mod team_skills;
 
 use clap::Parser;
 use serde_json::{json, Value};
@@ -368,6 +369,19 @@ fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "manage_team_skills",
+            "description": "List the team's Skills catalog, or install/uninstall a team Skill for this Agent only. Cannot target another Actor and cannot manage MCP servers.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["list", "install", "uninstall"] },
+                    "slug": { "type": "string", "description": "Required for install/uninstall." },
+                    "version": { "type": "integer", "minimum": 1, "description": "Required for install." }
+                },
+                "required": ["action"]
+            }
+        },
+        {
             "name": "archive_session",
             "description": "Archive a TeamClu cloud session (soft-hide from the active session list). Requires the desktop app to be running and the user to be signed in. When session_id is omitted, archives the current TeamClu session (TEAMCLU_SESSION_ID env or workspace .teamclu/active-session-id).",
             "inputSchema": {
@@ -562,6 +576,13 @@ async fn handle_request(req: &Value, workspace: &str, api_port: u16) -> Option<V
                         Err(e) => tool_err(&e),
                     }
                 }
+                "manage_team_skills" => match team_skills::handle(api_port, &arguments).await {
+                    Ok(v) => {
+                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+                        tool_ok(&text)
+                    }
+                    Err(e) => tool_err(&e),
+                },
                 "archive_session" => {
                     match session::archive(workspace, api_port, &arguments).await {
                         Ok(v) => {
