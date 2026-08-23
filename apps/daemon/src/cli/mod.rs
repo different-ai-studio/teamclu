@@ -5,11 +5,11 @@ pub mod cursor_permission_hook;
 pub mod doctor;
 pub mod install_opencode;
 pub mod manage;
-pub mod mcp_server;
 pub mod process;
 pub mod remote_tools_mcp;
 pub mod service;
 pub mod setup;
+pub mod sock;
 pub mod team_secrets;
 pub mod test_client;
 
@@ -107,12 +107,6 @@ pub enum Commands {
     InstallService,
     /// Stop and remove the amuxd background service.
     UninstallService,
-    /// Run the MCP (Model Context Protocol) server on stdio. Spawned by
-    /// claude-code via `--mcp-config`; bridges tool calls to amuxd over
-    /// `amuxd.sock`. Exposes a single `send` tool that lets the agent
-    /// proactively send messages/files to the gateway chat its session is
-    /// bound to.
-    McpServer(McpServerArgs),
     /// Run the remote-tools MCP server on stdio. Proxies browser/client tools
     /// to the bound TeamClu client over MQTT RPC.
     RemoteToolsMcp(RemoteToolsMcpArgs),
@@ -194,25 +188,6 @@ pub enum TeamSecretsAction {
         #[arg(long)]
         force: bool,
     },
-}
-
-#[derive(Args, Debug)]
-pub struct McpServerArgs {
-    /// Deprecated, ignored. The server is registered once per workspace now,
-    /// so it has no session of its own; `send` takes its destination from the
-    /// caller's `reply_token`. Still accepted because a worktree config
-    /// written by an older build passes it, and clap would otherwise abort.
-    #[arg(long, default_value = "")]
-    pub session_id: String,
-    /// Deprecated, ignored — see `session_id`. Routing used to come from this
-    /// binding URI; it now comes from `reply_token`, which is what lets a
-    /// session that somebody else attached still reply.
-    #[arg(long, default_value = "")]
-    pub binding: String,
-    /// Override path to `amuxd.sock`. Defaults to
-    /// `DaemonConfig::sock_path()` (`~/.amuxd/amuxd.sock`).
-    #[arg(long)]
-    pub sock: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]

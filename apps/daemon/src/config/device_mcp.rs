@@ -1,9 +1,8 @@
 //! Device-level MCP servers — `~/.amuxd/mcp.json`.
 //!
-//! These five servers are identical for every workspace on the machine:
-//! `amuxd-send` (this daemon's own socket), `teamclu-introspect` (the bundled
-//! sidecar), `playwright`, `chrome-control` and `autoui` (all `npx` tools).
-//! They used to be materialized into every
+//! These four servers are identical for every workspace on the machine:
+//! `teamclu-introspect` (the bundled sidecar), `playwright`, `chrome-control`
+//! and `autoui` (all `npx` tools). They used to be materialized into every
 //! `<workspace>/opencode.json`, which meant N copies of the same thing, each
 //! carrying **this** machine's absolute binary paths — so opening the same repo
 //! on another machine rewrote the file, and a committed copy churned forever.
@@ -34,12 +33,20 @@ use super::workspace_control::{McpServerConfig, WorkspaceControlError};
 /// Inherent servers that live at device scope. Order is irrelevant; membership
 /// is what `team_mcp` uses to keep them out of workspace configs.
 pub const DEVICE_MCP_NAMES: &[&str] = &[
-    "amuxd-send",
     "teamclu-introspect",
     "playwright",
     "chrome-control",
     "autoui",
 ];
+
+/// `amuxd-send` was a second daemon MCP server whose only tool, `send`, is now
+/// `send_channel_message`'s `reply_token` branch inside `teamclu-introspect`.
+/// Two servers and two send tools in front of the model did one job.
+///
+/// Kept as a name so existing device files lose the entry instead of keeping a
+/// server nothing spawns any more. Workspace copies are cleaned by
+/// `LEGACY_MCP_NAMES` in `runtime::supervisor`.
+pub const RETIRED_DEVICE_MCP_NAMES: &[&str] = &["amuxd-send"];
 
 pub fn is_device_scoped(name: &str) -> bool {
     DEVICE_MCP_NAMES.contains(&name)
@@ -93,23 +100,6 @@ fn write_raw(
     })
 }
 
-/// This daemon's `send` bridge. Rebuilt rather than remembered: the binary path
-/// changes with every reinstall and the socket path with `$AMUXD_HOME`.
-fn send_mcp_config() -> Result<serde_json::Value, WorkspaceControlError> {
-    let amuxd_bin =
-        std::env::current_exe().map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-    let sock = super::DaemonConfig::sock_path();
-    Ok(serde_json::json!({
-        "type": "local",
-        "enabled": true,
-        "command": [
-            amuxd_bin.to_string_lossy(),
-            "mcp-server",
-            format!("--sock={}", sock.to_string_lossy())
-        ]
-    }))
-}
-
 /// `teamclu-introspect`, the bundled sidecar.
 ///
 /// It was the last of the inherent servers still written per workspace, and the
@@ -124,13 +114,18 @@ fn send_mcp_config() -> Result<serde_json::Value, WorkspaceControlError> {
 /// the MCP panel on a machine that has the sidecar installed.
 fn introspect_mcp_config() -> Option<serde_json::Value> {
     let binary = crate::runtime::supervisor::resolve_introspect_binary()?;
+    let sock = super::DaemonConfig::sock_path();
     Some(serde_json::json!({
         "type": "local",
         "enabled": true,
         "command": [
             binary,
             "--api-port",
-            crate::runtime::supervisor::INTROSPECT_API_PORT.to_string()
+            crate::runtime::supervisor::INTROSPECT_API_PORT.to_string(),
+            // `send_channel_message`'s token branch is routed by the daemon, not
+            // by the desktop app on `--api-port`: only the daemon can resolve a
+            // reply token, and an unattended run has no app to ask.
+            format!("--sock={}", sock.to_string_lossy())
         ]
     }))
 }
@@ -145,10 +140,9 @@ fn autoui_environment() -> serde_json::Value {
 
 /// Seed the device servers, non-destructively.
 ///
-/// `amuxd-send` is compared and refreshed (its argv is machine state) and
 /// `teamclu-introspect` is refreshed when its binary path has gone stale — a
 /// reinstall moves the sidecar. The three `npx` bridges are only created when
-/// absent so a user's `enabled` toggle survives.
+/// absent so a user's `enabled` toggle survives. Retired servers are removed.
 /// Returns whether the file changed.
 pub fn ensure_device_mcp() -> Result<bool, WorkspaceControlError> {
     let mut root = read_raw();
@@ -167,10 +161,11 @@ pub fn ensure_device_mcp() -> Result<bool, WorkspaceControlError> {
         .as_object_mut()
         .ok_or_else(|| WorkspaceControlError::Parse("device mcp is not an object".into()))?;
 
-    let send = send_mcp_config()?;
-    if mcp_obj.get("amuxd-send") != Some(&send) {
-        mcp_obj.insert("amuxd-send".to_string(), send);
-        changed = true;
+    for retired in RETIRED_DEVICE_MCP_NAMES {
+        if mcp_obj.remove(*retired).is_some() {
+            tracing::info!(server = retired, "dropping retired device MCP entry");
+            changed = true;
+        }
     }
 
     // Refreshed on a dead path only: a reinstall moves the sidecar, but a user
@@ -311,35 +306,45 @@ mod tests {
     }
 
     #[test]
-    fn seeding_registers_the_send_bridge_for_the_whole_machine() {
-        // The regression this pins is older than the move: `send` used to be
-        // written to a per-session config that only a fresh attach applied, so a
-        // session the desktop had already attached had no send tool. One
-        // registration per machine is what makes it independent of who attached
-        // first — and of which backend runs, since every runtime reads this file.
+    fn a_retired_send_bridge_is_removed_from_an_existing_device_file() {
+        // `amuxd-send` was a second daemon MCP server for one tool. That tool is
+        // `send_channel_message`'s reply_token branch now, and nothing spawns
+        // `amuxd mcp-server` any more — the subcommand is gone — so an entry
+        // left in the file would only ever fail to start.
         with_temp_home(|| {
-            assert!(ensure_device_mcp().unwrap(), "first seed writes");
-            let servers = load_device_mcp();
-            let send = servers.get("amuxd-send").expect("send bridge present");
-            assert_eq!(send.enabled, Some(true));
+            let path = device_mcp_file();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"mcp":{"amuxd-send":{"type":"local","enabled":true,
+                    "command":["/old/amuxd","mcp-server","--sock=/tmp/amuxd.sock"]}}}"#,
+            )
+            .unwrap();
+
             assert!(
-                send.command.iter().any(|arg| arg == "mcp-server"),
-                "got: {:?}",
-                send.command
+                ensure_device_mcp().unwrap(),
+                "the retired entry is a change"
             );
+            assert!(!load_device_mcp().contains_key("amuxd-send"));
         })
     }
 
     #[test]
-    fn the_send_bridge_carries_no_session_identity() {
-        // Baking `--session-id` / `--binding` into argv is what forced the
-        // per-session registration in the first place. The destination now comes
-        // from the caller's reply token, so nothing here may be session-scoped.
+    fn introspect_can_reach_the_daemon_socket() {
+        // Its `reply_token` branch is routed by the daemon, so without a --sock
+        // an unattended run has no way to reply at all: the rest of the sidecar
+        // talks to the desktop app, which is not running at 3am.
         with_temp_home(|| {
             ensure_device_mcp().unwrap();
-            let command = load_device_mcp()["amuxd-send"].command.join(" ");
-            assert!(!command.contains("--session-id"), "got: {command}");
-            assert!(!command.contains("--binding"), "got: {command}");
+            let servers = load_device_mcp();
+            let Some(introspect) = servers.get("teamclu-introspect") else {
+                // The binary is not resolvable on this machine; nothing to assert.
+                return;
+            };
+            let command = introspect.command.join(" ");
+            assert!(command.contains("--sock="), "got: {command}");
+            // The workspace comes from the child's cwd, not from argv.
+            assert!(!command.contains("--workspace"), "got: {command}");
         })
     }
 
@@ -392,7 +397,7 @@ mod tests {
             assert!(load_device_mcp().is_empty());
             // …and the next seed repairs it.
             assert!(ensure_device_mcp().unwrap());
-            assert!(load_device_mcp().contains_key("amuxd-send"));
+            assert!(load_device_mcp().contains_key("chrome-control"));
         })
     }
 }

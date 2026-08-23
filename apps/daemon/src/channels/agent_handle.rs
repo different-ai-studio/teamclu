@@ -130,7 +130,7 @@ pub struct AmuxdAgentHandle {
     /// Backend client used to look up `sessions.binding` from the
     /// SQL-minted `acp_session_id` when lazy-spawning a runtime. The
     /// binding is required to write the per-session MCP config file
-    /// that mounts the `send` tool.
+    /// that mounts the send tool.
     pub backend: Arc<dyn Backend>,
     /// The daemon agent's own `default_agent_type`, resolved once when the
     /// channel manager is built (`GET /v1/runtime/agent-defaults`). Gateway
@@ -699,15 +699,15 @@ explicit target, is also how you reach a DIFFERENT chat.\n\n\
 /// The line that carries the chat's reply token into a turn.
 ///
 /// Repeated on *every* turn rather than only the first: the token is what
-/// gives `send` a destination, and a model that has to reach back many turns
+/// gives the send tool a destination, and a model that has to reach back many turns
 /// for it will sooner or later reach for something else. Repeating a derived
 /// (hence unchanging) value costs a line and removes that failure mode.
 fn reply_channel_note(token: &str) -> String {
     format!(
         "[SYSTEM] Reply token for this chat: {token}\n\
 Pass it as `reply_token` to attach a FILE to your reply, e.g. \
-`send(reply_token=\"{token}\", file_path=\"/tmp/report.pdf\")`. Your text reply \
-needs no tool — it is delivered on its own."
+`send_channel_message(reply_token=\"{token}\", file_path=\"/tmp/report.pdf\")`. \
+Your text reply needs no tool — it is delivered on its own."
     )
 }
 

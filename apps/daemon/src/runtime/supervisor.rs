@@ -20,7 +20,13 @@ const REMOTE_TOOLS_MCP_SERVER_NAME: &str = "amuxd-remote-tools";
 
 /// Inherent MCP servers that older builds wrote into workspace configs under a
 /// name this build no longer maintains. Removed on sight — see the call site.
-const LEGACY_MCP_NAMES: &[&str] = &["teamclaw-introspect"];
+/// Names no runtime should load any more. `teamclaw-introspect` is the
+/// pre-rename sidecar; `amuxd-send` is the retired second daemon MCP server
+/// whose `send` tool now lives in `teamclu-introspect`. Both are removed from
+/// any workspace config that still carries a copy — leaving one means spawning
+/// a server that no longer exists, and under pi a failed bridge spawn used to
+/// take the whole runtime down.
+const LEGACY_MCP_NAMES: &[&str] = &["teamclaw-introspect", "amuxd-send"];
 const INSTRUCTION_PLUGIN_TEMPLATE: &str = include_str!(
     "../../../../packages/app/src/lib/opencode/templates/teamclu-instruction-plugin.mjs.txt"
 );

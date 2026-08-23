@@ -296,13 +296,6 @@ fn main() -> anyhow::Result<()> {
             let path = config::DaemonConfig::default_path();
             cli::config_cmd::run(args, &path)?;
         }
-        Commands::McpServer(args) => {
-            let sock = args
-                .sock
-                .clone()
-                .unwrap_or_else(config::DaemonConfig::sock_path);
-            cli::mcp_server::run(&args.session_id, &args.binding, &sock)?;
-        }
         Commands::RemoteToolsMcp(args) => {
             let sock = args
                 .sock

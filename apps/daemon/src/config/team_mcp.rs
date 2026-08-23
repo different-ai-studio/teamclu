@@ -399,15 +399,14 @@ pub fn prune_device_mcp(workspace: &Path) -> Result<PruneTeamMcpOutcome, Workspa
             for name in &names {
                 if let Some(raw) = mcp_obj.remove(name) {
                     removed_count += 1;
-                    // Only a *user* difference is worth carrying. `amuxd-send`
-                    // and `teamclu-introspect` both bake an absolute binary
-                    // path into their argv, which differs on every reinstall and
-                    // (for introspect) still carries the `--workspace` of the
-                    // workspace it was written in. The device file's copy is the
-                    // fresh one, so never let a stale local copy win — carrying
-                    // one back would reintroduce exactly the pinning that moving
-                    // these to the device layer removes.
-                    if name == "amuxd-send" || name == "teamclu-introspect" {
+                    // Only a *user* difference is worth carrying.
+                    // `teamclu-introspect` bakes an absolute binary path into
+                    // its argv, which differs on every reinstall, and older
+                    // copies still carry the `--workspace` of wherever they were
+                    // written. The device file's copy is the fresh one, so never
+                    // let a stale local copy win — carrying one back would
+                    // reintroduce exactly the pinning the device layer removes.
+                    if name == "teamclu-introspect" {
                         continue;
                     }
                     if let Ok(local) = serde_json::from_value::<McpServerConfig>(raw) {
