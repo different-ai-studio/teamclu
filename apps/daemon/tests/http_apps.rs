@@ -34,6 +34,8 @@ mod opencode_install;
 mod opencode_settings;
 #[path = "../src/pi_install/mod.rs"]
 mod pi_install;
+#[path = "../src/process_util.rs"]
+mod process_util;
 #[path = "../src/proto.rs"]
 mod proto;
 #[path = "../src/provider_config.rs"]
