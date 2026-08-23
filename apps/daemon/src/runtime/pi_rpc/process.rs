@@ -603,18 +603,37 @@ fn resolve_pi_package_root(binary: &Path) -> Option<PathBuf> {
     };
     let resolved = std::fs::canonicalize(&start).ok()?;
     for dir in resolved.ancestors().skip(1) {
-        let package_json = dir.join("package.json");
-        if !package_json.exists() || !dir.join("dist").join("index.js").exists() {
-            continue;
-        }
-        let body = std::fs::read_to_string(&package_json).ok()?;
-        if body.contains("\"@earendil-works/pi-coding-agent\"") {
+        // POSIX: the `pi` shim is a symlink *into* the package, so the package
+        // root is one of its ancestors. A package root that isn't pi's (e.g. a
+        // wrapper package) just keeps the walk going.
+        if is_pi_package_root(dir) {
             return Some(dir.to_path_buf());
         }
-        // A package root that isn't pi's (e.g. a wrapper package) — keep
-        // walking; the real root may sit above a nested bin dir.
+        // Windows: `pi.cmd` is a standalone batch shim, not a link into the
+        // package, so no ancestor is ever the package root — the package sits
+        // in the npm prefix's `node_modules` beside the shim. Without this,
+        // every Windows install silently fell back to single-session
+        // `--mode rpc`.
+        let beside = dir
+            .join("node_modules")
+            .join("@earendil-works")
+            .join("pi-coding-agent");
+        if is_pi_package_root(&beside) {
+            return Some(beside);
+        }
     }
     None
+}
+
+/// Is `dir` the `@earendil-works/pi-coding-agent` package root — i.e. does it
+/// hold the `dist/index.js` the host imports?
+fn is_pi_package_root(dir: &Path) -> bool {
+    if !dir.join("dist").join("index.js").exists() {
+        return false;
+    }
+    std::fs::read_to_string(dir.join("package.json"))
+        .map(|body| body.contains("\"@earendil-works/pi-coding-agent\""))
+        .unwrap_or(false)
 }
 
 /// Resolve the pi binary amuxd should run. Order: explicit daemon config
@@ -627,9 +646,12 @@ pub(crate) fn resolve_binary(configured: Option<&str>) -> String {
     )
 }
 
+/// `~/.pi/bin/pi` — where pi's own installer puts it. Resolved through
+/// `well_known_bin` so Windows probes every executable extension (a pi that
+/// arrived via npm is `pi.cmd`, never `pi.exe`) instead of one guess.
 fn default_bin() -> Option<PathBuf> {
-    let name = if cfg!(windows) { "pi.exe" } else { "pi" };
-    dirs::home_dir().map(|h| h.join(".pi").join("bin").join(name))
+    let dir = dirs::home_dir()?.join(".pi").join("bin");
+    crate::runtime::well_known_bin::find_with("pi", &[dir], &[])
 }
 
 /// `well_known` is a parameter rather than a call to
@@ -870,6 +892,33 @@ mod tests {
                 std::fs::canonicalize(&pkg).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn package_root_found_beside_a_windows_style_shim() {
+        // What `npm install -g` produces on Windows:
+        //   %APPDATA%\npm\pi.cmd                     (a batch shim, no symlink)
+        //   %APPDATA%\npm\node_modules\@earendil-works\pi-coding-agent\
+        // Walking ancestors alone never finds the package here.
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir
+            .path()
+            .join("node_modules/@earendil-works/pi-coding-agent");
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"@earendil-works/pi-coding-agent","version":"0.84.2"}"#,
+        )
+        .unwrap();
+        std::fs::write(pkg.join("dist/index.js"), "").unwrap();
+        let shim = dir.path().join("pi.cmd");
+        std::fs::write(&shim, "@ECHO off\r\n").unwrap();
+
+        let root = resolve_pi_package_root(&shim).expect("package root beside the shim");
+        assert_eq!(
+            std::fs::canonicalize(&root).unwrap(),
+            std::fs::canonicalize(&pkg).unwrap()
+        );
     }
 
     #[test]
