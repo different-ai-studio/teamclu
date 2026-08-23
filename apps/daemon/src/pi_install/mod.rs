@@ -56,10 +56,8 @@ pub fn resolve_binary(configured: Option<&str>) -> String {
 fn pi_version_of(bin: &str) -> Option<String> {
     // PATH augmented: pi installs as an npm shim whose shebang is
     // `#!/usr/bin/env node`, so finding the file is not enough to run it.
-    let out = std::process::Command::new(bin)
-        .no_window()
+    let out = command_with_runtime_path(bin)
         .arg("--version")
-        .env("PATH", crate::runtime::well_known_bin::augmented_path())
         .output()
         .ok()?;
     if !out.status.success() {
@@ -110,10 +108,8 @@ pub struct PiStatus {
 const MIN_NODE_VERSION: &str = "22.19.0";
 
 fn node_version() -> Option<String> {
-    let out = std::process::Command::new("node")
-        .no_window()
+    let out = command_with_runtime_path("node")
         .arg("--version")
-        .env("PATH", crate::runtime::well_known_bin::augmented_path())
         .output()
         .ok()?;
     if !out.status.success() {
@@ -193,8 +189,15 @@ fn npm_package_spec(min_version: &str) -> String {
     format!("{PI_NPM_PKG}@{min_version}")
 }
 
+/// `Command` for a CLI we shell out to, with every platform repair applied:
+/// the enriched PATH, the Windows shim name (`npm` is `npm.cmd` — see
+/// `well_known_bin::spawn_name`), and no console window (#1045).
+///
+/// Routing the version probes through here is why they no longer call
+/// `.no_window()` themselves: one helper, one place to get it right.
 pub(super) fn command_with_runtime_path(command: &str) -> std::process::Command {
-    let mut process = std::process::Command::new(command);
+    let mut process =
+        std::process::Command::new(crate::runtime::well_known_bin::spawn_name(command));
     process.no_window();
     process.env("PATH", crate::runtime::well_known_bin::augmented_path());
     process
@@ -370,7 +373,14 @@ fn ensure_pi(force: bool) -> anyhow::Result<()> {
     }
 
     if !has_command("npm") && !has_command("bun") {
-        anyhow::bail!("neither npm nor bun found; install Node.js or Bun first");
+        // Node was already proved present above, so reaching here with a Node
+        // install means npm is missing from *this process's* PATH rather than
+        // from the machine — say which one to check.
+        anyhow::bail!(
+            "neither npm nor bun found on PATH (node {} is installed); \
+             install Node.js or Bun first, or add npm's directory to PATH",
+            node.as_deref().unwrap_or("?")
+        );
     }
 
     let pkg = npm_package_spec(&want);

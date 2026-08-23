@@ -32,18 +32,66 @@ pub fn search_dirs() -> Vec<PathBuf> {
         // npm's global prefix when the user relocated it out of /usr/local.
         dirs.push(home.join(".npm-global").join("bin"));
         dirs.push(home.join("bin"));
+        if cfg!(windows) {
+            // Bun's Windows installer target. Only added here: the POSIX list
+            // is left exactly as it was, since those platforms already work.
+            dirs.push(home.join(".bun").join("bin"));
+        }
     }
-    dirs.push(PathBuf::from("/opt/homebrew/bin"));
-    dirs.push(PathBuf::from("/usr/local/bin"));
+    if cfg!(windows) {
+        // npm's global prefix on Windows. `npm install -g` writes its shims
+        // here (`pi.cmd`), and nothing about a Node MSI install puts this
+        // directory on a *service*-launched process's PATH.
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            dirs.push(PathBuf::from(appdata).join("npm"));
+        }
+        // Where the Node.js MSI itself lands: `node.exe` plus `npm.cmd`.
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            dirs.push(PathBuf::from(program_files).join("nodejs"));
+        }
+    } else {
+        dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        dirs.push(PathBuf::from("/usr/local/bin"));
+    }
     dirs
 }
 
-/// Executable file name for this platform.
-fn exe_name(name: &str) -> String {
-    if cfg!(windows) {
-        format!("{name}.exe")
+/// The program name to hand `std::process::Command` on this platform.
+///
+/// Rust resolves a bare program name against PATH by appending `.exe` and
+/// nothing else — it never consults `PATHEXT`. Everything npm ships is a
+/// `.cmd` shim (`npm.cmd`, `npx.cmd`; there is no `npm.exe`), so
+/// `Command::new("npm")` cannot start npm on Windows even with Node installed
+/// and on PATH. That is what made `amuxd install-pi` bail with "neither npm
+/// nor bun found" on a machine whose `node --version` worked fine — `node` is
+/// a real `.exe`, so only the npm probe failed.
+///
+/// Only the shims are mapped. `bun`, `node` and friends are real executables
+/// that the implicit `.exe` already resolves.
+pub fn spawn_name(program: &str) -> String {
+    if cfg!(windows) && matches!(program, "npm" | "npx" | "pnpm" | "yarn") {
+        format!("{program}.cmd")
     } else {
-        name.to_string()
+        program.to_string()
+    }
+}
+
+/// Executable file names to try for `name`, in order.
+///
+/// Windows has no single answer. A native CLI is `bun.exe`, but a global npm
+/// install writes `pi.cmd` and no `pi.exe` at all — probing only `.exe` is why
+/// a perfectly good `npm install -g` of pi still read as "not installed".
+/// The extension-less `pi` npm writes beside the shim is a shell script
+/// `CreateProcess` cannot start, so it is deliberately not a candidate.
+fn exe_candidates(name: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec![
+            format!("{name}.exe"),
+            format!("{name}.cmd"),
+            format!("{name}.bat"),
+        ]
+    } else {
+        vec![name.to_string()]
     }
 }
 
@@ -52,11 +100,13 @@ fn exe_name(name: &str) -> String {
 /// `extra` is searched first, for a tool that owns a directory of its own
 /// (`~/.pi/bin`, `~/.claude/local`).
 pub fn find_with(name: &str, extra: &[PathBuf], dirs: &[PathBuf]) -> Option<PathBuf> {
-    let file = exe_name(name);
+    let files = exe_candidates(name);
+    // Directory-major: an earlier directory wins over a later one whatever
+    // extension each holds, so `extra` keeps beating the well-known dirs.
     extra
         .iter()
         .chain(dirs.iter())
-        .map(|dir| dir.join(&file))
+        .flat_map(|dir| files.iter().map(move |file| dir.join(file)))
         .find(|candidate| is_executable_file(candidate))
 }
 
@@ -128,9 +178,70 @@ mod tests {
 
     fn touch(dir: &Path, name: &str) -> PathBuf {
         std::fs::create_dir_all(dir).unwrap();
-        let p = dir.join(exe_name(name));
+        let p = dir.join(&exe_candidates(name)[0]);
         std::fs::write(&p, "").unwrap();
         p
+    }
+
+    #[test]
+    fn npm_is_probed_by_its_windows_shim_name() {
+        // Regression: `Command::new("npm")` never resolves `npm.cmd`, so the
+        // pi installer reported "neither npm nor bun found" on machines with
+        // Node installed. Bun and node stay bare — they are real `.exe`s.
+        if cfg!(windows) {
+            assert_eq!(spawn_name("npm"), "npm.cmd");
+            assert_eq!(spawn_name("npx"), "npx.cmd");
+        } else {
+            assert_eq!(spawn_name("npm"), "npm");
+            assert_eq!(spawn_name("npx"), "npx");
+        }
+        assert_eq!(spawn_name("bun"), "bun");
+        assert_eq!(spawn_name("node"), "node");
+    }
+
+    #[test]
+    fn windows_looks_for_the_cmd_shim_too() {
+        let got = exe_candidates("pi");
+        if cfg!(windows) {
+            assert_eq!(got, vec!["pi.exe", "pi.cmd", "pi.bat"]);
+        } else {
+            assert_eq!(got, vec!["pi"]);
+        }
+    }
+
+    #[test]
+    fn a_later_extension_in_an_earlier_dir_still_wins() {
+        // Only meaningful on Windows, where a directory holds `pi.cmd` while a
+        // later one may hold `pi.exe`; asserted everywhere so the ordering
+        // contract is not silently inverted by a refactor.
+        let tmp = tempfile::tempdir().unwrap();
+        let first = tmp.path().join("first");
+        let second = tmp.path().join("second");
+        let last_candidate = exe_candidates("pi").pop().unwrap();
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::write(first.join(&last_candidate), "").unwrap();
+        touch(&second, "pi");
+        assert_eq!(
+            find_with("pi", &[], &[first.clone(), second]),
+            Some(first.join(&last_candidate))
+        );
+    }
+
+    #[test]
+    fn windows_search_dirs_cover_the_npm_global_prefix() {
+        let dirs = search_dirs();
+        if cfg!(windows) {
+            let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+            if let Some(appdata) = appdata {
+                assert!(
+                    dirs.contains(&appdata.join("npm")),
+                    "%APPDATA%\\npm is where `npm install -g` puts pi.cmd"
+                );
+            }
+        } else {
+            assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
+            assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
+        }
     }
 
     #[test]
@@ -169,7 +280,7 @@ mod tests {
     #[test]
     fn a_directory_named_like_the_binary_does_not_count() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(exe_name("claude"))).unwrap();
+        std::fs::create_dir_all(tmp.path().join(&exe_candidates("claude")[0])).unwrap();
         assert_eq!(find_with("claude", &[], &[tmp.path().to_path_buf()]), None);
     }
 
