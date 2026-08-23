@@ -209,6 +209,22 @@ impl Backend for DeferredBackend {
             .await
     }
 
+    async fn remove_team_skill_install(&self, team_id: &str, slug: &str) -> BackendResult<()> {
+        self.inner()?.remove_team_skill_install(team_id, slug).await
+    }
+
+    async fn verify_agent_management_grant(
+        &self,
+        grant: &str,
+        scope: &str,
+        requester_actor_id: &str,
+        request_id: &str,
+    ) -> BackendResult<()> {
+        self.inner()?
+            .verify_agent_management_grant(grant, scope, requester_actor_id, request_id)
+            .await
+    }
+
     async fn ensure_llm_member_key(&self, team_id: &str) -> BackendResult<()> {
         self.inner()?.ensure_llm_member_key(team_id).await
     }
@@ -690,6 +706,40 @@ mod tests {
             mock.state().gateway_sessions_attached,
             vec![(key.to_string(), "sess-older".to_string())],
             "the switch must be recorded by the inner backend, not swallowed"
+        );
+    }
+
+    /// Both of these were added to the trait with default bodies and never
+    /// forwarded here, so on every onboarded daemon `verify_agent_management_grant`
+    /// answered "unsupported by this backend" — surfaced in the UI as "upgrade
+    /// your Agent" — and `remove_team_skill_install` silently did nothing while
+    /// reporting success. Nothing failed to compile. They are required trait
+    /// methods now; this test is the behavioural half of that guard.
+    #[tokio::test]
+    async fn agent_management_and_skill_removal_reach_the_inner_backend() {
+        let mock = Arc::new(MockBackend::with_identity("team-1", "agent-1"));
+        let b = DeferredBackend::claimed(mock.clone());
+
+        b.verify_agent_management_grant("grant-jwt", "skills:install", "member-1", "req-1")
+            .await
+            .expect("a claimed wrapper must delegate, not answer 'unsupported'");
+        assert_eq!(
+            mock.state().agent_management_verifications,
+            vec![(
+                "grant-jwt".to_string(),
+                "skills:install".to_string(),
+                "member-1".to_string(),
+                "req-1".to_string(),
+            )],
+        );
+
+        b.remove_team_skill_install("team-1", "research")
+            .await
+            .unwrap();
+        assert_eq!(
+            mock.state().team_skill_uninstalls,
+            vec![("team-1".to_string(), "research".to_string())],
+            "a silent Ok(()) here reports an uninstall that never happened",
         );
     }
 }
