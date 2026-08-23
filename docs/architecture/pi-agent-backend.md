@@ -33,7 +33,7 @@ first-wins，workspace A 的 env 会粘进 B 的进程）。会话文件仍只�
 | 流式事件 | SSE：`message.part.delta` 等 | stdout 事件：`message_update`（text/thinking delta）、`tool_execution_start/update/end`、`agent_end`，全部带 `sessionId` |
 | 权限审批 | 内建 `permission.asked` / reply 端点 | **无内建**——TeamClu pi extension 拦截工具执行，经 `extension_ui_request(confirm)` ↔ `extension_ui_response` 与宿主交互；host 模式下 uiContext 按会话闭包，请求天然归属正确会话 |
 | question 工具 | 内建 | extension 注册 `question` 工具，经带 `teamclu.question=` 标记的 `select` dialog 走同一 UI 通道，amuxd 译成 `question_asked` |
-| MCP | 内建（`opencode.json` 的 `mcp` 表） | **无内建**——extension 桥接（amuxd-remote-tools + workspace MCP），host 进程内共享一份 |
+| MCP | 内建（`opencode.json` 的 `mcp` 表） | **无内建**——extension 用官方 `@modelcontextprotocol/sdk` 做客户端，桥接同一张 `mcp` 表（local stdio + remote streamable HTTP/SSE），host 进程内共享一份 |
 | 模型 | `/config/providers` 目录 | `get_available_models`（host 级）/ `set_model`（会话级）；自定义 provider 用 `registerProvider` |
 | 取消 | per-session abort 端点 | `abort {sessionId}`，只中断该会话 |
 | slash 命令 | 静态表（`builtin_commands.rs`） | 运行时 `get_commands` 真实列表，attach 时以 `AvailableCommands` 事件上报 |
@@ -95,10 +95,36 @@ pi 无内建权限。方案：随 daemon 分发一个 **TeamClu pi extension**�
 
 ### MCP / remote-tools
 
-同一个 TeamClu extension 内实现 MCP 客户端桥（pi 生态无内建 MCP）：
-读取 daemon 注入的 MCP server 清单（沿用现在物化到 worktree 的配置文件，
-或 env 指针），把 MCP tools 注册为 pi 工具。第一版可只桥
-`amuxd-remote-tools`（gateway/团队功能依赖），通用 MCP 桥后续跟进。
+pi 官方明确不做 MCP（README：「**No MCP.** … or build an extension that adds
+MCP support」），所以 **TeamClu extension 本身就是 MCP 客户端**，基于官方
+`@modelcontextprotocol/sdk`：
+
+- **服务器清单同源**：仍是 workspace `opencode.json` 的 `mcp` 表（团队 +
+  inherent + 用户三处合并的 SSOT）。daemon 的 `pi_server_spec`
+  （`pi_rpc/mod.rs`）把它归一成两种形状塞进 `TEAMCLU_MCP_SERVERS`：
+  `{type:"local", command, environment}` / `{type:"remote", url, headers}`。
+  `amuxd-remote-tools` 走自己的 `TEAMCLU_REMOTE_TOOLS_CMD`（要带 socket 参数）。
+- **两种 transport 都支持**：local 走 `StdioClientTransport`，remote 先试
+  streamable HTTP，被拒再退 SSE——与 opencode 原生加载的集合对齐。
+  （SDK 之前是手写的 stdio JSON-RPC，remote 服务器整个丢弃。）
+- **SDK 带来的能力**：`tools/list` 翻页、`notifications/tools/list_changed`
+  运行时增量注册、`AbortSignal` 透传取消、image 结果按 `ImageContent` 原样
+  回传（pi 的 `normalizeToolResultImages` 明确把 MCP bridge 列为来源）。
+- **进程内共享**：bridge 注册表挂在 `globalThis`，按 (label, spec 签名) 复用；
+  `tools/list` 结果落盘缓存（`TEAMCLU_MCP_TOOL_CACHE_DIR`），冷启动不必等最慢
+  的那个 npx server。config 文件有 watcher，改 `mcp` 表无需重启 pi。
+- **工具名**：默认原样注册（`browser_click` 还是 `browser_click`），只有真撞名
+  才给后来者加 `<server>_` 前缀，先到先得，与注册顺序无关。
+
+**安装**：SDK 不是可选项——没有它就没有 remote-tools、没有任何团队工具。
+`pi_install::mcp_sdk` 把 `@modelcontextprotocol/sdk` 装进 extension 物化目录
+（`<cache>/pi/extensions/node_modules`，pi 会从 extension 同级目录解析裸导入），
+版本与 pi 一起锁在 `apps/daemon/pi.lock.json` 的 `mcpSdkVersion`，并计入
+`doctor().satisfied`。官方 registry 不通时退到 OSS 镜像
+（`https://teamclaw.ucar.cc/mcp-sdk`，`.github/workflows/mirror-pi-oss.yml`
+的 `mirror-mcp-sdk` job 发布依赖内联的 tarball，`npm --offline` 装），与 pi
+自己的镜像回退同一套机制。extension 里的 import 是**动态且带 try/catch** 的：
+SDK 缺失只损失 MCP 工具，权限门与 question 工具照常工作。
 
 ### 模型 / LiteLLM
 

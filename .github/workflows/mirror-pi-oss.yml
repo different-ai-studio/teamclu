@@ -1,9 +1,13 @@
-name: Mirror Pi to OSS
+name: Mirror Pi runtime to OSS
 
-# Pi is published only as an npm package. We create a versioned tarball with
-# Pi's full production dependency closure bundled inside it, then publish that
-# immutable artifact to OSS. This lets mainland clients install Pi without an
-# npm-registry round trip when the official route is unavailable.
+# Pi and the MCP SDK the TeamClu pi extension imports are published only as npm
+# packages. We create a versioned tarball with each one's full production
+# dependency closure bundled inside it, then publish that immutable artifact to
+# OSS. This lets mainland clients install both without an npm-registry round
+# trip when the official route is unavailable.
+#
+# Both jobs read `apps/daemon/pi.lock.json` (`version` / `mcpSdkVersion`), the
+# same file `pi_install` compiles in, so a lock bump refreshes both mirrors.
 on:
   workflow_call: {}
   push:
@@ -132,6 +136,132 @@ jobs:
         if: steps.skip.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.pi.outputs.version }}
+        run: |
+          set -euo pipefail
+          MANIFEST=$(curl -fsSL "$OSS_BASE/latest.json")
+          echo "$MANIFEST" | node -e '
+            let s=""; process.stdin.on("data", x => s += x).on("end", () => {
+              const m = JSON.parse(s)
+              if (m.version !== process.env.VERSION || !m.asset || !/^[a-f0-9]{64}$/.test(m.sha256)) process.exit(1)
+              console.log(m.version + " " + m.asset)
+            })'
+          ASSET=$(echo "$MANIFEST" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).asset")
+          curl -fsI "$OSS_BASE/$VERSION/$ASSET" >/dev/null
+
+  mirror-mcp-sdk:
+    # The pi extension is the MCP client (pi has no MCP of its own) and imports
+    # `@modelcontextprotocol/sdk` from a node_modules next to it. `amuxd pi
+    # install` installs it; this job is the mainland fallback for that install.
+    runs-on: ubuntu-latest
+    env:
+      SDK_PACKAGE: '@modelcontextprotocol/sdk'
+      OSS_BASE: https://teamclaw.ucar.cc/mcp-sdk
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Use npm 11 for dependency bundling
+        run: npm install --global npm@11
+
+      - name: Resolve the required MCP SDK version
+        id: sdk
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "(require('./apps/daemon/pi.lock.json').mcpSdkVersion || '').replace(/^v/, '')")
+          if [ -z "$VERSION" ]; then
+            echo "::error::apps/daemon/pi.lock.json has no mcpSdkVersion"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Mirroring official $SDK_PACKAGE@$VERSION"
+
+      - name: Skip when OSS already has this version
+        id: skip
+        env:
+          VERSION: ${{ steps.sdk.outputs.version }}
+        run: |
+          set -euo pipefail
+          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/latest.json" 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" 2>/dev/null || true)
+          if [ "$SERVED" = "$VERSION" ]; then
+            echo "MCP SDK OSS mirror already serves $VERSION"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build a dependency-bundled package from the official registry
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.sdk.outputs.version }}
+        run: |
+          set -euo pipefail
+          WORK=$(mktemp -d)
+          mkdir -p assets "$WORK/package"
+          npm pack "$SDK_PACKAGE@$VERSION" --pack-destination "$WORK"
+          tar -xzf "$WORK"/*.tgz -C "$WORK/package"
+          cd "$WORK/package/package"
+          npm install --omit=dev --no-audit --no-fund
+          node <<'NODE'
+          const fs = require('fs')
+          const pkg = require('./package.json')
+          pkg.bundledDependencies = [...new Set([
+            ...Object.keys(pkg.dependencies || {}),
+            ...Object.keys(pkg.optionalDependencies || {}),
+          ])].sort()
+          fs.writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`)
+          NODE
+          # --ignore-scripts is required, not hygiene: the published package
+          # carries a `prepack` that runs `tsc` against sources the tarball does
+          # not ship, so a plain `npm pack` here fails outright.
+          npm pack --ignore-scripts --pack-destination "$GITHUB_WORKSPACE/assets"
+          ls -lh "$GITHUB_WORKSPACE/assets"
+
+      - name: Upload immutable artifact and fresh manifest
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+          VERSION: ${{ steps.sdk.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "${OSS_ACCESS_KEY_ID:-}" || { echo '::error::OSS secrets not configured'; exit 1; }
+          python3 -m pip install oss2 --quiet --break-system-packages 2>/dev/null || pip3 install oss2 --quiet --break-system-packages
+          python3 - <<'PY'
+          import glob, hashlib, json, os
+          import oss2
+
+          files = glob.glob('assets/*.tgz')
+          if len(files) != 1:
+              raise SystemExit(f'expected one bundled MCP SDK tarball, got: {files}')
+          path = files[0]
+          asset = os.path.basename(path)
+          with open(path, 'rb') as fh:
+              sha256 = hashlib.sha256(fh.read()).hexdigest()
+          endpoint = os.environ['OSS_ENDPOINT']
+          if not endpoint.startswith('http'):
+              endpoint = 'https://' + endpoint
+          auth = oss2.Auth(os.environ['OSS_ACCESS_KEY_ID'], os.environ['OSS_ACCESS_KEY_SECRET'])
+          bucket = oss2.Bucket(auth, endpoint, os.environ['OSS_BUCKET'])
+          version = os.environ['VERSION']
+          key = f'mcp-sdk/{version}/{asset}'
+          bucket.put_object_from_file(key, path, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+          manifest = json.dumps({'version': version, 'asset': asset, 'sha256': sha256}, indent=2).encode()
+          bucket.put_object('mcp-sdk/latest.json', manifest, headers={
+              'Cache-Control': 'no-cache, no-store, max-age=0',
+              'Content-Type': 'application/json',
+          })
+          print(f'published {key} ({sha256})')
+          PY
+
+      - name: Verify public manifest and artifact
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.sdk.outputs.version }}
         run: |
           set -euo pipefail
           MANIFEST=$(curl -fsSL "$OSS_BASE/latest.json")
