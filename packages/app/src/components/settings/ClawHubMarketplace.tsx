@@ -110,10 +110,8 @@ export const ClawHubMarketplace = React.memo(function ClawHubMarketplace({
       try {
         const home = await pathModule.homeDir()
         const dirsToCheck = [
-          `${workspacePath}/.opencode/skills`,
           `${workspacePath}/.claude/skills`,
           `${workspacePath}/.agents/skills`,
-          `${home.replace(/\/$/, '')}/.config/opencode/skills`,
           `${home.replace(/\/$/, '')}/.claude/skills`,
           `${home.replace(/\/$/, '')}/.agents/skills`,
         ]

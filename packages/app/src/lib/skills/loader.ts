@@ -4,8 +4,7 @@ import { frontmatterString } from '@/lib/skills/frontmatter'
 import { homeDir } from '@tauri-apps/api/path'
 import type { SkillWithSource, SkillSource } from './types'
 import { INHERENT_SKILL_NAMES, shouldIncludeDesktopControlSkill } from './types'
-import type { ClawHubLockfile } from '@/lib/clawhub/types'
-import { appDisplayName, TEAMCLU_DIR, TEAM_REPO_DIR } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/build-config'
 import i18n from '@/lib/i18n'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -95,31 +94,6 @@ async function loadSkillsFromDir(
   return skills
 }
 
-/** Read .clawhub/lock.json to identify skills installed from ClawHub */
-async function readClawHubLockfile(workspacePath: string): Promise<Set<string>> {
-  const slugs = new Set<string>()
-  const paths = [
-    `${workspacePath}/.clawhub/lock.json`,
-    `${workspacePath}/.clawdhub/lock.json`,
-  ]
-  for (const lockPath of paths) {
-    try {
-      if (!(await exists(lockPath))) continue
-      const raw = await readTextFile(lockPath)
-      const lock: ClawHubLockfile = JSON.parse(raw)
-      if (lock.skills) {
-        for (const slug of Object.keys(lock.skills)) {
-          slugs.add(slug)
-        }
-      }
-      return slugs
-    } catch {
-      // try next
-    }
-  }
-  return slugs
-}
-
 // ─── Multi-Source Loader ────────────────────────────────────────────────────
 
 export { collectTeamSkillPaths, readConfigSkillPaths } from '@/lib/team-skill-paths'
@@ -127,14 +101,9 @@ export { collectTeamSkillPaths, readConfigSkillPaths } from '@/lib/team-skill-pa
 /** Return all known skill directories for the current workspace/user context. */
 export async function getSkillDirectories(workspacePath: string | null): Promise<string[]> {
   const home = trimTrailingPathSeparators(await homeDir())
-  const dirs = new Set<string>([
-    `${home}/.config/teamclu/skills`,
-    `${home}/.claude/skills`,
-    `${home}/.agents/skills`,
-  ])
+  const dirs = new Set<string>([`${home}/.claude/skills`, `${home}/.agents/skills`])
 
   if (workspacePath) {
-    dirs.add(`${workspacePath}/${TEAMCLU_DIR}/skills`)
     dirs.add(`${workspacePath}/.claude/skills`)
     dirs.add(`${workspacePath}/.agents/skills`)
 
@@ -150,18 +119,21 @@ export async function getSkillDirectories(workspacePath: string | null): Promise
 /**
  * Load skills from all sources with priority-based merging.
  *
+ * Kept in step with the daemon's `skill_dir_specs`, which is the list that
+ * decides what an agent actually loads. Two loaders disagreeing about which
+ * roots exist is how the settings page ends up showing a skill no runtime can
+ * see (and hiding one it can).
+ *
  * Workspace paths (project-level):
- * 1. TEAMCLU_DIR/skills/  → source: 'local' / 'builtin' / 'clawhub'
- * 2. `.claude/skills/`     → source: 'claude'
- * 3. `.agents/skills/`     → source: 'shared'
+ * 1. `.claude/skills/`     → source: 'claude'
+ * 2. `.agents/skills/`     → source: 'shared'
  *
  * Global paths (user-level):
- * 4. `~/.config/teamclu/skills/` → source: 'global-teamclu'
- * 5. `~/.claude/skills/`          → source: 'global-claude'
- * 6. `~/.agents/skills/`          → source: 'global-agent'
+ * 3. `~/.claude/skills/`          → source: 'global-claude'
+ * 4. `~/.agents/skills/`          → source: 'global-agent'
  *
- * Dynamic paths (from teamclu.json `skills.paths`):
- * 7+. Each configured path → source: 'team'
+ * Dynamic paths (from `opencode.json` `skills.paths`):
+ * 5+. Each configured path → source: 'team'
  *
  * Same-name skills are resolved by priority — workspace > global.
  */
@@ -182,92 +154,47 @@ export async function loadAllSkills(
   // Get user home directory
   const home = await homeDir()
 
-  // Read ClawHub lockfile to identify which .teamclu/skills were installed from ClawHub
-  let clawhubSlugs = new Set<string>()
-  if (workspacePath) {
-    clawhubSlugs = await readClawHubLockfile(workspacePath)
-  }
+  // `builtin` is decided by name, not by root: the inherent skills are seeded
+  // into `~/.agents/skills` and sit there next to team packs and the user's own
+  // files. Applied at every root so a copy left behind by an older build reads
+  // the same way.
+  const labelled = (skill: SkillWithSource, isGlobal: boolean): SkillWithSource =>
+    INHERENT_SKILL_NAMES.has(skill.filename)
+      ? { ...skill, source: 'builtin' as SkillSource, isGlobal }
+      : { ...skill, isGlobal }
 
   // ============ Workspace Skills (Project-level) ============
 
-  // 1. Load workspace .teamclu/skills (highest priority — user local)
-  //    Skills whose dirname matches INHERENT_SKILL_NAMES are marked as 'builtin'.
-  //    Skills whose dirname matches a ClawHub lockfile entry are marked as 'clawhub'.
-  if (workspacePath) {
-    const localDir = `${workspacePath}/${TEAMCLU_DIR}/skills`
-    const localSkills = await loadSkillsFromDir(localDir, 'local')
-    for (const skill of localSkills) {
-      if (INHERENT_SKILL_NAMES.has(skill.filename)) {
-        pushSkill({ ...skill, source: 'builtin' as SkillSource, isGlobal: false })
-      } else if (clawhubSlugs.has(skill.filename)) {
-        pushSkill({ ...skill, source: 'clawhub' as SkillSource, isGlobal: false })
-      } else {
-        pushSkill({ ...skill, isGlobal: false })
-      }
-    }
-  }
-
-  // 2. Load workspace .claude/skills (Cursor/Claude skills)
+  // 1. Load workspace .claude/skills (Cursor/Claude skills)
   if (workspacePath) {
     const claudeDir = `${workspacePath}/.claude/skills`
     const claudeSkills = await loadSkillsFromDir(claudeDir, 'claude')
-    for (const s of claudeSkills) pushSkill({ ...s, isGlobal: false })
+    for (const s of claudeSkills) pushSkill(labelled(s, false))
   }
 
-  // 3. Load workspace .agents/skills
+  // 2. Load workspace .agents/skills
   if (workspacePath) {
     const sharedDir = `${workspacePath}/.agents/skills`
     const sharedSkills = await loadSkillsFromDir(sharedDir, 'shared')
-    for (const s of sharedSkills) pushSkill({ ...s, isGlobal: false })
+    for (const s of sharedSkills) pushSkill(labelled(s, false))
   }
 
   // ============ Global Skills (User-level) ============
 
-  // 4. Load global ~/.config/teamclu/skills
-  const globalTeamcluDir = `${home.replace(/\/$/, '')}/.config/teamclu/skills`
-  const globalTeamcluSkills = await loadSkillsFromDir(globalTeamcluDir, 'global-teamclu')
-  for (const s of globalTeamcluSkills) pushSkill({ ...s, isGlobal: true })
-
-  // 5. Load global ~/.claude/skills
+  // 3. Load global ~/.claude/skills
   const globalClaudeDir = `${home.replace(/\/$/, '')}/.claude/skills`
   const globalClaudeSkills = await loadSkillsFromDir(globalClaudeDir, 'global-claude')
-  for (const s of globalClaudeSkills) pushSkill({ ...s, isGlobal: true })
+  for (const s of globalClaudeSkills) pushSkill(labelled(s, true))
 
-  // 6. Load global ~/.agents/skills
+  // 4. Load global ~/.agents/skills — where the registry, ClawHub and the
+  //    inherent skills all install.
   const globalAgentDir = `${home.replace(/\/$/, '')}/.agents/skills`
   const globalAgentSkills = await loadSkillsFromDir(globalAgentDir, 'global-agent')
-  for (const s of globalAgentSkills) pushSkill({ ...s, isGlobal: true })
+  for (const s of globalAgentSkills) pushSkill(labelled(s, true))
 
-  // ============ Plugin Skills ============
+  // ============ Dynamic paths from opencode.json ============
 
-  // 7. Scan plugin cache for skills installed via teamclu.json "plugin" array
-  if (workspacePath) {
-    const pluginCacheDir = `${workspacePath}/${TEAMCLU_DIR}/cache/agent/node_modules`
-    try {
-      if (await exists(pluginCacheDir)) {
-        const pluginEntries = await readDir(pluginCacheDir)
-        for (const entry of pluginEntries) {
-          if (entry.isDirectory && entry.name && !entry.name.startsWith('.')) {
-            const skillsDir = `${pluginCacheDir}/${entry.name}/skills`
-            try {
-              if (await exists(skillsDir)) {
-                const pluginSkills = await loadSkillsFromDir(skillsDir, 'plugin')
-                for (const s of pluginSkills) pushSkill({ ...s, isGlobal: false })
-              }
-            } catch {
-              // skip inaccessible plugin
-            }
-          }
-        }
-      }
-    } catch {
-      console.warn('[SkillLoader] Cannot access plugin cache directory')
-    }
-  }
-
-  // ============ Dynamic paths from teamclu.json ============
-
-  // 8+. Team-shared + configured skill paths (teamclu.json, opencode.json, teamclu-team/skills)
+  // 5+. Configured skill paths (`opencode.json` → `skills.paths`)
   if (workspacePath) {
     const configPaths = await collectTeamSkillPaths(workspacePath)
     for (const dirPath of configPaths) {
@@ -277,17 +204,14 @@ export async function loadAllSkills(
       const normalizedHome = home.replace(/\\/g, '/')
       const isGlobalPath =
         normalizedDirPath.startsWith(normalizedHome) ||
-        normalizedDirPath.includes('.config/teamclu') ||
         normalizedDirPath.includes('.claude') ||
         normalizedDirPath.includes('.agents')
-      for (const s of skills) pushSkill({ ...s, isGlobal: isGlobalPath })
+      for (const s of skills) pushSkill(labelled(s, isGlobalPath))
     }
   }
 
   // Deduplicate by filename with priority:
-  // Workspace (project) > Global (user)
-  // Within workspace: local > claude > clawhub > shared > team > builtin
-  // Within global: global-teamclu > global-claude > global-agent
+  // claude > global-agent > shared > team > global-claude
   //
   // `global-agent` (~/.agents/skills) is the exception to that ordering: it is
   // where team packs are installed, so it sits ahead of every personal root
@@ -298,17 +222,19 @@ export async function loadAllSkills(
   // `skill_dir_specs` ranks; two loaders disagreeing about which copy is real
   // is the bug this table exists to prevent.
   const priorityOrder: Record<SkillSource, number> = {
+    // Role-managed skills, which no root contributes — they are merged in
+    // separately and never collide with a scanned slug.
     local: 0,
     claude: 1,
+    // Same rank as the root it lives in: `builtin` is a label, and a label must
+    // not decide which copy of a duplicated slug wins. The inherent skills only
+    // ever exist in `~/.agents/skills`, so the tie is unreachable in practice.
+    builtin: 2,
     'global-agent': 2,
-    clawhub: 3,
-    shared: 4,
-    team: 5,
-    builtin: 6,
-    plugin: 7,
-    'global-teamclu': 8,
-    'global-claude': 9,
-    personal: 10,
+    shared: 3,
+    team: 4,
+    'global-claude': 5,
+    personal: 6,
   }
   const seen = new Map<string, SkillWithSource>()
 
@@ -346,23 +272,17 @@ export async function loadAllSkills(
 export function getSourceLabel(source: SkillSource): string {
   switch (source) {
     case 'local':
-      return 'Local'
+      return i18n.t('skills.roleManagedLabel')
     case 'claude':
       return 'Claude'
-    case 'clawhub':
-      return 'ClawHub'
     case 'shared':
       return 'Shared'
     case 'team':
       return 'Team'
     case 'builtin':
       return i18n.t('skills.builtinLabel')
-    case 'plugin':
-      return 'Plugin'
     case 'personal':
       return 'Personal'
-    case 'global-teamclu':
-      return 'Global'
     case 'global-claude':
       return 'Global Claude'
     case 'global-agent':
@@ -376,23 +296,17 @@ export function getSourceLabel(source: SkillSource): string {
 export function getSourceDirHint(source: SkillSource): string {
   switch (source) {
     case 'local':
-      return `${TEAMCLU_DIR}/skills/`
+      return 'roles/<role>/skills/'
     case 'claude':
       return '.claude/skills/'
-    case 'clawhub':
-      return `${TEAMCLU_DIR}/skills/ (ClawHub)`
     case 'shared':
       return '.agents/skills/'
     case 'team':
-      return `${TEAM_REPO_DIR}/skills/ (team share)`
+      return 'opencode.json → skills.paths'
     case 'builtin':
       return i18n.t('skills.builtinPath', { app: appDisplayName })
-    case 'plugin':
-      return 'teamclu.json → plugin'
     case 'personal':
       return ''
-    case 'global-teamclu':
-      return '~/.config/teamclu/skills/'
     case 'global-claude':
       return '~/.claude/skills/'
     case 'global-agent':
@@ -409,20 +323,14 @@ export function getSourceBadgeClass(source: SkillSource): string {
       return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300'
     case 'claude':
       return 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300'
-    case 'clawhub':
-      return 'bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-300'
     case 'shared':
       return 'bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-300'
     case 'team':
       return 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300'
     case 'builtin':
       return 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300 border border-blue-200/60 dark:border-blue-700/50'
-    case 'plugin':
-      return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-300'
     case 'personal':
       return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300'
-    case 'global-teamclu':
-      return 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-300'
     case 'global-claude':
       return 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300'
     case 'global-agent':

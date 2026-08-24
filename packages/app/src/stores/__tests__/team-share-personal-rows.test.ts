@@ -48,8 +48,7 @@ describe('planPersonalRow', () => {
     })
   })
 
-  test('market and builtin copies are not personal skills', () => {
-    expect(row({ source: 'clawhub' }).hidden).toBe(true)
+  test('builtin copies are not personal skills', () => {
     expect(row({ source: 'builtin' }).hidden).toBe(true)
   })
 })

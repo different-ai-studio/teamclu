@@ -38,7 +38,7 @@ import {
   deleteDaemonSkill,
 } from '@/lib/daemon-local-client'
 import { cn } from '@/lib/utils'
-import { appDisplayName, TEAMCLU_DIR } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/build-config'
 import { ensureAgentsSkillsPaths } from '@/lib/skills/ensure-agents-paths'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -427,22 +427,17 @@ ${skillContent.trim()}`
     }
 
     try {
-      if (targetSkill.source === 'clawhub') {
-        await invoke<string>('clawhub_uninstall', {
-          workspacePath,
-          slug: targetSkill.filename,
-        })
-      } else {
-        const deleted = await deleteDaemonSkill(
-          encodeWorkspaceId(workspacePath),
-          targetSkill.filename,
-          targetSkill.dirPath,
-        )
-        if (!deleted) {
-          const { remove } = await import('@tauri-apps/plugin-fs')
-          const baseDir = targetSkill.dirPath ?? `${workspacePath}/${TEAMCLU_DIR}/skills`
-          await remove(`${baseDir}/${targetSkill.filename}`, { recursive: true })
-        }
+      const deleted = await deleteDaemonSkill(
+        encodeWorkspaceId(workspacePath),
+        targetSkill.filename,
+        targetSkill.dirPath,
+      )
+      if (!deleted) {
+        const { remove } = await import('@tauri-apps/plugin-fs')
+        const { homeDir } = await import('@tauri-apps/api/path')
+        const baseDir =
+          targetSkill.dirPath ?? `${(await homeDir()).replace(/\/$/, '')}/.agents/skills`
+        await remove(`${baseDir}/${targetSkill.filename}`, { recursive: true })
       }
 
       setDeleteConfirmOpen(false)
@@ -475,8 +470,10 @@ ${skillContent.trim()}`
     setEditingSkill(skill)
     setSkillName(skill.name)
     setSkillContent(skill.content)
-    // Set view mode for non-editable skills (not local or clawhub)
-    const isEditable = skill.source === 'local' || skill.source === 'clawhub' || skill.isRoleSkill
+    // Everything the scan returns is written back through its own `dirPath`,
+    // so the only thing that is not editable is an inherent skill — the daemon
+    // reseeds those on every `prepare_workspace`.
+    const isEditable = skill.source !== 'builtin' && Boolean(skill.dirPath)
     setIsViewMode(!isEditable)
     setSkillDialogMode(isEditable ? 'edit' : 'view')
     setDialogOpen(true)

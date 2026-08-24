@@ -90,19 +90,6 @@ fn process_brand() -> String {
     teamclu_runtime_env::brand_short_name_from_env()
 }
 
-/// Canonical (write) skills directory for the process brand.
-fn brand_skills_dir(workspace_path: &Path) -> PathBuf {
-    teamclu_runtime_env::workspace_meta_write_path_from_env(workspace_path, "skills")
-}
-
-/// Meta skills roots to scan (canonical first, then legacy `.teamclu/skills`).
-fn meta_skills_dirs(workspace_path: &Path) -> Vec<PathBuf> {
-    teamclu_runtime_env::workspace_meta_read_roots(workspace_path, &process_brand())
-        .into_iter()
-        .map(|root| root.join("skills"))
-        .collect()
-}
-
 fn meta_roles_dirs(workspace_path: &Path) -> Vec<PathBuf> {
     teamclu_runtime_env::workspace_meta_read_roots(workspace_path, &process_brand())
         .into_iter()
@@ -112,14 +99,6 @@ fn meta_roles_dirs(workspace_path: &Path) -> Vec<PathBuf> {
 
 fn brand_roles_dir(workspace_path: &Path) -> PathBuf {
     teamclu_runtime_env::workspace_meta_write_path_from_env(workspace_path, "roles")
-}
-
-fn workspace_brand_config_rel() -> String {
-    format!(
-        "{}/{}",
-        teamclu_runtime_env::workspace_meta_dir_name(&process_brand()),
-        teamclu_runtime_env::workspace_config_file_name(&process_brand())
-    )
 }
 
 struct RawSkill {
@@ -132,9 +111,6 @@ struct RawSkill {
     is_role_skill: bool,
 }
 
-/// The brand meta directory outranks every other root.
-const RANK_META: u8 = 0;
-
 struct SkillDirSpec {
     path: PathBuf,
     /// Display label. Never used to order anything — see `rank`.
@@ -146,31 +122,10 @@ struct SkillDirSpec {
     /// edits, and feeds to an agent. The numbers mirror the frontend's
     /// `SKILL_SOURCE_PRIORITY` so both loaders resolve a collision the same way.
     rank: u8,
-    /// The brand meta directory, where `builtin` / `clawhub` classification
-    /// applies. Stated here instead of inferred from the path: the inference
-    /// (`is_meta_skills_dir`) matched any `skills` directory under a dot-prefixed
-    /// parent, which is all of them.
-    is_meta: bool,
 }
 
 fn io_err(e: std::io::Error) -> WorkspaceControlError {
     WorkspaceControlError::Io(e.to_string())
-}
-
-fn read_clawhub_slugs(workspace_path: &Path) -> HashSet<String> {
-    for lock_name in [".clawhub/lock.json", ".clawdhub/lock.json"] {
-        let lock_path = workspace_path.join(lock_name);
-        let Ok(content) = std::fs::read_to_string(&lock_path) else {
-            continue;
-        };
-        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) else {
-            continue;
-        };
-        if let Some(skills) = parsed.get("skills").and_then(|v| v.as_object()) {
-            return skills.keys().cloned().collect();
-        }
-    }
-    HashSet::new()
 }
 
 fn read_json_paths(workspace_path: &Path, config_rel: &str, key: &str) -> Vec<PathBuf> {
@@ -303,16 +258,6 @@ fn load_skills_from_dir(dir: &Path, source: &str) -> Result<Vec<RawSkill>, Works
     Ok(skills)
 }
 
-fn classify_teamclu_skill(filename: &str, clawhub_slugs: &HashSet<String>) -> &'static str {
-    if is_inherent_skill(filename) {
-        "builtin"
-    } else if clawhub_slugs.contains(filename) {
-        "clawhub"
-    } else {
-        "local"
-    }
-}
-
 fn onboarded_team_id() -> Option<String> {
     super::DaemonConfig::load(&super::DaemonConfig::default_path())
         .ok()
@@ -392,19 +337,15 @@ fn collect_team_skill_paths(workspace_path: &Path) -> Vec<PathBuf> {
         }
     };
 
-    for config_rel in [
-        workspace_brand_config_rel(),
-        format!(
-            "{}/{}",
-            teamclu_runtime_env::WORKSPACE_META_DIR,
-            teamclu_runtime_env::WORKSPACE_CONFIG_FILE
-        ),
-        "teamclu.json".to_string(),
-    ] {
-        for extra in read_json_paths(workspace_path, &config_rel, "/skills/paths") {
-            push(extra);
-        }
-    }
+    // `opencode.json` is the only config consulted for `skills.paths`.
+    //
+    // It is also the only one anything writes: the desktop's
+    // `ensure_agents_skills_paths` registers `~/.agents/skills` in
+    // `<ws>/opencode.json`, `.claude/settings.json` and `~/.claude/settings.json`
+    // — never in a brand config. The three brand files this used to read
+    // (`.teamclu/teamclu.json`, `.teamclu/teamclaw.json`, `teamclu.json`) had no
+    // writer, so parsing them only widened the surface a hand-edited file could
+    // pull skills in from.
     for extra in read_json_paths(workspace_path, "opencode.json", "/skills/paths") {
         push(extra);
     }
@@ -428,55 +369,26 @@ fn collect_team_skill_paths(workspace_path: &Path) -> Vec<PathBuf> {
 
 /// Every root scanned for skills, in one place so the ranks can be read — and
 /// tested — as a table rather than inferred from call order.
+///
+/// Deliberately short. The roots that used to be here and are not any more:
+///
+/// - the brand meta dir (`.teamclu/skills` + the legacy `.teamclaw/skills`) —
+///   nothing writes it. `upsert_skill` writes the caller's `dir_path`, the
+///   desktop's "new skill" dialog writes `~/.agents/skills` directly, and the
+///   inherent skills are seeded there too (`runtime::supervisor`).
+/// - `.opencode/skills` and `~/.config/opencode/skills` — opencode-era roots
+///   with no writer left; the seeded copies in the former always lost to a
+///   higher-ranked root anyway, so they were never what an agent loaded.
+/// - `~/.config/teamclu/skills` — never had a writer either.
 fn skill_dir_specs(workspace_path: &Path, home: &Path) -> Vec<SkillDirSpec> {
     let home_str = home.to_string_lossy();
     let home_trimmed = home_str.trim_end_matches('/');
 
-    let mut specs: Vec<SkillDirSpec> = meta_skills_dirs(workspace_path)
-        .into_iter()
-        .map(|path| SkillDirSpec {
-            path,
-            source: "local",
-            rank: RANK_META,
-            is_meta: true,
-        })
-        .collect();
-    specs.extend([
-        SkillDirSpec {
-            path: workspace_path.join(".opencode/skills"),
-            source: "opencode",
-            rank: 11,
-            is_meta: false,
-        },
+    let mut specs: Vec<SkillDirSpec> = vec![
         SkillDirSpec {
             path: workspace_path.join(".claude/skills"),
             source: "claude",
             rank: 1,
-            is_meta: false,
-        },
-        SkillDirSpec {
-            path: workspace_path.join(".agents/skills"),
-            source: "shared",
-            rank: 3,
-            is_meta: false,
-        },
-        SkillDirSpec {
-            path: PathBuf::from(format!("{home_trimmed}/.config/teamclu/skills")),
-            source: "global-teamclu",
-            rank: 7,
-            is_meta: false,
-        },
-        SkillDirSpec {
-            path: PathBuf::from(format!("{home_trimmed}/.config/opencode/skills")),
-            source: "global-opencode",
-            rank: 10,
-            is_meta: false,
-        },
-        SkillDirSpec {
-            path: PathBuf::from(format!("{home_trimmed}/.claude/skills")),
-            source: "global-claude",
-            rank: 8,
-            is_meta: false,
         },
         SkillDirSpec {
             path: PathBuf::from(format!("{home_trimmed}/.agents/skills")),
@@ -493,16 +405,24 @@ fn skill_dir_specs(workspace_path: &Path, home: &Path) -> Vec<SkillDirSpec> {
             // the install path offers exactly that when it has to take a path
             // over (`archive_unmanaged`).
             rank: 2,
-            is_meta: false,
         },
-    ]);
+        SkillDirSpec {
+            path: workspace_path.join(".agents/skills"),
+            source: "shared",
+            rank: 3,
+        },
+        SkillDirSpec {
+            path: PathBuf::from(format!("{home_trimmed}/.claude/skills")),
+            source: "global-claude",
+            rank: 5,
+        },
+    ];
 
     for extra in collect_team_skill_paths(workspace_path) {
         specs.push(SkillDirSpec {
             path: extra,
             source: "team",
             rank: 4,
-            is_meta: false,
         });
     }
 
@@ -513,7 +433,6 @@ fn load_all_skills(
     workspace_path: &Path,
     home: &Path,
 ) -> Result<Vec<RawSkill>, WorkspaceControlError> {
-    let clawhub_slugs = read_clawhub_slugs(workspace_path);
     let specs = skill_dir_specs(workspace_path, home);
 
     // Which copy of a duplicated slug survives is decided by the *directory* it
@@ -528,15 +447,17 @@ fn load_all_skills(
     for spec in specs {
         let mut batch = load_skills_from_dir(&spec.path, spec.source)?;
         for skill in batch.drain(..) {
-            // `builtin` / `clawhub` are properties of the brand meta directory —
-            // they are read out of that workspace's own lockfile and inherent
-            // list — so the classification only applies there. The frontend
-            // loader has always scoped it that way (`skill-loader.ts`:
-            // "`.teamclu/skills/` → 'local' / 'builtin' / 'clawhub'"); this used
-            // to apply it to every root whose parent name began with a dot,
-            // which is every skills root there is.
-            let source = if spec.is_meta {
-                classify_teamclu_skill(&skill.filename, &clawhub_slugs).to_owned()
+            // `builtin` is a property of the skill's *name*, not of the root it
+            // sits in. The inherent skills are seeded into `~/.agents/skills`
+            // (`runtime::supervisor`) alongside everything else there, and the
+            // Agent-side inventory already classifies them this way
+            // (`daemon::server::rpc::skill_inventory`). Labelling by root, as
+            // this used to, only worked while they lived in a root of their own.
+            //
+            // The rank stays the spec's: what a skill is *called* must not
+            // decide which copy of a duplicated slug the app opens and edits.
+            let source = if is_inherent_skill(&skill.filename) {
+                "builtin".to_owned()
             } else {
                 skill.source.clone()
             };
@@ -829,8 +750,10 @@ pub struct UpsertSkillRequest {
     pub content: String,
     #[serde(default)]
     pub skill_name: Option<String>,
-    #[serde(default)]
-    pub install_location: Option<String>,
+    // `installLocation` used to pick between the brand meta dir and
+    // `~/.agents/skills`. There is one root left, so the field is gone; an old
+    // client that still sends it is ignored, not rejected (no
+    // `deny_unknown_fields`).
     #[serde(default)]
     pub dir_path: Option<String>,
     #[serde(default)]
@@ -932,6 +855,14 @@ fn confine_path(
     }
 }
 
+/// Where a skill goes when the caller names no directory.
+///
+/// Always `~/.agents/skills`. It is the one root every runtime reads (opencode,
+/// Claude Code and pi all get it through `skills.paths` /
+/// `ensure_agents_skills_paths`), and it is where the desktop's own "new skill"
+/// dialog has always written. There is no second choice to offer: the arm this
+/// used to have named the brand meta dir, which is not scanned any more, so
+/// honouring it would write a file nothing can see.
 fn skills_dir_for_request(
     workspace_path: &Path,
     home: &Path,
@@ -940,10 +871,7 @@ fn skills_dir_for_request(
     if let Some(dir) = req.dir_path.as_deref().filter(|d| !d.is_empty()) {
         return confine_path(dir, workspace_path, home);
     }
-    if req.install_location.as_deref() == Some("global") {
-        return Ok(home.join(".agents/skills"));
-    }
-    Ok(brand_skills_dir(workspace_path))
+    Ok(home.join(".agents/skills"))
 }
 
 pub fn upsert_skill(
@@ -1045,15 +973,18 @@ pub fn delete_skill(
         vec![confine_path(dir, workspace_path, &home)?.join(slug)]
     } else {
         {
-            let mut paths: Vec<PathBuf> = meta_skills_dirs(workspace_path)
-                .into_iter()
-                .map(|dir| dir.join(slug))
-                .collect();
-            paths.push(workspace_path.join(".opencode/skills").join(slug));
+            // Only the roots this daemon writes to itself. Every caller that can
+            // see a skill also has its `dirPath` and passes it, so this fallback
+            // exists for the one it wrote without being told where — which is
+            // always `~/.agents/skills` now (`skills_dir_for_request`).
+            //
+            // Deliberately not "every scanned root": that would let a delete
+            // with no `dirPath` reach into `.claude/skills`, where the team
+            // bridge keeps its symlinks.
+            let mut paths = vec![home.join(".agents/skills").join(slug)];
             for roles in meta_roles_dirs(workspace_path) {
                 paths.push(roles.join(ROLE_SKILL_DIR).join(slug));
             }
-            paths.push(home.join(".config/opencode/skills").join(slug));
             paths
         }
     };
@@ -1251,7 +1182,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path();
 
-        let skill_dir = ws.join(".teamclu/skills/demo-skill");
+        let skill_dir = ws.join(".claude/skills/demo-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
@@ -1276,27 +1207,37 @@ mod tests {
         );
     }
 
+    /// A directory-less upsert lands in `~/.agents/skills`, and the matching
+    /// delete finds it there.
     #[test]
     fn upsert_and_delete_skill_round_trip() {
-        let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
         let ws = tempfile::tempdir().unwrap();
         let req = UpsertSkillRequest {
             content: "# Demo\n\nBody".to_owned(),
             skill_name: Some("Demo Skill".to_owned()),
-            install_location: Some("workspace".to_owned()),
             dir_path: None,
             filename: None,
         };
         let saved = upsert_skill(ws.path(), "demo-skill", &req).unwrap();
         assert_eq!(saved.filename, "demo-skill");
+        assert!(home
+            .path()
+            .join(".agents/skills/demo-skill/SKILL.md")
+            .is_file());
+        assert!(
+            !ws.path().join(".teamclu/skills/demo-skill").exists(),
+            "the brand meta dir is no longer a write target"
+        );
 
         delete_skill(ws.path(), "demo-skill", None).unwrap();
         let state = scan_roles_skills_state(ws.path()).unwrap();
         assert!(
             !state.skills.iter().any(|s| s.filename == "demo-skill"),
-            "deleted workspace skill must be gone"
+            "deleted skill must be gone"
         );
-        assert!(!ws.path().join(".teamclu/skills/demo-skill").exists());
+        assert!(!home.path().join(".agents/skills/demo-skill").exists());
     }
 
     /// Write a one-file skill and return its directory.
@@ -1330,24 +1271,61 @@ mod tests {
         let pack_root = rank_of(home.path().join(".agents/skills"));
 
         assert!(pack_root < rank_of(home.path().join(".claude/skills")));
-        assert!(pack_root < rank_of(home.path().join(".config/opencode/skills")));
-        assert!(pack_root < rank_of(ws.path().join(".opencode/skills")));
-        // The workspace's own dirs still win: a project that ships a skill is
-        // making a narrower statement than the team registry.
+        assert!(pack_root < rank_of(ws.path().join(".agents/skills")));
+        // The workspace's own `.claude/skills` still wins: a project that ships
+        // a skill is making a narrower statement than the team registry.
         assert!(pack_root > rank_of(ws.path().join(".claude/skills")));
-        assert!(pack_root > RANK_META);
+    }
+
+    /// The retired roots stay retired. Each of these had a writer once and has
+    /// none now; scanning them again would resurrect copies that no longer
+    /// match what the runtimes load.
+    #[test]
+    fn the_retired_roots_are_not_scanned() {
+        let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
+        let ws = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let scanned: Vec<PathBuf> = skill_dir_specs(ws.path(), home.path())
+            .into_iter()
+            .map(|spec| spec.path)
+            .collect();
+
+        for retired in [
+            ws.path().join(".teamclu/skills"),
+            ws.path().join(".teamclaw/skills"),
+            ws.path().join(".opencode/skills"),
+            home.path().join(".config/teamclu/skills"),
+            home.path().join(".config/opencode/skills"),
+        ] {
+            assert!(
+                !scanned.contains(&retired),
+                "{} must not be scanned any more",
+                retired.display()
+            );
+        }
+        assert_eq!(scanned.len(), 4, "four fixed roots, plus config paths");
     }
 
     #[test]
     fn a_duplicated_slug_resolves_by_root_rank_not_by_scan_order() {
         let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
         // `.claude/skills` (rank 1) outranks `.agents/skills` (3), which
-        // outranks `.opencode/skills` (11) — regardless of the order the specs
-        // happen to be listed in. Ordering used to be derived from the source
-        // label, and since every dot-prefixed root was relabelled `local` they
-        // all tied, leaving the winner to array position.
+        // outranks a config-declared team path (4) — regardless of the order the
+        // specs happen to be listed in. Ordering used to be derived from the
+        // source label, and since every dot-prefixed root was relabelled `local`
+        // they all tied, leaving the winner to array position.
         let ws = tempfile::tempdir().unwrap();
-        seed_skill(ws.path(), ".opencode/skills", "dup", "opencode");
+        let team_root = ws.path().join("team-skills");
+        std::fs::create_dir_all(&team_root).unwrap();
+        std::fs::write(
+            ws.path().join("opencode.json"),
+            format!(
+                r#"{{"skills":{{"paths":["{}"]}}}}"#,
+                team_root.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        seed_skill(ws.path(), "team-skills", "dup", "team");
         seed_skill(ws.path(), ".agents/skills", "dup", "agents");
         let expected = seed_skill(ws.path(), ".claude/skills", "dup", "claude");
 
@@ -1363,30 +1341,18 @@ mod tests {
         assert!(rows[0].content.contains("claude"));
     }
 
+    /// `builtin` is a property of the skill's name, not of the root it sits in.
+    ///
+    /// The inherent skills used to live in a root of their own (the brand meta
+    /// dir), so labelling by root and labelling by name were the same thing.
+    /// They are seeded into `~/.agents/skills` now, next to team packs and the
+    /// user's own files, and only the name still separates them — which is how
+    /// the Agent-side inventory has always read them.
     #[test]
-    fn only_the_brand_meta_dir_gets_the_local_builtin_clawhub_labels() {
+    fn inherent_skills_are_labelled_builtin_whatever_root_they_sit_in() {
         let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
-        // `builtin` and `clawhub` are read out of the workspace's own inherent
-        // list and lockfile, so they describe the brand meta directory and
-        // nothing else. This used to be applied to every root whose parent name
-        // began with a dot — i.e. every skills root — which flattened the
-        // settings UI's source badges to one value and, worse, collapsed the
-        // precedence order they were being derived from.
         let ws = tempfile::tempdir().unwrap();
-        std::fs::write(
-            ws.path().join(".clawhub-lock-placeholder"),
-            "not the lockfile",
-        )
-        .unwrap();
-        std::fs::create_dir_all(ws.path().join(".clawhub")).unwrap();
-        std::fs::write(
-            ws.path().join(".clawhub/lock.json"),
-            r#"{"skills":{"market-pack":{"version":"1"}}}"#,
-        )
-        .unwrap();
-
-        seed_skill(ws.path(), ".teamclu/skills", "market-pack", "in meta dir");
-        seed_skill(ws.path(), ".teamclu/skills", "create-role", "inherent");
+        seed_skill(ws.path(), ".agents/skills", "create-role", "inherent");
         seed_skill(ws.path(), ".agents/skills", "elsewhere", "shared root");
         seed_skill(ws.path(), ".claude/skills", "claude-one", "claude root");
 
@@ -1399,10 +1365,8 @@ mod tests {
                 .and_then(|s| s.source.clone())
         };
 
-        // Inside the meta dir: classified.
-        assert_eq!(source_of("market-pack").as_deref(), Some("clawhub"));
         assert_eq!(source_of("create-role").as_deref(), Some("builtin"));
-        // Outside it: the root's own label, not `local`.
+        // Everything else keeps its root's own label.
         assert_eq!(source_of("elsewhere").as_deref(), Some("shared"));
         assert_eq!(source_of("claude-one").as_deref(), Some("claude"));
     }
@@ -1422,9 +1386,9 @@ mod tests {
         // just written to, which the loser never gets: the file was written
         // correctly and only the confirmation failed.
         let ws = tempfile::tempdir().unwrap();
-        // The lower-ranked root, standing in for `~/.agents/skills` (rank 9),
+        // The lower-ranked root, standing in for `~/.agents/skills` (rank 2),
         // where team packs live — without needing to move HOME.
-        let pack_dir = ws.path().join(".opencode/skills");
+        let pack_dir = ws.path().join(".agents/skills");
         std::fs::create_dir_all(pack_dir.join("deploy-check")).unwrap();
         std::fs::write(
             pack_dir.join("deploy-check/SKILL.md"),
@@ -1455,7 +1419,6 @@ mod tests {
         let req = UpsertSkillRequest {
             content: "---\nname: deploy-check\n---\nedited by the user\n".to_owned(),
             skill_name: Some("deploy-check".to_owned()),
-            install_location: None,
             dir_path: Some(pack_dir.to_string_lossy().into_owned()),
             filename: Some("deploy-check".to_owned()),
         };
@@ -1483,7 +1446,6 @@ mod tests {
         let req = UpsertSkillRequest {
             content: "# Evil".to_owned(),
             skill_name: Some("Evil".to_owned()),
-            install_location: None,
             dir_path: Some(outside.path().to_string_lossy().into_owned()),
             filename: Some("pwned".to_owned()),
         };
@@ -1494,12 +1456,12 @@ mod tests {
 
     #[test]
     fn upsert_skill_rejects_traversal_in_filename() {
-        let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
         let ws = tempfile::tempdir().unwrap();
         let req = UpsertSkillRequest {
             content: "# Evil".to_owned(),
             skill_name: None,
-            install_location: Some("workspace".to_owned()),
             dir_path: None,
             filename: Some("../../escape".to_owned()),
         };
@@ -1542,10 +1504,11 @@ mod tests {
     }
 
     #[test]
-    fn white_label_scan_reads_brand_meta_without_teamclu_dir() {
+    fn white_label_scan_reads_brand_meta_roles_without_teamclu_dir() {
         let _guard = crate::test_brand_env::BrandEnvGuard::set("copilot361");
         let ws = tempfile::tempdir().unwrap();
-        let skill_dir = ws.path().join(".copilot361/skills/brand-skill");
+        // Skills are brand-independent now — `.claude/skills` under any brand.
+        let skill_dir = ws.path().join(".claude/skills/brand-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
@@ -1564,7 +1527,7 @@ mod tests {
         let state = scan_roles_skills_state(ws.path()).unwrap();
         assert!(
             state.skills.iter().any(|s| s.filename == "brand-skill"),
-            "brand meta skills must be visible"
+            "workspace skills must be visible under a white-label brand too"
         );
         assert!(
             state.roles.iter().any(|r| r.slug == "brand-role"),
@@ -1572,8 +1535,10 @@ mod tests {
         );
     }
 
+    /// Roles still fall back to the legacy meta dir; skills do not, because no
+    /// meta dir is a skills root any more.
     #[test]
-    fn white_label_scan_falls_back_to_legacy_teamclu_meta() {
+    fn white_label_roles_fall_back_to_legacy_teamclu_meta_but_skills_do_not() {
         let _guard = crate::test_brand_env::BrandEnvGuard::set("copilot361");
         let ws = tempfile::tempdir().unwrap();
         let skill_dir = ws.path().join(".teamclu/skills/legacy-skill");
@@ -1583,31 +1548,45 @@ mod tests {
             "---\nname: Legacy Skill\ndescription: legacy\n---\n\n# Legacy",
         )
         .unwrap();
+        let role_dir = ws.path().join(".teamclu/roles/legacy-role");
+        std::fs::create_dir_all(&role_dir).unwrap();
+        std::fs::write(
+            role_dir.join("ROLE.md"),
+            "---\nname: legacy-role\ndescription: Legacy role\n---\n\n## Role\nLegacy.\n",
+        )
+        .unwrap();
 
         let state = scan_roles_skills_state(ws.path()).unwrap();
         assert!(
-            state.skills.iter().any(|s| s.filename == "legacy-skill"),
-            "legacy .teamclu/skills must still be scanned for white-label"
+            state.roles.iter().any(|r| r.slug == "legacy-role"),
+            "legacy .teamclu/roles must still be scanned for white-label"
+        );
+        assert!(
+            !state.skills.iter().any(|s| s.filename == "legacy-skill"),
+            "the meta dir is not a skills root any more"
         );
     }
 
+    /// Skills are not brand-namespaced any more: a white-label build writes the
+    /// same `~/.agents/skills` as the official one, because that is the root
+    /// every runtime reads.
     #[test]
-    fn white_label_upsert_writes_brand_skills_dir() {
-        let _guard = crate::test_brand_env::BrandEnvGuard::set("copilot361");
+    fn white_label_upsert_writes_the_shared_agents_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("copilot361", home.path());
         let ws = tempfile::tempdir().unwrap();
         let req = UpsertSkillRequest {
             content: "# Brand\n\nBody".to_owned(),
             skill_name: Some("Brand Skill".to_owned()),
-            install_location: Some("workspace".to_owned()),
             dir_path: None,
             filename: None,
         };
         let saved = upsert_skill(ws.path(), "brand-skill", &req).unwrap();
         assert_eq!(saved.filename, "brand-skill");
-        assert!(ws
+        assert!(home
             .path()
-            .join(".copilot361/skills/brand-skill/SKILL.md")
+            .join(".agents/skills/brand-skill/SKILL.md")
             .is_file());
-        assert!(!ws.path().join(".teamclu/skills/brand-skill").exists());
+        assert!(!ws.path().join(".copilot361/skills/brand-skill").exists());
     }
 }

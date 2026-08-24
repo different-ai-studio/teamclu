@@ -463,8 +463,8 @@ export function planPersonalRow(row: {
   if (row.registryOwnsSlug && row.packOnDisk && row.source === 'global-agent') {
     return { hidden: true, id: row.slug }
   }
-  // Builtin / clawhub market copies are not "my personal skills".
-  if (row.source === 'builtin' || row.source === 'clawhub') {
+  // Builtin copies are not "my personal skills".
+  if (row.source === 'builtin') {
     return { hidden: true, id: row.slug }
   }
   // Rows are selected by id and resolved by first match, so a colliding row

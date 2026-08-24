@@ -311,7 +311,7 @@ export async function loadRolesSkillsWorkspaceStateFromFs(
       content: skill.content,
       description: extractSkillDescription(skill.content, skill.name),
       source: skill.source,
-      dirPath: skill.dirPath ?? `${workspacePath}/${TEAMCLU_DIR}/skills`,
+      dirPath: skill.dirPath,
       linkedRoles: roleUsageBySkill[skill.filename] ?? [],
       isRoleSkill: false,
     })
@@ -340,14 +340,11 @@ function skillRecordKey(skill: Pick<ManagedSkillRecord, "dirPath" | "filename">)
 const SKILL_SOURCE_PRIORITY: Record<SkillSource, number> = {
   local: 0,
   claude: 1,
-  clawhub: 2,
+  builtin: 2,
+  "global-agent": 2,
   shared: 3,
   team: 4,
-  builtin: 5,
-  plugin: 6,
-  "global-teamclu": 7,
-  "global-claude": 8,
-  "global-agent": 9,
+  "global-claude": 5,
   personal: 10,
 }
 
@@ -538,11 +535,20 @@ export async function deleteRole(workspacePath: string, roleSlug: string, roleFi
   }
 }
 
+/**
+ * Skills a role can be given a copy of.
+ *
+ * Scoped to the TeamClu-managed roots — `~/.agents/skills` (where the desktop
+ * writes new skills, and where the registry and ClawHub install) and the
+ * workspace's `.agents/skills`. This used to be the brand meta skills dir,
+ * which nothing writes and nothing scans any more; `.claude/skills` is
+ * deliberately left out, because those belong to Claude Code rather than to
+ * this app.
+ */
 export async function loadAttachableSkills(workspacePath: string): Promise<AttachableSkill[]> {
   const { skills } = await loadAllSkills(workspacePath)
-  const workspaceSkillRoot = `${workspacePath}/${TEAMCLU_DIR}/skills`
   return skills
-    .filter((skill) => skill.source === "local" && skill.dirPath === workspaceSkillRoot)
+    .filter((skill) => skill.source === "global-agent" || skill.source === "shared")
     .map((skill) => ({
       filename: skill.filename,
       name: skill.name,
@@ -602,7 +608,17 @@ export async function attachSkillToRole(input: AttachSkillToRoleInput): Promise<
     throw new Error(`Role "${roleSlug}" does not exist`)
   }
 
-  const sourceDir = `${workspacePath}/${TEAMCLU_DIR}/skills/${skillSlug}`
+  // Resolve the source through the attachable list rather than assuming a
+  // root: the skill can be in `~/.agents/skills` or the workspace's
+  // `.agents/skills`, and the single dir this used to hard-code (the brand meta
+  // skills dir) is not written or scanned any more, so attaching always failed
+  // with "not available".
+  const attachable = await loadAttachableSkills(workspacePath)
+  const source = attachable.find((skill) => skill.filename === skillSlug)
+  if (!source) {
+    throw new Error(`Skill "${skillSlug}" is not available for role attachment`)
+  }
+  const sourceDir = `${source.dirPath}/${skillSlug}`
   const sourceSkillPath = `${sourceDir}/SKILL.md`
   if (!(await exists(sourceSkillPath))) {
     throw new Error(`Skill "${skillSlug}" is not available for role attachment`)

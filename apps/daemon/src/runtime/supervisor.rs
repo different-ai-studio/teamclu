@@ -665,6 +665,21 @@ fn remove_non_native_desktop_control_skills(skills_dir: &Path) {
     }
 }
 
+/// Where the skills that ship with the binary are written: `~/.agents/skills`.
+///
+/// Not a workspace directory, and not brand-namespaced. They used to be seeded
+/// per workspace into the brand meta dir *and* `.opencode/skills` — two copies
+/// per project, of which only the meta one was ever read, and neither is a
+/// scanned root any more (`config::roles_skills::skill_dir_specs`). One copy in
+/// the root every runtime already reads replaces both, and it is where the
+/// Agent-side inventory has always looked for them
+/// (`daemon::server::rpc::skill_inventory`).
+fn inherent_skills_dir() -> Result<PathBuf, WorkspaceControlError> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| WorkspaceControlError::Io("home directory not found".to_owned()))?;
+    Ok(home.join(".agents/skills"))
+}
+
 fn ensure_inherent_skills_in_dir(skills_dir: &Path) -> Result<(), WorkspaceControlError> {
     std::fs::create_dir_all(skills_dir).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
     remove_non_native_desktop_control_skills(skills_dir);
@@ -723,11 +738,7 @@ pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlEr
 
     install_instruction_plugin_file(workspace_path)?;
     materialize_opencode_for_prepare(workspace_path)?;
-    ensure_inherent_skills_in_dir(&teamclu_runtime_env::workspace_meta_write_path_from_env(
-        workspace_path,
-        "skills",
-    ))?;
-    ensure_inherent_skills_in_dir(&workspace_path.join(".opencode/skills"))?;
+    ensure_inherent_skills_in_dir(&inherent_skills_dir()?)?;
     crate::runtime::claude_skills::ensure_claude_team_skills(workspace_path)?;
 
     if let Ok(Some(result)) =
@@ -2372,7 +2383,8 @@ mod tests {
 
     #[test]
     fn prepare_workspace_creates_defaults() {
-        let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
         let dir = tempfile::tempdir().unwrap();
         prepare_workspace(dir.path()).unwrap();
 
@@ -2386,16 +2398,22 @@ mod tests {
             "amuxd-remote-tools must not be auto-injected"
         );
 
-        assert!(dir
+        assert!(home
             .path()
-            .join(".teamclu/skills/create-role/SKILL.md")
+            .join(".agents/skills/create-role/SKILL.md")
             .is_file());
+        assert!(
+            !dir.path().join(".teamclu/skills/create-role").exists(),
+            "inherent skills are no longer seeded per workspace"
+        );
+        assert!(!dir.path().join(".opencode/skills").exists());
         assert!(!dir.path().join(".opencode/data").exists());
     }
 
     #[test]
     fn prepare_workspace_strips_paused_remote_tools_mcp() {
-        let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("opencode.json"),
@@ -2420,18 +2438,21 @@ mod tests {
     }
 
     #[test]
-    fn prepare_workspace_white_label_writes_brand_skills() {
-        let _guard = crate::test_brand_env::BrandEnvGuard::set("copilot361");
+    /// A white-label build seeds the same shared root as the official one:
+    /// skills are not brand-namespaced any more.
+    fn prepare_workspace_white_label_seeds_the_shared_agents_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("copilot361", home.path());
 
         let dir = tempfile::tempdir().unwrap();
         prepare_workspace(dir.path()).unwrap();
-        assert!(dir
+        assert!(home
             .path()
-            .join(".copilot361/skills/create-role/SKILL.md")
+            .join(".agents/skills/create-role/SKILL.md")
             .is_file());
         assert!(!dir
             .path()
-            .join(".teamclu/skills/create-role/SKILL.md")
+            .join(".copilot361/skills/create-role/SKILL.md")
             .exists());
     }
 
@@ -2470,7 +2491,8 @@ mod tests {
         // afterwards, and under pi the extension's bridge spawn took the whole
         // runtime down with it, so every session in the workspace failed with
         // "process exited before responding".
-        let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("opencode.json"),

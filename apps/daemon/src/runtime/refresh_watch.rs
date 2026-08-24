@@ -18,32 +18,16 @@ fn brand_workspace_config(workspace: &Path) -> PathBuf {
     teamclu_runtime_env::workspace_config_path_from_env(workspace)
 }
 
-fn brand_skills_dir(workspace: &Path) -> PathBuf {
-    teamclu_runtime_env::workspace_meta_write_path_from_env(workspace, "skills")
-}
-
 fn legacy_workspace_config(workspace: &Path) -> PathBuf {
     workspace
         .join(teamclu_runtime_env::WORKSPACE_META_DIR)
         .join(teamclu_runtime_env::WORKSPACE_CONFIG_FILE)
 }
 
-fn legacy_skills_dir(workspace: &Path) -> PathBuf {
-    workspace
-        .join(teamclu_runtime_env::WORKSPACE_META_DIR)
-        .join("skills")
-}
-
 fn is_workspace_config_path(path: &Path, workspace: &Path) -> bool {
     let brand = brand_workspace_config(workspace);
     let legacy = legacy_workspace_config(workspace);
     path == brand || (legacy != brand && path == legacy)
-}
-
-fn is_meta_skills_path(path: &Path, workspace: &Path) -> bool {
-    let brand = brand_skills_dir(workspace);
-    let legacy = legacy_skills_dir(workspace);
-    path.starts_with(&brand) || (legacy != brand && path.starts_with(&legacy))
 }
 
 /// Return both the workspace-visible team path and its physical target.
@@ -177,10 +161,12 @@ pub fn classify_change_path(
     let mut changes = Vec::new();
     let mut seen = HashSet::new();
 
+    // Mirrors `config::roles_skills::skill_dir_specs`. A root that is watched
+    // but not scanned only produces refreshes nothing can see; a root that is
+    // scanned but not watched leaves the panel stale until something else
+    // touches the workspace.
     let is_global_skill_path = home.is_some_and(|home_dir| {
-        path.starts_with(home_dir.join(".config/teamclu/skills"))
-            || path.starts_with(home_dir.join(".config/opencode/skills"))
-            || path.starts_with(home_dir.join(".claude/skills"))
+        path.starts_with(home_dir.join(".claude/skills"))
             || path.starts_with(home_dir.join(".agents/skills"))
     });
 
@@ -199,9 +185,7 @@ pub fn classify_change_path(
         ) || path.starts_with(workspace.workspace_path.join("teamclaw").join("_secrets"))
         {
             Some(RefreshChangeKind::EnvVars)
-        } else if is_meta_skills_path(path, &workspace.workspace_path)
-            || path.starts_with(workspace.workspace_path.join(".opencode/skills"))
-            || path.starts_with(workspace.workspace_path.join(".claude/skills"))
+        } else if path.starts_with(workspace.workspace_path.join(".claude/skills"))
             || path.starts_with(workspace.workspace_path.join(".agents/skills"))
             || is_team_skills_path(path, &workspace.workspace_path)
             || is_global_skill_path
@@ -252,22 +236,6 @@ fn watch_roots(workspaces: &[WatchedWorkspace], home: Option<&Path>) -> Vec<Watc
                 recursive: false,
             });
         }
-        let brand_skills = brand_skills_dir(&workspace.workspace_path);
-        let legacy_skills = legacy_skills_dir(&workspace.workspace_path);
-        roots.push(WatchRoot {
-            path: brand_skills.clone(),
-            recursive: true,
-        });
-        if legacy_skills != brand_skills {
-            roots.push(WatchRoot {
-                path: legacy_skills,
-                recursive: true,
-            });
-        }
-        roots.push(WatchRoot {
-            path: workspace.workspace_path.join(".opencode/skills"),
-            recursive: true,
-        });
         roots.push(WatchRoot {
             path: workspace.workspace_path.join(".claude/skills"),
             recursive: true,
@@ -295,14 +263,6 @@ fn watch_roots(workspaces: &[WatchedWorkspace], home: Option<&Path>) -> Vec<Watc
         });
     }
     if let Some(home_dir) = home {
-        roots.push(WatchRoot {
-            path: home_dir.join(".config/teamclu/skills"),
-            recursive: true,
-        });
-        roots.push(WatchRoot {
-            path: home_dir.join(".config/opencode/skills"),
-            recursive: true,
-        });
         roots.push(WatchRoot {
             path: home_dir.join(".claude/skills"),
             recursive: true,
@@ -558,22 +518,6 @@ mod tests {
 
         let cases = [
             (
-                Path::new("/tmp/ws-1/.teamclu/skills/demo-skill/SKILL.md"),
-                RefreshChangeKind::Skills,
-            ),
-            (
-                Path::new("/tmp/ws-1/.opencode/skills/demo-skill/SKILL.md"),
-                RefreshChangeKind::Skills,
-            ),
-            (
-                Path::new("/Users/tester/.config/teamclu/skills/global-skill/SKILL.md"),
-                RefreshChangeKind::Skills,
-            ),
-            (
-                Path::new("/Users/tester/.config/opencode/skills/global-skill/SKILL.md"),
-                RefreshChangeKind::Skills,
-            ),
-            (
                 Path::new("/tmp/ws-1/.claude/skills/demo-skill/SKILL.md"),
                 RefreshChangeKind::Skills,
             ),
@@ -621,6 +565,21 @@ mod tests {
                 kind
             );
         }
+
+        // Roots the scanner dropped. A write here refreshes nothing, because
+        // nothing can load it — see `skill_dir_specs`.
+        for retired in [
+            Path::new("/tmp/ws-1/.teamclu/skills/demo-skill/SKILL.md"),
+            Path::new("/tmp/ws-1/.opencode/skills/demo-skill/SKILL.md"),
+            Path::new("/Users/tester/.config/teamclu/skills/global-skill/SKILL.md"),
+            Path::new("/Users/tester/.config/opencode/skills/global-skill/SKILL.md"),
+        ] {
+            assert!(
+                classify_change_path(retired, &workspaces, Some(home)).is_empty(),
+                "{} is no longer a skills root",
+                retired.display()
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -659,7 +618,7 @@ mod tests {
         let workspaces = vec![watched_workspace("ws-1", "/tmp/ws-1")];
         let mut debounce = RefreshDebounce::new(Duration::from_millis(250));
         let now = Instant::now();
-        let path = Path::new("/tmp/ws-1/.teamclu/skills/demo-skill/SKILL.md");
+        let path = Path::new("/tmp/ws-1/.claude/skills/demo-skill/SKILL.md");
 
         record_classified_changes(
             &coordinator,
@@ -718,7 +677,7 @@ mod tests {
             &mut debounce,
             &workspaces,
             None,
-            &dir.path().join(".teamclu/skills/demo-skill/SKILL.md"),
+            &dir.path().join(".claude/skills/demo-skill/SKILL.md"),
             Instant::now(),
         )
         .await;
@@ -767,7 +726,7 @@ mod tests {
             &mut debounce,
             &workspaces,
             None,
-            &dir.path().join(".teamclu/skills/demo-skill/SKILL.md"),
+            &dir.path().join(".claude/skills/demo-skill/SKILL.md"),
             Instant::now(),
         )
         .await;
@@ -982,18 +941,31 @@ mod tests {
             &workspaces,
             None,
         );
-        assert_eq!(brand_skill[0].kind, RefreshChangeKind::Skills);
+        assert!(
+            brand_skill.is_empty(),
+            "a brand meta dir is not a skills root under any brand"
+        );
+
+        let claude_skill = classify_change_path(
+            Path::new("/tmp/ws-1/.claude/skills/demo/SKILL.md"),
+            &workspaces,
+            None,
+        );
+        assert_eq!(claude_skill[0].kind, RefreshChangeKind::Skills);
     }
 
     #[test]
-    fn white_label_watch_roots_include_brand_and_legacy() {
+    /// Config files are still brand-namespaced (and keep the legacy fallback);
+    /// skills are not watched under a meta dir at all any more.
+    fn white_label_watch_roots_include_brand_and_legacy_configs() {
         let _guard = crate::test_brand_env::BrandEnvGuard::set("copilot361");
         let workspaces = vec![watched_workspace("ws-1", "/tmp/ws-1")];
         let roots = watch_roots(&workspaces, None);
         let paths: Vec<_> = roots.iter().map(|r| r.path.clone()).collect();
         assert!(paths.contains(&PathBuf::from("/tmp/ws-1/.copilot361/copilot361.json")));
-        assert!(paths.contains(&PathBuf::from("/tmp/ws-1/.copilot361/skills")));
         assert!(paths.contains(&PathBuf::from("/tmp/ws-1/.teamclu/teamclu.json")));
-        assert!(paths.contains(&PathBuf::from("/tmp/ws-1/.teamclu/skills")));
+        assert!(paths.contains(&PathBuf::from("/tmp/ws-1/.claude/skills")));
+        assert!(!paths.contains(&PathBuf::from("/tmp/ws-1/.copilot361/skills")));
+        assert!(!paths.contains(&PathBuf::from("/tmp/ws-1/.teamclu/skills")));
     }
 }
