@@ -16,6 +16,7 @@ import {
   agents,
   agentMemberAccess,
 } from "../src/db/schema/index.js";
+import { makeAgentsRepo } from "../src/lib/pg-repo/agents.js";
 
 // ── Seed helpers ──────────────────────────────────────────────────────────────
 
@@ -595,4 +596,75 @@ test("authorizeAgentManagement is scoped to the team the caller named", async ()
     /agent not found/,
   );
   await assert.rejects(repo.authorizeAgentManagement(agentActor.id, ""), /teamId is required/);
+});
+
+// ── Device-scoped agent identity (agents_team_device_uk) ─────────────────────
+
+async function seedDeviceAgent(
+  db: any,
+  teamId: string,
+  ownerMemberId: string,
+  deviceId: string,
+  status = "active",
+) {
+  const [agentActor] = await db
+    .insert(actors)
+    .values({ teamId, actorType: "agent", displayName: "DeviceBot" })
+    .returning();
+  await db.insert(agents).values({
+    id: agentActor.id,
+    agentKind: "claude",
+    status,
+    visibility: "personal",
+    ownerMemberId,
+    deviceId,
+    teamId,
+  });
+  return agentActor;
+}
+
+const mockMintInvite = async (_teamId: string, _input: { displayName: string; targetActorId: string; ttlSeconds: number }) =>
+  ({ token: `mock-${Date.now()}-${Math.random()}`, expiresAt: null as string | null });
+
+test("ensureAgentForDevice: two owners on the same device each get their own agent", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const memberA = await seedMemberActor(db, team.id, { userId: "user-a" });
+  const memberB = await seedMemberActor(db, team.id, { userId: "user-b" });
+
+  const repoA = makeAgentsRepo(db, { callerActorId: memberA.id, mintAgentInvite: mockMintInvite });
+  const repoB = makeAgentsRepo(db, { callerActorId: memberB.id, mintAgentInvite: mockMintInvite });
+
+  const a = await repoA.ensureAgentForDevice(team.id, { deviceId: "dev-shared", displayName: "Bot-A" });
+  const b = await repoB.ensureAgentForDevice(team.id, { deviceId: "dev-shared", displayName: "Bot-B" });
+
+  assert.ok(a.agentId, "member A must get an agent");
+  assert.ok(b.agentId, "member B must get an agent");
+  assert.notEqual(a.agentId, b.agentId, "each owner gets a distinct agent");
+  assert.equal(a.created, true, "first call creates");
+  assert.equal(b.created, true, "second owner also creates (index scoped by owner)");
+});
+
+test("findAgentForDevice: returns the caller-owned agent regardless of status", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const member = await seedMemberActor(db, team.id, { userId: "user-find" });
+  await seedDeviceAgent(db, team.id, member.id, "dev-disabled", "disabled");
+
+  const repo = makeAgentsRepo(db, { callerActorId: member.id });
+  const found = await repo.findAgentForDevice(team.id, { deviceId: "dev-disabled" });
+  assert.ok(found.agentId, "a disabled agent must still be found (no status filter)");
+});
+
+test("ensureAgentForDevice: returns an existing disabled agent instead of inserting a duplicate", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const member = await seedMemberActor(db, team.id, { userId: "user-rebind" });
+  const existing = await seedDeviceAgent(db, team.id, member.id, "dev-rebind", "disabled");
+
+  const repo = makeAgentsRepo(db, { callerActorId: member.id, mintAgentInvite: mockMintInvite });
+  const result = await repo.ensureAgentForDevice(team.id, { deviceId: "dev-rebind", displayName: "Rebind" });
+
+  assert.equal(result.agentId, existing.id, "must return the existing agent, not create a new one");
+  assert.equal(result.created, false, "no new agent was created");
 });
