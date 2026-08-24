@@ -13,7 +13,7 @@
     "@teamclu/app": "workspace:*"
   },
   "devDependencies": {
-    "@types/chrome": "^0.0.270",
+    "@types/chrome": "^0.2.6",
     "esbuild": "^0.28.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
