@@ -232,6 +232,12 @@ jobs:
       - name: Run teamclu-runtime-env unit tests
         run: cargo test -p teamclu-runtime-env --locked
 
+      # Where every "installed in a terminal, missing in the app" bug gets
+      # decided, for both apps at once (#1049). Its tests moved here with the
+      # code when it left apps/daemon; without this step they run nowhere.
+      - name: Run teamclu-binpath unit tests
+        run: cargo test -p teamclu-binpath --locked
+
   daemon-windows:
     name: Daemon (Windows)
     runs-on: windows-latest

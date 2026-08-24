@@ -478,22 +478,24 @@ async fn install_opencode<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> 
     .await
 }
 
-/// Run the bundled `amuxd install-pi` sidecar, streaming its JSON progress lines
-/// under the "pi" requirement id. Idempotent (installs or upgrades to the pinned
-/// `pi.lock.json` minimum), mirroring the opencode install path.
-async fn install_pi<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+/// Run `amuxd install-pi`, streaming progress through `emit`.
+///
+/// `emit(status, line, error)` — status is "started" | "running" | "failed" |
+/// "done". Idempotent: installs pi or lifts it to the minimum `pi.lock.json`
+/// pins. Shaped like [`run_amuxd_install_opencode`] and shared for the same
+/// reason — the first-run SetupWizard and the settings Dependencies page must
+/// install pi through one code path, not two.
+pub(crate) async fn run_amuxd_install_pi<R, F>(app: &AppHandle<R>, emit: F) -> Result<(), String>
+where
+    R: Runtime,
+    F: Fn(&str, Option<String>, Option<String>) + Send,
+{
     use tauri_plugin_shell::process::CommandEvent;
     use tauri_plugin_shell::ShellExt;
 
-    emit_progress(
-        app,
-        SetupProgress {
-            id: "pi".into(),
-            status: "started".into(),
-            line: None,
-            error: None,
-        },
-    );
+    emit("started", None, None);
+    // `_child_guard` must stay alive until `rx` is drained: dropping the
+    // CommandChild early can kill the sidecar mid-install.
     let (mut rx, _child_guard) = app
         .shell()
         .sidecar("amuxd")
@@ -509,15 +511,7 @@ async fn install_pi<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             CommandEvent::Stdout(bytes) => {
                 let line = String::from_utf8_lossy(&bytes).trim().to_string();
                 if !line.is_empty() {
-                    emit_progress(
-                        app,
-                        SetupProgress {
-                            id: "pi".into(),
-                            status: "running".into(),
-                            line: Some(line),
-                            error: None,
-                        },
-                    );
+                    emit("running", Some(line), None);
                 }
             }
             CommandEvent::Stderr(bytes) => {
@@ -526,18 +520,10 @@ async fn install_pi<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
                     last_stderr = Some(line.clone());
                     // Forwarded, not just remembered: amuxd narrates a slow
                     // install (registry probes, mirror fallbacks) on stderr, and
-                    // holding those back is most of why this row could sit on
-                    // "installing…" with nothing under it. Mirrors the opencode
-                    // path, which has always emitted both pipes.
-                    emit_progress(
-                        app,
-                        SetupProgress {
-                            id: "pi".into(),
-                            status: "running".into(),
-                            line: Some(line),
-                            error: None,
-                        },
-                    );
+                    // holding those back is most of why an install row could sit
+                    // on "installing…" with nothing under it. Mirrors the
+                    // opencode path, which has always emitted both pipes.
+                    emit("running", Some(line), None);
                 }
             }
             CommandEvent::Terminated(payload) if payload.code.unwrap_or(-1) != 0 => {
@@ -550,27 +536,26 @@ async fn install_pi<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         }
     }
     if let Some(e) = last_err {
+        emit("failed", None, Some(e.clone()));
+        return Err(e);
+    }
+    emit("done", None, None);
+    Ok(())
+}
+
+async fn install_pi<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    run_amuxd_install_pi(app, |status, line, error| {
         emit_progress(
             app,
             SetupProgress {
                 id: "pi".into(),
-                status: "failed".into(),
-                line: None,
-                error: Some(e.clone()),
+                status: status.into(),
+                line,
+                error,
             },
         );
-        return Err(e);
-    }
-    emit_progress(
-        app,
-        SetupProgress {
-            id: "pi".into(),
-            status: "done".into(),
-            line: None,
-            error: None,
-        },
-    );
-    Ok(())
+    })
+    .await
 }
 
 /// Restart the desktop-managed amuxd so it re-reads `daemon.toml`.

@@ -324,6 +324,7 @@ dependencies = [
  "sha2",
  "subtle",
  "tar",
+ "teamclu-binpath",
  "teamclu-gateway",
  "teamclu-proto",
  "teamclu-runtime-env",
@@ -10726,6 +10727,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "teamclu-binpath",
  "teamclu-gateway",
  "teamclu-proto",
  "teamclu-rag",
@@ -10753,6 +10755,14 @@ dependencies = [
  "zip 8.5.1",
  "zstd",
  "zstd-sys",
+]
+
+[[package]]
+name = "teamclu-binpath"
+version = "0.1.0"
+dependencies = [
+ "dirs 6.0.0",
+ "tempfile",
 ]
 
 [[package]]

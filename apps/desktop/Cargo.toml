@@ -115,6 +115,8 @@ ignore = "0.4"
 zip = "8"
 urlencoding = "2"
 dirs = "5"
+# Shared with the daemon so the two never disagree about where a CLI lives.
+teamclu-binpath = { path = "../../crates/teamclu-binpath" }
 toml = "0.8"
 
 # HTML parsing for skills.sh scraping
