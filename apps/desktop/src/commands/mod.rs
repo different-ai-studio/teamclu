@@ -1,5 +1,6 @@
 pub mod acp_debug_log;
 pub mod agents_skills;
+pub mod amuxd_control;
 pub mod amuxd_supervisor;
 pub mod app_menu;
 pub mod clawhub;
