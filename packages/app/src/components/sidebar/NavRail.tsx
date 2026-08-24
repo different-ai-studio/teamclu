@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Inbox, Lightbulb, Keyboard, AppWindow, ChevronDown, ChevronRight } from 'lucide-react'
+import { Inbox, Lightbulb, Keyboard, AppWindow, ChevronDown } from 'lucide-react'
 import { useUIStore } from '@/stores/ui'
 import { useSessionListStore } from '@/stores/session-list-store'
 
@@ -23,6 +23,7 @@ import {
   useTeamShareCountsLoader,
 } from '@/components/sidebar/TeamShareNavSection'
 import { NewChatSplitButton } from '@/components/sidebar/NewChatSplitButton'
+import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 import { useFeatures } from '@/lib/remote-features'
 import { isScheduledSession } from '@/lib/session-origin'
 import { cn } from '@/lib/utils'
@@ -56,7 +57,8 @@ function TopEntry({ label, icon: Icon, active, badge, onClick }: TopEntryProps) 
         <span
           className={cn(
             // Same hit box for active/inactive so counts share a right edge.
-            'inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full px-[5px] text-[10.5px] font-semibold tabular-nums',
+            NAV_ROW_TRAILING_SLOT,
+            'text-[10.5px] font-semibold tabular-nums',
             active
               ? 'bg-coral text-coral-foreground shadow-[0_2px_6px_rgba(232,90,74,0.28)]'
               : 'text-muted-foreground',
@@ -177,18 +179,35 @@ export function NavRail() {
       </div>
 
       <div className="flex flex-col">
+        {/*
+          A rule with the label floated in it, rather than another left-aligned
+          header: the line is what separates the everyday rows from the folded
+          ones, and the chevron rotating in place is the only motion needed to
+          say which way it goes.
+        */}
         <button
           type="button"
           onClick={toggleAdvanced}
           aria-expanded={advancedExpanded}
-          className="flex w-full items-center gap-1.5 rounded-lg px-[9px] py-1.5 text-left text-[10.5px] font-semibold uppercase tracking-[0.08em] text-faint hover:text-foreground"
+          className="group flex w-full items-center gap-2.5 py-2"
         >
-          {advancedExpanded ? (
-            <ChevronDown className="h-[10px] w-[10px]" />
-          ) : (
-            <ChevronRight className="h-[10px] w-[10px]" />
-          )}
-          <span>{t('sidebar.advanced', 'Advanced')}</span>
+          <span
+            aria-hidden
+            className="h-px flex-1 bg-border-soft transition-colors duration-150 group-hover:bg-border"
+          />
+          <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-faint transition-colors duration-150 group-hover:text-ink-2">
+            {t('sidebar.advanced', 'Advanced')}
+            <ChevronDown
+              className={cn(
+                'h-3 w-3 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]',
+                advancedExpanded && 'rotate-180',
+              )}
+            />
+          </span>
+          <span
+            aria-hidden
+            className="h-px flex-1 bg-border-soft transition-colors duration-150 group-hover:bg-border"
+          />
         </button>
         {advancedExpanded && (
           <div className="flex flex-col gap-0.5">

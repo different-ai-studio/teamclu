@@ -6,6 +6,7 @@ import { useTeamShareBrowserStore, type TeamShareSection } from '@/stores/team-s
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { cn } from '@/lib/utils'
+import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 
 interface SectionDef {
   section: TeamShareSection
@@ -85,7 +86,8 @@ function SectionRow({
           title={attentionLabel}
         />
       )}
-      <span className="shrink-0 font-mono text-[11px] tabular-nums text-faint">{count}</span>
+      {/* Same box as the Sessions badge / Contacts "+" — see NAV_ROW_TRAILING_SLOT. */}
+      <span className={cn(NAV_ROW_TRAILING_SLOT, 'text-[10.5px] tabular-nums text-faint')}>{count}</span>
     </button>
   )
 }
