@@ -30,6 +30,16 @@
 
 use std::path::{Path, PathBuf};
 
+/// The home directory these lookups are relative to.
+///
+/// Exported so callers building an `extra` list resolve home through the same
+/// crate — `apps/desktop` pins `dirs = "5"` and this crate `dirs = "6"`, so a
+/// caller calling `dirs::home_dir()` itself would mix two resolvers inside one
+/// lookup, which is the split this crate exists to end.
+pub fn home_dir() -> Option<PathBuf> {
+    dirs::home_dir()
+}
+
 /// Directories to search, in order. Home-relative first — a user-local install
 /// is the one they chose most recently — then the system-wide package roots.
 ///

@@ -23,14 +23,18 @@ pub fn root() -> PathBuf {
 ///
 /// Everything here is safe to delete while the daemon is stopped — it is
 /// rebuilt on the next boot and describes *this* process, not any state.
-/// The control endpoint this daemon binds — `run/amuxd.sock` on unix, a named
-/// pipe on Windows. Shared with the desktop, which has to connect to it.
-pub fn control_endpoint() -> PathBuf {
-    teamclu_runtime_env::amuxd_layout::control_endpoint(&root())
-}
-
 pub fn run_dir() -> PathBuf {
     teamclu_runtime_env::amuxd_layout::run_dir(&root())
+}
+
+/// The control endpoint this daemon binds — `run/amuxd.sock` on unix, a named
+/// pipe on Windows. Shared with the desktop, which has to connect to it.
+///
+/// Note the Windows half is NOT under `run/`: a pipe name lives in a
+/// machine-global namespace, so the "safe to delete" rule above does not reach
+/// it.
+pub fn control_endpoint() -> PathBuf {
+    teamclu_runtime_env::amuxd_layout::control_endpoint(&root())
 }
 
 /// Rotating daemon log.

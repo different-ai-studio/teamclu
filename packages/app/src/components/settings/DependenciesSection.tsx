@@ -138,29 +138,33 @@ function InstallButton({ dep }: { dep: DependencyInfo }) {
   )
 }
 
-/** Deps that support an in-app update (re-fetches the latest release). */
-const UPDATABLE_DEPS = new Set(['opencode'])
+/** Deps that support an in-app update. */
+const UPDATABLE_DEPS = new Set(['opencode', 'pi'])
 
 function UpdateButton({ dep }: { dep: DependencyInfo }) {
   const { t } = useTranslation()
   const {
     updateDependency, installing, currentInstalling, installResults,
-    checkDependencies, resetInstallState, opencodeVersions, checkOpencodeVersions,
+    checkDependencies, resetInstallState, versions, checkVersions,
   } = useDepsStore()
   const isUpdatingThis = currentInstalling === dep.name
   const result = installResults[dep.name]
   const isFailed = result?.error !== undefined && !result?.success
-  const latest = opencodeVersions?.latest ?? null
+  // This dependency's own versions. It used to read opencode's unconditionally,
+  // which is why pi could not be listed here at all: it would have been offered
+  // an update labelled with opencode's version number.
+  const depVersions = versions[dep.name]
+  const latest = depVersions?.latest ?? null
   // Only `true` counts as up to date: null means we could not reach the mirror,
   // and "unknown" must not be presented to the user as "you're current".
-  const upToDate = opencodeVersions?.upToDate === true
+  const upToDate = depVersions?.upToDate === true
 
   const handleUpdate = async () => {
     resetInstallState()
     await updateDependency(dep.name)
     // Re-reads the version off disk, so the badge shows what actually landed.
     await checkDependencies()
-    await checkOpencodeVersions()
+    await checkVersions()
   }
 
   if (upToDate && !isUpdatingThis) {
@@ -262,7 +266,7 @@ function DepProgress({ dep }: { dep: DependencyInfo }) {
 
 export function DependenciesSection() {
   const { t } = useTranslation()
-  const { dependencies: deps, loading: isLoading, checkDependencies, checkOpencodeVersions } = useDepsStore()
+  const { dependencies: deps, loading: isLoading, checkDependencies, checkVersions } = useDepsStore()
   const [isChecking, setIsChecking] = React.useState(false)
 
   // Trigger initial check if not yet done
@@ -275,12 +279,12 @@ export function DependenciesSection() {
   // Separate from checkDependencies: this one hits the network, so it must not
   // gate the (offline, fast) dependency list rendering.
   React.useEffect(() => {
-    void checkOpencodeVersions()
-  }, [checkOpencodeVersions])
+    void checkVersions()
+  }, [checkVersions])
 
   const handleRecheck = async () => {
     setIsChecking(true)
-    await Promise.all([checkDependencies(), checkOpencodeVersions()])
+    await Promise.all([checkDependencies(), checkVersions()])
     setIsChecking(false)
   }
 

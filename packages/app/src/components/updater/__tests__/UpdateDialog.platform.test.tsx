@@ -19,6 +19,7 @@ function setPlatform(value: string) {
 }
 
 const originalPlatform = window.navigator.platform
+const originalUserAgent = window.navigator.userAgent
 
 describe('UpdateDialog restart copy', () => {
   beforeEach(() => {
@@ -30,10 +31,27 @@ describe('UpdateDialog restart copy', () => {
 
   afterEach(() => {
     setPlatform(originalPlatform)
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: originalUserAgent,
+      configurable: true,
+    })
   })
 
   it('tells a macOS user the update is already installed', () => {
     setPlatform('MacIntel')
+    render(<UpdateDialogContainer />)
+    expect(screen.getByText(/更新已安装。请重启以应用更改。/)).toBeInTheDocument()
+  })
+
+  // "darwin" contains "win". A substring test on the platform string told every
+  // macOS user they were on Windows, which is the more damaging direction: it
+  // hides the fact that the bundle is already swapped in.
+  it('does not read darwin as Windows', () => {
+    setPlatform('')
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (darwin) AppleWebKit/537.36 jsdom/26.0.0',
+      configurable: true,
+    })
     render(<UpdateDialogContainer />)
     expect(screen.getByText(/更新已安装。请重启以应用更改。/)).toBeInTheDocument()
   })

@@ -11,12 +11,8 @@
 //! import. It keeps the parallel (rayon) directory walk, because a zip can
 //! carry its `SKILL.md` at any depth.
 
-use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-
-use crate::process_util::CommandNoWindow;
 
 // ─── Import skill from local .zip (manual upload) ─────────────────────────────
 

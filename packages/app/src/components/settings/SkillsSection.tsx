@@ -794,7 +794,11 @@ ${skillContent.trim()}`
         <div id="marketplace-panel" role="tabpanel" aria-labelledby="marketplace-tab">
           {/* ClawHub directly: `SkillsMarketplace` was a source switcher between
               ClawHub and skills.sh, and skills.sh has been retired. With one
-              source left the switcher had nothing to switch. */}
+              source left the switcher had nothing to switch. The wrapper keeps
+              the gap it used to apply (`compact ? "" : "mt-4"`) — inlining the
+              component dropped it, butting the grid against the tab bar on the
+              non-embedded Settings page. */}
+          <div className={embeddedConsole ? undefined : 'mt-4'}>
           <ClawHubMarketplace
             sharedSearchQuery={embeddedConsole ? effectiveSearchQuery : undefined}
             onSharedSearchQueryChange={embeddedConsole ? onSharedSearchQueryChange : undefined}
@@ -807,6 +811,7 @@ ${skillContent.trim()}`
               window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
             }}
           />
+          </div>
         </div>
       ) : null}
 

@@ -139,6 +139,10 @@ type SetupState = {
   progress: Record<string, InstallProgress>
   errors: Record<string, string>
   loaded: boolean
+  /** Set when the requirement probe itself failed, so the UI can say so. */
+  probeError: string | null
+  /** Set when the runtime scan failed, so the picker stops pretending to scan. */
+  runtimeScanFailed: boolean
   /**
    * `agent` overrides which runtime the requirement list reports on. Onboarding
    * passes the user's pick (#881). Without it — the background probe that
@@ -162,6 +166,8 @@ export const useSetupStore = create<SetupState>((set, get) => ({
   progress: {},
   errors: {},
   loaded: false,
+  probeError: null,
+  runtimeScanFailed: false,
 
   // A required dep blocks continuing only when truly absent (no `version`
   // detected at all). If it's installed but outdated/upgrade-failed
@@ -178,20 +184,37 @@ export const useSetupStore = create<SetupState>((set, get) => ({
       return
     }
     markStartup('setup-list:start')
-    const { invoke } = await import('@tauri-apps/api/core')
-    const requirements = await invoke<RequirementStatus[]>('setup_list_requirements', {
-      localAgent: agent ?? null,
-    })
-    markStartup('setup-list:end')
-    set({ requirements, loaded: true })
-    // Refresh the optimistic-skip cache for the next launch.
-    persistSetupSatisfied(get().requiredSatisfied())
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const requirements = await invoke<RequirementStatus[]>('setup_list_requirements', {
+        localAgent: agent ?? null,
+      })
+      markStartup('setup-list:end')
+      set({ requirements, loaded: true, probeError: null })
+      // Refresh the optimistic-skip cache for the next launch.
+      persistSetupSatisfied(get().requiredSatisfied())
+    } catch (e) {
+      // `loaded` still flips. Without it the wizard sits on "scanning…" forever
+      // — a spinner that has stopped meaning anything is worse than an error,
+      // because it offers the user nothing to do. Same failure shape as the
+      // session list's never-resetting loader.
+      console.error('[SetupStore] requirement probe failed:', e)
+      set({ loaded: true, probeError: String(e) })
+    }
   },
 
   listAgentRuntimes: async () => {
     if (!isTauri()) return
-    const { invoke } = await import('@tauri-apps/api/core')
-    set({ agentRuntimes: await invoke<RequirementStatus[]>('setup_list_agent_runtimes') })
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const agentRuntimes = await invoke<RequirementStatus[]>('setup_list_agent_runtimes')
+      set({ agentRuntimes, runtimeScanFailed: false })
+    } catch (e) {
+      // Distinct from "still scanning": an empty list and a failed probe look
+      // identical to the picker, and only one of them is worth waiting on.
+      console.error('[SetupStore] runtime scan failed:', e)
+      set({ agentRuntimes: [], runtimeScanFailed: true })
+    }
   },
 
   install: async (id: string, opts?: { minDurationMs?: number }) => {

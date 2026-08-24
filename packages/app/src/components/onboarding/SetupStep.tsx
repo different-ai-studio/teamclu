@@ -271,6 +271,8 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
     installing,
     errors,
     loaded,
+    probeError,
+    runtimeScanFailed,
     progress,
     listRequirements,
     listAgentRuntimes,
@@ -403,6 +405,9 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
             {t('onboarding.setup.scanningSlow', 'First run — this can take a few seconds.')}
           </p>
         )}
+        {/* `loaded` now flips even on failure, so this screen is a moment rather
+            than a destination — but a probe that fails fast would otherwise
+            flash past with no trace. */}
       </div>
     )
   }
@@ -432,10 +437,35 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
                 the same "nothing is happening" the screen above just fixed. */}
             {visibleRuntimes.length === 0 ? (
               <div className="flex items-center gap-2 rounded-[12px] border border-border bg-paper px-4 py-3">
-                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                <span className="text-[12.5px] text-muted-foreground">
-                  {t('onboarding.setup.scanning', 'Looking for agent runtimes on this machine…')}
-                </span>
+                {runtimeScanFailed ? (
+                  <>
+                    <AlertCircle className="h-4 w-4 shrink-0 text-coral" />
+                    <span className="min-w-0 text-[12.5px] text-muted-foreground">
+                      {t(
+                        'onboarding.setup.scanFailed',
+                        'Could not check this machine for agent runtimes. Retry, or continue and install one from Settings.',
+                      )}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="ml-auto h-7 shrink-0 rounded-[6px] border-border bg-paper text-[11.5px]"
+                      disabled={rechecking}
+                      onClick={() => void recheck()}
+                    >
+                      {rechecking
+                        ? t('onboarding.setup.rechecking', 'Checking…')
+                        : t('onboarding.setup.retryScan', 'Retry')}
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    <span className="text-[12.5px] text-muted-foreground">
+                      {t('onboarding.setup.scanning', 'Looking for agent runtimes on this machine…')}
+                    </span>
+                  </>
+                )}
               </div>
             ) : (
             <div className="grid grid-cols-2 gap-2.5">
@@ -509,7 +539,7 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
         {/* The runtime error matters most on the guided path: nothing there is
             user-initiated, so a failed auto-install has no other way to surface
             (the developer screen already prints per-runtime errors above). */}
-        {[errors.amuxd, role === 'guided' ? errors[selected] : null]
+        {[probeError, errors.amuxd, role === 'guided' ? errors[selected] : null]
           .filter(Boolean)
           .map((message, i) => (
             <p key={i} className="flex items-start gap-1.5 text-[11.5px] text-coral">

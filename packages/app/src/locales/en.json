@@ -882,6 +882,8 @@
       "working": "Setting up…",
       "scanning": "Looking for agent runtimes on this machine…",
       "scanningSlow": "First run — this can take a few seconds.",
+      "scanFailed": "Could not check this machine for agent runtimes. Retry, or continue and install one from Settings.",
+      "retryScan": "Retry",
       "continue": "Continue",
       "switchToDeveloper": "Let me choose the runtime instead"
     },

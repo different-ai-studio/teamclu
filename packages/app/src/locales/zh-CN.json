@@ -882,6 +882,8 @@
       "working": "正在配置…",
       "scanning": "正在扫描本机已安装的 agent…",
       "scanningSlow": "首次启动，可能要等几秒。",
+      "scanFailed": "没能检测这台机器上的 agent 运行时。可以重试，或者继续、之后在设置里安装。",
+      "retryScan": "重试",
       "continue": "继续",
       "switchToDeveloper": "我想自己选运行时"
     },

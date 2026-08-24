@@ -97,6 +97,26 @@ pub fn report(url: &str, downloaded: u64, total: Option<u64>) {
     println!("{payload}");
 }
 
+/// The client these downloads use.
+///
+/// `no_proxy` is deliberate for the loopback case: reqwest reads `http_proxy` /
+/// `ALL_PROXY` from the environment and does *not* exempt localhost, so the
+/// unit test below would have its request CONNECTed through whatever proxy the
+/// machine happens to have configured and never reach its own listener. Real
+/// downloads go to public hosts where a corporate proxy is not something we
+/// route around, so this stays scoped to loopback.
+fn client_for(url: &str) -> reqwest::Result<reqwest::Client> {
+    let loopback = url.starts_with("http://127.0.0.1")
+        || url.starts_with("http://localhost")
+        || url.starts_with("http://[::1]");
+    let builder = reqwest::Client::builder();
+    if loopback {
+        builder.no_proxy().build()
+    } else {
+        builder.build()
+    }
+}
+
 /// Download `url` into memory, printing progress lines as the body arrives.
 ///
 /// Builds its own current-thread runtime, so it is safe to call from the
@@ -107,7 +127,7 @@ pub fn download(url: &str) -> anyhow::Result<Vec<u8>> {
         .enable_all()
         .build()?
         .block_on(async move {
-            let response = reqwest::get(url).await?.error_for_status()?;
+            let response = client_for(url)?.get(url).send().await?.error_for_status()?;
             let total = response.content_length();
             let mut buf: Vec<u8> = match total {
                 Some(n) => Vec::with_capacity(n.min(MAX_PREALLOC) as usize),
