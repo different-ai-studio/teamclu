@@ -1099,6 +1099,8 @@
     "restartLater": "稍后重启",
     "restartRecommendation": "更新已安装，建议尽快重启以使用新版本。",
     "restartToApply": "更新已安装。请重启以应用更改。",
+    "restartToInstall": "更新已下载完成。重启即开始安装。",
+    "restartInstallerNote": "安装程序会在应用关闭后运行，装完自动重新打开；Windows 可能会弹窗要你允许。直接退出则会丢弃这次下载。",
     "updateError": "更新过程中发生错误。",
     "retry": "重试"
   },

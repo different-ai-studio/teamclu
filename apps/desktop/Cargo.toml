@@ -157,8 +157,15 @@ block2 = "0.6"
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
 windows = "0.61"
-# Process liveness probe for the running-amuxd restart path (setup.rs).
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+# Process liveness probe for the running-amuxd restart path (setup.rs), and
+# ShellExecuteW for the updater — CreateProcess cannot raise the UAC prompt an
+# elevated NSIS installer needs (updater.rs).
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 wiremock = "0.5"

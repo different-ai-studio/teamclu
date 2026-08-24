@@ -262,3 +262,55 @@ jobs:
 
       - name: Build amuxd on Windows
         run: cargo build -p amuxd --locked
+
+  desktop-windows:
+    name: Desktop (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same protoc story as daemon-windows: the desktop crate pulls in
+      # teamclu-proto, whose build script needs it.
+      - name: Install protoc (for prost_build)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          # apps/desktop is a workspace member, so its output lands under the
+          # root target/ (see rust-check).
+          workspaces: |
+            . -> target
+
+      - name: Create stub sidecar binaries (tauri-build requires them to exist)
+        shell: bash
+        run: |
+          mkdir -p apps/desktop/binaries
+          touch apps/desktop/binaries/teamclu-introspect-x86_64-pc-windows-msvc.exe
+          touch apps/desktop/binaries/amuxd-x86_64-pc-windows-msvc.exe
+          # See rust-check: `resources` globs binaries/{cursor,claude}-bridge/**/*
+          # and all of binaries/ is gitignored, so the globs need a real file
+          # or tauri-build fails before any crate compiles.
+          mkdir -p apps/desktop/binaries/cursor-bridge apps/desktop/binaries/claude-bridge
+          touch apps/desktop/binaries/cursor-bridge/.keep
+          touch apps/desktop/binaries/claude-bridge/.keep
+
+      # Compile gate only, and the only one this crate's Windows code gets:
+      # rust-check runs on ubuntu and daemon-windows covers only amuxd, so
+      # every `#[cfg(target_os = "windows")]` block in apps/desktop used to
+      # reach a compiler for the first time inside the tag-triggered release
+      # build. The updater's Windows install path (#1049) is written against
+      # ShellExecuteW and cannot be checked from a macOS dev machine — ring's
+      # C sources need an MSVC toolchain to cross-compile — so without this
+      # job it had no coverage anywhere.
+      #
+      # `--no-default-features` mirrors what release.yml / release-oss.yml
+      # actually ship on Windows. The feature list is empty today, so it
+      # changes nothing; it keeps this job honest if that stops being true.
+      - name: Check the desktop app compiles on Windows
+        run: cargo check --manifest-path apps/desktop/Cargo.toml --locked --no-default-features

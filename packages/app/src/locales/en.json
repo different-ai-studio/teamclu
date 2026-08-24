@@ -1099,6 +1099,8 @@
     "restartLater": "Restart later",
     "restartRecommendation": "The update is installed. We recommend restarting soon to use the new version.",
     "restartToApply": "The update has been installed. Restart to apply changes.",
+    "restartToInstall": "The update is downloaded. Restart to install it.",
+    "restartInstallerNote": "The installer runs with the app closed and reopens it when it finishes; Windows may ask you to allow it. Quitting instead discards the download.",
     "updateError": "An error occurred during the update process.",
     "retry": "Retry"
   },
