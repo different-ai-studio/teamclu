@@ -843,6 +843,17 @@ impl RuntimeManager {
             self.release_opencode_snapshot(&handle.worktree);
             handle.status = amux::AgentStatus::Stopped;
             handle.shutdown().await;
+            // Clear the workspace's active-session stamp so a later session on
+            // the same worktree (esp. the shared per-team default worktree)
+            // doesn't read this stopped session's id via the MCP
+            // `get_session_deeplink` tool. Compare-and-clear: if a concurrent
+            // session already restamped, leave its id alone.
+            if !handle.session_id.is_empty() && !handle.worktree.is_empty() {
+                teamclu_runtime_env::clear_active_session_id_if_matches(
+                    std::path::Path::new(&handle.worktree),
+                    &handle.session_id,
+                );
+            }
             info!(agent_id, "agent stopped");
             Some(handle)
         } else {

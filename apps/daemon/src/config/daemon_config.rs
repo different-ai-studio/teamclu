@@ -75,6 +75,13 @@ pub struct DaemonConfig {
     /// daemon.toml rather than team.toml. `None` means English.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
+    /// App URL scheme for this deployment (e.g. `teamclu`, `acme`). Captured
+    /// from the onboarding invite and fed to workspace-scoped MCP tools as
+    /// `TEAMCLU_APP_SCHEME` so branded builds emit deeplinks with their own
+    /// scheme instead of the default `teamclu://`. `None` on legacy/pre-fix
+    /// `daemon.toml` — the MCP tool then falls back to `teamclu`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_scheme: Option<String>,
 }
 
 /// `[log]` — caps for the daemon's own rotating log file.
@@ -745,6 +752,7 @@ impl DaemonConfig {
             team_share: TeamShareConfig::default(),
             log: None,
             locale: None,
+            app_scheme: None,
         }
     }
 

@@ -25,7 +25,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 pub use active_session::{
-    read_active_session_id, write_active_session_id, ACTIVE_SESSION_ID_FILE, TEAMCLU_SESSION_ID_ENV,
+    clear_active_session_id_if_matches, read_active_session_id, write_active_session_id,
+    ACTIVE_SESSION_ID_FILE, TEAMCLU_SESSION_ID_ENV,
 };
 pub use env_activation::{
     analyze_env_activation, find_unresolved_config_placeholders, EnvActivationAnalysis,

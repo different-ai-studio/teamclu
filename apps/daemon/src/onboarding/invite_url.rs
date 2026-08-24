@@ -23,6 +23,12 @@ pub struct ParsedInvite {
     /// effective Cloud API endpoint into the invite so the daemon follows the
     /// app's build/runtime choice instead of a hardcoded default.
     pub cloud_api_url: Option<String>,
+    /// App URL scheme taken from the invite (`teamclu`, `acme`, …). Captured so
+    /// the daemon can feed `TEAMCLU_APP_SCHEME` to workspace-scoped MCP tools
+    /// (e.g. `get_session_deeplink`); without it, branded builds emit deeplinks
+    /// with the wrong `teamclu://` scheme. The inviter generates the invite with
+    /// its own registered scheme, so this always matches the desktop's handler.
+    pub scheme: String,
 }
 
 fn is_custom_app_scheme(scheme: &str) -> bool {
@@ -82,6 +88,7 @@ pub fn parse(raw: &str) -> Result<ParsedInvite> {
         token,
         broker_url,
         cloud_api_url,
+        scheme: url.scheme().to_string(),
     })
 }
 
@@ -94,6 +101,17 @@ mod tests {
         let p = parse("teamclu://invite?token=ABCDEF-12345_xyz").unwrap();
         assert_eq!(p.token, "ABCDEF-12345_xyz");
         assert_eq!(p.broker_url, None);
+        assert_eq!(p.scheme, "teamclu");
+    }
+
+    #[test]
+    fn captures_branded_scheme_from_invite() {
+        // A branded build's desktop generates invites with its own registered
+        // scheme (e.g. `acme`). The daemon must capture it so it can feed
+        // `TEAMCLU_APP_SCHEME` to MCP tools — otherwise `get_session_deeplink`
+        // emits `teamclu://` on a build whose handler is `acme://`.
+        let p = parse("acme://invite?token=tok-1").unwrap();
+        assert_eq!(p.scheme, "acme");
     }
 
     #[test]
