@@ -357,7 +357,6 @@ pub fn run() {
         .manage::<crate::mqtt::MqttBus>(std::sync::Arc::new(crate::mqtt::MqttBusInner::new()))
         .manage(std::sync::Arc::new(crate::terminal::Registry::new()))
         .invoke_handler(tauri::generate_handler![
-            commands::greet,
             commands::os_full_name,
             commands::get_device_hostname,
             commands::daemon_http::daemon_rpc,
@@ -431,11 +430,7 @@ pub fn run() {
             commands::cron::cron_run_job,
             commands::cron::cron_get_runs,
             commands::cron::cron_refresh_delivery,
-            commands::daemon_installer::install_local_daemon,
-            commands::daemon_installer::daemon_status,
-            commands::daemon_installer::uninstall_local_daemon,
             commands::daemon_onboarding::daemon_init,
-            commands::daemon_onboarding::daemon_install_service,
             commands::daemon_onboarding::daemon_clear,
             commands::amuxd_supervisor::daemon_ensure_running,
             commands::amuxd_supervisor::daemon_restart_managed,

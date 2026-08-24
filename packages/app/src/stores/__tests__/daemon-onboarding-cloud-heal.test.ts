@@ -68,9 +68,6 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (cmd === 'daemon_restart_managed' && h.restartManagedShouldThrow) {
       throw new Error('managed amuxd restart failed')
     }
-    if (cmd === 'daemon_install_service' && h.installServiceShouldThrow) {
-      throw new Error('amuxd binary not found at ~/.amuxd/bin/amuxd')
-    }
     return undefined
   }),
 }))

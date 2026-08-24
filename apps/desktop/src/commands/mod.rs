@@ -6,7 +6,6 @@ pub mod app_menu;
 pub mod clawhub;
 pub mod cron;
 pub mod daemon_http;
-pub mod daemon_installer;
 pub mod daemon_live;
 pub mod daemon_onboarding;
 pub mod deps;
@@ -142,11 +141,6 @@ pub fn with_amuxd_brand_env(
             teamclu_runtime_env::AMUXD_HOME_ENV,
             amuxd_home_dir().to_string_lossy().as_ref(),
         )
-}
-
-#[tauri::command]
-pub fn greet(name: &str) -> String {
-    format!("Hello, {}! Welcome to TeamClu.", name)
 }
 
 /// Best-effort OS account name used to seed a new member's default display
