@@ -62,6 +62,21 @@ pub fn global_team_dir(team_id: &str) -> PathBuf {
     super::layout::team_shared_dir(team_id).join(TEAM_LINK_NAME)
 }
 
+/// `~/.amuxd/teams/<team_id>/shared` — the sync engines content root.
+///
+/// Knowledge syncs directly under here as `shared/knowledge/` (the only
+/// `SHARED_PREFIX`). It used to live at `shared/teamclu-team/knowledge`; it was
+/// hoisted out so a workspace surfaces it via a dedicated `team-knowledge`
+/// link instead of through the `teamclu-team` repo dir.
+///
+/// There is deliberately no migration from the old location. The sync manifest
+/// keys files by the root-agnostic relative path `knowledge/…` and blobs are
+/// content-addressed, so a machine that upgrades simply pulls the team's
+/// knowledge down into the new root on its next tick.
+pub fn sync_content_root(team_id: &str) -> PathBuf {
+    super::layout::team_shared_dir(team_id)
+}
+
 /// `~/.amuxd/teams/<team_id>/state/cloud` — daemon-owned mirror of the team
 /// config that now comes from the Cloud API rather than the sync engine (team
 /// MCP, team env). See `runtime::team_cloud_config`.
@@ -139,15 +154,24 @@ pub fn resolve_team_dir(workspace_root: &Path, team_id: &str) -> PathBuf {
 pub fn ensure_initialized(team_id: &str) -> std::io::Result<PathBuf> {
     let dir = global_team_dir(team_id);
     std::fs::create_dir_all(&dir)?;
+    // Knowledge syncs under `shared/knowledge` (the sync content root), not
+    // under `shared/teamclu-team/knowledge` — see `sync_content_root`.
+    let shared = super::layout::team_shared_dir(team_id);
+    std::fs::create_dir_all(&shared)?;
     for prefix in SHARED_PREFIXES {
-        std::fs::create_dir_all(dir.join(prefix))?;
+        std::fs::create_dir_all(shared.join(prefix))?;
     }
     Ok(dir)
 }
 
 /// True when `dir` is missing, totally empty, or only holds empty scaffold dirs
-/// from [`ensure_initialized`] (no `.git`, no user content). Safe to remove before
-/// the first `git clone`.
+/// from [`ensure_initialized`] (no user content).
+///
+/// Callers use this to decide whether a directory is safe to delete, so point it
+/// at the tree that actually holds the content — [`sync_content_root`], not
+/// [`global_team_dir`]. `ensure_initialized` leaves the latter permanently empty
+/// now that the shared prefixes live one level up, which makes this vacuously
+/// true for it.
 pub fn is_scaffold_only(dir: &Path) -> bool {
     match std::fs::read_dir(dir) {
         Ok(entries) => entries.into_iter().all(|e| {
@@ -198,12 +222,17 @@ mod tests {
     }
 
     /// The load-bearing separation: everything the daemon writes for a team is
-    /// outside the one directory the sync engine scans. A path that satisfies
-    /// this by accident today (`cloud/` as a sibling of `teamclu-team/`) breaks
-    /// the moment someone adds a sibling one level in.
+    /// outside the tree the sync engine scans.
+    ///
+    /// Measured against [`sync_content_root`], never against `global_team_dir`.
+    /// The scanned root used to be `shared/teamclu-team`, so asserting on that
+    /// path was the same thing; once knowledge was hoisted to `shared/` the two
+    /// diverged and `global_team_dir` became a *child* of the synced tree — a
+    /// daemon-private path added under `shared/` would have passed the old
+    /// assertion and then been pushed to every teammate.
     #[test]
     fn daemon_private_paths_stay_out_of_the_synced_tree() {
-        let synced = global_team_dir("team-a");
+        let synced = sync_content_root("team-a");
         for private in [
             global_team_cloud_dir("team-a"),
             global_sync_state_path("team-a"),
@@ -216,6 +245,9 @@ mod tests {
                 synced.display()
             );
         }
+        // Guard the premise: the team repo dir really is inside the synced tree
+        // now, so this test would be vacuous if it kept measuring against it.
+        assert!(global_team_dir("team-a").starts_with(&synced));
     }
 
     #[test]
@@ -259,9 +291,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", tmp.path());
         let dir = ensure_initialized("team-x").unwrap();
-        assert!(dir.is_dir());
+        assert!(dir.is_dir()); // shared/teamclu-team (team repo)
+        // knowledge syncs under shared/knowledge (sync content root), not the repo dir
+        let shared = sync_content_root("team-x");
         for prefix in SHARED_PREFIXES {
-            assert!(dir.join(prefix).is_dir(), "{prefix} should exist");
+            assert!(shared.join(prefix).is_dir(), "{prefix} should exist under shared/");
         }
     }
 }

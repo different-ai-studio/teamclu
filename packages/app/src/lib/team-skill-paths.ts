@@ -84,6 +84,24 @@ export async function resolveTeamDir(_workspacePath: string): Promise<string | n
   return (await exists(globalDir)) ? globalDir : null
 }
 
+async function globalTeamKnowledgeDir(teamId: string): Promise<string> {
+  return `${await amuxdRoot()}/teams/${teamId}/shared/knowledge`
+}
+
+/** Active team global knowledge dir (~/.amuxd[-<brand>]/teams/<id>/shared/knowledge). */
+export async function globalTeamKnowledgeShareDir(): Promise<string | null> {
+  const teamId = await readOnboardedTeamId()
+  if (!teamId) return null
+  return globalTeamKnowledgeDir(teamId)
+}
+
+/** Where to read this workspace team knowledge: the global shared/knowledge dir. */
+export async function resolveTeamKnowledgeDir(): Promise<string | null> {
+  const globalDir = await globalTeamKnowledgeShareDir()
+  if (!globalDir) return null
+  return (await exists(globalDir)) ? globalDir : null
+}
+
 function trimTrailingPathSeparators(path: string): string {
   return path.replace(/[/\\]+$/, '')
 }

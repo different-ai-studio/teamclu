@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 
 use crate::backend::Backend;
 use crate::config::global_team_store::{self, TEAM_LINK_NAME};
-use crate::config::workspace_link::LinkStatus;
+use crate::config::workspace_link::{self, LinkStatus, TEAM_KNOWLEDGE_LINK_NAME};
 
 /// Result of consulting the cloud share-mode endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,59 +86,77 @@ fn path_is_under(ws_path: &str, root: &Path) -> bool {
     }
 }
 
-/// Remove `<workspace>/teamclu-team` only when it is a symlink/junction.
-///
-/// Used for app workspaces, where a same-named real directory would be the
-/// app's own source and must never be deleted.
-fn remove_workspace_team_symlink(ws_path: &str) {
-    let link = Path::new(ws_path.trim()).join(TEAM_LINK_NAME);
-    let Ok(meta) = std::fs::symlink_metadata(&link) else {
+/// Remove one workspace link entry only when it is a symlink/junction.
+fn remove_link_entry(link: &Path, ws_path: &str) {
+    let Ok(meta) = std::fs::symlink_metadata(link) else {
         return;
     };
     if !meta.file_type().is_symlink() {
         return;
     }
-    #[cfg(unix)]
-    let removed = std::fs::remove_file(&link);
-    #[cfg(windows)]
-    let removed = std::fs::remove_dir(&link);
-    if let Err(e) = removed {
-        debug!(workspace = %ws_path, "app workspace team-link cleanup skipped: {e}");
+    if let Err(e) = workspace_link::remove_link(link) {
+        debug!(workspace = %ws_path, entry = %link.display(), "team link cleanup skipped: {e}");
     }
 }
 
+/// Remove `<workspace>/team-knowledge` when it is a symlink/junction.
+///
+/// Link-only by design: unlike `teamclu-team`, this name never had a legacy
+/// real-directory form, so a real directory sitting there is local user content
+/// and must survive teardown.
+fn remove_workspace_knowledge_symlink(ws_root: &Path, ws_path: &str) {
+    remove_link_entry(&ws_root.join(TEAM_KNOWLEDGE_LINK_NAME), ws_path);
+}
+
+/// Remove `<workspace>/teamclu-team` and `<workspace>/team-knowledge` only when
+/// they are symlinks/junctions.
+///
+/// Used for app workspaces, where a same-named real directory would be the
+/// app's own source and must never be deleted.
+fn remove_workspace_team_symlink(ws_path: &str) {
+    let ws_root = Path::new(ws_path.trim());
+    remove_link_entry(&ws_root.join(TEAM_LINK_NAME), ws_path);
+    remove_workspace_knowledge_symlink(ws_root, ws_path);
+}
+
 /// Remove `<workspace>/teamclu-team` when it is a symlink/junction; remove a
-/// real directory if one was materialized locally (legacy).
+/// real directory if one was materialized locally (legacy). Drops the
+/// `team-knowledge` link alongside it.
+///
+/// Both have to go together. `team-knowledge` points into `shared/knowledge`,
+/// which [`prune_scaffold_team_home`] may delete immediately after this call,
+/// and nothing would repair the leftover: the workspace-relative repair path
+/// (`ensure_team_knowledge_link_from_workspace`) derives its target by reading
+/// the `teamclu-team` link this call just removed.
 pub fn remove_workspace_team_link(ws_path: &str) -> std::io::Result<()> {
-    let link = Path::new(ws_path.trim()).join(TEAM_LINK_NAME);
+    let ws_root = Path::new(ws_path.trim());
+    remove_workspace_knowledge_symlink(ws_root, ws_path);
+    let link = ws_root.join(TEAM_LINK_NAME);
     match std::fs::symlink_metadata(&link) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
-        Ok(meta) if meta.file_type().is_symlink() => {
-            #[cfg(unix)]
-            {
-                std::fs::remove_file(&link)
-            }
-            #[cfg(windows)]
-            {
-                std::fs::remove_dir(&link)
-            }
-        }
+        Ok(meta) if meta.file_type().is_symlink() => workspace_link::remove_link(&link),
         Ok(_) => std::fs::remove_dir_all(&link),
     }
 }
 
-/// Drop `~/.amuxd/teams/<team_id>/` when the global copy is still empty scaffold.
+/// Drop `~/.amuxd/teams/<team_id>/shared/` when it still holds nothing but the
+/// empty scaffold [`global_team_store::ensure_initialized`] creates.
+///
+/// The emptiness check MUST measure the sync content root — the tree about to
+/// be deleted — and not `teamclu-team`. Knowledge lives at `shared/knowledge`
+/// now, which leaves `shared/teamclu-team` permanently empty and makes
+/// `is_scaffold_only` vacuously true for it; asking it would delete a fully
+/// populated `shared/` on any unlink. `state/sync.json` survives that deletion
+/// as a sibling, so the next tick would see every `knowledge/*` entry missing
+/// and tombstone it for the whole team.
 pub fn prune_scaffold_team_home(team_id: &str) {
-    let global = global_team_store::global_team_dir(team_id);
-    if !global_team_store::is_scaffold_only(&global) {
+    let shared = global_team_store::sync_content_root(team_id);
+    if !global_team_store::is_scaffold_only(&shared) {
         return;
     }
-    let Some(team_home) = global.parent() else {
-        return;
-    };
-    if let Err(e) = std::fs::remove_dir_all(team_home) {
-        debug!(team_id, path = %team_home.display(), "prune scaffold team home failed: {e}");
+    if let Err(e) = std::fs::remove_dir_all(&shared) {
+        debug!(team_id, path = %shared.display(), "prune scaffold team home failed: {e}");
     }
 }
 
@@ -341,10 +359,70 @@ mod tests {
 
         let team_id = "team-prune-test";
         global_team_store::ensure_initialized(team_id).unwrap();
-        let global = global_team_store::global_team_dir(team_id);
-        assert!(global.exists());
+        let shared = global_team_store::sync_content_root(team_id);
+        assert!(shared.exists());
 
         prune_scaffold_team_home(team_id);
-        assert!(!global.exists());
+        assert!(!shared.exists());
+    }
+
+    /// The scaffold check must measure the synced tree, not `teamclu-team`.
+    /// `ensure_initialized` leaves that one permanently empty (the shared
+    /// prefixes moved a level up), so asking it is vacuously true and every
+    /// unlink would delete the team's whole knowledge base — and `sync.json`,
+    /// a sibling, survives to tombstone all of it for the rest of the team.
+    #[test]
+    fn prune_scaffold_team_home_keeps_a_populated_knowledge_dir() {
+        let _lock = global_team_store::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let team_id = "team-prune-populated";
+        global_team_store::ensure_initialized(team_id).unwrap();
+        let shared = global_team_store::sync_content_root(team_id);
+        let note = shared.join("knowledge").join("keep.md");
+        std::fs::write(&note, b"team knowledge").unwrap();
+        // The team repo dir is empty, exactly as `ensure_initialized` leaves it.
+        assert!(global_team_store::is_scaffold_only(
+            &global_team_store::global_team_dir(team_id)
+        ));
+
+        prune_scaffold_team_home(team_id);
+        assert_eq!(std::fs::read(&note).unwrap(), b"team knowledge");
+    }
+
+    /// Teardown must drop `team-knowledge` too. It points into `shared/`, which
+    /// `prune_scaffold_team_home` deletes right after, and nothing can repair
+    /// the leftover — the workspace-relative repair path reads the
+    /// `teamclu-team` link that teardown just removed.
+    #[cfg(unix)]
+    #[test]
+    fn unlink_drops_the_team_knowledge_link_too() {
+        let ws = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(target.path(), ws.path().join(TEAM_LINK_NAME)).unwrap();
+        std::os::unix::fs::symlink(target.path(), ws.path().join(TEAM_KNOWLEDGE_LINK_NAME))
+            .unwrap();
+
+        remove_workspace_team_link(ws.path().to_str().unwrap()).unwrap();
+        assert!(std::fs::symlink_metadata(ws.path().join(TEAM_LINK_NAME)).is_err());
+        assert!(std::fs::symlink_metadata(ws.path().join(TEAM_KNOWLEDGE_LINK_NAME)).is_err());
+        assert!(target.path().exists());
+    }
+
+    /// A real `team-knowledge` directory is local user content — this name never
+    /// had a legacy real-dir form the way `teamclu-team` did — so teardown must
+    /// leave it alone.
+    #[test]
+    fn unlink_leaves_a_real_team_knowledge_directory_alone() {
+        let ws = tempfile::tempdir().unwrap();
+        let real = ws.path().join(TEAM_KNOWLEDGE_LINK_NAME);
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("mine.md"), b"local note").unwrap();
+
+        remove_workspace_team_link(ws.path().to_str().unwrap()).unwrap();
+        assert_eq!(std::fs::read(real.join("mine.md")).unwrap(), b"local note");
     }
 }

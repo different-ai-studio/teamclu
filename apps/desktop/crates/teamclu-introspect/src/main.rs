@@ -4,7 +4,6 @@ mod config;
 mod daemon_sock;
 mod cron;
 mod env_vars;
-mod knowledge;
 mod mcp;
 mod participants;
 mod roles;
@@ -167,41 +166,6 @@ fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {}
-            }
-        },
-        {
-            "name": "manage_knowledge",
-            "description": "Manage the knowledge base: search entries, add a memory note, list all memory entries, or delete one. Use 'search' to find relevant information. Use 'add' to persist content for future reference.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["search", "add", "list", "delete"],
-                        "description": "The action to perform."
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Search query (required for action=search)."
-                    },
-                    "top_k": {
-                        "type": "integer",
-                        "description": "Max results to return for search (default 5)."
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Content to save (required for action=add)."
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Title of the memory note (optional for action=add)."
-                    },
-                    "filename": {
-                        "type": "string",
-                        "description": "Filename for the note (optional for add/delete). Auto-generated if omitted for add. Required for delete."
-                    }
-                },
-                "required": ["action"]
             }
         },
         {
@@ -539,15 +503,6 @@ async fn handle_request(
                     }
                     Err(e) => tool_err(&e),
                 },
-                "manage_knowledge" => {
-                    match knowledge::handle(workspace, api_port, &arguments).await {
-                        Ok(v) => {
-                            let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                            tool_ok(&text)
-                        }
-                        Err(e) => tool_err(&e),
-                    }
-                }
                 "manage_roles" => match roles::handle(workspace, &arguments).await {
                     Ok(v) => {
                         let text = serde_json::to_string_pretty(&v).unwrap_or_default();

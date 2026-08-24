@@ -721,6 +721,11 @@ pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlEr
         ));
     }
 
+    // Re-ensure the workspace team-knowledge link on every open/switch so a
+    // stale or dangling symlink never survives. No team_id here: it chains
+    // through the workspace own teamclu-team link.
+    let _ = crate::config::workspace_link::ensure_team_knowledge_link_from_workspace(workspace_path);
+
     install_instruction_plugin_file(workspace_path)?;
     materialize_opencode_for_prepare(workspace_path)?;
     ensure_inherent_skills_in_dir(&teamclu_runtime_env::workspace_meta_write_path_from_env(

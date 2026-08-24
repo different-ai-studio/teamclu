@@ -18,7 +18,6 @@ import type {
   QueuedMessage,
   SessionState,
 } from "./session-types";
-import type { SearchResult } from "@/stores/knowledge";
 import { updateSessionCache } from "./session-cache";
 import { clearMessageTimeout } from "./session-internals";
 import {
@@ -204,77 +203,6 @@ export function createMessageActions(set: SessionSet, get: SessionGet) {
   }
 
   return {
-    // RAG V2: Auto-inject knowledge from pre-inference search
-    autoInjectKnowledge: async (userMessage: string): Promise<{ context?: string; chunks?: SearchResult[] }> => {
-      try {
-        const { useKnowledgeStore } = await import('./knowledge')
-        const config = useKnowledgeStore.getState().config
-
-        if (!config || !config.autoInjectEnabled) {
-          return {}
-        }
-
-        const topK = config.autoInjectTopK
-        const minScore = config.autoInjectThreshold
-        const maxTokens = config.autoInjectMaxTokens
-
-        console.log('[RAG Auto-Inject] Searching with:', { topK, minScore, maxTokens })
-
-        const searchForAutoInject = useKnowledgeStore.getState().searchForAutoInject
-        const results = await searchForAutoInject(userMessage, topK, minScore)
-
-        if (results.length === 0) {
-          console.log('[RAG Auto-Inject] No results above threshold, skipping injection')
-          return {}
-        }
-
-        console.log(`[RAG Auto-Inject] Found ${results.length} results above threshold`)
-
-        const contextLines: string[] = [
-          '## \u76f8\u5173\u77e5\u8bc6\u5e93\u5185\u5bb9',
-          '',
-          '\u4ee5\u4e0b\u662f\u4ece\u77e5\u8bc6\u5e93\u4e2d\u68c0\u7d22\u5230\u7684\u76f8\u5173\u4fe1\u606f\uff0c\u8bf7\u53c2\u8003\u8fd9\u4e9b\u5185\u5bb9\u56de\u7b54\u7528\u6237\u95ee\u9898\uff1a',
-          '',
-        ]
-
-        let estimatedTokens = contextLines.join('\n').length / 4
-        const includedChunks: SearchResult[] = []
-
-        for (let i = 0; i < results.length; i++) {
-          const result = results[i]
-          const chunk = [
-            `### \u7247\u6bb5 ${i + 1} (\u6765\u6e90: ${result.source}, \u76f8\u4f3c\u5ea6: ${result.score.toFixed(2)})`,
-            result.heading ? `**\u7ae0\u8282**: ${result.heading}` : '',
-            '',
-            result.content,
-            '',
-          ].filter(Boolean).join('\n')
-
-          const chunkTokens = chunk.length / 4
-
-          if (estimatedTokens + chunkTokens > maxTokens) {
-            console.log(`[RAG Auto-Inject] Reached token limit (${maxTokens}), stopping at ${i} chunks`)
-            break
-          }
-
-          contextLines.push(chunk)
-          estimatedTokens += chunkTokens
-          includedChunks.push(result)
-        }
-
-        const injectedContext = contextLines.join('\n')
-        console.log(`[RAG Auto-Inject] Injected ${estimatedTokens.toFixed(0)} tokens from ${includedChunks.length} chunks`)
-
-        return {
-          context: injectedContext,
-          chunks: includedChunks
-        }
-      } catch (error) {
-        console.error('[RAG Auto-Inject] Failed:', error)
-        return {}
-      }
-    },
-
     // Send a message to the active session (auto-creates Cloud session if needed)
     sendMessage: async (content: string, _agent?: string, imageParts?: SendMessageFilePart[]) => {
       if (!content.trim() && (!imageParts || imageParts.length === 0)) return;

@@ -42,7 +42,7 @@ import { cn } from '@/lib/utils';
 import type { EditorProps } from './types';
 import { detectClipboardImage, saveClipboardImage } from './image-paste-handler';
 import { parseWikiLinkText } from '@/lib/wiki-link-utils';
-import { useKnowledgeStore } from '@/stores/knowledge';
+import { resolveWikiLinkPath, createNoteFromLink } from '@/lib/wiki-link-resolver';
 import { useWorkspaceStore } from '@/stores/workspace';
 
 export interface MarkdownEditorHandle {
@@ -151,21 +151,26 @@ function handleWikiLinkClick(event: MouseEvent): boolean {
   const workspacePath = workspace.workspacePath;
   if (!workspacePath) return false;
 
-  const knowledge = useKnowledgeStore.getState();
-  const resolved = knowledge.resolveWikiLink(parts.target);
   const heading = parts.heading ?? undefined;
-  if (resolved) {
-    workspace.selectFile(`${workspacePath}/${resolved}`, undefined, heading);
-  } else {
-    knowledge
-      .createNoteFromLink(parts.target)
-      .then((newPath) => {
-        workspace.selectFile(newPath, undefined, heading);
-      })
-      .catch((err) => {
-        console.error('[MarkdownEditor] createNoteFromLink failed:', err);
-      });
-  }
+  void resolveWikiLinkPath(workspacePath, "team-knowledge", parts.target)
+    .then((resolved) => {
+      if (resolved) {
+        workspace.selectFile(`${workspacePath}/${resolved}`, undefined, heading);
+        return;
+      }
+      return createNoteFromLink(workspacePath, "team-knowledge", parts.target).then(
+        (newPath) => {
+          workspace.selectFile(newPath, undefined, heading);
+        },
+      );
+    })
+    .catch((err) => {
+      console.error('[MarkdownEditor] wiki-link resolution failed:', err);
+      // Surfaced, not swallowed: the common failure is "team-knowledge isn't
+      // linked yet", and creating the note anyway would shadow the daemon's
+      // symlink for good. Silence would just read as a dead click.
+      toast.error(String(err instanceof Error ? err.message : err));
+    });
   return true;
 }
 

@@ -19,6 +19,7 @@
 - Do not commit secrets, credentials, or local private config.
 - Prefer small, reversible steps; run relevant checks before finishing.
 - Do not push directly to `main`; use a feature branch and review flow when that applies to this repo.
+- Shared team knowledge may live under `team-knowledge/` when this workspace is linked to team share.
 
 ## Role reminder
 

@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 
 import { cn } from '@/lib/utils';
-import { ObsidianIcon } from '@/components/knowledge/ObsidianIcon';
+import { ObsidianIcon } from './ObsidianIcon';
 import { useTabsStore } from '@/stores/tabs';
 import { useCurrentTeamStore } from '@/stores/current-team';
 import { useVersionHistoryStore } from '@/stores/version-history';
@@ -311,7 +311,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   const fileIconInfo = !isDirectory ? getFileIcon(node.name) : null;
   const FileIcon = fileIconInfo?.icon || File;
   const fileIconColor = fileIconInfo?.color || "text-muted-foreground";
-  const isKnowledgeDir = isDirectory && node.name === 'knowledge' && !node.path.includes('/.trash/');
+  const isKnowledgeDir = isDirectory && node.name === 'team-knowledge' && !node.path.includes('/.trash/');
 
   if (isRenaming) {
     return (
