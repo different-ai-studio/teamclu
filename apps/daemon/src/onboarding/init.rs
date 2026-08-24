@@ -249,6 +249,12 @@ fn daemon_config_for_invite(
         daemon_cfg.actor.name = display_name.to_string();
     }
     daemon_cfg.team_id = Some(team_id.to_string());
+    // Capture the invite's URL scheme so the daemon can feed
+    // `TEAMCLU_APP_SCHEME` to workspace-scoped MCP tools (introspect's
+    // `get_session_deeplink`). Without this, branded builds emit deeplinks
+    // with the wrong `teamclu://` scheme. Re-onboarding refreshes it; an
+    // existing value is overwritten so a re-brand takes effect.
+    daemon_cfg.app_scheme = Some(invite.scheme.clone());
     // Honor an explicit `?broker=` invite override; otherwise leave empty so the
     // daemon resolves the broker from /v1/config/bootstrap at startup.
     daemon_cfg.mqtt.broker_url = invite.broker_url.clone().unwrap_or_default();
@@ -273,6 +279,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: None,
                 cloud_api_url: None,
+                scheme: "teamclu".into(),
             },
         );
         let http = cfg.http.expect("init should write [http]");
@@ -313,6 +320,7 @@ mod tests {
                 team_share: TeamShareConfig::default(),
                 log: None,
                 locale: None,
+                app_scheme: None,
             }),
             "host",
             "team-1",
@@ -321,6 +329,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: None,
                 cloud_api_url: None,
+                scheme: "teamclu".into(),
             },
         );
         assert!(cfg.http.is_some());
@@ -343,12 +352,33 @@ mod tests {
                 token: "tok".into(),
                 broker_url: Some("mqtts://broker.example.com:8883".into()),
                 cloud_api_url: None,
+                scheme: "teamclu".into(),
             },
         );
         assert_eq!(cfg.team_id.as_deref(), Some("team-1"));
         assert_eq!(cfg.actor.id, "actor-1");
         assert_eq!(cfg.actor.name, "macmini-5");
         assert_eq!(cfg.mqtt.broker_url, "mqtts://broker.example.com:8883");
+    }
+
+    #[test]
+    fn invite_scheme_is_captured_into_app_scheme() {
+        // A branded build's invite carries the brand scheme; the daemon must
+        // persist it so workspace-scoped MCP tools (get_session_deeplink) emit
+        // deeplinks with the brand scheme instead of the default teamclu://.
+        let cfg = daemon_config_for_invite(
+            None,
+            "host",
+            "team-1",
+            "actor-1",
+            &ParsedInvite {
+                token: "tok".into(),
+                broker_url: None,
+                cloud_api_url: None,
+                scheme: "acme".into(),
+            },
+        );
+        assert_eq!(cfg.app_scheme.as_deref(), Some("acme"));
     }
 
     #[test]
@@ -364,6 +394,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: None,
                 cloud_api_url: None,
+                scheme: "teamclu".into(),
             },
         );
         assert_eq!(cfg.mqtt.broker_url, "");
@@ -392,6 +423,7 @@ mod tests {
                 team_share: TeamShareConfig::default(),
                 log: None,
                 locale: None,
+                app_scheme: None,
             }),
             "new-display-name",
             "team-2",
@@ -400,6 +432,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: Some("mqtts://broker.example.com:8883".into()),
                 cloud_api_url: None,
+                scheme: "teamclu".into(),
             },
         );
         assert_eq!(cfg.actor.id, "actor-2");
@@ -422,6 +455,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: None,
                 cloud_api_url: None,
+                scheme: "teamclu".into(),
             },
         );
         assert_eq!(cfg.actor.name, "new-display-name");
