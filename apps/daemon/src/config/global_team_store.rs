@@ -62,6 +62,77 @@ pub fn global_team_dir(team_id: &str) -> PathBuf {
     super::layout::team_shared_dir(team_id).join(TEAM_LINK_NAME)
 }
 
+/// `~/.amuxd/teams/<team_id>/shared` — the sync engines content root.
+///
+/// Knowledge syncs directly under here as `shared/knowledge/` (the only
+/// `SHARED_PREFIX`). It used to live at `shared/teamclu-team/knowledge`; it was
+/// hoisted out so a workspace surfaces it via a dedicated `team-knowledge`
+/// link instead of through the `teamclu-team` repo dir. See
+/// [`migrate_knowledge_to_shared`] for the one-time relocation of any copy
+/// that pre-dates this layout.
+pub fn sync_content_root(team_id: &str) -> PathBuf {
+    super::layout::team_shared_dir(team_id)
+}
+
+/// One-time, idempotent move of `shared/teamclu-team/knowledge` → `shared/knowledge`.
+///
+/// MUST run before the first OSS tick with the new [`sync_content_root`], or
+/// the scanner walks an empty `shared/knowledge` and the engine tombstones
+/// every `knowledge/*` entry for the whole team. Safe across daemon versions:
+/// the sync manifest keys files by the root-agnostic relative path
+/// `knowledge/…`, so an old daemon still rooted at `shared/teamclu-team` and a
+/// new daemon rooted at `shared/` push and pull the same content-addressed
+/// blobs.
+pub fn migrate_knowledge_to_shared(team_id: &str) -> std::io::Result<()> {
+    let shared = super::layout::team_shared_dir(team_id);
+    let team_repo = global_team_dir(team_id);
+    migrate_knowledge_to_shared_at(&shared, &team_repo)
+}
+
+/// Relocate `team_repo/knowledge` to `shared/knowledge`. Idempotent; usable
+/// from any call site that holds the team `shared/` and `teamclu-team` paths
+/// (the workspace-relative link path has no `team_id`, so it calls this directly).
+pub fn migrate_knowledge_to_shared_at(
+    shared: &Path,
+    team_repo: &Path,
+) -> std::io::Result<()> {
+    let new_knowledge = shared.join("knowledge");
+    let old_knowledge = team_repo.join("knowledge");
+
+    std::fs::create_dir_all(&new_knowledge)?;
+
+    // Already migrated (or fresh team with no old copy): nothing to do.
+    let new_has_content = std::fs::read_dir(&new_knowledge)
+        .map(|mut r| r.next().is_some())
+        .unwrap_or(false);
+    if new_has_content {
+        return Ok(());
+    }
+
+    let Ok(old_entries) = std::fs::read_dir(&old_knowledge) else {
+        return Ok(()); // old layout absent — fresh team, nothing to migrate
+    };
+    for entry in old_entries.flatten() {
+        let src = entry.path();
+        let name = entry.file_name();
+        let dst = new_knowledge.join(&name);
+        if dst.exists() {
+            continue; // never clobber a same-named entry already present
+        }
+        // Both paths live under `shared/` (same filesystem) → atomic rename.
+        if let Err(e) = std::fs::rename(&src, &dst) {
+            tracing::warn!(
+                file = %name.to_string_lossy(),
+                error = %e,
+                "knowledge migration: rename failed, leaving old copy in place"
+            );
+        }
+    }
+    // Best-effort: drop the now-empty old knowledge dir.
+    let _ = std::fs::remove_dir(&old_knowledge);
+    Ok(())
+}
+
 /// `~/.amuxd/teams/<team_id>/state/cloud` — daemon-owned mirror of the team
 /// config that now comes from the Cloud API rather than the sync engine (team
 /// MCP, team env). See `runtime::team_cloud_config`.
@@ -139,8 +210,12 @@ pub fn resolve_team_dir(workspace_root: &Path, team_id: &str) -> PathBuf {
 pub fn ensure_initialized(team_id: &str) -> std::io::Result<PathBuf> {
     let dir = global_team_dir(team_id);
     std::fs::create_dir_all(&dir)?;
+    // Knowledge syncs under `shared/knowledge` (the sync content root), not
+    // under `shared/teamclu-team/knowledge` — see `sync_content_root`.
+    let shared = super::layout::team_shared_dir(team_id);
+    std::fs::create_dir_all(&shared)?;
     for prefix in SHARED_PREFIXES {
-        std::fs::create_dir_all(dir.join(prefix))?;
+        std::fs::create_dir_all(shared.join(prefix))?;
     }
     Ok(dir)
 }
@@ -259,9 +334,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", tmp.path());
         let dir = ensure_initialized("team-x").unwrap();
-        assert!(dir.is_dir());
+        assert!(dir.is_dir()); // shared/teamclu-team (team repo)
+        // knowledge syncs under shared/knowledge (sync content root), not the repo dir
+        let shared = sync_content_root("team-x");
         for prefix in SHARED_PREFIXES {
-            assert!(dir.join(prefix).is_dir(), "{prefix} should exist");
+            assert!(shared.join(prefix).is_dir(), "{prefix} should exist under shared/");
         }
     }
 }

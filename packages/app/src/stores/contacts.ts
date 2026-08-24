@@ -29,7 +29,7 @@ export const useContactsStore = create<ContactsState>((set) => ({
     }
 
     await withAsync(set, async () => {
-      const contactsPath = await join(workspacePath, 'knowledge', 'contacts.md')
+      const contactsPath = await join(workspacePath, 'team-knowledge', 'contacts.md')
       const fileExists = await exists(contactsPath)
 
       if (!fileExists) {

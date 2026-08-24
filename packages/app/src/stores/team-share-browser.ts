@@ -4,7 +4,7 @@ import { useEnvVarsStore, type TeamEnvListing } from '@/stores/env-vars'
 import type { SkillSource } from '@/lib/skills/types'
 import { getSourceLabel } from '@/lib/skills/loader'
 import { frontmatterString } from '@/lib/skills/frontmatter'
-import { resolveTeamDir } from '@/lib/team-skill-paths'
+import { resolveTeamDir, resolveTeamKnowledgeDir } from '@/lib/team-skill-paths'
 import { invoke } from '@tauri-apps/api/core'
 import { getBackend } from '@/lib/backend/provider'
 import { getFreshAccessToken } from '@/lib/auth/session-store'
@@ -374,9 +374,8 @@ function currentTeamId(): string | null {
  * the count.
  */
 async function listTeamKnowledge(wsPath: string): Promise<TeamKnowledgeItem[]> {
-  const teamDir = await resolveTeamDir(wsPath)
-  if (!teamDir) return []
-  const knowledgeDir = `${teamDir}/knowledge`
+  const knowledgeDir = await resolveTeamKnowledgeDir()
+  if (!knowledgeDir) return []
   const { exists, readDir } = await import('@tauri-apps/plugin-fs')
   if (!(await exists(knowledgeDir))) return []
 
@@ -1710,9 +1709,10 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         //    that one prefix now, so a file created at the root is silently
         //    never synced, and the team dir's other entries (skills/, .mcp/,
         //    _secrets/, _meta/, _feedback/) are all retired.
-        const teamDir = wsPath ? await resolveTeamDir(wsPath) : null
-        const root = teamDir && wsPath ? `${wsPath}/${TEAM_REPO_DIR}/knowledge` : null
-        if (root) await ensureDir(root)
+        // team-knowledge is a daemon-managed symlink to shared/knowledge; the
+        // daemon ensures it on every workspace open/switch. Do NOT ensureDir
+        // here — a real dir would block the symlink the daemon recreates.
+        const root = wsPath ? `${wsPath}/team-knowledge` : null
         const items = wsPath ? await listTeamKnowledge(wsPath) : []
         set({ knowledgeRoot: root, knowledge: { items, loading: false, loaded: true, error: null } })
       } else if (section === 'mcp') {
