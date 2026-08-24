@@ -3003,7 +3003,8 @@
   },
   "skills": {
     "builtinLabel": "内置",
-    "builtinPath": ".teamclu/skills/（{{app}} 内置）"
+    "builtinPath": "~/.agents/skills/（{{app}} 内置）",
+    "roleManagedLabel": "角色"
   },
   "daemon": {
     "agentRuntime": {

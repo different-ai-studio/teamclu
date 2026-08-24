@@ -124,16 +124,23 @@ export function isTeamMember(obj: unknown): obj is TeamMember {
 // ─── Skill Source Types ────────────────────────────────────────────────────
 
 /** Source badge for a loaded skill */
-export type SkillSource = 
-  | 'local' 
-  | 'claude' 
-  | 'clawhub' 
-  | 'shared' 
-  | 'personal' 
-  | 'team' 
+/**
+ * Where a skill was loaded from. One entry per root in the daemon's
+ * `skill_dir_specs`, plus three labels that are not roots:
+ *
+ * - `builtin` — an inherent skill, decided by name wherever it sits.
+ * - `local` — role-managed, from `{meta}/roles/<role>/skills`. The only
+ *   remaining meaning of this value: it used to be the brand meta skills dir,
+ *   which is not scanned any more.
+ * - `personal` — an Agent inventory row, which carries no path at all.
+ */
+export type SkillSource =
+  | 'claude'
+  | 'shared'
+  | 'personal'
+  | 'team'
   | 'builtin'
-  | 'plugin'
-  | 'global-teamclu'
+  | 'local'
   | 'global-claude'
   | 'global-agent'
 

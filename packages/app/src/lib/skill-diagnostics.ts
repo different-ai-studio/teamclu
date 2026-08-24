@@ -44,10 +44,8 @@ export interface SkillsDiagnosticsReport {
 }
 
 const DIRECTORY_LABELS: Record<string, string> = {
-  workspace: `${TEAMCLU_DIR}/skills`,
   claude: '.claude/skills',
   agents: '.agents/skills',
-  globalTeamclu: '~/.config/teamclu/skills',
   globalClaude: '~/.claude/skills',
   globalAgents: '~/.agents/skills',
 }
@@ -68,14 +66,12 @@ function summarizeChecks(checks: SkillDiagnosticCheck[]): SkillDiagnosticStatus 
 function labelForDirectory(path: string, workspacePath: string): string {
   const normalized = path.replace(/\\/g, '/')
   const workspace = workspacePath.replace(/\\/g, '/')
-  if (normalized.includes(`/${TEAMCLU_DIR}/skills`)) return DIRECTORY_LABELS.workspace
   if (normalized.includes('/.claude/skills')) {
     return normalized.startsWith(workspace) ? DIRECTORY_LABELS.claude : DIRECTORY_LABELS.globalClaude
   }
   if (normalized.includes('/.agents/skills')) {
     return normalized.startsWith(workspace) ? DIRECTORY_LABELS.agents : DIRECTORY_LABELS.globalAgents
   }
-  if (normalized.includes('/.config/teamclu/skills')) return DIRECTORY_LABELS.globalTeamclu
   if (normalized.includes(`/${TEAM_SHARE_LINK_DIR}/skills`)) return `${TEAM_SHARE_LINK_DIR}/skills`
   if (normalized.includes('/roles/skills')) return `${TEAMCLU_DIR}/roles/skills`
   return path

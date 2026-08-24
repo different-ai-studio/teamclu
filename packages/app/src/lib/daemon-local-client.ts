@@ -1021,7 +1021,6 @@ export async function getDaemonRoles(
 export interface DaemonUpsertSkillRequest {
   content: string
   skillName?: string
-  installLocation?: 'workspace' | 'global'
   dirPath?: string
   filename?: string
 }

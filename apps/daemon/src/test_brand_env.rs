@@ -17,6 +17,7 @@ pub struct BrandEnvGuard {
     _lock: MutexGuard<'static, ()>,
     previous_brand: Option<String>,
     previous_home: Option<String>,
+    previous_user_home: Option<String>,
 }
 
 impl BrandEnvGuard {
@@ -32,7 +33,23 @@ impl BrandEnvGuard {
             _lock: lock,
             previous_brand,
             previous_home,
+            previous_user_home: None,
         }
+    }
+
+    /// [`set`], plus a temporary `HOME`.
+    ///
+    /// Needed by anything that resolves `~/.agents/skills` — the default write
+    /// root for skills — because `dirs::home_dir()` reads the real `HOME` and a
+    /// test that does not move it writes into the developer's own skills
+    /// directory. Same lock as the brand, so it cannot race the white-label
+    /// tests.
+    pub fn set_with_home(brand: &str, home: &Path) -> Self {
+        let mut guard = Self::set(brand);
+        guard.previous_user_home = Some(std::env::var("HOME").unwrap_or_default());
+        // SAFETY: serialized by TEST_HOME_LOCK, held by `guard`.
+        std::env::set_var("HOME", home);
+        guard
     }
 
     /// Set an explicit `AMUXD_HOME` override (brand env left unchanged).
@@ -45,6 +62,7 @@ impl BrandEnvGuard {
             _lock: lock,
             previous_brand,
             previous_home,
+            previous_user_home: None,
         }
     }
 }
@@ -58,6 +76,13 @@ impl Drop for BrandEnvGuard {
         match &self.previous_home {
             Some(v) => std::env::set_var(teamclu_runtime_env::AMUXD_HOME_ENV, v),
             None => std::env::remove_var(teamclu_runtime_env::AMUXD_HOME_ENV),
+        }
+        if let Some(v) = &self.previous_user_home {
+            if v.is_empty() {
+                std::env::remove_var("HOME");
+            } else {
+                std::env::set_var("HOME", v);
+            }
         }
     }
 }

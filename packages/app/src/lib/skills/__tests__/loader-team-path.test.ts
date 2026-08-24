@@ -25,10 +25,9 @@ vi.mock("@tauri-apps/api/path", () => ({
   join: (...args: unknown[]) => mockJoin(...(args as string[])),
 }))
 
-const teamclujson = (paths: string[]) =>
-  JSON.stringify({ skills: { paths } })
+const opencodeJson = (paths: string[]) => JSON.stringify({ skills: { paths } })
 
-describe("skill-loader dynamic team paths (from teamclu.json)", () => {
+describe("skill-loader dynamic team paths (from opencode.json)", () => {
   const workspacePath = "/tmp/ws"
 
   beforeEach(() => {
@@ -40,18 +39,18 @@ describe("skill-loader dynamic team paths (from teamclu.json)", () => {
     mockJoin.mockImplementation((...args: string[]) => Promise.resolve(args.join("/")))
   })
 
-  it("loads team skills from paths listed in teamclu.json", async () => {
+  it("loads team skills from paths listed in opencode.json", async () => {
     const teamDir = `${workspacePath}/${TEAM_REPO_DIR}/skills`
 
     mockExists.mockImplementation((path: string) => {
-      if (path === `${workspacePath}/teamclu.json`) return Promise.resolve(true)
+      if (path === `${workspacePath}/opencode.json`) return Promise.resolve(true)
       if (path === teamDir) return Promise.resolve(true)
       if (path.includes("my-team-skill") && path.endsWith("SKILL.md")) return Promise.resolve(true)
       return Promise.resolve(false)
     })
     mockReadTextFile.mockImplementation((path: string) => {
-      if (path === `${workspacePath}/teamclu.json`)
-        return Promise.resolve(teamclujson([`${TEAM_REPO_DIR}/skills`]))
+      if (path === `${workspacePath}/opencode.json`)
+        return Promise.resolve(opencodeJson([`${TEAM_REPO_DIR}/skills`]))
       if (path.includes("my-team-skill"))
         return Promise.resolve("# my-team-skill\n")
       return Promise.resolve("")
@@ -73,14 +72,14 @@ describe("skill-loader dynamic team paths (from teamclu.json)", () => {
     const expandedDir = "/home/user/shared-skills"
 
     mockExists.mockImplementation((path: string) => {
-      if (path === `${workspacePath}/teamclu.json`) return Promise.resolve(true)
+      if (path === `${workspacePath}/opencode.json`) return Promise.resolve(true)
       if (path === expandedDir) return Promise.resolve(true)
       if (path.includes("home-skill") && path.endsWith("SKILL.md")) return Promise.resolve(true)
       return Promise.resolve(false)
     })
     mockReadTextFile.mockImplementation((path: string) => {
-      if (path === `${workspacePath}/teamclu.json`)
-        return Promise.resolve(teamclujson(["~/shared-skills"]))
+      if (path === `${workspacePath}/opencode.json`)
+        return Promise.resolve(opencodeJson(["~/shared-skills"]))
       if (path.includes("home-skill"))
         return Promise.resolve("# home-skill\n")
       return Promise.resolve("")
@@ -102,12 +101,12 @@ describe("skill-loader dynamic team paths (from teamclu.json)", () => {
     const absoluteDir = "D:\\shared\\skills"
 
     mockExists.mockImplementation((path: string) => {
-      if (path === `${workspacePath}/teamclu.json`) return Promise.resolve(true)
+      if (path === `${workspacePath}/opencode.json`) return Promise.resolve(true)
       return Promise.resolve(false)
     })
     mockReadTextFile.mockImplementation((path: string) => {
-      if (path === `${workspacePath}/teamclu.json`) {
-        return Promise.resolve(teamclujson([absoluteDir]))
+      if (path === `${workspacePath}/opencode.json`) {
+        return Promise.resolve(opencodeJson([absoluteDir]))
       }
       return Promise.resolve("")
     })
@@ -120,12 +119,12 @@ describe("skill-loader dynamic team paths (from teamclu.json)", () => {
     mockHomeDir.mockResolvedValue("C:\\Users\\alice")
 
     mockExists.mockImplementation((path: string) => {
-      if (path === `${workspacePath}/teamclu.json`) return Promise.resolve(true)
+      if (path === `${workspacePath}/opencode.json`) return Promise.resolve(true)
       return Promise.resolve(false)
     })
     mockReadTextFile.mockImplementation((path: string) => {
-      if (path === `${workspacePath}/teamclu.json`) {
-        return Promise.resolve(teamclujson(["~\\shared-skills"]))
+      if (path === `${workspacePath}/opencode.json`) {
+        return Promise.resolve(opencodeJson(["~\\shared-skills"]))
       }
       return Promise.resolve("")
     })
@@ -137,13 +136,12 @@ describe("skill-loader dynamic team paths (from teamclu.json)", () => {
 
   it("contributes zero team skills when no team share dir and no skills.paths", async () => {
     mockExists.mockImplementation((path: string) => {
-      if (path === `${workspacePath}/teamclu.json`) return Promise.resolve(true)
-      if (path === `${workspacePath}/opencode.json`) return Promise.resolve(false)
+      if (path === `${workspacePath}/opencode.json`) return Promise.resolve(true)
       if (path === `${workspacePath}/${TEAM_SHARE_LINK_DIR}/skills`) return Promise.resolve(false)
       return Promise.resolve(false)
     })
     mockReadTextFile.mockImplementation((path: string) => {
-      if (path === `${workspacePath}/teamclu.json`)
+      if (path === `${workspacePath}/opencode.json`)
         return Promise.resolve(JSON.stringify({}))
       return Promise.resolve("")
     })
@@ -158,7 +156,6 @@ describe("skill-loader dynamic team paths (from teamclu.json)", () => {
     const globalSkills = `${globalTeamDir}/skills`
 
     mockExists.mockImplementation((path: string) => {
-      if (path === `${workspacePath}/teamclu.json`) return Promise.resolve(false)
       if (path === `${workspacePath}/opencode.json`) return Promise.resolve(true)
       if (path === brokenLinkSkills) return Promise.resolve(false)
       if (path === `${workspacePath}/${TEAM_SHARE_LINK_DIR}`) return Promise.resolve(false)
@@ -189,10 +186,11 @@ describe("skill-loader dynamic team paths (from teamclu.json)", () => {
     expect(skills.some((s) => s.source === "team" && s.filename === "shared-skill")).toBe(true)
   })
 
-  it("auto-loads the global team skills dir without teamclu.json skills.paths", async () => {
-    // No workspace-link fallback anymore: skills come from the daemon-owned
-    // global dir `~/.amuxd/teams/<team_id>/shared/teamclu-team/skills`.
-    expect(TEAM_SHARE_LINK_DIR).toBe("teamclu-team")
+  it("does not auto-load the global team skills dir without a skills.paths entry", async () => {
+    // The team drive's own `skills/` used to be added on sight. It has had no
+    // writer since the registry took over (OSS sync RETIRED_PREFIXES), so what
+    // is left on disk is whatever the last sync before that migration wrote —
+    // exactly the stale copies the registry exists to retire.
     const globalTeamDir = `/home/user/.amuxd/teams/team-abc/shared/${TEAM_SHARE_LINK_DIR}`
     const globalSkills = `${globalTeamDir}/skills`
 
@@ -215,27 +213,30 @@ describe("skill-loader dynamic team paths (from teamclu.json)", () => {
       return Promise.resolve("")
     })
 
-    const paths = await collectTeamSkillPaths(workspacePath)
-    expect(paths).toContain(globalSkills)
+    expect(await collectTeamSkillPaths(workspacePath)).toEqual([])
 
     const { skills } = await loadAllSkills(workspacePath)
-    expect(skills.some((s) => s.source === "team" && s.filename === "shared-skill")).toBe(true)
+    expect(skills.some((s) => s.filename === "shared-skill")).toBe(false)
   })
 
   it("still reads a daemon.toml that names the team with the legacy team_id key", async () => {
     // The daemon writes `active_team` but keeps a serde alias for `team_id`
     // (DaemonConfig::team_id), so an older daemon under a newer app must not
-    // read as un-onboarded.
+    // read as un-onboarded — the remap of a `teamclu-team/...` entry in
+    // `opencode.json` depends on resolving the team.
     const globalTeamDir = `/home/user/.amuxd/teams/team-abc/shared/${TEAM_SHARE_LINK_DIR}`
     const globalSkills = `${globalTeamDir}/skills`
 
     mockExists.mockImplementation((path: string) => {
+      if (path === `${workspacePath}/opencode.json`) return Promise.resolve(true)
       if (path === `/home/user/.amuxd/daemon.toml`) return Promise.resolve(true)
       if (path === globalTeamDir) return Promise.resolve(true)
       if (path === globalSkills) return Promise.resolve(true)
       return Promise.resolve(false)
     })
     mockReadTextFile.mockImplementation((path: string) => {
+      if (path === `${workspacePath}/opencode.json`)
+        return Promise.resolve(opencodeJson([`${TEAM_SHARE_LINK_DIR}/skills`]))
       if (path === `/home/user/.amuxd/daemon.toml`)
         return Promise.resolve('team_id = "team-abc"\n')
       return Promise.resolve("")
@@ -299,7 +300,7 @@ describe("skill-loader dynamic team paths (from teamclu.json)", () => {
   })
 
   it("prefers flat skill over bundled skill with same slug", async () => {
-    const localDir = `${workspacePath}/.teamclu/skills`
+    const localDir = `${workspacePath}/.claude/skills`
     const globalBundleDir = "/home/user/.agents/skills"
     const superpowersDir = `${globalBundleDir}/superpowers`
 
@@ -337,12 +338,12 @@ describe("skill-loader dynamic team paths (from teamclu.json)", () => {
     const { skills, overrides } = await loadAllSkills(workspacePath)
     const resolved = skills.find((s) => s.filename === "brainstorming")
 
-    expect(resolved?.source).toBe("local")
+    expect(resolved?.source).toBe("claude")
     expect(resolved?.dirPath).toBe(localDir)
     expect(resolved?.invocationName).toBe("brainstorming")
     expect(overrides).toContainEqual({
       name: "brainstorming",
-      winner: "local",
+      winner: "claude",
       loser: "global-agent",
     })
   })
@@ -357,151 +358,7 @@ describe("skill-loader dynamic team paths (from teamclu.json)", () => {
     expect(buildSkillInvocationName("C:\\Users\\alice\\.agents\\skills\\superpowers", "brainstorming")).toBe("superpowers/brainstorming")
   })
 
-  it("getSourceDirHint(team) shows team share directory", () => {
-    expect(getSourceDirHint("team")).toBe(`${TEAM_REPO_DIR}/skills/ (team share)`)
-  })
-})
-
-describe("skill-loader plugin cache scanning", () => {
-  const workspacePath = "/tmp/ws"
-  const pluginCacheDir = `${workspacePath}/.teamclu/cache/agent/node_modules`
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-    mockExists.mockReturnValue(false)
-    mockReadDir.mockResolvedValue([])
-    mockReadTextFile.mockResolvedValue("# Test Skill\n")
-    mockHomeDir.mockResolvedValue("/home/user")
-  })
-
-  it("loads skills from plugin cache directory", async () => {
-    const superpowersSkillsDir = `${pluginCacheDir}/superpowers/skills`
-
-    mockExists.mockImplementation((path: string) => {
-      if (path === pluginCacheDir) return Promise.resolve(true)
-      if (path === superpowersSkillsDir) return Promise.resolve(true)
-      if (path === `${superpowersSkillsDir}/brainstorming/SKILL.md`) return Promise.resolve(true)
-      if (path === `${superpowersSkillsDir}/systematic-debugging/SKILL.md`) return Promise.resolve(true)
-      return Promise.resolve(false)
-    })
-
-    mockReadDir.mockImplementation((path: string) => {
-      if (path === pluginCacheDir) {
-        return Promise.resolve([{ name: "superpowers", isDirectory: true }])
-      }
-      if (path === superpowersSkillsDir) {
-        return Promise.resolve([
-          { name: "brainstorming", isDirectory: true },
-          { name: "systematic-debugging", isDirectory: true },
-        ])
-      }
-      return Promise.resolve([])
-    })
-
-    mockReadTextFile.mockImplementation((path: string) => {
-      if (path === `${superpowersSkillsDir}/brainstorming/SKILL.md`) {
-        return Promise.resolve("---\nname: brainstorming\ndescription: Brainstorm first\n---\n")
-      }
-      if (path === `${superpowersSkillsDir}/systematic-debugging/SKILL.md`) {
-        return Promise.resolve("---\nname: systematic-debugging\n---\n")
-      }
-      return Promise.resolve("")
-    })
-
-    const { skills } = await loadAllSkills(workspacePath)
-    const pluginSkills = skills.filter((s) => s.source === "plugin")
-
-    expect(pluginSkills).toHaveLength(2)
-    expect(pluginSkills.some((s) => s.filename === "brainstorming")).toBe(true)
-    expect(pluginSkills.some((s) => s.filename === "systematic-debugging")).toBe(true)
-  })
-
-  it("skips plugins without a skills/ directory", async () => {
-    mockExists.mockImplementation((path: string) => {
-      if (path === pluginCacheDir) return Promise.resolve(true)
-      if (path === `${pluginCacheDir}/some-plugin/skills`) return Promise.resolve(false)
-      return Promise.resolve(false)
-    })
-
-    mockReadDir.mockImplementation((path: string) => {
-      if (path === pluginCacheDir) {
-        return Promise.resolve([{ name: "some-plugin", isDirectory: true }])
-      }
-      return Promise.resolve([])
-    })
-
-    const { skills } = await loadAllSkills(workspacePath)
-    expect(skills.filter((s) => s.source === "plugin")).toHaveLength(0)
-  })
-
-  it("local skills override plugin skills with the same name", async () => {
-    const localDir = `${workspacePath}/.teamclu/skills`
-    const superpowersSkillsDir = `${pluginCacheDir}/superpowers/skills`
-
-    mockExists.mockImplementation((path: string) => {
-      if (path === localDir) return Promise.resolve(true)
-      if (path === `${localDir}/brainstorming/SKILL.md`) return Promise.resolve(true)
-      if (path === pluginCacheDir) return Promise.resolve(true)
-      if (path === superpowersSkillsDir) return Promise.resolve(true)
-      if (path === `${superpowersSkillsDir}/brainstorming/SKILL.md`) return Promise.resolve(true)
-      return Promise.resolve(false)
-    })
-
-    mockReadDir.mockImplementation((path: string) => {
-      if (path === localDir) {
-        return Promise.resolve([{ name: "brainstorming", isDirectory: true }])
-      }
-      if (path === pluginCacheDir) {
-        return Promise.resolve([{ name: "superpowers", isDirectory: true }])
-      }
-      if (path === superpowersSkillsDir) {
-        return Promise.resolve([{ name: "brainstorming", isDirectory: true }])
-      }
-      return Promise.resolve([])
-    })
-
-    mockReadTextFile.mockImplementation((path: string) => {
-      if (path === `${localDir}/brainstorming/SKILL.md`) {
-        return Promise.resolve("---\nname: brainstorming\n---\nLocal version")
-      }
-      if (path === `${superpowersSkillsDir}/brainstorming/SKILL.md`) {
-        return Promise.resolve("---\nname: brainstorming\n---\nPlugin version")
-      }
-      return Promise.resolve("")
-    })
-
-    const { skills, overrides } = await loadAllSkills(workspacePath)
-    const resolved = skills.find((s) => s.filename === "brainstorming")
-
-    expect(resolved?.source).toBe("local")
-    expect(overrides).toContainEqual({
-      name: "brainstorming",
-      winner: "local",
-      loser: "plugin",
-    })
-  })
-
-  it("skips hidden directories in plugin cache", async () => {
-    mockExists.mockImplementation((path: string) => {
-      if (path === pluginCacheDir) return Promise.resolve(true)
-      return Promise.resolve(false)
-    })
-
-    mockReadDir.mockImplementation((path: string) => {
-      if (path === pluginCacheDir) {
-        return Promise.resolve([
-          { name: ".package-lock.json", isDirectory: false },
-          { name: ".cache", isDirectory: true },
-        ])
-      }
-      return Promise.resolve([])
-    })
-
-    const { skills } = await loadAllSkills(workspacePath)
-    expect(skills.filter((s) => s.source === "plugin")).toHaveLength(0)
-  })
-
-  it("getSourceDirHint(plugin) shows teamclu.json reference", () => {
-    expect(getSourceDirHint("plugin")).toBe("teamclu.json → plugin")
+  it("getSourceDirHint(team) points at the one config that declares team paths", () => {
+    expect(getSourceDirHint("team")).toBe("opencode.json → skills.paths")
   })
 })
