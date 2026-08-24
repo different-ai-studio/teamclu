@@ -978,6 +978,13 @@ fn relaunch_and_exit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 /// non-macOS platform does.
 #[cfg(target_os = "windows")]
 fn relaunch_and_exit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    // `try_state` lives on the `Manager` trait. Imported inside the function so
+    // the other platforms do not carry an unused import — and missing it is why
+    // this file first failed to compile for Windows: nothing on a macOS dev
+    // machine or in PR CI built this block until the `desktop-windows` job
+    // landed in this same branch.
+    use tauri::Manager;
+
     // Read, don't take: a launch that fails (a declined UAC prompt) must leave
     // the staged installer where it is. Taking it up front turned the second
     // click of "Restart Now" into a plain restart that silently skipped the
