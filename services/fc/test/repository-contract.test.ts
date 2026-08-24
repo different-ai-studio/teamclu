@@ -65,7 +65,7 @@ function contractRepo() {
   const roleStore = [
     { id: "role-1", teamId: "team-1", code: "admin", name: "Admin" },
   ];
-  // (team, device) → agent actor, mirroring agents_team_device_uk.
+  // (team, device, owner) → agent actor, mirroring agents_team_device_uk.
   const deviceAgentStore = new Map<string, string>();
   let inviteSeq = 0;
   const permissionStore = [

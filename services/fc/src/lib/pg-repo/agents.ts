@@ -72,7 +72,7 @@ export function makeAgentsRepo(db: DbLike, ctx: AgentsCtx = {}) {
     },
 
     /**
-     * Idempotent per (team, device): returns the caller-owned agent already bound
+     * Idempotent per (team, device, owner): returns the caller-owned agent already bound
      * to this machine in this team, creating it when absent, plus a one-shot
      * invite for the local daemon to claim.
      *
@@ -81,7 +81,7 @@ export function makeAgentsRepo(db: DbLike, ctx: AgentsCtx = {}) {
      * over the other's (mirrors amux.ensure_agent_for_device).
      *
      * Concurrency: the Supabase path serializes on an advisory lock inside the
-     * RPC. Here the unique index (team_id, device_id) is the arbiter — the loser
+     * RPC. Here the unique index (team_id, device_id, owner_member_id) is the arbiter — the loser
      * of a race catches the violation and re-reads the winner's row, so two cold
      * starts still converge on one agent.
      */
@@ -105,7 +105,6 @@ export function makeAgentsRepo(db: DbLike, ctx: AgentsCtx = {}) {
             eq(actors.teamId, teamId),
             eq(agents.deviceId, deviceId),
             eq(agents.ownerMemberId, callerActorId),
-            eq(agents.status, "active"),
           ),
         )
         .limit(1);
@@ -141,7 +140,6 @@ export function makeAgentsRepo(db: DbLike, ctx: AgentsCtx = {}) {
               eq(actors.teamId, teamId),
               eq(agents.deviceId, deviceId),
               eq(agents.ownerMemberId, callerActorId),
-              eq(agents.status, "active"),
             ),
           )
           .limit(1);
@@ -188,7 +186,7 @@ export function makeAgentsRepo(db: DbLike, ctx: AgentsCtx = {}) {
           });
           created = true;
         } catch (err) {
-          // Lost the race: the winner's row is what this machine gets.
+          // Lost the race: findOwned (no status filter) finds the winner's row.
           agentId = await findOwned();
           if (!agentId) throw err;
         }
