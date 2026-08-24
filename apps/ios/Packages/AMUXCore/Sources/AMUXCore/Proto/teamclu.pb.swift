@@ -1502,6 +1502,9 @@ public nonisolated struct Teamclu_RuntimeStartRequest: Sendable {
   /// Deprecated: ignored by daemon. Remote MCP is always mounted for session-bound runtimes.
   public var remoteToolCapabilities: [String] = []
 
+  /// Discard stored backend binding and spawn a fresh backend session.
+  public var resetBackendBinding: Bool = false
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1525,6 +1528,9 @@ public nonisolated struct Teamclu_RuntimeStartResult: Sendable {
   /// set iff !accepted (validation / auth / resource error)
   public var rejectedReason: String = String()
 
+  /// machine-readable, e.g. BACKEND_SESSION_NOT_RESUMABLE
+  public var errorCode: String = String()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1538,6 +1544,12 @@ public nonisolated struct Teamclu_RuntimeStopRequest: Sendable {
   // methods supported on all messages.
 
   public var runtimeID: String = String()
+
+  /// removeAgent: delete runtimes.toml rows for session
+  public var purgeBinding: Bool = false
+
+  /// optional precise delete when purgeBinding
+  public var workspaceID: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -4286,6 +4298,7 @@ nonisolated extension Teamclu_RuntimeStartRequest: SwiftProtobuf.Message, SwiftP
       case 5: try { try decoder.decodeSingularStringField(value: &self.worktree) }()
       case 6: try { try decoder.decodeSingularStringField(value: &self.sessionID) }()
       case 7: try { try decoder.decodeRepeatedStringField(value: &self.remoteToolCapabilities) }()
+      case 8: try { try decoder.decodeSingularBoolField(value: &self.resetBackendBinding) }()
       default: break
       }
     }
@@ -4313,6 +4326,9 @@ nonisolated extension Teamclu_RuntimeStartRequest: SwiftProtobuf.Message, SwiftP
     if !self.remoteToolCapabilities.isEmpty {
       try visitor.visitRepeatedStringField(value: self.remoteToolCapabilities, fieldNumber: 7)
     }
+    if self.resetBackendBinding != false {
+      try visitor.visitSingularBoolField(value: self.resetBackendBinding, fieldNumber: 8)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -4324,6 +4340,7 @@ nonisolated extension Teamclu_RuntimeStartRequest: SwiftProtobuf.Message, SwiftP
     if lhs.worktree != rhs.worktree {return false}
     if lhs.sessionID != rhs.sessionID {return false}
     if lhs.remoteToolCapabilities != rhs.remoteToolCapabilities {return false}
+    if lhs.resetBackendBinding != rhs.resetBackendBinding {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -4343,6 +4360,7 @@ nonisolated extension Teamclu_RuntimeStartResult: SwiftProtobuf.Message, SwiftPr
       case 2: try { try decoder.decodeSingularStringField(value: &self.runtimeID) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self.sessionID) }()
       case 4: try { try decoder.decodeSingularStringField(value: &self.rejectedReason) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.errorCode) }()
       default: break
       }
     }
@@ -4361,6 +4379,9 @@ nonisolated extension Teamclu_RuntimeStartResult: SwiftProtobuf.Message, SwiftPr
     if !self.rejectedReason.isEmpty {
       try visitor.visitSingularStringField(value: self.rejectedReason, fieldNumber: 4)
     }
+    if !self.errorCode.isEmpty {
+      try visitor.visitSingularStringField(value: self.errorCode, fieldNumber: 5)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -4369,6 +4390,7 @@ nonisolated extension Teamclu_RuntimeStartResult: SwiftProtobuf.Message, SwiftPr
     if lhs.runtimeID != rhs.runtimeID {return false}
     if lhs.sessionID != rhs.sessionID {return false}
     if lhs.rejectedReason != rhs.rejectedReason {return false}
+    if lhs.errorCode != rhs.errorCode {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -4385,6 +4407,8 @@ nonisolated extension Teamclu_RuntimeStopRequest: SwiftProtobuf.Message, SwiftPr
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.runtimeID) }()
+      case 2: try { try decoder.decodeSingularBoolField(value: &self.purgeBinding) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.workspaceID) }()
       default: break
       }
     }
@@ -4394,11 +4418,19 @@ nonisolated extension Teamclu_RuntimeStopRequest: SwiftProtobuf.Message, SwiftPr
     if !self.runtimeID.isEmpty {
       try visitor.visitSingularStringField(value: self.runtimeID, fieldNumber: 1)
     }
+    if self.purgeBinding != false {
+      try visitor.visitSingularBoolField(value: self.purgeBinding, fieldNumber: 2)
+    }
+    if !self.workspaceID.isEmpty {
+      try visitor.visitSingularStringField(value: self.workspaceID, fieldNumber: 3)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Teamclu_RuntimeStopRequest, rhs: Teamclu_RuntimeStopRequest) -> Bool {
     if lhs.runtimeID != rhs.runtimeID {return false}
+    if lhs.purgeBinding != rhs.purgeBinding {return false}
+    if lhs.workspaceID != rhs.workspaceID {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

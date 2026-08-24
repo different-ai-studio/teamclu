@@ -380,6 +380,7 @@ export type RuntimeStartFailureCode =
    */
   | 'session_participant_failed'
   | 'runtime_rejected'
+  | 'backend_session_not_resumable'
   | 'runtime_rpc_failed'
   | 'unknown'
 
@@ -387,6 +388,13 @@ export type RuntimeStartFailure = {
   agentActorId: string
   code: RuntimeStartFailureCode
   reason: string
+}
+
+function classifyRuntimeRejection(errorCode: string | undefined): RuntimeStartFailureCode {
+  if (errorCode === 'BACKEND_SESSION_NOT_RESUMABLE') {
+    return 'backend_session_not_resumable'
+  }
+  return 'runtime_rejected'
 }
 
 function classifyRuntimeRpcError(_error: unknown): RuntimeStartFailureCode {
@@ -618,16 +626,31 @@ export async function startAgentRuntimesAsync(
       })
       // RPC topic is amux/{team}/{agentActorId}/rpc/req — the routing segment
       // is the agent's actor_id.
-      const result = await runtimeStart({
+      const runtimeStartArgs = {
         targetActorId: agentActorId,
-        // Local path only for the daemon on this machine (see the helper).
         ...runtimeStartWorkspaceArgs(runtimeWorkspaceId, isLocalDaemonAgent ? localWorktree : ''),
         sessionId: args.sessionId,
         agentType,
         initialPrompt: '',
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
         timeoutMs: rpcTimeoutMs,
-      })
+      } as const
+
+      let result = await runtimeStart(runtimeStartArgs)
+      if (
+        !result.accepted
+        && result.errorCode === 'BACKEND_SESSION_NOT_RESUMABLE'
+      ) {
+        sessionFlowLog('runtime_start.request.reset_binding_retry', {
+          sessionId: args.sessionId,
+          teamId: args.teamId,
+          agentActorId,
+        })
+        result = await runtimeStart({
+          ...runtimeStartArgs,
+          resetBackendBinding: true,
+        })
+      }
       if (!result.accepted) {
         sessionFlowLog('runtime_start.request.rejected', {
           sessionId: args.sessionId,
@@ -642,7 +665,7 @@ export async function startAgentRuntimesAsync(
         })
         failures.push({
           agentActorId,
-          code: 'runtime_rejected',
+          code: classifyRuntimeRejection(result.errorCode),
           reason: result.rejectedReason?.trim() || 'runtimeStart rejected',
         })
       } else {

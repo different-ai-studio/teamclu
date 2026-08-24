@@ -537,6 +537,7 @@ impl RuntimeManager {
             None,
             None,
             None,
+            false,
             context,
         )
         .await
@@ -560,6 +561,7 @@ impl RuntimeManager {
         initial_model_override: Option<String>,
         mcp_config_path: Option<PathBuf>,
         resume_acp_session_id: Option<String>,
+        forbid_new_session_fallback: bool,
         context: ExecutionContext,
     ) -> crate::error::Result<String> {
         // An attachment is an attachment *to a session* (ADR-0004). The map is
@@ -642,7 +644,7 @@ impl RuntimeManager {
                 prompt.to_string(),
                 handle.event_tx.clone(),
                 permission,
-                false,
+                forbid_new_session_fallback,
             )
             .await?;
 
@@ -739,6 +741,7 @@ impl RuntimeManager {
         remote_workspace_id: Option<&str>,
         prompt: &str,
         mcp_config_path: Option<std::path::PathBuf>,
+        forbid_new_session_fallback: bool,
         context: ExecutionContext,
     ) -> crate::error::Result<String> {
         let ExecutionContext {
@@ -800,7 +803,7 @@ impl RuntimeManager {
                 prompt.to_string(),
                 handle.event_tx.clone(),
                 permission,
-                false,
+                forbid_new_session_fallback,
             )
             .await?;
 
@@ -1664,6 +1667,7 @@ impl RuntimeManager {
                 initial_model,
                 None,
                 None,
+                false,
                 ExecutionContext {
                     isolation_domain,
                     workspace,
@@ -2810,6 +2814,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
                 workspace_context(tmp.path()),
             )
             .await;

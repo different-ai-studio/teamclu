@@ -154,6 +154,7 @@ impl DaemonServer {
         initial_prompt: &str,
         initial_model_override: Option<String>,
         requester_actor_id: &str,
+        reset_backend_binding: bool,
     ) -> Result<StartRuntimeOutcome, StartRuntimeError> {
         info!(workspace_id, worktree, session_id, "apply_start_runtime");
 
@@ -303,11 +304,7 @@ impl DaemonServer {
                     .lock()
                     .await
                     .clear_runtime(rid);
-                if let Some(s) = self.sessions.find_by_id_mut(rid) {
-                    s.status = amux::AgentStatus::Stopped as i32;
-                }
             }
-            let _ = self.sessions.save(&self.sessions_path);
             info!(
                 session_id,
                 superseded = ?superseded,
@@ -512,35 +509,32 @@ impl DaemonServer {
         }
 
         if !session_id.is_empty() && !ws_id.is_empty() {
-            if let Some(outcome) = self
-                .try_resume_runtime_for_start(
-                    session_id,
-                    agent_type,
-                    &ws_id,
-                    initial_prompt,
-                    initial_model_override.as_deref(),
-                    requester_actor_id,
-                )
-                .await
+            if reset_backend_binding {
+                self.sessions
+                    .delete(session_id, &ws_id, agent_type as i32);
+                let _ = self.sessions.save(&self.sessions_path);
+            } else if self
+                .sessions
+                .lookup(session_id, &ws_id, agent_type as i32)
+                .is_some()
             {
-                return Ok(outcome);
+                if let Some(outcome) = self
+                    .try_resume_runtime_for_start(
+                        session_id,
+                        agent_type,
+                        &ws_id,
+                        initial_prompt,
+                        initial_model_override.as_deref(),
+                        requester_actor_id,
+                    )
+                    .await?
+                {
+                    return Ok(outcome);
+                }
             }
         }
 
-        let session_id_opt = (!session_id.is_empty()).then_some(session_id);
-        let resume_acp_session_id = if !session_id.is_empty() && !ws_id.is_empty() {
-            resolve_backend_session_id(&self.sessions, session_id, agent_type, &ws_id)
-        } else {
-            None
-        };
-        if let Some(ref sid) = resume_acp_session_id {
-            info!(
-                session_id,
-                workspace_id = %ws_id,
-                backend_session_id = %sid,
-                "apply_start_runtime: spawning with ACP resume (no matching stored runtime row)"
-            );
-        }
+        let forbid_new_session_fallback = false;
 
         let workspace_team_id = self.resolve_workspace_team_id(&ws_id).await;
 
@@ -578,7 +572,8 @@ impl DaemonServer {
                 session_id,
                 initial_model_override,
                 mcp_config_path,
-                resume_acp_session_id,
+                None,
+                forbid_new_session_fallback,
                 context,
             )
             .await;
@@ -672,32 +667,9 @@ impl DaemonServer {
             .get_handle(&new_id)
             .map(|h| h.acp_session_id.clone())
             .unwrap_or_default();
-        let stored = StoredSession {
-            runtime_id: new_id.clone(),
-            acp_session_id: acp_sid,
-            session_id: session_id.to_string(),
-            agent_type: agent_type as i32,
-            workspace_id: ws_id.clone(),
-            worktree: resolved_worktree.clone(),
-            status: amux::AgentStatus::Active as i32,
-            created_at: chrono::Utc::now().timestamp(),
-            last_prompt: initial_prompt.to_string(),
-            last_output_summary: String::new(),
-            tool_use_count: 0,
-        };
-        if !session_id.is_empty() {
-            let disk_superseded = self.sessions.supersede_stale_for_session(
-                session_id,
-                &ws_id,
-                agent_type as i32,
-                &new_id,
-            );
-            if !disk_superseded.is_empty() {
-                let _ = self.sessions.save(&self.sessions_path);
-            }
+        if !session_id.is_empty() && !acp_sid.is_empty() {
+            self.upsert_session_binding(session_id, &ws_id, agent_type, &acp_sid);
         }
-        self.sessions.upsert(stored);
-        let _ = self.sessions.save(&self.sessions_path);
 
         // ACTIVE — refresh the actor snapshot so clients see the attachment.
         let _ = self.publish_actor_state().await;
@@ -758,14 +730,13 @@ impl DaemonServer {
         }
 
         // Terminate via RuntimeManager (same path as AcpCommand::StopAgent).
-        if self
+        let stopped_handle = self
             .agents
             .lock()
             .await
             .stop_runtime(&runtime_id)
-            .await
-            .is_none()
-        {
+            .await;
+        if stopped_handle.is_none() {
             return reject_stop(
                 request,
                 &format!("stop failed for runtime_id: {}", runtime_id),
@@ -777,7 +748,22 @@ impl DaemonServer {
             .await
             .clear_runtime(&runtime_id);
 
-        self.publish_runtime_stopped(&runtime_id).await;
+        if stop.purge_binding {
+            let cloud_session_id = runtime_id.clone();
+            if !stop.workspace_id.trim().is_empty() {
+                let agent_type = stopped_handle.unwrap().agent_type as i32;
+                self.sessions.delete(
+                    &cloud_session_id,
+                    stop.workspace_id.trim(),
+                    agent_type,
+                );
+            } else {
+                self.sessions.delete_for_session(&cloud_session_id);
+            }
+            let _ = self.sessions.save(&self.sessions_path);
+        }
+
+        self.publish_runtime_detached(&runtime_id).await;
 
         RpcResponse {
             request_id: request.request_id.clone(),
@@ -792,16 +778,14 @@ impl DaemonServer {
         }
     }
 
-    /// Flip the persisted session row to Stopped and refresh the actor snapshot.
-    /// Idempotent — detach removes the session from `live_sessions`.
-    pub(crate) async fn publish_runtime_stopped(&mut self, runtime_id: &str) {
-        if let Some(session) = self.sessions.find_by_id_mut(runtime_id) {
-            session.status = amux::AgentStatus::Stopped as i32;
-            let _ = self.sessions.save(&self.sessions_path);
-        }
-        // Detach: the session drops out of `live_sessions`, so clients render
-        // it cold. Absence is the signal — there is no "stopped" entry.
+    /// Detach: refresh MQTT actor snapshot only — bindings stay in runtimes.toml.
+    pub(crate) async fn publish_runtime_detached(&mut self, _runtime_id: &str) {
         let _ = self.publish_actor_state().await;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn publish_runtime_stopped(&mut self, runtime_id: &str) {
+        self.publish_runtime_detached(runtime_id).await;
     }
 
     pub(crate) async fn handle_start_runtime(
@@ -829,6 +813,7 @@ impl DaemonServer {
                 &start.initial_prompt,
                 initial_model_override,
                 &request.requester_actor_id,
+                start.reset_backend_binding,
             )
             .await;
 
@@ -845,6 +830,7 @@ impl DaemonServer {
                         runtime_id: res.runtime_id,
                         session_id: res.session_id,
                         rejected_reason: String::new(),
+                        error_code: String::new(),
                     },
                 )),
             },
@@ -860,6 +846,7 @@ impl DaemonServer {
                         runtime_id: String::new(),
                         session_id: String::new(),
                         rejected_reason: err.error_message,
+                        error_code: err.error_code,
                     },
                 )),
             },

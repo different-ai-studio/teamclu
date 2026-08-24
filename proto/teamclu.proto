@@ -426,6 +426,9 @@ message RuntimeStartRequest {
   string session_id = 6;                // empty = no Supabase sessions.id linkage
   // Deprecated: ignored by daemon. Remote MCP is always mounted for session-bound runtimes.
   repeated string remote_tool_capabilities = 7;
+  // When true, discard any stored backend binding for (session_id, workspace_id)
+  // and create a fresh backend session on this cloud session.
+  bool reset_backend_binding = 8;
 }
 
 // Accepted-only reply to RuntimeStartRequest.
@@ -435,12 +438,15 @@ message RuntimeStartResult {
   string runtime_id = 2;                // allocated by daemon; present iff accepted
   string session_id = 3;                // echoed or newly-created; empty for bare-agent spawn
   string rejected_reason = 4;           // set iff !accepted (validation / auth / resource error)
+  string error_code = 5;                // machine-readable, e.g. BACKEND_SESSION_NOT_RESUMABLE
 }
 
 // Request a runtime terminate. Accepted-only reply.
 // Actual termination observable as state: STOPPED on runtime/{id}/state.
 message RuntimeStopRequest {
   string runtime_id = 1;
+  bool purge_binding = 2;               // removeAgent: delete runtimes.toml rows for session
+  string workspace_id = 3;              // optional precise delete when purge_binding
 }
 
 message RuntimeStopResult {
