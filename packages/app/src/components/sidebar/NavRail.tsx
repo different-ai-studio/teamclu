@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Inbox, Lightbulb, Keyboard, AppWindow } from 'lucide-react'
+import { Inbox, Lightbulb, Keyboard, AppWindow, ChevronDown, ChevronRight } from 'lucide-react'
 import { useUIStore } from '@/stores/ui'
 import { useSessionListStore } from '@/stores/session-list-store'
 
@@ -17,9 +17,11 @@ function refreshSessionListThrottled(): void {
 import { useCronStore } from '@/stores/cron'
 import { createQuickSession, describeQuickSessionFailure } from '@/lib/create-quick-session'
 import { useQuickChatReadiness } from '@/hooks/use-quick-chat-readiness'
-import { ActorsSection } from '@/components/sidebar/ActorsSection'
 import { ContactsNavEntry } from '@/components/sidebar/ContactsNavEntry'
-import { TeamShareNavSection } from '@/components/sidebar/TeamShareNavSection'
+import {
+  TeamShareNavSection,
+  useTeamShareCountsLoader,
+} from '@/components/sidebar/TeamShareNavSection'
 import { NewChatSplitButton } from '@/components/sidebar/NewChatSplitButton'
 import { useFeatures } from '@/lib/remote-features'
 import { isScheduledSession } from '@/lib/session-origin'
@@ -73,6 +75,9 @@ export function NavRail() {
   const embedMode = useUIStore((s) => s.embedMode)
   const filter = useUIStore((s) => s.sidebarFilter)
   const setFilter = useUIStore((s) => s.setSidebarFilter)
+  const advancedExpanded = useUIStore((s) => s.advancedNavExpanded)
+  const toggleAdvanced = useUIStore((s) => s.toggleAdvancedNav)
+  const setAdvancedExpanded = useUIStore((s) => s.setAdvancedNavExpanded)
   const listRows = useSessionListStore((s) => s.rows)
   const cronSessionIds = useCronStore((s) => s.cronSessionIds)
   const showCronSessions = useCronStore((s) => s.showCronSessions)
@@ -80,10 +85,27 @@ export function NavRail() {
   const quickChatState = useQuickChatReadiness()
   const [creating, setCreating] = React.useState(false)
 
+  // Counts feed rows in both groups, so the fetch lives here rather than in
+  // either TeamShareNavSection instance.
+  useTeamShareCountsLoader()
+
   const sessionsCount = React.useMemo(
     () => listRows.filter((r) => !isScheduledSession(r, cronSessionIds)).length,
     [listRows, cronSessionIds],
   )
+
+  // Something else can select an advanced destination (default-tab setting,
+  // deep link, a link from the chat pane) — unfold the group so the active row
+  // is never hidden behind a collapsed header.
+  const advancedFilterActive =
+    filter.kind === 'ideas' ||
+    filter.kind === 'apps' ||
+    filter.kind === 'shortcuts' ||
+    (filter.kind === 'teamShare' && (filter.section === 'mcp' || filter.section === 'env'))
+
+  React.useEffect(() => {
+    if (advancedFilterActive) setAdvancedExpanded(true)
+  }, [advancedFilterActive, setAdvancedExpanded])
 
   const handleQuickNewChat = React.useCallback(() => {
     if (quickChatState.kind !== 'ready' || creating) return
@@ -137,6 +159,7 @@ export function NavRail() {
         onPrimaryClick={handleQuickNewChat}
       />
 
+      {/* Everyday destinations. Everything else folds into 高级 below. */}
       <div className="flex flex-col gap-0.5">
         <TopEntry
           label={t('sidebar.sessions', 'Sessions')}
@@ -150,35 +173,53 @@ export function NavRail() {
           }}
         />
         <ContactsNavEntry />
-        {!embedMode ? (
-          <TopEntry
-            label={t('sidebar.ideas', 'Ideas')}
-            icon={Lightbulb}
-            active={filter.kind === 'ideas'}
-            onClick={() => setFilter({ kind: 'ideas' })}
-          />
-        ) : null}
-        {features.apps && (
-          <TopEntry
-            label={t('sidebar.apps', '演示及 APP')}
-            icon={AppWindow}
-            active={filter.kind === 'apps'}
-            onClick={() => setFilter({ kind: 'apps' })}
-          />
-        )}
-        {!embedMode ? (
-          <TopEntry
-            label={t('common.shortcuts', 'Shortcuts')}
-            icon={Keyboard}
-            active={filter.kind === 'shortcuts'}
-            onClick={() => setFilter({ kind: 'shortcuts' })}
-          />
-        ) : null}
+        <TeamShareNavSection sections={['skills', 'knowledge']} />
       </div>
 
-      <TeamShareNavSection />
-
-      <ActorsSection />
+      <div className="flex flex-col">
+        <button
+          type="button"
+          onClick={toggleAdvanced}
+          aria-expanded={advancedExpanded}
+          className="flex w-full items-center gap-1.5 rounded-lg px-[9px] py-1.5 text-left text-[10.5px] font-semibold uppercase tracking-[0.08em] text-faint hover:text-foreground"
+        >
+          {advancedExpanded ? (
+            <ChevronDown className="h-[10px] w-[10px]" />
+          ) : (
+            <ChevronRight className="h-[10px] w-[10px]" />
+          )}
+          <span>{t('sidebar.advanced', 'Advanced')}</span>
+        </button>
+        {advancedExpanded && (
+          <div className="flex flex-col gap-0.5">
+            {!embedMode ? (
+              <TopEntry
+                label={t('sidebar.ideas', 'Ideas')}
+                icon={Lightbulb}
+                active={filter.kind === 'ideas'}
+                onClick={() => setFilter({ kind: 'ideas' })}
+              />
+            ) : null}
+            {features.apps && (
+              <TopEntry
+                label={t('sidebar.apps', '演示及 APP')}
+                icon={AppWindow}
+                active={filter.kind === 'apps'}
+                onClick={() => setFilter({ kind: 'apps' })}
+              />
+            )}
+            {!embedMode ? (
+              <TopEntry
+                label={t('common.shortcuts', 'Shortcuts')}
+                icon={Keyboard}
+                active={filter.kind === 'shortcuts'}
+                onClick={() => setFilter({ kind: 'shortcuts' })}
+              />
+            ) : null}
+            <TeamShareNavSection sections={['mcp', 'env']} />
+          </div>
+        )}
+      </div>
     </div>
   )
 }

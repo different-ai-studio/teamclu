@@ -19,9 +19,6 @@ const mkListRow = (id: string, title: string) => ({
   updated_at: '',
 })
 
-vi.mock('@/components/sidebar/ActorsSection', () => ({
-  ActorsSection: () => <div data-testid="actors-section" />,
-}))
 vi.mock('@/components/sidebar/ContactsNavEntry', () => ({
   ContactsNavEntry: () => <div data-testid="contacts-nav-entry" />,
 }))
@@ -38,9 +35,17 @@ vi.mock('sonner', () => ({
   toast: vi.fn(),
 }))
 
+function expandAdvanced() {
+  fireEvent.click(screen.getByRole('button', { name: /高级|Advanced/ }))
+}
+
 describe('NavRail', () => {
   beforeEach(() => {
-    useUIStore.setState({ sidebarFilter: { kind: 'all' }, embedMode: false })
+    useUIStore.setState({
+      sidebarFilter: { kind: 'all' },
+      embedMode: false,
+      advancedNavExpanded: false,
+    })
     useSessionListStore.setState({
       rows: [mkListRow('s1', 'A'), mkListRow('s2', 'B')],
       pinnedSessionIds: [],
@@ -66,12 +71,6 @@ describe('NavRail', () => {
     expect(useCronStore.getState().showCronSessions).toBe(false)
   })
 
-  it('clicking Shortcuts sets filter to { kind: "shortcuts" }', () => {
-    render(<NavRail />)
-    fireEvent.click(screen.getByRole('button', { name: /快捷方式/ }))
-    expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'shortcuts' })
-  })
-
   it('shows session count badge in Sessions row', () => {
     render(<NavRail />)
     expect(screen.getByText('2')).toBeInTheDocument()
@@ -86,16 +85,46 @@ describe('NavRail', () => {
     expect(screen.getByText('3')).toBeInTheDocument()
   })
 
-  it('renders ContactsNavEntry, ActorsSection, and an Ideas filter entry', () => {
+  it('shows only Sessions, Contacts, Skills and Knowledge by default', () => {
     render(<NavRail />)
+    expect(screen.getByRole('button', { name: /会话|Sessions/ })).toBeInTheDocument()
     expect(screen.getByTestId('contacts-nav-entry')).toBeInTheDocument()
-    expect(screen.getByTestId('actors-section')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /技能|Skills/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /知识库|Knowledge/ })).toBeInTheDocument()
+
+    expect(screen.queryByRole('button', { name: /Ideas|想法/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /快捷方式|Shortcuts/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /MCP/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /环境变量|Team Env/ })).not.toBeInTheDocument()
+  })
+
+  it('reveals Ideas, Shortcuts, MCP and Team Env once 高级 is expanded', () => {
+    render(<NavRail />)
+    expandAdvanced()
     expect(screen.getByRole('button', { name: /Ideas|想法/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /快捷方式|Shortcuts/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /MCP/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /环境变量|Team Env/ })).toBeInTheDocument()
+  })
+
+  it('clicking Shortcuts inside 高级 sets filter to { kind: "shortcuts" }', () => {
+    render(<NavRail />)
+    expandAdvanced()
+    fireEvent.click(screen.getByRole('button', { name: /快捷方式/ }))
+    expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'shortcuts' })
+  })
+
+  it('auto-expands 高级 when an advanced destination is already selected', () => {
+    useUIStore.setState({ sidebarFilter: { kind: 'shortcuts' } })
+    render(<NavRail />)
+    expect(screen.getByRole('button', { name: /快捷方式|Shortcuts/ })).toBeInTheDocument()
+    expect(useUIStore.getState().advancedNavExpanded).toBe(true)
   })
 
   it('hides Ideas and Shortcuts in embed (plugin) mode', () => {
     useUIStore.setState({ embedMode: true })
     render(<NavRail />)
+    expandAdvanced()
     expect(screen.queryByRole('button', { name: /Ideas|想法/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /快捷方式|Shortcuts/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /会话|Sessions/ })).toBeInTheDocument()

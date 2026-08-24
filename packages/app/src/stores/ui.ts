@@ -75,7 +75,8 @@ interface UIState {
   draftPreselectedActor: DraftActor | null
   sidebarFilter: SidebarFilter
   ideasSectionCollapsed: boolean
-  actorsSectionCollapsed: boolean
+  /** 高级 nav group (想法 / 演示及 App / 快捷方式 / MCP / 环境变量) is expanded. */
+  advancedNavExpanded: boolean
   /** Workspace list expanded (「管理 Workspace 列表」). */
   localDaemonExpanded: boolean
   /** Action sheet open (⋯ menu). */
@@ -93,7 +94,8 @@ interface UIState {
   closeNewSessionDialog: () => void
   setSidebarFilter: (filter: SidebarFilter) => void
   toggleIdeasSection: () => void
-  toggleActorsSection: () => void
+  toggleAdvancedNav: () => void
+  setAdvancedNavExpanded: (expanded: boolean) => void
   toggleLocalDaemon: () => void
   toggleLocalDaemonSheet: () => void
   setLocalDaemonSheetOpen: (open: boolean) => void
@@ -150,7 +152,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   draftPreselectedActor: null,
   sidebarFilter: { kind: 'all' },
   ideasSectionCollapsed: false,
-  actorsSectionCollapsed: false,
+  advancedNavExpanded: false,
   localDaemonExpanded: false,
   localDaemonSheetOpen: false,
   automationPanelOpen: false,
@@ -402,7 +404,8 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({ sidebarFilter: filter })
   },
   toggleIdeasSection: () => set((s) => ({ ideasSectionCollapsed: !s.ideasSectionCollapsed })),
-  toggleActorsSection: () => set((s) => ({ actorsSectionCollapsed: !s.actorsSectionCollapsed })),
+  toggleAdvancedNav: () => set((s) => ({ advancedNavExpanded: !s.advancedNavExpanded })),
+  setAdvancedNavExpanded: (expanded) => set({ advancedNavExpanded: expanded }),
   toggleLocalDaemon: () => set((s) => ({ localDaemonExpanded: !s.localDaemonExpanded })),
   toggleLocalDaemonSheet: () => set((s) => ({ localDaemonSheetOpen: !s.localDaemonSheetOpen })),
   setLocalDaemonSheetOpen: (open) => set({ localDaemonSheetOpen: open }),

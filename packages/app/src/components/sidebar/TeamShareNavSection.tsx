@@ -14,12 +14,30 @@ interface SectionDef {
   fallback: string
 }
 
-const SECTIONS: SectionDef[] = [
-  { section: 'skills', icon: Sparkles, labelKey: 'teamShare.skills', fallback: 'Skills' },
-  { section: 'mcp', icon: Plug, labelKey: 'teamShare.mcp', fallback: 'MCP' },
-  { section: 'env', icon: Box, labelKey: 'teamShare.env', fallback: 'Team Env' },
-  { section: 'knowledge', icon: Bookmark, labelKey: 'teamShare.knowledge', fallback: 'Knowledge' },
-]
+const SECTION_DEFS: Record<TeamShareSection, SectionDef> = {
+  skills: { section: 'skills', icon: Sparkles, labelKey: 'teamShare.skills', fallback: 'Skills' },
+  mcp: { section: 'mcp', icon: Plug, labelKey: 'teamShare.mcp', fallback: 'MCP' },
+  env: { section: 'env', icon: Box, labelKey: 'teamShare.env', fallback: 'Team Env' },
+  knowledge: { section: 'knowledge', icon: Bookmark, labelKey: 'teamShare.knowledge', fallback: 'Knowledge' },
+}
+
+const ALL_SECTIONS: TeamShareSection[] = ['skills', 'mcp', 'env', 'knowledge']
+
+/**
+ * Loads every section's count once. Split out of the rows because the nav now
+ * renders team-share entries in two places (default group + 高级 group) and the
+ * counts must still be fetched exactly once per team/workspace.
+ */
+export function useTeamShareCountsLoader(): void {
+  const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
+  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const loadCounts = useTeamShareBrowserStore((s) => s.loadCounts)
+
+  React.useEffect(() => {
+    if (!currentTeamId || !workspacePath) return
+    void loadCounts()
+  }, [currentTeamId, workspacePath, loadCounts])
+}
 
 interface RowProps {
   label: string
@@ -72,15 +90,12 @@ function SectionRow({
   )
 }
 
-export function TeamShareNavSection() {
+export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: TeamShareSection[] }) {
   const { t } = useTranslation()
   const filter = useUIStore((s) => s.sidebarFilter)
   const setFilter = useUIStore((s) => s.setSidebarFilter)
-  const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
-  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
 
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
-  const loadCounts = useTeamShareBrowserStore((s) => s.loadCounts)
   const skillsCount = useTeamShareBrowserStore((s) => s.skills.items.length)
   const mcpCount = useTeamShareBrowserStore((s) => s.mcp.items.length)
   const envCount = useTeamShareBrowserStore((s) => s.envCount)
@@ -98,11 +113,6 @@ export function TeamShareNavSection() {
     env: envCount,
     knowledge: knowledgeCount,
   }
-
-  React.useEffect(() => {
-    if (!currentTeamId || !workspacePath) return
-    void loadCounts()
-  }, [currentTeamId, workspacePath, loadCounts])
 
   const handleSelect = React.useCallback(
     (section: TeamShareSection) => {
@@ -127,8 +137,8 @@ export function TeamShareNavSection() {
   )
 
   return (
-    <div className="flex flex-col">
-      {SECTIONS.map((def) => (
+    <>
+      {sections.map((section) => SECTION_DEFS[section]).map((def) => (
         <SectionRow
           key={def.section}
           label={t(def.labelKey, def.fallback)}
@@ -142,6 +152,6 @@ export function TeamShareNavSection() {
           onClick={() => handleSelect(def.section)}
         />
       ))}
-    </div>
+    </>
   )
 }

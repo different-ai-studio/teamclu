@@ -40,19 +40,36 @@ vi.mock('@/stores/ui', () => ({
     selector({ sidebarFilter: { kind: 'sessions' }, setSidebarFilter }),
 }))
 
-import { TeamShareNavSection } from '../TeamShareNavSection'
+import { TeamShareNavSection, useTeamShareCountsLoader } from '../TeamShareNavSection'
 
-describe('TeamShareNavSection', () => {
+function CountsLoaderHarness() {
+  useTeamShareCountsLoader()
+  return null
+}
+
+describe('useTeamShareCountsLoader', () => {
   it('loads counts after the current team becomes available', async () => {
     teamState.id = null
     loadCounts.mockReset()
 
-    const view = render(<TeamShareNavSection />)
+    const view = render(<CountsLoaderHarness />)
     expect(loadCounts).not.toHaveBeenCalled()
 
     teamState.id = 'team-1'
-    view.rerender(<TeamShareNavSection />)
+    view.rerender(<CountsLoaderHarness />)
 
     await waitFor(() => expect(loadCounts).toHaveBeenCalledTimes(1))
+  })
+})
+
+describe('TeamShareNavSection', () => {
+  it('renders only the requested sections', () => {
+    teamState.id = 'team-1'
+    const { getByText, queryByText } = render(<TeamShareNavSection sections={['skills', 'knowledge']} />)
+
+    expect(getByText('Skills')).toBeTruthy()
+    expect(getByText('Knowledge')).toBeTruthy()
+    expect(queryByText('MCP')).toBeNull()
+    expect(queryByText('Team Env')).toBeNull()
   })
 })
