@@ -77,9 +77,9 @@ export function NavRail() {
   const embedMode = useUIStore((s) => s.embedMode)
   const filter = useUIStore((s) => s.sidebarFilter)
   const setFilter = useUIStore((s) => s.setSidebarFilter)
-  const advancedExpanded = useUIStore((s) => s.advancedNavExpanded)
-  const toggleAdvanced = useUIStore((s) => s.toggleAdvancedNav)
-  const setAdvancedExpanded = useUIStore((s) => s.setAdvancedNavExpanded)
+  const moreExpanded = useUIStore((s) => s.moreNavExpanded)
+  const toggleMore = useUIStore((s) => s.toggleMoreNav)
+  const setMoreExpanded = useUIStore((s) => s.setMoreNavExpanded)
   const listRows = useSessionListStore((s) => s.rows)
   const cronSessionIds = useCronStore((s) => s.cronSessionIds)
   const showCronSessions = useCronStore((s) => s.showCronSessions)
@@ -96,18 +96,18 @@ export function NavRail() {
     [listRows, cronSessionIds],
   )
 
-  // Something else can select an advanced destination (default-tab setting,
-  // deep link, a link from the chat pane) — unfold the group so the active row
-  // is never hidden behind a collapsed header.
-  const advancedFilterActive =
+  // Something else can select one of the folded destinations (default-tab
+  // setting, deep link, a link from the chat pane) — unfold the group so the
+  // active row is never hidden behind a collapsed rule.
+  const moreFilterActive =
     filter.kind === 'ideas' ||
     filter.kind === 'apps' ||
     filter.kind === 'shortcuts' ||
     (filter.kind === 'teamShare' && (filter.section === 'mcp' || filter.section === 'env'))
 
   React.useEffect(() => {
-    if (advancedFilterActive) setAdvancedExpanded(true)
-  }, [advancedFilterActive, setAdvancedExpanded])
+    if (moreFilterActive) setMoreExpanded(true)
+  }, [moreFilterActive, setMoreExpanded])
 
   const handleQuickNewChat = React.useCallback(() => {
     if (quickChatState.kind !== 'ready' || creating) return
@@ -161,7 +161,7 @@ export function NavRail() {
         onPrimaryClick={handleQuickNewChat}
       />
 
-      {/* Everyday destinations. Everything else folds into 高级 below. */}
+      {/* Everyday destinations. Everything else folds into 更多 below. */}
       <div className="flex flex-col gap-0.5">
         <TopEntry
           label={t('sidebar.sessions', 'Sessions')}
@@ -187,8 +187,8 @@ export function NavRail() {
         */}
         <button
           type="button"
-          onClick={toggleAdvanced}
-          aria-expanded={advancedExpanded}
+          onClick={toggleMore}
+          aria-expanded={moreExpanded}
           className="group flex w-full items-center gap-2.5 py-2"
         >
           <span
@@ -196,11 +196,11 @@ export function NavRail() {
             className="h-px flex-1 bg-border-soft transition-colors duration-150 group-hover:bg-border"
           />
           <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-faint transition-colors duration-150 group-hover:text-ink-2">
-            {t('sidebar.advanced', 'Advanced')}
+            {t('sidebar.more', 'More')}
             <ChevronDown
               className={cn(
                 'h-3 w-3 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]',
-                advancedExpanded && 'rotate-180',
+                moreExpanded && 'rotate-180',
               )}
             />
           </span>
@@ -209,7 +209,7 @@ export function NavRail() {
             className="h-px flex-1 bg-border-soft transition-colors duration-150 group-hover:bg-border"
           />
         </button>
-        {advancedExpanded && (
+        {moreExpanded && (
           <div className="flex flex-col gap-0.5">
             {!embedMode ? (
               <TopEntry

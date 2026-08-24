@@ -35,8 +35,8 @@ vi.mock('sonner', () => ({
   toast: vi.fn(),
 }))
 
-function expandAdvanced() {
-  fireEvent.click(screen.getByRole('button', { name: /高级|Advanced/ }))
+function expandMore() {
+  fireEvent.click(screen.getByRole('button', { name: /更多|More/ }))
 }
 
 describe('NavRail', () => {
@@ -44,7 +44,7 @@ describe('NavRail', () => {
     useUIStore.setState({
       sidebarFilter: { kind: 'all' },
       embedMode: false,
-      advancedNavExpanded: false,
+      moreNavExpanded: false,
     })
     useSessionListStore.setState({
       rows: [mkListRow('s1', 'A'), mkListRow('s2', 'B')],
@@ -98,33 +98,33 @@ describe('NavRail', () => {
     expect(screen.queryByRole('button', { name: /环境变量|Team Env/ })).not.toBeInTheDocument()
   })
 
-  it('reveals Ideas, Shortcuts, MCP and Team Env once 高级 is expanded', () => {
+  it('reveals Ideas, Shortcuts, MCP and Team Env once 更多 is expanded', () => {
     render(<NavRail />)
-    expandAdvanced()
+    expandMore()
     expect(screen.getByRole('button', { name: /Ideas|想法/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /快捷方式|Shortcuts/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /MCP/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /环境变量|Team Env/ })).toBeInTheDocument()
   })
 
-  it('clicking Shortcuts inside 高级 sets filter to { kind: "shortcuts" }', () => {
+  it('clicking Shortcuts inside 更多 sets filter to { kind: "shortcuts" }', () => {
     render(<NavRail />)
-    expandAdvanced()
+    expandMore()
     fireEvent.click(screen.getByRole('button', { name: /快捷方式/ }))
     expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'shortcuts' })
   })
 
-  it('auto-expands 高级 when an advanced destination is already selected', () => {
+  it('auto-expands 更多 when one of its destinations is already selected', () => {
     useUIStore.setState({ sidebarFilter: { kind: 'shortcuts' } })
     render(<NavRail />)
     expect(screen.getByRole('button', { name: /快捷方式|Shortcuts/ })).toBeInTheDocument()
-    expect(useUIStore.getState().advancedNavExpanded).toBe(true)
+    expect(useUIStore.getState().moreNavExpanded).toBe(true)
   })
 
   it('hides Ideas and Shortcuts in embed (plugin) mode', () => {
     useUIStore.setState({ embedMode: true })
     render(<NavRail />)
-    expandAdvanced()
+    expandMore()
     expect(screen.queryByRole('button', { name: /Ideas|想法/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /快捷方式|Shortcuts/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /会话|Sessions/ })).toBeInTheDocument()
