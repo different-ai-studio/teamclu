@@ -193,6 +193,13 @@ public:
     void setSpeakerVolume(int volume, bool saveToSettings = false);
     int getSpeakerVolume(bool loadFromSettings = false);
     int getAudioSampleRate();
+    // Reopen the codec at a different rate. Added (not upstream) for voice:
+    // the codec is opened at 44.1 kHz for the UI sounds, but Opus does not
+    // support that rate at all (only 8/12/16/24/48 kHz), and 44100->16000 is
+    // not an integer ratio so it cannot be decimated cheaply. Switching the
+    // codec for the duration of a turn is far less work than carrying a
+    // resampler, and costs one close/open pair per turn.
+    bool setAudioSampleRate(int rate);
     void audioRecord(std::vector<int16_t>& data, uint16_t durationMs, float gain = 30.0f);
     void audioPlay(std::vector<int16_t>& data, bool async = true);
 

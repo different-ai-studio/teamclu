@@ -28,7 +28,10 @@ static const std::string_view _tag = "HAL-Audio";
 
 static class AudioCodec {
 public:
-    static constexpr int sample_rate       = 44100;
+    // Not constexpr: a voice turn reopens the codec at 16 kHz (Opus does not
+    // support 44.1 kHz at all) and restores this afterwards. See
+    // Hal::setAudioSampleRate.
+    int sample_rate = 44100;
     static constexpr int spectrum_fft_size = 512;
     static constexpr int spectrum_hop_size = 256;
 
@@ -75,7 +78,7 @@ public:
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
             .channel         = 1,
-            .sample_rate     = sample_rate,
+            .sample_rate     = static_cast<uint32_t>(sample_rate),
         };
         esp_codec_dev_open(_codec_dev, &fs);
     }
@@ -132,6 +135,27 @@ public:
             }
             _write(data);
         }
+    }
+
+    bool reopen(int new_rate)
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (new_rate == sample_rate) {
+            return true;
+        }
+        esp_codec_dev_close(_codec_dev);
+        esp_codec_dev_sample_info_t fs = {
+            .bits_per_sample = 16,
+            .channel         = 1,
+            .sample_rate     = static_cast<uint32_t>(new_rate),
+        };
+        if (esp_codec_dev_open(_codec_dev, &fs) != ESP_OK) {
+            mclog::tagError(_tag, "codec reopen at {} Hz failed", new_rate);
+            return false;
+        }
+        sample_rate = new_rate;
+        mclog::tagInfo(_tag, "codec reopened at {} Hz", new_rate);
+        return true;
     }
 
     void record(std::vector<int16_t>& data, uint16_t durationMs, float gain)
@@ -226,7 +250,7 @@ private:
 
         i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_PORT, I2S_ROLE_MASTER);
         i2s_std_config_t std_cfg   = {
-            .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate),
+            .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(static_cast<uint32_t>(sample_rate)),
             .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
             .gpio_cfg =
                 {
@@ -489,6 +513,11 @@ void Hal::audioPlay(std::vector<int16_t>& data, bool async)
 int Hal::getAudioSampleRate()
 {
     return _audio_codec.sample_rate;
+}
+
+bool Hal::setAudioSampleRate(int rate)
+{
+    return _audio_codec.reopen(rate);
 }
 
 void Hal::updateAudioSpectrum()

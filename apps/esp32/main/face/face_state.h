@@ -97,6 +97,11 @@ public:
     static constexpr std::uint32_t SavingToSavedMs = 1000;
     static constexpr std::uint32_t SavedToIdleMs   = 2200;
     static constexpr std::uint32_t PwrLongPressMs  = 1500;  // -> power off
+    // How long to wait for amuxd to say anything after an utterance is
+    // committed, before concluding nobody is listening. Generous: the budget in
+    // plan §9 is ~1 s, but a cold STT connection or a busy laptop can exceed it
+    // without being broken.
+    static constexpr std::uint32_t AgentTimeoutMs  = 8000;
 
     explicit FaceState(Hooks hooks = {});
 
@@ -153,6 +158,17 @@ public:
     void setLink(Link l);
     Link link() const { return _link; }
 
+    // True once MQTT is connected AND a device token bound us to a team/actor,
+    // i.e. there is somebody who could answer.
+    //
+    // This decides what a silent turn means. Unbound, the think->reply timer is
+    // a demo placeholder so the face is exercisable with no backend. Bound, the
+    // same silence means amuxd never answered, and pretending it replied would
+    // put the device on the speaking screen with nothing to say — so it becomes
+    // the "电脑没醒着" error instead (plan §3.1).
+    void setAgentExpected(bool expected) { _agentExpected = expected; }
+    bool agentExpected() const { return _agentExpected; }
+
     void setScreen(Screen s);  // for the on-device screen jumper / tests
 
 private:
@@ -183,6 +199,7 @@ private:
     std::uint8_t _batteryPct = 0;
     bool _batteryCharging = false;
     Link _link = Link::Booting;
+    bool _agentExpected = false;
 };
 
 }  // namespace face

@@ -314,6 +314,63 @@ void test_link_changes_do_not_disturb_other_screens()
     CHECK(s.screen() == Screen::Notes);
 }
 
+void test_silent_turn_with_no_agent_fakes_a_reply()
+{
+    std::printf("unbound: a silent turn still reaches reply (demo placeholder)\n");
+    Log log;
+    FaceState st(makeHooks(log));
+    st.setAgentExpected(false);
+
+    st.onButtonDown(Button::A, 0);
+    st.tick(FaceState::HoldThresholdMs);
+    st.onButtonUp(Button::A, 1000);
+    CHECK(st.screen() == Screen::Think);
+
+    st.tick(1000 + FaceState::ThinkToReplyMs);
+    CHECK(st.screen() == Screen::Reply);
+}
+
+void test_silent_turn_with_agent_expected_reports_no_agent()
+{
+    std::printf("bound: a silent turn becomes the no-agent error, not a fake reply\n");
+    Log log;
+    FaceState st(makeHooks(log));
+    st.setAgentExpected(true);
+
+    st.onButtonDown(Button::A, 0);
+    st.tick(FaceState::HoldThresholdMs);
+    st.onButtonUp(Button::A, 1000);
+    CHECK(st.screen() == Screen::Think);
+
+    // The old placeholder deadline must NOT fire.
+    st.tick(1000 + FaceState::ThinkToReplyMs);
+    CHECK(st.screen() == Screen::Think);
+
+    st.tick(1000 + FaceState::AgentTimeoutMs);
+    CHECK(st.screen() == Screen::Error);
+    CHECK(st.error() == ErrorKind::NoAgent);
+}
+
+void test_agent_reply_cancels_the_timeout()
+{
+    std::printf("an agent that answers cancels the no-agent timeout\n");
+    Log log;
+    FaceState st(makeHooks(log));
+    st.setAgentExpected(true);
+
+    st.onButtonDown(Button::A, 0);
+    st.tick(FaceState::HoldThresholdMs);
+    st.onButtonUp(Button::A, 1000);
+
+    st.onAgentSpeaking();           // ctl spk_start arrives
+    CHECK(st.screen() == Screen::Reply);
+
+    // Well past the timeout: it must not fire now that we are speaking.
+    st.tick(1000 + FaceState::AgentTimeoutMs + 1000);
+    CHECK(st.screen() == Screen::Reply);
+    CHECK(st.error() == ErrorKind::None);
+}
+
 }  // namespace
 
 int main()
@@ -332,6 +389,9 @@ int main()
     test_config_ap_makes_talk_buttons_inert();
     test_leaving_config_ap_returns_to_idle();
     test_link_changes_do_not_disturb_other_screens();
+    test_silent_turn_with_no_agent_fakes_a_reply();
+    test_silent_turn_with_agent_expected_reports_no_agent();
+    test_agent_reply_cancels_the_timeout();
 
     if (g_failures == 0) {
         std::printf("\nall face_state tests passed\n");

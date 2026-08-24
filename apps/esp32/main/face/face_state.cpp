@@ -201,6 +201,11 @@ void FaceState::tick(std::uint32_t nowMs)
                 fire(_hooks.vibrate, BumpDoneMs, BumpStrength);
                 armDeadline(nowMs, SavedToIdleMs, Screen::Idle);
                 break;
+            case Screen::Error:
+                // Only reachable from the chat deadline above: amuxd said
+                // nothing for AgentTimeoutMs.
+                onError(ErrorKind::NoAgent);
+                break;
             case Screen::Idle:
             default:
                 enterIdle();
@@ -223,11 +228,15 @@ void FaceState::commitHold(Mode m, std::uint32_t nowMs)
 {
     fire(_hooks.onCaptureEnd, m);
     if (m == Mode::Chat) {
-        // Placeholder timing. Milestone 2 replaces this with onAgentSpeaking()
-        // driven by the ctl channel; until then the fall-through keeps the
-        // whole gesture demonstrable on hardware with no network.
         _screen = Screen::Think;
-        armDeadline(nowMs, ThinkToReplyMs, Screen::Reply);
+        if (_agentExpected) {
+            // Someone should answer. If nothing arrives, that is a fact worth
+            // reporting, not something to paper over with a fake reply.
+            armDeadline(nowMs, AgentTimeoutMs, Screen::Error);
+        } else {
+            // No backend bound: keep the gesture demonstrable offline.
+            armDeadline(nowMs, ThinkToReplyMs, Screen::Reply);
+        }
     } else {
         _screen = Screen::Saving;
         armDeadline(nowMs, SavingToSavedMs, Screen::Saved);

@@ -18,11 +18,15 @@
 #include <cstdio>
 #include <string>
 
+#include "audio/voice_audio.h"
 #include "face/face_state.h"
 #include "face/face_ui.h"
 #include "power/battery_log.h"
 #include "power/power_hw.h"
+#include "net/ctl_parse.h"
+#include "net/mqtt_link.h"
 #include "net/net_link.h"
+#include "net/voice_ctl.h"
 #include "power/sleep_policy.h"
 
 namespace {
@@ -81,21 +85,36 @@ face::Hooks makeHooks()
         GetHAL().vibrate(ms, strength);
     };
 
-    // MILESTONE 2: start streaming Opus frames to
-    // amux/{team}/{actor}/voice/mic with intent=chat|note.
+    // Opens the turn on amuxd: its router keys an STT stream off this and the
+    // intent, then expects mic frames to follow. Audio capture itself is next.
     h.onCaptureStart = [](face::Mode m) {
         mclog::info(kTag, "capture start ({})", m == face::Mode::Chat ? "chat" : "note");
+        // ctl first: amuxd keys an STT stream off turn_start, so a mic frame
+        // that beats it to the broker has nowhere to land.
+        net::sendTurnStart(m);
+        audio::startCapture(m);
     };
 
-    // MILESTONE 2: stop the mic and commit the utterance. For note mode this is
-    // also where the offline queue gets a row if the link is down.
+    // Ends the utterance. amuxd drops the frame sender, which is what makes its
+    // provider drain a final transcript — so this must be sent even when no
+    // audio followed, or the turn is left open.
     h.onCaptureEnd = [](face::Mode m) {
         mclog::info(kTag, "capture end ({})", m == face::Mode::Chat ? "chat" : "note");
+        // Stop the mic before announcing the end, so no frame arrives after
+        // amuxd has already dropped the stream's sender.
+        audio::stopCapture();
+        net::sendTurnEnd();
+        (void)m;  // intent was declared at turn_start
     };
 
-    // MILESTONE 2: publish a flush marker on .../voice/ctl at QoS 1 and stop
-    // playback locally. Deliberately not on the audio topic — see plan §5.
-    h.onCancelPlayback = []() { mclog::info(kTag, "cancel playback"); };
+    // Barge-in. QoS 1 on ctl, never on the QoS 0 audio topic: a dropped flush
+    // is precisely the failure that cannot be tolerated (plan §5). amuxd closes
+    // the stream without expecting a final.
+    h.onCancelPlayback = []() {
+        mclog::info(kTag, "cancel playback");
+        audio::endPlayback();
+        net::sendBargeIn();
+    };
 
     // Screen and CPU handling live in the sleep policy, which sees the Sleep
     // screen as `userAsleep`. These hooks only record the intent.
@@ -132,6 +151,10 @@ extern "C" void app_main(void)
     state.addNote("09:12", "周会挪到周四下午");
     state.addNote("10:04", "亮度曲线要重标");
     state.addNote("11:38", "问 CST820B 中断脚");
+
+    if (!audio::init()) {
+        mclog::warn(kTag, "audio unavailable; voice will be control-only");
+    }
 
     power::BatteryLog battery;
     // 10 s: the HAL filters vbat over ~8 s, so faster only re-reports the same value.
@@ -174,6 +197,22 @@ extern "C" void app_main(void)
     // has any opinion, so a provisioning screen has a face to appear on.
     net::start(state.deviceCode());
 
+    // Route amuxd→device `voice/ctl` into the face's agent-driven input.
+    // The callback fires on the MQTT task; it only parses + pushes to the
+    // inbox, and the main loop drains it below — never touch FaceState from
+    // here (small task stack, non-thread-safe state machine).
+    net::mqttOnCtl([](const char* data, std::size_t len) {
+        net::ctlPushIncoming(net::parseIncomingCtl(data, len));
+    });
+
+    // Agent audio. Decoded and handed to the HAL's play task straight from the
+    // MQTT task: unlike ctl this must NOT be queued for the main loop, because
+    // the main loop runs at 16 ms and would add a frame of latency per hop to
+    // something already measured in hundreds of milliseconds (plan §9).
+    net::mqttOnSpk([](const std::uint8_t* data, std::size_t len) {
+        audio::onSpkFrame(data, len);
+    });
+
     mclog::info(kTag, "face up, device {}", state.deviceCode());
 
     std::uint32_t lastClockMs = 0;
@@ -199,6 +238,73 @@ extern "C" void app_main(void)
 
         net::poll();  // deferred network work; never run from the event task
         state.setLink(net::linkState());
+        // Only an actually-connected MQTT session means somebody could answer.
+        // Being merely on Wi-Fi is not enough: unbound or with the broker down,
+        // a silent turn is expected, not an error worth showing.
+        state.setAgentExpected(net::mqttState() == net::MqttState::Connected);
+
+        // Drain amuxd→device ctl: the agent-driven transitions the face
+        // couldn't fire in M1 (it used timers instead). Maps amuxd's error
+        // codes onto the device's ErrorKind taxonomy (plan §5.1).
+        net::IncomingCtl ctl;
+        while (net::ctlPopIncoming(ctl)) {
+            switch (ctl.kind) {
+                case net::IncomingCtl::Kind::Error: {
+                    const auto kind = [&]() -> face::ErrorKind {
+                        // amuxd error codes → device screen taxonomy.
+                        if (ctl.code == "no_wifi" || ctl.code == "no_network")
+                            return face::ErrorKind::NoWifi;
+                        if (ctl.code == "no_broker" || ctl.code == "broker_unreachable")
+                            return face::ErrorKind::NoBroker;
+                        if (ctl.code == "no_amuxd" || ctl.code == "no_agent")
+                            return face::ErrorKind::NoAgent;  // §3.1: laptop asleep
+                        return face::ErrorKind::Upstream;  // STT/LLM/TTS
+                    }();
+                    mclog::info(kTag, "ctl error: {} {}",
+                                ctl.code, ctl.message);
+                    // Tear the audio down too: otherwise a mid-turn failure
+                    // leaves the capture task running and the codec parked at
+                    // the voice rate, so the UI sounds play at the wrong pitch.
+                    audio::stopCapture();
+                    audio::endPlayback();
+                    state.onError(kind);
+                    break;
+                }
+                case net::IncomingCtl::Kind::Thinking:
+                    state.onAgentThinking();
+                    break;
+                case net::IncomingCtl::Kind::SpkStart:
+                    // Open the decoder before the face changes: frames can
+                    // arrive in the same breath as this marker, and one dropped
+                    // because playback was not armed yet is a clipped first
+                    // syllable.
+                    audio::beginPlayback();
+                    state.onAgentSpeaking();
+                    break;
+                case net::IncomingCtl::Kind::SpkEnd: {
+                    audio::endPlayback();
+                    const auto st = audio::stats();
+                    mclog::info(kTag, "turn audio: tx {}/{} (drop {}), rx {} (drop {})",
+                                st.framesPublished, st.framesCaptured, st.framesDroppedTx,
+                                st.framesPlayed, st.framesDroppedRx);
+                    state.onAgentDone();
+                    break;
+                }
+                case net::IncomingCtl::Kind::Session:
+                    // Session id for this turn. Not acted on yet — M3-3 ties a
+                    // saved note to its session; for now it's logged so the
+                    // round-trip is visible.
+                    mclog::info(kTag, "ctl session: {}", ctl.session);
+                    break;
+                case net::IncomingCtl::Kind::Unknown:
+                    // Forward-compat: a future amuxd ctl type. Log + ignore
+                    // rather than render, so the device never wedges on an
+                    // upgrade it doesn't understand.
+                    mclog::info(kTag, "ctl unknown type, ignored");
+                    break;
+            }
+        }
+
         state.tick(now);
 
         power::Inputs pin;

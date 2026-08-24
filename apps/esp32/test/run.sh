@@ -15,5 +15,7 @@ build_and_run() {
 build_and_run face_state_test test_face_state.cpp ../main/face/face_state.cpp || rc=1
 echo
 build_and_run sleep_policy_test test_sleep_policy.cpp ../main/power/sleep_policy.cpp || rc=1
+echo
+build_and_run ctl_parse_test test_ctl_parse.cpp ../main/net/ctl_parse.cpp || rc=1
 
 exit $rc

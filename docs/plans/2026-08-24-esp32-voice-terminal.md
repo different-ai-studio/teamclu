@@ -1,8 +1,9 @@
 # ESP32-S3 Voice Terminal — Implementation Plan
 
 > **Branch:** `task/stopwatch-esp32-devi`
-> **Status:** Rev 3 (2026-08-24). Milestone 1 code written; host tests green;
-> firmware not yet compiled. §13 is the rev2→rev3 changelog.
+> **Status:** Rev 4 (2026-08-24). Device runs on hardware: face, provisioning,
+> MQTT and the `voice/ctl` control plane are verified end to end. The audio path
+> is written but **has never run** — see §14. §13/§15 are the changelogs.
 >
 > Rev 1 was written blind. Rev 2 corrected it against the live amuxd/EMQX
 > stack. Rev 3 corrects it against the **actual hardware and the design
@@ -557,6 +558,83 @@ RX8130CE scheduled wake · touch input (CST820B is present and entirely unused)
 7. EMQX broker rate limits vs 50 frames/s/direction/device — M2-4
 8. Touch: the panel has it and the design uses none. Leave unused, or let it
    replace a button gesture?
+
+## 14. Audio path — written, unverified
+
+Everything in `main/audio/` and the codec changes in `hal_audio.cpp` were
+written while the device was unavailable. It compiles and is wired end to end;
+none of it has produced a sound. The specific things to check first, in the
+order they would fail:
+
+1. **Does reopening the codec actually change the rate?** The ES8311 is opened
+   at 44.1 kHz for the UI sounds, and Opus does not support 44.1 kHz at all —
+   only 8/12/16/24/48 kHz. 44100→16000 is not an integer ratio, so it cannot be
+   decimated cheaply. A turn therefore calls `esp_codec_dev_close` +
+   `open(16000)` and restores 44.1 kHz afterwards. **The I2S channel's own clock
+   is configured once at init** (`I2S_STD_CLK_DEFAULT_CONFIG(sample_rate)`), so
+   if `esp_codec_dev_open` does not also reprogram it, capture will still be at
+   44.1 kHz and everything downstream is garbage. This is the single largest
+   unverified assumption in the audio path.
+2. **Are back-to-back 20 ms reads gap-free?** `audioRecord` blocks on
+   `esp_codec_dev_read` against an already-open device, so consecutive calls
+   should come off one running DMA stream. If speech sounds clipped or
+   time-compressed, this is why.
+3. **CPU headroom for Opus at 16 kHz.** Complexity is set to 5 as a guess; the
+   device is simultaneously driving LVGL. `plan §10 M2-8` wanted this measured
+   and it still is not.
+4. **Does close/open click?** A codec reconfigured twice per turn may pop.
+
+`audio::stats()` counts captured / published / dropped frames and is logged at
+`spk_end`, which is the cheapest way to tell whether frames flow at all without
+a scope.
+
+## 15. Changelog — rev 3 → rev 4
+
+**Verified on hardware this round:**
+
+- Face, provisioning portal, Wi-Fi, device token, MQTT connect, retained state
+  and LWT — all confirmed from both the serial console and the broker.
+- The `voice/ctl` uplink: `turn_start`/`turn_end` with the right intent,
+  monotonic `seq`, exact 1:1 delivery between device and broker.
+- Sleep tiers active→dim→screenoff→lightsleep, and wake.
+
+**The bug that cost the most time, and why:** a `sys_evt` stack overflow. The
+Wi-Fi event callback did NVS reads, base64, JSON parsing and MQTT client
+startup on a 2304-byte task stack. The device associated, got an IP, then
+rebooted — 27 times in one capture. Externally this looked *exactly* like a
+flaky network, and several rounds were spent on the radio (country code, scan
+method, power save, listen interval) before the crash was even visible. Fixed
+by moving everything to `net::poll()` on the main loop, stripping the callback
+to atomic flag writes, and raising the stack to 6144.
+
+Three diagnostic traps made the crash invisible and are worth remembering:
+- Capturing serial through `grep | tail` loses the buffer when the process is
+  killed — and `grep` here is rewritten by a shell hook that swallowed even
+  `-c` output. Log to a file, analyse with Python.
+- **ELF SHA256 is not a build identity.** ESP-IDF embeds the compile time, so
+  every rebuild changes the hash even with identical source. Comparing it
+  produced a false "the device is running old firmware". Use the app
+  descriptor's compile time.
+- `Hard resetting via RTS pin` is a **no-op on this board**, so "flash
+  succeeded" and "the new code is running" are different claims.
+
+**Also this round:**
+
+- Pairing reduced to a pasted long-lived JWT (§8.1), signed with a dedicated
+  `DEVICE_MQTT_JWT_SECRET` and verified by a second EMQX authenticator added
+  live via `emqx ctl conf load` — no restart, no client disconnected.
+- The device `voice/ctl` protocol follows amuxd's shape, not this plan's
+  original: **intent travels on `turn_start`, not on every mic frame**, so
+  `voice/mic` stays pure Opus.
+- A silent turn now reports `NoAgent` rather than faking a reply — but only when
+  MQTT is actually connected. Unbound, the old placeholder timer still runs so
+  the face stays demonstrable with no backend.
+- Fixed in the daemon's new `voice` module: five integration-test binaries
+  failed to compile because `mqtt::subscriber` references `crate::voice` and the
+  test crate roots did not declare it. `cargo build` does not surface this.
+- Fixed in `ctl_parse`: the scanner matched a field name anywhere, so
+  `{"type":"session","session":"s-1"}` read the *value* of `type` as the key and
+  silently dropped the session id.
 
 ## 13. Changelog — rev 2 → rev 3
 

@@ -5,6 +5,8 @@ file(GLOB_RECURSE MY_SRCS
     "assets/*.c"
     "assets/*.cc"
     "assets/*.cpp"
+    "audio/*.c"
+    "audio/*.cpp"
     "face/*.c"
     "face/*.cc"
     "face/*.cpp"
