@@ -10,6 +10,9 @@ rumqttc = { version = "0.24", features = ["websocket"] }
 # NATS (alternative transport)
 async-nats = "0.49"
 futures-util = "0.3"
+# Pinned to the version rumqttc's `websocket` feature already resolves, so the
+# FunASR client does not drag a second tungstenite into the tree.
+tokio-tungstenite = "0.21"
 
 # Protobuf
 prost = { workspace = true }

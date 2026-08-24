@@ -1,3 +1,8 @@
+// `subscriber` parses `voice/ctl` into `crate::voice::ctl::VoiceCtl`, so this
+// crate root needs `voice` even though it only pulls in two mqtt submodules.
+#[path = "../src/voice/mod.rs"]
+mod voice;
+
 #[path = "../src/mqtt/subscriber.rs"]
 mod subscriber;
 #[path = "../src/mqtt/topics.rs"]

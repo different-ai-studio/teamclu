@@ -559,6 +559,39 @@ RX8130CE scheduled wake · touch input (CST820B is present and entirely unused)
 8. Touch: the panel has it and the design uses none. Leave unused, or let it
    replace a button gesture?
 
+## 13.5 STT — FunASR client implemented (M3-2)
+
+`voice/funasr.rs` is now a real streaming client, not a stub. It connects to a
+`funasr-wss-server`, forwards the device's Opus frames **verbatim** (the server
+ingests Opus, so nothing decodes anywhere on this path), and parses
+`2pass-online` / `2pass-offline` messages into partial/final transcripts.
+
+Three decisions worth knowing:
+
+- **The socket is not closed when the user releases PTT.** Dropping the frame
+  channel sends `{"is_speaking":false}` and then *keeps reading* — the offline
+  final arrives after that marker. Closing at that point, which is the obvious
+  reading of "the utterance ended", loses the transcript entirely.
+- **`note` downgrades to offline-only.** A note is read back, not spoken, so it
+  can trade first-partial latency for accuracy. `chat` stays 2pass.
+- **Parsing is deliberately lenient.** FunASR builds differ on whether the final
+  is signalled by `is_final` or only by a `…-offline` mode string; either counts.
+  An empty *final* is kept (the user said nothing, and the router needs it to
+  close the turn); an empty partial is dropped as bookkeeping.
+
+**Not verified against a real server.** No `funasr-wss-server` is deployed yet,
+and the protocol above is transcribed from documentation rather than observed on
+the wire — which is exactly why `parse_transcript` is unit-tested against the
+shapes it might receive rather than one assumed shape.
+
+M3-1 (subscriber → router) was already wired: `mqtt::subscriber` parses the
+5-segment voice topics and `daemon/server/rpc.rs` forwards `VoiceMic`/`VoiceCtl`
+into `VoiceRouter`.
+
+**Still missing for a working turn:** a deployed FunASR server, and the
+`TranscriptSink` implementations that turn a final transcript into
+`send_prompt` (chat, M3-3) and a stored note (M3-4). The default sink only logs.
+
 ## 14. Audio path — written, unverified
 
 Everything in `main/audio/` and the codec changes in `hal_audio.cpp` were

@@ -335,6 +335,7 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.25.0",
  "tokio-stream",
+ "tokio-tungstenite 0.21.0",
  "tokio-util",
  "toml 0.8.2",
  "tower 0.5.3",
