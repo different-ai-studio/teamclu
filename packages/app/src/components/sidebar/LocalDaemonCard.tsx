@@ -12,13 +12,12 @@ import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 
 /**
  * The local daemon agent, pinned to the BOTTOM of the sidebar (just above the
- * Settings footer) inside a small bordered card. Previously this row lived at
- * the top of Recents; giving it a deliberate home of its own keeps its
- * coral-emphasized styling from looking out of place among the recent contacts.
+ * Settings footer) inside a small bordered card. Giving it a home of its own
+ * keeps its coral-emphasized styling from looking out of place among the other
+ * nav rows.
  *
  * Self-contained: it resolves the local daemon actor itself and owns the
- * detail dialog and copy handlers (ActorsSection no longer renders
- * the daemon row, it only filters the daemon out of the Recents list).
+ * detail dialog and copy handlers.
  */
 export function LocalDaemonCard() {
   const { t } = useTranslation()

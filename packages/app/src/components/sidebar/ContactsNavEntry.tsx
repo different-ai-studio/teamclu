@@ -4,6 +4,7 @@ import { Plus, Users } from 'lucide-react'
 import { useUIStore } from '@/stores/ui'
 import { InviteActorDialog } from '@/components/sidebar/InviteActorDialog'
 import { cn } from '@/lib/utils'
+import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 
 export function ContactsNavEntry() {
   const { t } = useTranslation()
@@ -42,7 +43,10 @@ export function ContactsNavEntry() {
           onClick={() => setInviteOpen(true)}
           title={inviteLabel}
           aria-label={inviteLabel}
-          className="inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full text-muted-foreground transition-[background-color,color] duration-150 hover:bg-black/[0.04] hover:text-foreground"
+          className={cn(
+            NAV_ROW_TRAILING_SLOT,
+            'text-muted-foreground transition-[background-color,color] duration-150 hover:bg-black/[0.04] hover:text-foreground',
+          )}
         >
           <Plus className="h-3.5 w-3.5" strokeWidth={2.5} />
         </button>
