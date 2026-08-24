@@ -1,5 +1,4 @@
 import type { StoreApi } from 'zustand';
-import type { SearchResult } from '@/stores/knowledge';
 
 // ── Local type stubs for the legacy agent SDK shapes ──
 // Chat runtime is disabled and the consuming stores below are dead code that
@@ -153,7 +152,6 @@ export interface Message {
   modelID?: string;
   providerID?: string;
   agent?: string; // Agent/skill name
-  retrievedChunks?: SearchResult[]; // RAG 检索到的文档片段
   /** ACP Plan steps captured at turn end. present = show collapsed PlanCard. */
   planEntries?: PlanEntry[];
   displayKind?: "compaction" | "compaction-summary" | "synthetic";
@@ -328,7 +326,6 @@ export interface SessionState {
 
   // Actions - Message handling
   sendMessage: (content: string, agent?: string, imageParts?: SendMessageFilePart[]) => Promise<void>;
-  autoInjectKnowledge: (userMessage: string) => Promise<{ context?: string; chunks?: SearchResult[] }>;
   abortSession: () => Promise<void>;
   removeFromQueue: (id: string) => void;
 

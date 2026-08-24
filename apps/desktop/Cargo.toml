@@ -83,17 +83,10 @@ markitdown = "0.1.10"
 teamclu-gateway = { path = "../../crates/teamclu-gateway" }
 
 
-# RAG crate
-teamclu-rag = { path = "crates/teamclu-rag" }
-
 # RAG dependencies (still used by main crate)
 anyhow = "1"
 sha2 = "0.10"
 walkdir = "2"
-# zstd: also a transitive dep of tantivy (via teamclu-rag).
-# A direct dep on zstd-sys unifies features and links bundled libzstd (avoids wrong-arch pkg-config).
-zstd-sys = { version = "2.0.16", default-features = false, features = ["legacy", "zdict_builder", "bindgen"] }
-zstd = "0.13"
 thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }
 tauri-plugin-log = "2"

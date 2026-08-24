@@ -280,9 +280,6 @@ pub fn run() {
     let _guard = rt.enter();
     tauri::async_runtime::set(rt.handle().clone());
 
-    // RAG state for Tauri commands (MCP bridge uses standalone rag-mcp-server; see binaries README)
-    let rag_state = commands::knowledge::RagState::default();
-
     // The Cloud API URL comes solely from the frontend build config now; remove
     // any deprecated on-disk server config so a stale persisted cloudApiUrl can
     // never shadow it. Best-effort, non-fatal.
@@ -339,7 +336,6 @@ pub fn run() {
         .manage(commands::filewatcher::FileWatcherState::default())
         .manage(commands::gateway::GatewayState::default())
         .manage(commands::cron::CronState::default())
-        .manage(rag_state)
         .manage(local_cache::commands::LocalCacheState::default())
         .manage(commands::amuxd_supervisor::AmuxdSupervisor::new())
 
@@ -373,17 +369,6 @@ pub fn run() {
             commands::open_with_default_app,
             commands::open_in_terminal,
             commands::system_appearance::get_system_accent_color,
-            commands::knowledge::convert_to_markdown,
-            commands::knowledge::batch_convert_to_markdown,
-            commands::knowledge::rag_index,
-            commands::knowledge::rag_get_index_status,
-            commands::knowledge::rag_search,
-            commands::knowledge::rag_list_documents,
-            commands::knowledge::rag_delete_document,
-            commands::knowledge::rag_get_config,
-            commands::knowledge::rag_save_config,
-            commands::knowledge::rag_start_watcher,
-            commands::knowledge::rag_stop_watcher,
             commands::window::create_workspace_window,
             commands::window::open_local_agent_panel_window,
             commands::window::register_window_workspace,
@@ -588,15 +573,6 @@ pub fn run() {
             // Register aptabase here (inside setup) so the Tokio runtime is available
             // for its internal `tokio::spawn` polling loop.
             app.handle().plugin(tauri_plugin_aptabase::Builder::new("A-US-9094113207").build())?;
-
-            // The RAG surface agents actually use is served by the introspect
-            // API below (`/knowledge-search`, `/knowledge-add`,
-            // `/knowledge-list` on 13144). A second HTTP server on 13143
-            // exposed the same store under `/api/rag/*` for an "MCP bridge"
-            // that no longer exists — nothing in the repo, the sidecar
-            // binaries, or any MCP config ever called it. All it still did was
-            // fail to bind on relaunch and report it (Sentry TEAMCLU-2, the
-            // loudest Rust issue we had), so it is gone.
 
             // Start introspect MCP internal API server
             {

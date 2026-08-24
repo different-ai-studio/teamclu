@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 
 import { cn } from '@/lib/utils';
-import { ObsidianIcon } from '@/components/knowledge/ObsidianIcon';
+import { ObsidianIcon } from './ObsidianIcon';
 import { useTabsStore } from '@/stores/tabs';
 import { useCurrentTeamStore } from '@/stores/current-team';
 import { useVersionHistoryStore } from '@/stores/version-history';

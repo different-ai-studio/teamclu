@@ -2,7 +2,6 @@ import { SessionDiffPanel } from '@/components/chat/SessionDiffPanel'
 import { SessionList } from '@/components/chat/SessionList'
 import { SessionActorPanel } from '@/components/chat/SessionActorSheet'
 import { ShortcutsPanel } from './ShortcutsPanel'
-import { KnowledgeBrowser } from '@/components/knowledge/KnowledgeBrowser'
 import { TeamSharedFilesBrowser } from '@/components/workspace/TeamSharedFilesBrowser'
 import { ActorsView } from '@/components/panel/ActorsView'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -10,18 +9,16 @@ import { useSessionStore } from '@/stores/session'
 import { useSessionListStore } from '@/stores/session-list-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import type { FileDiff } from '@/stores/session-types'
-import type { ComponentProps } from 'react'
 
 interface RightPanelProps {
   diff?: FileDiff[]
   // Override the active tab from store
-  defaultTab?: 'diff' | 'session' | 'shortcuts' | 'files' | 'teamShared' | 'actors'
+  defaultTab?: 'diff' | 'session' | 'shortcuts' | 'teamShared' | 'actors'
   // Compact mode for file mode layout
   compact?: boolean
-  knowledgeBrowserProps?: ComponentProps<typeof KnowledgeBrowser>
 }
 
-export function RightPanel({ diff, defaultTab, compact, knowledgeBrowserProps }: RightPanelProps) {
+export function RightPanel({ diff, defaultTab, compact }: RightPanelProps) {
   const storeActiveTab = useWorkspaceStore(s => s.activeTab)
   const sessionDiff = useSessionStore(s => s.sessionDiff)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
@@ -38,7 +35,7 @@ export function RightPanel({ diff, defaultTab, compact, knowledgeBrowserProps }:
   // an outer `overflow-auto` scroller — otherwise the toolbar header scrolls
   // away with the tree. Give them a bounded flex column so the inner scroll
   // area (and thus the pinned toolbar) works.
-  const selfScrolling = activeTab === 'files' || activeTab === 'teamShared'
+  const selfScrolling = activeTab === 'teamShared'
   const noPadding = activeTab === 'session' || activeTab === 'actors'
 
   return (
@@ -53,9 +50,6 @@ export function RightPanel({ diff, defaultTab, compact, knowledgeBrowserProps }:
       )}
       {activeTab === 'session' && (
         <SessionList compact={compact} />
-      )}
-      {activeTab === 'files' && (
-        <KnowledgeBrowser {...knowledgeBrowserProps} />
       )}
       {activeTab === 'teamShared' && (
         <TeamSharedFilesBrowser />

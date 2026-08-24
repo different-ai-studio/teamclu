@@ -26,7 +26,6 @@ import { MessageTokenUsage } from "./MessageTokenUsage";
 import { MessageTokenSummary } from "./MessageTokenSummary";
 import { MessageFeedback } from "./MessageFeedback";
 import { MessageStarRating } from "./MessageStarRating";
-import { RetrievedChunksCard } from "./RetrievedChunksCard";
 import { splitAssistantProcessAndFinalParts } from "@/lib/agent-reply-transcript";
 import { hydrateDeferredProcessParts } from "@/lib/lazy-process-parts";
 import type { MessagePart } from "@/stores/session-types";
@@ -465,13 +464,6 @@ export const ChatMessage = React.memo(function ChatMessage({
             {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
             <span>{copied ? t("common.copied", "Copied!") : t("common.copy", "Copy")}</span>
           </button>
-        </div>
-      )}
-
-      {/* Retrieved chunks - show for user messages with RAG results */}
-      {isUser && latestMessage.retrievedChunks && latestMessage.retrievedChunks.length > 0 && (
-        <div className="mt-2">
-          <RetrievedChunksCard chunks={latestMessage.retrievedChunks} />
         </div>
       )}
 
