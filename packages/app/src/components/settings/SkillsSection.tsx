@@ -63,7 +63,7 @@ import type { SkillPermission, SkillPermissionMap } from '@/lib/opencode/config'
 import { resolveSkillPermission } from '@/lib/opencode/config'
 import type { SkillSource } from '@/lib/skills/types'
 import { INHERENT_SKILL_NAMES } from '@/lib/skills/types'
-import { SkillsMarketplace } from './SkillsMarketplace'
+import { ClawHubMarketplace } from './ClawHubMarketplace'
 import { SkillsDiagnosticsDialog } from './SkillsDiagnosticsDialog'
 
 
@@ -144,12 +144,6 @@ export const SkillsSection = React.memo(function SkillsSection({
   const [importZipLabel, setImportZipLabel] = React.useState<string | null>(null)
   const [exitingSkillKeys, setExitingSkillKeys] = React.useState<Set<string>>(new Set())
   const [marketplaceRefreshSignal, setMarketplaceRefreshSignal] = React.useState(0)
-  const [marketplaceSource, setMarketplaceSource] = React.useState<'clawhub' | 'skillssh'>('clawhub')
-
-  React.useEffect(() => {
-    // P3: skills.sh scrape UI retired — force ClawHub if a stale preference remains.
-    if (marketplaceSource === 'skillssh') setMarketplaceSource('clawhub')
-  }, [marketplaceSource])
   const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false)
   const installedTabRef = React.useRef<HTMLButtonElement>(null)
   const marketplaceTabRef = React.useRef<HTMLButtonElement>(null)
@@ -175,9 +169,6 @@ export const SkillsSection = React.memo(function SkillsSection({
     switchTab(activeTab === 'installed' ? 'marketplace' : 'installed')
   }, [activeTab, switchTab])
 
-  const switchMarketplaceSource = React.useCallback((nextSource: 'clawhub' | 'skillssh') => {
-    setMarketplaceSource(nextSource)
-  }, [])
   const isInstalledTabActive = activeTab === 'installed'
   const isMarketplaceTabActive = activeTab === 'marketplace'
 
@@ -218,10 +209,6 @@ export const SkillsSection = React.memo(function SkillsSection({
         skill.content.toLowerCase().includes(query)
     )
   }, [effectiveSearchQuery, skills])
-
-  const linkedInstalledSkillSlugs = React.useMemo(() => {
-    return new Set(skills.filter((skill) => (skill.linkedRoles?.length ?? 0) > 0).map((skill) => skill.filename))
-  }, [skills])
 
   const loadPermissions = React.useCallback(async () => {
     if (!workspacePath) return
@@ -722,26 +709,8 @@ ${skillContent.trim()}`
               </button>
           </div>
 
-          {isMarketplaceTabActive ? (
-            <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
-              <span>{t('settings.skills.sourceLabel', 'Source')}</span>
-              <Select value={marketplaceSource === 'skillssh' ? 'clawhub' : marketplaceSource} onValueChange={(value) => switchMarketplaceSource(value as 'clawhub' | 'skillssh')}>
-                <SelectTrigger className="h-8 min-w-[11rem] rounded-md border-border/70 bg-background px-2.5 text-[13px] shadow-none">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="clawhub">
-                    <span className="inline-flex items-center gap-2">
-                      <Package className="h-4 w-4" />
-                      ClawHub
-                    </span>
-                  </SelectItem>
-                  {/* skills.sh HTML scrape retired — first-party marketplace replaces it
-                      (docs/architecture/skills-marketplace.md §13 P3). */}
-                </SelectContent>
-              </Select>
-            </div>
-          ) : null}
+          {/* No source picker: skills.sh was the only other one, and it is gone.
+              A one-option dropdown is a control that cannot be used. */}
 
           <div className="relative min-w-0 flex-1 lg:max-w-xl">
             <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -826,16 +795,14 @@ ${skillContent.trim()}`
       {/* Marketplace tab */}
       {isMarketplaceTabActive ? (
         <div id="marketplace-panel" role="tabpanel" aria-labelledby="marketplace-tab">
-          <SkillsMarketplace
-            compact={embeddedConsole}
-            linkedInstalledSlugs={linkedInstalledSkillSlugs}
+          {/* ClawHub directly: `SkillsMarketplace` was a source switcher between
+              ClawHub and skills.sh, and skills.sh has been retired. With one
+              source left the switcher had nothing to switch. */}
+          <ClawHubMarketplace
             sharedSearchQuery={embeddedConsole ? effectiveSearchQuery : undefined}
             onSharedSearchQueryChange={embeddedConsole ? onSharedSearchQueryChange : undefined}
             externalSearch={embeddedConsole}
             externalRefreshSignal={marketplaceRefreshSignal}
-            activeSource={embeddedConsole ? marketplaceSource : undefined}
-            onActiveSourceChange={embeddedConsole ? setMarketplaceSource : undefined}
-            externalSourceControl={embeddedConsole}
             onInstalled={async () => {
               await loadSkills()
               onDataChange?.()

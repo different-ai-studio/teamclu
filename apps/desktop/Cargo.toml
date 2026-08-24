@@ -119,8 +119,6 @@ dirs = "5"
 teamclu-binpath = { path = "../../crates/teamclu-binpath" }
 toml = "0.8"
 
-# HTML parsing for skills.sh scraping
-scraper = "0.20"
 md5 = "0.7"
 rayon = "1.10"  # Parallel iterator for recursive skill search
 
