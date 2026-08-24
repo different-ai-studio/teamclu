@@ -167,14 +167,6 @@ impl SyncDispatcher {
                 let secret = self.secrets.resolve_team_secret(team_id, None)?;
                 let jwt = self.oss_jwt().await?;
                 let fc = oss::fc_client::FcClient::new(self.fc_endpoint()?, jwt);
-                // Relocate any pre-existing `shared/teamclu-team/knowledge` to
-                // `shared/knowledge` before the scanner walks the new root, or the
-                // engine tombstones every knowledge/* entry for the team.
-                if let Err(e) =
-                    crate::config::global_team_store::migrate_knowledge_to_shared(team_id)
-                {
-                    tracing::warn!(team_id, "knowledge migration to shared/ failed: {e}");
-                }
                 let content_root = content_root_dir.to_string_lossy().to_string();
                 let r = oss::tick(&content_root, team_id, &secret, &fc)
                     .await

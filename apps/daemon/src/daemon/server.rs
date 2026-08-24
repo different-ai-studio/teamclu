@@ -3436,10 +3436,16 @@ pub(crate) mod tests {
 
         ensure_team_link("team-ondemand", ws_path);
 
-        // Global dir + scaffold created under ~/.amuxd/teams/<id>/teamclu-team.
+        // Global dir created under ~/.amuxd/teams/<id>/shared/teamclu-team, and
+        // the knowledge scaffold one level up under the sync content root.
         let global = crate::config::global_team_store::global_team_dir("team-ondemand");
         assert!(global.is_dir(), "global team dir should be created");
-        assert!(global.join("knowledge").is_dir());
+        assert!(
+            crate::config::global_team_store::sync_content_root("team-ondemand")
+                .join("knowledge")
+                .is_dir(),
+            "knowledge scaffold should exist under shared/, not under teamclu-team/"
+        );
 
         // Workspace exposes it via a teamclu-team symlink to that global dir.
         let link = ws.path().join("teamclu-team");

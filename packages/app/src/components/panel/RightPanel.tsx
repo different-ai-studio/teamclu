@@ -2,7 +2,6 @@ import { SessionDiffPanel } from '@/components/chat/SessionDiffPanel'
 import { SessionList } from '@/components/chat/SessionList'
 import { SessionActorPanel } from '@/components/chat/SessionActorSheet'
 import { ShortcutsPanel } from './ShortcutsPanel'
-import { TeamSharedFilesBrowser } from '@/components/workspace/TeamSharedFilesBrowser'
 import { ActorsView } from '@/components/panel/ActorsView'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useSessionStore } from '@/stores/session'
@@ -13,7 +12,7 @@ import type { FileDiff } from '@/stores/session-types'
 interface RightPanelProps {
   diff?: FileDiff[]
   // Override the active tab from store
-  defaultTab?: 'diff' | 'session' | 'shortcuts' | 'teamShared' | 'actors'
+  defaultTab?: 'diff' | 'session' | 'shortcuts' | 'actors'
   // Compact mode for file mode layout
   compact?: boolean
 }
@@ -30,17 +29,11 @@ export function RightPanel({ diff, defaultTab, compact }: RightPanelProps) {
   const activeTab = defaultTab || storeActiveTab
   const diffData = diff ?? sessionDiff
 
-  // `files` and `teamShared` render a self-contained FileBrowser that owns its
-  // own scroll area and keeps a fixed toolbar. Those panes must NOT sit inside
-  // an outer `overflow-auto` scroller — otherwise the toolbar header scrolls
-  // away with the tree. Give them a bounded flex column so the inner scroll
-  // area (and thus the pinned toolbar) works.
-  const selfScrolling = activeTab === 'teamShared'
   const noPadding = activeTab === 'session' || activeTab === 'actors'
 
   return (
     <div
-      className={`h-full min-h-0 ${selfScrolling ? 'overflow-hidden flex flex-col' : 'overflow-auto'} ${noPadding ? '' : (compact ? 'p-1' : 'p-2')}`}
+      className={`h-full min-h-0 overflow-auto ${noPadding ? '' : (compact ? 'p-1' : 'p-2')}`}
     >
       {activeTab === 'shortcuts' && (
         <ShortcutsPanel />
@@ -50,9 +43,6 @@ export function RightPanel({ diff, defaultTab, compact }: RightPanelProps) {
       )}
       {activeTab === 'session' && (
         <SessionList compact={compact} />
-      )}
-      {activeTab === 'teamShared' && (
-        <TeamSharedFilesBrowser />
       )}
       {activeTab === 'actors' && (
         activeSessionId

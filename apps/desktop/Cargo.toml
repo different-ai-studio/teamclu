@@ -78,12 +78,11 @@ jsonwebtoken = "9"
 regex = "1"
 libsql = "0.9"
 nanoid = "0.4"
-markitdown = "0.1.10"
 # Gateway crate
 teamclu-gateway = { path = "../../crates/teamclu-gateway" }
 
 
-# RAG dependencies (still used by main crate)
+# Shared utility deps (the RAG crate that named this block is gone)
 anyhow = "1"
 sha2 = "0.10"
 walkdir = "2"

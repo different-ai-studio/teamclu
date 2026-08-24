@@ -4,7 +4,7 @@ import { useEnvVarsStore, type TeamEnvListing } from '@/stores/env-vars'
 import type { SkillSource } from '@/lib/skills/types'
 import { getSourceLabel } from '@/lib/skills/loader'
 import { frontmatterString } from '@/lib/skills/frontmatter'
-import { resolveTeamDir, resolveTeamKnowledgeDir } from '@/lib/team-skill-paths'
+import { resolveTeamKnowledgeDir } from '@/lib/team-skill-paths'
 import { invoke } from '@tauri-apps/api/core'
 import { getBackend } from '@/lib/backend/provider'
 import { getFreshAccessToken } from '@/lib/auth/session-store'
@@ -23,7 +23,6 @@ import {
   teamShareSectionForTarget,
   type TeamShareTarget,
 } from '@/lib/tabs/teamshare-target'
-import { TEAM_REPO_DIR } from '@/lib/build-config'
 
 function closeTeamShareTabs(match: (target: string) => boolean): void {
   const { tabs, closeTab } = useTabsStore.getState()
@@ -56,15 +55,6 @@ function closeSkillTabs(slug: string): void {
   })
 }
 
-/** `knowledge/` may not exist yet on a freshly enabled team. */
-async function ensureDir(path: string): Promise<void> {
-  try {
-    const { mkdir } = await import('@tauri-apps/plugin-fs')
-    await mkdir(path, { recursive: true })
-  } catch {
-    // Already there, or no FS access — the tree just renders empty.
-  }
-}
 import type {
   TeamSkill,
   TeamSkillCategory,
@@ -373,7 +363,9 @@ function currentTeamId(): string | null {
  * any other file type — a PDF, an image — was shared by sync yet invisible to
  * the count.
  */
-async function listTeamKnowledge(wsPath: string): Promise<TeamKnowledgeItem[]> {
+async function listTeamKnowledge(): Promise<TeamKnowledgeItem[]> {
+  // No workspace argument: knowledge is one global per-team dir now, resolved
+  // from the daemon home rather than from the workspace link.
   const knowledgeDir = await resolveTeamKnowledgeDir()
   if (!knowledgeDir) return []
   const { exists, readDir } = await import('@tauri-apps/plugin-fs')
@@ -1712,8 +1704,18 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         // team-knowledge is a daemon-managed symlink to shared/knowledge; the
         // daemon ensures it on every workspace open/switch. Do NOT ensureDir
         // here — a real dir would block the symlink the daemon recreates.
-        const root = wsPath ? `${wsPath}/team-knowledge` : null
-        const items = wsPath ? await listTeamKnowledge(wsPath) : []
+        //
+        // 3. It must be gated on the link actually being there. `null` is what
+        //    makes TeamShareListColumn fall back to `TeamDirInitPanel`, the only
+        //    UI that can repair a missing team link. Returning a path
+        //    unconditionally made that unreachable and pointed FileBrowser at
+        //    something that need not exist — a Windows `LinkStatus::Fallback`
+        //    machine, or a workspace opened before the first team-link sweep.
+        //    `exists` follows symlinks, so a dangling link reads as absent too.
+        const linkPath = wsPath ? `${wsPath}/team-knowledge` : null
+        const { exists: linkExists } = await import('@tauri-apps/plugin-fs')
+        const root = linkPath && (await linkExists(linkPath)) ? linkPath : null
+        const items = wsPath ? await listTeamKnowledge() : []
         set({ knowledgeRoot: root, knowledge: { items, loading: false, loaded: true, error: null } })
       } else if (section === 'mcp') {
         // Not gated on `wsPath`: with an Agent selected this goes over RPC to

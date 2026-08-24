@@ -107,8 +107,8 @@ describe('Settings navigation', () => {
       'Team LLM',
       'Prompt',
       // 'Roles' and 'Role Skills' are temporarily hidden — see
-      // HIDDEN_LOCAL_AGENT_SECTIONS in Settings.tsx.
-      'Knowledge Base',
+      // HIDDEN_LOCAL_AGENT_SECTIONS in Settings.tsx. 'Knowledge Base' is gone
+      // for good: it configured the RAG index, which no longer exists.
       'Dependencies',
     ])
   })

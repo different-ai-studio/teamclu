@@ -166,6 +166,10 @@ function handleWikiLinkClick(event: MouseEvent): boolean {
     })
     .catch((err) => {
       console.error('[MarkdownEditor] wiki-link resolution failed:', err);
+      // Surfaced, not swallowed: the common failure is "team-knowledge isn't
+      // linked yet", and creating the note anyway would shadow the daemon's
+      // symlink for good. Silence would just read as a dead click.
+      toast.error(String(err instanceof Error ? err.message : err));
     });
   return true;
 }

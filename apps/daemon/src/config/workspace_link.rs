@@ -37,9 +37,6 @@ pub fn ensure_workspace_link(workspace_root: &Path, team_id: &str) -> LinkStatus
             return LinkStatus::Fallback;
         }
     };
-    // Surface the team knowledge dir in the workspace too. Runs on every link
-    // so opening/switching a workspace always re-creates a stale link.
-    let _ = ensure_team_knowledge_link(workspace_root, team_id);
     let link = workspace_root.join(TEAM_LINK_NAME);
 
     // Never link a "workspace" whose `teamclu-team` path IS the team's own
@@ -50,12 +47,17 @@ pub fn ensure_workspace_link(workspace_root: &Path, team_id: &str) -> LinkStatus
     // `remove_dir_all` it (destroying the synced content), then symlink it to
     // itself — a self-referential link that makes every `cd` into it fail with
     // ELOOP. Clean up any such self-symlink and refuse to (re)create it.
+    //
+    // This runs BEFORE `ensure_team_knowledge_link`. Such a "workspace" is the
+    // team's `shared/` dir, so linking knowledge from it plants a
+    // `shared/team-knowledge` symlink inside the sync content root — the exact
+    // class of thing this guard exists to keep out.
     if link == target {
         if std::fs::symlink_metadata(&link)
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false)
         {
-            let _ = std::fs::remove_file(&link);
+            let _ = remove_link(&link);
         }
         tracing::warn!(
             team_id,
@@ -65,6 +67,10 @@ pub fn ensure_workspace_link(workspace_root: &Path, team_id: &str) -> LinkStatus
         return LinkStatus::Fallback;
     }
 
+    // Surface the team knowledge dir in the workspace too. Runs on every link
+    // so opening/switching a workspace always re-creates a stale link.
+    let _ = ensure_team_knowledge_link(workspace_root, team_id);
+
     // Already a symlink: repoint if stale or dangling, else done.
     if let Ok(meta) = std::fs::symlink_metadata(&link) {
         if meta.file_type().is_symlink() {
@@ -73,7 +79,7 @@ pub fn ensure_workspace_link(workspace_root: &Path, team_id: &str) -> LinkStatus
                     return LinkStatus::Linked(LinkKind::Symlink);
                 }
                 _ => {
-                    let _ = std::fs::remove_file(&link);
+                    let _ = remove_link(&link);
                 }
             }
         } else if meta.is_dir() {
@@ -189,6 +195,95 @@ fn copy_dir_contents(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Workspace link name surfacing the team's synced knowledge dir
+/// (`shared/knowledge`). Sibling of [`TEAM_LINK_NAME`] (`teamclu-team`).
+pub const TEAM_KNOWLEDGE_LINK_NAME: &str = "team-knowledge";
+
+/// Remove a workspace link entry regardless of how the platform materialized it.
+///
+/// On Windows a directory symlink is a directory entry and `remove_file` fails
+/// on it. Every call site needs both arms: an inlined `remove_file` leaves the
+/// stale link in place, `create_link` then fails with `AlreadyExists`, and the
+/// link can never be repointed again.
+pub fn remove_link(link: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(link)
+    }
+    #[cfg(windows)]
+    {
+        // Directory symlink / junction first; fall back for a file symlink.
+        std::fs::remove_dir(link).or_else(|_| std::fs::remove_file(link))
+    }
+}
+
+/// Idempotent: repoint a stale or dangling link at `target`, leave a real
+/// directory (user content) untouched, else create the link. Shared by the
+/// team-id and workspace-relative `team-knowledge` entry points.
+fn ensure_link_to(link: &Path, target: &Path) -> LinkStatus {
+    if let Ok(meta) = std::fs::symlink_metadata(link) {
+        if meta.file_type().is_symlink() {
+            match std::fs::read_link(link) {
+                Ok(dest) if dest == target && link.is_dir() => {
+                    return LinkStatus::Linked(LinkKind::Symlink);
+                }
+                _ => {
+                    let _ = remove_link(link);
+                }
+            }
+        } else if meta.is_dir() {
+            return LinkStatus::Fallback;
+        } else {
+            // A plain file, not a link — `remove_link`'s Windows directory arm
+            // would be wrong here.
+            let _ = std::fs::remove_file(link);
+        }
+    }
+    create_link(link, target)
+}
+
+/// Ensure `<workspace_root>/team-knowledge` points at the team's synced
+/// knowledge dir (`shared/knowledge`).
+pub fn ensure_team_knowledge_link(workspace_root: &Path, team_id: &str) -> LinkStatus {
+    if let Err(e) = global_team_store::ensure_initialized(team_id) {
+        tracing::warn!(team_id, "ensure_initialized for team-knowledge failed: {e}");
+        return LinkStatus::Fallback;
+    }
+    let target = global_team_store::sync_content_root(team_id).join("knowledge");
+    ensure_link_to(&workspace_root.join(TEAM_KNOWLEDGE_LINK_NAME), &target)
+}
+
+/// Workspace-relative variant for call sites with no `team_id` (notably
+/// `prepare_workspace`, which runs on every workspace open/switch). Derives the
+/// team's `shared/knowledge` by following the workspace's `teamclu-team` link.
+///
+/// The derived path is validated to sit under this build's teams dir before it
+/// is used. `teamclu-team` can be stale — `ensure_workspace_link` has a test
+/// devoted to repointing one, and this runs before any sweep has had the
+/// chance — and an unvalidated `read_link` result would point `team-knowledge`
+/// at an arbitrary directory that no sync engine owns.
+pub fn ensure_team_knowledge_link_from_workspace(workspace_root: &Path) -> LinkStatus {
+    let Ok(team_repo) = std::fs::read_link(workspace_root.join(TEAM_LINK_NAME)) else {
+        return LinkStatus::Fallback;
+    };
+    // `teamclu-team` -> `<teams>/<id>/shared/teamclu-team`; knowledge is its sibling.
+    let Some(shared) = team_repo.parent() else {
+        return LinkStatus::Fallback;
+    };
+    if !shared.starts_with(super::layout::teams_dir()) {
+        tracing::warn!(
+            workspace = %workspace_root.display(),
+            target = %team_repo.display(),
+            "team-knowledge link skipped: teamclu-team points outside the teams dir"
+        );
+        return LinkStatus::Fallback;
+    }
+    ensure_link_to(
+        &workspace_root.join(TEAM_KNOWLEDGE_LINK_NAME),
+        &shared.join("knowledge"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +372,103 @@ mod tests {
             std::fs::read(global_team_store::sync_content_root("team-self").join("knowledge/keep.md")).unwrap(),
             b"keep me"
         );
+
+        // ...and no `team-knowledge` link either. `ws_root` here IS the team's
+        // `shared/` dir, so one would sit inside the sync content root — the
+        // guard has to run before knowledge linking, not after.
+        assert!(
+            std::fs::symlink_metadata(ws_root.join(TEAM_KNOWLEDGE_LINK_NAME)).is_err(),
+            "self-symlink guard must also refuse the team-knowledge link"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_workspace_link_also_links_team_knowledge() {
+        let (_home, _guard) = temp_home();
+        let ws = tempfile::tempdir().unwrap();
+        assert_eq!(
+            ensure_workspace_link(ws.path(), "team-k"),
+            LinkStatus::Linked(LinkKind::Symlink)
+        );
+        let link = ws.path().join(TEAM_KNOWLEDGE_LINK_NAME);
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            global_team_store::sync_content_root("team-k").join("knowledge")
+        );
+        assert!(link.is_dir(), "link should resolve to the scaffold dir");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_team_knowledge_link_repoints_a_stale_link_and_spares_a_real_dir() {
+        let (_home, _guard) = temp_home();
+
+        // Stale/dangling link → repointed.
+        let ws = tempfile::tempdir().unwrap();
+        let link = ws.path().join(TEAM_KNOWLEDGE_LINK_NAME);
+        std::os::unix::fs::symlink("/nonexistent/old-knowledge", &link).unwrap();
+        assert_eq!(
+            ensure_team_knowledge_link(ws.path(), "team-stale"),
+            LinkStatus::Linked(LinkKind::Symlink)
+        );
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            global_team_store::sync_content_root("team-stale").join("knowledge")
+        );
+
+        // A real directory is user content: never replaced, never deleted.
+        let ws2 = tempfile::tempdir().unwrap();
+        let real = ws2.path().join(TEAM_KNOWLEDGE_LINK_NAME);
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("mine.md"), b"local").unwrap();
+        assert_eq!(
+            ensure_team_knowledge_link(ws2.path(), "team-stale"),
+            LinkStatus::Fallback
+        );
+        assert_eq!(std::fs::read(real.join("mine.md")).unwrap(), b"local");
+    }
+
+    /// `teamclu-team` can be stale (there is a whole test for repointing one),
+    /// and this path runs before any sweep gets the chance. An unvalidated
+    /// `read_link` result would point `team-knowledge` at an arbitrary
+    /// directory that no sync engine owns.
+    #[cfg(unix)]
+    #[test]
+    fn from_workspace_refuses_a_target_outside_the_teams_dir() {
+        let (_home, _guard) = temp_home();
+        let ws = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let bogus = elsewhere.path().join("some-other-home").join(TEAM_LINK_NAME);
+        std::fs::create_dir_all(&bogus).unwrap();
+        std::os::unix::fs::symlink(&bogus, ws.path().join(TEAM_LINK_NAME)).unwrap();
+
+        assert_eq!(
+            ensure_team_knowledge_link_from_workspace(ws.path()),
+            LinkStatus::Fallback
+        );
+        assert!(std::fs::symlink_metadata(ws.path().join(TEAM_KNOWLEDGE_LINK_NAME)).is_err());
+        // Nothing was created at the bogus location either.
+        assert!(!bogus.parent().unwrap().join("knowledge").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn from_workspace_links_knowledge_via_the_team_link() {
+        let (_home, _guard) = temp_home();
+        let ws = tempfile::tempdir().unwrap();
+        // Only `teamclu-team` exists — the state `prepare_workspace` finds.
+        let target = global_team_store::ensure_initialized("team-fw").unwrap();
+        std::os::unix::fs::symlink(&target, ws.path().join(TEAM_LINK_NAME)).unwrap();
+
+        assert_eq!(
+            ensure_team_knowledge_link_from_workspace(ws.path()),
+            LinkStatus::Linked(LinkKind::Symlink)
+        );
+        assert_eq!(
+            std::fs::read_link(ws.path().join(TEAM_KNOWLEDGE_LINK_NAME)).unwrap(),
+            global_team_store::sync_content_root("team-fw").join("knowledge")
+        );
     }
 
     #[cfg(unix)]
@@ -332,61 +524,4 @@ mod tests {
             .file_type()
             .is_symlink());
     }
-}
-
-/// Workspace link name surfacing the teams synced knowledge dir
-/// (`shared/knowledge`). Sibling of [`TEAM_LINK_NAME`] (`teamclu-team`).
-pub const TEAM_KNOWLEDGE_LINK_NAME: &str = "team-knowledge";
-
-/// Idempotent: repoint a stale or dangling link at target, leave a real
-/// directory (user content) untouched, else create the link. Shared by the
-/// team-id and workspace-relative entry points.
-fn ensure_link_to(link: &Path, target: &Path) -> LinkStatus {
-    if let Ok(meta) = std::fs::symlink_metadata(link) {
-        if meta.file_type().is_symlink() {
-            match std::fs::read_link(link) {
-                Ok(dest) if dest == target && link.is_dir() => {
-                    return LinkStatus::Linked(LinkKind::Symlink);
-                }
-                _ => {
-                    let _ = std::fs::remove_file(link);
-                }
-            }
-        } else if meta.is_dir() {
-            return LinkStatus::Fallback;
-        } else {
-            let _ = std::fs::remove_file(link);
-        }
-    }
-    create_link(link, target)
-}
-
-pub fn ensure_team_knowledge_link(workspace_root: &Path, team_id: &str) -> LinkStatus {
-    let target = global_team_store::sync_content_root(team_id).join("knowledge");
-    if let Err(e) = global_team_store::ensure_initialized(team_id) {
-        tracing::warn!(team_id, "ensure_initialized for team-knowledge failed: {e}");
-        return LinkStatus::Fallback;
-    }
-    ensure_link_to(&workspace_root.join(TEAM_KNOWLEDGE_LINK_NAME), &target)
-}
-
-/// Workspace-relative variant for call sites with no team_id (notably
-/// prepare_workspace, which runs on every workspace open/switch). Derives the
-/// team shared/knowledge dir by following the workspace teamclu-team symlink,
-/// so it always matches the workspace own team.
-pub fn ensure_team_knowledge_link_from_workspace(workspace_root: &Path) -> LinkStatus {
-    let tt = workspace_root.join(TEAM_LINK_NAME);
-    // teamclu-team is itself a symlink to .../shared/teamclu-team; knowledge
-    // lives at the sibling .../shared/knowledge.
-    let Ok(team_repo) = std::fs::read_link(&tt) else {
-        return LinkStatus::Fallback;
-    };
-    let Some(shared) = team_repo.parent() else {
-        return LinkStatus::Fallback;
-    };
-    // Relocate any pre-existing shared/teamclu-team/knowledge into shared/knowledge
-    // now, so an upgrade shows knowledge immediately on workspace open.
-    let _ = global_team_store::migrate_knowledge_to_shared_at(shared, &team_repo);
-    let target = shared.join("knowledge");
-    ensure_link_to(&workspace_root.join(TEAM_KNOWLEDGE_LINK_NAME), &target)
 }
