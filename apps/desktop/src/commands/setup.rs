@@ -523,7 +523,21 @@ async fn install_pi<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             CommandEvent::Stderr(bytes) => {
                 let line = String::from_utf8_lossy(&bytes).trim().to_string();
                 if !line.is_empty() {
-                    last_stderr = Some(line);
+                    last_stderr = Some(line.clone());
+                    // Forwarded, not just remembered: amuxd narrates a slow
+                    // install (registry probes, mirror fallbacks) on stderr, and
+                    // holding those back is most of why this row could sit on
+                    // "installing…" with nothing under it. Mirrors the opencode
+                    // path, which has always emitted both pipes.
+                    emit_progress(
+                        app,
+                        SetupProgress {
+                            id: "pi".into(),
+                            status: "running".into(),
+                            line: Some(line),
+                            error: None,
+                        },
+                    );
                 }
             }
             CommandEvent::Terminated(payload) if payload.code.unwrap_or(-1) != 0 => {

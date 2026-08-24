@@ -269,17 +269,12 @@ pub fn mirror_latest_version() -> Option<String> {
     }
 }
 
-/// Blocking download of `url` into memory. Builds its own current-thread tokio
-/// runtime so it is safe to call from the synchronous CLI path.
+/// Blocking download of `url` into memory, streaming byte-count progress lines
+/// as the body arrives (see `crate::download_progress`). Builds its own
+/// current-thread tokio runtime so it is safe to call from the synchronous CLI
+/// path.
 fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
-    let bytes = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(async {
-            let resp = reqwest::get(url).await?.error_for_status()?;
-            Ok::<_, anyhow::Error>(resp.bytes().await?)
-        })?;
-    Ok(bytes.to_vec())
+    crate::download_progress::download(url)
 }
 
 /// Extract the opencode binary from a downloaded `.zip` or `.tar.gz` asset and

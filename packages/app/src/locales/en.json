@@ -887,6 +887,8 @@
       "ready": "ready",
       "missing": "not found",
       "working": "Setting up…",
+      "scanning": "Looking for agent runtimes on this machine…",
+      "scanningSlow": "First run — this can take a few seconds.",
       "continue": "Continue",
       "switchToDeveloper": "Let me choose the runtime instead"
     },

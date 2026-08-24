@@ -1135,6 +1135,30 @@ input,
     animation: shimmer-sweep 2.5s ease-in-out infinite;
 }
 
+/* First-run install bar with no measurable size — an npm install, an unpack.
+   A sweep says "still working" where a 0%-wide fill would say "stalled". */
+@keyframes setup-progress-sweep {
+    0% {
+        transform: translateX(-100%);
+    }
+    100% {
+        transform: translateX(400%);
+    }
+}
+
+.setup-progress-indeterminate {
+    width: 25%;
+    animation: setup-progress-sweep 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .setup-progress-indeterminate {
+        animation: none;
+        width: 100%;
+        opacity: 0.5;
+    }
+}
+
 /* Bouncing dots while waiting for the next ACP stream event */
 @keyframes stream-loading-dot {
     0%,

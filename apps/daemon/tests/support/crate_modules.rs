@@ -13,6 +13,10 @@ mod cursor_install;
 // crate root only has the modules it declares here.
 #[path = "../../src/device_id.rs"]
 mod device_id;
+// Streaming download helper shared by `opencode_install` and `pi_install`;
+// an integration-test crate root only has the modules it declares here.
+#[path = "../../src/download_progress.rs"]
+mod download_progress;
 #[path = "../../src/error.rs"]
 mod error;
 #[path = "../../src/http/mod.rs"]

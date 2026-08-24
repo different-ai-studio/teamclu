@@ -20,6 +20,7 @@ function seed(over: Partial<ReturnType<typeof useSetupStore.getState>> = {}) {
     installing: null,
     errors: {},
     output: {},
+    progress: {},
     requirements: [req('amuxd'), req('git', { optional: true })],
     agentRuntimes: [req('opencode', { title: 'OpenCode' }), req('pi', { title: 'Pi' })],
     listRequirements: vi.fn(async () => {}),
@@ -148,5 +149,60 @@ describe('SetupStep', () => {
     render(<SetupStep role="guided" onDone={() => {}} />)
     screen.getByText('我想自己选运行时').click()
     expect(useOnboardingStore.getState().role).toBe('developer')
+  })
+
+  // The probe behind `loaded` shells out to `amuxd doctor`. It used to render as
+  // a bare spinner — the same picture a hung app draws.
+  it('says it is scanning while the runtime probe is still running', () => {
+    seed({ loaded: false })
+    render(<SetupStep role="guided" onDone={() => {}} />)
+    expect(screen.getByText('正在扫描本机已安装的 agent…')).toBeInTheDocument()
+  })
+
+  // `loaded` covers the requirements probe only; the runtime scan is a second
+  // call, and its empty result used to render as an empty grid.
+  it('says it is scanning while the runtime list is still empty', () => {
+    seed({ agentRuntimes: [] })
+    render(<SetupStep role="developer" onDone={() => {}} />)
+    expect(screen.getByText('正在扫描本机已安装的 agent…')).toBeInTheDocument()
+  })
+
+  // A multi-minute download behind a static "安装中…" is indistinguishable from
+  // a hang; the line names what is being fetched and the bar says how far in.
+  it('shows the download and its percentage while a runtime installs', () => {
+    seed({
+      installing: 'opencode',
+      agentRuntimes: [
+        req('opencode', { title: 'OpenCode', present: false, version: null }),
+        req('pi', { title: 'Pi' }),
+      ],
+      progress: {
+        opencode: {
+          event: 'download',
+          message: 'downloading https://example.test/opencode.zip',
+          percent: 42,
+        },
+      },
+    })
+    render(<SetupStep role="developer" onDone={() => {}} />)
+
+    expect(screen.getByText('downloading https://example.test/opencode.zip')).toBeInTheDocument()
+    expect(screen.getByText('42%')).toBeInTheDocument()
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '42')
+  })
+
+  // The guided path installs on its own, so its single row is where progress has
+  // to land.
+  it('shows install progress on the guided path', () => {
+    seed({
+      installing: 'opencode',
+      agentRuntimes: [req('opencode', { title: 'OpenCode', present: false, version: null })],
+      progress: { opencode: { event: 'unpack', message: 'unpacking opencode', percent: null } },
+    })
+    render(<SetupStep role="guided" onDone={() => {}} />)
+
+    expect(screen.getByText('unpacking opencode')).toBeInTheDocument()
+    // No measurable size — a sweep, not a fill frozen at 0%.
+    expect(screen.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow')
   })
 })
