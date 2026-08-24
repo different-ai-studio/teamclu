@@ -224,8 +224,8 @@ importers:
         specifier: ^0.19.0
         version: 0.19.0(zod@4.4.3)
       '@json-render/react':
-        specifier: ^0.19.0
-        version: 0.19.0(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.20.0
+        version: 0.20.0(react@19.2.8)(zod@4.4.3)
       '@radix-ui/react-avatar':
         specifier: ^1.1.11
         version: 1.1.11(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -1563,8 +1563,13 @@ packages:
     peerDependencies:
       zod: ^4.0.0
 
-  '@json-render/react@0.19.0':
-    resolution: {integrity: sha512-kTW6b6cSNRrlEfCUf/69SLoLn+CufC968ruge9tnQlp9pDTGG/SK8pgM541FdgwMFA4zm3s5mpM3G8rdODKc/A==}
+  '@json-render/core@0.20.0':
+    resolution: {integrity: sha512-cXAXn7h3QaylefQgh85AEGPuVq4C8SJ3k9JqigWLJhaBSozF1Fmsrm43DP16RmkqNiVgj5pBRdmB48lEO5qlow==}
+    peerDependencies:
+      zod: ^4.0.0
+
+  '@json-render/react@0.20.0':
+    resolution: {integrity: sha512-arRrlf7zeIJYM6i2JHcTBKW5Kl+ErBtoNR29h4i6rG4AtTzLmaWDgPTs35pr3MdSCTp0UxKwY4O3vWMdUihpRQ==}
     peerDependencies:
       react: ^19.2.3
 
@@ -10062,9 +10067,13 @@ snapshots:
     dependencies:
       zod: 4.4.3
 
-  '@json-render/react@0.19.0(react@19.2.8)(zod@4.4.3)':
+  '@json-render/core@0.20.0(zod@4.4.3)':
     dependencies:
-      '@json-render/core': 0.19.0(zod@4.4.3)
+      zod: 4.4.3
+
+  '@json-render/react@0.20.0(react@19.2.8)(zod@4.4.3)':
+    dependencies:
+      '@json-render/core': 0.20.0(zod@4.4.3)
       react: 19.2.8
     transitivePeerDependencies:
       - zod
