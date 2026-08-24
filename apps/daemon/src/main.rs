@@ -8,6 +8,7 @@ mod config;
 mod cursor_install;
 mod daemon;
 mod device_id;
+mod download_progress;
 mod error;
 mod history;
 mod http;

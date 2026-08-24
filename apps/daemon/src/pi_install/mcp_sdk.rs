@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 use super::{
     apply_registry, command_with_runtime_path, has_command, mirrored_bundle, progress,
-    registry_source, required_mcp_sdk_version, RegistrySource,
+    registry_source, required_mcp_sdk_version, run_streaming, RegistrySource,
 };
 use crate::opencode_install::version_ge;
 
@@ -169,18 +169,9 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
     progress("install", &format!("running npm {}", args.join(" ")));
     let mut command = command_with_runtime_path("npm");
     apply_registry(&mut command, source);
-    let output = command
-        .args(args.iter().map(String::as_str))
-        .output()
-        .map_err(|e| anyhow::anyhow!("failed to run npm: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
-        anyhow::bail!(
-            "MCP SDK install failed ({}): {}",
-            output.status,
-            if stderr.is_empty() { stdout } else { stderr }
-        );
+    let (status, tail) = run_streaming("npm", command.args(args.iter().map(String::as_str)))?;
+    if !status.success() {
+        anyhow::bail!("MCP SDK install failed ({status}): {tail}");
     }
     // An `--offline` install of a bundled tarball can succeed while resolving
     // to a different version than the manifest asked for; check the tree, not

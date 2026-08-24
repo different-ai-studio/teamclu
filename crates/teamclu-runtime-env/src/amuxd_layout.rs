@@ -16,6 +16,51 @@ pub fn run_dir(home: &Path) -> PathBuf {
     home.join("run")
 }
 
+/// The daemon's control endpoint — where `amuxd.sock`'s line/JSON protocol is
+/// served, and the one thing the desktop needs to talk to a running daemon.
+///
+/// Two shapes, because Windows has no Unix sockets: a socket file under `run/`
+/// on unix, and a named pipe on Windows. The daemon serves both (see
+/// `spawn_sock_listener`'s two cfg arms); it is only the *name* that differs.
+///
+/// This lives here, beside every other amuxd path, for the reason #1049 made
+/// concrete: the daemon derived the Windows pipe name and the desktop derived
+/// `<run>/amuxd.sock`, so the two could never have met even after the desktop
+/// learned to speak named pipes.
+///
+/// `home` is unused on Windows — pipe names live in a machine-global namespace
+/// rather than under a directory, which is also why the name has to carry the
+/// user (see [`control_pipe_suffix`]).
+pub fn control_endpoint(home: &Path) -> PathBuf {
+    #[cfg(not(windows))]
+    {
+        run_dir(home).join("amuxd.sock")
+    }
+    #[cfg(windows)]
+    {
+        let _ = home;
+        let user = std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "default".into());
+        PathBuf::from(format!(r"\\.\pipe\amuxd-{}", control_pipe_suffix(&user)))
+    }
+}
+
+/// Sanitize a username into `[A-Za-z0-9_-]` for use inside a Windows pipe name.
+/// Non-ASCII / separator characters map to `-` (a multi-byte char produces one
+/// `-` per char). Platform-independent so it is unit-testable everywhere.
+pub fn control_pipe_suffix(user: &str) -> String {
+    user.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 pub fn logs_dir(home: &Path) -> PathBuf {
     home.join("logs")
 }
@@ -127,5 +172,30 @@ mod tests {
             team_dir(home.path(), "  "),
             teams_dir(home.path()).join(UNCLAIMED_TEAM)
         );
+    }
+
+    #[test]
+    fn control_pipe_suffix_sanitizes_to_safe_charset() {
+        assert_eq!(control_pipe_suffix("matt.chow"), "matt-chow");
+        // 2 CJK chars + 1 space -> 3 dashes.
+        assert_eq!(control_pipe_suffix("\u{7b80}\u{4f53} user"), "---user");
+        assert_eq!(control_pipe_suffix("Win_User-1"), "Win_User-1");
+    }
+
+    /// The daemon binds this and the desktop connects to it, so "both sides
+    /// compute the same string" is the whole contract (#1049).
+    #[test]
+    fn control_endpoint_matches_the_platform_the_daemon_serves() {
+        let home = tempfile::tempdir().unwrap();
+        let endpoint = control_endpoint(home.path());
+        if cfg!(windows) {
+            let name = endpoint.to_string_lossy();
+            assert!(
+                name.starts_with(r"\\.\pipe\amuxd-"),
+                "named pipe, not a path under home: {name}"
+            );
+        } else {
+            assert_eq!(endpoint, run_dir(home.path()).join("amuxd.sock"));
+        }
     }
 }

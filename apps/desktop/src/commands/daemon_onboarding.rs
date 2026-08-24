@@ -105,16 +105,6 @@ async fn run_amuxd<R: Runtime>(app: &AppHandle<R>, args: &[&str]) -> Result<(), 
     Ok(())
 }
 
-/// Register amuxd as a user-level background service and start it.
-///
-/// **Deprecated path:** desktop-managed mode no longer registers LaunchAgent /
-/// systemd. This command now restarts the desktop-managed sidecar so onboard /
-/// heal keep working without a service.
-#[tauri::command]
-pub async fn daemon_install_service<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    crate::commands::amuxd_supervisor::AmuxdSupervisor::restart(&app).await
-}
-
 /// Wipe local daemon state (daemon.toml/backend.toml/etc) for a clean re-onboard.
 /// Stops the managed amuxd first so `clear` can take the lock.
 #[tauri::command]

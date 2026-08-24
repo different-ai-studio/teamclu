@@ -417,16 +417,88 @@ pub(super) fn mirror_manifest(base: &str) -> Option<MirrorManifest> {
         })
 }
 
+/// Streams byte-count progress lines while the body arrives, so a slow OSS
+/// route shows movement instead of a frozen "installing…".
 pub(super) fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
-    let url = url.to_owned();
-    let bytes = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(async {
-            let response = reqwest::get(url).await?.error_for_status()?;
-            Ok::<_, anyhow::Error>(response.bytes().await?)
-        })?;
-    Ok(bytes.to_vec())
+    crate::download_progress::download(url)
+}
+
+/// How much of a command's output to keep for its failure message. The lines
+/// themselves are streamed as they arrive; this is only what gets quoted back
+/// if the command exits non-zero.
+const OUTPUT_TAIL_LINES: usize = 20;
+
+/// Read one pipe to EOF on its own thread, emitting each line as it arrives and
+/// keeping the tail for the caller's error message.
+fn pump_output<R: std::io::Read + Send + 'static>(
+    reader: R,
+    tail: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> std::thread::JoinHandle<()> {
+    use std::io::BufRead;
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(reader).lines() {
+            let Ok(line) = line else { break };
+            let line = line.trim_end().to_string();
+            if line.is_empty() {
+                continue;
+            }
+            progress("output", &line);
+            let mut tail = tail.lock().unwrap_or_else(|e| e.into_inner());
+            if tail.len() == OUTPUT_TAIL_LINES {
+                tail.remove(0);
+            }
+            tail.push(line);
+        }
+    })
+}
+
+/// Run `command`, streaming both pipes as `output` progress lines instead of
+/// holding them until the process exits.
+///
+/// npm spends minutes on a slow route and writes its status to *stderr*.
+/// `.output()` buffered every byte of that until exit, so the wizard's install
+/// row had nothing to show for the whole wait — the "stuck on installing…"
+/// report. Returns the exit status and the tail of the combined output, which
+/// is what callers quote when it fails.
+pub(super) fn run_streaming(
+    cmd: &str,
+    command: &mut std::process::Command,
+) -> anyhow::Result<(std::process::ExitStatus, String)> {
+    use std::process::Stdio;
+    use std::sync::{Arc, Mutex};
+
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to run {cmd}: {e}"))?;
+
+    let tail = Arc::new(Mutex::new(Vec::new()));
+    let pumps: Vec<_> = [
+        child
+            .stdout
+            .take()
+            .map(|r| pump_output(r, Arc::clone(&tail))),
+        child
+            .stderr
+            .take()
+            .map(|r| pump_output(r, Arc::clone(&tail))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let status = child
+        .wait()
+        .map_err(|e| anyhow::anyhow!("{cmd} did not exit cleanly: {e}"))?;
+    // Join after wait(): a pipe can still hold buffered lines when the child
+    // exits, and dropping them would empty the failure message.
+    for pump in pumps {
+        let _ = pump.join();
+    }
+
+    let tail = tail.lock().unwrap_or_else(|e| e.into_inner()).join("\n");
+    Ok((status, tail))
 }
 
 pub(super) fn sha256_hex(bytes: &[u8]) -> String {
@@ -568,21 +640,9 @@ fn ensure_pi(force: bool) -> anyhow::Result<()> {
     progress("install", &format!("running {cmd} {}", args.join(" ")));
     let mut command = command_with_runtime_path(cmd);
     apply_registry(&mut command, source);
-    let output = command
-        .args(args.iter().map(String::as_str))
-        .output()
-        .map_err(|e| anyhow::anyhow!("failed to run {cmd}: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !stdout.is_empty() {
-        progress("output", &stdout);
-    }
-    if !output.status.success() {
-        anyhow::bail!(
-            "pi install failed ({}): {}",
-            output.status,
-            if stderr.is_empty() { stdout } else { stderr }
-        );
+    let (status, tail) = run_streaming(cmd, command.args(args.iter().map(String::as_str)))?;
+    if !status.success() {
+        anyhow::bail!("pi install failed ({status}): {tail}");
     }
     progress("ok", &format!("pi installed/upgraded (require >= {want})"));
     Ok(())

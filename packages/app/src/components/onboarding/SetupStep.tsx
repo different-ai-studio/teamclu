@@ -5,12 +5,19 @@ import { Check, Loader2, AlertCircle, Download, Terminal, Cpu, MousePointer2, Bo
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { localAgent } from '@/lib/build-config'
-import { useSetupStore, type RequirementStatus } from '@/stores/setup'
+import { useSetupStore, type InstallProgress, type RequirementStatus } from '@/stores/setup'
 import { useOnboardingStore, type OnboardingRole } from '@/stores/onboarding'
 import type { DaemonLocalAgent } from '@/lib/daemon-local-client'
 
 /** amuxd auto-installs (a near-instant binary copy); pad it so it reads as work. */
 const AMUXD_AUTO_INSTALL_MIN_MS = 2500
+
+/**
+ * How long the runtime scan may run before the screen admits it is slow.
+ * `setup_list_requirements` spawns `amuxd doctor`, which costs ~4s on a cold
+ * first launch (see stores/setup.ts) and longer on Windows.
+ */
+const SCAN_SLOW_MS = 4000
 
 const RUNTIME_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   opencode: Terminal,
@@ -56,12 +63,15 @@ function RuntimeCard({
   runtime,
   selected,
   busy,
+  progress,
   onSelect,
   onInstall,
 }: {
   runtime: RequirementStatus
   selected: boolean
   busy: boolean
+  /** Set only while this card's own install is running. */
+  progress?: InstallProgress
   onSelect: () => void
   onInstall: () => void
 }) {
@@ -143,35 +153,99 @@ function RuntimeCard({
             : t('onboarding.setup.install', 'Install')}
         </button>
       )}
+      {/* The developer path installs from the card, so the card is where its
+          progress has to land — the dependency rows below report on amuxd and
+          git, never on the runtime being fetched. */}
+      {progress && (
+        <div className="relative w-full">
+          <InstallProgressBar progress={progress} />
+        </div>
+      )}
     </div>
   )
 }
 
-function DependencyRow({ req, installing }: { req: RequirementStatus; installing: boolean }) {
+/**
+ * What the install is doing right now, under the row that started it.
+ *
+ * amuxd streams a line per step and the store parses out a percentage when the
+ * step is a sized download — which is the slow one, and the whole reason this
+ * exists: a bare "installing…" for a multi-minute fetch is indistinguishable
+ * from a hang. Steps with no measurable size (unpack, npm) get a sweep instead
+ * of a fill, since a bar frozen at 0% would say the opposite of what is true.
+ */
+function InstallProgressBar({ progress }: { progress: InstallProgress }) {
+  const determinate = progress.percent !== null
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline justify-between gap-3">
+        {/* The URL lives in this line; `title` keeps the full one reachable when
+            the row is too narrow for it. */}
+        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-faint" title={progress.message}>
+          {progress.message}
+        </span>
+        {determinate && (
+          <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-faint">
+            {progress.percent}%
+          </span>
+        )}
+      </div>
+      <div
+        className="h-[3px] w-full overflow-hidden rounded-full bg-selected"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={progress.percent ?? undefined}
+        aria-valuetext={determinate ? undefined : progress.message}
+      >
+        <div
+          className={cn(
+            'h-full rounded-full bg-coral',
+            determinate ? 'transition-[width] duration-300 ease-out' : 'setup-progress-indeterminate',
+          )}
+          style={determinate ? { width: `${progress.percent}%` } : undefined}
+        />
+      </div>
+    </div>
+  )
+}
+
+function DependencyRow({
+  req,
+  installing,
+  progress,
+}: {
+  req: RequirementStatus
+  installing: boolean
+  progress?: InstallProgress
+}) {
   const { t } = useTranslation()
   const ok = usable(req)
   return (
-    <div className="flex items-center justify-between rounded-[12px] border border-border bg-paper px-4 py-2.5">
-      <span className="flex items-center gap-2">
-        {ok ? (
-          <Check className="h-4 w-4 text-coral" />
-        ) : installing ? (
-          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-        ) : (
-          <AlertCircle className="h-4 w-4 text-faint" />
-        )}
-        <span className="text-[13px] text-foreground">{req.title}</span>
-      </span>
-      <span className="font-mono text-[11px] text-faint">
-        {req.blocker === 'node'
-          ? t('onboarding.setup.needsNode', 'Needs Node.js 22.19 or later before Pi can be installed.')
-          : req.version ??
-          (ok
-            ? t('onboarding.setup.ready', 'ready')
-            : installing
-              ? t('onboarding.setup.installing', 'installing…')
-              : t('onboarding.setup.missing', 'not found'))}
-      </span>
+    <div className="flex flex-col gap-2 rounded-[12px] border border-border bg-paper px-4 py-2.5">
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-2">
+          {ok ? (
+            <Check className="h-4 w-4 text-coral" />
+          ) : installing ? (
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          ) : (
+            <AlertCircle className="h-4 w-4 text-faint" />
+          )}
+          <span className="text-[13px] text-foreground">{req.title}</span>
+        </span>
+        <span className="font-mono text-[11px] text-faint">
+          {req.blocker === 'node'
+            ? t('onboarding.setup.needsNode', 'Needs Node.js 22.19 or later before Pi can be installed.')
+            : req.version ??
+            (ok
+              ? t('onboarding.setup.ready', 'ready')
+              : installing
+                ? t('onboarding.setup.installing', 'installing…')
+                : t('onboarding.setup.missing', 'not found'))}
+        </span>
+      </div>
+      {installing && progress && <InstallProgressBar progress={progress} />}
     </div>
   )
 }
@@ -191,8 +265,17 @@ function DependencyRow({ req, installing }: { req: RequirementStatus; installing
  */
 export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () => void }) {
   const { t } = useTranslation()
-  const { requirements, agentRuntimes, installing, errors, loaded, listRequirements, listAgentRuntimes, install } =
-    useSetupStore()
+  const {
+    requirements,
+    agentRuntimes,
+    installing,
+    errors,
+    loaded,
+    progress,
+    listRequirements,
+    listAgentRuntimes,
+    install,
+  } = useSetupStore()
   const setRuntime = useOnboardingStore((s) => s.setRuntime)
   const [selected, setSelected] = React.useState<DaemonLocalAgent>(DEFAULT_RUNTIME)
   const [rechecking, setRechecking] = React.useState(false)
@@ -282,6 +365,17 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
     onDone()
   }
 
+  // The probe behind `loaded` shells out to `amuxd doctor`; until it answers the
+  // screen has nothing to render. It used to render that as a bare spinner, which
+  // is the same picture a hung app draws — say what the machine is doing, and
+  // admit when it is taking a while.
+  const [scanSlow, setScanSlow] = React.useState(false)
+  React.useEffect(() => {
+    if (loaded) return
+    const timer = setTimeout(() => setScanSlow(true), SCAN_SLOW_MS)
+    return () => clearTimeout(timer)
+  }, [loaded])
+
   const recheck = async () => {
     setRechecking(true)
     try {
@@ -296,8 +390,19 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
 
   if (!loaded) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
+      <div
+        className="flex h-screen flex-col items-center justify-center gap-3 bg-background"
+        data-tauri-drag-region
+      >
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <p className="text-[12.5px] text-muted-foreground">
+          {t('onboarding.setup.scanning', 'Looking for agent runtimes on this machine…')}
+        </p>
+        {scanSlow && (
+          <p className="text-[11.5px] text-faint">
+            {t('onboarding.setup.scanningSlow', 'First run — this can take a few seconds.')}
+          </p>
+        )}
       </div>
     )
   }
@@ -322,6 +427,17 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
             <span className="text-[11.5px] font-medium uppercase tracking-wide text-faint">
               {t('onboarding.setup.runtime', 'Agent runtime')}
             </span>
+            {/* `loaded` tracks the requirements probe only; the runtime scan is a
+                second call, and rendering its empty result as an empty grid is
+                the same "nothing is happening" the screen above just fixed. */}
+            {visibleRuntimes.length === 0 ? (
+              <div className="flex items-center gap-2 rounded-[12px] border border-border bg-paper px-4 py-3">
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                <span className="text-[12.5px] text-muted-foreground">
+                  {t('onboarding.setup.scanning', 'Looking for agent runtimes on this machine…')}
+                </span>
+              </div>
+            ) : (
             <div className="grid grid-cols-2 gap-2.5">
               {visibleRuntimes.map((r) => (
                 <RuntimeCard
@@ -329,11 +445,13 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
                   runtime={r}
                   selected={r.id === selected}
                   busy={installing !== null}
+                  progress={installing === r.id ? progress[r.id] : undefined}
                   onSelect={() => pick(r.id as DaemonLocalAgent)}
                   onInstall={() => void install(r.id)}
                 />
               ))}
             </div>
+            )}
             {visibleRuntimes.map((r) =>
               errors[r.id] ? (
                 <p key={`${r.id}-err`} className="flex items-start gap-1.5 text-[11.5px] text-coral">
@@ -352,13 +470,18 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
             <DependencyRow
               req={selectedRuntime}
               installing={installing === selectedRuntime.id || guidedRuntimeMissing}
+              progress={progress[selectedRuntime.id]}
             />
           )
         )}
 
         <div className="flex flex-col gap-2">
           {amuxd && (
-            <DependencyRow req={amuxd} installing={installing === 'amuxd' || amuxdMissing} />
+            <DependencyRow
+              req={amuxd}
+              installing={installing === 'amuxd' || amuxdMissing}
+              progress={progress.amuxd}
+            />
           )}
           {/* git is `optional: true` from the backend; only developers need to
               know it is missing, and even for them it never blocks. */}

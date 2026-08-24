@@ -785,38 +785,13 @@ impl DaemonConfig {
     }
 
     /// Control endpoint: a Unix socket path on unix, a named-pipe name on
-    /// Windows. Pipe names live in a machine-global namespace, so the name
-    /// carries the (sanitized) username for per-user uniqueness.
-    #[cfg(not(windows))]
+    /// Windows.
+    ///
+    /// Derived in `teamclu_runtime_env::amuxd_layout` rather than here, because
+    /// the desktop has to compute the identical string to connect (#1049) and
+    /// two derivations cannot be kept honest by comment alone.
     pub fn sock_path() -> PathBuf {
-        super::layout::run_dir().join("amuxd.sock")
-    }
-
-    #[cfg(windows)]
-    pub fn sock_path() -> PathBuf {
-        let user = std::env::var("USERNAME")
-            .or_else(|_| std::env::var("USER"))
-            .unwrap_or_else(|_| "default".into());
-        PathBuf::from(format!(
-            r"\\.\pipe\amuxd-{}",
-            Self::control_pipe_suffix_from(&user)
-        ))
-    }
-
-    /// Sanitize a username into `[A-Za-z0-9_-]` for use inside a pipe name.
-    /// Non-ASCII / separator characters map to `-` (multi-byte chars produce
-    /// one `-` per char). Kept platform-independent so it is unit-testable
-    /// everywhere.
-    pub(crate) fn control_pipe_suffix_from(user: &str) -> String {
-        user.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect()
+        super::layout::control_endpoint()
     }
 
     pub fn http_token_path() -> PathBuf {
@@ -1005,23 +980,6 @@ mod tests {
             .allowed_origins
             .iter()
             .any(|o| o == "https://tauri.localhost"));
-    }
-
-    #[test]
-    fn control_pipe_suffix_sanitizes_to_safe_charset() {
-        assert_eq!(
-            DaemonConfig::control_pipe_suffix_from("matt.chow"),
-            "matt-chow"
-        );
-        // 2 CJK chars + 1 space -> 3 dashes.
-        assert_eq!(
-            DaemonConfig::control_pipe_suffix_from("\u{7b80}\u{4f53} user"),
-            "---user"
-        );
-        assert_eq!(
-            DaemonConfig::control_pipe_suffix_from("Win_User-1"),
-            "Win_User-1"
-        );
     }
 
     #[test]

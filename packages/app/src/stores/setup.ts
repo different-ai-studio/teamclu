@@ -64,12 +64,79 @@ export type SetupProgress = {
   error: string | null
 }
 
+/**
+ * The current step of an install, parsed out of the raw progress line for the
+ * wizard to render.
+ *
+ * amuxd narrates every install on stdout as one JSON object per line
+ * (`{"event","message"}`, plus `url`/`downloaded`/`total`/`percent` on a
+ * download). Those lines were collected into `output` and never shown, so an
+ * install that spends minutes fetching an asset had nothing on screen but
+ * "installing…".
+ */
+export type InstallProgress = {
+  /** amuxd's step name: download | unpack | install | mirror | upgrade | output | ok. */
+  event: string
+  /** One line, already trimmed to something a narrow row can show. */
+  message: string
+  /** 0–100 while a sized download is in flight; null when the step has no measurable size. */
+  percent: number | null
+}
+
+/** Clamp to the 0–100 a progress bar can actually draw. */
+function clampPercent(value: number): number | null {
+  if (!Number.isFinite(value)) return null
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+/**
+ * Parse one progress line. amuxd's lines are JSON; anything else (a stray
+ * stderr line from the sidecar, npm noise) is still worth showing verbatim —
+ * during a slow install the only thing worse than a raw line is a blank row.
+ */
+export function parseProgressLine(line: string): InstallProgress | null {
+  const text = line.trim()
+  if (!text) return null
+
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>
+      const event = typeof parsed.event === 'string' ? parsed.event : 'output'
+      const message = typeof parsed.message === 'string' ? parsed.message : event
+      const total = typeof parsed.total === 'number' ? parsed.total : null
+      const downloaded = typeof parsed.downloaded === 'number' ? parsed.downloaded : null
+      const percent =
+        typeof parsed.percent === 'number'
+          ? clampPercent(parsed.percent)
+          : total !== null && total > 0 && downloaded !== null
+            ? clampPercent((downloaded / total) * 100)
+            : null
+      return { event, message: lastLine(message), percent }
+    } catch {
+      // Not amuxd's shape after all — fall through and show it as text.
+    }
+  }
+  return { event: 'output', message: lastLine(text), percent: null }
+}
+
+/**
+ * The last non-empty line of a possibly multi-line message. npm's output can
+ * arrive as one blob, and the row shows a single line — the tail is the part
+ * that says where the command got to.
+ */
+function lastLine(text: string): string {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+  return lines[lines.length - 1] ?? text.trim()
+}
+
 type SetupState = {
   requirements: RequirementStatus[]
   /** Install status of every selectable runtime — populated by [`listAgentRuntimes`]. */
   agentRuntimes: RequirementStatus[]
   installing: string | null
   output: Record<string, string[]>
+  /** Latest parsed step per requirement id, for the install row's progress bar. */
+  progress: Record<string, InstallProgress>
   errors: Record<string, string>
   loaded: boolean
   /**
@@ -92,6 +159,7 @@ export const useSetupStore = create<SetupState>((set, get) => ({
   agentRuntimes: [],
   installing: null,
   output: {},
+  progress: {},
   errors: {},
   loaded: false,
 
@@ -132,7 +200,7 @@ export const useSetupStore = create<SetupState>((set, get) => ({
       // Browser/dev preview: no real install, but still honor the minimum
       // duration so the loading effect (e.g. amuxd auto-install) is visible.
       if (minDurationMs > 0) {
-        set((s) => ({ installing: id, errors: { ...s.errors, [id]: '' } }))
+        set((s) => ({ installing: id, errors: { ...s.errors, [id]: '' }, progress: without(s.progress, id) }))
         await delay(minDurationMs)
         set((s) => ({
           installing: null,
@@ -143,8 +211,14 @@ export const useSetupStore = create<SetupState>((set, get) => ({
     }
     const { invoke } = await import('@tauri-apps/api/core')
     const { listen } = await import('@tauri-apps/api/event')
-    // Clear any prior error for this id so a retry starts clean.
-    set((s) => ({ installing: id, errors: { ...s.errors, [id]: '' } }))
+    // Clear any prior error, log, and progress for this id so a retry starts
+    // clean rather than resuming on the previous attempt's last line.
+    set((s) => ({
+      installing: id,
+      errors: { ...s.errors, [id]: '' },
+      output: without(s.output, id),
+      progress: without(s.progress, id),
+    }))
     // Listener lives only for this install and is removed in finally. The wizard
     // is modal/non-dismissible during install, so unmount-mid-install is not a
     // concern; applyProgress writes to the singleton store regardless.
@@ -174,15 +248,22 @@ export const useSetupStore = create<SetupState>((set, get) => ({
       set((s) => ({ errors: { ...s.errors, [id]: String(e) } }))
     } finally {
       unlisten()
-      set({ installing: null })
+      set((s) => ({ installing: null, progress: without(s.progress, id) }))
     }
   },
 }))
+
+/** A copy of `record` without `key`. */
+function without<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const { [key]: _dropped, ...rest } = record
+  return rest
+}
 
 /** Pure reducer applied to each setup-progress event (exported for tests). */
 export function applyProgress(p: SetupProgress) {
   useSetupStore.setState((s) => {
     const output = { ...s.output }
+    let progress = s.progress
     const errors = { ...s.errors }
     let requirements = s.requirements
 
@@ -190,13 +271,24 @@ export function applyProgress(p: SetupProgress) {
     // by install() before the backend runs.
     if (p.status === 'running' && p.line) {
       output[p.id] = [...(output[p.id] ?? []), p.line]
+      const step = parseProgressLine(p.line)
+      if (step) {
+        // A step with no size of its own (unpacking, an npm line) must not wipe
+        // the bar the download just filled — it would read as a reset. Carry the
+        // last known percent until a differently-named step takes over.
+        const previous = progress[p.id]
+        const percent =
+          step.percent ?? (previous && previous.event === step.event ? previous.percent : null)
+        progress = { ...progress, [p.id]: { ...step, percent } }
+      }
     }
     if (p.status === 'failed' && p.error) {
       errors[p.id] = p.error
     }
     if (p.status === 'done') {
       requirements = requirements.map((r) => (r.id === p.id ? { ...r, present: true } : r))
+      progress = without(progress, p.id)
     }
-    return { output, errors, requirements }
+    return { output, progress, errors, requirements }
   })
 }
