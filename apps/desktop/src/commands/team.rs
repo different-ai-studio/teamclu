@@ -125,12 +125,6 @@ fn remove_workspace_team_repo_entry(workspace_path: &str) -> Result<(), String> 
     }
 }
 
-/// Delete the `teamclu-team/` directory inside `workspace_path`.
-#[tauri::command]
-pub fn workspace_delete_team_repo(workspace_path: String) -> Result<(), String> {
-    remove_workspace_team_repo_entry(&workspace_path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

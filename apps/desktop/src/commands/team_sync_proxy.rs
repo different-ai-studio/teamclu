@@ -612,65 +612,10 @@ fn team_sync_error_from_status(status: &serde_json::Value) -> Result<(), String>
     Ok(())
 }
 
-/// `team_sync_repo(workspace?, forceSync?)` (team.rs) → proxy to the daemon sync.
-#[tauri::command]
-pub async fn team_sync_repo(
-    workspace_path: Option<String>,
-    force_sync: Option<bool>,
-) -> Result<serde_json::Value, String> {
-    let force_sync = force_sync.unwrap_or(false);
-    let workspace_path = workspace_path
-        .filter(|p| !p.is_empty())
-        .ok_or_else(|| "No workspace path set. Please select a workspace first.".to_string())?;
-    invoke_daemon_team_sync(&workspace_path, force_sync).await
-}
-
-// ─── sync_mode commands (FC-direct; moved verbatim from oss_sync/mod.rs) ──────
-//
-// These toggle the team's FC `sync_mode` and mirror it into local teamclu.json.
-// They do NOT go through the daemon sync engine, so they keep calling FC
-// directly. Moved here so they survive the Task 8 deletion of oss_sync/mod.rs.
-
-use crate::commands::oss_sync::fc_client::FcClient;
-use crate::commands::oss_sync::get_fc_endpoint;
-
-/// Switch the team's sync_mode on the server (owner-only) and persist the new
-/// mode into local teamclu.json so the periodic tick dispatches to the correct
-/// backend.
-#[tauri::command]
-pub async fn oss_sync_set_team_sync_mode(
-    workspace_path: String,
-    team_id: String,
-    mode: String,
-    access_token: String,
-) -> Result<String, String> {
-    if mode != "oss" {
-        return Err(format!("invalid sync_mode: {}", mode));
-    }
-
-    let fc = FcClient::new(get_fc_endpoint(&workspace_path), access_token);
-    let returned_mode = fc
-        .set_team_sync_mode(&team_id, &mode)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // The team share mode is owned by the cloud; we no longer mirror it into
-    // local teamclu.json (legacy `team_mode`).
-    Ok(returned_mode)
-}
-
-/// Read the team's sync_mode from the server (no ownership required).
-#[tauri::command]
-pub async fn oss_sync_get_team_sync_mode(
-    workspace_path: String,
-    team_id: String,
-    access_token: String,
-) -> Result<Option<String>, String> {
-    let fc = FcClient::new(get_fc_endpoint(&workspace_path), access_token);
-    fc.get_team_sync_mode(&team_id)
-        .await
-        .map_err(|e| e.to_string())
-}
+// The `sync_mode` get/set pair lived here, "moved so they survive the Task 8
+// deletion of oss_sync/mod.rs". They did not survive contact with the product:
+// share mode became a one-shot switch with `oss` as its only value, so there
+// was nothing left to read or toggle, and nothing called them.
 
 // ─── unified team file/versions/changed proxies (Task 3) ────────────────────
 

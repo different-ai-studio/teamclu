@@ -458,8 +458,6 @@ pub fn run() {
             commands::terminal::terminal_subscribe,
             commands::terminal::terminal_write,
             commands::team::workspace_read_team_meta,
-            commands::team::workspace_delete_team_repo,
-            commands::team_sync_proxy::team_sync_repo,
             commands::team_sync_proxy::team_file_versions,
             commands::team_sync_proxy::team_file_content,
             commands::team_sync_proxy::team_changed_files,
@@ -549,11 +547,9 @@ pub fn run() {
             commands::window_chrome::set_window_close_preference,
             commands::tray_menu::update_tray_menu_labels,
             commands::app_menu::update_app_menu_labels,
-            commands::team_share::team_share_create,
             commands::team_share::enable::team_share_set_team_secret,
             commands::team_share::enable::team_share_get_team_secret,
             commands::team_share::enable::team_share_get_status,
-            commands::team_share::join::team_share_join_existing,
             commands::team_litellm::team_litellm_setup,
             commands::team_sync_proxy::oss_sync_now,
             commands::team_sync_proxy::oss_sync_status,
@@ -562,8 +558,6 @@ pub fn run() {
             commands::team_sync_proxy::oss_sync_get_version_content,
             commands::team_sync_proxy::oss_sync_restore_version,
             commands::team_sync_proxy::oss_sync_resolve_conflict,
-            commands::team_sync_proxy::oss_sync_set_team_sync_mode,
-            commands::team_sync_proxy::oss_sync_get_team_sync_mode,
         ])
         .setup(|app| {
             let setup_t0 = std::time::Instant::now();
