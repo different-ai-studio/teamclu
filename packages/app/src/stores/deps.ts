@@ -18,8 +18,14 @@ export interface DependencyInfo {
   priority: number
 }
 
-/** Installed vs newest-available opencode (from `amuxd opencode-versions`). */
-export interface OpencodeVersions {
+/**
+ * Installed vs available version of one dependency.
+ *
+ * "Available" differs per dependency — opencode's comes off the mirror
+ * manifest, pi's is the minimum `pi.lock.json` pins — but the question the UI
+ * asks is the same either way: is there something to update to.
+ */
+export interface DependencyVersions {
   installed: string | null
   latest: string | null
   /** null = latest unknown (mirror unreachable); keep offering the update. */
@@ -55,7 +61,8 @@ interface DepsState {
   /** Which operation produced the current results — drives the UI wording. */
   lastOperation: 'install' | 'update' | null
   /** Newest opencode available, or null until/unless the check succeeds. */
-  opencodeVersions: OpencodeVersions | null
+  /** Keyed by dependency name; absent means "not checked / unknown". */
+  versions: Record<string, DependencyVersions>
 
   /** Check all dependencies via Tauri command */
   checkDependencies: () => Promise<DependencyInfo[]>
@@ -76,7 +83,7 @@ interface DepsState {
   resetInstallState: () => void
 
   /** Ask amuxd what the newest opencode is (network; safe to fail). */
-  checkOpencodeVersions: () => Promise<void>
+  checkVersions: () => Promise<void>
 }
 
 
@@ -117,7 +124,7 @@ export const useDepsStore = create<DepsState>((set, get) => ({
   installResults: {},
   installOutput: {},
   lastOperation: null,
-  opencodeVersions: null,
+  versions: {},
 
   checkDependencies: async () => {
     if (!isTauri()) {
@@ -280,16 +287,26 @@ export const useDepsStore = create<DepsState>((set, get) => ({
     }
   },
 
-  checkOpencodeVersions: async () => {
+  checkVersions: async () => {
     if (!isTauri()) return
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      set({ opencodeVersions: await invoke<OpencodeVersions>('opencode_versions') })
-    } catch (err) {
-      // Unknown is a valid state — the UI keeps offering the update.
-      console.warn('[DepsStore] opencode version check failed:', err)
-      set({ opencodeVersions: null })
-    }
+    const { invoke } = await import('@tauri-apps/api/core')
+    // Independently, not in one command: opencode's answer needs the network
+    // and pi's does not, so a slow or unreachable mirror must not also blank
+    // pi's row. Unknown is a valid state — the UI keeps offering the update.
+    await Promise.all(
+      (['opencode', 'pi'] as const).map(async (name) => {
+        try {
+          const result = await invoke<DependencyVersions>(`${name}_versions`)
+          set((s) => ({ versions: { ...s.versions, [name]: result } }))
+        } catch (err) {
+          console.warn(`[DepsStore] ${name} version check failed:`, err)
+          set((s) => {
+            const { [name]: _dropped, ...rest } = s.versions
+            return { versions: rest }
+          })
+        }
+      }),
+    )
   },
 
   resetInstallState: () => {

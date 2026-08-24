@@ -237,10 +237,15 @@ fn requires_brew(name: &str) -> bool {
     matches!(name, "gh" | "node" | "python3")
 }
 
-/// Installed vs newest-available opencode, for the Dependencies UI.
+/// Installed vs available version of one dependency, for the Dependencies UI.
+///
+/// Shared by opencode and pi even though "available" means different things:
+/// opencode's comes off the mirror manifest (a moving target, network), pi's is
+/// the minimum `pi.lock.json` pins (fixed, offline). The UI only needs "is
+/// there something to update to", which both answer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OpencodeVersions {
+pub struct DependencyVersions {
     pub installed: Option<String>,
     pub latest: Option<String>,
     /// `None` when `latest` is unknown (mirror unreachable) — the UI must then
@@ -252,7 +257,9 @@ pub struct OpencodeVersions {
 /// network (the mirror manifest), so this is a separate command from
 /// `check_dependencies`, which must stay fast and offline.
 #[tauri::command]
-pub async fn opencode_versions<R: Runtime>(app: AppHandle<R>) -> Result<OpencodeVersions, String> {
+pub async fn opencode_versions<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<DependencyVersions, String> {
     use tauri_plugin_shell::process::CommandEvent;
     use tauri_plugin_shell::ShellExt;
 
@@ -270,6 +277,66 @@ pub async fn opencode_versions<R: Runtime>(app: AppHandle<R>) -> Result<Opencode
         }
     }
     serde_json::from_str(buf.trim()).map_err(|e| format!("parse amuxd opencode-versions: {e}"))
+}
+
+/// Installed vs required pi, for the same Update affordance opencode has.
+///
+/// Reads `amuxd doctor` rather than adding a sidecar subcommand: doctor already
+/// reports pi's installed version alongside the version `pi.lock.json` requires,
+/// and unlike opencode there is no mirror to ask — the target is pinned, so this
+/// answer is offline and cheap.
+#[tauri::command]
+pub async fn pi_versions<R: Runtime>(app: AppHandle<R>) -> Result<DependencyVersions, String> {
+    let doctor = crate::commands::setup::read_doctor(&app, Some("pi"))
+        .await
+        .ok_or_else(|| "amuxd doctor did not answer".to_string())?;
+    let pi = &doctor["pi"];
+    let installed = pi["version"].as_str().map(str::to_string);
+    let latest = pi["requiredVersion"]
+        .as_str()
+        .map(str::to_string)
+        .filter(|v| !v.is_empty());
+
+    // `satisfied` is not the answer here: it folds in Node and the MCP SDK, so
+    // a pi that is new enough but missing its SDK would read as "out of date"
+    // and the Update button would promise something it cannot fix.
+    let up_to_date = match (installed.as_deref(), latest.as_deref()) {
+        (Some(have), Some(want)) => Some(version_at_least(have, want)),
+        _ => None,
+    };
+
+    Ok(DependencyVersions {
+        installed,
+        latest,
+        up_to_date,
+    })
+}
+
+/// `have >= want` over dotted numeric versions, missing components read as 0.
+/// Mirrors the daemon's `version_ge`, which is what actually gates pi's
+/// upgrade — this only decides what the button says.
+fn version_at_least(have: &str, want: &str) -> bool {
+    fn parts(v: &str) -> Vec<u64> {
+        v.trim()
+            .trim_start_matches('v')
+            .split(['-', '+'])
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .map(|p| p.parse().unwrap_or(0))
+            .collect()
+    }
+    let (a, b) = (parts(have), parts(want));
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (
+            a.get(i).copied().unwrap_or(0),
+            b.get(i).copied().unwrap_or(0),
+        );
+        if x != y {
+            return x > y;
+        }
+    }
+    true
 }
 
 /// Check all external dependencies and return their status.
@@ -410,9 +477,12 @@ pub async fn install_dependency<R: Runtime>(
     Ok(success)
 }
 
-/// Update an already-installed dependency to the latest release.
-/// Only opencode supports this: `amuxd install-opencode --force` re-fetches the
-/// latest opencode (amuxd pins no version — the version is the user's choice).
+/// Update an already-installed dependency.
+///
+/// opencode takes `amuxd install-opencode --force`, because amuxd pins no
+/// version and "update" means "fetch whatever upstream ships now". pi is the
+/// opposite: `pi.lock.json` names the version, and plain `amuxd install-pi`
+/// already lifts an older install to it, so no force flag exists or is wanted.
 ///
 /// On success the desktop-managed amuxd is restarted, because the running
 /// `opencode serve` still holds the old binary and would otherwise keep serving
@@ -453,6 +523,12 @@ pub async fn update_dependency<R: Runtime>(
             });
         }
         return Ok(ok);
+    }
+    if name == "pi" {
+        // No amuxd restart afterwards, unlike opencode: pi is spawned per
+        // session rather than held open by a long-running `serve`, so the next
+        // spawn picks up the new binary on its own.
+        return Ok(install_pi_via_amuxd(&app).await);
     }
     Err(format!("No update path available for '{}'", name))
 }
@@ -724,6 +800,25 @@ mod tests {
                     .to_string_lossy()
             ),
         }
+    }
+
+    /// Decides whether pi's row says "Up to date" or offers an update, so
+    /// getting it backwards either hides a needed upgrade or nags forever.
+    #[test]
+    fn version_comparison_treats_missing_components_as_zero() {
+        assert!(version_at_least("0.84.2", "0.84.2"));
+        assert!(version_at_least("0.85.0", "0.84.2"));
+        assert!(!version_at_least("0.84.1", "0.84.2"));
+        // pi's lock pins a minimum, so a newer install is up to date, not stale.
+        assert!(version_at_least("1.0.0", "0.84.2"));
+        // Shorter is not smaller: 0.85 == 0.85.0.
+        assert!(version_at_least("0.85", "0.85.0"));
+        assert!(!version_at_least("0.85", "0.85.1"));
+        // Tags and a leading v are noise around the numbers.
+        assert!(version_at_least("v0.84.2-beta.1", "0.84.2"));
+        // Garbage parses to zeros rather than panicking; the row then reads as
+        // out of date, which is the safe direction.
+        assert!(!version_at_least("unknown", "0.84.2"));
     }
 
     /// Both runtimes must be offerable from the Dependencies page — pi was

@@ -466,6 +466,7 @@ pub fn run() {
             commands::team_sync_proxy::team_restore_file_version,
             commands::deps::check_dependencies,
             commands::deps::opencode_versions,
+            commands::deps::pi_versions,
             commands::deps::install_dependency,
             commands::deps::update_dependency,
             commands::env_vars::env_var_get,
