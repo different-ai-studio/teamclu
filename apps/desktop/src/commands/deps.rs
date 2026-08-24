@@ -7,6 +7,11 @@ use tokio::process::Command as AsyncCommand;
 
 use crate::process_util::CommandNoWindow;
 
+/// What `agents.local_agent` defaults to when it has never been set, and what
+/// the frontend reports when the daemon cannot be reached. Mirrors the daemon's
+/// own default (`LOCAL_AGENT_CANDIDATES[0]`).
+const DEFAULT_LOCAL_AGENT: &str = "opencode";
+
 /// Installation commands for each platform
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformInstallCommands {
@@ -341,8 +346,17 @@ fn version_at_least(have: &str, want: &str) -> bool {
 
 /// Check all external dependencies and return their status.
 /// Results are sorted by priority (lower first) for install ordering.
+///
+/// `local_agent` is the runtime this machine is configured to run
+/// (`agents.local_agent`, as the daemon reports it). It decides which of the
+/// two agent runtimes is *required*: before this, opencode was required
+/// unconditionally, so every machine set up to run pi was told it was missing
+/// something it does not need — a red "Required" row with nothing wrong.
+/// `None` keeps the old conservative answer, which is also what the frontend
+/// falls back to when the daemon cannot be asked.
 #[tauri::command]
-pub fn check_dependencies() -> Vec<DependencyInfo> {
+pub fn check_dependencies(local_agent: Option<String>) -> Vec<DependencyInfo> {
+    let active_runtime = local_agent.as_deref().unwrap_or(DEFAULT_LOCAL_AGENT);
     let mut deps = Vec::new();
 
     // Homebrew — macOS only, required, priority 0
@@ -398,29 +412,26 @@ pub fn check_dependencies() -> Vec<DependencyInfo> {
         1,
     ));
 
-    // opencode — required, priority 1 (the local agent runtime).
-    // Install/update is handled specially via `amuxd install-opencode`.
+    // opencode — priority 1. Required only when it is the runtime this machine
+    // actually runs. Install/update goes through `amuxd install-opencode`.
     deps.push(check_single_dependency(
         "opencode",
         &["--version"],
-        true,
-        "Agent runtime - required to run the local AI agent",
+        active_runtime == "opencode",
+        "Agent runtime for the local AI agent",
         get_install_commands_map("opencode").unwrap(),
         vec!["Local Agent".to_string()],
         1,
     ));
 
-    // pi — optional, priority 1. The other runtime this app can install, and
-    // until #1049 the Dependencies page did not know it existed: a machine set
-    // up to run pi saw only opencode listed as "required", with no way to see
-    // pi's version or repair a broken install from here. Optional rather than
-    // required because which of the two matters is the user's runtime choice,
-    // which this command has no view of.
+    // pi — the other runtime this app can install. Same rule as opencode: the
+    // one this machine runs is the one that is required. Both are always listed
+    // so either can be installed, upgraded or repaired from here.
     deps.push(check_single_dependency(
         "pi",
         &["--version"],
-        false,
-        "Agent runtime - the alternative to opencode for the local agent",
+        active_runtime == "pi",
+        "Agent runtime for the local AI agent",
         get_install_commands_map("pi").unwrap(),
         vec!["Local Agent".to_string()],
         1,
@@ -800,6 +811,37 @@ mod tests {
                     .to_string_lossy()
             ),
         }
+    }
+
+    fn required_names(local_agent: Option<&str>) -> Vec<String> {
+        check_dependencies(local_agent.map(str::to_string))
+            .into_iter()
+            .filter(|d| d.required)
+            .map(|d| d.name)
+            .collect()
+    }
+
+    /// A machine set up to run pi was told opencode was "Required" and missing.
+    /// Which runtime is required is the machine's runtime choice, not a constant.
+    #[test]
+    fn only_the_configured_runtime_is_required() {
+        assert_eq!(required_names(Some("opencode")), vec!["opencode"]);
+        assert_eq!(required_names(Some("pi")), vec!["pi"]);
+    }
+
+    /// The daemon may be down or never asked; fall back to the same default it
+    /// uses rather than requiring both runtimes or neither.
+    #[test]
+    fn an_unknown_runtime_falls_back_to_the_daemons_default() {
+        assert_eq!(required_names(None), vec![DEFAULT_LOCAL_AGENT]);
+    }
+
+    /// cursor and claude-code are the user's own tools — this page cannot
+    /// install either, so neither opencode nor pi is required for them.
+    #[test]
+    fn a_runtime_this_page_cannot_install_requires_neither() {
+        assert!(required_names(Some("cursor")).is_empty());
+        assert!(required_names(Some("claude-code")).is_empty());
     }
 
     /// Decides whether pi's row says "Up to date" or offers an update, so

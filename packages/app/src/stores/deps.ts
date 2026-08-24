@@ -141,7 +141,15 @@ export const useDepsStore = create<DepsState>((set, get) => ({
     set({ loading: true })
     try {
       const { invoke } = await import('@tauri-apps/api/core')
-      const result = await invoke<DependencyInfo[]>('check_dependencies')
+      // Which runtime this machine runs decides which one is *required*, and
+      // the daemon owns that answer (`agents.local_agent`). Asking it here
+      // rather than in Rust keeps one implementation of the lookup —
+      // `getDaemonLocalAgent` already falls back to opencode when the daemon
+      // cannot be reached, which is the conservative default the backend uses
+      // for `undefined` too.
+      const { getDaemonLocalAgent } = await import('@/lib/daemon-local-client')
+      const localAgent = await getDaemonLocalAgent().catch(() => undefined)
+      const result = await invoke<DependencyInfo[]>('check_dependencies', { localAgent })
       set({ dependencies: result, checked: true, loading: false })
       return result
     } catch (err) {
