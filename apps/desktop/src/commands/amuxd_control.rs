@@ -46,8 +46,12 @@ type BlockingStream = std::fs::File;
 
 #[cfg(unix)]
 fn connect_blocking(endpoint: &Path) -> Result<BlockingStream, String> {
-    BlockingStream::connect(endpoint)
-        .map_err(|e| format!("amuxd not reachable at {}: {e}", endpoint.display()))
+    let stream = BlockingStream::connect(endpoint)
+        .map_err(|e| format!("amuxd not reachable at {}: {e}", endpoint.display()))?;
+    stream
+        .set_read_timeout(Some(READ_TIMEOUT))
+        .map_err(|e| format!("amuxd read timeout not settable: {e}"))?;
+    Ok(stream)
 }
 
 #[cfg(windows)]
@@ -91,8 +95,46 @@ fn finish_request(stream: &mut BlockingStream) -> Result<(), String> {
     Ok(())
 }
 
+/// How long to wait on a reply before giving up.
+///
+/// These calls run inside `#[tauri::command] async fn`s. Without a deadline a
+/// wedged daemon parks a runtime worker forever — `list_wecom_chats` makes the
+/// daemon do an HTTP call of its own, so "slow" is a normal outcome and "never"
+/// is a reachable one. On unix this is a socket timeout; on Windows a named
+/// pipe opened as a file has no equivalent, so `spawn_blocking` (below) is what
+/// keeps a stuck read off the async runtime there.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Send `request` (terminate the last line with `\n` yourself) and read the
 /// whole reply.
+///
+/// Runs the blocking round-trip on the blocking pool: every caller is an async
+/// Tauri command, and before this the same work sat directly on a runtime
+/// worker.
+pub async fn request(request: &str) -> Result<String, String> {
+    let request = request.to_string();
+    tokio::task::spawn_blocking(move || request_blocking_at(&endpoint(), &request))
+        .await
+        .map_err(|e| format!("amuxd control task failed: {e}"))?
+}
+
+/// Send `request` and read the reply as JSON.
+pub async fn request_json_async<T: serde::de::DeserializeOwned>(line: &str) -> Result<T, String> {
+    let body = request(line).await?;
+    serde_json::from_str(body.trim())
+        .map_err(|e| format!("bad response from amuxd: {e} (body={body:?})"))
+}
+
+/// Send `request` without waiting for a reply, off the async runtime.
+pub async fn send(request: &str) -> Result<(), String> {
+    let request = request.to_string();
+    tokio::task::spawn_blocking(move || send_blocking_at(&endpoint(), &request))
+        .await
+        .map_err(|e| format!("amuxd control task failed: {e}"))?
+}
+
+/// Send `request` (terminate the last line with `\n` yourself) and read the
+/// whole reply. Blocking; prefer [`request`] from async code.
 pub fn request_blocking(request: &str) -> Result<String, String> {
     request_blocking_at(&endpoint(), request)
 }

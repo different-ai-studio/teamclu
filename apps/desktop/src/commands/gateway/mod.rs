@@ -48,12 +48,6 @@ pub struct ChannelStatus {
     pub last_error: Option<String>,
 }
 
-/// Where amuxd listens. Kept as a re-export so `cron` and `qr` keep one name
-/// for it; the derivation itself is shared with the daemon.
-pub(crate) fn sock_path() -> PathBuf {
-    crate::commands::amuxd_control::endpoint()
-}
-
 /// The active team's `team.toml`, resolved through daemon.toml's
 /// `active_team` pointer. `None` when the daemon has no team yet.
 fn team_config_path() -> Option<PathBuf> {
@@ -66,7 +60,7 @@ fn team_config_path() -> Option<PathBuf> {
 /// daemon is not running so the UI can surface an "amuxd unreachable" state.
 #[tauri::command]
 pub async fn list_channels() -> Result<Vec<ChannelStatus>, String> {
-    amuxd_control::request_json("channel-status\n")
+    amuxd_control::request_json_async("channel-status\n").await
 }
 
 /// Per-bot WeCom connection status as reported by amuxd over its control channel.
@@ -86,7 +80,7 @@ pub struct WeComBotStatus {
 /// JSON-array line, and deserializes it into `Vec<WeComBotStatus>`.
 #[tauri::command]
 pub async fn list_wecom_bots_status() -> Result<Vec<WeComBotStatus>, String> {
-    amuxd_control::request_json("wecom-bots-status\n")
+    amuxd_control::request_json_async("wecom-bots-status\n").await
 }
 
 /// Every conversation the configured WeCom bots can be addressed in.
@@ -99,7 +93,7 @@ pub async fn list_wecom_bots_status() -> Result<Vec<WeComBotStatus>, String> {
 /// empty dropdown.
 #[tauri::command]
 pub async fn list_wecom_chats() -> Result<serde_json::Value, String> {
-    amuxd_control::request_json("wecom-chat-list\n")
+    amuxd_control::request_json_async("wecom-chat-list\n").await
 }
 
 /// Which credential fields already hold a value, as dotted paths
@@ -115,7 +109,7 @@ pub async fn list_channel_secret_keys() -> Result<Vec<String>, String> {
         #[serde(default)]
         keys: Vec<String>,
     }
-    let parsed: Resp = amuxd_control::request_json("channel-secret-keys\n")?;
+    let parsed: Resp = amuxd_control::request_json_async("channel-secret-keys\n").await?;
     Ok(parsed.keys)
 }
 
@@ -168,7 +162,7 @@ pub async fn save_channel_config(platform: String, config_json: String) -> Resul
     // Single-line JSON keeps the framing simple — the daemon reads exactly
     // three newline-terminated tokens off the control channel.
     let single_line = config_json.replace('\n', " ");
-    amuxd_control::send_blocking(&format!("channel-save\n{platform}\n{single_line}\n"))
+    amuxd_control::send(&format!("channel-save\n{platform}\n{single_line}\n")).await
 }
 
 /// Read `channels.model` — the model every gateway session starts on when the
@@ -205,17 +199,18 @@ pub fn load_gateway_model() -> Result<Option<String>, String> {
 #[tauri::command]
 pub async fn save_gateway_model(model: String) -> Result<(), String> {
     // Two newline-terminated tokens, matching the control channel's line framing.
-    amuxd_control::send_blocking(&format!(
+    amuxd_control::send(&format!(
         "gateway-model\n{}\n",
         model.trim().replace('\n', " ")
     ))
+    .await
 }
 
 /// Tell amuxd to re-read `daemon.toml` and restart all channels. Cheap;
 /// useful when the daemon-managed config file was edited out-of-band.
 #[tauri::command]
 pub async fn reload_channels() -> Result<(), String> {
-    amuxd_control::send_blocking("channel-reload\n")
+    amuxd_control::send("channel-reload\n").await
 }
 
 /// Probe SeaTalk App ID / App Secret against the Open Platform token API.
@@ -348,8 +343,9 @@ pub fn save_system_prompt(
 #[tauri::command]
 pub async fn set_config_locale(locale: String) -> Result<(), String> {
     // Two newline-terminated tokens, matching the control channel's line framing.
-    amuxd_control::send_blocking(&format!(
+    amuxd_control::send(&format!(
         "gateway-locale\n{}\n",
         locale.trim().replace('\n', " ")
     ))
+    .await
 }

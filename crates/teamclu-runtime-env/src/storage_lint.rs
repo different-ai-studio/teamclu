@@ -46,7 +46,6 @@ const DEBT: &[&str] = &[
     "apps/desktop/src/commands/diagnostics.rs",
     "apps/desktop/src/commands/mod.rs",
     "apps/desktop/src/commands/team_share/enable.rs",
-    "apps/desktop/src/commands/team_share/mod.rs",
     "apps/desktop/src/commands/team_skills.rs",
     "apps/desktop/tests/team_litellm_smoke.rs",
     "apps/desktop/tests/team_share_smoke.rs",

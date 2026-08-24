@@ -64,9 +64,8 @@ pub struct PromptAwaitResponse {
     pub agent_error: Option<String>,
 }
 
-/// Convenience entry point: connect to amuxd's default sock path (resolved
-/// via `crate::commands::gateway::sock_path()`), run a `prompt-await`
-/// round-trip.
+/// Convenience entry point: connect to amuxd's control endpoint and run a
+/// `prompt-await` round-trip.
 pub async fn prompt_await(req: PromptAwaitRequest<'_>) -> Result<PromptAwaitResponse, String> {
     prompt_await_at(&amuxd_control::endpoint(), req).await
 }

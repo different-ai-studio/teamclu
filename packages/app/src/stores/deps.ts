@@ -298,9 +298,11 @@ export const useDepsStore = create<DepsState>((set, get) => ({
   checkVersions: async () => {
     if (!isTauri()) return
     const { invoke } = await import('@tauri-apps/api/core')
-    // Independently, not in one command: opencode's answer needs the network
-    // and pi's does not, so a slow or unreachable mirror must not also blank
-    // pi's row. Unknown is a valid state — the UI keeps offering the update.
+    // Independently, not in one command: opencode asks the mirror over the
+    // network and pi runs `amuxd doctor`, so neither is free and a slow one
+    // must not blank the other's row. (`doctor` is offline but not cheap — it
+    // spawns the sidecar, ~4s on a cold first launch.) Unknown is a valid
+    // state; the UI keeps offering the update rather than claiming currency.
     await Promise.all(
       (['opencode', 'pi'] as const).map(async (name) => {
         try {

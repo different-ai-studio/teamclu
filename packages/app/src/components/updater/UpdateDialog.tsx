@@ -26,7 +26,23 @@ import { useUpdaterStore } from "@/stores/updater"
  * materially different promise, so the copy has to say which one it is.
  */
 function isWindows(): boolean {
-  return (navigator.platform ?? '').toLowerCase().includes('win')
+  // Three sources, because the first one is going away: `navigator.platform` is
+  // a User-Agent-reduction target and a future WebView2 may freeze or empty it.
+  // Getting this wrong is not cosmetic — an emptied value would fall through to
+  // the macOS copy, and a Windows user told "the update has been installed"
+  // clicks "Restart later" and loses the staged installer.
+  const uaPlatform = (
+    navigator as Navigator & { userAgentData?: { platform?: string } }
+  ).userAgentData?.platform
+  // `startsWith`, not `includes`: platform strings are "Win32" / "Windows", and
+  // a substring test matches "darwin" — which is how the first version of this
+  // told every macOS user they were on Windows.
+  const platforms = [uaPlatform, navigator.platform]
+    .filter((p): p is string => !!p)
+    .map((p) => p.toLowerCase())
+  if (platforms.some((p) => p.startsWith('win'))) return true
+  // The UA spells it out in full ("Windows NT 10.0"), so it needs no such care.
+  return (navigator.userAgent ?? '').toLowerCase().includes('windows')
 }
 
 const releaseNotesMarkdownPlugins = [remarkGfm]

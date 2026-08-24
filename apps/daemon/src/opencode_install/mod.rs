@@ -49,31 +49,9 @@ pub fn resolve_binary(configured: Option<&str>) -> String {
     resolve_binary_with(configured, opencode_default_bin())
 }
 
-/// Parse a dotted version ("1.15.13" / "v1.15.13" / "1.15.13-beta") into (major, minor, patch).
-pub fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
-    s.split_whitespace().find_map(parse_semver_token)
-}
-
-fn parse_semver_token(token: &str) -> Option<(u64, u64, u64)> {
-    let token = token.trim().trim_start_matches('v');
-    let core = token
-        .split(|c: char| c == '-' || c == '+' || c == ',' || c == ')' || c == '(')
-        .next()
-        .unwrap_or("");
-    let mut it = core.split('.');
-    let major = it.next()?.parse().ok()?;
-    let minor = it.next().unwrap_or("0").parse().ok()?;
-    let patch = it.next().unwrap_or("0").parse().ok()?;
-    Some((major, minor, patch))
-}
-
-/// True if `have` >= `want` by semver. Unparseable `have` -> false (treat as needs-install).
-pub fn version_ge(have: &str, want: &str) -> bool {
-    match (parse_semver(have), parse_semver(want)) {
-        (Some(h), Some(w)) => h >= w,
-        _ => false,
-    }
-}
+/// Re-exported so the daemon and the desktop compare versions the same way.
+/// The implementation lives in `teamclu_runtime_env::version`.
+pub use teamclu_runtime_env::version::{parse_semver, version_ge};
 
 /// `<bin> --version`, returning the first token that looks like a version.
 fn opencode_version_of(bin: &str) -> Option<String> {

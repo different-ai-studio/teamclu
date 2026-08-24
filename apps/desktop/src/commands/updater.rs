@@ -470,7 +470,7 @@ fn extract_updater_archive(bytes: &[u8], dest: &Path) -> Result<(), String> {
 
 /// Install the update by extracting the tar.gz and replacing the .app bundle (macOS).
 #[cfg(target_os = "macos")]
-fn install_update(bytes: &[u8]) -> Result<(), String> {
+fn install_update(bytes: &[u8], _signature: &str) -> Result<(), String> {
     if cfg!(debug_assertions) {
         return Err("Auto-update installation is disabled in development builds".to_string());
     }
@@ -582,19 +582,48 @@ mod install_tests {
 /// drops the update on the floor and the next launch offers it again. On macOS
 /// the bytes are already on disk by then.
 #[cfg(target_os = "windows")]
-static STAGED_INSTALLER: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+static STAGED_INSTALLER: std::sync::Mutex<Option<StagedInstaller>> = std::sync::Mutex::new(None);
 
-/// One fixed staging directory, overwritten each time.
+/// A staged installer and the signature it was accepted under.
 ///
-/// A per-download directory would pile up ~100MB installers in TEMP forever,
-/// and sweeping siblings by prefix risks deleting the installer a second
-/// instance is about to launch. Overwriting one path cannot grow and cannot
-/// touch anyone else's file.
+/// The signature is kept because staging and launching are separated by however
+/// long the user takes to click Restart, and what is launched runs elevated.
 #[cfg(target_os = "windows")]
-fn staging_path() -> PathBuf {
-    std::env::temp_dir()
-        .join("teamclu-update")
-        .join("update-setup.exe")
+#[derive(Clone)]
+struct StagedInstaller {
+    path: PathBuf,
+    signature: String,
+}
+
+/// A fresh, randomly-named staging directory per download.
+///
+/// The first version used one fixed path, reasoning that overwriting it could
+/// not grow without bound. That is true and beside the point: a predictable,
+/// user-writable path holding something we later hand to `ShellExecuteW` — which
+/// raises a UAC prompt naming *our* installer — is a swap window for any code
+/// already running as the user. Randomizing removes the prediction, and
+/// `create_new` refuses a directory (or junction) somebody pre-created.
+/// tauri-plugin-updater randomizes for the same reason.
+///
+/// Old staging directories are swept on the way in, so nothing accumulates.
+#[cfg(target_os = "windows")]
+fn new_staging_dir() -> Result<PathBuf, String> {
+    const PREFIX: &str = "teamclu-update-";
+    let temp = std::env::temp_dir();
+
+    // Best-effort sweep of previous runs. A directory still in use by another
+    // instance fails to remove and is left alone, which is the safe outcome.
+    if let Ok(entries) = std::fs::read_dir(&temp) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(PREFIX) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+
+    let dir = temp.join(format!("{PREFIX}{}", nanoid::nanoid!(16)));
+    std::fs::create_dir(&dir).map_err(|e| format!("Cannot create {}: {}", dir.display(), e))?;
+    Ok(dir)
 }
 
 /// Write the verified installer where [`run_windows_installer`] can find it.
@@ -610,30 +639,29 @@ fn stage_windows_installer(bytes: &[u8]) -> Result<PathBuf, String> {
     if !bytes.starts_with(b"MZ") {
         return Err("Downloaded update is not a Windows installer executable".to_string());
     }
-    let path = staging_path();
-    let dir = path
-        .parent()
-        .ok_or_else(|| "Cannot resolve the update staging directory".to_string())?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {}", dir.display(), e))?;
+    let path = new_staging_dir()?.join("update-setup.exe");
     std::fs::write(&path, bytes).map_err(|e| format!("Cannot write {}: {}", path.display(), e))?;
     Ok(path)
 }
 
 /// Stage the update. See [`STAGED_INSTALLER`] for why this does not install.
 #[cfg(target_os = "windows")]
-fn install_update(bytes: &[u8]) -> Result<(), String> {
+fn install_update(bytes: &[u8], signature: &str) -> Result<(), String> {
     if cfg!(debug_assertions) {
         return Err("Auto-update installation is disabled in development builds".to_string());
     }
 
     let path = stage_windows_installer(bytes)?;
     log::info!("[updater] staged installer at {}", path.display());
-    *STAGED_INSTALLER.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+    *STAGED_INSTALLER.lock().unwrap_or_else(|e| e.into_inner()) = Some(StagedInstaller {
+        path,
+        signature: signature.to_string(),
+    });
     Ok(())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn install_update(_bytes: &[u8]) -> Result<(), String> {
+fn install_update(_bytes: &[u8], _signature: &str) -> Result<(), String> {
     Err("Auto-update installation is not supported on this platform yet".to_string())
 }
 
@@ -919,7 +947,7 @@ pub async fn download_and_install_update<R: Runtime>(
     verify_signature(&bytes, &signature, pubkey)?;
 
     // 3. Install (extract tar.gz and replace .app bundle)
-    install_update(&bytes)?;
+    install_update(&bytes, &signature)?;
 
     Ok(())
 }
@@ -989,20 +1017,35 @@ fn relaunch_and_exit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     // the staged installer where it is. Taking it up front turned the second
     // click of "Restart Now" into a plain restart that silently skipped the
     // update the user had already downloaded.
-    let staged = STAGED_INSTALLER
+    let staged: Option<StagedInstaller> = STAGED_INSTALLER
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let Some(path) = staged else {
+    let Some(staged) = staged else {
         app.request_restart();
         return Ok(());
     };
-    if !path.exists() {
-        return Err(format!(
-            "The staged installer {} is gone; download the update again",
+    let path = staged.path.clone();
+
+    // Re-verify the bytes on disk, not the bytes we downloaded. Everything
+    // between staging and here is somebody else's opportunity: this file is
+    // about to be launched through `ShellExecuteW`, which raises a UAC prompt
+    // in our name, so "we verified it earlier" is not the same claim as "this
+    // is what we verified".
+    let on_disk = std::fs::read(&path).map_err(|e| {
+        format!(
+            "The staged installer {} could not be read ({e}); download the update again",
             path.display()
-        ));
-    }
+        )
+    })?;
+    verify_signature(&on_disk, &staged.signature, get_updater_pubkey()).map_err(|e| {
+        // Do not launch, and do not keep it around to be launched later.
+        let _ = std::fs::remove_dir_all(path.parent().unwrap_or(&path));
+        *STAGED_INSTALLER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        format!(
+            "The staged installer no longer matches its signature ({e}); download the update again"
+        )
+    })?;
 
     // Launch before stopping amuxd, not after: ShellExecuteW reports failure
     // synchronously (a declined UAC prompt, most likely), and on that path the

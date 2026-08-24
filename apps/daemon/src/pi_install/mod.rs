@@ -436,9 +436,23 @@ fn pump_output<R: std::io::Read + Send + 'static>(
 ) -> std::thread::JoinHandle<()> {
     use std::io::BufRead;
     std::thread::spawn(move || {
-        for line in std::io::BufReader::new(reader).lines() {
-            let Ok(line) = line else { break };
-            let line = line.trim_end().to_string();
+        // `lines()` would be the obvious call and is the wrong one: it yields
+        // `Err(InvalidData)` for any line that is not valid UTF-8, and one such
+        // line would end this thread, drop the pipe, and take the rest of the
+        // install narration with it. npm on a non-English Windows console emits
+        // its output in the OEM codepage (GBK on zh-CN), so that is not a
+        // hypothetical — it is the platform this streaming exists for. Read raw
+        // and transcode lossily, which is what the `.output()` path this
+        // replaced did for free.
+        let mut reader = std::io::BufReader::new(reader);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let line = String::from_utf8_lossy(&buf).trim_end().to_string();
             if line.is_empty() {
                 continue;
             }
