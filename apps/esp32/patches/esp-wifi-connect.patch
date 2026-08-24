@@ -1,0 +1,705 @@
+diff --git a/assets/wifi_configuration.html b/assets/wifi_configuration.html
+index 637c6f5..711a884 100644
+--- a/assets/wifi_configuration.html
++++ b/assets/wifi_configuration.html
+@@ -6,166 +6,350 @@
+     <meta http-equiv="Content-Security-Policy" content="referrer no-referrer">
+     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+     <style type="text/css">
+-        /* ========== Base Styles ========== */
++        /* ==========================================================================
++           TeamClu StopWatch — provisioning portal.
++
++           This page is ONLY ever opened from a phone: you must join the device's
++           own access point to reach it, so there is no desktop case to design for.
++           It is also served from ESP32 flash over that AP, which means no internet,
++           no web fonts, no images, no framework. Those are the materials.
++
++           The look is taken from the device the user is physically holding while
++           they use this: black AMOLED ground, one living colour, right angles, and
++           meaning carried by solid rectangles. Colours are the same Modernist ramp
++           as main/face/palette.h so the firmware and this page cannot drift.
++           ========================================================================== */
++        :root {
++            --bg:     #000000;  /* the panel's own ground; on AMOLED, off */
++            --fg:     #F3F2F2;
++            --accent: #EC3013;  /* the device's "alive" colour, used sparingly */
++            --mid:    #7D7979;
++            --dim:    #605D5D;
++            --line:   #2D2B2B;
++            --field:  #121111;
++            --tap: 56px;        /* minimum comfortable target */
++        }
++
++        * { box-sizing: border-box; }
++
++        html { -webkit-text-size-adjust: 100%; }
++
+         body {
+-            font-family: Arial, sans-serif;
+             margin: 0;
+-            padding: 0;
+-            background-color: #f0f0f0;
++            background: var(--bg);
++            color: var(--fg);
++            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
++                         "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
++            font-size: 17px;          /* >=17px: Safari zooms the page on focus below 16 */
++            line-height: 1.45;
++            /* Clear the notch and the home indicator. */
++            padding:
++                calc(env(safe-area-inset-top) + 8px)
++                calc(env(safe-area-inset-right) + 20px)
++                calc(env(safe-area-inset-bottom) + 32px)
++                calc(env(safe-area-inset-left) + 20px);
++            max-width: 560px;         /* a tablet should not stretch the column */
++            margin-inline: auto;
+         }
+ 
+-        /* ========== Form Elements ========== */
++        h3 {
++            font-size: 11px;
++            font-weight: 700;
++            letter-spacing: .18em;
++            text-transform: uppercase;
++            color: var(--mid);
++            margin: 28px 0 10px;
++        }
++
++        /* ========== Form ========== */
+         label {
+             display: block;
+-            margin-bottom: 5px;
++            font-size: 11px;
++            font-weight: 700;
++            letter-spacing: .18em;
++            text-transform: uppercase;
++            color: var(--mid);
++            margin-bottom: 7px;
+         }
+-        input {
++        form p { margin: 0 0 18px; }
++
++        textarea {
+             width: 100%;
+-            padding: 5px;
+-            box-sizing: border-box;
+-            border: 1px solid #ccc;
+-            border-radius: 3px;
++            min-height: 84px;
++            padding: 12px 14px;
++            /* A JWT is a long opaque string with no word breaks; monospace makes
++               a mistyped character findable, and wrapping keeps it on screen. */
++            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
++            font-size: 13px;
++            line-height: 1.5;
++            color: var(--fg);
++            background: var(--field);
++            border: 1px solid var(--line);
++            border-radius: 0;
++            resize: vertical;
++            word-break: break-all;
++            -webkit-appearance: none;
++            appearance: none;
+         }
++        textarea:focus { outline: none; border-color: var(--accent); }
++
++        .hint {
++            display: block;
++            margin-top: 7px;
++            font-size: 12px;
++            line-height: 1.4;
++            color: var(--dim);
++        }
++
++        input, select {
++            width: 100%;
++            min-height: var(--tap);
++            padding: 0 14px;
++            font: inherit;
++            color: var(--fg);
++            background: var(--field);
++            border: 1px solid var(--line);
++            border-radius: 0;         /* the device has no rounded corners anywhere */
++            -webkit-appearance: none;
++            appearance: none;
++        }
++        input:focus, select:focus {
++            outline: none;
++            border-color: var(--accent);
++        }
++        input:read-only { color: var(--mid); }
++        input::placeholder { color: var(--dim); }
++
+         input[type="submit"] {
+-            background-color: #007bff;
+-            color: #fff;
++            padding: 0;
++            font-weight: 700;
++            letter-spacing: .12em;
++            text-transform: uppercase;
++            color: var(--bg);
++            background: var(--accent);
+             border: none;
+-            border-radius: 3px;
+-            padding: 10px;
+             cursor: pointer;
+         }
+-        input[type="submit"]:hover {
+-            background-color: #0056b3;
+-        }
++        input[type="submit"]:active { background: #AE1800; }
+         input[type="submit"]:disabled {
+-            background-color: #ccc;
+-            cursor: not-allowed;
+-        }
+-        #remember_bssid, #sleep_mode {
+-            width: auto;
++            color: var(--dim);
++            background: var(--line);
+         }
+ 
+-        /* ========== AP List Styles ========== */
+-        #ap_list {
+-            margin-top: 20px;
+-            border-top: 1px solid #ccc;
+-            padding-top: 10px;
++        input[type="checkbox"] {
++            width: 26px;
++            height: 26px;
++            min-height: 0;
++            margin: 0 10px 0 0;
++            vertical-align: middle;
++            accent-color: var(--accent);
+         }
+-        #ap_list .scanning {
+-            font-style: italic;
+-            color: #666;
++        /* Checkbox rows still need a full-height target even though the box is small. */
++        #remember_bssid, #sleep_mode { width: 26px; }
++
++        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
++
++        /* ========== Network list — the reason the page exists ========== */
++        #ap_list { margin-top: 10px; }
++        #ap_list p {
++            font-size: 11px;
++            font-weight: 700;
++            letter-spacing: .18em;
++            text-transform: uppercase;
++            color: var(--mid);
++            margin: 0 0 4px;
+         }
++        #ap_list .scanning { color: var(--dim); }
++
+         #ap_list a {
+-            display: block;
+-            margin-top: 5px;
+-            color: #007bff;
++            display: flex;
++            align-items: center;
++            gap: 14px;
++            min-height: var(--tap);
++            padding: 0 2px;
++            border-bottom: 1px solid var(--line);
++            color: var(--fg);
+             text-decoration: none;
++            -webkit-tap-highlight-color: transparent;
++        }
++        #ap_list a:active { background: var(--field); }
++
++        .ap-name {
++            flex: 1;
++            min-width: 0;
++            overflow: hidden;
++            text-overflow: ellipsis;
++            white-space: nowrap;
+         }
+-        #ap_list a:hover {
+-            text-decoration: underline;
++        .ap-lock {
++            flex: none;
++            font-size: 11px;
++            letter-spacing: .1em;
++            color: var(--dim);
+         }
+ 
+-        /* ========== Language Switcher ========== */
+-        .language-switch {
+-            position: absolute;
+-            top: 20px;
+-            right: 20px;
++        /* SIGNATURE: signal drawn in the device's own vocabulary — the same solid
++           bars its "listening" screen uses — rather than a borrowed wifi arc. The
++           bars are the reading, not an ornament. */
++        .ap-bars {
++            flex: none;
++            display: flex;
++            align-items: flex-end;
++            gap: 3px;
++            height: 20px;
+         }
+-        .language-switch select {
+-            padding: 5px;
+-            border-radius: 3px;
+-            border: 1px solid #ccc;
++        .ap-bars i {
++            display: block;
++            width: 4px;
++            background: var(--line);
++        }
++        .ap-bars i:nth-child(1) { height: 25%; }
++        .ap-bars i:nth-child(2) { height: 50%; }
++        .ap-bars i:nth-child(3) { height: 75%; }
++        .ap-bars i:nth-child(4) { height: 100%; }
++        .ap-bars i.on { background: var(--accent); }
++
++        /* ========== Saved networks ========== */
++        #saved_list { list-style: none; margin: 0; padding: 0; }
++        #saved_list li {
++            display: flex;
++            align-items: center;
++            gap: 12px;
++            min-height: var(--tap);
++            border-bottom: 1px solid var(--line);
++        }
++        #saved_list li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++        #saved_list a, #saved_list button {
++            flex: none;
++            min-height: 40px;
++            padding: 0 12px;
++            font: inherit;
++            font-size: 13px;
++            color: var(--fg);
++            background: transparent;
++            border: 1px solid var(--line);
++            border-radius: 0;
++            text-decoration: none;
++            cursor: pointer;
+         }
+ 
+-        /* ========== Tab Styles ========== */
++        /* ========== Tabs ========== */
+         .tabs {
+             display: flex;
+-            margin-top: 20px;
+-            margin-bottom: 0;
+-            padding-left: 20px;
+-            border-bottom: 1px solid #ccc;
++            margin: 4px 0 0;
++            border-bottom: 1px solid var(--line);
+         }
+         .tab {
+-            padding: 10px 20px;
++            flex: 1;
++            min-height: 50px;
++            display: flex;
++            align-items: center;
++            justify-content: center;
++            font-size: 11px;
++            font-weight: 700;
++            letter-spacing: .16em;
++            text-transform: uppercase;
++            color: var(--dim);
++            border-bottom: 2px solid transparent;
++            margin-bottom: -1px;
+             cursor: pointer;
+-            border: 1px solid #ccc;
+-            border-bottom: none;
+-            border-radius: 5px 5px 0 0;
+-            margin-right: 5px;
+-            background-color: #f0f0f0;
+-            position: relative;
+-            top: 1px;
+-        }
+-        .tab.active {
+-            background-color: #fff;
++            -webkit-tap-highlight-color: transparent;
+         }
+-        .tab-content {
+-            display: none;
+-            border-top: none;
+-            padding: 20px;
+-            background-color: #fff;
++        .tab.active { color: var(--fg); border-bottom-color: var(--accent); }
++
++        .tab-content { display: none; }
++        .tab-content.active { display: block; }
++
++        /* ========== Language ========== */
++        /* Was absolutely positioned in the corner — a desktop habit that lands in
++           the notch on a phone. It is a rarely-used control, so it sits inline. */
++        .language-switch { margin: 0 0 4px; }
++        .language-switch select {
++            min-height: 44px;
++            font-size: 13px;
++            color: var(--mid);
++            background: transparent;
++            border: none;
++            padding: 0;
++            text-align: right;
++            direction: rtl;
+         }
+-        .tab-content.active {
+-            display: block;
++
++        /* ========== Errors ========== */
++        .error, #error, #advanced_error {
++            color: var(--accent) !important;
++            font-size: 14px;
++            text-align: left !important;
++            margin: 0 0 12px;
+         }
++        .error:empty { margin: 0; }
+ 
+-        /* ========== Toast Message Styles ========== */
++        /* ========== Toast ========== */
+         .toast {
+             position: fixed;
+-            top: 50%;
+-            left: 50%;
+-            transform: translate(-50%, -50%);
+-            background-color: rgba(0, 0, 0, 0.8);
+-            color: white;
+-            padding: 15px 30px;
+-            border-radius: 8px;
++            left: 20px;
++            right: 20px;
++            bottom: calc(env(safe-area-inset-bottom) + 20px);
++            top: auto;
++            transform: none;          /* was centred on screen: covers the field you are typing in */
++            background: var(--fg);
++            color: var(--bg);
++            font-size: 15px;
++            padding: 16px 18px;
++            border-radius: 0;
+             z-index: 1000;
+             opacity: 0;
+-            transition: opacity 0.3s ease-in-out;
+-            min-width: 200px;
+-            text-align: center;
+-        }
+-        .toast.show {
+-            opacity: 1;
++            pointer-events: none;
++            transition: opacity .2s ease-in-out;
++            text-align: left;
++            min-width: 0;
+         }
++        .toast.show { opacity: 1; }
+ 
+-        /* ========== Loading Spinner Styles ========== */
++        /* ========== Loading ========== */
+         .loading-overlay {
+             display: none;
+             position: fixed;
+-            top: 0;
+-            left: 0;
+-            width: 100%;
+-            height: 100%;
+-            background-color: rgba(0, 0, 0, 0.5);
+-            z-index: 2000;
+-            justify-content: center;
+-            align-items: center;
+-        }
+-        .loading-overlay.show {
+-            display: flex;
+-        }
+-        .loading-spinner {
+-            width: 60px;
+-            height: 60px;
+-            border: 6px solid rgba(255, 255, 255, 0.3);
+-            border-top-color: #ffffff;
+-            border-radius: 50%;
+-            animation: spin 1s linear infinite;
++            inset: 0;
++            background: rgba(0, 0, 0, .88);
++            z-index: 999;
+         }
++        .loading-overlay.show { display: flex; align-items: center; justify-content: center; }
+         .loading-content {
+             display: flex;
+             flex-direction: column;
+             align-items: center;
+-            gap: 20px;
++            gap: 22px;
++        }
++        /* The device thinks in bobbing squares; so does this. */
++        .loading-spinner {
++            display: flex;
++            gap: 8px;
++        }
++        .loading-spinner::before,
++        .loading-spinner::after {
++            content: "";
++            width: 14px;
++            height: 14px;
++            background: var(--accent);
++            animation: bob 1.1s ease-in-out infinite;
+         }
++        .loading-spinner::after { animation-delay: .18s; }
+         .loading-text {
+-            color: white;
+-            font-size: 18px;
+-            font-weight: bold;
++            color: var(--fg);
++            font-size: 11px;
++            font-weight: 700;
++            letter-spacing: .18em;
++            text-transform: uppercase;
+         }
+-        @keyframes spin {
+-            to { transform: rotate(360deg); }
++        @keyframes bob {
++            0%, 100% { transform: translateY(0); }
++            50%      { transform: translateY(-9px); }
++        }
++        @media (prefers-reduced-motion: reduce) {
++            .loading-spinner::before,
++            .loading-spinner::after { animation: none; }
++            * { transition-duration: .01ms !important; }
+         }
+     </style>
+ </head>
+@@ -254,6 +438,13 @@
+                     <label for="password" data-lang="password">Password:</label>
+                     <input type="password" id="password" name="password">
+                 </p>
++                <p>
++                    <label for="device_token">设备令牌 / Device token</label>
++                    <textarea id="device_token" name="device_token" rows="3"
++                              autocapitalize="off" autocomplete="off" spellcheck="false"
++                              autocorrect="off"></textarea>
++                    <span class="hint">留空则只配网，稍后再绑定 · Leave empty to set up Wi-Fi only</span>
++                </p>
+                 <p style="text-align: center;">
+                     <input type="submit" value="Connect" id="button" data-lang-value="connect">
+                 </p>
+@@ -1249,21 +1440,47 @@
+                     
+                     // Iterate through available APs
+                     data.aps.forEach(ap => {
++                        // Stays an <a>: the "already populated" check above uses
++                        // apList.querySelector('a').
+                         const link = document.createElement('a');
+                         link.href = '#';
+-                        link.textContent = ap.ssid + ' (' + ap.rssi + ' dBm)';
+-                        
+-                        // Add lock icon for secured networks
+-                        if (ap.authmode === 0) {
+-                            link.textContent += ' 🌐';
+-                        } else {
+-                            link.textContent += ' 🔒';
++
++                        const name = document.createElement('span');
++                        name.className = 'ap-name';
++                        name.textContent = ap.ssid;   // textContent, never innerHTML
++                        link.appendChild(name);
++
++                        if (ap.authmode !== 0) {
++                            const lock = document.createElement('span');
++                            lock.className = 'ap-lock';
++                            lock.textContent = '\u{1F512}';
++                            link.appendChild(lock);
+                         }
+-                        
++
++                        // Signal as four solid bars, in the device's own language.
++                        // dBm is engineering detail nobody chooses a network by;
++                        // "which of these is strongest" is the actual question.
++                        const bars = document.createElement('span');
++                        bars.className = 'ap-bars';
++                        const lit = ap.rssi >= -55 ? 4
++                                  : ap.rssi >= -67 ? 3
++                                  : ap.rssi >= -78 ? 2
++                                  : 1;
++                        for (let b = 0; b < 4; b++) {
++                            const bar = document.createElement('i');
++                            if (b < lit) bar.className = 'on';
++                            bars.appendChild(bar);
++                        }
++                        link.appendChild(bars);
++
+                         link.addEventListener('click', () => {
+                             ssid.value = ap.ssid;
++                            // Jump straight to the next thing to do. On a phone the
++                            // field is often below the fold behind the keyboard.
++                            const pw = document.getElementById('password');
++                            if (pw) { pw.focus(); }
+                         });
+-                        
++
+                         apList.appendChild(link);
+                     });
+                     
+@@ -1293,7 +1510,8 @@
+ 
+             const payload = {
+                 ssid: ssid.value,
+-                password: document.getElementById('password').value
++                password: document.getElementById('password').value,
++                device_token: document.getElementById('device_token').value.trim()
+             };
+ 
+             try {
+diff --git a/wifi_configuration_ap.cc b/wifi_configuration_ap.cc
+index 591ffaf..35900a7 100644
+--- a/wifi_configuration_ap.cc
++++ b/wifi_configuration_ap.cc
+@@ -1,5 +1,7 @@
+ #include "wifi_configuration_ap.h"
+ #include <cstdio>
++#include <algorithm>
++#include <cstring>
+ #include <memory>
+ #include <freertos/FreeRTOS.h>
+ #include <freertos/event_groups.h>
+@@ -332,9 +334,39 @@ void WifiConfigurationAp::StartWebServer()
+             for (int i = 0; i < this_->ap_records_.size(); i++) {
+                 ESP_LOGI(TAG, "SSID: %s, RSSI: %d, Authmode: %d",
+                     (char *)this_->ap_records_[i].ssid, this_->ap_records_[i].rssi, this_->ap_records_[i].authmode);
+-                char buf[128];
++                // TeamClu: escape the SSID. It is attacker-influenced text from
++                // the air, interpolated straight into a JSON string. One nearby
++                // network named with a quote or backslash produced invalid JSON
++                // for the whole response, and the picker rendered EMPTY — a far
++                // worse failure than the duplicates, and a much more confusing
++                // one to diagnose.
++                std::string ssid_escaped;
++                {
++                    const char *p = reinterpret_cast<const char *>(this_->ap_records_[i].ssid);
++                    const size_t n = strnlen(p, sizeof(this_->ap_records_[i].ssid));
++                    ssid_escaped.reserve(n + 8);
++                    for (size_t k = 0; k < n; k++) {
++                        const unsigned char c = static_cast<unsigned char>(p[k]);
++                        switch (c) {
++                            case '"':  ssid_escaped += "\\\""; break;
++                            case '\\': ssid_escaped += "\\\\"; break;
++                            case '\n': ssid_escaped += "\\n"; break;
++                            case '\r': ssid_escaped += "\\r"; break;
++                            case '\t': ssid_escaped += "\\t"; break;
++                            default:
++                                if (c < 0x20) {
++                                    char esc[7];
++                                    snprintf(esc, sizeof(esc), "\\u%04x", c);
++                                    ssid_escaped += esc;
++                                } else {
++                                    ssid_escaped += static_cast<char>(c);
++                                }
++                        }
++                    }
++                }
++                char buf[256];
+                 snprintf(buf, sizeof(buf), "{\"ssid\":\"%s\",\"rssi\":%d,\"authmode\":%d}",
+-                    (char *)this_->ap_records_[i].ssid, this_->ap_records_[i].rssi, this_->ap_records_[i].authmode);
++                    ssid_escaped.c_str(), this_->ap_records_[i].rssi, this_->ap_records_[i].authmode);
+                 httpd_resp_sendstr_chunk(req, buf);
+                 if (i < this_->ap_records_.size() - 1) {
+                     httpd_resp_sendstr_chunk(req, ",");
+@@ -355,7 +387,7 @@ void WifiConfigurationAp::StartWebServer()
+         .handler = [](httpd_req_t *req) -> esp_err_t {
+             char *buf;
+             size_t buf_len = req->content_len;
+-            if (buf_len > 1024) { // 限制最大请求体大小
++            if (buf_len > 4096) { // 限制最大请求体大小 (device token is a JWT)
+                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload too large");
+                 return ESP_FAIL;
+             }
+@@ -395,6 +427,16 @@ void WifiConfigurationAp::StartWebServer()
+                 return ESP_OK;
+             }
+ 
++            // TeamClu: an optional pairing code travels with the Wi-Fi
++            // credentials so provisioning is a single trip. Upstream knows
++            // nothing about it; we only stash it for the application to redeem.
++            cJSON *token_item = cJSON_GetObjectItemCaseSensitive(json, "device_token");
++            std::string token_str = "";
++            if (cJSON_IsString(token_item) && token_item->valuestring != NULL &&
++                strlen(token_item->valuestring) < 1024) {
++                token_str = token_item->valuestring;
++            }
++
+             std::string ssid_str = ssid_item->valuestring;
+             std::string password_str = "";
+             if (cJSON_IsString(password_item) && (password_item->valuestring != NULL) && (strlen(password_item->valuestring) < 65)) {
+@@ -410,6 +452,17 @@ void WifiConfigurationAp::StartWebServer()
+             }
+ 
+             this_->Save(ssid_str, password_str);
++
++            // TeamClu: persist only after the association succeeded, so a code
++            // is never stored against credentials that turned out to be wrong.
++            if (!token_str.empty()) {
++                nvs_handle_t teamclu_nvs;
++                if (nvs_open("teamclu", NVS_READWRITE, &teamclu_nvs) == ESP_OK) {
++                    nvs_set_str(teamclu_nvs, "dev_token", token_str.c_str());
++                    nvs_commit(teamclu_nvs);
++                    nvs_close(teamclu_nvs);
++                }
++            }
+             cJSON_Delete(json);
+             // 设置成功响应
+             httpd_resp_set_type(req, "application/json");
+@@ -760,6 +813,37 @@ void WifiConfigurationAp::WifiEventHandler(void* arg, esp_event_base_t event_bas
+         self->ap_records_.resize(ap_num);
+         esp_wifi_scan_get_ap_records(&ap_num, self->ap_records_.data());
+ 
++        // TeamClu: collapse duplicate SSIDs. A scan yields one record per
++        // BSSID, so a mesh network — or one router bridging 2.4 and 5 GHz under
++        // a single name — appears many times over and the picker becomes
++        // unusable. Keep the strongest sighting of each name, then order by
++        // signal so the network the user actually wants is at the top.
++        {
++            std::vector<wifi_ap_record_t> unique;
++            unique.reserve(self->ap_records_.size());
++            for (const auto &rec : self->ap_records_) {
++                if (rec.ssid[0] == '\0') {
++                    continue;  // hidden network: nothing to show or pick
++                }
++                auto it = std::find_if(unique.begin(), unique.end(),
++                    [&rec](const wifi_ap_record_t &u) {
++                        return std::strncmp(reinterpret_cast<const char *>(u.ssid),
++                                            reinterpret_cast<const char *>(rec.ssid),
++                                            sizeof(u.ssid)) == 0;
++                    });
++                if (it == unique.end()) {
++                    unique.push_back(rec);
++                } else if (rec.rssi > it->rssi) {
++                    *it = rec;  // same name, better signal — prefer this BSSID
++                }
++            }
++            std::sort(unique.begin(), unique.end(),
++                      [](const wifi_ap_record_t &a, const wifi_ap_record_t &b) {
++                          return a.rssi > b.rssi;
++                      });
++            self->ap_records_.swap(unique);
++        }
++
+         // 扫描完成，等待10秒后再次扫描
+         esp_timer_start_once(self->scan_timer_, 10 * 1000000);
+     }
+diff --git a/wifi_station.cc b/wifi_station.cc
+index ca8bd24..10b5636 100644
+--- a/wifi_station.cc
++++ b/wifi_station.cc
+@@ -225,7 +225,19 @@ void WifiStation::StartConnect() {
+         memcpy(wifi_config.sta.bssid, ap_record.bssid, 6);
+         wifi_config.sta.bssid_set = true;
+     }
+-    wifi_config.sta.listen_interval = 10;
++    // TeamClu: was 10, i.e. sleep ~1.02 s between beacon checks (the log says
++    // "li: 10, scale listen interval ... to 1024000 us"). Against an AP with
++    // DTIM period 1 — every phone hotspot — that is far outside what it expects
++    // of a client, and iOS in particular drops the station, giving an endless
++    // connect/disconnect cycle. 3 keeps most of the saving without the drops.
++    wifi_config.sta.listen_interval = 3;
++    // TeamClu: scan every channel and pick the strongest match, rather than the
++    // IDF default WIFI_FAST_SCAN which stops at the first AP whose SSID matches
++    // and gives up early. Espressif recommend the all-channel scan for exactly
++    // this failure — a network that is plainly visible from a phone but which
++    // the ESP32 reports as "No AP found".
++    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
++    wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+ 
+     reconnect_count_ = 0;

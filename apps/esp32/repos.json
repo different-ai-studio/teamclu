@@ -1,0 +1,56 @@
+[
+    {
+        "url": "https://github.com/Forairaaaaa/mooncake.git",
+        "path": "components/mooncake",
+        "branch": "v2.3.3"
+    },
+    {
+        "url": "https://github.com/Forairaaaaa/mooncake_log.git",
+        "path": "components/mooncake_log",
+        "branch": "v1.5.0"
+    },
+    {
+        "url": "https://github.com/Forairaaaaa/smooth_ui_toolkit.git",
+        "path": "components/smooth_ui_toolkit",
+        "branch": "v2.12.1"
+    },
+    {
+        "url": "https://github.com/m5stack/M5GFX.git",
+        "path": "components/M5GFX",
+        "branch": "0.2.19"
+    },
+    {
+        "url": "https://github.com/bblanchon/ArduinoJson.git",
+        "path": "components/ArduinoJson",
+        "branch": "v7.4.3"
+    },
+    {
+        "url": "https://github.com/lvgl/lvgl.git",
+        "path": "components/lvgl",
+        "branch": "v9.5.0"
+    },
+    {
+        "url": "https://github.com/m5stack/M5IOE1",
+        "path": "components/M5IOE1",
+        "branch": "1.0.8",
+        "patch": "patches/M5IOE1.patch"
+    },
+    {
+        "url": "https://github.com/m5stack/M5PM1",
+        "path": "components/M5PM1",
+        "branch": "1.0.6",
+        "patch": "patches/M5PM1.patch"
+    },
+    {
+        "url": "https://github.com/lbuque/BMI270_BMM150_Sensor.git",
+        "path": "components/BMI270_BMM150_Sensor",
+        "branch": "0.1.2",
+        "with_submodules": true
+    },
+    {
+        "url": "https://github.com/78/esp-wifi-connect.git",
+        "path": "components/esp-wifi-connect",
+        "branch": "cbf5cfff421cd1814f8eeacb53800288ed16943c",
+        "patch": "patches/esp-wifi-connect.patch"
+    }
+]

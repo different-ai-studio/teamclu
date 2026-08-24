@@ -28,6 +28,9 @@ mod http;
 mod mcp_probe;
 #[path = "../src/mqtt/mod.rs"]
 mod mqtt;
+// `mqtt::subscriber` parses `voice/ctl` into `crate::voice::ctl::VoiceCtl`.
+#[path = "../src/voice/mod.rs"]
+mod voice;
 #[path = "../src/opencode_install/mod.rs"]
 mod opencode_install;
 #[path = "../src/opencode_settings/mod.rs"]

@@ -48,6 +48,31 @@ services:
       # EMQX's native env override (Compose interpolates ${EMQX_JWT_SECRET} at
       # parse time) so the authenticator is created with the real key.
       EMQX_AUTHENTICATION__1__SECRET: "${EMQX_JWT_SECRET}"
+      # ── Authenticator 2: ESP32 voice terminals ───────────────────────────
+      # A SECOND JWT authenticator with its own key, so a token pulled off a
+      # device reaches the broker and nothing else. Signing these with
+      # EMQX_JWT_SECRET would be less work — authenticator 1 already trusts it —
+      # but that key is Supabase's, so a leaked device token would be a valid
+      # *user* token against the whole API. Same position, and the same wording,
+      # as services/fc/src/lib/agent-management-grant.ts: a dedicated key only,
+      # because "issuer/audience separation does nothing against a holder of the
+      # key itself".
+      #
+      # EMQX tries authenticators in order and accepts on the first match, so
+      # adding this cannot affect existing clients.
+      #
+      # ⚠ Authenticators are read at START. `docker compose up -d` will not
+      #   restart EMQX just because this file changed — restart it explicitly or
+      #   the authenticator never loads, and devices fail auth with no clue why.
+      #
+      # Unset is fine: EMQX skips an authenticator whose secret is empty, so a
+      # deployment that has not provisioned this key behaves exactly as before.
+      EMQX_AUTHENTICATION__2__MECHANISM: "jwt"
+      EMQX_AUTHENTICATION__2__USE_JWKS: "false"
+      EMQX_AUTHENTICATION__2__ALGORITHM: "hmac-based"
+      EMQX_AUTHENTICATION__2__FROM: "password"
+      EMQX_AUTHENTICATION__2__SECRET_BASE64_ENCODED: "true"
+      EMQX_AUTHENTICATION__2__SECRET: "${DEVICE_MQTT_JWT_SECRET:-}"
       # The 8883 listener reads Caddy's ACME storage, where certificates are
       # filed under the hostname they were issued for. Derive the path from
       # MQTT_DOMAIN rather than hardcoding it in emqx.conf, so renaming the host

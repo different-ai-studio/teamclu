@@ -29,6 +29,20 @@ pub enum IncomingMessage {
         session_id: String,
         payload: Vec<u8>,
     },
+    /// `amux/{team}/{actor}/voice/mic` — an Opus 20 ms frame from a paired
+    /// device. QoS 0. `payload` is raw Opus bytes; intent is *not* here, it
+    /// arrives on `voice/ctl` `turn_start`. See `crate::voice::ctl`.
+    VoiceMic {
+        team_id: String,
+        actor_id: String,
+        payload: Vec<u8>,
+    },
+    /// `amux/{team}/{actor}/voice/ctl` — a parsed control JSON. QoS 1.
+    VoiceCtl {
+        team_id: String,
+        actor_id: String,
+        ctl: crate::voice::ctl::VoiceCtl,
+    },
 }
 
 pub fn parse_incoming(publish: &Publish) -> Option<IncomingMessage> {
@@ -76,6 +90,42 @@ pub fn parse_frame(frame: &IncomingFrame) -> Option<IncomingMessage> {
                 actor_id: parts[2].to_string(),
                 payload: payload.clone(),
             });
+        }
+    }
+
+    // Device voice topics: amux/{team}/{actor}/voice/{mic,ctl} (5 segments).
+    // `voice/spk` is amuxd→device (outbound) and `voice/state` is retained
+    // device→broker; neither is routed here. `voice/ctl` is parsed here so
+    // the business loop sees a structured message, not raw JSON.
+    if topic.starts_with("amux/") {
+        let parts: Vec<&str> = topic.split('/').collect();
+        if parts.len() == 5 && parts[3] == "voice" {
+            let team_id = parts[1].to_string();
+            let actor_id = parts[2].to_string();
+            return match parts[4] {
+                "mic" => Some(IncomingMessage::VoiceMic {
+                    team_id,
+                    actor_id,
+                    payload: payload.clone(),
+                }),
+                "ctl" => match crate::voice::ctl::VoiceCtl::parse(payload) {
+                    Ok(ctl) => Some(IncomingMessage::VoiceCtl {
+                        team_id,
+                        actor_id,
+                        ctl,
+                    }),
+                    Err(e) => {
+                        warn!(
+                            team = %team_id,
+                            actor = %actor_id,
+                            error = %e,
+                            "voice/ctl JSON parse failed; dropping"
+                        );
+                        None
+                    }
+                },
+                _ => None,
+            };
         }
     }
 

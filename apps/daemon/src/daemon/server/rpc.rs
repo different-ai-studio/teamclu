@@ -985,6 +985,50 @@ impl DaemonServer {
                     }
                 }
             }
+            // Voice topics (M3-1): forward to the voice router task if the
+            // adapter is enabled; otherwise log-and-ack so the business loop
+            // is never blocked by a missing consumer. The router owns all
+            // STT/stream lifecycle; these arms are pure forwarding.
+            subscriber::IncomingMessage::VoiceMic {
+                team_id,
+                actor_id,
+                payload,
+            } => {
+                if let Some(tx) = &self.voice_tx {
+                    let _ = tx.send(crate::voice::VoiceEvent::Mic {
+                        team_id,
+                        actor_id,
+                        payload: bytes::Bytes::from(payload),
+                    });
+                } else {
+                    info!(
+                        team_id = %team_id,
+                        actor_id = %actor_id,
+                        bytes = payload.len(),
+                        "voice mic frame received (voice adapter disabled)"
+                    );
+                }
+            }
+            subscriber::IncomingMessage::VoiceCtl {
+                team_id,
+                actor_id,
+                ctl,
+            } => {
+                if let Some(tx) = &self.voice_tx {
+                    let kind = ctl.kind.clone();
+                    let _ = tx.send(crate::voice::VoiceEvent::Ctl {
+                        team_id,
+                        actor_id,
+                        ctl,
+                    });
+                } else {
+                    info!(
+                        team_id = %team_id,
+                        actor_id = %actor_id,
+                        "voice ctl received (voice adapter disabled)"
+                    );
+                }
+            }
         }
         super::command_executor::HandlerOutcome::Success
     }

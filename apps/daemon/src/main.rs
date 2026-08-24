@@ -28,6 +28,7 @@ mod sync;
 mod team_link;
 mod team_shared_env;
 mod teamclu;
+mod voice;
 #[cfg(test)]
 mod test_brand_env;
 #[cfg(test)]

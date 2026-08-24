@@ -112,5 +112,12 @@ fn validate_inbound_message(
                 .map(|_| ())
                 .map_err(|error| format!("invalid Notify: {error}"))
         }
+        // Voice frames are raw Opus bytes (QoS 0) — no envelope to validate;
+        // an out-of-band frame before turn_start is the router's problem, not
+        // a malformed-message problem.
+        IncomingMessage::VoiceMic { .. } => Ok(()),
+        // VoiceCtl was already JSON-parsed in `parse_frame`; a malformed one
+        // was dropped there. Reaching here means it parsed.
+        IncomingMessage::VoiceCtl { .. } => Ok(()),
     }
 }

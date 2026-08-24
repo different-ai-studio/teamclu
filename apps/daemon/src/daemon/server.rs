@@ -194,6 +194,11 @@ pub struct DaemonServer {
     remote_tool_turn_contexts: Arc<AsyncMutex<crate::remote_tools::RemoteToolTurnContextStore>>,
     rpc_client: Arc<AsyncMutex<crate::teamclu::rpc::RpcClient>>,
     team_skill_reconciler: Arc<crate::runtime::team_skills::TeamSkillReconciler>,
+    /// Voice router forwarder. `Some` once the adapter task is spawned at
+    /// boot; `None` in tests so existing fixtures are unaffected. Voice
+    /// messages with `None` here are logged and acked, never blocking the
+    /// business loop. See `crate::voice::adapter::VoiceRouter`.
+    voice_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::voice::VoiceEvent>>,
     /// Answered capability-management requests, keyed on the authorized
     /// (requester, request_id) pair. Shared rather than owned so the handler
     /// can run on its own task instead of on the message pump.
@@ -764,7 +769,33 @@ impl DaemonServer {
         let team_skill_reconciler = Arc::new(
             crate::runtime::team_skills::TeamSkillReconciler::new(backend.clone()),
         );
-        Ok(Self {
+        // M3-1: spawn the voice router. The default provider is FunASR local
+    // (returns NotImplemented until M3-2); the default sink only logs.
+    // Subscribing to device voice topics awaits M2-2 pairing, but the
+    // routing path is live: a forwarded VoiceMic/VoiceCtl reaches the
+    // router and a turn_start/turn_end round-trip is exercised by tests.
+    let voice_router_tx = match crate::voice::stt::build_provider(
+        &crate::voice::stt::SttConfig::funasr_local(),
+    ) {
+        Ok(provider) => {
+            let router = crate::voice::adapter::VoiceRouter::new(
+                Arc::from(provider),
+                Arc::new(crate::voice::adapter::LogTranscriptSink::default()),
+            );
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::voice::VoiceEvent>();
+            router.spawn(rx);
+            Some(tx)
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "voice adapter not started: STT provider unavailable"
+            );
+            None
+        }
+    };
+
+    Ok(Self {
             config,
             config_path: config_path.to_path_buf(),
             mqtt_command_rx: Some(mqtt_command_rx),
@@ -807,6 +838,7 @@ impl DaemonServer {
             )),
             rpc_client,
             team_skill_reconciler,
+            voice_tx: voice_router_tx,
             agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
             cron_turn_done_tx,
             cron_turn_done_rx: Some(cron_turn_done_rx),
@@ -3766,6 +3798,7 @@ pub(crate) mod tests {
                 team_skill_reconciler: Arc::new(
                     crate::runtime::team_skills::TeamSkillReconciler::new(backend),
                 ),
+                voice_tx: None,
                 agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
                 cron_turn_done_tx,
                 cron_turn_done_rx: Some(cron_turn_done_rx),

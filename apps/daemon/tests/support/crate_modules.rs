@@ -49,3 +49,8 @@ mod test_brand_env;
 fn test_sync_dispatcher() -> sync::dispatch::SyncDispatcher {
     sync::dispatch::SyncDispatcher::new(sync::secret_store::SecretStore::new(), None)
 }
+
+// `mqtt::subscriber` parses `voice/ctl` into `crate::voice::ctl::VoiceCtl`, so
+// every integration-test crate root that pulls in `mqtt` needs `voice` too.
+#[path = "../../src/voice/mod.rs"]
+mod voice;

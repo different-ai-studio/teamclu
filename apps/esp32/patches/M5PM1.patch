@@ -1,0 +1,20 @@
+diff --git a/src/M5PM1_i2c_compat.h b/src/M5PM1_i2c_compat.h
+index 6c66416..06134d8 100644
+--- a/src/M5PM1_i2c_compat.h
++++ b/src/M5PM1_i2c_compat.h
+@@ -300,14 +300,8 @@ static inline bool M5PM1_M5UNIFIED_SEND_WAKE(m5::I2C_Class *i2c, uint8_t addr, u
+ // If not, the begin(i2c_bus_handle_t,...) overload silently disappears and the compiler
+ // will report 'no matching function for call to begin()' at the call site.
+ #if defined(_I2C_BUS_H_)
+-#error \
+-    "[M5PM1] i2c_bus cannot be used together with M5GFX/M5Unified. " \
+-    "M5GFX registers driver_ng via i2c_new_master_bus() during global construction. " \
+-    "BACKWARD_CONFIG=y: i2c_bus.c calls i2c_driver_install() (legacy driver) -> runtime abort() in check_i2c_driver_conflict(). " \
+-    "BACKWARD_CONFIG=n: i2c_bus_v2.c calls i2c_new_master_bus() on the same port -> undefined behaviour. " \
+-    "Fix: use pm1.begin(&M5.In_I2C, addr, freq) and set I2C_USE_MODE=0."
+ #endif
+-#define M5PM1_HAS_I2C_BUS 0
++#define M5PM1_HAS_I2C_BUS 1 // 0
+ // ── 编译期头文件冲突（无 M5GFX/M5Unified）──────────────────────────────────
+ #elif defined(CONFIG_I2C_BUS_BACKWARD_CONFIG)
+ #define M5PM1_HAS_I2C_BUS 1  // BACKWARD_CONFIG，无 M5GFX/M5Unified：兼容 / compatible without M5GFX/M5Unified
