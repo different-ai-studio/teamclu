@@ -78,6 +78,45 @@ pub trait TranscriptSink: Send + Sync {
     );
 }
 
+/// Delivers each final transcript to several sinks.
+///
+/// The router holds one sink, but the device has two intents and each has its
+/// own consumer: `chat` goes to [`super::chat_sink::ChatSink`], `note` to
+/// [`super::note_sink::NoteSink`]. Rather than teach the router to branch on
+/// intent, both sinks receive every final and each ignores the intent that is
+/// not theirs — so adding a third intent later means adding a sink, not
+/// editing a `match` in the routing layer.
+///
+/// Sinks run in order rather than concurrently: only one of them acts on any
+/// given transcript, so there is nothing to overlap, and sequential delivery
+/// keeps failures attributable.
+pub struct FanOutSink {
+    sinks: Vec<Arc<dyn TranscriptSink>>,
+}
+
+impl FanOutSink {
+    pub fn new(sinks: Vec<Arc<dyn TranscriptSink>>) -> Self {
+        Self { sinks }
+    }
+}
+
+#[async_trait]
+impl TranscriptSink for FanOutSink {
+    async fn on_final(
+        &self,
+        team_id: &str,
+        actor_id: &str,
+        intent: Intent,
+        session_id: Option<&str>,
+        text: &str,
+    ) {
+        for sink in &self.sinks {
+            sink.on_final(team_id, actor_id, intent, session_id, text)
+                .await;
+        }
+    }
+}
+
 /// Default sink: logs the final transcript. Used until M3-3/M3-4 land.
 #[derive(Default)]
 pub struct LogTranscriptSink;
@@ -119,6 +158,9 @@ pub struct VoiceRouter {
     provider: Arc<dyn SttProvider>,
     sink: Arc<dyn TranscriptSink>,
     active: parking_lot::Mutex<HashMap<DeviceKey, ActiveStream>>,
+    /// Stops in-flight TTS when the user interrupts. `None` before the TTS
+    /// downlink is wired, in which case barge-in only closes the uplink.
+    speaker: Option<Arc<dyn super::spk::ReplySpeaker>>,
 }
 
 impl VoiceRouter {
@@ -127,6 +169,21 @@ impl VoiceRouter {
             provider,
             sink,
             active: parking_lot::Mutex::new(HashMap::new()),
+            speaker: None,
+        }
+    }
+
+    /// Give the router a handle on the speech downlink so a new turn or a
+    /// barge-in can silence a reply that is still playing.
+    pub fn with_speaker(mut self, speaker: Arc<dyn super::spk::ReplySpeaker>) -> Self {
+        self.speaker = Some(speaker);
+        self
+    }
+
+    /// Silence any reply currently being spoken to this device.
+    async fn silence(&self, key: &DeviceKey) {
+        if let Some(speaker) = &self.speaker {
+            speaker.cancel(key).await;
         }
     }
 
@@ -197,6 +254,9 @@ impl VoiceRouter {
                 // previous turn for this device. Idempotent against a
                 // redelivered turn_start (QoS 1).
                 self.close_stream(&key);
+                // Talking over the previous answer is the common case here —
+                // the user asks a follow-up before the reply finishes.
+                self.silence(&key).await;
                 let (frames_tx, frames_rx) = mpsc::channel(64);
                 match self.provider.recognize(intent, frames_rx).await {
                     Ok(stream) => {
@@ -272,6 +332,10 @@ impl VoiceRouter {
                     "voice barge-in: closing turn without final"
                 );
                 self.close_stream(&key);
+                // The whole point of barge-in: stop talking. This is also why
+                // `spk` paces frames — if the reply were already sitting in
+                // the device's play queue there would be nothing to cancel.
+                self.silence(&key).await;
             }
             "error" => {
                 warn!(
@@ -384,6 +448,61 @@ mod tests {
                 text.to_string(),
             ));
         }
+    }
+
+    /// Records only the intents it was asked to accept, the way `ChatSink` and
+    /// `NoteSink` each ignore the other's.
+    struct IntentSink {
+        accepts: Intent,
+        seen: Arc<parking_lot::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl TranscriptSink for IntentSink {
+        async fn on_final(
+            &self,
+            _team_id: &str,
+            _actor_id: &str,
+            intent: Intent,
+            _session_id: Option<&str>,
+            text: &str,
+        ) {
+            if intent == self.accepts {
+                self.seen.lock().push(text.to_string());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fan_out_delivers_to_every_sink() {
+        // Both sinks must see every final: the router does not branch on
+        // intent, each sink filters for itself.
+        let chat = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let note = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let fan = FanOutSink::new(vec![
+            Arc::new(IntentSink {
+                accepts: Intent::Chat,
+                seen: chat.clone(),
+            }),
+            Arc::new(IntentSink {
+                accepts: Intent::Note,
+                seen: note.clone(),
+            }),
+        ]);
+
+        fan.on_final("t", "a", Intent::Chat, None, "问题").await;
+        fan.on_final("t", "a", Intent::Note, None, "笔记").await;
+
+        assert_eq!(*chat.lock(), vec!["问题"]);
+        assert_eq!(*note.lock(), vec!["笔记"]);
+    }
+
+    #[tokio::test]
+    async fn fan_out_with_no_sinks_is_a_no_op() {
+        // Guards the degenerate wiring: a daemon built with neither sink
+        // configured must drop transcripts quietly, not panic on an empty Vec.
+        let fan = FanOutSink::new(Vec::new());
+        fan.on_final("t", "a", Intent::Chat, None, "x").await;
     }
 
     fn make_router() -> (

@@ -291,10 +291,18 @@ extern "C" void app_main(void)
                     break;
                 }
                 case net::IncomingCtl::Kind::Session:
-                    // Session id for this turn. Not acted on yet — M3-3 ties a
-                    // saved note to its session; for now it's logged so the
-                    // round-trip is visible.
+                    // Session id for this turn. Not acted on: amuxd owns which
+                    // session a turn belongs to and deliberately does not trust
+                    // an id the device supplies, so this is logged to make the
+                    // round-trip visible and nothing more.
                     mclog::info(kTag, "ctl session: {}", ctl.session);
+                    break;
+                case net::IncomingCtl::Kind::NoteSaved:
+                    // The note actually landed. Before this existed the face
+                    // showed "saved" on a timer whether or not anything was
+                    // stored — see face_state::commitHold.
+                    mclog::info(kTag, "ctl note_saved: {} {}", ctl.time, ctl.text);
+                    state.onNoteSaved(now, ctl.time, ctl.text);
                     break;
                 case net::IncomingCtl::Kind::Unknown:
                     // Forward-compat: a future amuxd ctl type. Log + ignore

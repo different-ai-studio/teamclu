@@ -1,18 +1,26 @@
 # ESP32-S3 Voice Terminal — Implementation Plan
 
 > **Branch:** `task/stopwatch-esp32-devi`
-> **Status:** Rev 4 (2026-08-24). Device runs on hardware: face, provisioning,
-> MQTT and the `voice/ctl` control plane are verified end to end. The audio path
-> is written but **has never run** — see §14. §13/§15 are the changelogs.
+> **Status:** Rev 6 (2026-08-25). Device runs on hardware: face, provisioning,
+> MQTT and the `voice/ctl` control plane are verified end to end. The full
+> voice round trip — mic → STT → agent → TTS → speaker — is written on both
+> sides. **Speech now works against the live vendor**: Alibaba NLS recognises
+> and synthesises through amuxd's own code (§13.9). What has still never run is
+> the device half — no audio has left or entered the hardware (§14).
+> §13/§15/§16 are the changelogs.
 >
 > Rev 1 was written blind. Rev 2 corrected it against the live amuxd/EMQX
 > stack. Rev 3 corrects it against the **actual hardware and the design
-> canvas** — which turned out to change more than rev 2 did.
+> canvas** — which turned out to change more than rev 2 did. Rev 4 added the
+> ctl control plane. Rev 5 closes the daemon-side audio loop. **Rev 6 withdraws
+> self-hosted STT/TTS in favour of hosted Alibaba NLS behind an FC-minted
+> credential (§13.9) — read that before §13.5/§13.6, whose vendor choice it
+> supersedes.**
 
 A pocket **voice terminal** for TeamClu on the **M5Stack Core StopWatch**.
 Two gestures: hold the top-right button to *talk* (the agent answers out loud),
 hold the bottom-right to *note* (it saves and says nothing). amuxd routes audio
-through STT → pi → OpenAI → TTS.
+through STT → the agent runtime → TTS.
 
 ## 0. What the device is
 
@@ -53,7 +61,7 @@ loses days here. We do not: see §1.
 | HAL | **Vendored from `m5stack/M5StopWatch-UserDemo` (MIT)** | Official ESP-IDF reference for this exact board |
 | Chain | `ESP32 → MQTT → EMQX(cloud) → amuxd → pi → OpenAI` | Reuses the existing agent/session/MQTT stack |
 | Intents | **Two: `chat` and `note`** | From the design canvas; rev 2 had only one |
-| STT / TTS | Deepgram streaming / Cartesia Sonic | Low first-audio latency |
+| STT / TTS | ~~Deepgram / Cartesia~~ → ~~FunASR / CosyVoice self-hosted~~ → **Alibaba NLS, hosted** | Self-hosting was a dead end (§13.9); FC mints a short-lived token, amuxd connects direct |
 | Brain | pi (`local_agent = "pi"`), gpt-4o-mini | Speed/cost fit |
 | Audio codec | Opus, 16 kHz mono, 20 ms, 24 kbps VBR, QoS 0 | Pinned in rev 2 |
 | Transport | **WSS via Caddy :443 → EMQX ws :8083** | The only working TLS path (§8) |
@@ -89,18 +97,22 @@ BMI270, ArduinoJson — fetched by `fetch_repos.py`, not vendored.
 ## 3. Architecture chain
 
 ```
-                      intent=chat ──────────────────────────┐
-┌────────┐  MQTT/WSS  ┌──────┐  MQTT  ┌──────────────────────┴─────────────┐
+                      intent=chat ────────────────────────────┐
+┌────────┐  MQTT/WSS  ┌──────┐  MQTT  ┌────────────────────────┴───────────┐
 │ ESP32  │ ─────────► │ EMQX │ ─────► │ amuxd voice adapter                │
-│ Stop-  │ ◄───────── │cloud │ ◄───── │  ├─ STT (Deepgram, streaming)      │
-│ Watch  │            └──────┘        │  ├─ prompt channel ─► pi ─► OpenAI │
-└────────┘                            │  └─ TTS (Cartesia) ─► spk          │
-                      intent=note ───►│  └─ transcript ─► session store    │
+│ Stop-  │ ◄───────── │cloud │ ◄───── │  ├─ STT (Alibaba NLS, hosted)      │
+│ Watch  │            └──────┘        │  ├─ chat sink ─► agent runtime     │
+└────────┘                            │  │    └─ token deltas ─┐           │
+                                      │  └─ TTS (Alibaba NLS)  ◄┘          │
+                      intent=note ───►│       └─ Opus 20 ms ─► spk (paced) │
+                                      │  └─ transcript ─► session store    │
                                       └────────────────────────────────────┘
                                          (note never produces spk audio)
 ```
 
-pi and OpenAI see only text, exactly as today.
+pi and OpenAI see only text, exactly as today. Speech credentials are minted by
+FC and the audio goes straight from amuxd to the NLS gateway — it never
+transits the Cloud API (§13.9).
 
 ### 3.1 amuxd is local — the deployment consequence
 
@@ -453,25 +465,42 @@ device.
 
 ### 8.3 Cost model
 
-Deepgram and Cartesia bill per streamed minute and this device streams whenever
-a button is held. P0-4 must produce a per-active-minute cost and a monthly
-projection before both vendors are committed. Note mode needs STT but **not**
-TTS, so the two intents have different unit costs — worth modelling separately.
+**Live again.** An earlier revision marked this "largely moot" on the premise
+that both vendors were self-hosted; §13.9 withdrew that premise. Alibaba NLS
+bills per usage and this device streams whenever a button is held, so P0-4 must
+produce a per-active-minute cost and a monthly projection before the device
+ships to more than a handful of people.
+
+Note mode needs STT but **not** TTS, so the two intents have genuinely
+different unit costs — model them separately. Barge-in also matters here: the
+daemon paces `spk` frames and stops synthesising on cancel (§13.6), so an
+interrupted reply is not billed for its whole length.
+
+Because the credential is minted per team (§13.9), per-team attribution is
+available if it is ever needed — the same place LiteLLM already does it for
+LLM spend.
 
 ## 9. Latency budget — still a bet
 
 | Hop | Estimate |
 |---|---|
 | Device → EMQX → amuxd | ~40–90 ms |
-| Deepgram final after endpoint | ~100–200 ms |
-| pi → OpenAI first token | ~300–600 ms |
-| Cartesia first audio chunk | ~90–200 ms |
-| amuxd → EMQX → device (incl. jitter buffer) | ~80–150 ms |
-| **PTT-release → first audio** | **~600–1100 ms** |
+| NLS ASR final after endpoint | ~100–250 ms (hosted; one WAN hop) |
+| Agent runtime first token | ~300–600 ms |
+| NLS TTS first audio chunk | ~90–200 ms (hosted; unmeasured) |
+| amuxd → EMQX → device (incl. 200 ms prebuffer) | ~200–300 ms |
+| **PTT-release → first audio** | **~700–1400 ms** |
 
 Every figure is an estimate; none has been measured. P0-4 measures it with the
 fake device, no hardware involved. **If the real number lands past ~1500 ms the
 product thesis needs revisiting before more firmware is written.**
+
+Two notes. The vendor hops are back after §13.9 withdrew self-hosting, but a
+hosted GPU almost certainly beats laptop CPU inference by more than the WAN hop
+costs — the self-hosted variant traded a network hop for a much worse compute
+one. And the downlink figure includes the 200 ms prebuffer from §13.6, which is
+deliberate spend bought to make barge-in and jitter behave; dropping it would
+shave the budget and break both.
 
 Escape hatch, documented not built: swap the brain to OpenAI Realtime (native
 audio, no STT/TTS) behind the same MQTT/EMQX/device layer.
@@ -519,14 +548,23 @@ audio, no STT/TTS) behind the same MQTT/EMQX/device layer.
   that can still invalidate the codec choice
 
 ### Milestone 3 — the two intents end to end
-- **M3-1** amuxd voice adapter: device-scoped topics on `MessagePublisher`
-- **M3-2** Deepgram streaming → partial + final transcripts
-- **M3-3** `chat`: final transcript → `send_prompt` → pi → Cartesia → `spk`
-- **M3-4** `note`: transcript → session message store, **no TTS**, no reply
-- **M3-5** Offline note queue on device (NVS/FAT) + drain on reconnect + queue
+- **M3-1** ✅ amuxd voice adapter: `VoiceRouter`, ctl→turn lifecycle, sink seam
+- **M3-2** ✅ Streaming STT → partial + final transcripts (FunASR, not Deepgram — §13.5)
+- **M3-3** ✅ `chat`: final transcript → `send_prompt` (§13.7)
+- **M3-5** ✅ Reply → TTS → Opus → `spk`, with `thinking`/`spk_start`/`spk_end`
+  ctl and paced frames (CosyVoice, not Cartesia — §13.6)
+- **M3-4** ✅ `note`: transcript → session message store, **no TTS**, no reply
+  (§13.8). Includes the firmware half: `note_saved` ctl, and the `Saved` cue
+  no longer fires on a timer when a backend is bound.
+- **M3-6** Offline note queue on device (NVS/FAT) + drain on reconnect + queue
   depth on the retained `state` topic
-- **M3-6** Endpointing + barge-in state machine; QoS 1 flush on `ctl`
-- **M3-7** Full GB2312 binfont for real note text (§6.1)
+- **M3-7** Endpointing + barge-in state machine; QoS 1 flush on `ctl`.
+  Barge-in's daemon half is done (router `cancel` → speaker stops mid-reply,
+  which is why `spk` paces frames); device-side endpointing is not.
+- **M3-8** Full GB2312 binfont for real note text (§6.1)
+
+None of M3-1..M3-5 has run against a real device or a real STT/TTS server —
+see §13.5, §13.6 and §14.
 
 ### Milestone 4 — hardening
 - Power budget vs 450 mAh; light sleep + wake path
@@ -552,8 +590,14 @@ RX8130CE scheduled wake · touch input (CST820B is present and entirely unused)
 1. MQTT JWT signing: reuse Supabase HS256, or a second EMQX authenticator (§8.1) — P0/M2-2
 2. Device→actor granularity: one device one actor, or re-claimable; interacts with revocation — M2-2
 3. Sleep + PTT: canvas (inert) vs rev 2 (wake on PTT) — §5.1
-4. Deepgram language: fixed zh-CN vs auto-detect — M3-2
-5. Cartesia voice id — M3-3
+4. ~~Deepgram language~~ → FunASR `lang`: fixed `zh` today, auto-detect untested — M3-2
+5. ~~Cartesia voice id~~ → CosyVoice `spk_id`: defaults to `中文女`, unvalidated
+   against a real server — M3-5
+5b. Where TTS/STT endpoints are configured. Both read env
+   (`TEAMCLU_COSYVOICE_*`) with hardcoded localhost defaults. Deployment-shaped
+   and secret-free, so env is defensible — but team-scoped routing (§7's facade
+   philosophy) would want config, and neither backend is reachable from a
+   team's settings today.
 6. Whether audio is ever stored (default: no)
 7. EMQX broker rate limits vs 50 frames/s/direction/device — M2-4
 8. Touch: the panel has it and the design uses none. Leave unused, or let it
@@ -592,6 +636,250 @@ into `VoiceRouter`.
 `TranscriptSink` implementations that turn a final transcript into
 `send_prompt` (chat, M3-3) and a stored note (M3-4). The default sink only logs.
 
+## 13.6 TTS and the speech downlink — implemented (M3-5)
+
+The chain is now closed end to end in code:
+
+```
+device → mic → STT → transcript → agent          ✅ M3-1/2/3
+                                    ↓
+                        token deltas → sentences → TTS → PCM   ✅ tts.rs / cosyvoice.rs
+                                    ↓
+                        resample 24k→16k → Opus 20 ms          ✅ resample.rs / spk.rs
+                                    ↓
+device ← spk ← ──────────────────────────────────             ✅ paced publish
+```
+
+**The vendor decision, made.** Plan §1 pins Cartesia; its API key does not
+exist, exactly as with Deepgram. The default is **CosyVoice** running locally,
+for the same three reasons FunASR won the STT slot: no key, no per-minute
+billing, no audio egress, and it is the same ModelScope family — a deployment
+that already runs FunASR is not taking on a second ecosystem. `Cartesia` and
+`AliyunTts` remain as [`TtsBackend`] variants that the factory refuses with a
+clear error, so switching later is a config change rather than a rewrite.
+
+**Four things worth knowing about the implementation:**
+
+- **The device contract already existed.** `ctl_parse.cpp` has recognised
+  `session` / `thinking` / `spk_start` / `spk_end` / `error` since the firmware
+  ctl work, and `main.cpp` acts on all five. The daemon was sending *none* of
+  them. These are load-bearing, not decoration: the face arms a deadline when
+  it enters Think and falls to the `NoAgent` error screen if nothing arrives,
+  so a daemon that synthesises perfect audio but never sends `thinking` /
+  `spk_start` shows the user an error and then talks over it.
+- **A resampler was mandatory and is not in any earlier revision of this plan.**
+  CosyVoice2 synthesises at 24 kHz (CosyVoice1 at 22.05 kHz); the device's Opus
+  decoder is 16 kHz. Feeding 24 kHz samples to a 16 kHz encoder does not fail —
+  it plays back 1.5× fast and chipmunk-pitched. `resample.rs` is a windowed-sinc
+  streaming resampler with the cutoff at the lower Nyquist, tested with tones
+  rather than by eye.
+- **Frames are paced at wall-clock speed** after a 200 ms prebuffer, rather than
+  published as fast as they encode. Two reasons: barge-in means nothing if a
+  ten-second reply already sits in the device's play queue, and `onSpkFrame`
+  hands every decoded buffer to the HAL play task, so a burst becomes queue
+  pressure counted in `framesDroppedRx`.
+- **Subscribe happens before the prompt is sent.** `ReplySpeaker::begin` runs
+  ahead of `send_prompt` and keeps only the *live* half of the subscription. A
+  subscription opened afterwards races the first token deltas (the reply starts
+  mid-sentence); replaying the backlog instead would speak the previous turn's
+  answer.
+
+**Still unverified.** No CosyVoice server is deployed, so the HTTP protocol here
+is transcribed from the repo's `server.py` rather than observed on the wire —
+the same caveat as the FunASR client in §13.5. `CosyVoiceConfig::sample_rate`
+is the highest-risk field: getting it wrong does not error, it just plays back
+at the wrong speed, so it is the first thing to check when hardware audio sounds
+off.
+
+## 13.7 Chat sink — a transcript becomes a prompt (M3-3)
+
+`voice/chat_sink.rs` turns a final `chat` transcript into
+`RuntimeAdapter::send_prompt`. Three choices worth knowing:
+
+- **One session per device, not per turn.** The device is a conversational
+  object — "what did I just ask you" has to work — and sessions already carry
+  history. Created lazily on the first transcript, so a device that is powered
+  on but never spoken to does not hold a runtime.
+- **The device's session id is a hint, not an instruction.** `turn_start` may
+  carry one, but it is adopted only when we have no session of our own *and*
+  the runtime confirms it exists. A device that remembers an id across a
+  reflash must not be able to prompt into somebody else's session.
+- **A rejected prompt drops the session**, so a restarted daemon does not leave
+  the device wedged against a dead id forever.
+
+It does not wait for the answer itself: `send_prompt` returns once the turn is
+accepted, and the reply arrives as session events. The sink starts the speech
+downlink (§13.6) through the `ReplySpeaker` seam *before* prompting, and calls
+`fail` if the runtime rejects the prompt — otherwise the speaker would watch a
+session that never answers while the device sat on Think until its own deadline
+expired.
+
+## 13.8 Note sink — the second intent (M3-4)
+
+`voice/note_sink.rs` turns a final `note` transcript into one stored message.
+It is the smaller half of the two intents by design: no agent, no TTS, no
+reply.
+
+**Where a note goes.** Into the session message store via
+`Backend::insert_message`, as one `text` message attributed to the *device's*
+actor (not the daemon's — that would file every user's note under whichever
+machine relayed it). Two alternatives were rejected:
+
+- **Ideas** (`teamclu::Idea`) sound note-shaped but are task objects — status,
+  claims, submissions, parent links. "周会挪到周四" is not a work item.
+- **`send_prompt`**, the way chat does it, starts a runtime and produces an
+  answer. `insert_message` writes the row without waking an agent, which makes
+  "no reply" structural rather than a promise.
+
+**The device was lying, and now isn't.** `commitHold(Mode::Note)` showed
+`Saving` then `Saved` on a **timer** (`SavingToSavedMs`), whether or not
+anything had been stored — the same defect the chat path had before §13.6 gave
+it real markers. Fixed the same way and with the same `_agentExpected` switch:
+
+- **Unbound** (no MQTT session): the timer stays, so the gesture is still
+  demonstrable offline.
+- **Bound**: `Saving` waits for amuxd's `note_saved`, and falls to the
+  `NoAgent` error screen after `AgentTimeoutMs` if nothing arrives. Silence now
+  means "it did not save", which for a capture device is the one thing that
+  must not be misreported.
+
+A late `note_saved` — arriving after the deadline already showed Error —
+replaces the error with `Saved`. Leaving the error up would be the same lie
+pointing the other way.
+
+**The transcript comes back with the marker.** `note_saved` carries
+`{time, text}`, because the device never had the text: it shipped Opus frames
+and only amuxd knows what they transcribed to. This is what lets the Notes
+screen show real entries instead of the three placeholders `main.cpp` seeds.
+Rendering them still needs the GB2312 font (M3-8) — the wire is done, the
+glyphs are not.
+
+**`FanOutSink`.** The router holds one sink but there are now two consumers, so
+both receive every final and each ignores the intent that is not theirs. Adding
+a third intent later means adding a sink, not editing a `match` in the routing
+layer.
+
+**Open piece.** `BackendNoteStore` takes its session id at construction,
+because the daemon has no per-device notes session to resolve yet. That arrives
+with M2-2 pairing — the same gap that means nothing is subscribed to
+`voice/mic` to deliver a note in the first place. The write itself is complete
+and tested against `MockBackend`. The device's `turn_start` session hint is
+deliberately *not* used, for the reason §13.7 gives about chat.
+
+## 13.9 Speech goes hosted, via an FC-minted credential (supersedes §13.5/§13.6's vendor choice)
+
+**The self-hosted plan was wrong and is withdrawn.** §13.5 and §13.6 chose
+local FunASR and CosyVoice, and the stated reason — "no API key exists" — was
+an operational fact doing an architect's job. It produced a design where every
+user hosts a 0.5B autoregressive TTS and a Paraformer ASR. That is a dev-machine
+hack, not a product.
+
+The numbers, once actually checked:
+
+| | FC's ECS box | a dev laptop |
+|---|---|---|
+| CPU | 4 vCPU Xeon | Apple M4, 10 cores |
+| RAM | 14 GB | 16 GB |
+| free disk | **8 GB** (79% used) | 321 GB |
+| GPU | **none** | M4 / MPS |
+
+Two independent blockers on the shared box: the images alone (~7–10 GB FunASR,
+~10–15 GB CosyVoice) do not fit in 8 GB, and with no GPU a 0.5B autoregressive
+TTS runs far slower than real time on 4 cores — §9's 90–200 ms first chunk is
+not reachable. Moving inference to the laptop dodges both but assumes hardware
+no user has.
+
+**Decision: hosted Alibaba NLS, reached with a credential FC mints.** The same
+Paraformer and CosyVoice models, without hosting them.
+
+The remaining choice was *how* "via Cloud API" works, and the repo already
+answered it:
+
+- **Rejected — proxy the audio through FC.** It would put a WebSocket audio
+  relay inside a container that serves JSON REST, on the same 4-vCPU box as
+  Postgres, EMQX and MinIO, and add a hop to a tight latency budget.
+- **Chosen — FC mints, amuxd connects direct.** Exactly what
+  `POST /v1/teams/:id/litellm/setup` already does for LLM traffic. NLS's
+  `CreateToken` fits perfectly: the AccessKey never leaves FC, and what reaches
+  the daemon expires on its own. Audio never touches FC.
+
+DashScope/百炼 was the other vendor candidate and lost on this specific point:
+it authenticates with a long-lived `sk-` key and has no short-lived token to
+mint, so "hand out a credential" would mean handing out the real key.
+
+**Shipped:** `POST /v1/teams/{teamId}/voice/credentials` (OpenAPI +
+`lib/aliyun-nls.ts` + both repo backends + route), returning
+`{ gatewayEndpoint, appKey, token, expiresAt, sttModel, ttsVoice }`.
+
+Three things worth knowing:
+
+- **Voice reads its own `VOICE_*` AccessKey and never inherits
+  `ACCESS_KEY_ID`**, which on self-host is the *MinIO root credential*. That
+  inheritance is what broke app deploys before (`provisioning/apps-oss.ts`), and
+  signing an NLS request with a MinIO key fails upstream naming nothing.
+- **503 vs 502 are kept distinct.** 503 `voice_unavailable` means "not
+  configured" and names the empty variable; 502 `voice_upstream_failed` means
+  "configured, vendor call failed". Collapsing them sends whoever is on call to
+  the wrong place.
+- **Membership is checked before the upstream call**, so a non-member cannot
+  spend the deployment's NLS quota or learn whether voice is configured.
+
+**What this does and does not invalidate in §13.5/§13.6:**
+
+- *Unaffected* — everything device-facing: `spk.rs`'s Opus framing, pacing and
+  ctl timing, `chat_sink`, `note_sink`, `FanOutSink`, `SentenceChunker`,
+  `mqtt_publisher`, and both provider traits. The vendor sits behind the trait.
+- *Superseded* — `cosyvoice.rs` and `funasr.rs`, the two self-hosted clients.
+  Keep them only if private deployment becomes a requirement.
+- *Still needed, probably* — `resample.rs`. A hosted API may let us request
+  16 kHz directly, but Opus only accepts 8/12/16/24/48 kHz and vendors commonly
+  emit 22.05 or 44.1 kHz. Do not delete it before the real output rate is known.
+- *Reinstated* — the §8.3 cost model. It was marked "largely moot" on the
+  self-hosted premise; NLS bills per usage and this device streams whenever a
+  button is held.
+
+**amuxd side, and it has been run for real.** `SttBackend::AliyunNls` and
+`TtsBackend::AliyunTts` are implemented (`voice/nls.rs` for the shared
+envelope, `voice/aliyun_stt.rs`, `voice/aliyun_tts.rs`,
+`voice/credentials.rs`). A console-issued token made it possible to exercise
+the live gateway without an AccessKey pair, and the closed-loop test —
+synthesise a sentence, Opus-encode it the way the device does, feed it back at
+20 ms, transcribe — returns the sentence verbatim.
+
+Three things the live run settled that no amount of local testing could:
+
+1. **Audio before `TranscriptionStarted` is rejected outright**:
+   `TaskFailed 40000002 Gateway:MESSAGE_INVALID:Invalid binary message while
+   server state is 'ROUTING'`. The first implementation streamed frames as soon
+   as it had sent `StartTranscription`, which on hardware would have failed
+   *every* turn — mic frames arrive milliseconds after `turn_start`. Frames are
+   now buffered across the handshake and flushed in order.
+2. **`longxiaochun` is not an NLS voice.** It is a CosyVoice/DashScope name and
+   the gateway answers `TtsClientError: Engine return error code: 418`. Working
+   voices are `zhixiaobai`, `xiaoyun`, `siqi`, `aixia`; the default moved to
+   `zhixiaobai` on both sides.
+3. **16 kHz PCM comes back directly**, so `resample.rs` really is out of this
+   path — measured, not assumed. It stays in the tree because the rate is a
+   *request* and a future voice or vendor may not honour it.
+
+Also observed: synthesis frames vary in size (8000 bytes typically, but 320 and
+296 both appeared), which is why the PCM decode carries a straddling byte
+rather than trusting alignment.
+
+Live tests live in `voice::aliyun_{stt,tts}::live`, `#[ignore]`d because they
+need a credential and spend vendor quota:
+
+```sh
+set -a; . deploy/self-host/.env; set +a
+TEAMCLU_VOICE_APPKEY=$VOICE_NLS_APPKEY \
+  cargo test -p amuxd --bin amuxd voice::aliyun -- --ignored --nocapture
+```
+
+**Still not run:** FC's `CreateToken` path. That needs an AccessKey pair, which
+does not exist yet — the console token bypasses it. The signing is pinned
+against Alibaba's documented worked example, which remains the strongest check
+available without a key.
+
 ## 14. Audio path — written, unverified
 
 Everything in `main/audio/` and the codec changes in `hal_audio.cpp` were
@@ -619,7 +907,76 @@ order they would fail:
 
 `audio::stats()` counts captured / published / dropped frames and is logged at
 `spk_end`, which is the cheapest way to tell whether frames flow at all without
-a scope.
+a scope. Now that the daemon actually sends `spk_end` (§13.6), that log line
+fires for the first time.
+
+### 14.1 Downlink — what to check when the first reply plays
+
+The daemon half is written and unit-tested but has never driven a speaker. In
+the order these would fail:
+
+1. **Is playback armed before the first frame?** `spk_start` must arrive before
+   any `voice/spk` publish, because `onSpkFrame` drops everything while
+   `g_playing` is false — the symptom is a clipped first syllable, or total
+   silence if the ctl is lost. The daemon publishes ctl at QoS 1 and audio at
+   QoS 0 specifically for this, and `spk_start` is only emitted once real audio
+   exists. `framesDroppedRx` counts what got dropped.
+2. **Is the sample rate right?** `CosyVoiceConfig::sample_rate` must match what
+   the server really emits (24 kHz for CosyVoice2, 22.05 kHz for CosyVoice1).
+   Wrong value = correct words at the wrong speed and pitch. This does not error
+   anywhere and no test can catch it.
+3. **Does pacing match consumption?** Frames go out at 20 ms intervals after a
+   200 ms prebuffer. If the device underruns (choppy audio), the prebuffer is
+   too small; if `framesDroppedRx` climbs, the HAL play queue is overflowing and
+   it is too large.
+4. **Does the face follow?** `thinking` → Think, `spk_start` → Speaking,
+   `spk_end` → idle. A face that sits on Think while audio plays means the ctl
+   topic is not being delivered even though `spk` is.
+
+A `funasr-wss-server` and a CosyVoice fastapi server both still need deploying
+before any of this can run at all.
+
+## 16. Changelog — rev 4 → rev 5
+
+Daemon-side only; no firmware changed and nothing new ran on hardware.
+
+**Built:**
+
+- `voice/tts.rs` — `TtsProvider` trait mirroring `SttProvider`, plus
+  `SentenceChunker`, which turns per-character token deltas into sentence-sized
+  synthesis requests.
+- `voice/cosyvoice.rs` — local CosyVoice client. One HTTP request per sentence,
+  streaming raw i16 PCM back, so sentence N+1 synthesises while N plays.
+- `voice/resample.rs` — windowed-sinc streaming resampler. **Not in any earlier
+  revision, and not optional:** CosyVoice emits 24 kHz and the device decodes
+  16 kHz.
+- `voice/spk.rs` — Opus 20 ms framing, paced publish to `voice/spk`, and the
+  `session`/`thinking`/`spk_start`/`spk_end`/`error` ctl the firmware has been
+  waiting for since rev 4.
+- `chat_sink` now drives the downlink through a `ReplySpeaker` seam, and
+  `VoiceRouter` cancels in-flight speech on `barge_in` and on a new `turn_start`.
+
+**Decisions made:**
+
+- TTS vendor: **CosyVoice local**, not Cartesia (§13.6). Same reasoning as
+  FunASR over Deepgram, and no API key exists for either hosted option.
+- Frames are **paced**, not blasted (§13.6). Barge-in is meaningless otherwise.
+- `ReplySpeaker::begin` runs **before** `send_prompt`, and drops the
+  subscription backlog. Either half wrong loses or duplicates the reply.
+
+**Found while building:**
+
+- The firmware's inbound ctl vocabulary already existed and the daemon was
+  sending none of it. The face's Think-screen deadline means that was not a
+  cosmetic gap: a working audio path with no `thinking`/`spk_start` would show
+  an error and then talk over it.
+- `teamclu_mqtt_rearchitecture.rs` pulled in all of `voice/mod.rs` for one type,
+  so it broke the moment a module there reached for `crate::http`. Narrowed to
+  the three files it actually needs. `--bin` builds never showed this;
+  `--all-targets` did.
+
+**Still not done:** M3-4 (note sink), deploying either server, and every
+hardware verification in §14.
 
 ## 15. Changelog — rev 3 → rev 4
 

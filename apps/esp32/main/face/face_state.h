@@ -118,6 +118,14 @@ public:
     void onAgentThinking();
     void onAgentSpeaking();
     void onAgentDone();
+    // A note turn landed. `time`/`text` come from amuxd, not from the device:
+    // the device only ever sent Opus, so the transcript is amuxd's to report.
+    // Adds the note to the list and shows the "saved" cue for real.
+    //
+    // Takes `nowMs` unlike its siblings above, because it is the only
+    // agent-driven signal that starts a *timed* screen — Saved returns to Idle
+    // after SavedToIdleMs, and arming that needs the clock.
+    void onNoteSaved(std::uint32_t nowMs, std::string time, std::string text);
     void onError(ErrorKind kind);
     void clearError();
 

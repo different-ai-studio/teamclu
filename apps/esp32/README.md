@@ -7,23 +7,30 @@ Hardware: ESP32-S3R8, 16 MB flash / 8 MB PSRAM, 1.75" round AMOLED 466×466
 (CO5300, QSPI), CST820B touch, ES8311 codec + MEMS mic + AW8737A amp, BMI270
 IMU, RX8130CE RTC, M5IOE1 I/O expander, M5PM1 PMIC, vibration motor, 450 mAh.
 
-## Status — milestone 1 (offline)
+## Status — milestone 3
 
-The interaction model from the design canvas, running on hardware with **no
-Wi-Fi, no MQTT and no audio**. Everything that would reach the network is a
-stub in `main.cpp` marked `MILESTONE 2`.
+**Verified on hardware:**
 
 - 10 face screens: idle / listen / think / reply / saving / saved / notes /
-  wifi / sleep / error
+  wifi / sleep / error, with CJK text on the notes screen
 - Two-button gesture model: hold-to-talk vs short-press, per button
 - Haptics on PTT-grab, first-reply, note-saved, error
-- RTC-driven clock on the idle screen
+- RTC-driven clock and battery on the idle screen
+- Wi-Fi provisioning (captive portal, device token typed in), MQTT over WSS,
+  retained state + LWT
+- The `voice/ctl` uplink: `turn_start` / `turn_end` round-trips 1:1 with the
+  broker, monotonic `seq`
 
-Builds clean on ESP-IDF 5.5 (1.33 MB, 74% of the app partition free) and the
-host tests pass. **Not yet run on hardware.**
+**Written but never run:** the entire audio path — capture, Opus encode,
+playback, and the amuxd→device ctl markers (`thinking`, `spk_start`,
+`spk_end`, `note_saved`). See §14 of the plan for what to check first, in the
+order it would fail.
 
-Not started: Wi-Fi, credential exchange, MQTT, Opus, STT/TTS, offline queue,
-light sleep, OTA.
+Builds clean on ESP-IDF 5.5 (2.3 MB, 55% of the app partition free) and the
+host tests pass (`./test/run.sh`).
+
+Not started: offline note queue (M3-6), device-side endpointing (M3-7), full
+GB2312 binfont for arbitrary note text (M3-8), OTA.
 
 ## Layout
 

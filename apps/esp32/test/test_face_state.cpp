@@ -139,6 +139,98 @@ void test_note_hold_flow()
     CHECK(s.screen() == Screen::Idle);
 }
 
+void test_silent_note_with_agent_expected_reports_no_agent()
+{
+    std::printf("note with a backend bound: silence is an error, not a smile\n");
+    Log log;
+    FaceState s(makeHooks(log));
+    s.setAgentExpected(true);
+
+    s.onButtonDown(Button::B, 0);
+    s.tick(FaceState::HoldThresholdMs);
+    s.onButtonUp(Button::B, 900);
+    CHECK(s.screen() == Screen::Saving);
+
+    // The old timer would have shown "saved" here whether or not amuxd stored
+    // anything. With a backend bound that cue is a claim, so it has to wait.
+    s.tick(900 + FaceState::SavingToSavedMs + 1);
+    CHECK(s.screen() == Screen::Saving);
+
+    s.tick(900 + FaceState::AgentTimeoutMs);
+    CHECK(s.screen() == Screen::Error);
+    CHECK(s.error() == ErrorKind::NoAgent);
+}
+
+void test_note_saved_marker_cancels_the_timeout()
+{
+    std::printf("note_saved arrives -> saved, then idle; no error fires\n");
+    Log log;
+    FaceState s(makeHooks(log));
+    s.setAgentExpected(true);
+
+    s.onButtonDown(Button::B, 0);
+    s.tick(FaceState::HoldThresholdMs);
+    s.onButtonUp(Button::B, 900);
+    CHECK(s.screen() == Screen::Saving);
+
+    s.onNoteSaved(1500, "09:12", "周会挪到周四");
+    CHECK(s.screen() == Screen::Saved);
+    CHECK(s.noteCount() == 1);
+    CHECK(s.notes()[0].time == "09:12");
+    CHECK(s.notes()[0].text == "周会挪到周四");
+
+    // The pending NoAgent deadline must be gone, not merely overtaken.
+    s.tick(900 + FaceState::AgentTimeoutMs);
+    CHECK(s.screen() != Screen::Error);
+
+    s.tick(1500 + FaceState::SavedToIdleMs);
+    CHECK(s.screen() == Screen::Idle);
+}
+
+void test_late_note_saved_replaces_the_error()
+{
+    std::printf("note_saved after the timeout still shows saved\n");
+    Log log;
+    FaceState s(makeHooks(log));
+    s.setAgentExpected(true);
+
+    s.onButtonDown(Button::B, 0);
+    s.tick(FaceState::HoldThresholdMs);
+    s.onButtonUp(Button::B, 900);
+    s.tick(900 + FaceState::AgentTimeoutMs);
+    CHECK(s.screen() == Screen::Error);
+
+    // A slow backend that eventually succeeded. Leaving the error up would be
+    // the same lie as the old fake smile, just pointing the other way.
+    s.onNoteSaved(60000, "09:13", "迟到的笔记");
+    CHECK(s.screen() == Screen::Saved);
+    CHECK(s.error() == ErrorKind::None);
+    CHECK(s.noteCount() == 1);
+}
+
+void test_note_saved_without_text_adds_no_blank_row()
+{
+    std::printf("note_saved with empty text adds nothing to the list\n");
+    Log log;
+    FaceState s(makeHooks(log));
+    s.onNoteSaved(1000, "09:14", "");
+    CHECK(s.screen() == Screen::Saved);
+    CHECK(s.noteCount() == 0);
+}
+
+void test_note_without_a_backend_still_demos_offline()
+{
+    std::printf("unbound note keeps the offline timer path\n");
+    Log log;
+    FaceState s(makeHooks(log));  // agentExpected defaults to false
+
+    s.onButtonDown(Button::B, 0);
+    s.tick(FaceState::HoldThresholdMs);
+    s.onButtonUp(Button::B, 900);
+    s.tick(900 + FaceState::SavingToSavedMs);
+    CHECK(s.screen() == Screen::Saved);
+}
+
 void test_short_press_b_toggles_notes()
 {
     std::printf("short press B toggles the notes screen\n");
@@ -379,6 +471,11 @@ int main()
     test_chat_hold_flow();
     test_short_press_a_interrupts_playback();
     test_note_hold_flow();
+    test_silent_note_with_agent_expected_reports_no_agent();
+    test_note_saved_marker_cancels_the_timeout();
+    test_late_note_saved_replaces_the_error();
+    test_note_saved_without_text_adds_no_blank_row();
+    test_note_without_a_backend_still_demos_offline();
     test_short_press_b_toggles_notes();
     test_sleep_gates_ptt();
     test_power_long_press();

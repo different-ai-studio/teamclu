@@ -41,6 +41,47 @@ void test_known_kinds()
     CHECK(parse(R"({"type":"spk_start"})").kind == IncomingCtl::Kind::SpkStart);
     CHECK(parse(R"({"type":"spk_end"})").kind == IncomingCtl::Kind::SpkEnd);
     CHECK(parse(R"({"type":"session","session":"s-1"})").kind == IncomingCtl::Kind::Session);
+    CHECK(parse(R"({"type":"note_saved","time":"09:12","text":"x"})").kind ==
+          IncomingCtl::Kind::NoteSaved);
+}
+
+void test_note_saved_carries_time_and_text()
+{
+    std::printf("note_saved carries the stored time and transcript\n");
+    const auto n = parse(R"({"type":"note_saved","time":"09:12","text":"周会挪到周四","seq":7})");
+    CHECK(n.kind == IncomingCtl::Kind::NoteSaved);
+    CHECK(n.time == "09:12");
+    CHECK(n.text == "周会挪到周四");
+}
+
+void test_note_text_with_quotes_and_escapes()
+{
+    std::printf("a transcript containing quotes does not derail the scan\n");
+    // Transcripts are free text from STT, so the one field most likely to
+    // carry a quote or a newline is exactly this one.
+    const auto n = parse(R"({"type":"note_saved","time":"10:00","text":"他说\"好\"\n然后走了"})");
+    CHECK(n.kind == IncomingCtl::Kind::NoteSaved);
+    CHECK(n.time == "10:00");
+    CHECK(n.text == "他说\"好\"\n然后走了");
+}
+
+void test_note_saved_missing_fields_are_empty_not_garbage()
+{
+    std::printf("note_saved without time/text degrades to empty strings\n");
+    const auto n = parse(R"({"type":"note_saved"})");
+    CHECK(n.kind == IncomingCtl::Kind::NoteSaved);
+    CHECK(n.time.empty());
+    CHECK(n.text.empty());
+}
+
+void test_note_text_is_not_confused_with_other_keys()
+{
+    std::printf("a value that reads like a key does not hijack text\n");
+    // The same trap that once ate the session id: "text" appearing as a
+    // *value* must not be taken for the key.
+    const auto n = parse(R"({"type":"note_saved","time":"text","text":"real"})");
+    CHECK(n.time == "text");
+    CHECK(n.text == "real");
 }
 
 void test_fields_extracted()
@@ -146,6 +187,10 @@ int main()
 {
     test_known_kinds();
     test_fields_extracted();
+    test_note_saved_carries_time_and_text();
+    test_note_text_with_quotes_and_escapes();
+    test_note_saved_missing_fields_are_empty_not_garbage();
+    test_note_text_is_not_confused_with_other_keys();
     test_unknown_type_is_forward_compatible();
     test_unreadable_type_is_unknown();
     test_truncated_but_readable_type_is_honoured();

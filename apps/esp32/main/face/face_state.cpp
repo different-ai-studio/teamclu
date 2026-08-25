@@ -202,8 +202,9 @@ void FaceState::tick(std::uint32_t nowMs)
                 armDeadline(nowMs, SavedToIdleMs, Screen::Idle);
                 break;
             case Screen::Error:
-                // Only reachable from the chat deadline above: amuxd said
-                // nothing for AgentTimeoutMs.
+                // Armed by either commitHold branch when an agent is expected:
+                // amuxd said nothing for AgentTimeoutMs, so neither the answer
+                // nor the note ever arrived. Same cause, same error.
                 onError(ErrorKind::NoAgent);
                 break;
             case Screen::Idle:
@@ -239,7 +240,17 @@ void FaceState::commitHold(Mode m, std::uint32_t nowMs)
         }
     } else {
         _screen = Screen::Saving;
-        armDeadline(nowMs, SavingToSavedMs, Screen::Saved);
+        if (_agentExpected) {
+            // Symmetric with Chat above: somebody should be storing this. The
+            // "saved" smile is a claim that it landed, so it now waits for
+            // amuxd's note_saved rather than a timer. Silence means the note
+            // did NOT land, and saying otherwise is the one lie a capture
+            // device cannot afford.
+            armDeadline(nowMs, AgentTimeoutMs, Screen::Error);
+        } else {
+            // No backend bound: keep the gesture demonstrable offline.
+            armDeadline(nowMs, SavingToSavedMs, Screen::Saved);
+        }
     }
 }
 
@@ -283,6 +294,24 @@ void FaceState::onAgentSpeaking()
 void FaceState::onAgentDone()
 {
     enterIdle();
+}
+
+void FaceState::onNoteSaved(std::uint32_t nowMs, std::string time, std::string text)
+{
+    // Cancels the AgentTimeoutMs deadline commitHold armed — the note landed
+    // inside the window, so the pending "nobody stored it" error is wrong now.
+    clearDeadline();
+    if (!text.empty()) {
+        addNote(std::move(time), std::move(text));
+    }
+    // Arrives while the face is on Saving in the normal case, but a late
+    // marker can land after the deadline already dropped us on Error. Showing
+    // Saved anyway is right: the note *did* land, and leaving the error up
+    // would be the same lie in the opposite direction.
+    _screen = Screen::Saved;
+    _error = ErrorKind::None;
+    fire(_hooks.vibrate, BumpDoneMs, BumpStrength);
+    armDeadline(nowMs, SavedToIdleMs, Screen::Idle);
 }
 
 void FaceState::onError(ErrorKind kind)

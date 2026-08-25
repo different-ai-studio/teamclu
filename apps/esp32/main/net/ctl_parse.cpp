@@ -129,11 +129,12 @@ std::string extractString(const char* json, std::size_t len, const char* key)
 
 IncomingCtl::Kind kindFromType(const std::string& type)
 {
-    if (type == "error")     return IncomingCtl::Kind::Error;
-    if (type == "thinking")  return IncomingCtl::Kind::Thinking;
-    if (type == "spk_start") return IncomingCtl::Kind::SpkStart;
-    if (type == "spk_end")   return IncomingCtl::Kind::SpkEnd;
-    if (type == "session")   return IncomingCtl::Kind::Session;
+    if (type == "error")      return IncomingCtl::Kind::Error;
+    if (type == "thinking")   return IncomingCtl::Kind::Thinking;
+    if (type == "spk_start")  return IncomingCtl::Kind::SpkStart;
+    if (type == "spk_end")    return IncomingCtl::Kind::SpkEnd;
+    if (type == "session")    return IncomingCtl::Kind::Session;
+    if (type == "note_saved") return IncomingCtl::Kind::NoteSaved;
     return IncomingCtl::Kind::Unknown;
 }
 
@@ -154,6 +155,10 @@ IncomingCtl parseIncomingCtl(const char* json, std::size_t len)
             break;
         case IncomingCtl::Kind::Session:
             out.session = extractString(json, len, "session");
+            break;
+        case IncomingCtl::Kind::NoteSaved:
+            out.time = extractString(json, len, "time");
+            out.text = extractString(json, len, "text");
             break;
         case IncomingCtl::Kind::Thinking:
         case IncomingCtl::Kind::SpkStart:

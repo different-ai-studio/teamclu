@@ -774,8 +774,13 @@ impl DaemonServer {
     // Subscribing to device voice topics awaits M2-2 pairing, but the
     // routing path is live: a forwarded VoiceMic/VoiceCtl reaches the
     // router and a turn_start/turn_end round-trip is exercised by tests.
+    // No credential source here: it needs a Backend, which is constructed
+    // later in startup than the router. Until that is rewired the router runs
+    // on the keyless local backend, and the hosted NLS arms refuse cleanly
+    // rather than panicking (plan §13.9).
     let voice_router_tx = match crate::voice::stt::build_provider(
         &crate::voice::stt::SttConfig::funasr_local(),
+        None,
     ) {
         Ok(provider) => {
             let router = crate::voice::adapter::VoiceRouter::new(

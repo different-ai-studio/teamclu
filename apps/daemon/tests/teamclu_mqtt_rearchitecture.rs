@@ -1,7 +1,18 @@
-// `subscriber` parses `voice/ctl` into `crate::voice::ctl::VoiceCtl`, so this
-// crate root needs `voice` even though it only pulls in two mqtt submodules.
-#[path = "../src/voice/mod.rs"]
-mod voice;
+// `subscriber` parses `voice/ctl` into `crate::voice::ctl::VoiceCtl`, and that
+// is the ONLY thing this crate root needs from the voice tree.
+//
+// `ctl` has no intra-module dependencies on purpose — `Intent` lives there
+// rather than in `stt` precisely so this stays a one-file include. Pulling in
+// `voice/mod.rs` instead would drag the speech backends, `crate::http` and
+// `crate::backend` into a test about MQTT topic parsing.
+//
+// `allow` mirrors the `#![allow(...)]` at the top of `voice/mod.rs`, which an
+// inline module does not inherit.
+#[allow(dead_code, unused_imports)]
+#[path = "../src/voice"]
+mod voice {
+    pub mod ctl;
+}
 
 #[path = "../src/mqtt/subscriber.rs"]
 mod subscriber;

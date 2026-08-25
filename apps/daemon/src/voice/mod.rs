@@ -19,12 +19,23 @@
 //!
 //! ## Current state
 //!
-//! Only the seam is here. `SttProvider` and its types are real and usable;
-//! `FunasrProvider` is a structural stub — config, validation, and builder
-//! are real, the streaming loop returns [`SttError::NotImplemented`] and is
-//! tagged `// M3-2`. The MQTT subscriber does not yet route `voice/mic` into
-//! a provider (that is M3-1). Wiring those two together is the rest of the
-//! milestone.
+//! The whole chain now exists in code — [`adapter`] routes turns, [`funasr`]
+//! transcribes, [`chat_sink`] prompts the agent, and [`spk`] speaks the reply
+//! back through [`cosyvoice`] → [`resample`] → Opus. **None of it has run.**
+//! Two things stand between here and a working device:
+//!
+//! 1. **Nothing subscribes to `voice/mic` / `voice/ctl`.** `parse_incoming`
+//!    understands both, but no subscription is ever issued, because the
+//!    device's `(team, actor)` comes from M2-2 pairing. Until that lands, the
+//!    router is reachable only from tests.
+//! 2. **The daemon still builds the router with `LogTranscriptSink`** (see
+//!    `daemon::server`), not [`ChatSink`] + [`SpeechSynthesizer`]. The runtime
+//!    adapter those need is constructed later in startup than the router is.
+//!
+//! Neither is a gap in this module; both are wiring in `daemon::server`. The
+//! backends also need deploying — there is no `funasr-wss-server` and no
+//! CosyVoice server anywhere yet, so both clients are written against
+//! documentation rather than an observed wire.
 //!
 //! ## Topic layout
 //!
@@ -43,12 +54,34 @@
 #![allow(dead_code, unused_imports)]  // M3-1 (subscriber routing) + M3-2 (funasr WSS) consume these
 
 pub mod adapter;
+pub mod aliyun_stt;
+pub mod aliyun_tts;
+pub mod chat_sink;
+pub mod cosyvoice;
+pub mod credentials;
 pub mod ctl;
 pub mod funasr;
+pub mod mqtt_publisher;
+pub mod nls;
+pub mod note_sink;
+pub mod resample;
+pub mod spk;
 pub mod stt;
+pub mod tts;
 
-pub use adapter::{DeviceKey, LogTranscriptSink, TranscriptSink, VoiceEvent, VoiceRouter};
+pub use adapter::{
+    DeviceKey, FanOutSink, LogTranscriptSink, TranscriptSink, VoiceEvent, VoiceRouter,
+};
+pub use chat_sink::ChatSink;
+pub use aliyun_stt::AliyunNlsProvider;
+pub use aliyun_tts::{AliyunTtsConfig, AliyunTtsProvider};
+pub use cosyvoice::{CosyVoiceConfig, CosyVoiceProvider};
+pub use credentials::{CloudApiCredentials, CredentialSource, StaticCredentials, VoiceCredentials};
 pub use ctl::VoiceCtl;
+pub use mqtt_publisher::TransportVoicePublisher;
+pub use note_sink::{BackendNoteStore, Note, NoteSink, NoteStore};
+pub use spk::{ReplySpeaker, SpeechSynthesizer, SpkConfig, VoicePublisher};
+pub use tts::{TtsBackend, TtsConfig, TtsError, TtsProvider, TtsStream};
 pub use stt::{
     AudioFormat, AudioFrame, Intent, SttBackend, SttConfig, SttError, SttProvider, SttStream,
     Transcript,

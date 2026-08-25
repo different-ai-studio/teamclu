@@ -12,16 +12,14 @@ use bytes::Bytes;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-/// Which gesture started the capture. `Note` has no TTS downstream and is
-/// read back by the user, so providers may trade first-partial latency for
-/// final-accuracy (e.g. skip partials, run a larger model). `Chat` wants the
-/// first partial ASAP.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Intent {
-    Chat,
-    Note,
-}
+/// Re-exported from [`super::ctl`], where it is defined.
+///
+/// `Intent` arrives on the `voice/ctl` wire, so that is where it lives — and
+/// keeping it there means `ctl` has no dependency on this module. That matters
+/// beyond tidiness: the MQTT subscriber pulls in `voice::ctl` alone, and a
+/// `ctl -> stt` edge would drag every speech backend into build targets that
+/// only ever wanted to parse a control message.
+pub use super::ctl::Intent;
 
 /// Wire audio format of an [`AudioFrame`]. The device always sends Opus; the
 /// enum exists so a provider that already decoded to PCM locally can hand the
@@ -164,16 +162,25 @@ impl std::fmt::Debug for dyn SttProvider {
 /// Build a boxed provider from config. The voice adapter (M3-1) will call
 /// this once per device session. Each variant that has no adapter yet returns
 /// [`SttError::NotImplemented`] with its milestone tag.
-pub fn build_provider(cfg: &SttConfig) -> Result<Box<dyn SttProvider>, SttError> {
+pub fn build_provider(
+    cfg: &SttConfig,
+    credentials: Option<std::sync::Arc<dyn super::credentials::CredentialSource>>,
+) -> Result<Box<dyn SttProvider>, SttError> {
     match cfg.backend {
         SttBackend::FunasrLocal => Ok(Box::new(super::funasr::FunasrProvider::default())),
+        // Hosted NLS is the current default per plan §13.9. It cannot be built
+        // without a credential source: the AccessKey lives in FC and this
+        // process only ever holds a minted, expiring token.
+        SttBackend::AliyunNls => match credentials {
+            Some(source) => Ok(Box::new(super::aliyun_stt::AliyunNlsProvider::new(source))),
+            None => Err(SttError::NotImplemented(
+                "AliyunNls",
+                "needs a CredentialSource (POST /v1/teams/:id/voice/credentials)",
+            )),
+        },
         SttBackend::Deepgram => Err(SttError::NotImplemented(
             "Deepgram",
-            "M3-2: streaming WSS adapter, native Opus ingest",
-        )),
-        SttBackend::AliyunNls => Err(SttError::NotImplemented(
-            "AliyunNls",
-            "M3-2: NLS WSS + Opus→PCM decode",
+            "no API key exists; superseded by AliyunNls (plan §13.9)",
         )),
     }
 }
@@ -260,16 +267,55 @@ mod tests {
         let cfg = SttConfig {
             backend: SttBackend::Deepgram,
         };
-        let err = build_provider(&cfg).expect_err("deepgram not implemented");
+        let err = build_provider(&cfg, None).expect_err("deepgram not implemented");
         match err {
-            SttError::NotImplemented("Deepgram", tag) => assert!(tag.starts_with("M3-2")),
+            // The tag has to say *why*, since Deepgram is not coming back:
+            // it was superseded, not merely deferred to a later milestone.
+            SttError::NotImplemented("Deepgram", tag) => {
+                assert!(tag.contains("AliyunNls"), "got {tag:?}")
+            }
             other => panic!("expected NotImplemented, got {other:?}"),
         }
     }
 
     #[test]
+    fn aliyun_nls_without_credentials_is_refused_not_silently_broken() {
+        // The AccessKey lives in FC; this process only ever holds a minted
+        // token. A provider built without a source would fail at the first
+        // turn instead of at wiring time.
+        let cfg = SttConfig {
+            backend: SttBackend::AliyunNls,
+        };
+        let err = build_provider(&cfg, None).expect_err("no credential source");
+        match err {
+            SttError::NotImplemented("AliyunNls", tag) => {
+                assert!(tag.contains("credentials"), "got {tag:?}")
+            }
+            other => panic!("expected NotImplemented, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aliyun_nls_builds_with_a_credential_source() {
+        use crate::voice::credentials::{StaticCredentials, VoiceCredentials};
+        let creds = std::sync::Arc::new(StaticCredentials(VoiceCredentials {
+            gateway_endpoint: "wss://nls/ws/v1".into(),
+            app_key: "ak".into(),
+            token: "tok".into(),
+            expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            stt_model: "paraformer-realtime-v2".into(),
+            tts_voice: "zhixiaobai".into(),
+        }));
+        let cfg = SttConfig {
+            backend: SttBackend::AliyunNls,
+        };
+        let p = build_provider(&cfg, Some(creds)).expect("builds");
+        assert_eq!(p.name(), "aliyun-nls");
+    }
+
+    #[test]
     fn factory_builds_funasr() {
-        let p = build_provider(&SttConfig::funasr_local()).expect("funasr builds");
+        let p = build_provider(&SttConfig::funasr_local(), None).expect("funasr builds");
         assert_eq!(p.name(), "funasr");
     }
 }

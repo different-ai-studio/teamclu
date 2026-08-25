@@ -409,7 +409,7 @@ mod tests {
     fn factory_returns_funasr_provider() {
         let p = build_provider(&SttConfig {
             backend: SttBackend::FunasrLocal,
-        })
+        }, None)
         .expect("funasr builds");
         assert_eq!(p.name(), "funasr");
     }

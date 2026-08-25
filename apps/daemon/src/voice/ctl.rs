@@ -13,7 +13,16 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::stt::Intent;
+/// Which gesture started the capture. `Note` has no TTS downstream and is
+/// read back by the user, so providers may trade first-partial latency for
+/// final-accuracy (e.g. skip partials, run a larger model). `Chat` wants the
+/// first partial ASAP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Intent {
+    Chat,
+    Note,
+}
 
 /// A parsed `voice/ctl` JSON message. Field `type` is exposed as `kind`
 /// because `type` is a reserved word.

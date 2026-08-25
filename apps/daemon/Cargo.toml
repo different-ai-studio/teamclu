@@ -13,6 +13,7 @@ futures-util = "0.3"
 # Pinned to the version rumqttc's `websocket` feature already resolves, so the
 # FunASR client does not drag a second tungstenite into the tree.
 tokio-tungstenite = "0.21"
+audiopus = "0.2"
 
 # Protobuf
 prost = { workspace = true }
