@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Sparkles, Plug, Box, Bookmark } from 'lucide-react'
 import { useUIStore } from '@/stores/ui'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
+import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
 import { useTeamShareBrowserStore, type TeamShareSection } from '@/stores/team-share-browser'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -125,12 +126,30 @@ export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: Te
   // Knowledge conflicts happen in the background — the daemon syncs on a timer
   // whether or not this column is open — so the dot is how a member finds out
   // that a document of theirs was overwritten and is waiting on a decision.
-  const knowledgeConflicts = useTeamConflictsStore((s) => s.entries.length)
+  // Documents, not sidecars: one note that conflicted twice is still one
+  // decision to go and make, and that is what the label says.
+  const conflictsBySyncKey = useTeamConflictsStore((s) => s.bySyncKey)
+  const knowledgeConflicts = React.useMemo(
+    () => Object.keys(conflictsBySyncKey).length,
+    [conflictsBySyncKey],
+  )
   const loadConflicts = useTeamConflictsStore((s) => s.load)
   const conflictTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
   React.useEffect(() => {
     if (!conflictTeamId) return
     void loadConflicts()
+    // The dot exists to announce conflicts created while the user is somewhere
+    // else — but the only other refreshes live inside the Knowledge column,
+    // which is exactly where the user is NOT. The nav is always mounted, so
+    // this is where "check again" belongs: coming back to the window, and any
+    // sync finishing anywhere in the app. Both are local reads.
+    const recheck = () => void loadConflicts()
+    window.addEventListener('focus', recheck)
+    window.addEventListener(TEAM_SYNCED_EVENT, recheck)
+    return () => {
+      window.removeEventListener('focus', recheck)
+      window.removeEventListener(TEAM_SYNCED_EVENT, recheck)
+    }
   }, [conflictTeamId, loadConflicts])
 
   const counts: Record<TeamShareSection, number> = {

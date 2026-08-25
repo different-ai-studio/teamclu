@@ -7,6 +7,21 @@
  */
 import { cn } from '@/lib/utils'
 
+/**
+ * Above this many LCS cells the table costs more than the answer is worth: a
+ * 2000×2000 comparison already allocates 4M numbers on the main thread, and
+ * every line becomes its own DOM node with no virtualization. Conflicts happen
+ * on long shared notes, so this ceiling is reachable in normal use.
+ */
+const MAX_DIFF_CELLS = 1_000_000
+
+/** Whether a line-by-line comparison of these two texts is worth attempting. */
+export function canDiff(oldContent: string, newContent: string): boolean {
+  const m = oldContent.split('\n').length
+  const n = newContent.split('\n').length
+  return m * n <= MAX_DIFF_CELLS
+}
+
 export interface DiffLine {
   type: 'added' | 'removed' | 'unchanged'
   content: string
@@ -60,6 +75,20 @@ interface SimpleDiffProps {
 }
 
 export function SimpleDiff({ oldContent, newContent }: SimpleDiffProps) {
+  if (!canDiff(oldContent, newContent)) {
+    // Showing the newer text beats freezing the tab; the reader can still see
+    // what the other side holds, just not what moved.
+    return (
+      <div>
+        <div className="border-b border-border px-3 py-2 text-[11.5px] text-muted-foreground">
+          Too large to compare line by line — showing the other version as-is.
+        </div>
+        <pre className="whitespace-pre-wrap break-all px-3 py-2 text-xs font-mono leading-relaxed">
+          {newContent}
+        </pre>
+      </div>
+    )
+  }
   const lines = computeSimpleDiff(oldContent, newContent)
   return (
     <pre className="text-xs font-mono leading-relaxed">

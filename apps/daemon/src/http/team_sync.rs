@@ -695,19 +695,27 @@ fn apply_conflict_decision(
             .map_err(|e| DecisionError::Invalid(format!("invalid path: {e}")))?;
     }
 
+    // The named sidecar may have gone between the scan and this request —
+    // another window resolved it, or the user deleted it by hand. That is
+    // "already done", and saying so beats the alternative: KeepLocal used to
+    // fall through with nothing restored, mark the document dirty anyway, and
+    // report success — which pushed the REMOTE content back up while telling
+    // the user their own copy had been restored.
+    if !sidecar_abs.is_file() {
+        return Ok(None);
+    }
+
     let mut st = crate::sync::oss::state::LocalSyncState::load_at(team_id)
         .map_err(|e| DecisionError::Failed(format!("load sync state: {e}")))?;
 
     match choice {
         crate::sync::oss::ConflictChoice::KeepLocal => {
-            if sidecar_abs.is_file() {
-                let bytes = std::fs::read(&sidecar_abs)
-                    .map_err(|e| DecisionError::Failed(format!("read sidecar: {e}")))?;
-                // Restore first, delete second: a failure in between leaves the
-                // user's bytes recoverable from the sidecar rather than gone.
-                write_atomic(team_id, &original_abs, &bytes)
-                    .map_err(|e| DecisionError::Failed(format!("restore local copy: {e}")))?;
-            }
+            let bytes = std::fs::read(&sidecar_abs)
+                .map_err(|e| DecisionError::Failed(format!("read sidecar: {e}")))?;
+            // Restore first, delete second: a failure in between leaves the
+            // user's bytes recoverable from the sidecar rather than gone.
+            write_atomic(team_id, &original_abs, &bytes)
+                .map_err(|e| DecisionError::Failed(format!("restore local copy: {e}")))?;
             let _ = std::fs::remove_file(&sidecar_abs);
             if let Some(fs) = st.files.get_mut(path) {
                 // mtime/size are deliberately left at the last-synced baseline:
@@ -1645,6 +1653,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(acted, None);
+    }
+
+    #[test]
+    fn a_sidecar_that_is_already_gone_changes_nothing() {
+        let fx = ConflictFixture::new();
+        fx.write("knowledge/note.md", "remote wins");
+        fx.seed_state("knowledge/note.md", "hash-of-remote");
+
+        // The UI names a sidecar that another window has already resolved.
+        let acted = apply_conflict_decision(
+            &fx.team_id,
+            "knowledge/note.md",
+            Some("knowledge/note.conflict.1000.aabbccdd.md"),
+            crate::sync::oss::ConflictChoice::KeepLocal,
+        )
+        .unwrap();
+
+        assert_eq!(acted, None, "nothing was there to act on");
+        // The document must NOT be queued for push: it holds the remote copy,
+        // and pushing it would send that back up as if the user had chosen it.
+        assert!(!fx.state_for("knowledge/note.md").dirty);
+        assert_eq!(fx.read("knowledge/note.md"), "remote wins");
     }
 
     #[test]
