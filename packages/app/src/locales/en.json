@@ -2719,6 +2719,22 @@
     "remoteAhead": "A newer version is waiting in the cloud",
     "both": "Changed on both sides — the next sync will conflict"
   },
+  "cloudVersion": {
+    "title": "Cloud version",
+    "tabLabel": "Cloud version",
+    "menuItem": "Show the cloud version",
+    "subtitle": "Last changed {{time}}{{by}}",
+    "byAuthor": " by {{who}}",
+    "useThis": "Overwrite my copy with this",
+    "useThisTitle": "Overwrite the local document?",
+    "useThisDescription": "The cloud version replaces what is on this disk. Anything you have not pushed is lost.",
+    "useThisConfirm": "Overwrite",
+    "restored": "The cloud version was written to this document",
+    "restoreFailed": "Could not restore: {{msg}}",
+    "notPushed": "This document only exists here — the cloud has no copy of it yet.",
+    "unreadable": "The cloud copy cannot be read here: it is either binary, or encrypted with a team secret this device does not have.",
+    "notTeamContent": "This file is not part of the team knowledge base."
+  },
   "knowledgeConflict": {
     "title": "Conflict",
     "tabLabel": "Conflict",

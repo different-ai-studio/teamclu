@@ -7,7 +7,7 @@ import { useOssSyncStore } from '@/stores/oss-sync'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
 import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
 import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
-import { openKnowledgeConflict } from '@/lib/tabs/open-conflict'
+import { openKnowledgeConflict } from '@/lib/tabs/knowledge-tabs'
 import { formatRelativeTime, formatDateTime } from '@/lib/date-format'
 
 /** How long a sync has to run before the bar is worth showing. */

@@ -24,7 +24,7 @@ const { refresh, syncNow, openKnowledgeConflict, absPathFor } = vi.hoisted(() =>
   absPathFor: (key: string) => `/knowledge-root/${key.slice('knowledge/'.length)}`,
 }))
 
-vi.mock('@/lib/tabs/open-conflict', () => ({ openKnowledgeConflict }))
+vi.mock('@/lib/tabs/knowledge-tabs', () => ({ openKnowledgeConflict }))
 const cloud = vi.hoisted(() => ({ available: true }))
 vi.mock('@/hooks/use-team-cloud-sync', () => ({
   useTeamCloudSync: () => ({ available: cloud.available, syncing: false, syncNow }),

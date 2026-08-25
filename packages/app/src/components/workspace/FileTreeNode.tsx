@@ -18,6 +18,7 @@ import {
   AppWindow,
   History,
   AlertTriangle,
+  Cloud,
 } from "lucide-react";
 
 import { cn } from '@/lib/utils';
@@ -27,7 +28,7 @@ import { useCurrentTeamStore } from '@/stores/current-team';
 import { useVersionHistoryStore } from '@/stores/version-history';
 import { encodeVersionHistoryTarget } from '@/lib/tabs/teamshare-target';
 import type { SyncBadge } from '@/lib/team-sync-badges';
-import { openKnowledgeConflict } from '@/lib/tabs/open-conflict';
+import { openKnowledgeConflict, openCloudVersion } from '@/lib/tabs/knowledge-tabs';
 import { getFileIcon } from '@/lib/file-icons';
 import { formatDateTime, formatRelativeTime } from '@/lib/date-format';
 import type { FileNode } from "@/stores/workspace";
@@ -207,6 +208,8 @@ export interface FileTreeItemProps {
    * everything else — a workspace file has no cloud counterpart to differ from.
    */
   syncStatus?: SyncBadge | null;
+  /** True for a team-knowledge document, which has a cloud copy to look at. */
+  isTeamKnowledge?: boolean;
   compactName?: string;
   compactedPaths?: string[];
   onCollapseCompacted: (paths: string[]) => void;
@@ -253,6 +256,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   isTeamCluTeam,
   teamSyncing,
   teamLastSyncAt,
+  isTeamKnowledge,
   syncStatus,
   onSelectFile,
   onSelectFileRange,
@@ -540,6 +544,14 @@ export const FileTreeItem = React.memo(function FileTreeItem({
           >
             <AlertTriangle className="h-4 w-4" />
             {t('knowledgeConflict.resolveAction', 'Resolve conflict')}
+          </ContextMenuItem>
+        )}
+        {isTeamKnowledge && (
+          <ContextMenuItem
+            onSelect={guardedMenuAction(() => openCloudVersion(node.path, t('cloudVersion.tabLabel', 'Cloud version')))}
+          >
+            <Cloud className="h-4 w-4" />
+            {t('cloudVersion.menuItem', 'Show the cloud version')}
           </ContextMenuItem>
         )}
         {!isDirectory && (

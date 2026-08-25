@@ -1190,6 +1190,11 @@ export function FileTree({
         ? badgeForDirectory(syncKey, badges)
         : (badges[syncKey] ?? null);
     })(),
+    // Whether the row has a cloud counterpart at all — which is what decides
+    // if "show the cloud version" is a meaningful thing to offer on it.
+    isTeamKnowledge:
+      node.type !== 'directory' &&
+      teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath }) !== null,
     onSelectFile: selectFile,
     onSelectFileRange: selectFileRange,
     onToggleFileSelection: toggleFileSelection,

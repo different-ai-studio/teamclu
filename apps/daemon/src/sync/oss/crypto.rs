@@ -97,6 +97,24 @@ pub fn is_encrypted_blob(bytes: &[u8]) -> bool {
         && matches!(bytes[4], VERSION_V1 | VERSION_V2)
 }
 
+/// Turn a blob fetched from object storage into file bytes.
+///
+/// The single entry point for every read path — the sync pull, the version
+/// preview, the restore. Knowledge content is uploaded as plaintext, so most
+/// blobs need nothing done to them; anything carrying the AMXC envelope was
+/// written before that change and still needs the team key, which this device
+/// may simply not have (the key is pasted by hand and nothing ever checked that
+/// two members pasted the same one).
+pub fn decode_blob(blob: Vec<u8>, key: Option<&[u8; 32]>) -> Result<Vec<u8>, String> {
+    if !is_encrypted_blob(&blob) {
+        return Ok(blob);
+    }
+    let key = key.ok_or_else(|| {
+        "crypto: blob is encrypted but this device has no team secret to decrypt it".to_string()
+    })?;
+    decrypt_blob(&blob, key)
+}
+
 /// Decrypt an AMXC blob (v1 or v2), returning plaintext.
 pub fn decrypt_blob(blob: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
     if blob.len() < 5 {
@@ -188,6 +206,25 @@ fn inflate(data: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_handles_both_shapes_and_refuses_to_guess() {
+        let key = [7u8; 32];
+        let plain = b"# note\n\njust text".to_vec();
+
+        // What every new write looks like: no key involved.
+        assert_eq!(decode_blob(plain.clone(), None).unwrap(), plain);
+        assert_eq!(decode_blob(plain.clone(), Some(&key)).unwrap(), plain);
+
+        // What is already in object storage.
+        let envelope = encrypt_blob(&plain, &key).unwrap();
+        assert_eq!(decode_blob(envelope.clone(), Some(&key)).unwrap(), plain);
+
+        // No key, or the wrong one: an error, never ciphertext handed back as
+        // if it were the document.
+        assert!(decode_blob(envelope.clone(), None).is_err());
+        assert!(decode_blob(envelope, Some(&[1u8; 32])).is_err());
+    }
 
     #[test]
     fn envelopes_are_recognised_and_plaintext_is_not() {

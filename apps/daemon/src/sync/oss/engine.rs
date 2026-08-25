@@ -13,7 +13,7 @@ use futures::StreamExt;
 
 use super::{
     conflict::write_conflict_sidecar,
-    crypto::{decrypt_blob, is_encrypted_blob, sha256_hex},
+    crypto::sha256_hex,
     error::SyncError,
     fc_client::{
         BatchItemOutcome, CompleteResult, DeleteBatchItem, FcClient, ManifestItem, PrepareBatchItem,
@@ -349,24 +349,10 @@ struct FailedPull {
     error: SyncError,
 }
 
-/// Turn a downloaded blob into file bytes.
-///
-/// Knowledge content is uploaded as plaintext, so most blobs need nothing done
-/// to them. Anything carrying the AMXC envelope was written before that change
-/// and still needs the team key — which this device may simply not have, since
-/// the key is pasted by hand and nothing ever checked that two members pasted
-/// the same one. That case is an error, and the caller quarantines the file
-/// rather than wedging the whole sync on it.
+/// [`crypto::decode_blob`] in this module's error type. A blob it cannot open is
+/// a quarantine entry, not a reason to wedge the whole sync.
 fn decode_pulled_blob(blob: Vec<u8>, key: Option<&[u8; 32]>) -> Result<Vec<u8>, SyncError> {
-    if !is_encrypted_blob(&blob) {
-        return Ok(blob);
-    }
-    let key = key.ok_or_else(|| {
-        SyncError::Crypto(
-            "blob is encrypted but this device has no team secret to decrypt it".to_string(),
-        )
-    })?;
-    decrypt_blob(&blob, key).map_err(SyncError::Crypto)
+    super::crypto::decode_blob(blob, key).map_err(SyncError::Crypto)
 }
 
 /// Reports one unit of transfer progress when it goes out of scope.

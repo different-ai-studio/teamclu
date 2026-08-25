@@ -768,12 +768,15 @@ async fn fc_client_from_store(
     state: &HttpState,
     team_id: &str,
     fc_endpoint: Option<String>,
-) -> Result<(crate::sync::oss::fc_client::FcClient, String), HttpError> {
+) -> Result<(crate::sync::oss::fc_client::FcClient, Option<String>), HttpError> {
+    // Optional: content goes up as plaintext now, so the secret is only needed
+    // to open blobs written before that change. Demanding it here used to make
+    // version history and restore unusable on a device that never had one.
     let team_secret = state
         .sync_dispatcher
         .secrets()
         .resolve_team_secret(team_id, None)
-        .map_err(|e| HttpError::validation(format!("no OSS team secret: {e}")))?;
+        .ok();
     let jwt = state
         .sync_dispatcher
         .oss_jwt()
@@ -791,6 +794,20 @@ async fn fc_client_from_store(
         crate::sync::oss::fc_client::FcClient::new(base, jwt),
         team_secret,
     ))
+}
+
+/// Derive the content key when this device has a team secret at all.
+///
+/// `None` is a normal state, not a failure: it only means legacy (encrypted)
+/// blobs are unreadable here, which `decode_blob` reports per blob.
+fn optional_team_key(secret: Option<&str>) -> Result<Option<[u8; 32]>, HttpError> {
+    match secret {
+        Some(s) => Ok(Some(
+            crate::team_shared_env::derive_key(s)
+                .map_err(|e| HttpError::internal(format!("derive key: {e}")))?,
+        )),
+        None => Ok(None),
+    }
 }
 
 /// An `FcClient` for calls that only read metadata.
@@ -986,8 +1003,7 @@ pub async fn restore_version(
     crate::sync::oss::path_validator::validate(&body.path)
         .map_err(|e| HttpError::validation(format!("invalid path: {e}")))?;
     let (fc, team_secret) = fc_client_from_store(&state, &body.team_id, body.fc_endpoint).await?;
-    let key = crate::team_shared_env::derive_key(&team_secret)
-        .map_err(|e| HttpError::internal(format!("derive key: {e}")))?;
+    let key = optional_team_key(team_secret.as_deref())?;
 
     let mut st = crate::sync::oss::state::LocalSyncState::load_at(&body.team_id)
         .map_err(|e| HttpError::internal(format!("load sync state: {e}")))?;
@@ -1000,8 +1016,8 @@ pub async fn restore_version(
         .get_blob(&dl.download_url, &body.content_hash)
         .await
         .map_err(|e| HttpError::internal(e.to_string()))?;
-    let plaintext = crate::sync::oss::crypto::decrypt_blob(&blob, &key)
-        .map_err(|e| HttpError::internal(format!("decrypt: {e}")))?;
+    let plaintext =
+        crate::sync::oss::crypto::decode_blob(blob, key.as_ref()).map_err(HttpError::internal)?;
     let plain_hash = crate::sync::oss::crypto::sha256_hex(&plaintext);
 
     // Write into the GLOBAL content root, not a workspace path.
@@ -1091,8 +1107,7 @@ pub async fn get_file(
     };
 
     let (fc, secret) = fc_client_from_store(&state, &q.team_id, q.fc_endpoint).await?;
-    let key = crate::team_shared_env::derive_key(&secret)
-        .map_err(|e| HttpError::internal(format!("derive key: {e}")))?;
+    let key = optional_team_key(secret.as_deref())?;
     let dl = fc
         .download(&q.team_id, &cipher_hash)
         .await
@@ -1101,8 +1116,8 @@ pub async fn get_file(
         .get_blob(&dl.download_url, &cipher_hash)
         .await
         .map_err(|e| HttpError::internal(e.to_string()))?;
-    let plaintext = crate::sync::oss::crypto::decrypt_blob(&blob, &key)
-        .map_err(|e| HttpError::internal(format!("decrypt: {e}")))?;
+    let plaintext =
+        crate::sync::oss::crypto::decode_blob(blob, key.as_ref()).map_err(HttpError::internal)?;
     let content =
         String::from_utf8(plaintext).map_err(|e| HttpError::internal(format!("utf8: {e}")))?;
     Ok(Json(FileContentResponse {

@@ -28,6 +28,9 @@ const VERSION_HISTORY = 'version-history'
 /** The conflict-decision view for one team document. */
 const KNOWLEDGE_CONFLICT = 'knowledge-conflict'
 
+/** The read-only "what does the cloud hold" view for one team document. */
+const CLOUD_VERSION = 'knowledge-cloud'
+
 export function encodeTeamShareTarget(t: TeamShareTarget): string {
   switch (t.kind) {
     case 'skill':
@@ -119,6 +122,16 @@ export function decodeKnowledgeConflictTarget(target: string): string | undefine
   return target.slice(KNOWLEDGE_CONFLICT.length + 1) || undefined
 }
 
+export function encodeCloudVersionTarget(path: string): string {
+  return `${CLOUD_VERSION}/${path}`
+}
+
+/** The document whose cloud copy a target names, `undefined` when it is not one. */
+export function decodeCloudVersionTarget(target: string): string | undefined {
+  if (!target.startsWith(`${CLOUD_VERSION}/`)) return undefined
+  return target.slice(CLOUD_VERSION.length + 1) || undefined
+}
+
 /** Every target this module owns, for bulk close when the team changes. */
 export function isTeamShareOwnedTarget(target: string): boolean {
   return (
@@ -126,7 +139,8 @@ export function isTeamShareOwnedTarget(target: string): boolean {
     decodeVersionHistoryTarget(target) !== undefined ||
     // A conflict belongs to the team whose tree it is in; keeping the tab open
     // across a team switch would offer a decision about another team's file.
-    decodeKnowledgeConflictTarget(target) !== undefined
+    decodeKnowledgeConflictTarget(target) !== undefined ||
+    decodeCloudVersionTarget(target) !== undefined
   )
 }
 
