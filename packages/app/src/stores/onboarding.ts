@@ -7,8 +7,7 @@ import type { DaemonLocalAgent } from '@/lib/daemon-local-client'
  *
  * `developer` — pick the agent runtime, see git and the rest of the dependency
  *   detail, configure models later in Settings.
- * `guided` — take the recommended runtime, skip anything optional, and get
- *   walked through connecting one model provider.
+ * `guided` — take the recommended runtime and skip anything optional.
  *
  * Named for what the user is doing, not for how skilled we think they are:
  * these values reach log lines and telemetry, and "novice" is not a label to
@@ -23,9 +22,6 @@ const DONE_KEY = `${appStoragePrefix}-onboarding-done`
  *  *that* it was asked, so a user who confirms the system default is not asked
  *  again on the next launch. */
 const LANGUAGE_ACK_KEY = `${appStoragePrefix}-onboarding-language-ack`
-/** The setup step has been cleared. Persisted so quitting on the model step
- *  resumes there instead of re-running dependency setup from the top. */
-const SETUP_ACK_KEY = `${appStoragePrefix}-onboarding-setup-ack`
 /**
  * The runtime picked on the setup step, waiting to be written into the daemon.
  *
@@ -63,15 +59,12 @@ function write(key: string, value: string | null): void {
 type OnboardingState = {
   /** The language step has been answered at least once. */
   languageAck: boolean
-  /** The setup step has been cleared; the flow resumes at the model step. */
-  setupAck: boolean
   role: OnboardingRole | null
   /** Runtime chosen on the setup step; null until the user gets there. */
   runtime: DaemonLocalAgent | null
   /** The whole first-run flow has been completed at least once. */
   completed: boolean
   markLanguageAck: () => void
-  markSetupAck: () => void
   /** True once the user has answered anything at all. Distinguishes "mid-flow,
    *  came back" from "never started", which decide different things. */
   started: () => boolean
@@ -94,7 +87,6 @@ const readFlag = (key: string): boolean => {
 
 export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   languageAck: readFlag(LANGUAGE_ACK_KEY),
-  setupAck: readFlag(SETUP_ACK_KEY),
   role: readStored<OnboardingRole>(ROLE_KEY, ['developer', 'guided']),
   // Restored so a quit between the setup step and sign-in does not lose the
   // answer — that whole stretch is before the pick has anywhere to go.
@@ -106,14 +98,9 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     set({ languageAck: true })
   },
 
-  markSetupAck: () => {
-    write(SETUP_ACK_KEY, '1')
-    set({ setupAck: true })
-  },
-
   started: () => {
     const s = get()
-    return s.languageAck || s.role !== null || s.setupAck
+    return s.languageAck || s.role !== null
   },
 
   setRole: (role) => {
@@ -143,8 +130,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     write(ROLE_KEY, null)
     write(DONE_KEY, null)
     write(LANGUAGE_ACK_KEY, null)
-    write(SETUP_ACK_KEY, null)
     write(RUNTIME_KEY, null)
-    set({ languageAck: false, setupAck: false, role: null, runtime: null, completed: false })
+    set({ languageAck: false, role: null, runtime: null, completed: false })
   },
 }))

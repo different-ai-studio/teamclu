@@ -125,7 +125,6 @@ vi.mock("@/stores/onboarding", () => ({
 
 vi.mock("@/components/onboarding/RoleStep", () => ({ RoleStep: () => <div>role step</div> }));
 vi.mock("@/components/onboarding/SetupStep", () => ({ SetupStep: () => <div>setup step</div> }));
-vi.mock("@/components/onboarding/ModelStep", () => ({ ModelStep: () => <div>model step</div> }));
 
 vi.mock("@/stores/daemon-onboarding", () => ({
   useDaemonOnboardingStore: (

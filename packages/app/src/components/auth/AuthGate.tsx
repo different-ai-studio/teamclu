@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuthStore, type AuthClaimResult } from "@/stores/auth-store";
 import { useCurrentTeamStore, readCachedCurrentTeam } from "@/stores/current-team";
 import { getBackend } from "@/lib/backend";
@@ -11,7 +11,6 @@ import { isLocaleLocked, availableLanguages } from "@/lib/i18n";
 import { LanguageStep } from "@/components/onboarding/LanguageStep";
 import { RoleStep } from "@/components/onboarding/RoleStep";
 import { SetupStep } from "@/components/onboarding/SetupStep";
-import { ModelStep } from "@/components/onboarding/ModelStep";
 import { useOnboardingStore } from "@/stores/onboarding";
 import { useSetupStore, setupPreviouslySatisfied } from "@/stores/setup";
 import { DaemonOnboardingWizard } from "@/components/auth/DaemonOnboardingWizard";
@@ -93,32 +92,17 @@ export function AuthGate({ children }: AuthGateProps) {
   // gate is the real backstop if a dependency actually went missing.
   const [setupAck] = useState(() => devSkipSetup() || setupPreviouslySatisfied());
 
-  // First-run onboarding (#881). `onboardingSetupAck` is local rather than
-  // persisted: it only sequences the screens within one run.
+  // First-run onboarding (#881).
   const onboardingLanguageAck = useOnboardingStore((s) => s.languageAck);
   const markOnboardingLanguageAck = useOnboardingStore((s) => s.markLanguageAck);
   const onboardingRole = useOnboardingStore((s) => s.role);
   const onboardingDone = useOnboardingStore((s) => s.completed);
   const setOnboardingRole = useOnboardingStore((s) => s.setRole);
   const markOnboardingCompleted = useOnboardingStore((s) => s.markCompleted);
-  const onboardingSetupAck = useOnboardingStore((s) => s.setupAck);
-  const setOnboardingSetupAck = useOnboardingStore((s) => s.markSetupAck);
   // Started-but-unfinished. Whichever screen the user quit on, they come back
   // to it — and it outranks the `setup-ok` optimistic skip below, which would
   // otherwise swallow the rest of a flow the user is visibly in the middle of.
-  const onboardingStarted = useOnboardingStore((s) => s.languageAck || s.role !== null || s.setupAck);
-  // Whether a model step follows is decided here, when setup finishes, rather
-  // than as another render branch — that branch would have had to call
-  // `markCompleted` during render to skip itself.
-  //
-  // pi ships without credentials of its own, so a guided user who never
-  // connected a provider would land in an app that cannot answer them.
-  // Developers configure models in Settings on their own terms.
-  const finishSetupStep = useCallback(() => {
-    setOnboardingSetupAck();
-    const { role, runtime } = useOnboardingStore.getState();
-    if (!(role === "guided" && runtime === "pi")) markOnboardingCompleted();
-  }, [markOnboardingCompleted, setOnboardingSetupAck]);
+  const onboardingStarted = useOnboardingStore((s) => s.languageAck || s.role !== null);
 
   const daemonStatus = useDaemonOnboardingStore((s) => s.status);
   const daemonLoaded = useDaemonOnboardingStore((s) => s.loaded);
@@ -447,10 +431,9 @@ export function AuthGate({ children }: AuthGateProps) {
   // would stay empty through auth hydrate / team bootstrap / myTeams and
   // the side panel would flash white for seconds.
 
-  // First-run onboarding (#881), ahead of auth: pick a setup style, get the
-  // runtime and local dependencies in place, and — on the guided path — connect
-  // a model. Provider credentials are device-level since #742, so that last
-  // step works with no account and no workspace.
+  // First-run onboarding (#881), ahead of auth: pick a setup style, then get the
+  // runtime and local dependencies in place. Models are not asked for here —
+  // they are configured in Settings once the app is up.
   //
   // Returning users skip all of it: `onboardingDone` is set once the flow
   // completes, and `setupAck` (the setup-ok cache) covers installs that
@@ -470,12 +453,8 @@ export function AuthGate({ children }: AuthGateProps) {
       removeStartupSkeleton();
       return <RoleStep onDone={setOnboardingRole} />;
     }
-    if (!onboardingSetupAck) {
-      removeStartupSkeleton();
-      return <SetupStep role={onboardingRole} onDone={finishSetupStep} />;
-    }
     removeStartupSkeleton();
-    return <ModelStep onDone={markOnboardingCompleted} />;
+    return <SetupStep role={onboardingRole} onDone={markOnboardingCompleted} />;
   }
 
   if (isTauri() && loading && authFlow === "invite") {
