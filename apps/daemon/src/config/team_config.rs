@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use toml::Value;
 
-use super::{ChannelsConfig, TeamShareConfig};
+use super::{ChannelsConfig, TeamShareConfig, VoiceConfig};
 
 /// The typed shape of `team.toml` (with credentials injected).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -38,6 +38,10 @@ pub struct TeamFileConfig {
     pub team_share: TeamShareConfig,
     #[serde(default)]
     pub channels: ChannelsConfig,
+    /// Speech credentials for the voice terminal. `voice.token` is a secret
+    /// leaf, so it round-trips through `secrets.enc` rather than this file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceConfig>,
 }
 
 pub fn path_for(team_id: &str) -> PathBuf {
@@ -72,6 +76,7 @@ pub fn hydrate(config: &mut super::DaemonConfig) -> anyhow::Result<()> {
     let team = load_typed(&super::layout::active_team())?;
     config.channels = team.channels;
     config.team_share = team.team_share;
+    config.voice = team.voice;
     if let Some(agent) = team.local_agent {
         if !agent.trim().is_empty() {
             config.agents.local_agent = agent;
@@ -182,6 +187,9 @@ pub fn persist_from(config: &super::DaemonConfig) -> anyhow::Result<()> {
         local_agent: Some(config.agents.local_agent.clone()),
         team_share: config.team_share.clone(),
         channels: config.channels.clone(),
+        // Carried through, not re-derived: a channel save must not drop the
+        // voice section on its way past.
+        voice: config.voice.clone(),
     };
     save_typed(&super::layout::active_team(), &team)
 }
@@ -209,8 +217,13 @@ pub fn load_value(team_id: &str) -> anyhow::Result<Value> {
 pub fn save_value(team_id: &str, mut root: Value) -> anyhow::Result<()> {
     // Strip first so validation sees exactly what will be written.
     let mut fresh: BTreeMap<String, String> = BTreeMap::new();
-    if let Some(channels) = root.get_mut("channels") {
-        strip_secrets("channels", channels, &mut fresh);
+    // Named subtrees rather than the whole document: a root key that merely
+    // happens to be spelled like a secret leaf should not start moving into
+    // the store and changing the on-disk shape of installs that predate it.
+    for root_key in SECRET_BEARING_SECTIONS {
+        if let Some(section) = root.get_mut(*root_key) {
+            strip_secrets(root_key, section, &mut fresh);
+        }
     }
 
     let _typed: TeamFileConfig = root
@@ -296,6 +309,8 @@ pub fn is_team_key(key: &str) -> bool {
         || key.starts_with("channels.")
         || key == "team_share"
         || key.starts_with("team_share.")
+        || key == "voice"
+        || key.starts_with("voice.")
 }
 
 /// `agents.local_agent` kept its public spelling (the desktop PUTs
@@ -308,6 +323,10 @@ pub fn rewrite_team_key(key: &str) -> &str {
 }
 
 // ── secret split ────────────────────────────────────────────────────────────
+
+/// Sections of team.toml searched for credentials on save. `voice.token` is an
+/// NLS token; everything under `channels` is a bot credential.
+const SECRET_BEARING_SECTIONS: &[&str] = &["channels", "voice"];
 
 fn is_secret_leaf(name: &str) -> bool {
     super::edit::is_secret_key(name)
@@ -506,6 +525,7 @@ mod tests {
 
     fn seed_config() -> super::super::DaemonConfig {
         super::super::DaemonConfig {
+            voice: None,
             actor: crate::config::ActorConfig {
                 id: "dev-1".to_string(),
                 name: "Mac".to_string(),
@@ -699,6 +719,45 @@ secret = ""
                 .contains_key("channels.wecom.bots[b-1].secret"),
             "the deleted bot's secret must be garbage-collected"
         );
+    }
+
+    #[test]
+    fn voice_credentials_hydrate_and_the_token_stays_out_of_team_toml() {
+        // The whole point of putting the credential in a file: it has to
+        // survive whichever process launches the daemon next. And the token is
+        // a credential, so it has to land in secrets.enc rather than plaintext.
+        let home = tempfile::tempdir().unwrap();
+        let _guard = BrandEnvGuard::set_amuxd_home(home.path());
+        std::fs::write(
+            home.path().join("daemon.toml"),
+            "active_team = \"team-1\"\n",
+        )
+        .unwrap();
+
+        save_value(
+            "team-1",
+            doc("[voice]\nappkey = \"ak-1\"\ntoken = \"tok-1\"\n"),
+        )
+        .unwrap();
+
+        let on_disk = std::fs::read_to_string(path_for("team-1")).unwrap();
+        assert!(
+            !on_disk.contains("tok-1"),
+            "token was written in plaintext: {on_disk}"
+        );
+        assert!(on_disk.contains("ak-1"), "appkey is not a secret");
+
+        let mut config = seed_config();
+        hydrate(&mut config).unwrap();
+        let voice = config.voice.clone().expect("voice hydrated");
+        assert_eq!(voice.appkey.as_deref(), Some("ak-1"));
+        assert_eq!(voice.token.as_deref(), Some("tok-1"));
+
+        // A channel save travels through the same struct; it must not take the
+        // voice section with it.
+        persist_from(&config).unwrap();
+        let reloaded = load_typed("team-1").unwrap().voice.expect("voice kept");
+        assert_eq!(reloaded.token.as_deref(), Some("tok-1"));
     }
 
     #[test]

@@ -28,7 +28,15 @@ pub fn run(args: ConfigArgs, default_config_path: &std::path::Path) -> anyhow::R
         }
         ConfigAction::Set { key, value } => {
             edit::set_config_value(path, &key, &value)?;
-            println!("{key} = {}", edit::get_config_value(path, &key)?);
+            // A secret leaf is moved into the team's encrypted store on save,
+            // so it is no longer in the document to read back. Echoing the
+            // write instead of erroring matters: the set succeeded, and
+            // "Error: missing key" after a successful write reads as failure.
+            if edit::is_secret_key(&key) {
+                println!("{key} = (stored)");
+            } else {
+                println!("{key} = {}", edit::get_config_value(path, &key)?);
+            }
         }
         ConfigAction::Unset { key } => {
             edit::unset_config_value(path, &key)?;

@@ -784,7 +784,7 @@ impl DaemonServer {
         let voice_router_tx = Some(voice_router_tx);
         let voice_router_rx = Some(voice_router_rx);
 
-    Ok(Self {
+        Ok(Self {
             config,
             config_path: config_path.to_path_buf(),
             mqtt_command_rx: Some(mqtt_command_rx),
@@ -895,9 +895,12 @@ impl DaemonServer {
     /// speech, no notes session means notes are not stored, and either way the
     /// rest of the daemon starts normally.
     ///
-    /// Credentials come from `TEAMCLU_VOICE_*` when set — a console-issued NLS
-    /// token, which is how the gateway is exercised without an AccessKey pair
-    /// (plan §13.9) — and otherwise from the Cloud API, which mints one.
+    /// Credentials are looked for in three places, in order: `TEAMCLU_VOICE_*`
+    /// (a one-shot override for a bench run), the active team's `[voice]`
+    /// section in `team.toml` (the same console-issued NLS token, but on disk
+    /// so it survives whichever process launches the daemon), and otherwise
+    /// the Cloud API, which mints one per turn — the only one of the three
+    /// that does not expire in a day (plan §13.9).
     async fn spawn_voice_router(
         &self,
         rx: tokio::sync::mpsc::UnboundedReceiver<crate::voice::VoiceEvent>,
@@ -912,9 +915,20 @@ impl DaemonServer {
             BackendNoteStore, ChatSink, NoteSink, TransportVoicePublisher,
         };
 
-        let credentials: Option<Arc<dyn CredentialSource>> = match StaticCredentials::from_env() {
-            Some(sc) => {
-                info!("voice: using TEAMCLU_VOICE_* credentials (bench/testing path)");
+        // Environment wins over the file: an operator who exports a variable
+        // for one run means it for that run. The file is the durable answer —
+        // the desktop app relaunches its amuxd sidecar with its own
+        // environment, so a credential that lives only in a shell export is
+        // there until the next restart and then silently is not.
+        let static_creds = StaticCredentials::from_env()
+            .map(|sc| ("TEAMCLU_VOICE_*", sc))
+            .or_else(|| {
+                let voice = self.config.voice.as_ref()?;
+                StaticCredentials::from_config(voice).map(|sc| ("team.toml [voice]", sc))
+            });
+        let credentials: Option<Arc<dyn CredentialSource>> = match static_creds {
+            Some((source, sc)) => {
+                info!("voice: using {source} credentials (bench/testing path)");
                 Some(Arc::new(sc))
             }
             None => Some(Arc::new(CloudApiCredentials::new(self.backend.clone()))),
@@ -980,7 +994,16 @@ impl DaemonServer {
         // per-device notes session to resolve yet (M2-2). Until then the
         // session is named explicitly or notes are not stored at all — better
         // than inventing a destination for the user's captures.
-        match std::env::var("TEAMCLU_VOICE_NOTES_SESSION").ok().filter(|s| !s.trim().is_empty()) {
+        let notes_session = std::env::var("TEAMCLU_VOICE_NOTES_SESSION")
+            .ok()
+            .or_else(|| {
+                self.config
+                    .voice
+                    .as_ref()
+                    .and_then(|v| v.notes_session.clone())
+            })
+            .filter(|s| !s.trim().is_empty());
+        match notes_session {
             Some(session_id) => {
                 let store = Arc::new(BackendNoteStore::new(self.backend.clone(), session_id));
                 sinks.push(Arc::new(
@@ -988,7 +1011,10 @@ impl DaemonServer {
                 ));
             }
             None => {
-                info!("voice: TEAMCLU_VOICE_NOTES_SESSION unset; note turns will be logged only");
+                info!(
+                    "voice: no notes session (TEAMCLU_VOICE_NOTES_SESSION / \
+                     team.toml voice.notes_session); note turns will be logged only"
+                );
                 sinks.push(Arc::new(LogTranscriptSink::default()));
             }
         }
@@ -3687,6 +3713,7 @@ pub(crate) mod tests {
 
     pub(crate) fn test_config() -> DaemonConfig {
         DaemonConfig {
+            voice: None,
             actor: crate::config::ActorConfig {
                 id: "actor-config-test".to_string(),
                 name: "test-host".to_string(),

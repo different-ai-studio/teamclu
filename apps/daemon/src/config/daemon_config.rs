@@ -10,6 +10,12 @@ pub struct DaemonConfig {
     #[serde(rename = "actor", alias = "device")]
     pub actor: ActorConfig,
     pub mqtt: MqttConfig,
+    /// Speech credentials for the voice terminal. Team-scoped; lives in
+    /// `teams/<id>/state/team.toml` and is hydrated from there like
+    /// `channels`. `None` means the daemon asks the Cloud API to mint a token
+    /// per turn instead.
+    #[serde(skip)]
+    pub voice: Option<VoiceConfig>,
     /// Transport selector. Defaults to MQTT when omitted so existing
     /// `daemon.toml` files keep working unchanged. Set
     /// `[transport] kind = "nats"` + `url = "nats://..."` to use NATS.
@@ -275,6 +281,58 @@ pub struct MqttConfig {
     pub username: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
+}
+
+/// Speech credentials for the voice terminal (`[voice]` in `team.toml`).
+///
+/// Team-scoped, because that is what the credential is: FC mints it per team
+/// (`POST /v1/teams/:id/voice/credentials`), and one daemon can serve several
+/// teams. A device-wide copy would hand whichever team spoke last another
+/// team's quota.
+///
+/// It lives in a file rather than the environment because the daemon is
+/// started by whoever happens to launch it — the desktop app's sidecar, a
+/// shell, a supervisor — and only one of those carries whatever a human
+/// exported. On disk it is a property of the installation instead of a
+/// property of one launch, which is the difference between voice working and
+/// voice working *this time*.
+///
+/// `token` is a secret leaf name, so [`super::edit::is_secret_key`] moves it
+/// into the team's encrypted `secrets.enc` on save and injects it back on
+/// load; it is never written to `team.toml` in plaintext.
+///
+/// This holds a **console-issued NLS token**, which is a testing path: it
+/// expires in about a day and nothing renews it. The durable arrangement is
+/// `POST /v1/teams/:id/voice/credentials`, where FC mints one on demand and no
+/// long-lived secret sits on disk at all (plan §13.9). Leave this empty to use
+/// that.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VoiceConfig {
+    /// NLS project appkey. Not a secret on its own — it names a project.
+    #[serde(default)]
+    pub appkey: Option<String>,
+    /// Short-lived NLS token. A credential: this is why `daemon.toml`'s
+    /// permissions matter.
+    #[serde(default)]
+    pub token: Option<String>,
+    /// Overrides the gateway URL; normally derived from `region`.
+    #[serde(default)]
+    pub gateway: Option<String>,
+    /// Defaults to `cn-shanghai`, where the speech models are published.
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub stt_model: Option<String>,
+    /// An NLS voice name (`zhixiaobai`, `xiaoyun`, …). CosyVoice names are a
+    /// different product and the gateway rejects them.
+    #[serde(default)]
+    pub tts_voice: Option<String>,
+    /// Session that note-mode turns are filed under. Unset means note turns
+    /// are logged and not stored — better than inventing a destination for
+    /// someone's captures. A stopgap until the device resolves its own notes
+    /// session (M2-2).
+    #[serde(default)]
+    pub notes_session: Option<String>,
 }
 
 /// Top-level transport switch. When present and `kind = "nats"`, the
@@ -728,6 +786,8 @@ impl DaemonConfig {
                 id: uuid::Uuid::new_v4().to_string(),
                 name: BOOTSTRAP_ACTOR_NAME.to_string(),
             },
+            // Team-scoped: hydrated from team.toml once a team exists.
+            voice: None,
             mqtt: MqttConfig {
                 broker_url: String::new(),
                 username: None,

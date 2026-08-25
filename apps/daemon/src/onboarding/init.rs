@@ -294,6 +294,7 @@ mod tests {
     fn reinit_backfills_http_section_when_missing() {
         let cfg = daemon_config_for_invite(
             Some(DaemonConfig {
+                voice: None,
                 actor: ActorConfig {
                     id: "actor-1".into(),
                     name: "host".into(),
@@ -373,6 +374,7 @@ mod tests {
     fn existing_actor_id_is_replaced_with_claim_actor_id() {
         let cfg = daemon_config_for_invite(
             Some(DaemonConfig {
+                voice: None,
                 actor: ActorConfig {
                     id: "stale-actor-id".into(),
                     name: "existing-host".into(),

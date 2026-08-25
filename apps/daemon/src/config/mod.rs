@@ -21,7 +21,7 @@ pub use daemon_config::{
     ActorConfig, AgentBackendConfig, AgentsConfig, ChannelsConfig, ClaudeAgentConfig,
     CursorAgentConfig, DaemonConfig, DiscordChannel, EmailChannel, FeishuChannel, HttpConfig,
     KookChannel, MqttConfig, PiAgentConfig, SeaTalkChannel, TeamShareConfig, TransportKind,
-    WeChatChannel, WeComChannel, BOOTSTRAP_ACTOR_NAME,
+    VoiceConfig, WeChatChannel, WeComChannel, BOOTSTRAP_ACTOR_NAME,
 };
 pub use member_store::{MemberStore, PendingInvite, StoredMember};
 pub use model_catalog::DeviceModelCatalog;

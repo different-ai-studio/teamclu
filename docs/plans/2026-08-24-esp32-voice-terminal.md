@@ -880,6 +880,42 @@ does not exist yet — the console token bypasses it. The signing is pinned
 against Alibaba's documented worked example, which remains the strongest check
 available without a key.
 
+### Where the bench credential lives — RUN 2026-08-25
+
+Environment variables turned out to be the wrong home for it. The daemon is
+started by whoever happens to launch it, and the desktop app relaunches its
+amuxd sidecar with its *own* environment — twice during this work the app
+restarted the daemon, the `TEAMCLU_VOICE_*` exports were not there, the daemon
+fell back to FC's unshipped `/voice/credentials`, and every frame of a turn was
+dropped for want of a token. Nothing in the log said "your credential is gone";
+it said 404.
+
+So the credential is now a **team** setting, because that is what it is: FC
+mints it per team, and one daemon can serve several. It lives in
+`teams/<id>/state/team.toml`, and `voice.token` is a secret leaf name, so
+`team_config`'s existing split moves it into the encrypted `secrets.enc` and
+injects it back on load — it is never written to `team.toml` in plaintext.
+
+```sh
+set -a; . deploy/self-host/.env; set +a
+amuxd config set voice.appkey "$VOICE_NLS_APPKEY"
+amuxd config set voice.token  "$VOICE_NLS_TOKEN"   # → "voice.token = (stored)"
+```
+
+Resolution order is `TEAMCLU_VOICE_*` → `team.toml [voice]` → Cloud API, and
+the daemon logs which one it took. Verified by letting the desktop app relaunch
+the daemon with no voice variables set at all:
+
+```
+voice: using team.toml [voice] credentials (bench/testing path)
+voice: router started team_id=e84103ca-… actor_id=b0f2c15f-…
+voice subscribed context="initial" topic=…/voice/mic
+```
+
+`voice.notes_session` moved the same way and for the same reason. None of this
+changes the destination: a console token still expires in about a day and still
+nothing renews it. Leaving `[voice]` empty is what selects the durable path.
+
 ## 14. Audio path — RUN ON HARDWARE 2026-08-25
 
 **The uplink works end to end on the real device.** Superseded everything this

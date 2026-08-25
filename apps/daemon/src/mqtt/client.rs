@@ -193,6 +193,7 @@ mod tests {
 
     fn test_config() -> DaemonConfig {
         DaemonConfig {
+            voice: None,
             actor: ActorConfig {
                 id: "abc123defg".into(),
                 name: "test-device".into(),

@@ -108,6 +108,7 @@ mod tests {
 
     fn base_config() -> DaemonConfig {
         DaemonConfig {
+            voice: None,
             actor: ActorConfig {
                 id: "dev-1".to_string(),
                 name: "Mac".to_string(),

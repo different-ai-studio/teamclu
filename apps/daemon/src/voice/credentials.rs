@@ -194,27 +194,65 @@ impl StaticCredentials {
     ///
     /// Returns `None` unless both the appkey and the token are set.
     pub fn from_env() -> Option<Self> {
-        let appkey = std::env::var("TEAMCLU_VOICE_APPKEY").ok()?;
-        let token = std::env::var("TEAMCLU_VOICE_TOKEN").ok()?;
-        if appkey.trim().is_empty() || token.trim().is_empty() {
-            return None;
-        }
-        let region =
-            std::env::var("TEAMCLU_VOICE_REGION").unwrap_or_else(|_| "cn-shanghai".to_string());
+        Self::assemble(
+            std::env::var("TEAMCLU_VOICE_APPKEY").ok(),
+            std::env::var("TEAMCLU_VOICE_TOKEN").ok(),
+            std::env::var("TEAMCLU_VOICE_GATEWAY").ok(),
+            std::env::var("TEAMCLU_VOICE_REGION").ok(),
+            std::env::var("TEAMCLU_VOICE_STT_MODEL").ok(),
+            std::env::var("TEAMCLU_VOICE_TTS_VOICE").ok(),
+        )
+    }
+
+    /// Build from the team's `[voice]` section (`team.toml`).
+    ///
+    /// Same testing hatch as [`Self::from_env`], reached the durable way: a
+    /// file the daemon reads at boot rather than an environment only one
+    /// launcher happens to carry. The token still expires in about a day and
+    /// still nothing renews it — for that, leave the section empty and let
+    /// [`CloudApiCredentials`] mint one per turn.
+    ///
+    /// Returns `None` unless both the appkey and the token are set, so a
+    /// half-filled section falls through to FC rather than failing every turn
+    /// against a gateway that will not have it.
+    pub fn from_config(cfg: &crate::config::VoiceConfig) -> Option<Self> {
+        Self::assemble(
+            cfg.appkey.clone(),
+            cfg.token.clone(),
+            cfg.gateway.clone(),
+            cfg.region.clone(),
+            cfg.stt_model.clone(),
+            cfg.tts_voice.clone(),
+        )
+    }
+
+    /// Shared by both sources: blank is absent, and every optional field has a
+    /// working default so only the two credentials are ever mandatory.
+    fn assemble(
+        appkey: Option<String>,
+        token: Option<String>,
+        gateway: Option<String>,
+        region: Option<String>,
+        stt_model: Option<String>,
+        tts_voice: Option<String>,
+    ) -> Option<Self> {
+        let nonblank =
+            |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let appkey = nonblank(appkey)?;
+        let token = nonblank(token)?;
+        let region = nonblank(region).unwrap_or_else(|| "cn-shanghai".to_string());
         Some(Self(VoiceCredentials {
-            gateway_endpoint: std::env::var("TEAMCLU_VOICE_GATEWAY")
-                .unwrap_or_else(|_| format!("wss://nls-gateway-{region}.aliyuncs.com/ws/v1")),
-            app_key: appkey.trim().to_string(),
-            token: token.trim().to_string(),
+            gateway_endpoint: nonblank(gateway)
+                .unwrap_or_else(|| format!("wss://nls-gateway-{region}.aliyuncs.com/ws/v1")),
+            app_key: appkey,
+            token,
             // A console token lasts about a day; claim an hour so anything
             // watching `expires_at` still treats it as perishable.
             expires_at: Utc::now() + Duration::hours(1),
-            stt_model: std::env::var("TEAMCLU_VOICE_STT_MODEL")
-                .unwrap_or_else(|_| "paraformer-realtime-v2".to_string()),
+            stt_model: nonblank(stt_model).unwrap_or_else(|| "paraformer-realtime-v2".to_string()),
             // An NLS voice name. CosyVoice names (longxiaochun, …) are a
             // different product and the gateway rejects them with 418.
-            tts_voice: std::env::var("TEAMCLU_VOICE_TTS_VOICE")
-                .unwrap_or_else(|_| "zhixiaobai".to_string()),
+            tts_voice: nonblank(tts_voice).unwrap_or_else(|| "zhixiaobai".to_string()),
         }))
     }
 }

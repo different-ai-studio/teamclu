@@ -458,15 +458,15 @@ async fn run_turn(
         spoke_any = true;
         let _ = pieces_tx.send(tail);
     }
+    // Nothing was spoken from the deltas: fall back to the completed text, so a
+    // runtime that only reports a finished message still gets a voice.
     if !spoke_any && errored.is_none() {
         if let Some(content) = completed_text.filter(|c| !c.trim().is_empty()) {
             let mut c = SentenceChunker::default();
             for piece in c.push(&content) {
-                spoke_any = true;
                 let _ = pieces_tx.send(piece);
             }
             if let Some(tail) = c.finish() {
-                spoke_any = true;
                 let _ = pieces_tx.send(tail);
             }
         }
