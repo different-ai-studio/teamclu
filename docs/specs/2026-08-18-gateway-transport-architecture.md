@@ -15,25 +15,27 @@
 
 - §3 / §4 的内核流水线：`Core::handle`（dedup → addressed? → route → identity → command? → write → turn → render），写入固定在 turn 之前
 - 六个 trait：`DedupStore` / `SessionRouter` / `IdentityMapper` / `SessionWriter` / `TurnRunner` / `CommandRunner`
-- §5 第 1、2 步：WeCom（`wecom.rs:1070`）与飞书（`feishu.rs:805`）已实现 `ChannelDriver`
+- §5 第 1、2 步：WeCom（`crates/teamclu-gateway/src/wecom.rs:1070`）与飞书（同目录 `feishu.rs:805`）已实现 `ChannelDriver`。注意这两个驱动在 gateway crate 里，不在上面那个 daemon 目录下；trait 定义在 `driver.rs`，内核在 daemon 侧
 - 出站附件挂到本轮回复（`core/turn_attachments.rs`）
 
 **未落地**：
 
 - §5 第 3、4 步 —— 邮件 / KOOK / SeaTalk / Discord / 微信仍是 inline 实现
-- §6 的删除清单一项未执行；`crates/teamclu-gateway` 从 17.3k 涨到 **18.9k 行**
+- §6 的删除清单只执行了第一项（`session.rs`，见下），其余未动。`crates/teamclu-gateway` 曾从 17.3k 涨到 18.9k，删掉 `session.rs` 后为 **18454 行**
 - §4.2 第三条旁路（desktop `introspect_api.rs:89` 的 `POST /send-wecom`）原样保留
 - #933 侧：cron 写入、claim-before-publish（`backend_store.rs:31` 仍写死空 mention）、出站顺序反转、撤 `checkout_turn_for_acp`
 
 **一处预判落空**：§5 结尾写着「中途不存在"两套并存但都不完整"的状态」。实际上内核挂在 env 开关 `TEAMCLU_GATEWAY_CORE`（`core/sink.rs:150`，默认开）之后，inline 路径仍然编译、仍然可达，五个渠道还在用它 —— 正是那个状态。收尾时要连开关一起删。
 
-**一处前提消失（利好）**：§7 第 6 条担心 `session.rs` 退休需要迁移老会话。现在不需要了 —— 它已经是只写不读：全仓只剩 `apps/desktop/src/commands/cron/scheduler.rs` 调两个 `set_email_*` 写方法，对应的读方法按该文件自己的注释已是死路（`EmailDb` 才是活的存储）。直接删即可。
+**一处已完成**：`session.rs` 已删除。§7 第 6 条担心它退休需要迁移老会话，事后证明不必 —— 它是只写不读的：所有 getter 全仓零调用，`set_persist_path` 也从没人调过（那份 `.teamclu/sessions.json` 根本没落过盘），写入方只剩 `cron/scheduler.rs` 的两个 `set_email_*`。连同 desktop 侧写入一并删除，没有迁移。
+
+> ⚠️ 本文**第 1、2、6、7 节仍按删除前的状态描述 `session.rs`**，下面已逐处就地标注。读到那些段落时以本节为准。
 
 ---
 
 ## 1. 现状：每个渠道都是一份从零开始的实现
 
-`crates/teamclu-gateway` 目前共享的只有两个 trait（`AgentHandle`、`ChannelStore`）、命令解析（`commands.rs`，#934 刚收拢）、一个本地 session JSON 映射（`session.rs`）、排队器（`session_queue.rs`）和 i18n。**其余每个渠道各写一遍**：连接与重连、去重、白名单过滤、@ 规则、流式节流、附件、渲染、错误回复。
+`crates/teamclu-gateway` 目前共享的只有两个 trait（`AgentHandle`、`ChannelStore`）、命令解析（`commands.rs`，#934 刚收拢）、~~一个本地 session JSON 映射（`session.rs`）~~（已删，见 §0）、排队器（`session_queue.rs`）和 i18n。**其余每个渠道各写一遍**：连接与重连、去重、白名单过滤、@ 规则、流式节流、附件、渲染、错误回复。
 
 后果不是"代码重复"这么温和 —— 是**功能能力按渠道随机分布**。实测三个渠道：
 
@@ -44,11 +46,13 @@
 | 流式回复 | ✅ `send_prompt_streamed` + 卡片更新节流 | ❌ 阻塞 `send_prompt` | ❌ 阻塞 |
 | 去重 | 内存 `mark_message_processed` | 无（依赖平台不重投） | UID 水位 + `email_db.rs`（507 行） |
 | 交互式提问 | ✅ 模板卡片 | ❌ | ❌ |
-| 会话映射 | binding → acp → cloud session | 同左 + `session.rs` 里的 `feishu:<chat_id>` | 同左 + `email:thread:<msg_id>` 索引 |
+| 会话映射 | binding → acp → cloud session | 同左 + ~~`session.rs` 里的 `feishu:<chat_id>`~~（已删） | 同左 + `email:thread:<msg_id>` 索引 |
 
 也就是说：**新接一个渠道 = 从零开始，且大概率停在"能收发文本"这一档**。飞书和邮件就停在这一档。用户在企微能发图片、能看流式、能被追问，换到飞书同一个 session 就全没了 —— 但那是同一个 session。
 
-还有一个隐蔽问题：session 身份有**两套**。`ChannelStore::ensure_session` 给的是云端 session id，而 `session.rs` 里另有一份按 `"feishu:<chat_id>"` / `"email:thread:<id>"` 为键的本地 JSON 映射（存 opencode session id 和模型偏好）。两套都在用，谁是权威没有定义。
+~~还有一个隐蔽问题：session 身份有**两套**。`ChannelStore::ensure_session` 给的是云端 session id，而 `session.rs` 里另有一份按 `"feishu:<chat_id>"` / `"email:thread:<id>"` 为键的本地 JSON 映射（存 opencode session id 和模型偏好）。两套都在用，谁是权威没有定义。~~
+
+> 2026-08-25：这一段已不成立。核实下来那份映射是**只写不读**的（所有 getter 全仓零调用，连落盘都没发生过），并不是两套都在用。`session.rs` 已删除，云端 session id 是唯一权威。见 §0。
 
 ---
 
@@ -147,7 +151,7 @@ pub trait ChannelDriver: Send + Sync {
 驱动 → InboundMessage
         │
         ├─ 去重       (channel, external_message_id) —— 一个存储，替换掉三套各自的做法
-        ├─ 路由       conversation → binding → session（退休 session.rs 那份本地 JSON 映射）
+        ├─ 路由       conversation → binding → session（session.rs 那份本地 JSON 映射已删）
         ├─ 身份       external user → external actor + 加入 participant
         ├─ 准入       白名单 / 群 @ 规则 / 命令识别（commands.rs）
         ├─ 写入       ★ session 写入服务（#933）：入库 + 广播 + 附件，双向同一条路径
@@ -208,7 +212,7 @@ gateway crate 只认注入进来的两个 trait（`AgentHandle` / `ChannelStore`
 ## 6. 迁移完成后可以删除
 
 - 各渠道的去重实现（`mark_message_processed`、UID 集合、`email_db.rs` 的去重部分）
-- `session.rs` 的本地 session 映射（云端 session 成为唯一权威）
+- ~~`session.rs` 的本地 session 映射（云端 session 成为唯一权威）~~ ✅ 已删除
 - 各渠道的 turn 驱动与流式节流散落实现
 - `ChannelManager::dispatch_send` 的旁路文件语义（#933 第 3 条）
 - desktop `introspect_api.rs` 里对 gateway crate 渠道函数的直接调用（§4.2 第三条路），改为经 daemon

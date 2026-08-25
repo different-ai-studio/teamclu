@@ -29,13 +29,13 @@ impl DeliveryManager {
         target: &str,
         message: &str,
     ) -> Result<(), String> {
-        if matches!(channel, DeliveryChannel::Wecom | DeliveryChannel::Seatalk) {
-            match channel {
-                DeliveryChannel::Wecom => self.send_wecom(target, message).await?,
-                DeliveryChannel::Seatalk => self.send_seatalk(target, message).await?,
-                _ => unreachable!(),
-            }
-            return Ok(());
+        // These two are amuxd-owned and carry their own credentials, so they
+        // must not go through `read_teamclu_config` — a workspace without
+        // `teamclu.json` would fail a delivery that needs nothing from it.
+        match channel {
+            DeliveryChannel::Wecom => return self.send_wecom(target, message).await,
+            DeliveryChannel::Seatalk => return self.send_seatalk(target, message).await,
+            _ => {}
         }
 
         let config = self.read_teamclu_config()?;
@@ -45,6 +45,7 @@ impl DeliveryManager {
             DeliveryChannel::Email => self.send_email(&config, target, message).await,
             DeliveryChannel::Kook => self.send_kook(&config, target, message).await,
             DeliveryChannel::Wechat => self.send_wechat(&config, target, message).await,
+            // Both returned above; an arm is still required for exhaustiveness.
             DeliveryChannel::Wecom | DeliveryChannel::Seatalk => Ok(()),
         }
     }
@@ -170,9 +171,8 @@ impl DeliveryManager {
     /// Send via Email — delegates to gateway::email::send_notification_email.
     /// Properly handles Gmail OAuth2 (XOAUTH2) and custom SMTP.
     ///
-    /// The outgoing Message-ID it returns is dropped here: the header is what
-    /// makes a reply thread, and `email_db.rs` is what resolves that reply back
-    /// to a session on the way in.
+    /// A reply to this mail does NOT come back to the job's session: nothing
+    /// indexes the outgoing Message-ID. See the note in `send_notification_email`.
     async fn send_email(
         &self,
         config: &serde_json::Value,
@@ -199,7 +199,6 @@ impl DeliveryManager {
             message,
         )
         .await
-        .map(|_message_id| ())
     }
 
     // ==================== Kook ====================

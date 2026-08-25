@@ -2261,14 +2261,17 @@ fn clean_email_body(body: &str) -> String {
 
 /// Send a standalone notification email.
 /// Properly handles Gmail OAuth2 (XOAUTH2) and custom SMTP authentication.
-/// Returns the normalized outgoing Message-ID on success.
+///
+/// The outgoing Message-ID is set on the wire but not returned: nothing indexes
+/// it. Replies to mail sent this way do NOT resolve back to a session — see the
+/// note at the Message-ID header below.
 pub async fn send_notification_email(
     config: &EmailConfig,
     workspace_path: &str,
     to_addr: &str,
     subject: &str,
     body_text: &str,
-) -> Result<String, String> {
+) -> Result<(), String> {
     // Get access token for Gmail OAuth2 (async, must happen before spawn_blocking)
     let access_token = if config.provider == EmailProvider::Gmail {
         let token_manager = GmailTokenManager::new(
@@ -2304,14 +2307,13 @@ pub async fn send_notification_email(
 /// Synchronous helper for sending a notification email via SMTP.
 /// Uses shared helpers (resolve_smtp_params, build_from_mailbox, build_smtp_transport)
 /// so it automatically inherits display_name, alias, and auth features from the gateway.
-/// Returns the normalized outgoing Message-ID.
 fn send_notification_email_sync(
     config: &EmailConfig,
     access_token: Option<&str>,
     to: &str,
     subject: &str,
     body: &str,
-) -> Result<String, String> {
+) -> Result<(), String> {
     use lettre::{
         message::{Mailbox, Message},
         Transport,
@@ -2339,9 +2341,16 @@ fn send_notification_email_sync(
         builder = builder.header(ReplyToHeader(params.from_email.clone()));
     }
 
-    // Generate and set Message-ID header (same as gateway reply), so a
-    // reply threads against it. `email_db.rs` is what resolves it back to a
-    // session on the way in.
+    // Generate and set Message-ID header (same as gateway reply) so the
+    // recipient's client threads the conversation.
+    //
+    // Note this id is NOT indexed: `EmailDb::store_message_thread` is only
+    // called from the inbound reply path (`process_and_reply_sync`), so a reply
+    // to mail sent through here misses both the message-id and the subject
+    // index and lands in a fresh session. A dead `SessionMapping` registration
+    // used to sit at the cron call site pretending otherwise; it was removed
+    // rather than left as a decoy. Wiring this up needs an account_key and a
+    // session binding that the cron path does not have — see #933.
     let outgoing_message_id = generate_outgoing_message_id(&params.base_email);
     builder = builder.header(MessageIdHeader(outgoing_message_id.clone()));
 
@@ -2358,5 +2367,5 @@ fn send_notification_email_sync(
         "[Email] Notification sent to {} (message-id: {})",
         to, outgoing_message_id
     );
-    Ok(normalize_message_id(&outgoing_message_id))
+    Ok(())
 }

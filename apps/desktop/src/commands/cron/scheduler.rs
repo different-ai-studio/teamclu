@@ -284,8 +284,7 @@ impl CronScheduler {
         check_generation!();
 
         // ── New cron-to-amuxd execution flow ─────────────────────────────
-        // (Replaces the OpenCode HTTP path. See spec
-        //  docs/superpowers/specs/2026-05-17-cron-to-amuxd-design.md §3.)
+        // (Replaces the OpenCode HTTP path.)
 
         let session_key = format!("cron/{}/{}", job.id, run_id);
         let working_directory = Self::working_directory_for_run(execution_workspace.as_deref());
