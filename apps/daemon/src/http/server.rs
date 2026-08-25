@@ -798,7 +798,7 @@ mod tests {
     // handler's own validation — again before the single-team config load, so
     // the test never touches the real `~/.amuxd/daemon.toml`.
     #[tokio::test]
-    async fn team_link_rejects_empty_path() {
+    async fn team_link_takes_a_pathless_body_while_unlink_still_requires_one() {
         let dir = tempfile::tempdir().unwrap();
         let token_path = dir.path().join("token");
         let cfg = HttpConfig {
@@ -850,6 +850,9 @@ mod tests {
             .unwrap();
         let token = exchanged["token"].as_str().unwrap().to_string();
 
+        // Link no longer rejects a pathless body: the team's own directory is
+        // not a workspace's, and materializing it is exactly what a client with
+        // no folder open asks for. Whitespace reads as "no workspace named".
         let resp = client
             .post(format!("{base}/v1/team/link"))
             .bearer_auth(&token)
@@ -857,7 +860,21 @@ mod tests {
             .send()
             .await
             .unwrap();
+        assert_ne!(
+            resp.status().as_u16(),
+            422,
+            "a missing workspace path is not a validation error any more"
+        );
+
+        // Unlink still requires one — it removes a *workspace's* link.
         // `HttpError::validation` → 422 Unprocessable Entity.
+        let resp = client
+            .post(format!("{base}/v1/team/unlink"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"path": "   "}))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status().as_u16(), 422);
         handle.shutdown().await;
     }

@@ -26,8 +26,15 @@ use super::state::HttpState;
 
 #[derive(Debug, Deserialize)]
 pub struct LinkTeamWorkspaceRequest {
-    /// Absolute path of the workspace to link into the team's global dir.
-    pub path: String,
+    /// Absolute path of a workspace to link into the team's global dir.
+    ///
+    /// Optional. The team's own directory does not belong to any workspace, and
+    /// materializing it is the half of this call that clients actually need
+    /// (the Knowledge column's repair button, for one, reads the team dir by
+    /// absolute path and never touches a workspace link). Omit it to create the
+    /// team dir alone.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,7 +68,7 @@ fn onboarded_team_id() -> Result<String, HttpError> {
         .ok_or_else(|| HttpError::validation("daemon is not onboarded to a team"))
 }
 
-/// `POST /v1/team/link` — body `{ "path": "<workspace path>" }`.
+/// `POST /v1/team/link` — body `{ "path"?: "<workspace path>" }`.
 pub async fn link_team_workspace(
     principal: Principal,
     State(_state): State<HttpState>,
@@ -69,14 +76,25 @@ pub async fn link_team_workspace(
 ) -> Result<Json<LinkTeamWorkspaceResponse>, HttpError> {
     require_scope(&principal, "workspace:write")?;
 
-    let path = body.path.trim();
-    if path.is_empty() {
-        return Err(HttpError::validation("path must not be empty"));
-    }
-
     let team_id = onboarded_team_id()?;
+    let path = body
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
 
-    let status = crate::team_link::ensure_team_link(&team_id, path);
+    let status = match path {
+        Some(path) => crate::team_link::ensure_team_link(&team_id, path),
+        // No workspace named: materialize the team's own directory and stop
+        // there. `ensure_team_link` would do this first anyway; skipping it
+        // would leave the caller with a response about a link nobody asked for.
+        None => match crate::config::global_team_store::ensure_initialized(&team_id) {
+            Ok(_) => LinkStatus::Fallback,
+            Err(e) => {
+                return Err(HttpError::internal(format!("team dir init failed: {e}")));
+            }
+        },
+    };
     let global_dir = crate::config::global_team_store::global_team_dir(&team_id)
         .to_string_lossy()
         .into_owned();
@@ -101,10 +119,13 @@ pub async fn unlink_team_workspace(
 ) -> Result<Json<UnlinkTeamWorkspaceResponse>, HttpError> {
     require_scope(&principal, "workspace:write")?;
 
-    let path = body.path.trim();
-    if path.is_empty() {
-        return Err(HttpError::validation("path must not be empty"));
-    }
+    // Unlink, unlike link, genuinely needs one: it removes a *workspace's* link.
+    let path = body
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| HttpError::validation("path must not be empty"))?;
 
     let team_id = onboarded_team_id()?;
 
@@ -125,6 +146,20 @@ pub async fn unlink_team_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Knowledge column's repair button reads the team dir by absolute path
+    /// and never touches a workspace link, so it calls this with no path at all.
+    /// Requiring one made that button unreachable with no folder open — for the
+    /// half of the operation that has nothing to do with a workspace.
+    #[test]
+    fn link_request_accepts_a_body_without_a_path() {
+        let body: LinkTeamWorkspaceRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(body.path, None);
+
+        let with_path: LinkTeamWorkspaceRequest =
+            serde_json::from_str(r#"{"path":"/tmp/ws"}"#).unwrap();
+        assert_eq!(with_path.path.as_deref(), Some("/tmp/ws"));
+    }
 
     #[test]
     fn status_str_covers_all_link_states() {
