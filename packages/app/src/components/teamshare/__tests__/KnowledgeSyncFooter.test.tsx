@@ -41,7 +41,22 @@ vi.mock('@/stores/oss-sync', () => ({
   useOssSyncStore: (sel: (s: Record<string, unknown>) => unknown) => sel({ ...sync, refresh }),
 }))
 
-const conflictState = vi.hoisted(() => ({ entries: [] as { path: string }[] }))
+const conflictState = vi.hoisted(() => ({
+  entries: [] as { path: string; sidecar: string }[],
+}))
+const syncStatusState = vi.hoisted(() => ({
+  localBySyncKey: {} as Record<string, string>,
+  remoteBySyncKey: {} as Record<string, { version: number; deleted: boolean }>,
+  stuckBySyncKey: {} as Record<string, { reason: string; attempts: number }>,
+}))
+const refreshSyncStatus = vi.hoisted(() => vi.fn())
+vi.mock('@/stores/team-sync-status', () => ({
+  useTeamSyncStatusStore: (sel: (s: Record<string, unknown>) => unknown) =>
+    sel({ ...syncStatusState, refresh: refreshSyncStatus }),
+}))
+vi.mock('@/stores/workspace', () => ({
+  useWorkspaceStore: (sel: (s: Record<string, unknown>) => unknown) => sel({ selectFile: vi.fn() }),
+}))
 vi.mock('@/stores/team-conflicts', () => ({
   useTeamConflictsStore: (sel: (s: Record<string, unknown>) => unknown) =>
     sel({ ...conflictState, absPathFor }),
@@ -57,6 +72,9 @@ beforeEach(() => {
   sync.failed = 0
   sync.lastError = null
   conflictState.entries = []
+  syncStatusState.localBySyncKey = {}
+  syncStatusState.remoteBySyncKey = {}
+  syncStatusState.stuckBySyncKey = {}
   cloud.available = true
 })
 
@@ -120,18 +138,44 @@ describe('KnowledgeSyncFooter', () => {
     expect(refresh).not.toHaveBeenCalled()
   })
 
-  it('leads with conflicts, and goes to the decision instead of syncing', () => {
-    conflictState.entries = [{ path: 'knowledge/note.md' }]
+  it('leads with conflicts, and the list goes to the decision instead of syncing', async () => {
+    conflictState.entries = [{ path: 'knowledge/note.md', sidecar: 'knowledge/note.conflict.1.a.md' }]
     render(<KnowledgeSyncFooter />)
 
     expect(screen.getByText('1 conflicts need a decision')).toBeTruthy()
     fireEvent.click(screen.getByTestId('knowledge-sync-footer'))
+
+    // The bar opens what is waiting; the row is what acts.
+    fireEvent.click(await screen.findByText('note.md'))
     expect(openKnowledgeConflict).toHaveBeenCalledWith('/knowledge-root/note.md', expect.any(String))
     // A conflict is not fixed by syncing again — that is what created it.
     expect(syncNow).not.toHaveBeenCalled()
   })
 
-  it('does not offer a sync the app cannot run, but still offers the decision', () => {
+  it('lists a deleted document, which has no row in the tree to show', async () => {
+    // The one case the badges cannot cover: the file is gone, so the only
+    // places it can appear are its folder's colour and this list.
+    syncStatusState.localBySyncKey = { 'knowledge/gone.md': 'deleted' }
+    render(<KnowledgeSyncFooter />)
+
+    fireEvent.click(screen.getByTestId('knowledge-sync-footer'))
+    expect(await screen.findByText('gone.md')).toBeTruthy()
+    expect(screen.getByText('deleted')).toBeTruthy()
+  })
+
+  it('names the file it cannot sync, and why', async () => {
+    // "3 files cannot sync" is not something a person can act on.
+    syncStatusState.stuckBySyncKey = {
+      'knowledge/locked.md': { reason: 'AES-GCM decrypt failed', attempts: 4 },
+    }
+    render(<KnowledgeSyncFooter />)
+
+    fireEvent.click(screen.getByTestId('knowledge-sync-footer'))
+    expect(await screen.findByText('locked.md')).toBeTruthy()
+    expect(screen.getByText(/retried 4× · AES-GCM decrypt failed/)).toBeTruthy()
+  })
+
+  it('does not offer a sync the app cannot run, but still opens what is waiting', async () => {
     // Team share not set up on this device: clicking would be a no-op, which is
     // worse than an obviously inert bar.
     cloud.available = false
@@ -141,9 +185,10 @@ describe('KnowledgeSyncFooter', () => {
     unmount()
 
     // A conflict is local, so it is decidable either way.
-    conflictState.entries = [{ path: 'knowledge/note.md' }]
+    conflictState.entries = [{ path: 'knowledge/note.md', sidecar: 'knowledge/note.conflict.1.a.md' }]
     render(<KnowledgeSyncFooter />)
     fireEvent.click(screen.getByTestId('knowledge-sync-footer'))
+    fireEvent.click(await screen.findByText('note.md'))
     expect(openKnowledgeConflict).toHaveBeenCalled()
   })
 

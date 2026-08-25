@@ -39,9 +39,10 @@ export interface BadgeInputs {
 /**
  * Fold the three sources into one badge per document.
  *
- * Deletions are deliberately absent from the result: a file deleted here has no
- * row left to mark. It still matters — it is a push this device owes the team —
- * which is what the column's footer counts.
+ * A DELETED file gets an entry too, even though its own row is gone from the
+ * tree — that entry is what its folder inherits. Without it, deleting a synced
+ * document left the panel counting a pending push (`↑1`) that nothing anywhere
+ * in the tree accounted for.
  */
 export function buildBadgeMap({ conflicts, local, remote }: BadgeInputs): Record<string, SyncBadge> {
   const out: Record<string, SyncBadge> = {}
@@ -49,8 +50,16 @@ export function buildBadgeMap({ conflicts, local, remote }: BadgeInputs): Record
   for (const key of Object.keys(conflicts)) out[key] = 'conflict'
 
   for (const [key, status] of Object.entries(local)) {
-    if (out[key] === 'conflict' || status === 'deleted') continue
-    out[key] = key in remote ? 'both' : status === 'new' ? 'local-new' : 'local-modified'
+    if (out[key] === 'conflict') continue
+    if (key in remote) {
+      out[key] = 'both'
+    } else if (status === 'new') {
+      out[key] = 'local-new'
+    } else {
+      // Edited or deleted: both are "changed here, not pushed", which is what
+      // the folder should say. A deletion has no row of its own to contradict.
+      out[key] = 'local-modified'
+    }
   }
 
   for (const key of Object.keys(remote)) {

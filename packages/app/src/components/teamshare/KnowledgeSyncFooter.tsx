@@ -3,9 +3,13 @@ import { useTranslation } from 'react-i18next'
 import { AlertTriangle, ArrowUpDown, Check, Loader2, RefreshCw } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 import { useOssSyncStore } from '@/stores/oss-sync'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
 import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
+import { useWorkspaceStore } from '@/stores/workspace'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { openKnowledgeConflict } from '@/lib/tabs/knowledge-tabs'
 import { formatRelativeTime, formatDateTime } from '@/lib/date-format'
@@ -41,6 +45,8 @@ export function KnowledgeSyncFooter() {
   const absPathFor = useTeamConflictsStore((s) => s.absPathFor)
   const localBySyncKey = useTeamSyncStatusStore((s) => s.localBySyncKey)
   const remoteBySyncKey = useTeamSyncStatusStore((s) => s.remoteBySyncKey)
+  const stuckBySyncKey = useTeamSyncStatusStore((s) => s.stuckBySyncKey)
+  const selectFile = useWorkspaceStore((s) => s.selectFile)
   const refreshSyncStatus = useTeamSyncStatusStore((s) => s.refresh)
   const loadConflicts = useTeamConflictsStore((s) => s.load)
   const { available, syncNow } = useTeamCloudSync()
@@ -84,13 +90,6 @@ export function KnowledgeSyncFooter() {
     return () => clearTimeout(id)
   }, [syncing, showBar])
 
-  const firstConflict = conflicts[0] ?? null
-  const openFirstConflict = React.useCallback(() => {
-    if (!firstConflict) return
-    const abs = absPathFor(firstConflict.path)
-    if (abs) openKnowledgeConflict(abs, t('knowledgeConflict.tabLabel', 'Conflict'))
-  }, [firstConflict, absPathFor, t])
-
   const phaseLabel = React.useMemo(() => {
     switch (progress?.phase) {
       case 'pulling':
@@ -114,16 +113,88 @@ export function KnowledgeSyncFooter() {
   const incoming = Object.keys(remoteBySyncKey).length
   const pending = outgoing + incoming > 0
 
-  const onClick = conflicted ? openFirstConflict : () => void syncNow()
-  // Conflicts are on this disk and can always be decided; running a sync needs
-  // the cloud side to be there at all.
-  const clickable = conflicted || available
+  // Everything that is not settled, in the order it deserves attention. This
+  // list is the only place some of it can be seen at all: a deleted document
+  // has no row left in the tree, and a file the pull cannot apply never had one.
+  const groups = React.useMemo(() => {
+    const fileName = (key: string) => key.slice(key.lastIndexOf('/') + 1)
+    const open = (syncKey: string) => {
+      const abs = absPathFor(syncKey)
+      return abs ? () => selectFile(abs) : undefined
+    }
+    return [
+      {
+        id: 'conflict',
+        label: t('knowledgeSync.groupConflict', 'Needs a decision'),
+        tone: 'text-red-500',
+        items: conflicts.map((c) => ({
+          key: c.sidecar,
+          name: fileName(c.path),
+          note: t('knowledgeSync.itemConflict', 'both sides changed it'),
+          onClick: () => {
+            const abs = absPathFor(c.path)
+            if (abs) openKnowledgeConflict(abs, t('knowledgeConflict.tabLabel', 'Conflict'))
+          },
+        })),
+      },
+      {
+        id: 'stuck',
+        label: t('knowledgeSync.groupStuck', 'Cannot sync'),
+        tone: 'text-red-500',
+        items: Object.entries(stuckBySyncKey).map(([key, s]) => ({
+          key,
+          name: fileName(key),
+          // The reason is the only thing that tells a person whether this is
+          // theirs to fix (a key they can paste) or nobody's (a lost one).
+          note: t('knowledgeSync.itemStuck', 'retried {{count}}× · {{reason}}', {
+            count: s.attempts,
+            reason: s.reason,
+          }),
+          onClick: undefined,
+        })),
+      },
+      {
+        id: 'outgoing',
+        label: t('knowledgeSync.groupOutgoing', 'Waiting to upload'),
+        tone: '',
+        items: Object.entries(localBySyncKey).map(([key, status]) => ({
+          key,
+          name: fileName(key),
+          note:
+            status === 'new'
+              ? t('knowledgeSync.itemNew', 'new')
+              : status === 'deleted'
+                ? t('knowledgeSync.itemDeleted', 'deleted')
+                : t('knowledgeSync.itemModified', 'edited'),
+          onClick: status === 'deleted' ? undefined : open(key),
+        })),
+      },
+      {
+        id: 'incoming',
+        label: t('knowledgeSync.groupIncoming', 'Waiting to download'),
+        tone: '',
+        items: Object.entries(remoteBySyncKey).map(([key, item]) => ({
+          key,
+          name: fileName(key),
+          note: item.deleted
+            ? t('knowledgeSync.itemRemoteDeleted', 'deleted by a teammate')
+            : t('knowledgeSync.itemRemoteUpdated', 'updated'),
+          onClick: undefined,
+        })),
+      },
+    ].filter((g) => g.items.length > 0)
+  }, [conflicts, stuckBySyncKey, localBySyncKey, remoteBySyncKey, absPathFor, selectFile, t])
 
-  return (
+  const hasList = groups.length > 0
+
+  const bar = (
     <button
       type="button"
-      onClick={onClick}
-      disabled={!clickable || (syncing && !conflicted)}
+      onClick={hasList ? undefined : () => void syncNow()}
+      // With something to list, the bar is always openable — reading the list
+      // during a sync is exactly when a person wants it. With nothing to list
+      // it is just the sync button, and that needs the cloud side to be there.
+      disabled={hasList ? false : !available || syncing}
       data-testid="knowledge-sync-footer"
       className={cn(
         // Same slot and chrome as the skills column's scan-paths bar.
@@ -214,5 +285,48 @@ export function KnowledgeSyncFooter() {
         </span>
       )}
     </button>
+  )
+
+  if (!hasList) return bar
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>{bar}</PopoverTrigger>
+      <PopoverContent side="top" align="start" className="w-[320px] p-0" data-testid="knowledge-sync-list">
+        <ScrollArea className="max-h-[280px]">
+          <div className="py-1">
+            {groups.map((group) => (
+              <div key={group.id}>
+                <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+                  {group.label}
+                </div>
+                {group.items.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={item.onClick}
+                    disabled={!item.onClick}
+                    className={cn(
+                      'flex w-full items-baseline gap-2 px-3 py-1 text-left text-[12px]',
+                      item.onClick ? 'hover:bg-black/[0.04]' : 'cursor-default',
+                    )}
+                  >
+                    <span className={cn('min-w-0 flex-1 truncate', group.tone)}>{item.name}</span>
+                    <span className="shrink-0 text-[10.5px] text-faint">{item.note}</span>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        </ScrollArea>
+        <div className="flex items-center justify-end border-t border-border px-3 py-2">
+          <Button size="sm" onClick={() => void syncNow()} disabled={syncing || !available}>
+            {syncing
+              ? t('knowledgeSync.syncing', 'Syncing…')
+              : t('knowledgeSync.syncNowAction', 'Sync now')}
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }

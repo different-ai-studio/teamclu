@@ -10,6 +10,12 @@ interface RemotePendingItem {
   deleted: boolean
 }
 
+/** A file the pull keeps failing on. Carries why, so the UI can say it. */
+export interface StuckFile {
+  reason: string
+  attempts: number
+}
+
 /**
  * How long a remote probe stays fresh. The probe is a real FC round-trip, so it
  * runs on events (panel shown, window focused, manual refresh) and this keeps
@@ -22,6 +28,8 @@ interface TeamSyncStatusState {
   localBySyncKey: Record<string, LocalChangeStatus>
   /** Sync key → the version waiting in the cloud. One FC round-trip to fill. */
   remoteBySyncKey: Record<string, RemotePendingItem>
+  /** Sync key → why this device cannot apply the cloud's copy. */
+  stuckBySyncKey: Record<string, StuckFile>
   /** `Date.now()` of the last successful remote probe. */
   remoteCheckedAt: number
   loading: boolean
@@ -44,6 +52,7 @@ interface TeamSyncStatusState {
 export const useTeamSyncStatusStore = create<TeamSyncStatusState>((set, get) => ({
   localBySyncKey: {},
   remoteBySyncKey: {},
+  stuckBySyncKey: {},
   remoteCheckedAt: 0,
   loading: false,
   error: null,
@@ -52,18 +61,20 @@ export const useTeamSyncStatusStore = create<TeamSyncStatusState>((set, get) => 
     if (!isTauri()) return
     const teamId = useCurrentTeamStore.getState().team?.id
     if (!teamId) {
-      set({ localBySyncKey: {} })
+      set({ localBySyncKey: {}, stuckBySyncKey: {} })
       return
     }
     try {
       const { invoke } = await import('@tauri-apps/api/core')
-      const res = await invoke<{ files: { path: string; status: LocalChangeStatus }[] }>(
-        'team_changed_files',
-        { teamId },
-      )
+      const res = await invoke<{
+        files: { path: string; status: LocalChangeStatus }[]
+        stuck?: { path: string; reason: string; attempts: number }[]
+      }>('team_changed_files', { teamId })
       const next: Record<string, LocalChangeStatus> = {}
       for (const f of res.files ?? []) next[f.path] = f.status
-      set({ localBySyncKey: next, error: null })
+      const stuck: Record<string, StuckFile> = {}
+      for (const f of res.stuck ?? []) stuck[f.path] = { reason: f.reason, attempts: f.attempts }
+      set({ localBySyncKey: next, stuckBySyncKey: stuck, error: null })
     } catch (e) {
       set({ error: String(e) })
     }
@@ -110,6 +121,12 @@ export const useTeamSyncStatusStore = create<TeamSyncStatusState>((set, get) => 
   },
 
   reset() {
-    set({ localBySyncKey: {}, remoteBySyncKey: {}, remoteCheckedAt: 0, error: null })
+    set({
+      localBySyncKey: {},
+      remoteBySyncKey: {},
+      stuckBySyncKey: {},
+      remoteCheckedAt: 0,
+      error: null,
+    })
   },
 }))

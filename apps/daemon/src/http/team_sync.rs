@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use super::auth::{require_scope, Principal};
 use super::errors::HttpError;
 use super::state::HttpState;
-use crate::sync::versions::{ChangedFile, VersionEntry};
+use crate::sync::versions::{ChangedFile, StuckFile, VersionEntry};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1140,6 +1140,10 @@ pub struct ChangedQuery {
 #[serde(rename_all = "camelCase")]
 pub struct ChangedResponse {
     pub files: Vec<ChangedFile>,
+    /// What the pull cannot apply, by path. Same call because the panel needs
+    /// both to answer one question — "what is not in sync here" — and this one
+    /// is already read on every write to the knowledge tree.
+    pub stuck: Vec<StuckFile>,
 }
 
 /// `GET /v1/team/changed?teamId=` — list files with local changes: dirty
@@ -1153,8 +1157,19 @@ pub async fn list_changed(
     let root = crate::config::global_team_store::sync_content_root(&q.team_id);
     let state = crate::sync::oss::state::LocalSyncState::load_at(&q.team_id)
         .map_err(|e| HttpError::internal(format!("load sync state: {e}")))?;
+    let mut stuck: Vec<StuckFile> = state
+        .quarantined
+        .iter()
+        .map(|(path, q)| StuckFile {
+            path: path.clone(),
+            reason: q.reason.clone(),
+            attempts: q.attempts,
+        })
+        .collect();
+    stuck.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(Json(ChangedResponse {
         files: local_changes(&root.to_string_lossy(), &state),
+        stuck,
     }))
 }
 

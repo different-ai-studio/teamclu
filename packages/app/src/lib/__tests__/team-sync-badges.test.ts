@@ -40,9 +40,13 @@ describe('buildBadgeMap', () => {
     expect(badges['knowledge/a.md']).toBe('conflict')
   })
 
-  it('leaves deletions out — there is no row left to mark', () => {
-    const badges = buildBadgeMap({ ...none, local: { 'knowledge/gone.md': 'deleted' } })
-    expect(badges).toEqual({})
+  it('keeps a deletion in the map so its folder can inherit it', () => {
+    // The file's own row is gone from the tree, but the folder's is not — and
+    // without this the panel counted a pending push that nothing in the tree
+    // accounted for.
+    const badges = buildBadgeMap({ ...none, local: { 'knowledge/team/gone.md': 'deleted' } })
+    expect(badges['knowledge/team/gone.md']).toBe('local-modified')
+    expect(badgeForDirectory('knowledge/team', badges)).toBe('local-modified')
   })
 })
 
