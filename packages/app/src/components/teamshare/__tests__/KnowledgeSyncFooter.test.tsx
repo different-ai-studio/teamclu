@@ -153,7 +153,7 @@ describe('KnowledgeSyncFooter', () => {
     sync.failed = 3
     render(<KnowledgeSyncFooter />)
 
-    expect(screen.getByText('3 files could not be pulled')).toBeTruthy()
+    expect(screen.getByText('3 files cannot sync · retrying')).toBeTruthy()
     expect(screen.queryByText(/Synced/)).toBeNull()
   })
 })

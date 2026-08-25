@@ -2,6 +2,7 @@
   "teamShare": {
     "refreshAndSync": "刷新并同步云端",
     "cloudSyncFailed": "同步失败：{{msg}}",
+    "cloudSyncStuckFiles": "还有 {{count}} 个文件同步不了，每次同步都会重试",
     "envAdd": "新增环境变量",
     "envAddTeam": "新增团队环境变量",
     "envAddPersonal": "新增个人环境变量",
@@ -2708,7 +2709,7 @@
     "phasePushing": "上传中",
     "phaseDeleting": "删除中",
     "conflicts": "{{count}} 个冲突待决策",
-    "failedFiles": "{{count}} 个文件拉取失败",
+    "failedFiles": "{{count}} 个文件同步不了 · 持续重试",
     "failed": "同步失败"
   },
   "knowledgeConflict": {

@@ -131,7 +131,7 @@ export function KnowledgeSyncFooter() {
             <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-red-500" />
             <span className="min-w-0 flex-1 truncate text-red-500">
               {failed > 0
-                ? t('knowledgeSync.failedFiles', '{{count}} files could not be pulled', {
+                ? t('knowledgeSync.failedFiles', '{{count}} files cannot sync · retrying', {
                     count: failed,
                   })
                 : t('knowledgeSync.failed', 'Sync failed')}

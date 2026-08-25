@@ -194,15 +194,9 @@ impl SyncDispatcher {
         let jwt = self.oss_jwt().await?;
         let fc = oss::fc_client::FcClient::new(self.fc_endpoint()?, jwt);
         let content_root = content_root_dir.to_string_lossy().to_string();
-        let r = oss::tick_with_progress(
-            &content_root,
-            team_id,
-            secret.as_deref(),
-            &fc,
-            progress,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let r = oss::tick_with_progress(&content_root, team_id, secret.as_deref(), &fc, progress)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(SyncStatus {
             mode: Some("oss".into()),
             last_sync_at: now_rfc3339(),
@@ -348,7 +342,7 @@ mod tests {
     /// the honest precondition is the team secret: without it there is nothing
     /// to encrypt or decrypt with, and a red banner would be noise.
     #[tokio::test]
-    async fn a_team_without_a_secret_skips_rather_than_erroring() {
+    async fn a_team_without_a_secret_still_syncs() {
         let _lock = crate::config::global_team_store::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -365,8 +359,21 @@ mod tests {
             .sync_team("no-secret-team", SyncOptions { force: true })
             .await;
 
-        assert!(st.skipped);
-        assert!(st.last_error.is_none());
+        // Knowledge content is plaintext now, so a missing team secret is no
+        // longer a reason to do nothing — it only means blobs written before
+        // that change cannot be decoded. Skipping here is what made a device
+        // with no secret look permanently, silently idle.
+        assert!(!st.skipped, "a missing secret must not stop a sync");
+        // The mock exposes no cloud URL, so the tick gets as far as asking for
+        // one and stops there. That it got that far is the point.
+        assert!(
+            st.last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("FC endpoint"),
+            "unexpected error: {:?}",
+            st.last_error
+        );
 
         if let Some(v) = orig {
             std::env::set_var("AMUXD_HOME", v);

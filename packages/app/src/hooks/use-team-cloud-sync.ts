@@ -35,10 +35,21 @@ export function useTeamCloudSync() {
   const syncNow = React.useCallback(async () => {
     if (!available || syncing) return
     await ossSyncNow(workspacePath)
-    const err = useOssSyncStore.getState().lastError
+    const { lastError: err, failed } = useOssSyncStore.getState()
     if (err) {
       toast.error(t('teamShare.cloudSyncFailed', 'Sync failed: {{msg}}', { msg: err }))
       return
+    }
+    // A tick can return Ok while leaving files behind — a blob this device
+    // cannot decode, a download that 404s. Those are retried every tick, but
+    // reporting the run as a plain success is how the condition stayed
+    // invisible for as long as it did.
+    if (failed > 0) {
+      toast.warning(
+        t('teamShare.cloudSyncStuckFiles', '{{count}} files still cannot sync — retrying each time', {
+          count: failed,
+        }),
+      )
     }
     window.dispatchEvent(new CustomEvent(TEAM_SYNCED_EVENT))
   }, [available, syncing, workspacePath, ossSyncNow, t])

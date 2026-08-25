@@ -113,7 +113,6 @@ pub async fn tick_with_progress(
     // dirty-vs-newer files) here — this mutates `state`/disk and must stay
     // sequential. The actual blob downloads are then batched by `pull_phase`.
     let mut pull_items: Vec<PullItem> = Vec::new();
-    // Reassigned below when quarantined files are prepended.
 
     for item in &all_items {
         // `.mcp/` and `_secrets/` moved to the Cloud API. A team synced before the
@@ -196,31 +195,14 @@ pub async fn tick_with_progress(
         });
     }
 
-    // Everything the last ticks could not apply, retried before anything else.
-    // The manifest is queried by `afterSeq`, so a file the cursor has already
-    // passed is never re-listed — this list is the only thing that brings it
-    // back, and it is why the cursor is now free to move past a bad file.
-    let already_listed: std::collections::HashSet<&str> =
-        pull_items.iter().map(|i| i.path.as_str()).collect();
-    let mut retries: Vec<PullItem> = state
-        .quarantined
-        .iter()
-        .filter(|(path, _)| !already_listed.contains(path.as_str()))
-        .map(|(path, q)| PullItem {
-            path: path.clone(),
-            cipher_hash: q.cipher_hash.clone(),
-            version: q.version,
-        })
-        .collect();
-    retries.sort_by(|a, b| a.path.cmp(&b.path));
-    if !retries.is_empty() {
+    let retried = state.quarantined.len();
+    let pull_items = with_quarantined_retries(pull_items, &state);
+    if retried > 0 {
         tracing::info!(
             team_id,
-            count = retries.len(),
+            count = retried,
             "retrying quarantined pulls before this tick's manifest items"
         );
-        retries.extend(pull_items);
-        pull_items = retries;
     }
 
     // Batched download (with per-file fallback on a pre-batch FC).
@@ -518,6 +500,35 @@ fn prepare_upload(
 
 /// Batched PULL: sign N GET URLs in one FC round-trip, then fetch + decrypt +
 /// write blobs concurrently straight from OSS. Returns the number pulled.
+/// Put everything the last ticks could not apply back at the front of this
+/// tick's pull list.
+///
+/// This is what makes moving the cursor past a bad file safe. The manifest is
+/// queried by `afterSeq`, so once the cursor passes a file the server never
+/// lists it again — without this list, "skip the file that failed" would mean
+/// "lose the file forever". Sorted for a deterministic order, and files this
+/// tick's manifest already offers are left to it rather than fetched twice.
+fn with_quarantined_retries(items: Vec<PullItem>, state: &LocalSyncState) -> Vec<PullItem> {
+    if state.quarantined.is_empty() {
+        return items;
+    }
+    let already_listed: std::collections::HashSet<&str> =
+        items.iter().map(|i| i.path.as_str()).collect();
+    let mut retries: Vec<PullItem> = state
+        .quarantined
+        .iter()
+        .filter(|(path, _)| !already_listed.contains(path.as_str()))
+        .map(|(path, q)| PullItem {
+            path: path.clone(),
+            cipher_hash: q.cipher_hash.clone(),
+            version: q.version,
+        })
+        .collect();
+    retries.sort_by(|a, b| a.path.cmp(&b.path));
+    retries.extend(items);
+    retries
+}
+
 /// Where the sync cursor should sit after a pull: at the snapshot the manifest
 /// reported, whenever it reported one.
 ///
@@ -1503,6 +1514,61 @@ mod tests {
         state.files.insert("knowledge/a.md".into(), synced_file(2));
         let scan = vec![scanned("knowledge/a.md")];
         assert!(locally_deleted_paths(&state, &scan).is_empty());
+    }
+
+    #[test]
+    fn quarantined_files_are_retried_ahead_of_the_new_manifest_items() {
+        let mut state = empty_state();
+        state.quarantine(
+            "knowledge/stuck.md",
+            "hash-stuck",
+            4,
+            "decrypt failed".into(),
+        );
+        state.quarantine("knowledge/also.md", "hash-also", 6, "download 500".into());
+
+        let fresh = vec![PullItem {
+            path: "knowledge/new.md".into(),
+            cipher_hash: "hash-new".into(),
+            version: 9,
+        }];
+
+        let items = with_quarantined_retries(fresh, &state);
+
+        // The cursor has already moved past the stuck files, so this list is the
+        // only thing that ever fetches them again.
+        let paths: Vec<&str> = items.iter().map(|i| i.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "knowledge/also.md",
+                "knowledge/stuck.md",
+                "knowledge/new.md"
+            ]
+        );
+        assert_eq!(items[1].cipher_hash, "hash-stuck");
+        assert_eq!(items[1].version, 4, "retried at the version that failed");
+    }
+
+    #[test]
+    fn a_file_this_manifest_already_offers_is_not_fetched_twice() {
+        let mut state = empty_state();
+        state.quarantine("knowledge/stuck.md", "old-hash", 4, "decrypt failed".into());
+
+        // The server has a NEWER version of the same path this tick.
+        let fresh = vec![PullItem {
+            path: "knowledge/stuck.md".into(),
+            cipher_hash: "new-hash".into(),
+            version: 7,
+        }];
+
+        let items = with_quarantined_retries(fresh, &state);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].cipher_hash, "new-hash",
+            "the manifest's newer version wins over the quarantined one"
+        );
     }
 
     #[test]

@@ -497,6 +497,9 @@ pub async fn oss_sync_now(
         "pulled": pick("pulled"),
         "pushed": pick("pushed"),
         "conflicts": pick("conflicts"),
+        // Dropping this was how "every file failed" reached the app as a clean
+        // run: the frontend defaults the missing field to 0.
+        "failed": pick("failed"),
     }))
 }
 

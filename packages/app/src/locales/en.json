@@ -2,6 +2,7 @@
   "teamShare": {
     "refreshAndSync": "Refresh and sync with cloud",
     "cloudSyncFailed": "Sync failed: {{msg}}",
+    "cloudSyncStuckFiles": "{{count}} files still cannot sync — retrying each time",
     "envAdd": "Add environment variable",
     "envAddTeam": "Add team env key",
     "envAddPersonal": "Add personal env key",
@@ -2708,7 +2709,7 @@
     "phasePushing": "Uploading",
     "phaseDeleting": "Removing",
     "conflicts": "{{count}} conflicts need a decision",
-    "failedFiles": "{{count}} files could not be pulled",
+    "failedFiles": "{{count}} files cannot sync · retrying",
     "failed": "Sync failed"
   },
   "knowledgeConflict": {
