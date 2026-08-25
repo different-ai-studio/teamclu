@@ -530,6 +530,22 @@ fn restart_delay(failure_count: u32) -> Duration {
         .min(REBUILD_RETRY_MAX)
 }
 
+/// Whether a CONNACK refusal is one a fresh credential could fix.
+///
+/// Both codes show up against a JWT-authenticating broker and both mean the
+/// password is the problem: EMQX answers `BadUserNamePassword` when the
+/// signature verified but `exp` has passed, and `NotAuthorized` when no
+/// authenticator matched the signature at all. Everything else (protocol
+/// version, identifier rejected, server unavailable) is not about the
+/// credential, so rebuilding the worker around a new token would not help.
+fn connect_refusal_is_credential_failure(code: &rumqttc::mqttbytes::v4::ConnectReturnCode) -> bool {
+    use rumqttc::mqttbytes::v4::ConnectReturnCode;
+    matches!(
+        code,
+        ConnectReturnCode::BadUserNamePassword | ConnectReturnCode::NotAuthorized
+    )
+}
+
 fn inbound_retry_delay(attempt: u32) -> Duration {
     let exponent = attempt.saturating_sub(1).min(5);
     Duration::from_secs(1_u64 << exponent).min(INBOUND_RETRY_MAX)
@@ -1487,6 +1503,19 @@ impl MqttWorker {
         let mut auto_restore_subscriptions = false;
         let mut subscriptions_ready_announced = false;
         let mut exit_reason = "MQTT worker stopped".to_string();
+        // An ABSOLUTE deadline, deliberately hoisted out of the loop. It used
+        // to be a fresh `sleep(SUPERVISOR_TICK)` per iteration, which starves
+        // the tick arm whenever the event loop errors faster than the tick
+        // period: a rejected CONNACK comes back in ~10ms, so the timer was
+        // dropped and recreated ~100x/s and never once elapsed. That silently
+        // disabled everything the tick arm owns — `RECOVERY_DEADLINE`,
+        // `forced_rebuild`, and the proactive credential refresh. Observed in
+        // production as a worker stuck at `generation=0` with
+        // `poll_error_count=3065410` after 8.4 hours, hammering the broker at
+        // ~100 connects/s and never picking up the refreshed token sitting on
+        // disk. With an absolute deadline the arm fires on schedule no matter
+        // how fast the loop spins.
+        let mut next_tick = tokio::time::Instant::now() + SUPERVISOR_TICK;
 
         loop {
             self.heartbeat.touch();
@@ -1501,7 +1530,7 @@ impl MqttWorker {
                 self.flush_pending(&mut client, &mut pending, &mut publish_waiting_for_write);
             }
 
-            let tick = tokio::time::sleep(SUPERVISOR_TICK);
+            let tick = tokio::time::sleep_until(next_tick);
             tokio::pin!(tick);
 
             if let Some(active) = client.as_mut() {
@@ -1743,10 +1772,27 @@ impl MqttWorker {
                                 );
                                 let reason = error.to_string();
                                 if let rumqttc::ConnectionError::ConnectionRefused(code) = &error {
-                                    use rumqttc::mqttbytes::v4::ConnectReturnCode;
-                                    if matches!(code, ConnectReturnCode::BadUserNamePassword | ConnectReturnCode::NotAuthorized) {
+                                    if connect_refusal_is_credential_failure(code) {
                                         self.backend.invalidate_cached_credential();
-                                        warn!(?code, "MQTT authentication rejected; invalidating cached credential");
+                                        // Invalidating the cache is not enough on its
+                                        // own: rumqttc reconnects from the same
+                                        // `MqttOptions`, so it replays the password
+                                        // this worker was built with and can only ever
+                                        // be rejected again. The refreshed token on
+                                        // disk reaches the broker exactly when a new
+                                        // worker is built around it, so exit and let
+                                        // the supervisor rebuild — `schedule_restart`
+                                        // spaces those out 5s→30s, where the bare
+                                        // retry ran flat out at ~100/s.
+                                        forced_rebuild.get_or_insert_with(|| {
+                                            format!("MQTT credential rejected ({code:?})")
+                                        });
+                                        // Fire the tick arm on the next pass rather
+                                        // than burning up to a full second of retries
+                                        // waiting for the deadline it would otherwise
+                                        // have.
+                                        next_tick = tokio::time::Instant::now();
+                                        warn!(?code, "MQTT authentication rejected; invalidating cached credential and rebuilding the worker");
                                     } else {
                                         warn!(?code, "MQTT connection refused for a non-auth reason");
                                     }
@@ -1769,7 +1815,8 @@ impl MqttWorker {
                                         .map(|started| started.elapsed().as_millis() as u64)
                                         .unwrap_or_default(),
                                     %reason,
-                                    "MQTT transport error; rumqttc automatic recovery remains active"
+                                    rebuild_pending = forced_rebuild.is_some(),
+                                    "MQTT transport error; recovery in progress"
                                 );
                             }
                             Ok(_) => {
@@ -1782,6 +1829,10 @@ impl MqttWorker {
                     }
                     _ = &mut tick => {
                         self.heartbeat.touch();
+                        // Re-arm before the early-return path below: this arm
+                        // only breaks when a rebuild is due, so on every other
+                        // tick the loop continues and needs the next deadline.
+                        next_tick = tokio::time::Instant::now() + SUPERVISOR_TICK;
                         let recovery_expired = recovery_started
                             .is_some_and(|started| started.elapsed() >= RECOVERY_DEADLINE);
                         let proactive_due = next_proactive_reconnect
@@ -2433,6 +2484,33 @@ mod tests {
         assert!(heartbeat.last_progress_ms.load(Ordering::Relaxed) > 0);
         heartbeat.end_poll();
         assert_eq!(heartbeat.poll_pending_since_ms.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn credential_refusals_force_a_rebuild_and_other_refusals_do_not() {
+        use rumqttc::mqttbytes::v4::ConnectReturnCode;
+
+        // A JWT broker rejects an expired token as BadUserNamePassword and an
+        // unverifiable signature as NotAuthorized. Both are fixed by a new
+        // token, so both must take the rebuild path — leaving either one on
+        // rumqttc's own reconnect replays the dead password forever.
+        assert!(connect_refusal_is_credential_failure(
+            &ConnectReturnCode::BadUserNamePassword
+        ));
+        assert!(connect_refusal_is_credential_failure(
+            &ConnectReturnCode::NotAuthorized
+        ));
+
+        for code in [
+            ConnectReturnCode::RefusedProtocolVersion,
+            ConnectReturnCode::BadClientId,
+            ConnectReturnCode::ServiceUnavailable,
+        ] {
+            assert!(
+                !connect_refusal_is_credential_failure(&code),
+                "{code:?} is not a credential problem; a fresh token cannot fix it"
+            );
+        }
     }
 
     #[test]
