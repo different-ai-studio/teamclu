@@ -199,6 +199,12 @@ pub struct DaemonServer {
     /// messages with `None` here are logged and acked, never blocking the
     /// business loop. See `crate::voice::adapter::VoiceRouter`.
     voice_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::voice::VoiceEvent>>,
+    /// Receiver half of the same channel, parked here until `run()` can build
+    /// the router. The router needs a `RuntimeAdapter` (for the chat sink) and
+    /// that is constructed later in startup than this struct, so the channel is
+    /// created early — the MQTT loop can forward from the first message — and
+    /// consumed late. `None` in tests, which never spawn the router.
+    voice_router_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::voice::VoiceEvent>>,
     /// Answered capability-management requests, keyed on the authorized
     /// (requester, request_id) pair. Shared rather than owned so the handler
     /// can run on its own task instead of on the message pump.
@@ -769,36 +775,14 @@ impl DaemonServer {
         let team_skill_reconciler = Arc::new(
             crate::runtime::team_skills::TeamSkillReconciler::new(backend.clone()),
         );
-        // M3-1: spawn the voice router. The default provider is FunASR local
-    // (returns NotImplemented until M3-2); the default sink only logs.
-    // Subscribing to device voice topics awaits M2-2 pairing, but the
-    // routing path is live: a forwarded VoiceMic/VoiceCtl reaches the
-    // router and a turn_start/turn_end round-trip is exercised by tests.
-    // No credential source here: it needs a Backend, which is constructed
-    // later in startup than the router. Until that is rewired the router runs
-    // on the keyless local backend, and the hosted NLS arms refuse cleanly
-    // rather than panicking (plan §13.9).
-    let voice_router_tx = match crate::voice::stt::build_provider(
-        &crate::voice::stt::SttConfig::funasr_local(),
-        None,
-    ) {
-        Ok(provider) => {
-            let router = crate::voice::adapter::VoiceRouter::new(
-                Arc::from(provider),
-                Arc::new(crate::voice::adapter::LogTranscriptSink::default()),
-            );
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::voice::VoiceEvent>();
-            router.spawn(rx);
-            Some(tx)
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "voice adapter not started: STT provider unavailable"
-            );
-            None
-        }
-    };
+        // The voice channel is created here so the MQTT business loop has a
+        // sink for `voice/*` from its very first message, but the ROUTER is
+        // built in `run()`: its chat sink needs a `RuntimeAdapter`, which does
+        // not exist yet at this point in startup.
+        let (voice_router_tx, voice_router_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::voice::VoiceEvent>();
+        let voice_router_tx = Some(voice_router_tx);
+        let voice_router_rx = Some(voice_router_rx);
 
     Ok(Self {
             config,
@@ -844,6 +828,7 @@ impl DaemonServer {
             rpc_client,
             team_skill_reconciler,
             voice_tx: voice_router_tx,
+            voice_router_rx,
             agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
             cron_turn_done_tx,
             cron_turn_done_rx: Some(cron_turn_done_rx),
@@ -903,6 +888,125 @@ impl DaemonServer {
     /// Re-subscribe team topics and re-announce presence after MQTT CONNACK.
     /// Returns `Err(())` when the caller should break to the outer reconnect
     /// loop (same semantics as the first-connect path).
+    /// Assemble and spawn the voice router.
+    ///
+    /// Every dependency here is optional in the sense that its absence degrades
+    /// the feature rather than failing the daemon: no credentials means no
+    /// speech, no notes session means notes are not stored, and either way the
+    /// rest of the daemon starts normally.
+    ///
+    /// Credentials come from `TEAMCLU_VOICE_*` when set — a console-issued NLS
+    /// token, which is how the gateway is exercised without an AccessKey pair
+    /// (plan §13.9) — and otherwise from the Cloud API, which mints one.
+    async fn spawn_voice_router(
+        &self,
+        rx: tokio::sync::mpsc::UnboundedReceiver<crate::voice::VoiceEvent>,
+        runtime: Arc<dyn crate::http::runtime_adapter::RuntimeAdapter>,
+    ) {
+        use crate::voice::{
+            adapter::{FanOutSink, LogTranscriptSink, TranscriptSink, VoiceRouter},
+            credentials::{CloudApiCredentials, CredentialSource, StaticCredentials},
+            spk::{ReplySpeaker, SpeechSynthesizer, SpkConfig, VoicePublisher},
+            stt::{SttBackend, SttConfig},
+            tts::{TtsBackend, TtsConfig},
+            BackendNoteStore, ChatSink, NoteSink, TransportVoicePublisher,
+        };
+
+        let credentials: Option<Arc<dyn CredentialSource>> = match StaticCredentials::from_env() {
+            Some(sc) => {
+                info!("voice: using TEAMCLU_VOICE_* credentials (bench/testing path)");
+                Some(Arc::new(sc))
+            }
+            None => Some(Arc::new(CloudApiCredentials::new(self.backend.clone()))),
+        };
+
+        // Hosted NLS when a credential source exists; the local backend
+        // otherwise, so a deployment without speech config still routes turns
+        // and logs them instead of dropping them silently.
+        let (stt_cfg, tts_cfg) = (
+            SttConfig {
+                backend: SttBackend::AliyunNls,
+            },
+            TtsConfig {
+                backend: TtsBackend::AliyunTts,
+            },
+        );
+        let provider = match crate::voice::stt::build_provider(&stt_cfg, credentials.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(error = %e, "voice: STT provider unavailable; router not started");
+                return;
+            }
+        };
+
+        let publisher: Arc<dyn VoicePublisher> =
+            Arc::new(TransportVoicePublisher::new(self.publisher_handle.clone()));
+
+        // The speech downlink. Without TTS the chat sink still prompts the
+        // agent — the device just hears nothing, which is the pre-§13.6
+        // behaviour rather than a broken turn.
+        let speaker: Option<Arc<dyn ReplySpeaker>> =
+            match crate::voice::tts::build_provider(&tts_cfg, credentials) {
+                Ok(tts) => Some(Arc::new(SpeechSynthesizer::new(
+                    Arc::from(tts),
+                    publisher.clone(),
+                    runtime.clone(),
+                    SpkConfig::default(),
+                ))),
+                Err(e) => {
+                    warn!(error = %e, "voice: TTS unavailable; replies will not be spoken");
+                    None
+                }
+            };
+
+        let mut chat = ChatSink::new(
+            runtime,
+            // Sessions are scoped to the token that created them. The device
+            // has no HTTP token, so the daemon's own actor id owns them —
+            // stable across restarts, which a random uuid would not be.
+            uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_URL,
+                format!("teamclu-voice:{}", self.config.actor.id).as_bytes(),
+            ),
+            Some(self.config.agents.local_agent.clone()),
+        );
+        if let Some(sp) = &speaker {
+            chat = chat.with_speaker(sp.clone());
+        }
+
+        let mut sinks: Vec<Arc<dyn TranscriptSink>> = vec![Arc::new(chat)];
+
+        // Notes need a session to be written into, and the daemon has no
+        // per-device notes session to resolve yet (M2-2). Until then the
+        // session is named explicitly or notes are not stored at all — better
+        // than inventing a destination for the user's captures.
+        match std::env::var("TEAMCLU_VOICE_NOTES_SESSION").ok().filter(|s| !s.trim().is_empty()) {
+            Some(session_id) => {
+                let store = Arc::new(BackendNoteStore::new(self.backend.clone(), session_id));
+                sinks.push(Arc::new(
+                    NoteSink::new(store).with_publisher(publisher.clone()),
+                ));
+            }
+            None => {
+                info!("voice: TEAMCLU_VOICE_NOTES_SESSION unset; note turns will be logged only");
+                sinks.push(Arc::new(LogTranscriptSink::default()));
+            }
+        }
+
+        let mut router = VoiceRouter::new(Arc::from(provider), Arc::new(FanOutSink::new(sinks)));
+        if let Some(sp) = speaker {
+            // Lets a new turn or a barge-in silence a reply that is still
+            // playing — the reason `spk` paces frames at all.
+            router = router.with_speaker(sp);
+        }
+        router.spawn(rx);
+        info!(
+            team_id = %self.config.team_id.as_deref().unwrap_or("<none>"),
+            actor_id = %self.config.actor.id,
+            "voice: router started"
+        );
+    }
+
     async fn mqtt_resubscribe_after_connack(
         &mut self,
         context: &str,
@@ -939,6 +1043,40 @@ impl DaemonServer {
             }
             if !current() {
                 return Err("stale MQTT generation after runtime subscription".to_string());
+            }
+            // Device voice topics. Without these the router is unreachable no
+            // matter how it is wired — `parse_incoming` understands `voice/*`
+            // but nothing was ever subscribed.
+            //
+            // Bench scoping: the device shares the daemon's actor, so its
+            // topics fall under this actor's namespace. Per-device actors
+            // arrive with M2-2 pairing, at which point this becomes a
+            // subscription per paired device.
+            //
+            // mic is QoS 0 and ctl QoS 1, mirroring what the device publishes:
+            // a re-sent 20 ms frame arrives after the audio around it has
+            // already been consumed, while a lost turn_start loses the turn.
+            if let Some(team_id) = self.config.team_id.as_deref().filter(|t| !t.is_empty()) {
+                let actor_id = self.config.actor.id.clone();
+                for (topic, qos) in [
+                    (
+                        crate::voice::voice_mic_topic(team_id, &actor_id),
+                        teamclu_transport::DeliveryGuarantee::AtMostOnce,
+                    ),
+                    (
+                        crate::voice::voice_ctl_topic(team_id, &actor_id),
+                        teamclu_transport::DeliveryGuarantee::AtLeastOnce,
+                    ),
+                ] {
+                    if let Err(e) = self.publisher_handle.subscribe(&topic, qos).await {
+                        // Not fatal: speech is one feature, and failing the
+                        // whole reconnect over it would take the daemon's RPC
+                        // path down with it.
+                        warn!(context, topic = %topic, error = %e, "voice subscribe failed");
+                    } else {
+                        info!(context, topic = %topic, "voice subscribed");
+                    }
+                }
             }
             if let Some(tc) = &mut self.teamclu {
                 if let Err(e) = tc.subscribe_all().await {
@@ -1133,6 +1271,17 @@ impl DaemonServer {
                     Some(refresh_coordinator),
                     Some(execution_context_assembler.clone()),
                 );
+
+            // ── Voice router ────────────────────────────────────────────────
+            //
+            // Built here, not in `new()`: the chat sink needs the
+            // `RuntimeAdapter` above, and the speech downlink needs the MQTT
+            // publisher. Everything degrades rather than aborting startup — a
+            // daemon that cannot do speech must still be a daemon.
+            if let Some(rx) = self.voice_router_rx.take() {
+                self.spawn_voice_router(rx, runtime.clone()).await;
+            }
+
             // Start the refresh watchers with an empty workspace set so the
             // (cloud-dependent) `cloud_workspace_list()` fetch does not delay the
             // HTTP listener bind. The set is populated on a background task after
@@ -3804,6 +3953,7 @@ pub(crate) mod tests {
                     crate::runtime::team_skills::TeamSkillReconciler::new(backend),
                 ),
                 voice_tx: None,
+                voice_router_rx: None,
                 agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
                 cron_turn_done_tx,
                 cron_turn_done_rx: Some(cron_turn_done_rx),
