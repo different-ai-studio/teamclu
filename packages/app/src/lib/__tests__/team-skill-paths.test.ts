@@ -22,7 +22,13 @@ vi.mock('@/lib/build-config', async (importOriginal) => {
   }
 })
 
-import { amuxdHomePath, resolveTeamDir, TEAM_SHARE_LINK_DIR } from '../team-skill-paths'
+import {
+  amuxdHomePath,
+  globalTeamKnowledgeShareDir,
+  resolveTeamDir,
+  teamSyncKeyForPath,
+  TEAM_SHARE_LINK_DIR,
+} from '../team-skill-paths'
 
 describe('team-skill-paths (white-label amuxd home)', () => {
   beforeEach(() => {
@@ -75,5 +81,60 @@ describe('team-skill-paths (white-label amuxd home)', () => {
     })
 
     await expect(resolveTeamDir('/tmp/ws')).resolves.toBeNull()
+  })
+})
+
+/**
+ * The key the OSS sync engine addresses a file by — its path relative to the
+ * team's sync content root. Everything version-related (history, baseline diff,
+ * restore) is keyed by this, and it is derived from the absolute
+ * `~/.amuxd[-<brand>]/teams/<id>/shared/knowledge` path, never from a workspace.
+ */
+describe('teamSyncKeyForPath', () => {
+  const KNOWLEDGE = '/home/user/.amuxd-copilot361/teams/team-abc/shared/knowledge'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockHomeDir.mockResolvedValue('/home/user')
+    mockExists.mockResolvedValue(false)
+    mockReadTextFile.mockResolvedValue('')
+  })
+
+  it('maps a file under the real knowledge dir to its sync key', () => {
+    expect(teamSyncKeyForPath(`${KNOWLEDGE}/guides/setup.md`, { knowledgeDir: KNOWLEDGE })).toBe(
+      'knowledge/guides/setup.md',
+    )
+  })
+
+  /**
+   * The workspace panel still renders the daemon's `team-knowledge` symlink, so
+   * the same document reaches the editor under two spellings. Both must produce
+   * the same key, or a note's history would depend on which surface opened it.
+   */
+  it('maps the workspace team-knowledge symlink to the same key', () => {
+    expect(
+      teamSyncKeyForPath('/ws/team-knowledge/guides/setup.md', {
+        knowledgeDir: KNOWLEDGE,
+        workspacePath: '/ws',
+      }),
+    ).toBe('knowledge/guides/setup.md')
+  })
+
+  it('returns null for a file outside any knowledge tree', () => {
+    expect(
+      teamSyncKeyForPath('/ws/src/main.ts', { knowledgeDir: KNOWLEDGE, workspacePath: '/ws' }),
+    ).toBeNull()
+    // The root itself is a directory, not a synced file.
+    expect(teamSyncKeyForPath(KNOWLEDGE, { knowledgeDir: KNOWLEDGE })).toBeNull()
+  })
+
+  it('falls back to the last resolved knowledge dir when none is passed', async () => {
+    mockExists.mockImplementation((path: string) =>
+      Promise.resolve(path === '/home/user/.amuxd-copilot361/daemon.toml'),
+    )
+    mockReadTextFile.mockResolvedValue('active_team = "team-abc"\n')
+
+    await expect(globalTeamKnowledgeShareDir()).resolves.toBe(KNOWLEDGE)
+    expect(teamSyncKeyForPath(`${KNOWLEDGE}/top.md`)).toBe('knowledge/top.md')
   })
 })

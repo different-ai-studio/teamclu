@@ -43,6 +43,10 @@ import type { EditorProps } from './types';
 import { detectClipboardImage, saveClipboardImage } from './image-paste-handler';
 import { parseWikiLinkText } from '@/lib/wiki-link-utils';
 import { resolveWikiLinkPath, createNoteFromLink } from '@/lib/wiki-link-resolver';
+import {
+  globalTeamKnowledgeShareDir,
+  teamKnowledgeRootForPath,
+} from '@/lib/team-skill-paths';
 import { useWorkspaceStore } from '@/stores/workspace';
 
 export interface MarkdownEditorHandle {
@@ -137,7 +141,7 @@ const wikiLinkPlugin = ViewPlugin.fromClass(
   { decorations: (v) => v.decorations },
 );
 
-function handleWikiLinkClick(event: MouseEvent): boolean {
+function handleWikiLinkClick(event: MouseEvent, filePath?: string): boolean {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return false;
   const el = target.closest('.cm-wiki-link');
@@ -148,29 +152,39 @@ function handleWikiLinkClick(event: MouseEvent): boolean {
 
   const parts = parseWikiLinkText(match[1]);
   const workspace = useWorkspaceStore.getState();
-  const workspacePath = workspace.workspacePath;
-  if (!workspacePath) return false;
-
   const heading = parts.heading ?? undefined;
-  void resolveWikiLinkPath(workspacePath, "team-knowledge", parts.target)
-    .then((resolved) => {
+
+  void (async () => {
+    try {
+      // Resolve inside the knowledge tree the open document belongs to: the
+      // real `~/.amuxd[-<brand>]/teams/<id>/shared/knowledge` dir for a document
+      // opened from the Knowledge column, the `team-knowledge` symlink for one
+      // opened from the workspace file panel. Resolving both against the
+      // symlink would open the same note under a second path — two tabs over
+      // one file. A document outside any knowledge tree still links into the
+      // team's notes, and does so by the real directory.
+      const root =
+        (filePath
+          ? teamKnowledgeRootForPath(filePath, { workspacePath: workspace.workspacePath })
+          : null) ?? (await globalTeamKnowledgeShareDir());
+      if (!root) return;
+
+      const resolved = await resolveWikiLinkPath(root, parts.target);
       if (resolved) {
-        workspace.selectFile(`${workspacePath}/${resolved}`, undefined, heading);
+        await workspace.selectFile(resolved, undefined, heading);
         return;
       }
-      return createNoteFromLink(workspacePath, "team-knowledge", parts.target).then(
-        (newPath) => {
-          workspace.selectFile(newPath, undefined, heading);
-        },
-      );
-    })
-    .catch((err) => {
+      const newPath = await createNoteFromLink(root, parts.target);
+      await workspace.selectFile(newPath, undefined, heading);
+    } catch (err) {
       console.error('[MarkdownEditor] wiki-link resolution failed:', err);
-      // Surfaced, not swallowed: the common failure is "team-knowledge isn't
-      // linked yet", and creating the note anyway would shadow the daemon's
-      // symlink for good. Silence would just read as a dead click.
+      // Surfaced, not swallowed: the common failure is "the team knowledge dir
+      // isn't there yet", and creating the note anyway would materialize a
+      // directory the daemon means to own. Silence would just read as a dead
+      // click.
       toast.error(String(err instanceof Error ? err.message : err));
-    });
+    }
+  })();
   return true;
 }
 
@@ -297,7 +311,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, EditorProps>(
             return true;
           },
           mousedown(event) {
-            return handleWikiLinkClick(event);
+            return handleWikiLinkClick(event, filePathRef.current ?? undefined);
           },
         }),
         EditorView.updateListener.of((update) => {

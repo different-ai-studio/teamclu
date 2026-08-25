@@ -23,7 +23,10 @@ import {
   History,
 } from "lucide-react";
 import { cn, isTauri } from "@/lib/utils";
-import { TEAM_REPO_DIR } from "@/lib/build-config";
+import {
+  globalTeamKnowledgeShareDir,
+  teamSyncKeyForPath,
+} from "@/lib/team-skill-paths";
 import { getEditorType } from "@/components/editors/utils";
 import { UNSUPPORTED_BINARY_EXTENSIONS } from "@/components/viewers/UnsupportedFileViewer";
 import { supportsPreview } from "@/components/editors/utils";
@@ -365,7 +368,6 @@ export function FileEditor({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const isTeamFile = filePath?.includes(`/${TEAM_REPO_DIR}/`) ?? false
   const targetLine = useWorkspaceStore((s) => s.targetLine);
   const targetHeading = useWorkspaceStore((s) => s.targetHeading);
   const [currentContent, setCurrentContent] = useState(content);
@@ -405,23 +407,39 @@ export function FileEditor({
       ? filePath.slice(workspacePath.length + 1)
       : (filePath ?? "");
 
-  const teamRepoPath = useMemo(
-    () =>
-      workspacePath ? `${workspacePath.replace(/\/+$/, '')}/${TEAM_REPO_DIR}` : null,
-    [workspacePath],
-  )
+  // The team's real knowledge dir (`~/.amuxd[-<brand>]/teams/<id>/shared/
+  // knowledge`) — the directory the OSS sync engine owns, resolved by absolute
+  // path rather than through any workspace link.
+  const [knowledgeDir, setKnowledgeDir] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    globalTeamKnowledgeShareDir()
+      .then((dir) => { if (!cancelled) setKnowledgeDir(dir) })
+      .catch(() => { if (!cancelled) setKnowledgeDir(null) })
+    return () => { cancelled = true }
+  }, [])
 
-  const relativeTeamPath = useMemo(() => {
-    if (!teamRepoPath || !filePath) return null
-    const norm = filePath.replace(/\/+$/, '')
-    if (!norm.startsWith(teamRepoPath + '/')) return null
-    return norm.slice(teamRepoPath.length + 1)
-  }, [teamRepoPath, filePath])
+  // The key sync addresses this file by (`knowledge/<rel>`), null when the file
+  // is not team-synced content. Files opened from the Knowledge column carry the
+  // real absolute path; files opened from the workspace panel come in under the
+  // `team-knowledge` symlink. Both map to the same key, so the same document has
+  // the same history whichever surface opened it.
+  const teamSyncKey = useMemo(
+    () => (filePath ? teamSyncKeyForPath(filePath, { knowledgeDir, workspacePath }) : null),
+    [filePath, knowledgeDir, workspacePath],
+  )
+  // Team content is exactly what sync carries. This used to be "anywhere under
+  // `teamclu-team/`", which is a tree sync retired: it offered history on files
+  // that have none, and offered none on knowledge documents, which are the only
+  // files that do.
+  const isTeamFile = !!teamSyncKey
 
   const historyProvider = useMemo(() => {
-    if (!teamRepoPath || !relativeTeamPath || !workspacePath) return null
-    return new OssHistoryProvider(workspacePath, relativeTeamPath)
-  }, [teamRepoPath, relativeTeamPath, workspacePath])
+    if (!teamSyncKey) return null
+    // `workspacePath` is accepted for signature compatibility only — the daemon
+    // keys versions by team id + sync key, and the Tauri command drops it.
+    return new OssHistoryProvider(workspacePath ?? '', teamSyncKey)
+  }, [teamSyncKey, workspacePath])
 
   // Fetch the file's baseline content from the daemon for gutter decorations
   // (team files only). The daemon's `team_file_content(..., "baseline")` proxy
@@ -429,7 +447,7 @@ export function FileEditor({
   // so the gutter works for both team share modes.
   useEffect(() => {
     const teamId = useCurrentTeamStore.getState().team?.id;
-    if (!isTauri() || !isTeamFile || !relativeTeamPath || !teamId) {
+    if (!isTauri() || !teamSyncKey || !teamId) {
       setGitHeadContent(null);
       return;
     }
@@ -441,7 +459,7 @@ export function FileEditor({
         const { invoke } = await import("@tauri-apps/api/core");
         const res = await invoke<{ content: string | null }>("team_file_content", {
           teamId,
-          path: relativeTeamPath,
+          path: teamSyncKey,
           ref: "baseline",
         });
         if (!cancelled) {
@@ -457,7 +475,7 @@ export function FileEditor({
     return () => {
       cancelled = true;
     };
-  }, [relativeTeamPath, isTeamFile]);
+  }, [teamSyncKey]);
 
   // Check if this file supports preview
   const previewType = supportsPreview(filename);

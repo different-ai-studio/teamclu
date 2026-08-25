@@ -9,15 +9,16 @@ import { linkDaemonTeamWorkspace } from '@/lib/daemon-local-client'
 import { isTauri } from '@/lib/utils'
 
 /**
- * Shown in the Knowledge column when the team directory is missing on THIS
- * machine — `<workspace>/teamclu-team` does not resolve, so there is no root to
- * render a file tree from.
+ * Shown in the Knowledge column when the team's knowledge directory is missing
+ * on THIS machine — `~/.amuxd[-<brand>]/teams/<id>/shared/knowledge` is not
+ * there, so there is no root to render a file tree from. (It no longer means
+ * "this workspace has no symlink": the column reads that directory by absolute
+ * path and does not go through the workspace link at all.)
  *
  * This is a local-state problem, not an account one: sync is on for the team
- * either way. The daemon owns the directory (one global copy under
- * `~/.amuxd/teams/<id>/shared/`, exposed per workspace as a symlink), and
- * `POST /v1/team/link` is idempotent — it materializes whichever half is
- * missing. So the fix is one button, and pressing it twice is harmless.
+ * either way. The daemon owns the directory, and `POST /v1/team/link` is
+ * idempotent — it materializes whichever half is missing. So the fix is one
+ * button, and pressing it twice is harmless.
  *
  * `strict: true` because the whole point here is to report failure: the
  * best-effort default would swallow "daemon not running", which is the most
@@ -27,7 +28,6 @@ export function TeamDirInitPanel() {
   const { t } = useTranslation()
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
-  const refreshFileTree = useWorkspaceStore((s) => s.refreshFileTree)
 
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -40,10 +40,9 @@ export function TeamDirInitPanel() {
     setError(null)
     try {
       await linkDaemonTeamWorkspace(workspacePath, { strict: true })
-      // The symlink is new, so the cached workspace tree does not contain it
-      // yet — refresh before re-resolving the root, or `knowledgeRoot` stays
-      // null and the column bounces straight back to this panel.
-      await refreshFileTree()
+      // Re-resolving the root is enough. It reads the daemon's directory
+      // directly, so there is no cached workspace tree standing between the
+      // repair and the column noticing it.
       await loadSection('knowledge', { force: true })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))

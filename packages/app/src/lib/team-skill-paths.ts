@@ -88,11 +88,76 @@ async function globalTeamKnowledgeDir(teamId: string): Promise<string> {
   return `${await amuxdRoot()}/teams/${teamId}/shared/knowledge`
 }
 
+/**
+ * Workspace symlink name surfacing the team's synced knowledge dir. Must match
+ * `TEAM_KNOWLEDGE_LINK_NAME` in `apps/daemon/src/config/workspace_link.rs`.
+ *
+ * Nothing reads team knowledge *through* this link any more — it exists for
+ * agents and for the workspace file panel, which renders the workspace as it is
+ * on disk. It is listed here only so a file opened from that panel can still be
+ * recognised as team-synced content.
+ */
+export const TEAM_KNOWLEDGE_LINK_DIR = 'team-knowledge'
+
+/**
+ * Last resolved global knowledge dir. Cached because mapping a path to its sync
+ * key happens inside renders, where awaiting the daemon config is not an option.
+ */
+let lastKnownKnowledgeDir: string | null = null
+
 /** Active team global knowledge dir (~/.amuxd[-<brand>]/teams/<id>/shared/knowledge). */
 export async function globalTeamKnowledgeShareDir(): Promise<string | null> {
   const teamId = await readOnboardedTeamId()
   if (!teamId) return null
-  return globalTeamKnowledgeDir(teamId)
+  const dir = await globalTeamKnowledgeDir(teamId)
+  lastKnownKnowledgeDir = dir
+  return dir
+}
+
+function isUnder(root: string | null | undefined, path: string): boolean {
+  if (!root) return false
+  const normalized = trimTrailingPathSeparators(root)
+  return path === normalized || path.startsWith(`${normalized}/`)
+}
+
+/**
+ * The knowledge tree root that contains `absPath`, or null when it holds no
+ * team knowledge.
+ *
+ * Two spellings reach the same bytes: the real directory under the amuxd home —
+ * what the Knowledge column browses and what the sync engine owns — and
+ * `<workspace>/team-knowledge`, the daemon-managed symlink the workspace file
+ * panel renders. Both have to be recognised, or a document opened from one
+ * surface loses the history the same document has when opened from the other.
+ */
+export function teamKnowledgeRootForPath(
+  absPath: string,
+  opts: { knowledgeDir?: string | null; workspacePath?: string | null } = {},
+): string | null {
+  const knowledgeDir = opts.knowledgeDir ?? lastKnownKnowledgeDir
+  if (isUnder(knowledgeDir, absPath)) return trimTrailingPathSeparators(knowledgeDir as string)
+  const linkDir = opts.workspacePath
+    ? `${trimTrailingPathSeparators(opts.workspacePath)}/${TEAM_KNOWLEDGE_LINK_DIR}`
+    : null
+  if (isUnder(linkDir, absPath)) return linkDir
+  return null
+}
+
+/**
+ * The key the team sync engine addresses a file by: its path relative to the
+ * sync content root (`~/.amuxd[-<brand>]/teams/<id>/shared`), e.g.
+ * `knowledge/onboarding.md`. Null when the file is not team-synced content.
+ *
+ * Version history, baseline diffs and conflict resolution all take this key —
+ * never an absolute path, and never a workspace-relative one.
+ */
+export function teamSyncKeyForPath(
+  absPath: string,
+  opts: { knowledgeDir?: string | null; workspacePath?: string | null } = {},
+): string | null {
+  const root = teamKnowledgeRootForPath(absPath, opts)
+  if (!root || absPath === root) return null
+  return `knowledge/${absPath.slice(root.length + 1)}`
 }
 
 /** Where to read this workspace team knowledge: the global shared/knowledge dir. */

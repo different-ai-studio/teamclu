@@ -363,11 +363,7 @@ function currentTeamId(): string | null {
  * any other file type — a PDF, an image — was shared by sync yet invisible to
  * the count.
  */
-async function listTeamKnowledge(): Promise<TeamKnowledgeItem[]> {
-  // No workspace argument: knowledge is one global per-team dir now, resolved
-  // from the daemon home rather than from the workspace link.
-  const knowledgeDir = await resolveTeamKnowledgeDir()
-  if (!knowledgeDir) return []
+async function listTeamKnowledge(knowledgeDir: string): Promise<TeamKnowledgeItem[]> {
   const { exists, readDir } = await import('@tauri-apps/plugin-fs')
   if (!(await exists(knowledgeDir))) return []
 
@@ -1684,38 +1680,25 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         )
         set({ skills: { items, loading: false, loaded: true, error: registryError } })
       } else if (section === 'knowledge') {
-        // The tree renders straight off disk now, so this only has to resolve
-        // where its root is. The flat listing stays for the nav count.
+        // The daemon's own directory, by absolute path:
+        // `~/.amuxd[-brand]/teams/<id>/shared/knowledge`. That is the tree the
+        // OSS sync engine scans, pushes and pulls (`sync_content_root` +
+        // the `knowledge/` prefix), so it is the only honest source here.
         //
-        // Two things this path has to get right, both of which were wrong:
+        // The per-workspace `team-knowledge` symlink is deliberately NOT used.
+        // It is a convenience surface for agents and the workspace file panel,
+        // and reading through it made this column depend on a link that need
+        // not exist — no workspace open, a workspace opened before the daemon's
+        // link sweep, a Windows `LinkStatus::Fallback` machine — while the
+        // content sat right there on disk. It also disagreed with the nav
+        // count, which has always been read from the real directory.
         //
-        // 1. It must be the IN-WORKSPACE path, not `resolveTeamDir`'s answer.
-        //    `teamclu-team` is a symlink into ~/.amuxd, and resolveTeamDir
-        //    returns the link TARGET — but the workspace file tree is built
-        //    from workspace paths, so `findSubtree` looked up an absolute
-        //    ~/.amuxd path that is never in the tree and always came back
-        //    empty. The column read "No files found" no matter what was on
-        //    disk.
-        //
-        // 2. It must be `knowledge/`, not the team root. File sync carries
-        //    that one prefix now, so a file created at the root is silently
-        //    never synced, and the team dir's other entries (skills/, .mcp/,
-        //    _secrets/, _meta/, _feedback/) are all retired.
-        // team-knowledge is a daemon-managed symlink to shared/knowledge; the
-        // daemon ensures it on every workspace open/switch. Do NOT ensureDir
-        // here — a real dir would block the symlink the daemon recreates.
-        //
-        // 3. It must be gated on the link actually being there. `null` is what
-        //    makes TeamShareListColumn fall back to `TeamDirInitPanel`, the only
-        //    UI that can repair a missing team link. Returning a path
-        //    unconditionally made that unreachable and pointed FileBrowser at
-        //    something that need not exist — a Windows `LinkStatus::Fallback`
-        //    machine, or a workspace opened before the first team-link sweep.
-        //    `exists` follows symlinks, so a dangling link reads as absent too.
-        const linkPath = wsPath ? `${wsPath}/team-knowledge` : null
-        const { exists: linkExists } = await import('@tauri-apps/plugin-fs')
-        const root = linkPath && (await linkExists(linkPath)) ? linkPath : null
-        const items = wsPath ? await listTeamKnowledge() : []
+        // `null` still falls back to `TeamDirInitPanel`, but now it means "the
+        // team dir is missing on this machine", not "this workspace lacks a
+        // link into it". Note there is no workspace gate left: knowledge is
+        // per-team, not per-workspace.
+        const root = await resolveTeamKnowledgeDir()
+        const items = root ? await listTeamKnowledge(root) : []
         set({ knowledgeRoot: root, knowledge: { items, loading: false, loaded: true, error: null } })
       } else if (section === 'mcp') {
         // Not gated on `wsPath`: with an Agent selected this goes over RPC to

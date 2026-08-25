@@ -260,7 +260,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
 
   // Inline "name this thing" row at the top of the knowledge tree.
   const [rootCreating, setRootCreating] = React.useState<'file' | 'folder' | null>(null)
-  const refreshFileTree = useWorkspaceStore((s) => s.refreshFileTree)
+  const openExternalRoot = useWorkspaceStore((s) => s.openExternalRoot)
   const selectFile = useWorkspaceStore((s) => s.selectFile)
 
   const [query, setQuery] = React.useState('')
@@ -652,7 +652,9 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         ? await createNewFolder(knowledgeRoot, trimmed)
         : await createNewFile(knowledgeRoot, trimmed)
     if (!ok) return
-    await refreshFileTree()
+    // The knowledge tree is its own root in the store — re-list THAT. The
+    // workspace tree has nothing to do with this column any more.
+    await openExternalRoot(knowledgeRoot)
     void loadSection('knowledge', { force: true })
     if (rootCreating !== 'folder') selectFile(`${knowledgeRoot}/${trimmed}`)
   }
