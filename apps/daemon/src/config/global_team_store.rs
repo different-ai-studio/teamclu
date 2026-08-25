@@ -190,6 +190,9 @@ mod tests {
 
     #[test]
     fn global_dir_is_keyed_by_team_id() {
+        let _guard = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
         let a = global_team_dir("team-a");
         let b = global_team_dir("team-b");
         assert_ne!(a, b);
@@ -203,6 +206,9 @@ mod tests {
     /// the moment someone adds a sibling one level in.
     #[test]
     fn daemon_private_paths_stay_out_of_the_synced_tree() {
+        let _guard = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
         let synced = global_team_dir("team-a");
         for private in [
             global_team_cloud_dir("team-a"),

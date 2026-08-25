@@ -17,7 +17,7 @@
 
 ```bash
 # Vitest 集成测试（推荐，需 daemon 已启动）
-pnpm --filter @teamclu/app exec vitest run src/lib/__tests__/session-binding-live.test.ts
+SESSION_BINDING_LIVE=1 pnpm --filter @teamclu/app exec vitest run src/lib/__tests__/session-binding-live.test.ts
 
 # Rust 单元测试（TC-06/07，无需 live daemon）
 node scripts/daemon-cargo.js test -p amuxd --bin amuxd config::session_store:: -- --quiet

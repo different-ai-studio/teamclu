@@ -1,9 +1,8 @@
 /**
  * Session binding live tests — requires `pnpm tauri:dev:daemon`.
- * Run: pnpm --filter @teamclu/app exec vitest run src/lib/__tests__/session-binding-live.test.ts
+ * Run: SESSION_BINDING_LIVE=1 pnpm --filter @teamclu/app exec vitest run src/lib/__tests__/session-binding-live.test.ts
  */
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
-import { execSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -34,7 +33,9 @@ const RUNTIMES_PATH = path.join(
   'state',
   'runtimes.toml',
 )
-const REPO_ROOT = path.resolve(import.meta.dirname, '../../../../..')
+
+const LIVE = process.env.SESSION_BINDING_LIVE === '1'
+const liveDescribe = LIVE ? describe : describe.skip
 
 function daemonBase(): string {
   const port = fs.readFileSync(path.join(RUN_DIR, 'amuxd.http.port'), 'utf8').trim()
@@ -177,7 +178,7 @@ function skipUnlessDaemonUp(): boolean {
   }
 }
 
-describe('session binding harness (live daemon)', () => {
+liveDescribe('session binding harness (live daemon)', () => {
   const skip = skipUnlessDaemonUp()
 
   it.skipIf(skip)('TC-00: health + mqtt ready', async () => {
@@ -205,19 +206,6 @@ describe('session binding harness (live daemon)', () => {
     await stopRuntime(token, PURGE_ALL_SESSION, { purgeBinding: true, workspaceId: '' })
     expect(bindingCount(PURGE_ALL_SESSION)).toBe(0)
   }, 120_000)
-
-  it('TC-06b/TC-07: session_store + session_resume rust unit tests', () => {
-    const out = execSync(
-      'node scripts/daemon-cargo.js test -p amuxd --bin amuxd config::session_store:: -- --quiet',
-      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 300_000 },
-    )
-    expect(out).toMatch(/test result: ok/)
-    const resumeOut = execSync(
-      'node scripts/daemon-cargo.js test -p amuxd --bin amuxd session_resume:: -- --quiet',
-      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 120_000 },
-    )
-    expect(resumeOut).toMatch(/test result: ok/)
-  }, 420_000)
 
   it.skipIf(skip)('TC-01: runtimeStart accepts bound session', async () => {
     const token = await sessionToken()
