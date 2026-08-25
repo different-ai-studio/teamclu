@@ -24,10 +24,14 @@ export function useTeamCloudSync() {
   const syncing = useOssSyncStore((s) => s.syncing)
   const ossSyncNow = useOssSyncStore((s) => s.syncNow)
 
-  const available = isTauri() && !!workspacePath && shareMode === 'oss'
+  // No workspace requirement: the daemon syncs the team's own tree under its
+  // amuxd home, so "no folder open" is not a reason to hide the button. A
+  // workspace, when there is one, is passed along only so the daemon can repair
+  // its team links on the way through.
+  const available = isTauri() && shareMode === 'oss'
 
   const syncNow = React.useCallback(async () => {
-    if (!available || syncing || !workspacePath) return
+    if (!available || syncing) return
     await ossSyncNow(workspacePath)
     const err = useOssSyncStore.getState().lastError
     if (err) {

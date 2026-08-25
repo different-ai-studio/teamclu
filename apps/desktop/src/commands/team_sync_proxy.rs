@@ -166,20 +166,25 @@ fn urlencode(value: &str) -> String {
 
 // ─── typed helpers ─────────────────────────────────────────────────────────
 
-/// `POST /v1/team/sync` `{ workspacePath, forceSync? }` — trigger a team sync.
+/// `POST /v1/team/sync` `{ workspacePath?, forceSync? }` — trigger a team sync.
+///
+/// The workspace is optional and never decides what is synced — the daemon
+/// syncs the team's own tree under its amuxd home. Passing one only asks the
+/// daemon to repair that workspace's team links on the way through.
 pub async fn daemon_team_sync(
-    workspace_path: &str,
+    workspace_path: Option<&str>,
     force_sync: bool,
 ) -> Result<serde_json::Value, String> {
+    let mut body = serde_json::json!({ "forceSync": force_sync });
+    if let Some(path) = workspace_path.map(str::trim).filter(|p| !p.is_empty()) {
+        body["workspacePath"] = serde_json::Value::String(path.to_string());
+    }
     daemon_request(
         reqwest::Method::POST,
         "/v1/team/sync",
         "",
         &["workspace:write"],
-        Some(&serde_json::json!({
-            "workspacePath": workspace_path,
-            "forceSync": force_sync,
-        })),
+        Some(&body),
     )
     .await
 }
@@ -393,7 +398,7 @@ pub async fn team_env_runtime_status(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        if redeliver_local_team_secret(&team_id, wp).await {
+        if redeliver_local_team_secret(&team_id, Some(wp)).await {
             return daemon_team_env_available(&team_id).await;
         }
     }
@@ -430,9 +435,17 @@ fn local_team_secret_for_redelivery(workspace_path: &str, team_id: &str) -> Opti
 /// desktop is the source of truth for the secret (persisted in
 /// `team_secret_store`), so if the daemon is missing it we push it back.
 ///
+/// Needs a workspace: the secret lookup reads the legacy per-workspace stores,
+/// and the re-link is per-workspace by definition. With no folder open there is
+/// nothing to recover from, so the caller's sync simply reports the daemon's
+/// own error instead.
+///
 /// Returns `true` if a secret existed locally and was delivered, `false`
-/// otherwise (no local secret to recover from, or delivery failed).
-async fn redeliver_local_team_secret(team_id: &str, workspace_path: &str) -> bool {
+/// otherwise (no workspace, no local secret, or delivery failed).
+async fn redeliver_local_team_secret(team_id: &str, workspace_path: Option<&str>) -> bool {
+    let Some(workspace_path) = workspace_path.map(str::trim).filter(|p| !p.is_empty()) else {
+        return false;
+    };
     let Some(secret) = local_team_secret_for_redelivery(workspace_path, team_id) else {
         return false;
     };
@@ -444,26 +457,31 @@ async fn redeliver_local_team_secret(team_id: &str, workspace_path: &str) -> boo
     true
 }
 
-/// `oss_sync_now(workspacePath, teamId)` — trigger a team sync via the daemon.
+/// `oss_sync_now(workspacePath?, teamId)` — trigger a team sync via the daemon.
+///
+/// `workspacePath` is optional: team sync is per team, not per workspace, so
+/// this works with no folder open. When one is given it also gets its team
+/// links repaired, and it is what the secret self-heal below reads.
 ///
 /// The frontend only reads back fresh status afterwards (it does not depend on
 /// the exact `{pulled,pushed,conflicts}` numbers), so we map the daemon's sync
 /// response into that shape, defaulting any missing field to `0`.
 #[tauri::command]
 pub async fn oss_sync_now(
-    workspace_path: String,
+    workspace_path: Option<String>,
     team_id: String,
 ) -> Result<serde_json::Value, String> {
-    let mut status = daemon_team_sync(&workspace_path, true).await?;
+    let workspace_path = workspace_path.as_deref();
+    let mut status = daemon_team_sync(workspace_path, true).await?;
     // Self-heal: if the daemon reports it has no team secret, re-deliver the
     // locally-stored one and retry the sync once.
     if status
         .get("lastError")
         .and_then(|v| v.as_str())
         .is_some_and(is_missing_team_secret_error)
-        && redeliver_local_team_secret(&team_id, &workspace_path).await
+        && redeliver_local_team_secret(&team_id, workspace_path).await
     {
-        status = daemon_team_sync(&workspace_path, true).await?;
+        status = daemon_team_sync(workspace_path, true).await?;
     }
     let pick = |k: &str| status.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
     Ok(serde_json::json!({
@@ -473,16 +491,16 @@ pub async fn oss_sync_now(
     }))
 }
 
-/// `oss_sync_status(workspacePath, teamId)` — current sync status from the daemon.
+/// `oss_sync_status(workspacePath?, teamId)` — current sync status from the daemon.
 ///
-/// Returns the daemon status JSON verbatim (Phase 3 aligns the TS type). The
-/// `workspacePath` arg is accepted for signature compatibility; the daemon keys
-/// status by team.
+/// Returns the daemon status JSON verbatim. The daemon keys status by team; the
+/// optional `workspacePath` only feeds the secret self-heal below.
 #[tauri::command]
 pub async fn oss_sync_status(
-    workspace_path: String,
+    workspace_path: Option<String>,
     team_id: String,
 ) -> Result<serde_json::Value, String> {
+    let workspace_path = workspace_path.as_deref();
     let status = daemon_team_sync_status(&team_id).await?;
     // Self-heal a stale "no OSS team secret" state: the desktop holds the secret
     // locally, so re-deliver it and run a sync so the daemon clears its
@@ -493,9 +511,9 @@ pub async fn oss_sync_status(
         .get("lastError")
         .and_then(|v| v.as_str())
         .is_some_and(is_missing_team_secret_error)
-        && redeliver_local_team_secret(&team_id, &workspace_path).await
+        && redeliver_local_team_secret(&team_id, workspace_path).await
     {
-        let _ = daemon_team_sync(&workspace_path, true).await;
+        let _ = daemon_team_sync(workspace_path, true).await;
         return daemon_team_sync_status(&team_id).await;
     }
     Ok(status)
@@ -567,7 +585,7 @@ fn team_sync_success_payload() -> serde_json::Value {
 }
 
 async fn invoke_daemon_team_sync(
-    workspace_path: &str,
+    workspace_path: Option<&str>,
     force_sync: bool,
 ) -> Result<serde_json::Value, String> {
     match daemon_team_sync(workspace_path, force_sync).await {

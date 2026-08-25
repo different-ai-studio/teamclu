@@ -60,10 +60,17 @@ export interface OssSyncState {
   failed: number
   lastError: string | null
 
-  refresh(workspacePath: string): Promise<void>
-  syncNow(workspacePath: string): Promise<void>
+  /**
+   * Team sync is per TEAM, not per workspace: the daemon syncs
+   * `~/.amuxd[-<brand>]/teams/<id>/shared`, which exists whether or not a folder
+   * is open. `workspacePath` stays optional on these calls purely so the daemon
+   * can repair that workspace's team links on the way through, and so the
+   * desktop's team-secret self-heal has somewhere to read from.
+   */
+  refresh(workspacePath?: string | null): Promise<void>
+  syncNow(workspacePath?: string | null): Promise<void>
   listVersions(
-    workspacePath: string,
+    workspacePath: string | null,
     path: string,
     cursor?: string | null,
   ): Promise<VersionPage>
@@ -73,14 +80,14 @@ export interface OssSyncState {
    * message. Callers (history providers) already degrade to a "preview
    * unavailable" state on rejection rather than crashing.
    */
-  getVersionContent(workspacePath: string, contentHash: string): Promise<string>
+  getVersionContent(workspacePath: string | null, contentHash: string): Promise<string>
   restoreVersion(
-    workspacePath: string,
+    workspacePath: string | null,
     path: string,
     contentHash: string,
   ): Promise<void>
   resolveConflict(
-    workspacePath: string,
+    workspacePath: string | null,
     path: string,
     choice: 'keepRemote' | 'keepLocal',
   ): Promise<void>
@@ -124,7 +131,7 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
   failed: 0,
   lastError: null,
 
-  async refresh(workspacePath: string) {
+  async refresh(workspacePath?: string | null) {
     if (!isTauri()) return
     const teamId = activeTeamId()
     if (!teamId) {
@@ -134,7 +141,7 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
     }
     try {
       const status = await invoke<SyncStatusResult>('oss_sync_status', {
-        workspacePath,
+        workspacePath: workspacePath ?? null,
         teamId,
       })
       set({
@@ -153,17 +160,17 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
     }
   },
 
-  async syncNow(workspacePath: string) {
+  async syncNow(workspacePath?: string | null) {
     if (!isTauri()) return
     const teamId = activeTeamId()
     if (!teamId) {
-      set({ lastError: 'No active team to sync. Open a team workspace first.' })
+      set({ lastError: 'No active team to sync.' })
       return
     }
     set({ syncing: true, lastError: null })
     try {
       const result = await invoke<SyncNowResult>('oss_sync_now', {
-        workspacePath,
+        workspacePath: workspacePath ?? null,
         teamId,
       })
       set({
@@ -182,7 +189,7 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
   },
 
   async listVersions(
-    workspacePath: string,
+    workspacePath: string | null,
     path: string,
     cursor?: string | null,
   ): Promise<VersionPage> {
@@ -195,7 +202,7 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
   },
 
   async getVersionContent(
-    workspacePath: string,
+    workspacePath: string | null,
     contentHash: string,
   ): Promise<string> {
     // The daemon does not yet support version content fetch; the command
@@ -208,7 +215,7 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
     })
   },
 
-  async restoreVersion(workspacePath: string, path: string, contentHash: string) {
+  async restoreVersion(workspacePath: string | null, path: string, contentHash: string) {
     await invoke<void>('oss_sync_restore_version', {
       workspacePath,
       teamId: activeTeamId(),
@@ -218,7 +225,7 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
   },
 
   async resolveConflict(
-    workspacePath: string,
+    workspacePath: string | null,
     path: string,
     choice: 'keepRemote' | 'keepLocal',
   ) {

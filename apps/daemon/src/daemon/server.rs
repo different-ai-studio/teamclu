@@ -1209,28 +1209,15 @@ impl DaemonServer {
         // the MQTT reconnect loop.
         self.start_channels().await;
         self.sync_team_shared_dirs_for_known_workspaces().await;
-        {
-            let team_id = self.backend.team_id().to_string();
-            let grouped = if team_id.trim().is_empty() {
-                Vec::new()
-            } else {
-                match self.backend.get_workspaces_by_team(&team_id).await {
-                    Ok(rows) => {
-                        let paths = cloud_rows_to_local_linkable_paths(&rows);
-                        if paths.is_empty() {
-                            Vec::new()
-                        } else {
-                            vec![(team_id, paths)]
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!("sync timer: get_workspaces_by_team failed: {e}");
-                        Vec::new()
-                    }
-                }
-            };
-            crate::sync::timer::spawn(self.sync_dispatcher.clone(), grouped);
-        }
+        // The timer syncs the daemon's team, full stop. It used to ask the cloud
+        // for that team's workspaces first and stand down when the list came
+        // back empty or the call failed — so a device with no registered
+        // workspace, or one that booted while FC was unreachable, silently never
+        // auto-synced. The synced tree is the team's, not a workspace's.
+        crate::sync::timer::spawn(
+            self.sync_dispatcher.clone(),
+            self.backend.team_id().to_string(),
+        );
 
         // Populate the refresh watchers from the cloud workspace list on a
         // background task (moved off the pre-bind path above). The watcher poll

@@ -436,9 +436,10 @@ export function FileEditor({
 
   const historyProvider = useMemo(() => {
     if (!teamSyncKey) return null
-    // `workspacePath` is accepted for signature compatibility only — the daemon
-    // keys versions by team id + sync key, and the Tauri command drops it.
-    return new OssHistoryProvider(workspacePath ?? '', teamSyncKey)
+    // `workspacePath` is passed through but never decides anything — the daemon
+    // keys versions by team id + sync key. A knowledge document opened with no
+    // folder open still has its history.
+    return new OssHistoryProvider(workspacePath, teamSyncKey)
   }, [teamSyncKey, workspacePath])
 
   // Fetch the file's baseline content from the daemon for gutter decorations

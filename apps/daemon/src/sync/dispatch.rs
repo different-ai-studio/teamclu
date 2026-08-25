@@ -101,19 +101,21 @@ impl SyncDispatcher {
     }
 
     /// Sync one team for one workspace path. Serialized per team_id.
-    pub async fn sync_team(
-        &self,
-        team_id: &str,
-        workspace_path: &str,
-        options: SyncOptions,
-    ) -> SyncStatus {
+    /// Sync one team's shared tree.
+    ///
+    /// Takes no workspace: the synced content root is
+    /// `~/.amuxd[-<brand>]/teams/<id>/shared`, which belongs to the team, not to
+    /// any workspace. The parameter used to be here and was already unused —
+    /// keeping it made every caller invent a workspace it did not need, and made
+    /// "no folder open" look like "cannot sync".
+    pub async fn sync_team(&self, team_id: &str, options: SyncOptions) -> SyncStatus {
         let lock = self.team_lock(team_id).await;
         let _guard = lock.lock().await;
         {
             let mut s = self.status.lock().await;
             s.entry(team_id.to_string()).or_default().syncing = true;
         }
-        let result = self.run_once(team_id, workspace_path, options).await;
+        let result = self.run_once(team_id, options).await;
         let mut s = self.status.lock().await;
         let entry = s.entry(team_id.to_string()).or_default();
         match result {
@@ -136,12 +138,7 @@ impl SyncDispatcher {
         entry.clone()
     }
 
-    async fn run_once(
-        &self,
-        team_id: &str,
-        _workspace_path: &str,
-        options: SyncOptions,
-    ) -> Result<SyncStatus, String> {
+    async fn run_once(&self, team_id: &str, options: SyncOptions) -> Result<SyncStatus, String> {
         if !options.force && !crate::config::DaemonConfig::team_share_auto_sync_enabled_from_disk()
         {
             return Ok(SyncStatus {
@@ -152,7 +149,7 @@ impl SyncDispatcher {
         }
         use crate::sync::oss;
         // The share mode comes from FC; the OSS content secret comes from the
-        // per-team secret store. The workspace path is no longer consulted.
+        // per-team secret store.
         let backend = self
             .backend
             .as_ref()
@@ -228,9 +225,7 @@ mod tests {
             .unwrap();
 
         let (d, _backend) = dispatcher_with_mock(&tmp);
-        let st = d
-            .sync_team("t", "/tmp/ws", SyncOptions { force: false })
-            .await;
+        let st = d.sync_team("t", SyncOptions { force: false }).await;
         assert!(st.skipped);
         assert!(st.last_error.is_none());
 
@@ -259,18 +254,14 @@ mod tests {
 
         let store = SecretStore::with_base(tmp.path().to_path_buf());
         let d = SyncDispatcher::new(store, None);
-        let err_st = d
-            .sync_team("t", "/tmp/ws", SyncOptions { force: true })
-            .await;
+        let err_st = d.sync_team("t", SyncOptions { force: true }).await;
         assert!(err_st.last_error.is_some());
 
         team.team_share.auto_sync = false;
         crate::config::team_config::save_typed(&crate::config::layout::active_team(), &team)
             .unwrap();
 
-        let st = d
-            .sync_team("t", "/tmp/ws", SyncOptions { force: false })
-            .await;
+        let st = d.sync_team("t", SyncOptions { force: false }).await;
         assert!(st.skipped);
         assert!(st.last_error.is_some());
 
