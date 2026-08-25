@@ -1495,19 +1495,30 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   reconcileSkills: async () => {
     const teamId = currentTeamId()
     if (!teamId) return
-    // Deliberately independent of `subjectActorId`. Auto-follow is always about
-    // the signed-in member's own disk — it fetches the member's desired set
-    // (`listTeamSkills(teamId)`, no actorId) no matter which Agent the browser
-    // pane happens to be pointed at. Bailing out when a subject was selected
-    // meant the Agent picker, which auto-selects the sole manageable Agent the
-    // moment the Skills or MCP section opens, silently switched local
-    // auto-follow off for the rest of the session.
+    // Scoped to this *machine's* Agent, not to `subjectActorId`. The disk being
+    // reconciled is this device's, so the ledger that describes it is the local
+    // daemon's — and reading it from the Agent picker instead would make
+    // auto-follow follow whichever Agent the browser pane happens to point at,
+    // including somebody else's machine. `getKnownLocalDaemonActorId` is fixed
+    // for the device, so the picker cannot switch auto-follow off either, which
+    // is what an earlier `subjectActorId` dependency did.
+    //
+    // Both ledgers are read. Installs made before this was Agent-scoped sit on
+    // the member's, so the Agent's set is the authority on what to install and
+    // what version to write back, while removal is held to what *neither*
+    // ledger asks for. Planning removal off the Agent's set alone would empty a
+    // machine's team packs on the first tick after the switch.
     const backend = getBackend()
+    const localAgentId = getKnownLocalDaemonActorId()
     let desired
+    let memberDesired
     let listed: OnDiskSkill[]
     try {
-      ;[desired, listed] = await Promise.all([
+      ;[memberDesired, desired, listed] = await Promise.all([
         backend.teamSkills.listTeamSkills(teamId),
+        localAgentId
+          ? backend.teamSkills.listTeamSkills(teamId, { actorId: localAgentId })
+          : backend.teamSkills.listTeamSkills(teamId),
         listInstalledPacks(),
       ])
     } catch {
@@ -1515,6 +1526,10 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       // a failed fetch must never be read as "the team removed everything".
       return
     }
+    // Only ever holds removal back — see `planReconcile`.
+    const stillWantedByMember = new Set(
+      memberDesired.filter((s) => s.installed).map((s) => s.slug),
+    )
 
     const states: Record<string, SkillLocalState> = {}
     const errors: Record<string, string> = {}
@@ -1542,7 +1557,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // queues them for a fresh install, and the tick overwrites edits it was
     // never able to see.
     const onDisk = await listInstalledPacks().catch(() => listed)
-    const plan = planReconcile(desired, onDisk, blocked, teamId)
+    const plan = planReconcile(desired, onDisk, blocked, teamId, stillWantedByMember)
 
     for (const { slug, version } of plan.install) {
       try {
@@ -1591,7 +1606,13 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     }))
     for (const { slug, version } of planVersionWriteback(desired, settled)) {
       try {
-        await backend.teamSkills.installTeamSkill(teamId, slug, { version })
+        // Against the same Agent whose desired set drove this tick; writing the
+        // member's row here would leave the Agent's forever behind and every
+        // pack permanently "updating…".
+        await backend.teamSkills.installTeamSkill(teamId, slug, {
+          version,
+          ...(localAgentId ? { actorId: localAgentId } : {}),
+        })
       } catch {
         // The disk is already right; only the record is behind, and the next
         // tick recomputes this from fresh server state and tries again.
