@@ -152,13 +152,19 @@ Team sync is owned by the amuxd daemon (OSS engine). The legacy iroh-based P2P
 mode has been removed, and so has git share — `git` is not invoked anywhere in
 the product.
 
-**Share mode is a switch, not a choice.** `oss` (Alibaba OSS with WebDAV) is the
-only backend; enabling it is one-shot and permanent (`ShareMode` in
-`packages/app/src/stores/team-share.ts` is `'oss' | null`, mirroring
-`GET /v1/teams/:id/share-mode`). The retired `managed_git` / `custom_git` values
-still exist in the Postgres enum because in-use enum values cannot be dropped —
-legacy rows carrying them read as "enabled" and nothing more. Branch on
-null-ness, never on the value.
+**There is no share-mode switch any more.** It was a one-shot cloud flag with no
+producer left in the product — nothing shipped a call that set it — so every team
+created since read as "off", and everything branching on it silently did nothing
+(the sync button, the status poll, the daemon's sync, and a link sweep that
+*removed* the team links it exists to create). Whether a team can sync is decided
+by its **team secret**, checked where the sync runs
+(`sync::dispatch::run_once`): no secret → nothing to encrypt or decrypt with →
+`skipped`; secret → sync.
+
+The `teams.share_mode` column and its Postgres enum are still there (in-use enum
+values cannot be dropped, and dropping the column is a one-way door on
+production data), but no code reads or writes them. Do not reintroduce a branch
+on them.
 
 Shared: `skills/`, `.mcp/`, `knowledge/`
 
@@ -257,9 +263,7 @@ Cloud API endpoints: see `docs/openapi/teamclu-api.v1.yaml` (the contract) —
 
 Team share onboarding endpoints (see `docs/openapi/teamclu-api.v1.yaml`):
 
-- `POST /v1/teams/:id/share-mode` — one-shot lock to `oss` (409 once locked, 400 for any other mode).
-- `GET  /v1/teams/:id/share-mode` — `{ mode, enabledAt }`; `mode: null` means team-share 未开通.
-- `GET  /v1/teams/:id/workspace-config` — merged shape `{ shareMode, syncMode, litellmTeamId }`. The legacy `{ defaultWorkspaceId, pinnedWorkspaceIds }` shape now lives at `GET /v1/teams/:id/workspace-defaults` (PUT path is unchanged).
+- `GET  /v1/teams/:id/workspace-config` — merged shape `{ syncMode, litellmTeamId, llm }`. The legacy `{ defaultWorkspaceId, pinnedWorkspaceIds }` shape now lives at `GET /v1/teams/:id/workspace-defaults` (PUT path is unchanged).
 - `POST /v1/teams/:id/litellm/setup` — provisions LiteLLM and returns `{ aiGatewayEndpoint, litellmKey }`; 503 `litellm_unavailable` if FC is not configured.
 
 <!-- seahelm:suggest:start -->

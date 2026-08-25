@@ -434,20 +434,6 @@ export function createSupabaseBusinessRepository(options) {
     return createServiceRoleClient();
   }
 
-  async function shareModeServiceRpc(rpcName, args) {
-    const admin = await serviceRoleClient("change team share mode");
-    const { data, error } = await admin.rpc(rpcName, args);
-    if (error) {
-      const code = error?.code || "";
-      if (code === "PGRST202") {
-        throw new Error(
-          `${rpcName} RPC is missing on the database (apply migration 20260604120000_disable_team_share)`,
-        );
-      }
-      throw error;
-    }
-    return data;
-  }
 
 
   return {
@@ -872,46 +858,6 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
     },
 
-    // --- Team share mode (Task 3 of share-onboarding refactor) ---
-
-    async enableShareMode(teamId, mode) {
-      await requireCallerTeamOwner(teamId);
-      const args = {
-        p_team_id: teamId,
-        p_mode: mode,
-        p_git_remote_url: null,
-        p_git_auth_kind: null,
-        p_git_credential_ref: null,
-      };
-      const data = await shareModeServiceRpc("enable_team_share", args);
-      const row = requiredRow(data, "teams.enableShareMode");
-      return mapTeam(row);
-    },
-
-    async getShareMode(teamId) {
-      const { data, error } = await supabase
-        .from("teams")
-        .select("share_mode, share_enabled_at")
-        .eq("id", teamId)
-        .maybeSingle();
-      if (error) throw error;
-      if (!data) {
-        return { mode: null, enabledAt: null };
-      }
-      return {
-        mode: data.share_mode ?? null,
-        enabledAt: data.share_enabled_at ?? null,
-      };
-    },
-
-    async disableShareMode(teamId) {
-      await requireCallerTeamOwner(teamId);
-      const data = await shareModeServiceRpc("disable_team_share", {
-        p_team_id: teamId,
-      });
-      if (data) requiredRow(data, "teams.disableShareMode");
-      return { mode: null, enabledAt: null };
-    },
 
     async setupLiteLlm(teamId) {
       // Lazy import keeps the LiteLLM client out of cold-path repo constructors
@@ -1084,20 +1030,13 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async getWorkspaceConfig(teamId) {
-      const [teamRes, configRes] = await Promise.all([
-        supabase
-          .from("teams")
-          .select("share_mode")
-          .eq("id", teamId)
-          .maybeSingle(),
-        supabase
-          .from("team_workspace_config")
-          .select("sync_mode, litellm_team_id, ai_gateway_endpoint, llm_enabled, llm_base_url, llm_models")
-          .eq("team_id", teamId)
-          .maybeSingle(),
-      ]);
-      if (teamRes.error) throw teamRes.error;
-      if (configRes.error) throw configRes.error;
+      const { data: configData, error: configError } = await supabase
+        .from("team_workspace_config")
+        .select("sync_mode, litellm_team_id, ai_gateway_endpoint, llm_enabled, llm_base_url, llm_models")
+        .eq("team_id", teamId)
+        .maybeSingle();
+      if (configError) throw configError;
+      const configRes = { data: configData };
       const aiGatewayEndpoint = configRes.data?.ai_gateway_endpoint ?? null;
       // availableModels proxies the LiteLLM gateway GET /v1/models (the gateway
       // authoritatively lists its models) and degrades to [] whenever the
@@ -1122,7 +1061,6 @@ export function createSupabaseBusinessRepository(options) {
       }
       const storedModels = Array.isArray(configRes.data?.llm_models) ? configRes.data.llm_models : [];
       return {
-        shareMode: teamRes.data?.share_mode ?? null,
         syncMode: configRes.data?.sync_mode ?? null,
         litellmTeamId: configRes.data?.litellm_team_id ?? null,
         // `models` is the STORED, authoritative per-team list; `availableModels`

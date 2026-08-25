@@ -25,7 +25,6 @@ export async function provisionTwoNodeTeam({ threeNode = false } = {}) {
 
   const teamName = `e2e-oss-${stamp}`;
   const teamId = await fc.createTeam(base, ownerToken, teamName);
-  await fc.lockOss(base, ownerToken, teamId);
 
   const services = threeNode ? ["node-a", "node-b", "node-c"] : ["node-a", "node-b"];
 

@@ -1561,7 +1561,7 @@ paths:
         Returns the legacy team workspace defaults shape:
         `{ defaultWorkspaceId, pinnedWorkspaceIds, updatedAt }`.
         Distinct from `GET /v1/teams/{teamId}/workspace-config`, which returns
-        the merged share-mode + litellm shape introduced in the team-share
+        the merged sync + litellm shape introduced in the team-share
         onboarding refactor.
       tags: [Teams]
       parameters:
@@ -1609,9 +1609,8 @@ paths:
       summary: Put team workspace config (legacy defaults shape)
       description: |
         Upserts the legacy team workspace defaults shape
-        (`defaultWorkspaceId`, `pinnedWorkspaceIds`). Does not modify
-        share-mode or litellm fields — those are managed via the
-        `/share-mode` and `/litellm/setup` endpoints.
+        (`defaultWorkspaceId`, `pinnedWorkspaceIds`). Does not modify the
+        litellm fields — those are managed via `/litellm/setup`.
       tags: [Teams]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -2595,68 +2594,6 @@ paths:
         "204": { description: Deleted. }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
-  /v1/teams/{teamId}/share-mode:
-    post:
-      operationId: enableTeamShareMode
-      summary: Enable team knowledge sync (one-shot, permanent)
-      description: |
-        Turns on team knowledge sync. This is a switch, not a choice: git
-        share modes are gone and the only backend is Supabase Storage. `mode`
-        is vestigial — omit it, or send `oss`; `managed_git` and `custom_git`
-        are rejected with 400. Once enabled the team cannot be un-enabled
-        (`DELETE` returns 410) and a second call returns 409
-        `share_mode_locked`.
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/EnableShareModeRequest"
-      responses:
-        "200":
-          description: Team after share mode is enabled.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Team"
-        "400":
-          $ref: "#/components/responses/Error"
-        "401":
-          $ref: "#/components/responses/Error"
-        "404":
-          $ref: "#/components/responses/Error"
-        "409":
-          $ref: "#/components/responses/Error"
-    get:
-      operationId: getTeamShareMode
-      summary: Get team share mode status
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: |
-            Current team share status. `mode` is null when sync has never been
-            enabled; any non-null value means enabled. Branch on null-ness, not
-            on the value — `managed_git` / `custom_git` survive on legacy rows
-            and mean nothing beyond "enabled".
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ShareStatus"
-        "401":
-          $ref: "#/components/responses/Error"
-        "404":
-          $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/litellm/setup:
     post:
       operationId: setupTeamLiteLlm
@@ -6133,43 +6070,10 @@ components:
           type:
             - string
             - "null"
-    TeamShareMode:
-      type: string
-      enum: [oss]
-      description: |
-        Team share mode. `oss` (Alibaba OSS / WebDAV) is the only backend. The
-        retired `managed_git` / `custom_git` values survive on legacy rows in
-        the database; the API neither accepts nor returns them.
-    EnableShareModeRequest:
-      type: object
-      description: |
-        Body is optional and carries no decision. `mode` is kept only so
-        existing clients keep working; the sole accepted value is `oss`.
-      properties:
-        mode:
-          type: string
-          enum: [oss]
-    ShareStatus:
-      type: object
-      required: [mode, enabledAt]
-      properties:
-        mode:
-          oneOf:
-            - $ref: "#/components/schemas/TeamShareMode"
-            - type: "null"
-        enabledAt:
-          type:
-            - string
-            - "null"
-          format: date-time
     MergedWorkspaceConfig:
       type: object
-      required: [shareMode, syncMode, litellmTeamId]
+      required: [syncMode, litellmTeamId]
       properties:
-        shareMode:
-          oneOf:
-            - $ref: "#/components/schemas/TeamShareMode"
-            - type: "null"
         syncMode:
           type:
             - string

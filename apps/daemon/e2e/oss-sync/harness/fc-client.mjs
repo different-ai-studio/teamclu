@@ -23,11 +23,6 @@ export async function createTeam(base, token, name) {
   return out.id;
 }
 
-/** 一次性锁定 share-mode=oss。 */
-export async function lockOss(base, token, teamId) {
-  return postJson(`${base}/v1/teams/${encodeURIComponent(teamId)}/share-mode`, { mode: "oss" }, token);
-}
-
 /** 建 agent invite（amuxd），返回 invite token。 */
 export async function createAgentInvite(base, token, teamId, displayName) {
   const out = await postJson(

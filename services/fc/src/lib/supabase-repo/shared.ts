@@ -245,8 +245,6 @@ export function mapTeam(row) {
     createdAt: row?.created_at ?? null,
     orgId: row?.oid ?? null,
     orgName: (row?.orgs as any)?.name ?? null,
-    shareMode: row?.share_mode ?? null,
-    shareEnabledAt: row?.share_enabled_at ?? null,
     visibility: row?.visibility ?? "private",
   };
 }

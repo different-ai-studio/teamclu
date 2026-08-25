@@ -99,9 +99,9 @@ export function createAuthModule(
           message: "Invite claim returned no team.",
         });
       }
-      // The team share mode is owned by the cloud (`GET /v1/teams/:id/share-mode`)
-      // and surfaced via the team-share store; we no longer persist a local
-      // `team_mode` into teamclu.json after a join.
+      // No local `team_mode` is persisted into teamclu.json after a join. The
+      // cloud share-mode flag that used to decide it is gone entirely: whether
+      // a team can sync is decided by its team secret, in the daemon.
       return claim;
     },
     async listPendingInvites(): Promise<PendingInvite[]> {

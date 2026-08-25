@@ -12,7 +12,7 @@
  *   - amuxd daemon running (pnpm daemon:run) with valid SUPABASE_URL +
  *     SUPABASE_ANON_KEY in apps/daemon/.env.
  *   - A reachable Cloud API (TEAMCLU_CLOUD_API_URL) capable of returning
- *     200 on POST /v1/teams and POST /v1/teams/:id/share-mode.
+ *     200 on POST /v1/teams.
  *   - A LiteLLM provisioning env (for the optional litellm setup path).
  *
  * Because the share UI currently has no stable `data-testid` hooks

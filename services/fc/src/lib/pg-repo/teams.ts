@@ -70,7 +70,6 @@ async function resolveOwnersForTeam(db: any, teamId: string, actorIds: string[])
 function mapTeam(r: any) {
   return {
     id: r.id, name: r.name, slug: r.slug, createdAt: iso(r.createdAt),
-    shareMode: r.shareMode ?? null, shareEnabledAt: iso(r.shareEnabledAt),
     visibility: r.visibility ?? "private",
   };
 }
@@ -143,27 +142,6 @@ export function makeTeamsRepo(db: PgDatabase<any, any>, deps: TeamsRepoDeps = {}
       if (!r) throw new ApiError(404, "not_found", "team not found");
       return mapTeam(r);
     },
-    async getShareMode(teamId: string) {
-      const [r] = await db.select().from(teams).where(eq(teams.id, teamId)).limit(1);
-      if (!r) return { mode: null, enabledAt: null };
-      return { mode: r.shareMode ?? null, enabledAt: iso(r.shareEnabledAt) };
-    },
-    async enableShareMode(teamId: string, mode: "oss") {
-      const [r] = await (db.update(teams) as any)
-        .set({
-          shareMode: mode,
-          shareEnabledAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(teams.id, teamId), isNull(teams.shareMode)))
-        .returning();
-      if (!r) {
-        const [exists] = await db.select({ id: teams.id, sm: teams.shareMode }).from(teams).where(eq(teams.id, teamId)).limit(1);
-        if (!exists) throw new ApiError(404, "not_found", "team not found");
-        throw new ApiError(409, "conflict", "share_mode already locked");
-      }
-      return { id: r.id, shareMode: r.shareMode, shareEnabledAt: iso(r.shareEnabledAt) };
-    },
     async getTeamWorkspaceConfig(teamId: string) {
       const [r] = await db.select().from(teamWorkspaceConfig).where(eq(teamWorkspaceConfig.teamId, teamId)).limit(1);
       return r ?? null;
@@ -201,7 +179,6 @@ export function makeTeamsRepo(db: PgDatabase<any, any>, deps: TeamsRepoDeps = {}
       }
       const storedModels = Array.isArray(wc?.llmModels) ? wc.llmModels : [];
       return {
-        shareMode: t?.shareMode ?? null,
         syncMode: wc?.syncMode ?? null,
         litellmTeamId: wc?.litellmTeamId ?? null,
         // `models` is the STORED, authoritative per-team list; `availableModels`
@@ -377,25 +354,6 @@ export function makeTeamsRepo(db: PgDatabase<any, any>, deps: TeamsRepoDeps = {}
       const [r] = await (db.update(teams) as any).set({ visibility, updatedAt: new Date() }).where(eq(teams.id, teamId)).returning();
       if (!r) throw new ApiError(404, "not_found", "team not found");
       return mapTeam(r);
-    },
-
-    /**
-     * Owner-only: clears the team's share mode + git config back to the
-     * unconfigured state. Mirrors supabase-repo.disableShareMode.
-     */
-    async disableShareMode(teamId: string, ctx?: { userId?: string }) {
-      const userId = ctx?.userId;
-      if (!userId) throw new ApiError(401, "missing_auth", "authenticated user required");
-      await requireTeamOwner(db, userId, teamId);
-      await (db.update(teams) as any)
-        .set({
-          shareMode: null,
-          shareEnabledAt: null,
-          gitCredentialRef: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(teams.id, teamId));
-      return { mode: null, enabledAt: null };
     },
 
     /**
