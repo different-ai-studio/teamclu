@@ -1688,6 +1688,13 @@ mod tests {
 
     #[test]
     fn get_mcp_empty_workspace_returns_empty_map() {
+        // `get_mcp` merges the device-scoped `~/.amuxd/mcp.json` into whatever
+        // the workspace has, so "empty" is only true of an isolated home. This
+        // was the one test in this module that skipped the isolation its
+        // neighbours all take, which made it fail on any machine with device
+        // MCP servers configured — CI has none, so it passed there and only
+        // ever failed for whoever ran the suite locally.
+        let _isolation = isolate_global_config();
         let dir = tempfile::tempdir().unwrap();
         let store = make_store();
         let servers = store.get_mcp(&ws_id(dir.path())).unwrap();
