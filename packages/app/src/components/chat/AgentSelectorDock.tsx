@@ -41,9 +41,10 @@ import type { AttachedAgent } from '@/packages/ai/prompt-input-insert-hooks'
 import type { EngagedAgentUiEntry } from '@/hooks/use-engaged-agent-ui-states'
 import {
   resolveAgentPillDot,
+  type SessionAgentSyncHint,
   type SessionAgentUiState,
 } from '@/lib/session-agent-ui-state'
-import { pillSuffixForUiState } from '@/components/chat/EngagedAgentOfflineBanner'
+import { pillSuffixForAgentPill } from '@/components/chat/EngagedAgentOfflineBanner'
 import { isSoloBuild } from '@/lib/solo-build'
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -81,8 +82,8 @@ export function AgentSelectorDock({
   agentMentionLocked = false,
 }: AgentSelectorDockProps) {
   const runtimeStates = useRuntimeStateStore((s) => s.byRuntimeId)
-  const uiStateByAgentId = React.useMemo(
-    () => new Map(engagedUiEntries.map((e) => [e.agent.id, e.uiState])),
+  const uiEntryByAgentId = React.useMemo(
+    () => new Map(engagedUiEntries.map((e) => [e.agent.id, e])),
     [engagedUiEntries],
   )
 
@@ -109,7 +110,8 @@ export function AgentSelectorDock({
             dbRuntimeId={dbRuntimeId}
             backendType={backendType}
             runtimeInfo={runtimeEntry?.info}
-            uiState={uiStateByAgentId.get(agent.id) ?? 'connecting'}
+            uiState={uiEntryByAgentId.get(agent.id)?.uiState ?? 'connecting'}
+            syncHint={uiEntryByAgentId.get(agent.id)?.syncHint ?? null}
             mentionLocked={agentMentionLocked}
             onRemove={() => {
               if (activeSessionId) {
@@ -135,6 +137,7 @@ function AgentPill({
   backendType,
   runtimeInfo,
   uiState,
+  syncHint = null,
   mentionLocked = false,
   onRemove,
 }: {
@@ -144,6 +147,7 @@ function AgentPill({
   backendType: string | undefined
   runtimeInfo: RuntimeInfo | undefined
   uiState: SessionAgentUiState
+  syncHint?: SessionAgentSyncHint
   mentionLocked?: boolean
   onRemove: () => void
 }) {
@@ -202,7 +206,7 @@ function AgentPill({
     ],
   )
 
-  const statusSuffix = pillSuffixForUiState(effectiveUiState, t)
+  const statusSuffix = pillSuffixForAgentPill(effectiveUiState, syncHint, t)
   const hideModelOnPill = isSoloBuild()
   // `unconfigured` is a settled answer ("nothing to run"), so it must not read
   // as loading — that is the spinner-forever bug this state exists to end.
@@ -457,7 +461,12 @@ function AgentPill({
           {statusSuffix ? (
             <>
               {isSelf ? null : <span className="shrink-0 text-muted-foreground/70">·</span>}
-              <span className="min-w-0 flex-1 truncate text-[11px] text-faint">
+              <span
+                className={cn(
+                  'min-w-0 flex-1 truncate text-[11px]',
+                  syncHint === 'degraded' ? 'text-amber-600' : 'text-faint',
+                )}
+              >
                 {effectiveUiState === 'connecting' &&
                 (runtimeInfoLoading || availableModels.length === 0) ? (
                   <span className="inline-flex items-center gap-1">

@@ -699,6 +699,7 @@
       "pillUnconfigured": "未配置模型",
       "pillCatalogError": "无法获取模型列表",
       "pillRuntimeError": "Agent 启动失败",
+      "pillSyncDegraded": "云同步断开",
       "mentionOffline": "离线",
       "mentionStale": "需重新绑定",
       "mentionConnecting": "连接中…",

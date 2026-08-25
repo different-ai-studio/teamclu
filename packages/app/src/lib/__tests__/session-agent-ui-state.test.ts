@@ -3,6 +3,7 @@ import { AgentStatus, RuntimeLifecycle } from '@/lib/proto/amux_pb'
 import {
   isDriftedLocalGhostBinding,
   resolveAgentPillDot,
+  resolveSessionAgentSyncHint,
   resolveSessionAgentUiState,
   toMentionDeliverySnapshot,
   type ReachabilityEvidence,
@@ -241,6 +242,108 @@ describe('resolveSessionAgentUiState', () => {
       runtimeInfo: { state: RuntimeLifecycle.ACTIVE } as never,
       reachability: evidence('unreachable'),
     })).toBe('offline')
+  })
+
+  describe('local session — loopback layered over MQTT retain', () => {
+    const localSession = {
+      ...sessionBase,
+      isLocalAgent: true,
+      reachability: evidence('reachable'),
+    }
+
+    it('stays ready when broker presence drops but loopback and catalog remain', () => {
+      expect(resolveSessionAgentUiState({
+        ...localSession,
+        presenceOnline: false,
+        runtimeInfo: undefined,
+        localCatalog: 'ready',
+        availableModelCount: 3,
+      })).toBe('ready')
+    })
+
+    it('does not escalate MQTT blip to runtime-error after connecting timeout', () => {
+      expect(resolveSessionAgentUiState({
+        ...localSession,
+        presenceOnline: false,
+        runtimeInfo: undefined,
+        localCatalog: 'ready',
+        availableModelCount: 3,
+        connectingTimedOut: true,
+      })).toBe('ready')
+    })
+
+    it('still reports runtime-error when loopback sees FAILED', () => {
+      expect(resolveSessionAgentUiState({
+        ...localSession,
+        presenceOnline: true,
+        runtimeInfo: { state: RuntimeLifecycle.FAILED } as never,
+      })).toBe('runtime-error')
+    })
+
+    it('converges local session cold-start timeout to runtime-error like remote', () => {
+      expect(resolveSessionAgentUiState({
+        ...localSession,
+        presenceOnline: true,
+        runtimeInfo: { state: RuntimeLifecycle.STARTING } as never,
+        connectingTimedOut: true,
+      })).toBe('runtime-error')
+    })
+
+    it('leaves remote session on the MQTT retain path unchanged', () => {
+      expect(resolveSessionAgentUiState({
+        ...sessionBase,
+        presenceOnline: false,
+        runtimeInfo: { state: RuntimeLifecycle.ACTIVE } as never,
+        connectingTimedOut: true,
+      })).toBe('offline')
+    })
+  })
+})
+
+describe('resolveSessionAgentSyncHint', () => {
+  it('is null for non-ready agents', () => {
+    expect(resolveSessionAgentSyncHint({
+      uiState: 'connecting',
+      isLocalAgent: true,
+      daemonMqttConnected: false,
+      reachability: evidence('reachable'),
+    })).toBeNull()
+  })
+
+  it('flags degraded when debounced daemon mqtt reads false', () => {
+    expect(resolveSessionAgentSyncHint({
+      uiState: 'ready',
+      isLocalAgent: true,
+      daemonMqttConnected: false,
+      reachability: evidence('reachable'),
+    })).toBe('degraded')
+  })
+
+  it('does not degrade on stale broker presence when daemon mqtt is up', () => {
+    expect(resolveSessionAgentSyncHint({
+      uiState: 'ready',
+      isLocalAgent: true,
+      daemonMqttConnected: true,
+      reachability: evidence('reachable'),
+    })).toBeNull()
+  })
+
+  it('is null while daemon mqtt status is still unknown', () => {
+    expect(resolveSessionAgentSyncHint({
+      uiState: 'ready',
+      isLocalAgent: true,
+      daemonMqttConnected: null,
+      reachability: evidence('reachable'),
+    })).toBeNull()
+  })
+
+  it('ignores remote agents', () => {
+    expect(resolveSessionAgentSyncHint({
+      uiState: 'ready',
+      isLocalAgent: false,
+      daemonMqttConnected: false,
+      reachability: evidence('reachable'),
+    })).toBeNull()
   })
 })
 

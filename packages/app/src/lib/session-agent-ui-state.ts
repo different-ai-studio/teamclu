@@ -78,6 +78,22 @@ export function isDriftedLocalGhostBinding(input: {
   return localReady
 }
 
+export type SessionAgentSyncHint = 'degraded' | null
+
+export function resolveSessionAgentSyncHint(input: {
+  uiState: SessionAgentUiState
+  isLocalAgent?: boolean
+  /** Debounced daemon MQTT link for UI (from daemon-mqtt-status store). */
+  daemonMqttConnected?: boolean | null
+  reachability?: ReachabilityEvidence
+}): SessionAgentSyncHint {
+  if (input.uiState !== 'ready') return null
+  if (!input.isLocalAgent) return null
+  if (input.reachability?.status !== 'reachable') return null
+  if (input.daemonMqttConnected !== false) return null
+  return 'degraded'
+}
+
 export function resolveSessionAgentUiState(input: {
   context: SessionAgentContext
   isLocalAgent?: boolean
@@ -110,6 +126,38 @@ export function resolveSessionAgentUiState(input: {
     const runtimeObservedAt = input.runtimeObservedAt ?? 0
 
     if (input.context.kind === 'session') {
+      // Local session: loopback is authoritative for send readiness. A broker
+      // retain blip must not paint the pill red when this machine can still run.
+      if (input.isLocalAgent) {
+        if (reachabilityStatus === 'unreachable') return 'offline'
+
+        if (reachabilityStatus === 'reachable') {
+          switch (input.runtimeInfo?.state) {
+            case RuntimeLifecycle.ACTIVE:
+              return 'ready'
+            case RuntimeLifecycle.FAILED:
+            case RuntimeLifecycle.STOPPED:
+              return 'runtime-error'
+            case RuntimeLifecycle.STARTING:
+            case RuntimeLifecycle.UNKNOWN:
+            default:
+              if (input.availableModelCount > 0 || input.localCatalog === 'ready') {
+                return 'ready'
+              }
+              if (input.localCatalog === 'empty') return 'unconfigured'
+              if (input.localCatalog === 'error') return 'catalog-error'
+              return input.connectingTimedOut ? 'runtime-error' : 'connecting'
+          }
+        }
+
+        if (
+          input.presenceOnline === false &&
+          input.runtimeInfo?.state === RuntimeLifecycle.ACTIVE
+        ) {
+          return 'ready'
+        }
+      }
+
       if (input.presenceOnline === false) return 'offline'
       if (input.isLocalAgent && reachabilityStatus === 'unreachable') return 'offline'
 

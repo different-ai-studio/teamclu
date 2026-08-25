@@ -699,6 +699,7 @@
       "pillUnconfigured": "No model configured",
       "pillCatalogError": "Model list unavailable",
       "pillRuntimeError": "Agent start failed",
+      "pillSyncDegraded": "Team sync interrupted",
       "mentionOffline": "Offline",
       "mentionStale": "Rebind required",
       "mentionConnecting": "Connecting…",

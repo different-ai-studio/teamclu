@@ -9,9 +9,11 @@ import { mergeAgentDevicePresence } from '@/lib/agent-device-reachability'
 import { resolveRuntimeStateEntryForAgent } from '@/lib/runtime-state-resolve'
 import {
   SESSION_AGENT_CONNECTING_TIMEOUT_MS,
+  resolveSessionAgentSyncHint,
   resolveSessionAgentUiState,
   type ReachabilityEvidence,
   type SessionAgentContext,
+  type SessionAgentSyncHint,
   type SessionAgentUiState,
 } from '@/lib/session-agent-ui-state'
 import {
@@ -43,10 +45,12 @@ import {
   LOCAL_AGENT_READY_PROBE_INTERVAL_MS,
   LOCAL_CATALOG_POLL_INTERVAL_MS,
 } from '@/lib/session-agent-probe'
+import { useDaemonMqttConnected } from '@/stores/daemon-mqtt-status'
 
 export type EngagedAgentUiEntry = {
   agent: AttachedAgent
   uiState: SessionAgentUiState
+  syncHint: SessionAgentSyncHint
 }
 
 /**
@@ -203,6 +207,27 @@ function computeProvisionalState(
   })
 }
 
+function computeSyncHint(
+  agent: AttachedAgent,
+  uiState: SessionAgentUiState,
+  reachabilityByAgent: Record<string, ReachabilityEvidence>,
+  contextKey: string,
+  daemonMqttConnected: boolean | null,
+): SessionAgentSyncHint {
+  const localId = getKnownLocalDaemonActorId()
+  const isLocalAgent = !!localId && agent.id === localId
+  const reachability = reachabilityByAgent[agent.id]
+  const currentReachability =
+    reachability?.contextKey === `${contextKey}:${agent.id}` ? reachability : undefined
+
+  return resolveSessionAgentSyncHint({
+    uiState,
+    isLocalAgent,
+    daemonMqttConnected,
+    reachability: currentReachability,
+  })
+}
+
 function latestPositiveEvidenceAt(
   agent: AttachedAgent,
   agentToRuntimeId: Map<string, string>,
@@ -328,6 +353,7 @@ export function useEngagedAgentUiStates(
   const requestIdRef = React.useRef(0)
   const teamId = useCurrentTeamStore((s) => s.team?.id)?.trim() || ''
   const contextKey = `${teamId}:${context.kind}:${context.kind === 'session' ? context.sessionId : 'draft'}`
+  const daemonMqttConnected = useDaemonMqttConnected(!!getKnownLocalDaemonActorId())
   const stableContext = React.useMemo<SessionAgentContext>(
     () => context.kind === 'session'
       ? { kind: 'session', sessionId: context.sessionId }
@@ -618,9 +644,8 @@ export function useEngagedAgentUiStates(
 
   return React.useMemo(() => {
     const now = Date.now()
-    return engagedAgents.map((agent) => ({
-      agent,
-      uiState: computeProvisionalState(
+    return engagedAgents.map((agent) => {
+      const uiState = computeProvisionalState(
         agent,
         agentToRuntimeId,
         byRuntimeId,
@@ -633,8 +658,19 @@ export function useEngagedAgentUiStates(
         stableContext,
         contextKey,
         now,
-      ),
-    }))
+      )
+      return {
+        agent,
+        uiState,
+        syncHint: computeSyncHint(
+          agent,
+          uiState,
+          reachabilityByAgent,
+          contextKey,
+          daemonMqttConnected,
+        ),
+      }
+    })
   }, [
     engagedAgents,
     engagedSignature,
@@ -651,6 +687,7 @@ export function useEngagedAgentUiStates(
     stableContext,
     contextKey,
     tick,
+    daemonMqttConnected,
   ])
 }
 
