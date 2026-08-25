@@ -157,6 +157,12 @@ impl LocalSyncState {
         std::fs::rename(&tmp, &path).map_err(|e| format!("rename sync state: {e}"))
     }
 
+    /// An empty state, for tests that need one without touching the disk.
+    #[cfg(test)]
+    pub fn new_for_test(team_id: &str) -> Self {
+        Self::new(team_id)
+    }
+
     fn new(team_id: &str) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,

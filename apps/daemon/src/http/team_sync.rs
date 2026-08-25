@@ -875,20 +875,7 @@ pub async fn remote_pending(
             .map_err(|e| HttpError::internal(e.to_string()))?;
         snapshot_seq.get_or_insert(page.snapshot_seq);
         for item in page.items {
-            if crate::sync::oss::path_validator::is_retired(&item.path)
-                || crate::sync::oss::path_validator::validate(&item.path).is_err()
-            {
-                continue;
-            }
-            // Our own push comes back in the manifest with a fresh change_seq
-            // until the next tick moves the cursor. Reporting that as "the
-            // cloud is ahead of you" would light up every file the user just
-            // saved. Same test the pull uses to decide it has work to do.
-            let already_applied = local
-                .files
-                .get(&item.path)
-                .is_some_and(|f| item.version <= f.synced_version);
-            if already_applied {
+            if !manifest_item_is_pending(&item, &local) {
                 continue;
             }
             items.push(RemotePendingItem {
@@ -910,6 +897,36 @@ pub async fn remote_pending(
         snapshot_seq: snapshot_seq.unwrap_or(since_seq),
         since_seq,
     }))
+}
+
+/// Whether a manifest entry is still work for THIS device.
+///
+/// Three ways it is not, and each of them would otherwise put a number in front
+/// of the user that never goes down:
+///
+/// - a prefix the sync no longer carries (`skills/`, `.mcp/`, …)
+/// - a version this device already has — including the push it just made, which
+///   the manifest keeps listing until the next tick moves the cursor
+/// - a tombstone for a path this device never had. Deletions stay in the
+///   manifest forever, so a team that has ever deleted anything would show a
+///   permanent backlog of files to "fetch" that do not exist on either side.
+fn manifest_item_is_pending(
+    item: &crate::sync::oss::fc_client::ManifestItem,
+    local: &crate::sync::oss::state::LocalSyncState,
+) -> bool {
+    if crate::sync::oss::path_validator::is_retired(&item.path)
+        || crate::sync::oss::path_validator::validate(&item.path).is_err()
+    {
+        return false;
+    }
+    let entry = local.files.get(&item.path);
+    if entry.is_some_and(|f| item.version <= f.synced_version) {
+        return false;
+    }
+    if item.deleted {
+        return entry.is_some_and(|f| !f.deleted_local && f.synced_version > 0);
+    }
+    true
 }
 
 /// `GET /v1/team/versions?teamId=&path=&cursor=&fcEndpoint=` — one page of a
@@ -1259,6 +1276,100 @@ mod tests {
                 .cloned()
                 .unwrap()
         }
+    }
+
+    // ── remote pending probe ─────────────────────────────────────────────────
+
+    fn manifest_item(
+        path: &str,
+        version: i32,
+        deleted: bool,
+    ) -> crate::sync::oss::fc_client::ManifestItem {
+        crate::sync::oss::fc_client::ManifestItem {
+            path: path.to_string(),
+            version,
+            content_hash: Some("hash".into()),
+            size: Some(10),
+            deleted,
+            change_seq: 1,
+            updated_at: None,
+        }
+    }
+
+    fn state_with(
+        path: &str,
+        synced_version: i32,
+        deleted_local: bool,
+    ) -> crate::sync::oss::state::LocalSyncState {
+        let mut st = crate::sync::oss::state::LocalSyncState::new_for_test("t");
+        st.upsert(
+            path,
+            synced_version,
+            "c".into(),
+            "p".into(),
+            "p".into(),
+            0,
+            1,
+        );
+        if deleted_local {
+            st.mark_tombstoned(path, synced_version);
+        }
+        st
+    }
+
+    #[test]
+    fn a_newer_remote_version_is_pending() {
+        let st = state_with("knowledge/a.md", 1, false);
+        assert!(manifest_item_is_pending(
+            &manifest_item("knowledge/a.md", 2, false),
+            &st
+        ));
+        // Never seen here at all — that is the teammate's new document.
+        assert!(manifest_item_is_pending(
+            &manifest_item("knowledge/new.md", 1, false),
+            &st
+        ));
+    }
+
+    #[test]
+    fn our_own_push_is_not_something_waiting_for_us() {
+        // The manifest keeps listing it until the next tick moves the cursor;
+        // counting it would put a "pull me" marker on every file the user saves.
+        let st = state_with("knowledge/a.md", 2, false);
+        assert!(!manifest_item_is_pending(
+            &manifest_item("knowledge/a.md", 2, false),
+            &st
+        ));
+    }
+
+    #[test]
+    fn a_tombstone_for_a_file_we_never_had_is_not_work() {
+        // Deletions live in the manifest forever. A team that has deleted
+        // anything would otherwise show a backlog that can never reach zero.
+        let st = state_with("knowledge/a.md", 1, false);
+        assert!(!manifest_item_is_pending(
+            &manifest_item("knowledge/long-gone.md", 4, true),
+            &st
+        ));
+        // But a deletion of something we DO have is a real pull: the file has
+        // to come off this disk.
+        assert!(manifest_item_is_pending(
+            &manifest_item("knowledge/a.md", 2, true),
+            &st
+        ));
+    }
+
+    #[test]
+    fn retired_prefixes_are_not_pending() {
+        let st = crate::sync::oss::state::LocalSyncState::new_for_test("t");
+        assert!(!manifest_item_is_pending(
+            &manifest_item("skills/pack/SKILL.md", 3, false),
+            &st
+        ));
+        assert!(!manifest_item_is_pending(
+            &manifest_item("_secrets/env", 1, false),
+            &st
+        ));
     }
 
     // ── local change detection ───────────────────────────────────────────────
