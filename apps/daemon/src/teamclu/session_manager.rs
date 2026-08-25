@@ -1285,8 +1285,68 @@ impl SessionManager {
         persist_backend: bool,
         backend: Option<&std::sync::Arc<dyn Backend>>,
     ) -> bool {
+        // An agent reply addresses no one, and it is written by the same daemon
+        // that would answer a mention — so there is nothing to claim either.
+        self.emit_session_message(
+            SessionMessageWrite {
+                session_id,
+                sender_actor_id,
+                kind,
+                content,
+                metadata_json,
+                model,
+                turn_id,
+                reply_to_message_id,
+                sequence,
+                claim_before_publish: false,
+                persist_local: true,
+                persist_backend,
+            },
+            backend,
+        )
+        .await
+    }
+
+    /// Write one message into a session: claim, broadcast, persist, insert —
+    /// in that order, once.
+    ///
+    /// The #933 write service. Everything that puts a message into a session
+    /// from the daemon side goes through here, so "what a message looks like"
+    /// is decided in one place instead of being re-derived per caller. Before
+    /// this, `emit_agent_message` and cron's `persist_cron_user_prompt` were
+    /// two hand-rolled copies that had already drifted apart on ordering.
+    ///
+    /// `claim_before_publish` exists because the daemon subscribes to its own
+    /// sessions' live topics: a message that names this daemon's agent comes
+    /// straight back and `route_session_message` would start a second turn for
+    /// it. Claiming the id in the shared `MessageDedup` *before* publishing
+    /// closes that gate first. An agent reply does not need it (the sender is
+    /// this daemon, which `route_session_message` skips outright); a prompt
+    /// written on the agent's behalf does.
+    pub async fn emit_session_message(
+        &self,
+        write: SessionMessageWrite<'_>,
+        backend: Option<&std::sync::Arc<dyn Backend>>,
+    ) -> bool {
+        let SessionMessageWrite {
+            session_id,
+            sender_actor_id,
+            kind,
+            content,
+            metadata_json,
+            model,
+            turn_id,
+            reply_to_message_id,
+            sequence,
+            claim_before_publish,
+            persist_local,
+            persist_backend,
+        } = write;
         let message_id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now();
+        if claim_before_publish {
+            self.recent_events.claim_message(session_id, &message_id);
+        }
 
         let proto_msg = crate::proto::teamclu::Message {
             message_id: message_id.clone(),
@@ -1313,9 +1373,14 @@ impl SessionManager {
         //    chat bubbles — the kind filter in handleIncomingChatMessage
         //    drops agent_reply and lets handleAcpEvent's isComplete=true
         //    output own that bubble.
+        // Mentions ride from the metadata, so a caller that means them (cron
+        // writing a prompt on the agent's behalf) gets them and one that does
+        // not (an agent reply) sends an empty list without special-casing.
         let envelope = crate::proto::teamclu::SessionMessageEnvelope {
             message: Some(proto_msg.clone()),
-            mention_actor_ids: Vec::new(), // agent reply addresses no one
+            mention_actor_ids: crate::daemon::session_events::parse_mention_actor_ids(
+                metadata_json,
+            ),
         };
         if let Err(e) = self
             .live_publisher
@@ -1326,8 +1391,10 @@ impl SessionManager {
         }
 
         // 2. Local TOML (durable history; not on the live path).
-        if let Err(e) = self.persist_message(session_id, &proto_msg).await {
-            warn!(?e, session_id, "persist_message failed");
+        if persist_local {
+            if let Err(e) = self.persist_message(session_id, &proto_msg).await {
+                warn!(?e, session_id, "persist_message failed");
+            }
         }
 
         // 3. Backend (turn-final AgentReply only — see TurnAggregator::cloud_persistent).
@@ -1365,26 +1432,30 @@ impl SessionManager {
         true
     }
 
-    /// Publish an already-persisted message on `session/{id}/live`.
-    ///
-    /// Mentions ride along from the message's own metadata, so a subscriber
-    /// sees the same envelope it would have for a desktop-sent message.
-    pub async fn publish_live_message(
-        &self,
-        session_id: &str,
-        message: &teamclu::Message,
-    ) -> crate::error::Result<()> {
-        let envelope = teamclu::SessionMessageEnvelope {
-            message: Some(message.clone()),
-            mention_actor_ids: crate::daemon::session_events::parse_mention_actor_ids(
-                &message.metadata_json,
-            ),
-        };
-        self.live_publisher
-            .publish_message(session_id, &message.sender_actor_id, &envelope)
-            .await
-    }
+}
 
+/// One message on its way into a session. A struct rather than a dozen
+/// positional arguments because the two flags at the end decide correctness,
+/// not formatting, and `true, true, false` at a call site says nothing.
+pub struct SessionMessageWrite<'a> {
+    pub session_id: &'a str,
+    pub sender_actor_id: &'a str,
+    pub kind: crate::proto::teamclu::MessageKind,
+    pub content: &'a str,
+    pub metadata_json: &'a str,
+    pub model: &'a str,
+    pub turn_id: &'a str,
+    pub reply_to_message_id: &'a str,
+    pub sequence: u64,
+    /// Close the loopback gate before broadcasting. See `emit_session_message`.
+    pub claim_before_publish: bool,
+    /// Write to the session's local TOML history.
+    pub persist_local: bool,
+    /// Insert into the cloud `messages` table.
+    pub persist_backend: bool,
+}
+
+impl SessionManager {
     #[allow(dead_code)]
     pub async fn ensure_session_subscription(
         &mut self,

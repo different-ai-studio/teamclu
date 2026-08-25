@@ -582,13 +582,11 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
     /// shows no mention, and every catchup re-queues it as silent context
     /// instead of seeing an answered turn.
     ///
-    /// Burns the message id in the ingestion dedup gate first, then publishes
-    /// on `session/live` like any other message. The burn is what makes the
-    /// publish safe: cron drives this turn itself, and without it the loopback
-    /// copy would prompt the runtime a second time — which is why this used to
-    /// skip the publish entirely. Skipping it left the desktop to *pull* the
-    /// prompt, and "Run Now" navigates in before the row is queryable, so the
-    /// thread opened showing the agent talking to nobody.
+    /// The write itself is `SessionManager::emit_session_message` (#933): claim
+    /// the id in the dedup gate, broadcast on `session/{id}/live`, write local
+    /// TOML, insert into the cloud. This used to be ~70 lines of that sequence
+    /// hand-rolled here, which is exactly the second implementation the issue
+    /// is about — and the two had already drifted on ordering.
     pub(crate) async fn persist_cron_user_prompt(
         &mut self,
         team_id: &str,
@@ -603,6 +601,7 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
             );
             return;
         }
+        let _ = team_id;
 
         let sender_actor_id = self
             .backend
@@ -612,77 +611,49 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
             .and_then(|ids| ids.into_iter().next())
             .unwrap_or_else(|| self.actor_id.clone());
 
-        let message_id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now();
         let metadata_json =
             serde_json::json!({ "mention_actor_ids": [self.actor_id.clone()] }).to_string();
-        let proto_msg = crate::proto::teamclu::Message {
-            message_id: message_id.clone(),
-            session_id: session_id.to_string(),
-            sender_actor_id: sender_actor_id.clone(),
-            kind: crate::proto::teamclu::MessageKind::Text as i32,
-            content: prompt.to_string(),
-            created_at: now.timestamp(),
-            metadata_json: metadata_json.clone(),
-            model: model.to_string(),
-            ..Default::default()
-        };
-
-        if let Some(tc) = self.teamclu.as_ref() {
-            if let Err(e) = tc.persist_message(session_id, &proto_msg).await {
-                warn!(?e, session_id, "cron: persist user prompt to TOML failed");
-            }
-        }
-
-        // Claim the id BEFORE publishing: the loopback copy comes back fast,
-        // and the gate has to already be closed when it does.
-        if let Some(tc) = self.teamclu.as_mut() {
-            tc.should_process_message(session_id, &message_id);
-        }
-
-        if let Some(tc) = self.teamclu.as_ref() {
-            if let Err(e) = tc.publish_live_message(session_id, &proto_msg).await {
-                warn!(?e, session_id, "cron: publish user prompt to live failed");
-            }
-        }
-
-        info!(
-            session_id,
-            bytes = prompt.len(),
-            sender_actor_id = %sender_actor_id,
-            mention_actor_id = %self.actor_id,
-            "cron: persisted user prompt to session TOML and cloud"
-        );
 
         let backend = self.backend.clone();
-        let team_id = team_id.to_string();
-        let session = session_id.to_string();
-        let content = prompt.to_string();
-        let model = model.to_string();
-        tokio::spawn(async move {
-            if let Err(e) = backend
-                .insert_message(
-                    &message_id,
-                    &team_id,
-                    &session,
-                    &sender_actor_id,
-                    "text",
-                    &content,
-                    &metadata_json,
-                    &model,
-                    "",
-                    "",
-                    0,
-                )
-                .await
-            {
-                warn!(
-                    ?e,
-                    session_id = %session,
-                    "cron: backend insert user prompt failed"
-                );
-            }
-        });
+        let ok = {
+            let tc = self.teamclu.as_ref().expect("checked above");
+            tc.emit_session_message(
+                crate::teamclu::session_manager::SessionMessageWrite {
+                    session_id,
+                    sender_actor_id: &sender_actor_id,
+                    kind: crate::proto::teamclu::MessageKind::Text,
+                    content: prompt,
+                    metadata_json: &metadata_json,
+                    model,
+                    turn_id: "",
+                    reply_to_message_id: "",
+                    sequence: 0,
+                    // Cron drives this turn itself. Without the claim the
+                    // loopback copy would prompt the runtime a second time,
+                    // which is why this used to skip the publish entirely —
+                    // and skipping it left the desktop to *pull* the prompt,
+                    // so "Run Now" opened a thread showing the agent talking
+                    // to nobody.
+                    claim_before_publish: true,
+                    persist_local: true,
+                    persist_backend: true,
+                },
+                Some(&backend),
+            )
+            .await
+        };
+
+        if ok {
+            info!(
+                session_id,
+                bytes = prompt.len(),
+                sender_actor_id = %sender_actor_id,
+                mention_actor_id = %self.actor_id,
+                "cron: persisted user prompt to session TOML and cloud"
+            );
+        } else {
+            warn!(session_id, "cron: persisting the user prompt failed");
+        }
     }
 
     /// Resolve the working directory to use for a cron turn that didn't pin
