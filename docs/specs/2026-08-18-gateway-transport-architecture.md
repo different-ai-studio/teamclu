@@ -1,9 +1,33 @@
 # 网关架构重做：渠道退回传输驱动
 
 - **Date**: 2026-08-18
-- **Status**: Design proposal — 待评审，未实现
+- **Status**: 部分实现 —— 内核与 WeCom / 飞书两个驱动已随 #978 于 2026-08-19 合并；其余渠道、cron、出站顺序、旁路清理未做。见下方「实现进度」
 - **Scope**: `crates/teamclu-gateway`（17.3k 行，8 个渠道），以 **WeCom / 飞书 / 邮件** 三个渠道为设计基准
 - **Related**: #933（网关收拢为传输适配器）。#933 是"把 session 写入收成一套"，本文是"把渠道本身收成一套"，两者共用同一层写入服务
+
+---
+
+## 0. 实现进度（2026-08-25 核实，对照 main `30873c7c`）
+
+本文写于设计阶段。#978 已经落了其中一部分，下面是与代码的对照，读正文时请以这里为准。
+
+**已落地** —— `apps/daemon/src/channels/core/`（约 2.3k 行）：
+
+- §3 / §4 的内核流水线：`Core::handle`（dedup → addressed? → route → identity → command? → write → turn → render），写入固定在 turn 之前
+- 六个 trait：`DedupStore` / `SessionRouter` / `IdentityMapper` / `SessionWriter` / `TurnRunner` / `CommandRunner`
+- §5 第 1、2 步：WeCom（`wecom.rs:1070`）与飞书（`feishu.rs:805`）已实现 `ChannelDriver`
+- 出站附件挂到本轮回复（`core/turn_attachments.rs`）
+
+**未落地**：
+
+- §5 第 3、4 步 —— 邮件 / KOOK / SeaTalk / Discord / 微信仍是 inline 实现
+- §6 的删除清单一项未执行；`crates/teamclu-gateway` 从 17.3k 涨到 **18.9k 行**
+- §4.2 第三条旁路（desktop `introspect_api.rs:89` 的 `POST /send-wecom`）原样保留
+- #933 侧：cron 写入、claim-before-publish（`backend_store.rs:31` 仍写死空 mention）、出站顺序反转、撤 `checkout_turn_for_acp`
+
+**一处预判落空**：§5 结尾写着「中途不存在"两套并存但都不完整"的状态」。实际上内核挂在 env 开关 `TEAMCLU_GATEWAY_CORE`（`core/sink.rs:150`，默认开）之后，inline 路径仍然编译、仍然可达，五个渠道还在用它 —— 正是那个状态。收尾时要连开关一起删。
+
+**一处前提消失（利好）**：§7 第 6 条担心 `session.rs` 退休需要迁移老会话。现在不需要了 —— 它已经是只写不读：全仓只剩 `apps/desktop/src/commands/cron/scheduler.rs` 调两个 `set_email_*` 写方法，对应的读方法按该文件自己的注释已是死路（`EmailDb` 才是活的存储）。直接删即可。
 
 ---
 
@@ -179,6 +203,8 @@ gateway crate 只认注入进来的两个 trait（`AgentHandle` / `ChannelStore`
 
 每步都能单独上线，中途不存在"两套并存但都不完整"的状态。
 
+> ⚠️ 2026-08-25：这一句没兑现。第 1、2 步落地后，内核挂在 `TEAMCLU_GATEWAY_CORE` 开关之后与 inline 路径并存，五个渠道仍走 inline。见 §0。
+
 ## 6. 迁移完成后可以删除
 
 - 各渠道的去重实现（`mark_message_processed`、UID 集合、`email_db.rs` 的去重部分）
@@ -196,7 +222,7 @@ gateway crate 只认注入进来的两个 trait（`AgentHandle` / `ChannelStore`
 3. **流式节流属于驱动**：企微卡片更新有频率限制，飞书消息更新也有。内核只管"文本又长了"，节流规则留在驱动里，否则内核会长出渠道细节。
 4. **多 bot**：企业微信已经一个渠道多 bot，`bot_id` 必须进 `Conversation` 的键，否则两个 bot 的同名群会撞。
 5. **附件惰性获取**：入站附件用闭包而非字节，是为了让"纯文本消息立即开始 turn"（WeCom 现在的行为）不被附件下载拖慢；但闭包的生命周期要跨过 turn，需要明确谁持有。
-6. **兼容期**：`session.rs` 的本地映射退休时，已有的 `feishu:<chat_id>` / `email:thread:<id>` 记录需要迁移到云端 session 绑定，否则老会话会断。
+6. ~~**兼容期**：`session.rs` 的本地映射退休时，已有的 `feishu:<chat_id>` / `email:thread:<id>` 记录需要迁移到云端 session 绑定，否则老会话会断。~~ 2026-08-25 已不成立：`session.rs` 现在只写不读，读方按其调用方自己的注释早已是死路（`EmailDb` 才是活的存储），直接删即可。见 §0。
 7. **desktop 直连渠道要不要一起收**（§4.2 第三条路）：改成经 daemon 会让 desktop 多一个"daemon 不在跑就发不出去"的失败态 —— 现在它是自己直接发的，不依赖 daemon。是接受这个新依赖，还是给 introspect 的 send 保留一条明确标注"不入 session"的旁路？倾向前者：一条发得出去但没人看得见的消息，比发不出去更难排查。
 
 ---
