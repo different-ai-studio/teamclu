@@ -54,7 +54,8 @@ export async function requireActorForTeam(
 }
 
 /**
- * Ensures the authenticated user is the team owner before share-mode mutations.
+ * Ensures the authenticated user is the team owner before owner-only team
+ * mutations.
  */
 export async function requireTeamOwner(
   db: DbLike,

@@ -940,40 +940,6 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     }
   });
 
-  test("repository contract: enableShareMode locks team to an oss share mode", async () => {
-    const repo = createRepository();
-    const out = await repo.enableShareMode("team-share-1", "oss");
-    assert.ok(out, "result must be returned");
-    assert.equal(out.id, "team-share-1");
-    assert.equal(out.shareMode, "oss");
-    assert.ok(out.shareEnabledAt, "shareEnabledAt must be set");
-  });
-
-  test("repository contract: enableShareMode is idempotent on the same team", async () => {
-    const repo = createRepository();
-    await repo.enableShareMode("team-share-3", "oss");
-    const out = await repo.enableShareMode("team-share-3", "oss");
-    assert.equal(out.shareMode, "oss");
-    const current = await repo.getShareMode("team-share-3");
-    assert.equal(current.mode, "oss");
-  });
-
-  test("repository contract: getShareMode returns null mode for fresh team", async () => {
-    const repo = createRepository();
-    const out = await repo.getShareMode("team-share-fresh");
-    assert.ok(out, "result must be returned");
-    assert.equal(out.mode, null);
-    assert.equal(out.enabledAt, null);
-  });
-
-  test("repository contract: getShareMode reflects a previously enabled share mode", async () => {
-    const repo = createRepository();
-    await repo.enableShareMode("team-share-4", "oss");
-    const out = await repo.getShareMode("team-share-4");
-    assert.equal(out.mode, "oss");
-    assert.ok(out.enabledAt, "enabledAt must be set once mode is enabled");
-  });
-
   test("repository contract: ensureMemberKey returns the caller's own key + gateway endpoint", async () => {
     const repo = createRepository();
     assert.equal(typeof repo.ensureMemberKey, "function", "repository must implement ensureMemberKey");
@@ -1012,36 +978,10 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     assert.ok(out.litellmKey.length > 0, "litellmKey must be non-empty");
   });
 
-  test("repository contract: getWorkspaceConfig merges share + workspace fields", async () => {
-    const repo = createRepository();
-    await repo.enableShareMode("team-share-5", "oss");
-    const out = await repo.getWorkspaceConfig("team-share-5");
-    assert.ok(out, "result must be returned");
-    assert.deepEqual(Object.keys(out).sort(), [
-      "litellmTeamId",
-      "llm",
-      "shareMode",
-      "syncMode",
-    ].sort());
-    assert.equal(out.shareMode, "oss");
-    // llm block: shape is always present. `models` is the stored per-team
-    // list (empty here), `availableModels` is the gateway proxy (no endpoint
-    // → []). The gateway dep is never required for the request to succeed.
-    assert.ok(out.llm && typeof out.llm === "object", "llm block must be present");
-    assert.equal(out.llm.aiGatewayEndpoint, null);
-    assert.equal(out.llm.enabled, false);
-    assert.equal(out.llm.baseUrl, null);
-    assert.ok(Array.isArray(out.llm.models), "llm.models must be an array");
-    assert.equal(out.llm.models.length, 0);
-    assert.ok(Array.isArray(out.llm.availableModels), "llm.availableModels must be an array");
-    assert.equal(out.llm.availableModels.length, 0);
-  });
-
-  test("repository contract: getWorkspaceConfig returns null share for fresh team", async () => {
+  test("repository contract: getWorkspaceConfig returns an empty llm block for a fresh team", async () => {
     const repo = createRepository();
     const out = await repo.getWorkspaceConfig("team-share-fresh-2");
     assert.ok(out, "result must be returned");
-    assert.equal(out.shareMode, null);
     assert.ok(out.llm && typeof out.llm === "object", "llm block must be present");
     assert.equal(out.llm.aiGatewayEndpoint, null);
     assert.deepEqual(out.llm.models, []);

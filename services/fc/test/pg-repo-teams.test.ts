@@ -26,7 +26,7 @@ test("listTeams returns mapped rows ordered by created_at", async () => {
   const repo = createPgBusinessRepository({ db, accessToken: "x" });
   const rows = await repo.listTeams({ limit: 50 });
   assert.equal(rows.length, 2);
-  assert.deepEqual(Object.keys(rows[0]).sort(), ["createdAt","id","name","shareEnabledAt","shareMode","slug"]);
+  assert.deepEqual(Object.keys(rows[0]).sort(), ["createdAt","id","name","slug","visibility"]);
 });
 
 test("listAllMyTeams returns only teams the caller belongs to", async () => {
@@ -70,27 +70,6 @@ test("renameTeam updates name", async () => {
   assert.equal(out.name, "Renamed");
 });
 
-test("getShareMode null for fresh team, reflects enabled mode", async () => {
-  const { db } = await makeTestDb();
-  const t = await seedTeam(db);
-  const repo = createPgBusinessRepository({ db, accessToken: "x" });
-  assert.deepEqual(await repo.getShareMode(t.id), { mode: null, enabledAt: null });
-  await repo.enableShareMode(t.id, "oss");
-  const sm = await repo.getShareMode(t.id);
-  assert.equal(sm.mode, "oss");
-  assert.equal(typeof sm.enabledAt, "string");
-});
-
-test("enableShareMode can switch modes on the same team", async () => {
-  const { db } = await makeTestDb();
-  const t = await seedTeam(db);
-  const repo = createPgBusinessRepository({ db, accessToken: "x" });
-  await repo.enableShareMode(t.id, "oss");
-  await repo.enableShareMode(t.id, "oss");
-  const sm = await repo.getShareMode(t.id);
-  assert.equal(sm.mode, "oss");
-});
-
 test("get/putTeamWorkspaceConfig roundtrip; getWorkspaceConfig merges", async () => {
   const { db } = await makeTestDb();
   const t = await seedTeam(db);
@@ -100,7 +79,6 @@ test("get/putTeamWorkspaceConfig roundtrip; getWorkspaceConfig merges", async ()
   const wc = await repo.getWorkspaceConfig(t.id);
   assert.equal(wc.syncMode, "oss");
   assert.equal(wc.litellmTeamId, "lt1");
-  assert.equal(wc.shareMode, null);
   // Defaults for the new per-team LLM config block.
   assert.equal(wc.llm.enabled, false);
   assert.equal(wc.llm.baseUrl, null);
@@ -336,32 +314,7 @@ test("listAllMyTeams requires userId context", async () => {
   await assert.rejects(() => repo.listAllMyTeams(), /missing_auth|authenticated/i);
 });
 
-// ── drift-parity: disableShareMode ──────────────────────────────────────────
-
-test("disableShareMode clears share mode (owner-only)", async () => {
-  const { db } = await makeTestDb();
-  const { teamId, userId } = await seedOwner(db);
-  const repo = createPgBusinessRepository({ db, userId });
-  await repo.enableShareMode(teamId, "oss");
-  assert.equal((await repo.getShareMode(teamId)).mode, "oss");
-
-  const out = await repo.disableShareMode(teamId);
-  assert.deepEqual(out, { mode: null, enabledAt: null });
-  assert.deepEqual(await repo.getShareMode(teamId), { mode: null, enabledAt: null });
-});
-
-test("disableShareMode rejects non-owner", async () => {
-  const { db } = await makeTestDb();
-  const { teamId } = await seedOwner(db);
-  const otherUser = crypto.randomUUID();
-  const [otherActor] = await db.insert(actors).values({ teamId, actorType: "member", displayName: "Other", userId: otherUser }).returning();
-  await db.insert(members).values({ id: otherActor.id, status: "active" });
-  await db.insert(teamMembers).values({ teamId, memberId: otherActor.id, role: "member" });
-  const repo = createPgBusinessRepository({ db, userId: otherUser });
-  await assert.rejects(() => repo.disableShareMode(teamId), /forbidden|owner/i);
-});
-
-// ── drift-parity: getLiteLlmUsage empty shape when unprovisioned ─────────────
+// ── drift-parity: team workspace config ─────────────────────────────────────
 
 test("getLiteLlmUsage returns empty shape without querying when LiteLLM unprovisioned", async () => {
   const { db } = await makeTestDb();

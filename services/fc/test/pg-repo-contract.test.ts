@@ -6,7 +6,7 @@
  *     in-memory stores on each call, initialized from fixture JSON files and hardcoded data.
  *   - Tests assume pre-seeded fixture IDs: "team-1", "actor-1", "session-1",
  *     "message-1", "workspace-1", "shortcut-1", "agent-1", "idea-1", etc.
- *   - enableShareMode tests use "team-share-1" … "team-share-5", "team-share-fresh",
+ *   - team-scoped tests use "team-share-1" … "team-share-5", "team-share-fresh",
  *     "team-share-fresh-2" as team IDs that are mutated within each isolated test.
  *
  * IDENTITY CONVENTION (pg-repo, documented here as the canonical rule):
@@ -37,8 +37,7 @@
  *   that domain and seed the UUID fixtures in makeContractDb().
  *
  * WHAT IS GREEN NOW:
- *   renameTeam · getShareMode · enableShareMode (oss / lock)
- *   getTeamWorkspaceConfig · putTeamWorkspaceConfig · getWorkspaceConfig
+ *   renameTeam · getTeamWorkspaceConfig · putTeamWorkspaceConfig · getWorkspaceConfig
  */
 
 import { test } from "node:test";
@@ -138,81 +137,6 @@ test("pg-repo [teams]: putTeamWorkspaceConfig upserts row, getTeamWorkspaceConfi
   const cfg = await repo.getTeamWorkspaceConfig(T1);
   assert.ok(cfg, "config should exist after put");
   assert.equal(cfg.teamId, T1);
-});
-
-// --- getShareMode null for fresh team ---
-test("pg-repo [teams]: getShareMode returns null mode for fresh team", async () => {
-  const { pg, repo } = await makeRepo();
-  await seedTeam(pg, TSF, "team-share-fresh-slug");
-
-  const out = await repo.getShareMode(TSF);
-  assert.ok(out, "result must be returned");
-  assert.equal(out.mode, null);
-  assert.equal(out.enabledAt, null);
-});
-
-// --- enableShareMode oss ---
-test("pg-repo [teams]: enableShareMode locks team to oss share mode", async () => {
-  const { pg, repo } = await makeRepo();
-  await seedTeam(pg, TS1, "team-share-1-slug");
-
-  const out = await repo.enableShareMode(TS1, "oss");
-  assert.ok(out, "result must be returned");
-  assert.equal(out.id, TS1);
-  assert.equal(out.shareMode, "oss");
-  assert.ok(out.shareEnabledAt, "shareEnabledAt must be set");
-});
-
-test("pg-repo [teams]: enableShareMode switches mode on the same team", async () => {
-  const { pg, repo } = await makeRepo();
-  await seedTeam(pg, TS3, "team-share-3-slug");
-
-  await repo.enableShareMode(TS3, "oss");
-  await repo.enableShareMode(TS3, "oss");
-  const out = await repo.getShareMode(TS3);
-  assert.equal(out.mode, "oss");
-});
-
-// --- getShareMode reflects enabled mode ---
-test("pg-repo [teams]: getShareMode reflects a previously enabled share mode", async () => {
-  const { pg, repo } = await makeRepo();
-  await seedTeam(pg, TS4, "team-share-4-slug");
-
-  await repo.enableShareMode(TS4, "oss");
-  const out = await repo.getShareMode(TS4);
-  assert.equal(out.mode, "oss");
-  assert.ok(out.enabledAt, "enabledAt must be set once mode is enabled");
-});
-
-// --- getWorkspaceConfig returns null share for fresh team ---
-test("pg-repo [teams]: getWorkspaceConfig returns null share fields for fresh team", async () => {
-  const { pg, repo } = await makeRepo();
-  await seedTeam(pg, TSF2, "team-share-fresh-2-slug");
-
-  const out = await repo.getWorkspaceConfig(TSF2);
-  assert.ok(out, "result must be returned");
-  assert.equal(out.shareMode, null);
-});
-
-// --- getWorkspaceConfig merges share + workspace fields ---
-test("pg-repo [teams]: getWorkspaceConfig merges share + workspace fields", async () => {
-  const { pg, repo } = await makeRepo();
-  await seedTeam(pg, TS5, "team-share-5-slug");
-
-  await repo.enableShareMode(TS5, "oss");
-  const out = await repo.getWorkspaceConfig(TS5);
-  assert.ok(out, "result must be returned");
-  assert.deepEqual(Object.keys(out).sort(), [
-    "litellmTeamId",
-    "llm",
-    "shareMode",
-    "syncMode",
-  ].sort());
-  assert.equal(out.shareMode, "oss");
-  // Additive llm block: no aiGatewayEndpoint persisted → endpoint null, models [].
-  assert.ok(out.llm && typeof out.llm === "object");
-  assert.equal(out.llm.aiGatewayEndpoint, null);
-  assert.deepEqual(out.llm.models, []);
 });
 
 // --- getWorkspaceConfig surfaces gateway endpoint + proxied models ---

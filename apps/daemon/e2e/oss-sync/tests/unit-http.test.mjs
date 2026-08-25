@@ -28,12 +28,12 @@ test("postJson sends bearer + body and parses json", async () => {
 test("postJson throws HttpCallError with status+body on non-2xx", async () => {
   const srv = await serve((req, res) => {
     res.writeHead(409, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "share_mode_locked" }));
+    res.end(JSON.stringify({ error: "conflict" }));
   });
   const port = srv.address().port;
   await assert.rejects(
     () => postJson(`http://127.0.0.1:${port}/x`, {}, null),
-    (e) => e instanceof HttpCallError && e.status === 409 && /share_mode_locked/.test(e.body),
+    (e) => e instanceof HttpCallError && e.status === 409 && /conflict/.test(e.body),
   );
   srv.close();
 });

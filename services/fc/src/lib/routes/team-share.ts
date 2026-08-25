@@ -1,28 +1,5 @@
 import { ApiError } from "../http-utils.js";
 
-// `share_mode` is now a switch, not a choice. The column, the enum and this
-// field keep their historical names — the value that means "on" is `oss`
-// because that is the only one every existing client already understands:
-// `normalizeShareStatus` in packages/app/src/stores/team-share.ts collapses an
-// unrecognised value to `mode: null`, which renders an enabled team as
-// "not set up" and reopens the onboarding wizard.
-const SHARE_MODE_ON = "oss";
-
-function validateShareModeInput(body) {
-  const mode = body?.mode;
-  // Accepting only the enabled value keeps the endpoint honest about what it
-  // can actually do; a client still asking for a git mode gets told, rather
-  // than getting a team configured for a backend that no longer exists.
-  if (mode !== undefined && mode !== SHARE_MODE_ON) {
-    throw new ApiError(
-      400,
-      "validation_failed",
-      `mode must be "${SHARE_MODE_ON}" — git share modes are no longer supported`,
-    );
-  }
-  return { mode: SHARE_MODE_ON };
-}
-
 function validateLlmConfigInput(body) {
   const enabled = body?.enabled;
   if (typeof enabled !== "boolean") {
@@ -48,49 +25,7 @@ function validateLlmConfigInput(body) {
   return { enabled, baseUrl, models };
 }
 
-function isLockViolation(err) {
-  if (!err) return false;
-  if (err.code === "check_violation") return true;
-  const msg = err.message || "";
-  return /locked|already.*share_mode/i.test(msg);
-}
-
 export function registerTeamShare(router) {
-  router.post("/v1/teams/:teamId/share-mode", async (ctx) => {
-    const { mode } = validateShareModeInput(ctx.json ?? {});
-    try {
-      const team = await ctx.repository.enableShareMode(ctx.params.teamId, mode);
-      return { body: team };
-    } catch (err) {
-      if (err instanceof ApiError) throw err;
-      if (isLockViolation(err)) {
-        throw new ApiError(
-          409,
-          "share_mode_locked",
-          err.message || "Team share mode is already locked",
-          { cause: err },
-        );
-      }
-      throw err;
-    }
-  });
-
-  router.get("/v1/teams/:teamId/share-mode", async (ctx) => {
-    const result = await ctx.repository.getShareMode(ctx.params.teamId);
-    return { body: result };
-  });
-
-  router.delete("/v1/teams/:teamId/share-mode", async () => {
-    // Turning sync off would leave every member holding a half-synced tree with
-    // no way to reconcile it, and the DB trigger refuses to clear the column
-    // anyway. Say so instead of failing deeper down.
-    throw new ApiError(
-      410,
-      "share_mode_permanent",
-      "Team knowledge sync cannot be disabled once enabled",
-    );
-  });
-
   router.get("/v1/teams/:teamId/workspace-config", async (ctx) => {
     const result = await ctx.repository.getWorkspaceConfig(ctx.params.teamId);
     return { body: result };

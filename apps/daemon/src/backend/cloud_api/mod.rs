@@ -2960,7 +2960,6 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/v1/teams/team-1/workspace-config"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "shareMode": "oss",
                 "llm": {
                     "enabled": true,
                     "baseUrl": "https://ai.ucar.cc",

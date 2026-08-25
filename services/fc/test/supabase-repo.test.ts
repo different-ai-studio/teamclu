@@ -330,7 +330,7 @@ const OWNER_AUTH = {
   },
 };
 
-function fakeSupabaseForShareMode(rpcData, rpcCalls = []) {
+function fakeSupabaseForOwnerRpc(rpcData, rpcCalls = []) {
   return fakeSupabase({
     rpcCalls,
     rpcData,
@@ -668,65 +668,6 @@ test("bootstrapTeam rejects a token the trust secret does not verify", async () 
     "a signature the trust secret rejects must not bootstrap a team",
   );
   assert.deepEqual(rpcCalls, [], "no RPC may run for an unverified caller");
-});
-
-test("enableShareMode calls the enable_team_share rpc", async () => {
-  const rpcCalls = [];
-  const repo = createRepo(fakeSupabaseForShareMode({
-      enable_team_share: [{
-        id: "team-1",
-        name: "Acme",
-        slug: "acme",
-        created_at: "2026-05-28T00:00:00Z",
-        share_mode: "oss",
-        share_enabled_at: "2026-05-28T01:00:00Z",
-        git_remote_url: null,
-        git_auth_kind: null,
-      }],
-  }, rpcCalls));
-
-  const result = await repo.enableShareMode("team-1", "oss");
-
-  assert.deepEqual(rpcCalls[0], {
-    name: "enable_team_share",
-    args: {
-      p_team_id: "team-1",
-      p_mode: "oss",
-      p_git_remote_url: null,
-      p_git_auth_kind: null,
-      p_git_credential_ref: null,
-    },
-  });
-  assert.equal(result.id, "team-1");
-  assert.equal(result.shareMode, "oss");
-  assert.equal(result.shareEnabledAt, "2026-05-28T01:00:00Z");
-});
-
-test("getShareMode returns nulls when team row absent", async () => {
-  const repo = createRepo(fakeSupabase({ tableData: { teams: [] } }));
-  const result = await repo.getShareMode("team-missing");
-  assert.deepEqual(result, {
-    mode: null,
-    enabledAt: null,
-  });
-});
-
-test("getShareMode maps team columns to camelCase", async () => {
-  const repo = createRepo(fakeSupabase({
-    tableData: {
-      teams: [{
-        share_mode: "oss",
-        share_enabled_at: "2026-05-28T03:00:00Z",
-        git_remote_url: "https://git.example.com/repo.git",
-        git_auth_kind: "https_token",
-      }],
-    },
-  }));
-  const result = await repo.getShareMode("team-3");
-  assert.deepEqual(result, {
-    mode: "oss",
-    enabledAt: "2026-05-28T03:00:00Z",
-  });
 });
 
 test("setupLiteLlm persists via update_team_litellm RPC", async () => {
@@ -1077,9 +1018,9 @@ test("setLiteLlmBudget rejects non-owner with 403", async () => {
 
 test("setLiteLlmBudget throws 409 litellm_not_provisioned when litellm_team_id is unset", async () => {
   const repo = createRepo(
-    fakeSupabaseForShareMode({}),
+    fakeSupabaseForOwnerRpc({}),
   );
-  // fakeSupabaseForShareMode has no team_workspace_config rows
+  // fakeSupabaseForOwnerRpc has no team_workspace_config rows
   await assert.rejects(
     () => repo.setLiteLlmBudget("team-budget-3", { maxBudget: 25 }),
     (err: any) => err.statusCode === 409 && err.code === "litellm_not_provisioned",
@@ -1128,7 +1069,6 @@ test("getWorkspaceConfig merges teams + team_workspace_config rows", async () =>
   // the stored, authoritative per-team list; `availableModels` is the optional
   // gateway picker source and stays empty when no gateway answers.
   assert.deepEqual(result, {
-    shareMode: "oss",
     syncMode: "git",
     litellmTeamId: "litellm-team-zzz",
     llm: {
@@ -1147,7 +1087,6 @@ test("getWorkspaceConfig returns nulls when both rows absent", async () => {
   }));
   const result = await repo.getWorkspaceConfig("team-7");
   assert.deepEqual(result, {
-    shareMode: null,
     syncMode: null,
     litellmTeamId: null,
     // Absent config means LLM disabled, not "unknown": the client renders the
