@@ -38,7 +38,7 @@ import {
   amuxcBlobs,
 } from "../../db/schema/index.js";
 import { ApiError } from "../http-utils.js";
-import { requireActorForTeam, resolveTeamRole } from "./authz.js";
+import { checkAgentOwnership, requireActorForTeam, resolveTeamRole } from "./authz.js";
 import { alignTeamSkillToMarketplace } from "./marketplace.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -190,13 +190,22 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
   }
 
   /**
-   * The three install gates from the design doc:
-   *   - target is the caller's own member actor  → allow
+   * The install gates:
+   *   - target is the caller's own member actor   → allow
+   *   - target is an agent the caller owns        → allow
    *   - target is a visibility='team' agent actor → require team admin
    *   - target is somebody else's member actor    → deny, always
    *
    * The last one is deliberate: an admin owns the team's shared agents, not a
    * teammate's personal setup. "Push a skill onto a person" is not a thing.
+   *
+   * The owner gate exists because a member's own machine is an agent, not a
+   * member actor: sharing or publishing a skill from the desktop installs it
+   * into that machine's skills root, and the install has to be recorded against
+   * the agent that will be asked "what do you have installed". Without this
+   * branch that record could only land on the member, where the agent's own
+   * inventory never looks — the skill then sat on disk, loaded by the runtime,
+   * and missing from the skills column.
    */
   async function assertCanInstallFor(userId: string, teamId: string, targetActorId: string) {
     const callerActorId = await requireActorForTeam(db, userId, teamId);
@@ -225,6 +234,7 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
         "cannot install on behalf of another member — only on yourself or a team agent",
       );
     }
+    if (await checkAgentOwnership(db, userId, targetActorId)) return callerActorId;
     if (agentRow.visibility !== "team") {
       throw new ApiError(
         403,
@@ -869,6 +879,25 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
         throw new ApiError(400, "validation_failed", `unknown version: ${body.version}`);
       }
 
+      // Delete-then-insert rather than ON CONFLICT, for the same reason the
+      // Supabase implementation does it: the unique index coalesces
+      // `workspace_id`, and an expression index cannot be named as a conflict
+      // target here. Drizzle 0.36 does not render an `sql` fragment in
+      // `target` — it emitted the literal identifier `"undefined"`, so the
+      // statement was `on conflict ("actor_id","skill_id","scope","undefined")`
+      // and every install died on `42703 column "undefined" does not exist`.
+      // Nothing caught it because no test had ever executed this method; the
+      // route tests stub the repo, and the daemon logs the failure at warn and
+      // retries forever.
+      await db
+        .delete(teamSkillInstalls)
+        .where(
+          and(
+            eq(teamSkillInstalls.actorId, targetActorId),
+            eq(teamSkillInstalls.skillId, skill.id),
+            eq(teamSkillInstalls.scope, scope),
+          ),
+        );
       const [row] = await (db.insert(teamSkillInstalls) as any)
         .values({
           teamId,
@@ -877,15 +906,6 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
           installedVersion: version,
           scope,
           workspaceId,
-        })
-        .onConflictDoUpdate({
-          target: [
-            teamSkillInstalls.actorId,
-            teamSkillInstalls.skillId,
-            teamSkillInstalls.scope,
-            sql`coalesce(${teamSkillInstalls.workspaceId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
-          ],
-          set: { installedVersion: version, updatedAt: new Date() },
         })
         .returning();
       return mapInstall(row);

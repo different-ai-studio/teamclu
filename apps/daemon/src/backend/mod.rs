@@ -98,7 +98,7 @@ pub struct TeamEnvSecretRow {
 /// needs the metadata too: the frontmatter rewrite that makes a skill legible
 /// to an agent (`when_to_use`, `when_not_to_use`, owner) is fed from these
 /// fields, and the install list carries only versions.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamSkillRow {
     pub slug: String,

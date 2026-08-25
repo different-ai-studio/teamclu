@@ -916,13 +916,27 @@ pub struct TeamSkillInspectResult {
 /// happened to name, so a personal skill sitting at the pack's path was
 /// registered as that team version and auto-follow saw nothing left to do —
 /// content that was never the team's, pinned as the team's, permanently.
+/// Whether an installed pack was laid down for a different team than the one
+/// being reconciled.
+///
+/// An absent id on either side answers `false`: packs written before the field
+/// existed carry none, and "I cannot tell whose this is" is not evidence that it
+/// is somebody else's any more than it is evidence that it is ours.
+fn belongs_to_another_team(origin: &SkillOrigin, team_id: Option<&str>) -> bool {
+    team_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .zip(origin.team_id.as_deref())
+        .is_some_and(|(want, have)| want != have)
+}
+
 #[tauri::command]
 pub fn team_skill_inspect(
     slug: String,
     expected_version: Option<i64>,
     team_id: Option<String>,
 ) -> Result<TeamSkillInspectResult, String> {
-    let _ = (expected_version, team_id);
+    let _ = expected_version;
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
     let target = global_skills_dir()?.join(&slug);
@@ -942,7 +956,25 @@ pub fn team_skill_inspect(
 
     let origin = read_origin(&target);
 
-    if let Some(origin) = origin.as_ref().filter(|o| o.registry != SOURCE_TEAM) {
+    // Another registry's pack, or another *team's*. Both mean the same thing to
+    // every caller — "not ours to touch" — so both answer `foreign`.
+    //
+    // The team half matters because one flat root serves every team the user
+    // belongs to and a slug can only name one directory. Two teams publishing
+    // `deploy-check` therefore contend for `~/.agents/skills/deploy-check`, and
+    // with the team ignored the reconcile could not see the contention: on
+    // differing version numbers it overwrote the other team's bytes in place,
+    // and on matching ones — the common case, since every team's versions start
+    // at 1 — it did nothing at all and left the runtime serving one team's file
+    // as the other team's skill. Reporting it stops auto-follow and puts the
+    // collision on screen, which is not co-existence but is at least the truth.
+    //
+    // An absent `teamId` (packs from before the field existed) is not evidence
+    // of anything and never makes a pack foreign.
+    if let Some(origin) = origin
+        .as_ref()
+        .filter(|o| o.registry != SOURCE_TEAM || belongs_to_another_team(o, team_id.as_deref()))
+    {
         return Ok(TeamSkillInspectResult {
             slug,
             state: "foreign".to_string(),
@@ -1128,10 +1160,14 @@ fn move_to_trash(target: &std::path::Path, slug: &str) -> Result<String, String>
 /// Retire the personal original a skill was shared from.
 ///
 /// Sharing copies the directory into the pack root and leaves the original
-/// where it was, so the slug now exists twice — and the pack root ranks below
-/// nearly every other skills root, meaning the copy the user goes on editing is
-/// the original while publish, dirty detection, and diff all read the pack. One
-/// name, one file is the only version of this that stays comprehensible.
+/// where it was, so the slug now exists twice and the two copies compete. The
+/// pack root (`~/.agents/skills`) is rank 2 — ahead of every root but the
+/// workspace's `.claude/skills` (daemon `skill_dir_specs`, desktop loader
+/// `priorityOrder`) — so unless the original sat in that one root, the pack is
+/// what agents load and what publish, dirty detection and diff all read.
+/// Whichever copy loses, its author goes on editing a file nothing reads, and
+/// nothing tells them so. One name, one file is the only version of this that
+/// stays comprehensible.
 ///
 /// Refuses rather than guesses in three cases: a source that resolves to the
 /// pack itself (nothing to retire, and removing it would delete what was just
@@ -1471,6 +1507,50 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), "body\n").unwrap();
         dir
+    }
+
+    fn origin_for(team: Option<&str>) -> SkillOrigin {
+        SkillOrigin {
+            version: ORIGIN_VERSION,
+            registry: SOURCE_TEAM.to_string(),
+            slug: "deploy-check".into(),
+            installed_version: "3".into(),
+            installed_at: 1,
+            team_id: team.map(str::to_owned),
+            files: None,
+        }
+    }
+
+    /// One flat root serves every team the user belongs to, and a slug names
+    /// exactly one directory — so two teams that both publish `deploy-check`
+    /// contend for the same one. With the team ignored the reconcile could not
+    /// see the contention: on differing version numbers it overwrote the other
+    /// team's bytes, and on matching ones — the common case, every team's
+    /// versions starting at 1 — it did nothing and left the runtime serving one
+    /// team's file as the other team's skill.
+    #[test]
+    fn a_pack_installed_for_another_team_is_not_ours() {
+        assert!(belongs_to_another_team(
+            &origin_for(Some("team-a")),
+            Some("team-b")
+        ));
+        assert!(!belongs_to_another_team(
+            &origin_for(Some("team-a")),
+            Some("team-a")
+        ));
+    }
+
+    /// Neither side knowing is not evidence either way, and guessing "somebody
+    /// else's" would strand every pack written before the field existed in a
+    /// conflict nobody can resolve.
+    #[test]
+    fn an_unrecorded_team_never_makes_a_pack_foreign() {
+        assert!(!belongs_to_another_team(&origin_for(None), Some("team-b")));
+        assert!(!belongs_to_another_team(&origin_for(Some("team-a")), None));
+        assert!(!belongs_to_another_team(
+            &origin_for(Some("team-a")),
+            Some("  ")
+        ));
     }
 
     #[test]

@@ -82,16 +82,24 @@ export const RECONCILE_INTERVAL_MS = 10 * 60 * 1000
  * switching teams makes the other team's packs look like leftovers and deletes
  * them — and packs installed before the id was recorded are never removable at
  * all, because "I cannot tell whose this is" is not evidence that it is mine.
+ *
+ * `alsoWanted` names slugs some *other* ledger still asks for, and only ever
+ * holds removal back. Auto-follow reads the Agent's desired set, while installs
+ * recorded before that was true sit on the member's — so for as long as both
+ * ledgers exist, a pack missing from the Agent's set is not evidence that
+ * anybody stopped wanting it. Planning removal off the Agent's set alone would
+ * empty a machine's team packs on the first tick after the switch.
  */
 export function planReconcile(
   desired: DesiredSkill[],
   onDisk: OnDiskSkill[],
   blocked: ReadonlySet<string>,
   teamId: string,
+  alsoWanted: ReadonlySet<string> = new Set(),
 ): ReconcilePlan {
   const bySlug = new Map(onDisk.map((p) => [p.slug, p]))
   const plan: ReconcilePlan = { install: [], remove: [], blocked: [] }
-  const wanted = new Set<string>()
+  const wanted = new Set<string>(alsoWanted)
 
   for (const skill of desired) {
     if (!skill.installed) continue

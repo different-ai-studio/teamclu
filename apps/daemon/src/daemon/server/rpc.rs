@@ -3,6 +3,32 @@
 
 use super::*;
 
+/// The slugs the inventory's team branch speaks for: rows the registry reports
+/// as installed for this Agent.
+///
+/// This set — not the presence of an `origin.json` — is what makes a directory
+/// under `~/.agents/skills` somebody else's to report. An origin only says the
+/// directory arrived as a package; it says nothing about whether any row will
+/// actually claim it, and two ordinary flows leave packs that none does:
+///
+/// - a ClawHub install (`clawhub_install` stamps its own v1 payload, registry
+///   URL, no team) — the team registry has never heard of it;
+/// - a skill shared from this machine, whose install got recorded against the
+///   member actor rather than the Agent, so the Agent's own row is missing.
+///
+/// Judging by the origin dropped both out of the inventory entirely: skipped by
+/// the personal branch, never emitted by the team branch, invisible in the
+/// skills column while the runtime went on loading them off disk. Judging by
+/// what was actually emitted cannot do that — an unclaimed pack is reported as
+/// the Agent's own, which is the honest reading and, more to the point, is
+/// visible.
+fn claimed_slugs(rows: &[crate::backend::TeamSkillRow]) -> std::collections::BTreeSet<String> {
+    rows.iter()
+        .filter(|row| row.installed)
+        .map(|row| row.slug.clone())
+        .collect()
+}
+
 async fn skill_inventory(
     backend: &dyn crate::backend::Backend,
     team_id: &str,
@@ -14,6 +40,7 @@ async fn skill_inventory(
         .map_err(|e| e.to_string())?;
     let root = crate::runtime::team_skills::team_cloud_skills_dir(team_id);
     let mut items = Vec::new();
+    let claimed = claimed_slugs(&desired);
     for row in desired.into_iter().filter(|row| row.installed) {
         let origin = teamclu_skillpack::read_origin(&root.join(&row.slug));
         let actual_version = origin
@@ -49,9 +76,9 @@ async fn skill_inventory(
                 let Some(slug) = entry.file_name().to_str().map(str::to_owned) else {
                     continue;
                 };
-                // A registry origin means this is desktop/member managed, not an
-                // Agent personal skill. Never merge it into the daemon inventory.
-                if teamclu_skillpack::read_origin(&entry.path()).is_some() {
+                // Already spoken for by the team branch above; reporting it twice
+                // would put the same slug in the list under two ids.
+                if claimed.contains(&slug) {
                     continue;
                 }
                 let read_only = crate::config::is_inherent_skill(&slug);
@@ -97,7 +124,14 @@ fn personal_skill_dir_name(item_id: &str) -> Option<&str> {
     }
 }
 
-fn remove_personal_skill(item_id: &str) -> Result<(), (&'static str, String)> {
+/// `claimed` is the same set the inventory used to decide what this Agent's own
+/// skills are. Passing it here rather than re-deriving one is what keeps the two
+/// in step: anything this refuses must be absent from that list, or the column
+/// grows a row whose delete button can only ever fail.
+fn remove_personal_skill(
+    item_id: &str,
+    claimed: &std::collections::BTreeSet<String>,
+) -> Result<(), (&'static str, String)> {
     let slug = personal_skill_dir_name(item_id)
         .ok_or(("invalid_item", "personal skill id is invalid".into()))?;
     if crate::config::is_inherent_skill(slug) {
@@ -119,11 +153,8 @@ fn remove_personal_skill(item_id: &str) -> Result<(), (&'static str, String)> {
             "personal skill id escapes the global skill root".into(),
         ));
     }
-    if teamclu_skillpack::read_origin(&path).is_some() {
-        return Err((
-            "not_personal_skill",
-            "team or registry skills require uninstall".into(),
-        ));
+    if claimed.contains(slug) {
+        return Err(("not_personal_skill", "team skills require uninstall".into()));
     }
     match std::fs::remove_dir_all(&path) {
         Ok(()) => Ok(()),
@@ -624,7 +655,15 @@ impl DaemonServer {
                     .await;
                 }
                 (AgentCapabilityAction::RemovePersonalSkill, AgentCapabilityKind::AgentSkill) => {
-                    remove_personal_skill(&management.item_id)?;
+                    // Fetched rather than assumed: "is this the Agent's own?" is
+                    // the registry's answer, and it has to be the same answer the
+                    // list this delete came from was built on.
+                    let rows = ctx
+                        .backend
+                        .team_skills(&team_id)
+                        .await
+                        .map_err(|e| ("inventory_failed", e.to_string()))?;
+                    remove_personal_skill(&management.item_id, &claimed_slugs(&rows))?;
                 }
                 (AgentCapabilityAction::InstallTeamItem, AgentCapabilityKind::AgentMcp) => {
                     ctx.backend
@@ -1660,7 +1699,52 @@ impl DaemonServer {
 
 #[cfg(test)]
 mod agent_management_tests {
-    use super::{mcp_inventory, personal_skill_dir_name};
+    use super::{claimed_slugs, mcp_inventory, personal_skill_dir_name, remove_personal_skill};
+    use crate::backend::TeamSkillRow;
+    use std::collections::BTreeSet;
+
+    fn row(slug: &str, installed: bool) -> TeamSkillRow {
+        TeamSkillRow {
+            slug: slug.to_owned(),
+            installed,
+            ..Default::default()
+        }
+    }
+
+    /// Only an *installed* row speaks for a slug. A skill the team publishes but
+    /// this Agent never installed leaves any same-named directory on disk the
+    /// Agent's own — the team branch skips that row, so the personal branch has
+    /// to report it or nothing will.
+    #[test]
+    fn only_installed_rows_claim_a_slug() {
+        let claimed = claimed_slugs(&[row("installed-one", true), row("offered-only", false)]);
+        assert!(claimed.contains("installed-one"));
+        assert!(!claimed.contains("offered-only"));
+    }
+
+    /// The pack the customer lost: shared from this machine, so it carries a
+    /// `registry: "team"` origin, but the install was recorded against the member
+    /// actor and no row of the Agent's claims it. Judging by the origin made it
+    /// vanish; judging by the claim keeps it visible as the Agent's own.
+    #[test]
+    fn an_unclaimed_pack_stays_the_agents_own_whatever_its_origin_says() {
+        let claimed = claimed_slugs(&[row("something-else", true)]);
+        assert!(!claimed.contains("spr-investigate-auto"));
+    }
+
+    /// Delete has to refuse exactly what the list withheld, and nothing more.
+    #[test]
+    fn remove_refuses_only_the_slugs_the_team_branch_reported() {
+        let claimed: BTreeSet<String> = ["team-owned".to_owned()].into_iter().collect();
+
+        let refused = remove_personal_skill("personal:team-owned", &claimed);
+        assert_eq!(refused.unwrap_err().0, "not_personal_skill");
+
+        // Unclaimed: allowed past the guard. It fails later on a missing
+        // directory, which is a different, honest error.
+        let allowed = remove_personal_skill("personal:unclaimed-pack", &claimed);
+        assert!(!matches!(allowed, Err(("not_personal_skill", _))));
+    }
 
     #[test]
     fn personal_skill_ids_address_exactly_one_directory() {

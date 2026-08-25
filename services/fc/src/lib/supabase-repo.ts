@@ -3593,7 +3593,7 @@ export function createSupabaseBusinessRepository(options) {
 
       const { data: agentRow, error: agErr } = await supabase
         .from("agents")
-        .select("visibility")
+        .select("visibility, owner_member_id")
         .eq("id", targetActorId)
         .maybeSingle();
       if (agErr) throw agErr;
@@ -3603,6 +3603,16 @@ export function createSupabaseBusinessRepository(options) {
           "forbidden",
           "cannot install on behalf of another member — only on yourself or a team agent",
         );
+      }
+      // An agent you own is yours to install on, personal or not. A member's own
+      // machine is an agent, not a member actor, and it is that actor the daemon
+      // answers "what do I have installed" about — so sharing or publishing a
+      // skill from the desktop has to be recordable against it. Without this the
+      // record could only land on the member, where the machine's own inventory
+      // never looks, and the skill went missing from the skills column while the
+      // runtime went on loading it off disk.
+      if (agentRow.owner_member_id && agentRow.owner_member_id === callerActorId) {
+        return callerActorId;
       }
       if (agentRow.visibility !== "team") {
         throw new ApiError(

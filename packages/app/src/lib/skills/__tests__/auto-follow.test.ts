@@ -66,6 +66,40 @@ describe('planReconcile', () => {
     expect(plan.install).toEqual([])
   })
 
+  test('holds removal back for a pack the other ledger still wants', () => {
+    // Auto-follow reads the Agent's desired set, but installs recorded before
+    // that was true sit on the member's. A pack missing from the Agent's set is
+    // therefore not evidence anybody stopped wanting it — planning removal off
+    // the Agent's set alone emptied a machine's team packs on the first tick
+    // after the switch.
+    const plan = planReconcile(
+      [],
+      [pack('deploy-check', '4')],
+      new Set(),
+      TEAM,
+      new Set(['deploy-check']),
+    )
+    expect(plan.remove).toEqual([])
+  })
+
+  test('still removes a pack neither ledger asks for', () => {
+    const plan = planReconcile(
+      [],
+      [pack('deploy-check', '4')],
+      new Set(),
+      TEAM,
+      new Set(['something-else']),
+    )
+    expect(plan.remove).toEqual(['deploy-check'])
+  })
+
+  test('the other ledger holds removal back without ever forcing an install', () => {
+    // `alsoWanted` is a removal veto, not a desired set: a slug only the member
+    // still wants must not start being downloaded onto the Agent's disk.
+    const plan = planReconcile([], [], new Set(), TEAM, new Set(['deploy-check']))
+    expect(plan.install).toEqual([])
+  })
+
   test('never removes another team’s pack', () => {
     // One flat directory serves every team the user belongs to. Reconciling for
     // team B must not read team A's packs as leftovers — that turned every team
