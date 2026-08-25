@@ -1431,7 +1431,6 @@ impl SessionManager {
         }
         true
     }
-
 }
 
 /// One message on its way into a session. A struct rather than a dozen

@@ -295,8 +295,7 @@ impl ChannelManager {
                     None => &running.wecom[0],
                 };
                 let (kind, id) = parse_send_target(target)?;
-                let media: Option<(Vec<u8>, String)> =
-                    media.map(|m| (m.bytes, m.filename));
+                let media: Option<(Vec<u8>, String)> = media.map(|m| (m.bytes, m.filename));
                 let text = message.unwrap_or("");
                 let result = match kind {
                     "user" => g.send_to_user_with_optional_media(id, text, media).await,
@@ -323,7 +322,9 @@ impl ChannelManager {
                 result.map_err(|e| anyhow::anyhow!("seatalk send: {e}"))
             }
             "feishu" | "discord" | "kook" | "wechat" | "email" => {
-                anyhow::bail!("{channel}: send not yet implemented in v2; only WeCom/SeaTalk are wired")
+                anyhow::bail!(
+                    "{channel}: send not yet implemented in v2; only WeCom/SeaTalk are wired"
+                )
             }
             other => anyhow::bail!("unknown channel: {other}"),
         }
@@ -684,9 +685,13 @@ impl ChannelManager {
         gw.set_config(cfg).await;
         // SeaTalk gains dedup, commands, attachments-as-text and a per-channel
         // turn timeout from this; it had none of them on the inline path.
-        gw.use_core_pipeline(self.core_sink_for(Arc::new(
-            gw.as_driver().await.with_thread_sessions(dm_thread, group_thread),
-        )))
+        gw.use_core_pipeline(
+            self.core_sink_for(Arc::new(
+                gw.as_driver()
+                    .await
+                    .with_thread_sessions(dm_thread, group_thread),
+            )),
+        )
         .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)

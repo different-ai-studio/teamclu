@@ -158,5 +158,4 @@ mod tests {
         assert!(!is_command("what about /stop"));
         assert!(!is_command(""));
     }
-
 }
