@@ -9,7 +9,7 @@ pub mod path_validator;
 pub mod scanner;
 pub mod state;
 
-pub use engine::{tick, tick_with_progress};
+pub use engine::tick_with_progress;
 
 use serde::{Deserialize, Serialize};
 
@@ -51,18 +51,14 @@ pub struct SyncProgress {
 ///
 /// Called from inside the blob transfer loops, so it must be cheap and must not
 /// block: the dispatcher's implementation takes a std mutex for the length of a
-/// map insert and nothing else. `ProgressSink::none()` is the no-op used by
-/// every caller that does not display progress (tests, the CLI).
+/// map insert and nothing else. A caller with nothing to display passes
+/// `ProgressSink::new(|_| {})`.
 #[derive(Clone)]
 pub struct ProgressSink(std::sync::Arc<dyn Fn(SyncProgress) + Send + Sync>);
 
 impl ProgressSink {
     pub fn new(f: impl Fn(SyncProgress) + Send + Sync + 'static) -> Self {
         Self(std::sync::Arc::new(f))
-    }
-
-    pub fn none() -> Self {
-        Self(std::sync::Arc::new(|_| {}))
     }
 
     pub fn report(&self, phase: SyncPhase, done: u32, total: u32) {

@@ -13,7 +13,7 @@ use futures::StreamExt;
 
 use super::{
     conflict::write_conflict_sidecar,
-    crypto::{decrypt_blob, encrypt_blob, encrypt_blob_compressed, sha256_hex},
+    crypto::{decrypt_blob, is_encrypted_blob, sha256_hex},
     error::SyncError,
     fc_client::{
         BatchItemOutcome, CompleteResult, DeleteBatchItem, FcClient, ManifestItem, PrepareBatchItem,
@@ -47,28 +47,8 @@ pub struct TickResult {
     pub failed: u32,
 }
 
-/// Run a full sync tick: PULL then PUSH (spec §4.3).
-///
-/// Reports nothing. [`tick_with_progress`] is the same tick with a progress
-/// sink attached — kept as a separate entry point so every existing caller
-/// (tests, CLI, timer) stays a one-liner.
-pub async fn tick(
-    content_root: &str,
-    team_id: &str,
-    team_secret: &str,
-    fc: &FcClient,
-) -> Result<TickResult, SyncError> {
-    tick_with_progress(
-        content_root,
-        team_id,
-        team_secret,
-        fc,
-        &ProgressSink::none(),
-    )
-    .await
-}
-
-/// [`tick`], reporting how far it has got as it goes.
+/// Run a full sync tick: PULL then PUSH (spec §4.3), reporting how far it has
+/// got as it goes.
 ///
 /// The totals are known before the work starts — the manifest walk produces the
 /// pull list, the scan produces the push list — so every phase after `Checking`
@@ -76,12 +56,21 @@ pub async fn tick(
 pub async fn tick_with_progress(
     content_root: &str,
     team_id: &str,
-    team_secret: &str,
+    team_secret: Option<&str>,
     fc: &FcClient,
     progress: &ProgressSink,
 ) -> Result<TickResult, SyncError> {
-    let key = crate::team_shared_env::derive_key(team_secret)
-        .map_err(|e| SyncError::Crypto(e.to_string()))?;
+    // Knowledge content is pushed as plaintext, so a key is no longer required
+    // to sync. It is still derived when the team has a secret, because blobs
+    // written before that change are AES-GCM envelopes and are only readable
+    // with it.
+    let key: Option<[u8; 32]> = match team_secret {
+        Some(secret) => Some(
+            crate::team_shared_env::derive_key(secret)
+                .map_err(|e| SyncError::Crypto(e.to_string()))?,
+        ),
+        None => None,
+    };
     // content_root is now a parameter (the global team dir).
     let mut state = LocalSyncState::load_at(team_id).map_err(SyncError::State)?;
 
@@ -124,6 +113,7 @@ pub async fn tick_with_progress(
     // dirty-vs-newer files) here — this mutates `state`/disk and must stay
     // sequential. The actual blob downloads are then batched by `pull_phase`.
     let mut pull_items: Vec<PullItem> = Vec::new();
+    // Reassigned below when quarantined files are prepended.
 
     for item in &all_items {
         // `.mcp/` and `_secrets/` moved to the Cloud API. A team synced before the
@@ -206,22 +196,56 @@ pub async fn tick_with_progress(
         });
     }
 
+    // Everything the last ticks could not apply, retried before anything else.
+    // The manifest is queried by `afterSeq`, so a file the cursor has already
+    // passed is never re-listed — this list is the only thing that brings it
+    // back, and it is why the cursor is now free to move past a bad file.
+    let already_listed: std::collections::HashSet<&str> =
+        pull_items.iter().map(|i| i.path.as_str()).collect();
+    let mut retries: Vec<PullItem> = state
+        .quarantined
+        .iter()
+        .filter(|(path, _)| !already_listed.contains(path.as_str()))
+        .map(|(path, q)| PullItem {
+            path: path.clone(),
+            cipher_hash: q.cipher_hash.clone(),
+            version: q.version,
+        })
+        .collect();
+    retries.sort_by(|a, b| a.path.cmp(&b.path));
+    if !retries.is_empty() {
+        tracing::info!(
+            team_id,
+            count = retries.len(),
+            "retrying quarantined pulls before this tick's manifest items"
+        );
+        retries.extend(pull_items);
+        pull_items = retries;
+    }
+
     // Batched download (with per-file fallback on a pre-batch FC).
     let expected_pulls = pull_items.len();
     progress.report(SyncPhase::Pulling, 0, expected_pulls as u32);
-    let pulled = pull_phase(content_root, &key, fc, &mut state, pull_items, progress).await;
+    let pulled = pull_phase(
+        content_root,
+        key.as_ref(),
+        fc,
+        &mut state,
+        pull_items,
+        progress,
+    )
+    .await;
     let pull_failures = expected_pulls.saturating_sub(pulled as usize);
 
-    let advanced = next_high_water(state.last_server_seq, snapshot_seq, pull_failures);
-    if advanced == state.last_server_seq && pull_failures > 0 {
+    state.last_server_seq = next_high_water(state.last_server_seq, snapshot_seq);
+    if !state.quarantined.is_empty() {
         tracing::warn!(
             team_id,
-            failed = pull_failures,
-            held_at = state.last_server_seq,
-            "holding sync cursor: some files could not be pulled; they will be retried next tick"
+            quarantined = state.quarantined.len(),
+            cursor = state.last_server_seq,
+            "some files could not be applied; the cursor moved on and they are retried every tick"
         );
     }
-    state.last_server_seq = advanced;
 
     // ── PUSH ─────────────────────────────────────────────────────────────────
     // Re-scan (the tree may have changed during PULL) to pick up current
@@ -270,7 +294,7 @@ pub async fn tick_with_progress(
     let push_stats = push_phase(
         content_root,
         team_id,
-        &key,
+        key.as_ref(),
         fc,
         &mut state,
         all_dirty,
@@ -314,8 +338,12 @@ pub async fn tick_with_progress(
         pulled,
         pushed,
         conflicts: conflict_count,
-        failed: pull_failures as u32,
+        // What is STUCK, not what missed this tick: a quarantined file stays
+        // counted until it finally lands, which is the number a person needs to
+        // see. `pull_failures` is only interesting to the log line above.
+        failed: state.quarantined.len() as u32,
     };
+    let _ = pull_failures;
 
     tracing::info!(
         team_id,
@@ -330,6 +358,34 @@ pub async fn tick_with_progress(
 }
 
 // ── Batch phase plumbing ───────────────────────────────────────────────────────
+
+/// A blob this device could not turn into a file on disk.
+struct FailedPull {
+    path: String,
+    cipher_hash: String,
+    version: i32,
+    error: SyncError,
+}
+
+/// Turn a downloaded blob into file bytes.
+///
+/// Knowledge content is uploaded as plaintext, so most blobs need nothing done
+/// to them. Anything carrying the AMXC envelope was written before that change
+/// and still needs the team key — which this device may simply not have, since
+/// the key is pasted by hand and nothing ever checked that two members pasted
+/// the same one. That case is an error, and the caller quarantines the file
+/// rather than wedging the whole sync on it.
+fn decode_pulled_blob(blob: Vec<u8>, key: Option<&[u8; 32]>) -> Result<Vec<u8>, SyncError> {
+    if !is_encrypted_blob(&blob) {
+        return Ok(blob);
+    }
+    let key = key.ok_or_else(|| {
+        SyncError::Crypto(
+            "blob is encrypted but this device has no team secret to decrypt it".to_string(),
+        )
+    })?;
+    decrypt_blob(&blob, key).map_err(SyncError::Crypto)
+}
 
 /// Reports one unit of transfer progress when it goes out of scope.
 ///
@@ -424,42 +480,26 @@ fn record_item_error(stats: &mut PhaseStats, label: &str, path: &str, status: u1
     }
 }
 
-/// Whether to write compressed (v2) blobs on upload. OFF by default — flip on
-/// (env `AMUXD_OSS_COMPRESS=1`) only after the whole fleet runs a v2-read-capable
-/// daemon (this build reads v2). Old daemons reject version-2 blobs, so writing
-/// must not precede fleet-wide read support. Cached once at first use.
-fn compress_uploads() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        matches!(
-            std::env::var("AMUXD_OSS_COMPRESS").ok().as_deref(),
-            Some("1") | Some("true")
-        )
-    })
-}
-
 /// Encrypt a blob for the OSS upload path, compressing (v2) when the gate is on.
-fn encrypt_blob_for_upload(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    if compress_uploads() {
-        encrypt_blob_compressed(plaintext, key)
-    } else {
-        encrypt_blob(plaintext, key)
-    }
-}
-
-/// Encrypt + hash one local file in preparation for upload (no network).
+/// Read + hash one local file in preparation for upload (no network).
+///
+/// The bytes go up as they are on disk. Knowledge content used to be wrapped in
+/// an AES-GCM envelope keyed by the team secret, which bought nothing — chat
+/// messages, skill packages and MCP config all live server-side in the clear —
+/// while a secret typed differently by two members meant one of them could
+/// never read the other's documents, silently and permanently.
+///
+/// `cipher_hash` keeps its name: on the wire it is just "the hash of the blob",
+/// which for a plaintext blob is the hash of the plaintext.
 fn prepare_upload(
     content_root: &str,
     rel_path: &str,
-    key: &[u8; 32],
     state: &LocalSyncState,
 ) -> Result<PreparedUpload, SyncError> {
     let abs_path = Path::new(content_root).join(rel_path);
-    let plaintext = std::fs::read(&abs_path).map_err(|e| SyncError::Io(e.to_string()))?;
-    let plain_hash = sha256_hex(&plaintext);
-    let blob = encrypt_blob_for_upload(&plaintext, key).map_err(SyncError::Crypto)?;
-    let cipher_hash = sha256_hex(&blob);
+    let blob = std::fs::read(&abs_path).map_err(|e| SyncError::Io(e.to_string()))?;
+    let plain_hash = sha256_hex(&blob);
+    let cipher_hash = plain_hash.clone();
     let parent_version = state
         .files
         .get(rel_path)
@@ -478,26 +518,30 @@ fn prepare_upload(
 
 /// Batched PULL: sign N GET URLs in one FC round-trip, then fetch + decrypt +
 /// write blobs concurrently straight from OSS. Returns the number pulled.
-/// Where the sync cursor should sit after a pull.
+/// Where the sync cursor should sit after a pull: at the snapshot the manifest
+/// reported, whenever it reported one.
 ///
-/// Advance only when the cursor was fully drained (`snapshot_seq` is `Some`)
-/// **and** every listed file landed. Advancing past a failed pull loses that
-/// file permanently: the next tick asks for `changeSeq > last_server_seq`, so
-/// the server never lists it again, `needs_download` never gets to re-evaluate
-/// it, and nothing retries — pull failures are not counted in `deferred`, the
-/// tick still returns `Ok`, and only a `warn!` records it. Holding the mark
-/// back costs one extra version comparison per already-synced file on the next
-/// tick (`needs_download` skips them; nothing is re-downloaded).
-fn next_high_water(current: i64, snapshot_seq: Option<i64>, pull_failures: usize) -> i64 {
+/// This used to hold the cursor back whenever ANY file failed to land, so that
+/// the next manifest request would list it again. The cost was catastrophic and
+/// silent: one undecodable blob — a file encrypted with a key this device does
+/// not have — froze the cursor forever, and every document created after it
+/// stopped arriving for that member, with no error anywhere (the tick returns
+/// `Ok`, and only a `warn!` recorded it).
+///
+/// The retry now lives in `state.quarantined` instead, which is re-fetched by
+/// path on every tick. That keeps the "never lose a file" property — dropping
+/// the file outright would lose it, since the manifest is queried by
+/// `afterSeq` — without letting one bad file block everyone else's work.
+fn next_high_water(current: i64, snapshot_seq: Option<i64>) -> i64 {
     match snapshot_seq {
-        Some(seq) if pull_failures == 0 => seq,
-        _ => current,
+        Some(seq) => seq,
+        None => current,
     }
 }
 
 async fn pull_phase(
     content_root: &str,
-    key: &[u8; 32],
+    key: Option<&[u8; 32]>,
     fc: &FcClient,
     state: &mut LocalSyncState,
     items: Vec<PullItem>,
@@ -507,7 +551,7 @@ async fn pull_phase(
         return 0;
     }
     let team_id = state.team_id.clone();
-    let key_copy = *key;
+    let key_copy = key.copied();
     let mut pulled = 0u32;
     let total = items.len() as u32;
     // Counts every file the transfer loop finishes, including the ones that
@@ -534,7 +578,10 @@ async fn pull_phase(
                     .await
                     {
                         Ok(_) => pulled += 1,
-                        Err(e) => tracing::warn!("[oss_sync] pull {}: {e}", it.path),
+                        Err(e) => {
+                            tracing::warn!("[oss_sync] pull {}: {e}", it.path);
+                            state.quarantine(&it.path, &it.cipher_hash, it.version, e.to_string());
+                        }
                     }
                     progress.report(
                         SyncPhase::Pulling,
@@ -563,12 +610,18 @@ async fn pull_phase(
                 )),
                 BatchItemOutcome::Conflict { .. } => {}
                 BatchItemOutcome::Err { status, message } => {
-                    tracing::warn!("[oss_sync] download {} HTTP {status}: {message}", it.path)
+                    tracing::warn!("[oss_sync] download {} HTTP {status}: {message}", it.path);
+                    state.quarantine(
+                        &it.path,
+                        &it.cipher_hash,
+                        it.version,
+                        format!("download HTTP {status}: {message}"),
+                    );
                 }
             }
         }
 
-        let writes: Vec<Result<WriteResult, SyncError>> = futures::stream::iter(
+        let writes: Vec<Result<WriteResult, FailedPull>> = futures::stream::iter(
             targets
                 .into_iter()
                 .map(|(path, cipher_hash, version, url)| {
@@ -580,19 +633,28 @@ async fn pull_phase(
                             counter: transferred,
                             total,
                         };
-                        let blob = fc.get_blob(&url, &cipher_hash).await?;
+                        // Failures carry the path/hash/version so the caller can
+                        // quarantine THIS file rather than stalling everyone.
+                        let fail = |e: SyncError| FailedPull {
+                            path: path.clone(),
+                            cipher_hash: cipher_hash.clone(),
+                            version,
+                            error: e,
+                        };
+                        let blob = fc.get_blob(&url, &cipher_hash).await.map_err(&fail)?;
                         let plaintext =
-                            decrypt_blob(&blob, &key_copy).map_err(SyncError::Crypto)?;
+                            decode_pulled_blob(blob, key_copy.as_ref()).map_err(&fail)?;
                         let abs = Path::new(content_root).join(&path);
                         if let Some(parent) = abs.parent() {
                             tokio::fs::create_dir_all(parent)
                                 .await
-                                .map_err(|e| SyncError::Io(e.to_string()))?;
+                                .map_err(|e| fail(SyncError::Io(e.to_string())))?;
                         }
                         tokio::fs::write(&abs, &plaintext)
                             .await
-                            .map_err(|e| SyncError::Io(e.to_string()))?;
-                        let meta = std::fs::metadata(&abs).map_err(SyncError::from)?;
+                            .map_err(|e| fail(SyncError::Io(e.to_string())))?;
+                        let meta = std::fs::metadata(&abs)
+                            .map_err(|e| fail(SyncError::Io(e.to_string())))?;
                         let mtime = meta
                             .modified()
                             .ok()
@@ -631,7 +693,10 @@ async fn pull_phase(
                     );
                     pulled += 1;
                 }
-                Err(e) => tracing::warn!("[oss_sync] pull transfer: {e}"),
+                Err(f) => {
+                    tracing::warn!("[oss_sync] pull {}: {}", f.path, f.error);
+                    state.quarantine(&f.path, &f.cipher_hash, f.version, f.error.to_string());
+                }
             }
         }
     }
@@ -643,7 +708,9 @@ async fn pull_phase(
 async fn push_phase(
     content_root: &str,
     team_id: &str,
-    key: &[u8; 32],
+    // `key` is only reachable through the conflict path, which pulls the remote
+    // version that won — uploads themselves no longer encrypt anything.
+    key: Option<&[u8; 32]>,
     fc: &FcClient,
     state: &mut LocalSyncState,
     paths: Vec<String>,
@@ -663,7 +730,7 @@ async fn push_phase(
         // Stage 0: encrypt + hash. Unreadable files are skipped (stay dirty).
         let mut prepared: Vec<PreparedUpload> = Vec::new();
         for p in chunk {
-            match prepare_upload(content_root, p, key, state) {
+            match prepare_upload(content_root, p, state) {
                 Ok(pu) => prepared.push(pu),
                 Err(e) => tracing::warn!("[oss_sync] encrypt {p}: {e}"),
             }
@@ -909,7 +976,7 @@ async fn handle_push_conflict(
     path: &str,
     remote_version: Option<i32>,
     remote_cipher_hash: Option<String>,
-    key: &[u8; 32],
+    key: Option<&[u8; 32]>,
     fc: &FcClient,
     state: &mut LocalSyncState,
     stats: &mut PhaseStats,
@@ -937,12 +1004,12 @@ async fn apply_push_per_file(
     content_root: &str,
     path: &str,
     team_id: &str,
-    key: &[u8; 32],
+    key: Option<&[u8; 32]>,
     fc: &FcClient,
     state: &mut LocalSyncState,
     stats: &mut PhaseStats,
 ) {
-    match upload_one_retrying(content_root, path, team_id, key, fc, state).await {
+    match upload_one_retrying(content_root, path, team_id, fc, state).await {
         Ok(_) => stats.pushed += 1,
         Err(SyncError::Conflict {
             remote_version,
@@ -1086,14 +1153,14 @@ async fn delete_phase(
     stats
 }
 
-/// Download a remote blob, verify cipher_hash, decrypt, write to disk,
+/// Download a remote blob, decode it (envelope or plaintext), write it to disk,
 /// and update state to non-dirty.
 pub async fn download_and_write(
     content_root: &str,
     rel_path: &str,
     remote_cipher_hash: &str,
     version: i32,
-    key: &[u8; 32],
+    key: Option<&[u8; 32]>,
     fc: &FcClient,
     state: &mut LocalSyncState,
 ) -> Result<(), SyncError> {
@@ -1101,7 +1168,7 @@ pub async fn download_and_write(
     let dl = fc.download(&team_id, remote_cipher_hash).await?;
     let blob = fc.get_blob(&dl.download_url, remote_cipher_hash).await?;
 
-    let plaintext = decrypt_blob(&blob, key).map_err(SyncError::Crypto)?;
+    let plaintext = decode_pulled_blob(blob, key)?;
     let plain_hash = sha256_hex(&plaintext);
 
     let abs_path = Path::new(content_root).join(rel_path);
@@ -1137,23 +1204,20 @@ pub async fn download_and_write(
     Ok(())
 }
 
-/// Encrypt and upload one dirty local file.
+/// Upload one dirty local file, as-is.
 async fn upload_one(
     content_root: &str,
     rel_path: &str,
     team_id: &str,
-    key: &[u8; 32],
     fc: &FcClient,
     state: &mut LocalSyncState,
 ) -> Result<(), SyncError> {
     let abs_path = Path::new(content_root).join(rel_path);
-    let plaintext = tokio::fs::read(&abs_path)
+    let blob = tokio::fs::read(&abs_path)
         .await
         .map_err(|e| SyncError::Io(e.to_string()))?;
-    let plain_hash = sha256_hex(&plaintext);
-
-    let blob = encrypt_blob_for_upload(&plaintext, key).map_err(SyncError::Crypto)?;
-    let remote_cipher_hash = sha256_hex(&blob);
+    let plain_hash = sha256_hex(&blob);
+    let remote_cipher_hash = plain_hash.clone();
 
     let parent_version = state
         .files
@@ -1230,13 +1294,12 @@ async fn upload_one_retrying(
     content_root: &str,
     rel_path: &str,
     team_id: &str,
-    key: &[u8; 32],
     fc: &FcClient,
     state: &mut LocalSyncState,
 ) -> Result<(), SyncError> {
     let mut attempt = 0u32;
     loop {
-        match upload_one(content_root, rel_path, team_id, key, fc, state).await {
+        match upload_one(content_root, rel_path, team_id, fc, state).await {
             Err(e) if is_transient(&e) && attempt < MAX_TRANSIENT_RETRIES => {
                 attempt += 1;
                 backoff_sleep(attempt).await;
@@ -1317,6 +1380,36 @@ mod tests {
     /// guard is what still counts it — without that a pull where two of ten
     /// files 404 would sit at 8/10 and read as hung rather than finished.
     #[test]
+    fn a_pulled_blob_is_decoded_as_plaintext_or_envelope() {
+        let key = [7u8; 32];
+
+        // What every new write looks like: no envelope, no key needed.
+        let plain = b"# note\n\njust text".to_vec();
+        assert_eq!(
+            decode_pulled_blob(plain.clone(), None).unwrap(),
+            plain,
+            "plaintext must pass through untouched, with or without a key"
+        );
+        assert_eq!(
+            decode_pulled_blob(plain.clone(), Some(&key)).unwrap(),
+            plain
+        );
+
+        // What is already in object storage: an envelope, readable with the key.
+        let envelope = crate::sync::oss::crypto::encrypt_blob(&plain, &key).unwrap();
+        assert_eq!(
+            decode_pulled_blob(envelope.clone(), Some(&key)).unwrap(),
+            plain
+        );
+
+        // The case that froze whole teams: an envelope this device cannot open.
+        // It has to be an error so the file is quarantined and RETRIED, not
+        // written to disk as ciphertext.
+        assert!(decode_pulled_blob(envelope.clone(), None).is_err());
+        assert!(decode_pulled_blob(envelope, Some(&[1u8; 32])).is_err());
+    }
+
+    #[test]
     fn a_failed_transfer_still_advances_the_bar() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = {
@@ -1345,6 +1438,7 @@ mod tests {
 
     fn empty_state() -> LocalSyncState {
         LocalSyncState {
+            quarantined: Default::default(),
             schema_version: 1,
             team_id: "t".into(),
             last_server_seq: 0,
@@ -1412,15 +1506,11 @@ mod tests {
     }
 
     #[test]
-    fn high_water_advances_only_on_a_fully_successful_pull() {
+    fn high_water_advances_past_files_it_could_not_apply() {
         // Clean drain → advance.
-        assert_eq!(next_high_water(10, Some(42), 0), 42);
-        // One file failed → hold, so the next manifest request re-lists it.
-        assert_eq!(next_high_water(10, Some(42), 1), 10);
+        assert_eq!(next_high_water(10, Some(42)), 42);
         // Manifest never produced a snapshot → nothing to advance to.
-        assert_eq!(next_high_water(10, None, 0), 10);
-        // Never regress, even if the server hands back an older snapshot.
-        assert_eq!(next_high_water(10, Some(42), 3), 10);
+        assert_eq!(next_high_water(10, None), 10);
     }
 
     #[test]
@@ -1553,13 +1643,15 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("knowledge")).unwrap();
         std::fs::write(dir.path().join("knowledge/x.md"), b"hello world\n").unwrap();
 
-        let key = [7u8; 32];
         let mut state = empty_state();
 
-        let pu = prepare_upload(root, "knowledge/x.md", &key, &state).unwrap();
+        let pu = prepare_upload(root, "knowledge/x.md", &state).unwrap();
         assert_eq!(pu.parent_version, 0, "new file → parentVersion 0");
-        assert!(!pu.blob.is_empty(), "blob is the encrypted ciphertext");
-        assert_ne!(pu.cipher_hash, pu.plain_hash, "cipher hash != plain hash");
+        // Knowledge goes up as it is on disk — no envelope, so the two hashes
+        // are the same thing said twice.
+        assert_eq!(pu.blob, b"hello world\n");
+        assert_eq!(pu.cipher_hash, pu.plain_hash);
+        assert_eq!(pu.cipher_hash, sha256_hex(b"hello world\n"));
 
         let c = CompleteResult {
             version: 1,
@@ -1656,7 +1748,7 @@ mod tests {
         // The tombstoned-but-present entry is selected for push (the all_dirty
         // readd filter), and it CAS-es against v2.
         assert!(state.files["knowledge/x.md"].deleted_local);
-        let pu = prepare_upload(root, "knowledge/x.md", &[9u8; 32], &state).unwrap();
+        let pu = prepare_upload(root, "knowledge/x.md", &state).unwrap();
         assert_eq!(
             pu.parent_version, 2,
             "re-add must CAS against the tombstone version, not 0"

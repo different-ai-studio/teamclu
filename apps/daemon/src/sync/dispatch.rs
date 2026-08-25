@@ -181,32 +181,28 @@ impl SyncDispatcher {
         }
         use crate::sync::oss;
 
-        // The precondition is the team secret, not a cloud flag.
+        // No precondition left to check here.
         //
-        // This used to ask FC for the team's `share_mode` and do nothing unless
-        // it read `"oss"`. Nothing in the product sets that flag any more — no
-        // client ships a call to `POST /v1/teams/:id/share-mode` — so every team
-        // created since reads as "off" and never synced, silently, with a
-        // successful-looking status. The secret is the honest precondition: it
-        // is what encrypts and decrypts the content, a team without one cannot
-        // sync no matter what any flag says, and one with it always can.
-        let Ok(secret) = self.secrets.resolve_team_secret(team_id, None) else {
-            // Not an error: a team that never set up sharing has nothing to
-            // sync, and a red banner for that is noise, not information.
-            return Ok(SyncStatus {
-                skipped: true,
-                last_sync_at: now_rfc3339(),
-                ..Default::default()
-            });
-        };
+        // `share_mode` went first (nothing in the product ever set it), and the
+        // team secret follows it now that knowledge content is uploaded as
+        // plaintext: a team without a secret syncs fine, and one with a secret
+        // additionally gets to read the blobs written before that change. The
+        // secret is therefore fetched, not required.
+        let secret = self.secrets.resolve_team_secret(team_id, None).ok();
 
         let content_root_dir = crate::config::global_team_store::sync_content_root(team_id);
         let jwt = self.oss_jwt().await?;
         let fc = oss::fc_client::FcClient::new(self.fc_endpoint()?, jwt);
         let content_root = content_root_dir.to_string_lossy().to_string();
-        let r = oss::tick_with_progress(&content_root, team_id, &secret, &fc, progress)
-            .await
-            .map_err(|e| e.to_string())?;
+        let r = oss::tick_with_progress(
+            &content_root,
+            team_id,
+            secret.as_deref(),
+            &fc,
+            progress,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         Ok(SyncStatus {
             mode: Some("oss".into()),
             last_sync_at: now_rfc3339(),
