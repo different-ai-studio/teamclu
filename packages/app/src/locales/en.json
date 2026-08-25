@@ -853,21 +853,11 @@
     "openAgentSettings": "Open agent settings"
   },
   "onboarding": {
-    "model": {
-      "title": "Connect a model",
-      "subtitle": "Pick a provider and paste its API key. You can add more later in Settings.",
-      "getKey": "Get an API key",
-      "keyPlaceholder": "Paste the API key",
-      "connect": "Connect",
-      "saving": "Saving…",
-      "saved": "Saved",
-      "failed": "Could not save that key. Check it and try again.",
-      "skip": "Skip for now"
-    },
     "setup": {
       "title": "Setting up your agent",
       "developerSubtitle": "Pick the runtime this machine should use.",
-      "guidedSubtitle": "This only takes a moment.",
+      "guidedSubtitle": "Downloading and installing the agent runtime for this machine.",
+      "guidedReadySubtitle": "Everything this machine needs is already here.",
       "runtime": "Agent runtime",
       "install": "Install",
       "upgrade": "Upgrade",
@@ -882,20 +872,28 @@
       "working": "Setting up…",
       "scanning": "Looking for agent runtimes on this machine…",
       "scanningSlow": "First run — this can take a few seconds.",
+      "probing": "Checking which download source is fastest…",
+      "routeLine": "Downloading from {{route}}",
+      "routeOfficial": "the official source",
+      "routePublicMirror": "a public mirror",
+      "routeSelfHosted": "our own mirror",
+      "routeCustom": "the registry you configured",
+      "elapsed": "Still working — {{seconds}}s",
+      "slowHint": "First run downloads and installs the agent runtime. On Windows this can take several minutes — antivirus scans every file as it is written.",
       "scanFailed": "Could not check this machine for agent runtimes. Retry, or continue and install one from Settings.",
       "retryScan": "Retry",
       "continue": "Continue",
       "switchToDeveloper": "Let me choose the runtime instead"
     },
     "role": {
-      "title": "How would you like to set up {{app}}?",
+      "title": "How would you like to set things up?",
       "subtitle": "You can change any of this later in Settings.",
       "developerTitle": "I'll set it up myself",
       "developerAudience": "For developers",
       "developerCaption": "Choose the agent runtime yourself and review everything before it installs. Pick this if a terminal is familiar ground.",
       "guidedTitle": "Just get me started",
       "guidedAudience": "Recommended if this is new to you",
-      "guidedCaption": "We take the recommended setup and walk you through connecting one model. Nothing to choose, nothing to install by hand."
+      "guidedCaption": "We take the recommended setup and install what's needed for you. Nothing to choose, nothing to install by hand."
     },
     "common": {
       "back": "Back"

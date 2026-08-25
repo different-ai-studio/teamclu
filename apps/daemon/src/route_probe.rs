@@ -11,6 +11,23 @@
 
 use std::time::{Duration, Instant};
 
+/// Which source an install ended up using, carried on the `source` progress
+/// line as `route` so the desktop wizard can say it in the user's own words.
+///
+/// The distinction that matters to somebody watching a slow first run is
+/// "official upstream" vs "something we host", not the URL — so these are named
+/// for that, and the installers map their own sources onto them.
+pub mod route {
+    /// registry.npmjs.org / the official GitHub release.
+    pub const OFFICIAL: &str = "official";
+    /// A public mirror we did not deploy (registry.npmmirror.com).
+    pub const PUBLIC_MIRROR: &str = "public-mirror";
+    /// Our own OSS mirror.
+    pub const SELF_HOSTED: &str = "self-hosted";
+    /// A registry the user configured themselves; we did not choose it.
+    pub const CUSTOM: &str = "custom";
+}
+
 /// What a route delivered while being sampled.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RouteSample {

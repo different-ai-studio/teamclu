@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 
 vi.mock('@/lib/utils', async () => {
   const actual = await vi.importActual<typeof import('@/lib/utils')>('@/lib/utils')
@@ -33,8 +33,13 @@ vi.mock('@/stores/daemon-onboarding', () => ({
 }))
 
 vi.mock('@/components/onboarding/RoleStep', () => ({ RoleStep: () => <div>role step</div> }))
-vi.mock('@/components/onboarding/SetupStep', () => ({ SetupStep: () => <div>setup step</div> }))
-vi.mock('@/components/onboarding/ModelStep', () => ({ ModelStep: () => <div>model step</div> }))
+vi.mock('@/components/onboarding/SetupStep', () => ({
+  SetupStep: ({ onDone }: { onDone: () => void }) => (
+    <button type="button" onClick={onDone}>
+      setup step
+    </button>
+  ),
+}))
 vi.mock('../DesktopOnboarding', () => ({ DesktopOnboarding: () => <div>sign in</div> }))
 vi.mock('@/components/auth/DaemonOnboardingWizard', () => ({ DaemonOnboardingWizard: () => null }))
 vi.mock('@/components/auth/PendingInvitesDialog', () => ({ PendingInvitesDialog: () => null }))
@@ -57,6 +62,17 @@ describe('AuthGate first-run onboarding gate', () => {
     useOnboardingStore.getState().setRole('developer')
     render(<AuthGate>app</AuthGate>)
     expect(screen.getByText('setup step')).toBeInTheDocument()
+  })
+
+  // The guided path used to end on a "connect a model" screen. Setup is now the
+  // last step for every role — models are a Settings concern.
+  it('ends the flow when setup finishes', async () => {
+    useOnboardingStore.getState().setRole('guided')
+    useOnboardingStore.getState().setRuntime('pi')
+    render(<AuthGate>app</AuthGate>)
+    fireEvent.click(screen.getByText('setup step'))
+    expect(useOnboardingStore.getState().completed).toBe(true)
+    expect(await screen.findByText('sign in')).toBeInTheDocument()
   })
 
   it('falls through to sign-in once onboarding is done', async () => {

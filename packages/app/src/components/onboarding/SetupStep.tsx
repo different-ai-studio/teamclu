@@ -1,16 +1,48 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Check, Loader2, AlertCircle, Download, Terminal, Cpu, MousePointer2, Bot, RefreshCw } from 'lucide-react'
+import { Check, Loader2, AlertCircle, Download, Terminal, Cpu, MousePointer2, Bot, RefreshCw, Globe } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { localAgent } from '@/lib/build-config'
-import { useSetupStore, type InstallProgress, type RequirementStatus } from '@/stores/setup'
+import {
+  useSetupStore,
+  type InstallProgress,
+  type InstallRoute,
+  type RequirementStatus,
+} from '@/stores/setup'
 import { useOnboardingStore, type OnboardingRole } from '@/stores/onboarding'
+import { useElapsedSeconds } from '@/hooks/use-elapsed-seconds'
 import type { DaemonLocalAgent } from '@/lib/daemon-local-client'
 
-/** amuxd auto-installs (a near-instant binary copy); pad it so it reads as work. */
-const AMUXD_AUTO_INSTALL_MIN_MS = 2500
+/**
+ * How long the work on this screen may run before it starts saying how long it
+ * has been running. A spinner and a hung app draw the same picture.
+ */
+const INSTALL_SLOW_MS = 8_000
+
+/**
+ * And how long before it explains itself. The honest answer on a cold Windows
+ * first run is minutes: two npm installs writing thousands of small files, each
+ * one scanned on write. The screen used to promise "this only takes a moment"
+ * and then say nothing for all of it.
+ */
+const INSTALL_STUCK_MS = 45_000
+
+/**
+ * What to call each source amuxd can install from. The distinction people
+ * actually ask about is official-vs-ours, not the hostname.
+ *
+ * Keys are spelled out rather than built from the route value: the i18n
+ * guardrail finds keys by literal, and `public-mirror` is not a legal key
+ * fragment for it anyway.
+ */
+const ROUTE_LABEL: Record<InstallRoute, { key: string; fallback: string }> = {
+  official: { key: 'onboarding.setup.routeOfficial', fallback: 'the official source' },
+  'public-mirror': { key: 'onboarding.setup.routePublicMirror', fallback: 'a public mirror' },
+  'self-hosted': { key: 'onboarding.setup.routeSelfHosted', fallback: 'our own mirror' },
+  custom: { key: 'onboarding.setup.routeCustom', fallback: 'the registry you configured' },
+}
 
 /**
  * How long the runtime scan may run before the screen admits it is slow.
@@ -175,14 +207,23 @@ function RuntimeCard({
  * of a fill, since a bar frozen at 0% would say the opposite of what is true.
  */
 function InstallProgressBar({ progress }: { progress: InstallProgress }) {
+  const { t } = useTranslation()
   const determinate = progress.percent !== null
+  // The route probe is the one step whose raw line says nothing to a user
+  // ("checking which download route is fastest"), and it is also the longest
+  // silent stretch — up to nine seconds of sampling both registries. Say what it
+  // is in their language instead.
+  const label =
+    progress.event === 'probe'
+      ? t('onboarding.setup.probing', 'Checking which download source is fastest…')
+      : progress.message
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-baseline justify-between gap-3">
         {/* The URL lives in this line; `title` keeps the full one reachable when
             the row is too narrow for it. */}
-        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-faint" title={progress.message}>
-          {progress.message}
+        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-faint" title={label}>
+          {label}
         </span>
         {determinate && (
           <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-faint">
@@ -196,7 +237,7 @@ function InstallProgressBar({ progress }: { progress: InstallProgress }) {
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={progress.percent ?? undefined}
-        aria-valuetext={determinate ? undefined : progress.message}
+        aria-valuetext={determinate ? undefined : label}
       >
         <div
           className={cn(
@@ -274,6 +315,7 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
     probeError,
     runtimeScanFailed,
     progress,
+    installRoute,
     listRequirements,
     listAgentRuntimes,
     install,
@@ -320,7 +362,7 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
   React.useEffect(() => {
     if (!loaded || !amuxdMissing || amuxdTriggered.current) return
     amuxdTriggered.current = true
-    void install('amuxd', { minDurationMs: AMUXD_AUTO_INSTALL_MIN_MS })
+    void install('amuxd')
   }, [loaded, amuxdMissing, install])
 
   // Same treatment for the runtime on the guided path: promising "no choices" and
@@ -356,6 +398,15 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
     amuxdMissing ||
     (guidedRuntimeMissing && !guidedRuntimeNeedsNode) ||
     (!runtimeReady && visibleRuntimes.length > 0 && selectedRuntime?.blocker !== 'node')
+
+  // Elapsed time for whatever `busy` is covering. Kept in state rather than read
+  // during render so the clock starts at the moment work does, and stops dead
+  // when it ends.
+  const [busySince, setBusySince] = React.useState<number | null>(null)
+  React.useEffect(() => {
+    setBusySince(busy ? Date.now() : null)
+  }, [busy])
+  const elapsed = useElapsedSeconds(busySince)
 
   const pick = (id: DaemonLocalAgent) => {
     setSelected(id)
@@ -423,7 +474,18 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
           <p className="mt-1.5 text-[12.5px] leading-5 text-muted-foreground">
             {role === 'developer'
               ? t('onboarding.setup.developerSubtitle', 'Pick the runtime this machine should use.')
-              : t('onboarding.setup.guidedSubtitle', 'This only takes a moment.')}
+              : busy
+                ? // Says what is happening rather than how long it will take. The
+                  // old copy ("this only takes a moment") was a promise this path
+                  // cannot keep on a cold Windows first run.
+                  t(
+                    'onboarding.setup.guidedSubtitle',
+                    'Downloading and installing the agent runtime for this machine.',
+                  )
+                : t(
+                    'onboarding.setup.guidedReadySubtitle',
+                    'Everything this machine needs is already here.',
+                  )}
           </p>
         </div>
 
@@ -534,6 +596,43 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
               ? t('onboarding.setup.rechecking', 'Checking…')
               : t('onboarding.setup.recheck', 'I installed Node.js — check again')}
           </Button>
+        )}
+
+        {/* Where the bytes are coming from, kept on screen after the line that
+            said so has scrolled past. On a slow first run "is this even using
+            the mirror?" is the first thing anyone asks, and until now the
+            answer went by in one throwaway progress line. */}
+        {installRoute && (
+          <p className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+            <Globe className="h-3.5 w-3.5 shrink-0 text-faint" />
+            <span className="min-w-0">
+              {t('onboarding.setup.routeLine', 'Downloading from {{route}}', {
+                route: t(
+                  ROUTE_LABEL[installRoute.choice].key,
+                  ROUTE_LABEL[installRoute.choice].fallback,
+                ),
+              })}
+            </span>
+          </p>
+        )}
+
+        {/* Elapsed time, then an explanation. Neither is decoration: this screen
+            can legitimately run for minutes on Windows, and a spinner alone
+            makes that indistinguishable from a hang. */}
+        {busy && elapsed * 1000 >= INSTALL_SLOW_MS && (
+          <div className="flex flex-col gap-1">
+            <span className="text-[11.5px] text-muted-foreground">
+              {t('onboarding.setup.elapsed', 'Still working — {{seconds}}s', { seconds: elapsed })}
+            </span>
+            {elapsed * 1000 >= INSTALL_STUCK_MS && (
+              <span className="text-[11.5px] leading-4 text-faint">
+                {t(
+                  'onboarding.setup.slowHint',
+                  'First run downloads and installs the agent runtime. On Windows this can take several minutes — antivirus scans every file as it is written.',
+                )}
+              </span>
+            )}
+          </div>
         )}
 
         {/* The runtime error matters most on the guided path: nothing there is

@@ -853,21 +853,11 @@
     "openAgentSettings": "打开 Agent 设置"
   },
   "onboarding": {
-    "model": {
-      "title": "连接一个模型",
-      "subtitle": "选一家服务商，把 API key 粘进来。之后还能在设置里加更多。",
-      "getKey": "去申请 API Key",
-      "keyPlaceholder": "粘贴 API key",
-      "connect": "连接",
-      "saving": "保存中…",
-      "saved": "已保存",
-      "failed": "这个 key 没能保存，检查一下再试。",
-      "skip": "先跳过"
-    },
     "setup": {
       "title": "正在配置本机 agent",
       "developerSubtitle": "选择这台机器要用的运行时。",
-      "guidedSubtitle": "稍等片刻就好。",
+      "guidedSubtitle": "正在为这台机器下载并安装 agent 运行时。",
+      "guidedReadySubtitle": "这台机器需要的东西都齐了。",
       "runtime": "Agent 运行时",
       "install": "安装",
       "upgrade": "升级",
@@ -882,20 +872,28 @@
       "working": "正在配置…",
       "scanning": "正在扫描本机已安装的 agent…",
       "scanningSlow": "首次启动，可能要等几秒。",
+      "probing": "正在确认网络环境，挑更快的下载源…",
+      "routeLine": "正在从{{route}}下载",
+      "routeOfficial": "官方源",
+      "routePublicMirror": "公共镜像",
+      "routeSelfHosted": "我们自建的镜像",
+      "routeCustom": "你自己配置的源",
+      "elapsed": "还在装 —— 已用 {{seconds}} 秒",
+      "slowHint": "首次启动要下载并安装 agent 运行时。Windows 上可能要几分钟——杀毒软件会逐个扫描写入的文件。",
       "scanFailed": "没能检测这台机器上的 agent 运行时。可以重试，或者继续、之后在设置里安装。",
       "retryScan": "重试",
       "continue": "继续",
       "switchToDeveloper": "我想自己选运行时"
     },
     "role": {
-      "title": "想怎么配置 {{app}}？",
+      "title": "想怎么配置？",
       "subtitle": "这些之后都能在设置里改。",
       "developerTitle": "我自己来",
       "developerAudience": "适合开发者",
       "developerCaption": "自己选运行时，装了什么一目了然。熟悉命令行就选这个。",
       "guidedTitle": "直接开始用",
       "guidedAudience": "新手推荐",
-      "guidedCaption": "用推荐配置，带你把一个模型连好。不用选，也不用手动装任何东西。"
+      "guidedCaption": "用推荐配置，需要的组件自动装好。不用选，也不用自己动手。"
     },
     "common": {
       "back": "上一步"

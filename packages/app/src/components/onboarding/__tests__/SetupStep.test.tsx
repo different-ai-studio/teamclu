@@ -21,6 +21,7 @@ function seed(over: Partial<ReturnType<typeof useSetupStore.getState>> = {}) {
     errors: {},
     output: {},
     progress: {},
+    installRoute: null,
     requirements: [req('amuxd'), req('git', { optional: true })],
     agentRuntimes: [req('opencode', { title: 'OpenCode' }), req('pi', { title: 'Pi' })],
     listRequirements: vi.fn(async () => {}),
@@ -34,6 +35,34 @@ describe('SetupStep', () => {
   beforeEach(() => {
     seed()
     useOnboardingStore.getState().reset()
+  })
+
+  // "Is it even using the mirror?" is the first thing a slow first run makes
+  // people ask, and the answer used to go past in one throwaway progress line.
+  it('keeps the download source on screen', () => {
+    seed({ installRoute: { id: 'opencode', choice: 'self-hosted' } })
+    render(<SetupStep role="guided" onDone={() => {}} />)
+    expect(screen.getByText('正在从我们自建的镜像下载')).toBeInTheDocument()
+  })
+
+  // The route probe is up to nine seconds of sampling both registries, and its
+  // raw line is English prose about routes. Say what it is doing instead.
+  it('puts the route probe in words rather than showing amuxd’s line', () => {
+    seed({
+      installing: 'opencode',
+      progress: {
+        opencode: {
+          event: 'probe',
+          message: 'checking which download route is fastest',
+          percent: null,
+        },
+      },
+    })
+    render(<SetupStep role="guided" onDone={() => {}} />)
+    expect(screen.getByText('正在确认网络环境，挑更快的下载源…')).toBeInTheDocument()
+    expect(
+      screen.queryByText('checking which download route is fastest'),
+    ).not.toBeInTheDocument()
   })
 
   it('lets a developer see both runtimes', () => {

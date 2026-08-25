@@ -9,23 +9,12 @@ import {
   ONBOARDING_STEPS,
   type OnboardingStep,
 } from '@/stores/daemon-onboarding'
+import { useElapsedSeconds } from '@/hooks/use-elapsed-seconds'
 
 /** Show elapsed time and a per-step hint once a run passes this. */
 const SLOW_HINT_MS = 8_000
 /** Surface the log path and an explicit retry once it passes this. */
 const STUCK_HINT_MS = 25_000
-
-/** Tick once a second while a run is in flight, for elapsed-time display. */
-function useElapsedSeconds(startedAt: number | null): number {
-  const [now, setNow] = React.useState(() => Date.now())
-  React.useEffect(() => {
-    if (startedAt == null) return
-    setNow(Date.now())
-    const id = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(id)
-  }, [startedAt])
-  return startedAt == null ? 0 : Math.max(0, Math.floor((now - startedAt) / 1000))
-}
 
 function StepList({
   current,

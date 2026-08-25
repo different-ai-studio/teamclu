@@ -49,7 +49,7 @@ function RoleCard({
 /**
  * First screen of first-run setup (#881): pick how much of the setup you want
  * to drive. Everything after this branches on the answer — which runtimes are
- * offered, whether git is checked, whether we walk you through a model.
+ * offered, and whether git is checked.
  */
 export function RoleStep({ onDone }: { onDone: (role: OnboardingRole) => void }) {
   const { t } = useTranslation()
@@ -73,9 +73,7 @@ export function RoleStep({ onDone }: { onDone: (role: OnboardingRole) => void })
               className="mx-auto mb-4 h-16 w-16 object-contain"
             />
             <h1 className="text-[22px] font-semibold text-foreground">
-              {t('onboarding.role.title', 'How would you like to set up {{app}}?', {
-                app: appDisplayName,
-              })}
+              {t('onboarding.role.title', 'How would you like to set things up?')}
             </h1>
             <p className="mx-auto mt-2 max-w-sm text-[13px] leading-6 text-muted-foreground">
               {t('onboarding.role.subtitle', 'You can change any of this later in Settings.')}
@@ -83,6 +81,17 @@ export function RoleStep({ onDone }: { onDone: (role: OnboardingRole) => void })
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row">
+            <RoleCard
+              icon={<Sparkles className="h-5 w-5" />}
+              title={t('onboarding.role.guidedTitle', 'Just get me started')}
+              audience={t('onboarding.role.guidedAudience', 'Recommended if this is new to you')}
+              recommended
+              caption={t(
+                'onboarding.role.guidedCaption',
+                "We take the recommended setup and install what's needed for you. Nothing to choose, nothing to install by hand.",
+              )}
+              onClick={() => choose('guided')}
+            />
             <RoleCard
               icon={<Terminal className="h-5 w-5" />}
               title={t('onboarding.role.developerTitle', "I'll set it up myself")}
@@ -92,17 +101,6 @@ export function RoleStep({ onDone }: { onDone: (role: OnboardingRole) => void })
                 'Choose the agent runtime yourself and review everything before it installs. Pick this if a terminal is familiar ground.',
               )}
               onClick={() => choose('developer')}
-            />
-            <RoleCard
-              icon={<Sparkles className="h-5 w-5" />}
-              title={t('onboarding.role.guidedTitle', 'Just get me started')}
-              audience={t('onboarding.role.guidedAudience', 'Recommended if this is new to you')}
-              recommended
-              caption={t(
-                'onboarding.role.guidedCaption',
-                'We take the recommended setup and walk you through connecting one model. Nothing to choose, nothing to install by hand.',
-              )}
-              onClick={() => choose('guided')}
             />
           </div>
         </div>
