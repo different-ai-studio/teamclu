@@ -28,7 +28,7 @@ use super::records::{
 };
 use super::{
     AgentDefaults, Backend, BackendError, BackendResult, BootstrapMqttOverride, CloudAuthSnapshot,
-    ManagedLlmConfig, ShareModeConfig, TeamEnvSecretRow, TeamSkillDownload, TeamSkillRow,
+    ManagedLlmConfig, TeamEnvSecretRow, TeamSkillDownload, TeamSkillRow,
 };
 
 /// Error returned by every business call before onboarding completes.
@@ -151,10 +151,6 @@ impl Backend for DeferredBackend {
             Some(inner) => inner.fetch_bootstrap_mqtt().await,
             None => Ok(None),
         }
-    }
-
-    async fn team_share_config(&self, team_id: &str) -> BackendResult<ShareModeConfig> {
-        self.inner()?.team_share_config(team_id).await
     }
 
     async fn managed_llm_config(&self, team_id: &str) -> BackendResult<ManagedLlmConfig> {

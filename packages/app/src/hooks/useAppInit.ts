@@ -27,7 +27,6 @@ import { useCronStore } from "@/stores/cron";
 import { probeDaemonHttp, invalidateDaemonConnection } from "@/lib/daemon-local-client";
 import { useDaemonOnboardingStore } from "@/stores/daemon-onboarding";
 import { useWorkspaceRuntimeRefreshStore } from "@/stores/workspace-runtime-refresh";
-import { useTeamShareStore } from "@/stores/team-share";
 import { useOssSyncStore } from "@/stores/oss-sync";
 import { getSkillDirectories, loadAllSkills } from "@/lib/skills/loader";
 import { DEFAULT_WORKSPACE_PATH } from "@/lib/build-config";
@@ -467,9 +466,9 @@ export function useGitReposInit() {
 
   }, [workspacePath, workspaceReady]);
 
-  // Team sync status, read once share mode is known.
-  //
-  // Not gated on a workspace: the status the daemon reports is per team.
+  // Team sync status. Not gated on a workspace (the status is per team), and no
+  // longer on a cloud share-mode flag either — nothing in the product sets that
+  // flag, so gating on it meant never reading the status at all.
   //
   // What used to be here as well — a `file-change` listener under
   // `<workspace>/teamclu-team/` that re-read this status on every team file
@@ -477,13 +476,10 @@ export function useGitReposInit() {
   // daemon stopped exposing (`fileSyncStatusMap` has been `{}` since), and it
   // watched a tree sync retired: team content lives in the team's own
   // `shared/knowledge` now, which that path never pointed at.
-  const shareMode = useTeamShareStore((s) => s.status.mode);
   useEffect(() => {
     if (!isTauri()) return;
-    if (shareMode === "oss") {
-      void useOssSyncStore.getState().refresh(workspacePath);
-    }
-  }, [workspacePath, shareMode]);
+    void useOssSyncStore.getState().refresh(workspacePath);
+  }, [workspacePath]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

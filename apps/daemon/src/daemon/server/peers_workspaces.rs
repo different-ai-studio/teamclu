@@ -280,8 +280,7 @@ impl DaemonServer {
         // On-demand link: a workspace bound to a team must materialize the
         // global dir + symlink now, not wait for the next daemon restart.
         if !team_id.trim().is_empty() {
-            let gate = crate::team_link::team_share_gate(self.backend.as_ref(), team_id).await;
-            crate::team_link::materialize_or_teardown(gate, team_id, &canonical_str);
+            crate::team_link::materialize_team_link(team_id, &canonical_str);
             // Pull the team's shared tree now instead of waiting for the timer's
             // next tick, so the team dirs (knowledge/, .mcp/) are there by the
             // time the user looks. Fire-and-forget so registration stays

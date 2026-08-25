@@ -1512,6 +1512,15 @@ export interface DaemonTeamLinkResult {
  * fails (e.g. the daemon isn't onboarded to a team). The link is still created
  * lazily later, so a failure here is non-fatal to enabling team-share.
  */
+/**
+ * Thrown (as an Error message) when the local daemon is too old to create the
+ * team folder without a workspace — it still requires `path` on
+ * `POST /v1/team/link`. A contract string, not a message: the UI has to
+ * recognise it to say something useful instead of surfacing the daemon's raw
+ * "missing field `path`" deserialization complaint.
+ */
+export const TEAM_LINK_LEGACY_DAEMON = 'team_link_legacy_daemon'
+
 export async function linkDaemonTeamWorkspace(
   workspacePath: string | null,
   options?: { strict?: boolean },
@@ -1526,7 +1535,8 @@ export async function linkDaemonTeamWorkspace(
       body: JSON.stringify(path ? { path } : {}),
     })
     if (!result.ok) {
-      const msg = result.error ?? 'daemon team link failed'
+      const raw = result.error ?? 'daemon team link failed'
+      const msg = !path && /missing field .?path/.test(raw) ? TEAM_LINK_LEGACY_DAEMON : raw
       if (options?.strict) throw new Error(msg)
       console.warn('[daemon-local-client] team link failed:', msg)
       return null

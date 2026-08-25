@@ -27,12 +27,6 @@ pub enum ErrorCode {
     RuntimeUnavailable,
     RateLimited,
     ValidationFailed,
-    /// Daemon's bound team has no share-mode the daemon can read (FC returns
-    /// unset/404 for the daemon's identity), so headless sync is refused. A
-    /// dedicated 422 code so the desktop can offer a "rebind daemon" action
-    /// instead of surfacing the raw validation error. Distinct from
-    /// `ValidationFailed` precisely so clients branch on it.
-    TeamShareNotEnabledForDaemon,
     EventGone,
     Conflict,
     BadRequest,
@@ -50,9 +44,7 @@ impl ErrorCode {
             ErrorCode::SessionBusy | ErrorCode::Conflict => StatusCode::CONFLICT,
             ErrorCode::RuntimeUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-            ErrorCode::ValidationFailed | ErrorCode::TeamShareNotEnabledForDaemon => {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
+            ErrorCode::ValidationFailed => StatusCode::UNPROCESSABLE_ENTITY,
             ErrorCode::EventGone => StatusCode::GONE,
             ErrorCode::BadRequest => StatusCode::BAD_REQUEST,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
@@ -70,7 +62,6 @@ impl ErrorCode {
             ErrorCode::RuntimeUnavailable => "Runtime unavailable",
             ErrorCode::RateLimited => "Too many requests",
             ErrorCode::ValidationFailed => "Validation failed",
-            ErrorCode::TeamShareNotEnabledForDaemon => "Team share not enabled for daemon",
             ErrorCode::EventGone => "Event window expired",
             ErrorCode::Conflict => "Conflict",
             ErrorCode::BadRequest => "Bad request",
@@ -130,13 +121,6 @@ impl HttpError {
 
     pub fn validation(detail: impl Into<String>) -> Self {
         Self::new(ErrorCode::ValidationFailed, detail)
-    }
-
-    /// 422 with the dedicated `team_share_not_enabled_for_daemon` code, so the
-    /// desktop can recognize the "daemon can't read this team's share-mode"
-    /// case and offer a rebind action rather than echoing the raw detail.
-    pub fn team_share_not_enabled_for_daemon(detail: impl Into<String>) -> Self {
-        Self::new(ErrorCode::TeamShareNotEnabledForDaemon, detail)
     }
 
     pub fn internal(detail: impl Into<String>) -> Self {
@@ -230,22 +214,6 @@ mod tests {
         assert_eq!(json["code"], "not_found");
         assert_eq!(json["title"], "Not found");
         assert_eq!(json["detail"], "nope");
-    }
-
-    #[tokio::test]
-    async fn team_share_not_enabled_for_daemon_is_422_with_stable_code() {
-        let err = HttpError::team_share_not_enabled_for_daemon("share_mode is unset");
-        let resp = err.into_response();
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["status"], 422);
-        assert_eq!(json["code"], "team_share_not_enabled_for_daemon");
-        assert_eq!(
-            json["type"],
-            "https://teamclu/errors/team_share_not_enabled_for_daemon"
-        );
-        assert_eq!(json["title"], "Team share not enabled for daemon");
     }
 
     #[tokio::test]

@@ -71,15 +71,6 @@ pub struct BootstrapMqttOverride {
 #[cfg(test)]
 pub mod mock;
 
-/// A team's share-mode configuration, as sourced from the TeamClu Cloud API
-/// (`GET /v1/teams/:id/share-mode`). `mode == None` means team-share has not
-/// been enabled for this team yet (the daemon should treat this as "no sync").
-#[derive(Debug, Clone, Default)]
-pub struct ShareModeConfig {
-    /// `"oss"`; `None` when team-share is not enabled.
-    pub mode: Option<String>,
-}
-
 /// One model exposed by the team's managed LLM gateway.
 #[derive(Debug, Clone)]
 pub struct ManagedLlmModelInfo {
@@ -229,12 +220,6 @@ pub trait Backend: Send + Sync {
     async fn fetch_bootstrap_mqtt(&self) -> BackendResult<Option<BootstrapMqttOverride>> {
         Ok(None)
     }
-
-    /// Fetch a team's share-mode config from the Cloud API. A team that has not
-    /// yet enabled team-share resolves to `ShareModeConfig::default()`
-    /// (all `None`) rather than an error. No default impl: both backends must
-    /// implement it since the semantics differ (HTTP fetch vs. in-memory stub).
-    async fn team_share_config(&self, team_id: &str) -> BackendResult<ShareModeConfig>;
 
     /// Fetch the team's managed (shared) LLM config from the Cloud API
     /// (`GET /v1/teams/:id/workspace-config` → `llm.*`). Used to materialize

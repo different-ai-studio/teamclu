@@ -836,14 +836,8 @@ fn sync_menu(theme: &ColorfulTheme) -> anyhow::Result<()> {
         if auto_sync { "enabled" } else { "disabled" }
     );
     if !auto_sync {
-        println!(
-            "  Cloud share-mode may still be enabled; this daemon skips automatic git/OSS sync."
-        );
+        println!("  This daemon skips automatic OSS sync.");
         println!("  Use manual sync below or `amuxd config set team_share.auto_sync true`.");
-    }
-
-    if let Ok(mode) = fetch_share_mode(&team_id) {
-        println!("Cloud share-mode: {mode}");
     }
 
     let toggle_label = if auto_sync {
@@ -947,29 +941,6 @@ fn trigger_manual_sync(theme: &ColorfulTheme, team_id: &str) -> anyhow::Result<(
         Err(e) => println!("Sync failed: {e}"),
     }
     Ok(())
-}
-
-fn fetch_share_mode(team_id: &str) -> anyhow::Result<String> {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Response {
-        team_id: String,
-        mode: Option<String>,
-    }
-
-    tokio::runtime::Runtime::new()?.block_on(async {
-        let daemon = ManageDaemonClient::connect().await?;
-        let response: Response = daemon
-            .json(reqwest::Method::GET, "/v1/team/share-mode", None)
-            .await?;
-        if response.team_id != team_id {
-            anyhow::bail!("daemon is bound to a different team");
-        }
-        Ok(response
-            .mode
-            .filter(|mode| !mode.trim().is_empty())
-            .unwrap_or_else(|| "(unset)".to_string()))
-    })
 }
 
 fn pick_workspace(theme: &ColorfulTheme) -> anyhow::Result<PathBuf> {

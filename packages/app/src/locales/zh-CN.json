@@ -11,6 +11,8 @@
     "dirMissingBody": "团队同步是开着的，只是本机还没有团队目录。重建会创建它并把团队内容拉下来。",
     "dirMissingAction": "重建团队目录",
     "dirMissingNeedsDesktop": "只能在桌面端修复。",
+    "dirMissingStillMissing": "已重建，但本机仍然没有团队目录。多半是本机 daemon 版本太旧了——重启或更新它之后再试。",
+    "dirMissingDaemonTooOld": "本机 daemon 版本太旧，无法自行创建团队目录。重启或更新它之后再试。",
     "envEmpty": "还没有环境变量。",
     "knowledgeAdd": "新建文档或文件夹",
     "knowledgeNewFile": "新建文档",

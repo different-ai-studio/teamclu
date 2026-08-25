@@ -5,8 +5,8 @@ mod messages;
 use super::{
     AgentDefaults, Backend, BackendError, BackendResult, BackendSessionAndParticipants,
     BootstrapMqttOverride, ClaimResult, CloudAuthSnapshot, GatewaySessionRow, ManagedLlmConfig,
-    ManagedLlmModelInfo, ShareModeConfig, StoredMessage, TeamEnvSecretRow, TeamSkillDownload,
-    TeamSkillRow, WorkspaceRow, WorkspaceUpsert,
+    ManagedLlmModelInfo, StoredMessage, TeamEnvSecretRow, TeamSkillDownload, TeamSkillRow,
+    WorkspaceRow, WorkspaceUpsert,
 };
 use crate::provider_config::CloudApiConfig;
 use async_trait::async_trait;
@@ -82,22 +82,6 @@ impl BootstrapMqttPayload {
         } else {
             self.url
         }
-    }
-}
-
-/// Wire shape of `GET /v1/teams/:id/share-mode`. The FC handler returns
-/// `{ mode, enabledAt }` (see `services/fc/src/lib/pg-repo/teams.ts::getShareMode`
-/// and the Supabase repo equivalent). `enabledAt` is ignored — the daemon only
-/// needs the sync config.
-#[derive(Debug, Deserialize)]
-struct ShareModeResponse {
-    #[serde(default)]
-    mode: Option<String>,
-}
-
-impl From<ShareModeResponse> for ShareModeConfig {
-    fn from(r: ShareModeResponse) -> Self {
-        ShareModeConfig { mode: r.mode }
     }
 }
 
@@ -697,17 +681,6 @@ impl Backend for CloudApiBackend {
             password: m.password.clone(),
             url: m.broker_url(),
         }))
-    }
-
-    async fn team_share_config(&self, team_id: &str) -> BackendResult<ShareModeConfig> {
-        let path = format!("/v1/teams/{team_id}/share-mode");
-        match self.get::<ShareModeResponse>(&path).await {
-            Ok(resp) => Ok(resp.into()),
-            // A team that has never enabled team-share (404) is not an error —
-            // it simply has no sync config yet.
-            Err(BackendError::NotFound(_)) => Ok(ShareModeConfig::default()),
-            Err(e) => Err(e),
-        }
     }
 
     async fn managed_llm_config(&self, team_id: &str) -> BackendResult<ManagedLlmConfig> {
@@ -2901,56 +2874,6 @@ mod tests {
             .await;
         let backend = CloudApiBackend::new(config(&server));
         backend.heartbeat().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn team_share_config_parses_oss_response() {
-        let server = MockServer::start().await;
-        mount_refresh(&server).await;
-        Mock::given(method("GET"))
-            .and(path("/v1/teams/team-1/share-mode"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "mode": "oss",
-                "enabledAt": "2026-06-01T00:00:00Z"
-            })))
-            .mount(&server)
-            .await;
-        let backend = CloudApiBackend::new(config(&server));
-        let cfg = backend.team_share_config("team-1").await.unwrap();
-        assert_eq!(cfg.mode.as_deref(), Some("oss"));
-    }
-
-    #[tokio::test]
-    async fn team_share_config_null_mode_is_default() {
-        let server = MockServer::start().await;
-        mount_refresh(&server).await;
-        Mock::given(method("GET"))
-            .and(path("/v1/teams/team-1/share-mode"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "mode": null,
-                "enabledAt": null
-            })))
-            .mount(&server)
-            .await;
-        let backend = CloudApiBackend::new(config(&server));
-        let cfg = backend.team_share_config("team-1").await.unwrap();
-        assert_eq!(cfg.mode, None);
-    }
-
-    #[tokio::test]
-    async fn team_share_config_404_is_default_not_error() {
-        let server = MockServer::start().await;
-        mount_refresh(&server).await;
-        Mock::given(method("GET"))
-            .and(path("/v1/teams/team-1/share-mode"))
-            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-                "error": { "code": "not_found", "message": "team not found" }
-            })))
-            .mount(&server)
-            .await;
-        let backend = CloudApiBackend::new(config(&server));
-        let cfg = backend.team_share_config("team-1").await.unwrap();
-        assert_eq!(cfg.mode, None);
     }
 
     #[tokio::test]

@@ -120,7 +120,6 @@ import {
   stashPendingSessionDeeplink,
 } from "@/lib/open-session-deeplink";
 import { useCurrentTeamStore } from "@/stores/current-team";
-import { useTeamShareStore } from "@/stores/team-share";
 import { E2E_BUILD, isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
 import { TrafficLights } from "@/components/ui/traffic-lights";
 import {
@@ -656,7 +655,6 @@ function AppContent() {
   // Team-share state drives the top-right "team shared files" tab visibility.
   // Refresh it centrally (below) so the tab reflects the true share mode even
   // before the user ever opens the panel or Settings → Team.
-  const refreshTeamShare = useTeamShareStore((s) => s.refresh);
   const mainContentLayout = useUIStore((s) => s.mainContentLayout);
   // Header icon visibility — additive gates on top of the capability/session
   // conditions below. Defaults hidden; users enable per-icon in Settings →
@@ -827,22 +825,6 @@ function AppContent() {
       );
     useTeamShareBrowserStore.getState().clearDetail();
   }, [currentTeamId]);
-
-  // Keep team-share status fresh so the top-right "team shared files" tab shows
-  // only when share is actually enabled (shareMode != null). This is the ONLY
-  // place that loads it, and everything downstream reads the result: the sidebar
-  // tab (`teamShareActive`), the cloud-sync button's `available`, and the sync
-  // status poll in useAppInit.
-  //
-  // Deliberately not gated on a workspace. Share mode is the team's and comes
-  // from the Cloud API; a workspace only decorates the result with its own
-  // `linkStatus`. The old `!workspacePath` guard meant a client with no folder
-  // open reported "share is off" for a team where it is on — which is what left
-  // the sync button greyed out and the shared-files tab hidden.
-  useEffect(() => {
-    if (!currentTeamId) return;
-    void refreshTeamShare(currentTeamId, workspacePath);
-  }, [currentTeamId, workspacePath, refreshTeamShare]);
 
   // Clear in-memory chat when the signed-in user or active team changes.
   // signOut resets before unmount; this effect owns team-switch / adoptSession.

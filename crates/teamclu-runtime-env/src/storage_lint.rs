@@ -61,7 +61,6 @@ const DEBT: &[&str] = &[
     "packages/app/src/lib/__tests__/mid-turn-followup-repro.test.ts",
     "packages/app/src/lib/__tests__/session-binding-live.test.ts",
     "packages/app/src/lib/build-config.ts",
-    "packages/app/src/stores/__tests__/team-share.test.ts",
 ];
 
 /// A hand-written home dir is a quote immediately followed by one of these.

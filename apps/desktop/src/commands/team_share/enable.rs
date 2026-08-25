@@ -136,19 +136,6 @@ pub async fn team_share_get_team_secret(
 
 // ─── get_share_status ────────────────────────────────────────────────────
 
-/// What the workspace `teamclu-team` entry currently is:
-/// `"symlink"` (linked to the daemon's global copy — a Windows junction also
-/// reports as a symlink to symlink_metadata), `"real_dir"` (legacy local dir,
-/// awaiting daemon consolidation), or `"missing"` (not linked yet).
-pub(crate) fn detect_link_status(workspace_path: &str) -> &'static str {
-    let link = std::path::Path::new(workspace_path).join(TEAM_REPO_DIR);
-    match std::fs::symlink_metadata(&link) {
-        Ok(m) if m.file_type().is_symlink() => "symlink",
-        Ok(m) if m.is_dir() => "real_dir",
-        _ => "missing",
-    }
-}
-
 /// `~/.amuxd/teams/<team_id>/shared/teamclu-team` — the daemon's global copy
 /// path, shown in the UI so users can see where synced content actually lives.
 pub(crate) fn global_team_dir_display(team_id: &str) -> Option<String> {
@@ -159,76 +146,9 @@ pub(crate) fn global_team_dir_display(team_id: &str) -> Option<String> {
     )
 }
 
-/// Share mode for a team, plus local decoration.
-///
-/// `workspace_path` is optional. The mode itself is the TEAM's and comes from
-/// FC; the only thing a workspace contributes is `linkStatus`, which describes
-/// one workspace's `teamclu-team` entry. Requiring one meant the app never
-/// learned whether share was on until a folder was opened — and every consumer
-/// of that status (the shared-files tab, the sync button, the nav counts) stayed
-/// dark on a client with no folder.
-pub async fn get_share_status_impl(
-    team_id: String,
-    workspace_path: Option<String>,
-    access_token: String,
-    cloud_api_url: String,
-) -> Result<serde_json::Value, String> {
-    let fc = FcClient::new(resolve_runtime_fc_endpoint(&cloud_api_url)?, access_token);
-    let path = format!("/v1/teams/{}/share-mode", team_id);
-    let mut value = fc.get_json(&path).await.map_err(|e| e.to_string())?;
-    // Augment the server share-mode payload with local link + global-path info
-    // so the settings UI can show where synced content lives and whether this
-    // workspace is linked. camelCase to match the existing payload shape.
-    if let Some(obj) = value.as_object_mut() {
-        if let Some(ws) = workspace_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-        {
-            obj.insert("linkStatus".to_string(), json!(detect_link_status(ws)));
-        }
-        if let Some(p) = global_team_dir_display(&team_id) {
-            obj.insert("globalPath".to_string(), json!(p));
-        }
-    }
-    Ok(value)
-}
-
-#[tauri::command]
-pub async fn team_share_get_status(
-    team_id: String,
-    workspace_path: Option<String>,
-    access_token: String,
-    cloud_api_url: String,
-) -> Result<serde_json::Value, String> {
-    get_share_status_impl(team_id, workspace_path, access_token, cloud_api_url).await
-}
-
 #[cfg(test)]
 mod link_status_tests {
     use super::*;
-
-    #[test]
-    fn reports_missing_when_absent() {
-        let ws = tempfile::tempdir().unwrap();
-        assert_eq!(detect_link_status(ws.path().to_str().unwrap()), "missing");
-    }
-
-    #[test]
-    fn reports_real_dir_for_plain_directory() {
-        let ws = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(ws.path().join(TEAM_REPO_DIR)).unwrap();
-        assert_eq!(detect_link_status(ws.path().to_str().unwrap()), "real_dir");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn reports_symlink_when_present() {
-        let ws = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(target.path(), ws.path().join(TEAM_REPO_DIR)).unwrap();
-        assert_eq!(detect_link_status(ws.path().to_str().unwrap()), "symlink");
-    }
 
     #[test]
     fn global_path_contains_team_and_amuxd() {

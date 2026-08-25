@@ -56,13 +56,6 @@ impl SyncDispatcher {
         &self.secrets
     }
 
-    pub async fn team_share_gate(&self, team_id: &str) -> crate::team_link::TeamShareGate {
-        match &self.backend {
-            Some(b) => crate::team_link::team_share_gate(b.as_ref(), team_id).await,
-            None => crate::team_link::TeamShareGate::Enabled,
-        }
-    }
-
     /// FC base URL for OSS sync: the cloud URL from the authenticated backend.
     /// Returns an error if no backend is configured or it exposes no URL.
     pub fn fc_endpoint(&self) -> Result<String, String> {
@@ -148,42 +141,42 @@ impl SyncDispatcher {
             });
         }
         use crate::sync::oss;
-        // The share mode comes from FC; the OSS content secret comes from the
-        // per-team secret store.
-        let backend = self
-            .backend
-            .as_ref()
-            .ok_or_else(|| "no cloud backend for sync".to_string())?;
-        let share = backend
-            .team_share_config(team_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        let content_root_dir = crate::config::global_team_store::sync_content_root(team_id);
-        match share.mode.as_deref() {
-            Some("oss") => {
-                let secret = self.secrets.resolve_team_secret(team_id, None)?;
-                let jwt = self.oss_jwt().await?;
-                let fc = oss::fc_client::FcClient::new(self.fc_endpoint()?, jwt);
-                let content_root = content_root_dir.to_string_lossy().to_string();
-                let r = oss::tick(&content_root, team_id, &secret, &fc)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok(SyncStatus {
-                    mode: Some("oss".into()),
-                    last_sync_at: now_rfc3339(),
-                    pulled: r.pulled,
-                    pushed: r.pushed,
-                    conflicts: r.conflicts,
-                    failed: r.failed,
-                    ..Default::default()
-                })
-            }
-            _ => Ok(SyncStatus {
-                mode: None,
+
+        // The precondition is the team secret, not a cloud flag.
+        //
+        // This used to ask FC for the team's `share_mode` and do nothing unless
+        // it read `"oss"`. Nothing in the product sets that flag any more — no
+        // client ships a call to `POST /v1/teams/:id/share-mode` — so every team
+        // created since reads as "off" and never synced, silently, with a
+        // successful-looking status. The secret is the honest precondition: it
+        // is what encrypts and decrypts the content, a team without one cannot
+        // sync no matter what any flag says, and one with it always can.
+        let Ok(secret) = self.secrets.resolve_team_secret(team_id, None) else {
+            // Not an error: a team that never set up sharing has nothing to
+            // sync, and a red banner for that is noise, not information.
+            return Ok(SyncStatus {
+                skipped: true,
                 last_sync_at: now_rfc3339(),
                 ..Default::default()
-            }),
-        }
+            });
+        };
+
+        let content_root_dir = crate::config::global_team_store::sync_content_root(team_id);
+        let jwt = self.oss_jwt().await?;
+        let fc = oss::fc_client::FcClient::new(self.fc_endpoint()?, jwt);
+        let content_root = content_root_dir.to_string_lossy().to_string();
+        let r = oss::tick(&content_root, team_id, &secret, &fc)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(SyncStatus {
+            mode: Some("oss".into()),
+            last_sync_at: now_rfc3339(),
+            pulled: r.pulled,
+            pushed: r.pushed,
+            conflicts: r.conflicts,
+            failed: r.failed,
+            ..Default::default()
+        })
     }
 }
 
@@ -253,6 +246,20 @@ mod tests {
             .unwrap();
 
         let store = SecretStore::with_base(tmp.path().to_path_buf());
+        // A team secret is the precondition for syncing at all; without one the
+        // tick skips instead of erroring, and this test needs a real error to
+        // cache. With the secret in place it gets one from the missing backend.
+        store
+            .save(
+                "t",
+                &crate::sync::secret_store::TeamSecrets {
+                    oss_team_secret: Some(
+                        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".into(),
+                    ),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         let d = SyncDispatcher::new(store, None);
         let err_st = d.sync_team("t", SyncOptions { force: true }).await;
         assert!(err_st.last_error.is_some());
@@ -264,6 +271,38 @@ mod tests {
         let st = d.sync_team("t", SyncOptions { force: false }).await;
         assert!(st.skipped);
         assert!(st.last_error.is_some());
+
+        if let Some(v) = orig {
+            std::env::set_var("AMUXD_HOME", v);
+        } else {
+            std::env::remove_var("AMUXD_HOME");
+        }
+    }
+
+    /// A team that never set up sharing has nothing to sync. That used to be
+    /// decided by the cloud `share_mode` flag — which nothing sets any more — so
+    /// the honest precondition is the team secret: without it there is nothing
+    /// to encrypt or decrypt with, and a red banner would be noise.
+    #[tokio::test]
+    async fn a_team_without_a_secret_skips_rather_than_erroring() {
+        let _lock = crate::config::global_team_store::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let orig = std::env::var("AMUXD_HOME").ok();
+        std::env::set_var("AMUXD_HOME", tmp.path());
+        let mut team = crate::config::team_config::TeamFileConfig::default();
+        team.team_share.auto_sync = true;
+        crate::config::team_config::save_typed(&crate::config::layout::active_team(), &team)
+            .unwrap();
+
+        let (d, _backend) = dispatcher_with_mock(&tmp);
+        let st = d
+            .sync_team("no-secret-team", SyncOptions { force: true })
+            .await;
+
+        assert!(st.skipped);
+        assert!(st.last_error.is_none());
 
         if let Some(v) = orig {
             std::env::set_var("AMUXD_HOME", v);

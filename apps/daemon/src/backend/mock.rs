@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use crate::backend::{
     ActorDirectoryRow, AgentDefaults, Backend, BackendError, BackendResult,
     BackendSessionAndParticipants, BootstrapMqttOverride, ClaimResult, GatewaySessionRow,
-    ManagedLlmConfig, ShareModeConfig, StoredMessage, WorkspaceRow, WorkspaceUpsert,
+    ManagedLlmConfig, StoredMessage, WorkspaceRow, WorkspaceUpsert,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,9 +144,6 @@ pub struct MockState {
     pub ensured_agent_types: Vec<(Vec<String>, String)>,
     pub default_workspace_ids: Vec<String>,
     pub set_default_workspace_error: Option<String>,
-    /// Per-team `team_share_config` overrides. Missing entries fall back to
-    /// `ShareModeConfig::default()` (i.e. team-share disabled).
-    pub team_share_configs: HashMap<String, ShareModeConfig>,
     /// Per-team registry rows returned by `team_skills`.
     pub team_skills: HashMap<String, Vec<super::TeamSkillRow>>,
     /// `(team_id, slug, version)` writes made by `record_team_skill_install`.
@@ -220,19 +217,6 @@ impl Backend for MockBackend {
 
     async fn auth_token(&self) -> BackendResult<String> {
         Ok(self.auth_token.clone())
-    }
-
-    async fn team_share_config(&self, team_id: &str) -> BackendResult<ShareModeConfig> {
-        // No team-share configured by default; tests that need a populated
-        // config can seed `state().team_share_configs`.
-        Ok(self
-            .state
-            .lock()
-            .unwrap()
-            .team_share_configs
-            .get(team_id)
-            .cloned()
-            .unwrap_or_default())
     }
 
     async fn managed_llm_config(&self, team_id: &str) -> BackendResult<ManagedLlmConfig> {

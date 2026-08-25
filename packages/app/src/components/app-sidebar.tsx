@@ -1,7 +1,6 @@
 import * as React from "react"
 import { useTranslation } from "react-i18next"
 import { Search, SquarePen, PanelLeftIcon, Settings, ChevronUp, Mail, CalendarDays, LogOut, Users, Trophy } from "lucide-react"
-import { useTeamShareStore, isShareModeLocked } from "@/stores/team-share"
 
 import { useSessionStore } from "@/stores/session"
 import { useUIStore } from "@/stores/ui"
@@ -224,7 +223,6 @@ function SidebarUserAccountMenu() {
   const signOut = useAuthStore((s) => s.signOut)
   const currentTeam = useCurrentTeamStore((s) => s.team)
   const currentMember = useCurrentTeamStore((s) => s.currentMember)
-  const teamShareActive = useTeamShareStore((s) => isShareModeLocked(s.status.mode))
   const openSettings = useUIStore((s) => s.openSettings)
   // The desktop app's *own* MQTT link. Distinct from the daemon's MQTT link,
   // which the LocalDaemonCard dot reports — see #522. Only surfaced when it is
@@ -350,15 +348,11 @@ function SidebarUserAccountMenu() {
             </div>
           </div>
         </div>
-        {teamShareActive && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => openSettings('leaderboard')}>
-              <Trophy className="mr-2 h-4 w-4" />
-              {t('settings.nav.leaderboard', 'Team Leaderboard')}
-            </DropdownMenuItem>
-          </>
-        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => openSettings('leaderboard')}>
+          <Trophy className="mr-2 h-4 w-4" />
+          {t('settings.nav.leaderboard', 'Team Leaderboard')}
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => { void signOut() }} variant="destructive">
           <LogOut className="mr-2 h-4 w-4" />

@@ -11,6 +11,8 @@
     "dirMissingBody": "Team sync is on, but the team's folder is not on this machine yet. Rebuilding creates it and pulls the team content down.",
     "dirMissingAction": "Rebuild team folder",
     "dirMissingNeedsDesktop": "This can only be repaired from the desktop app.",
+    "dirMissingStillMissing": "Rebuilt, but the team folder is still not here. The local daemon is probably out of date — restart or update it, then try again.",
+    "dirMissingDaemonTooOld": "The local daemon is too old to create the team folder on its own. Restart or update it, then try again.",
     "envEmpty": "No environment variables yet.",
     "knowledgeAdd": "New document or folder",
     "knowledgeNewFile": "New document",

@@ -73,17 +73,6 @@ pub async fn sync_now(
     {
         return Err(HttpError::internal(err.to_string()));
     }
-    if status
-        .mode
-        .as_deref()
-        .filter(|m| !m.trim().is_empty())
-        .is_none()
-    {
-        return Err(HttpError::team_share_not_enabled_for_daemon(format!(
-            "team share is not enabled for daemon team {team_id} (share_mode is unset). \
-             If you switched teams in the app, re-bind the local daemon (amuxd init) to the current team, then enable team share again."
-        )));
-    }
     Ok(Json(SyncResponse { status }))
 }
 
@@ -406,31 +395,6 @@ async fn reconcile_team_skills_for_state(
     )
     .await;
     Ok(Json(TeamSkillReconcileResponse { team_id, outcome }))
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeamShareModeResponse {
-    pub team_id: String,
-    pub mode: Option<String>,
-}
-
-/// `GET /v1/team/share-mode` — authoritative cloud share mode through the
-/// daemon-owned backend/token state.
-pub async fn get_share_mode(
-    principal: Principal,
-    State(state): State<HttpState>,
-) -> Result<Json<TeamShareModeResponse>, HttpError> {
-    require_scope(&principal, "workspace:read")?;
-    let (backend, team_id) = daemon_backend_and_team(&state)?;
-    let config = backend
-        .team_share_config(&team_id)
-        .await
-        .map_err(|e| HttpError::internal(e.to_string()))?;
-    Ok(Json(TeamShareModeResponse {
-        team_id,
-        mode: config.mode,
-    }))
 }
 
 fn daemon_backend_and_team(
