@@ -14,6 +14,7 @@ pub mod team_crypto;
 pub mod team_provider;
 pub mod team_provider_sync;
 pub mod version;
+pub mod workspace_instructions;
 
 /// Ratchet keeping home-directory names spelled in `storage_namespace` only.
 /// Test-only: it scans the repo and has no runtime surface.
@@ -56,6 +57,9 @@ pub use team_provider_sync::{
 };
 
 pub use amuxd_layout::{active_team as active_amuxd_team, team_state_dir as amuxd_team_state_dir};
+pub use workspace_instructions::{
+    claude_md_block_present, load_system_prompt, sync_teamclu_claude_md,
+};
 pub use storage_namespace::{
     amuxd_home_for_brand, amuxd_home_from_env, brand_home_dir, brand_short_name_from_env,
     is_official_brand, resolve_amuxd_dir_name, resolve_storage_dir_name,

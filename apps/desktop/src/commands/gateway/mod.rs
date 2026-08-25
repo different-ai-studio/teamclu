@@ -281,7 +281,7 @@ pub fn save_system_prompt(
         "systemPrompt",
         serde_json::json!(prompt),
     )?;
-    teamclu_gateway::sync_teamclu_claude_md(&workspace_path, &prompt)
+    teamclu_runtime_env::sync_teamclu_claude_md(&workspace_path, &prompt)
 }
 
 /// Report the app's UI language to amuxd, which is what the gateways reply in.

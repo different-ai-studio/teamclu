@@ -30,7 +30,6 @@ pub mod wechat;
 pub mod wechat_config;
 pub mod wecom;
 pub mod wecom_config;
-pub mod workspace_instructions;
 
 pub use config::*;
 pub use discord::DiscordGateway;
@@ -50,9 +49,6 @@ pub use wechat::WeChatGateway;
 pub use wechat_config::*;
 pub use wecom::WeComGateway;
 pub use wecom_config::*;
-pub use workspace_instructions::{
-    claude_md_block_present, load_system_prompt, sync_teamclu_claude_md,
-};
 
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};

@@ -1,8 +1,12 @@
-//! Daemon-facing helpers for workspace static instructions (re-export gateway SSOT).
+//! Daemon-facing helpers for workspace static instructions.
+//!
+//! The implementation lives in `teamclu-runtime-env` — it moved out of the
+//! gateway crate in #933, since a transport adapter should not be the owner of
+//! a workspace's agent instructions.
 
 use std::path::Path;
 
-pub use teamclu_gateway::{
+pub use teamclu_runtime_env::{
     claude_md_block_present, load_system_prompt as load_system_prompt_str,
     sync_teamclu_claude_md as sync_teamclu_claude_md_str,
 };

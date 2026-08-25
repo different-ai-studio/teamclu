@@ -164,7 +164,6 @@ impl DaemonServer {
             workspace_resolver: self.workspace_resolver.clone(),
             workspace_override: Arc::new(AsyncMutex::new(HashMap::new())),
             bot_configs: Arc::new(AsyncMutex::new(bot_configs)),
-            daemon_config_path: crate::config::DaemonConfig::default_path(),
         });
         // Everything this store writes gets announced on `session/{id}/live`.
         // Without it a gateway conversation exists only in the cloud table, and
