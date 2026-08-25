@@ -17,7 +17,6 @@ import {
   Trash2,
 } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
-import { useWorkspaceStore } from "@/stores/workspace"
 import { ensureAgentsSkillsPaths } from "@/lib/skills/ensure-agents-paths"
 import { openExternalUrl } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -33,6 +32,7 @@ import type {
   ClawHubLockfile,
 } from "@/lib/clawhub/types"
 import { parseStats } from "@/lib/clawhub/types"
+import { useEffectiveWorkspacePath } from "@/lib/effective-workspace"
 import {
   Dialog,
   DialogContent,
@@ -64,7 +64,7 @@ export const ClawHubMarketplace = React.memo(function ClawHubMarketplace({
   externalRefreshSignal = 0,
 }: ClawHubMarketplaceProps) {
   const { t } = useTranslation()
-  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const workspacePath = useEffectiveWorkspacePath()
 
   const [searchQuery, setSearchQuery] = React.useState("")
   const [isLoading, setIsLoading] = React.useState(true)

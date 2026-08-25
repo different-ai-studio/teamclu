@@ -66,11 +66,27 @@ describe('TeamDirInitPanel', () => {
     expect(loadSection).not.toHaveBeenCalled()
   })
 
-  it('asks for a workspace instead of offering a rebuild it cannot do', () => {
+  /**
+   * The repair is "create the team's directory", which belongs to the team —
+   * so it is offered with no folder open, and the call goes out without a path.
+   * It used to be hidden behind "open a team workspace first", for an operation
+   * that never needed one.
+   */
+  it('rebuilds with no workspace open, and sends no path', async () => {
     workspaceState.workspacePath = null
     render(<TeamDirInitPanel />)
 
+    fireEvent.click(screen.getByRole('button', { name: 'Rebuild team folder' }))
+
+    await waitFor(() => expect(loadSection).toHaveBeenCalled())
+    expect(linkDaemonTeamWorkspace).toHaveBeenCalledWith(null, { strict: true })
+  })
+
+  it('offers nothing outside the desktop app', () => {
+    isTauriMock.mockReturnValue(false)
+    render(<TeamDirInitPanel />)
+
     expect(screen.queryByRole('button', { name: 'Rebuild team folder' })).toBeNull()
-    expect(screen.getByText('Open a team workspace first.')).toBeTruthy()
+    expect(screen.getByText('This can only be repaired from the desktop app.')).toBeTruthy()
   })
 })

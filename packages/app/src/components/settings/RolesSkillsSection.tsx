@@ -2,19 +2,19 @@ import * as React from "react"
 import { useTranslation } from "react-i18next"
 import { cn } from "@/lib/utils"
 import { Shapes, Sparkles, UserRound } from "lucide-react"
-import { useWorkspaceStore } from "@/stores/workspace"
 import { Skeleton } from "@/components/ui/skeleton"
 import { SettingCard } from "./shared"
 import { RolesSection } from "./RolesSection"
 import { SkillsSection } from "./SkillsSection"
 import { loadRolesSkillsWorkspaceState } from "@/lib/roles/loader"
 import type { RolesSkillsWorkspaceState } from "@/lib/roles/types"
+import { useEffectiveWorkspacePath } from "@/lib/effective-workspace"
 
 type ResourceTab = "roles" | "skills"
 
 export const RolesSkillsSection = React.memo(function RolesSkillsSection() {
   const { t } = useTranslation()
-  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const workspacePath = useEffectiveWorkspacePath()
   const [activeTab, setActiveTab] = React.useState<ResourceTab>("roles")
   const [transitionTargetTab, setTransitionTargetTab] = React.useState<ResourceTab | null>(null)
   const rolesTabRef = React.useRef<HTMLButtonElement>(null)

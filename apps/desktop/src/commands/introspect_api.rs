@@ -178,18 +178,19 @@ async fn handle_send_wecom(app: &AppHandle, body: &[u8]) -> Result<String, Strin
 }
 
 async fn handle_team_sync_all(app: &AppHandle, _body: &[u8]) -> Result<String, String> {
-    // introspect_api has no calling-window context (HTTP server). Falls back
-    // to current_workspace in WindowRegistry.
+    // introspect_api has no calling-window context (HTTP server), so it reads
+    // current_workspace from the WindowRegistry — and takes `None` for an
+    // answer. Team sync is per team, not per workspace; a workspace only asks
+    // the daemon to repair that workspace's team links on the way through.
+    // Refusing without one made this endpoint unusable on a client with no
+    // folder open, for an operation that never needed it.
     let registry = app.state::<super::window::WindowRegistry>();
     let workspace = registry
         .current_workspace
         .lock()
         .ok()
-        .and_then(|cw| cw.clone())
-        .ok_or_else(|| "No workspace path set. Please select a workspace first.".to_string())?;
-    // Plan B Task 8: the desktop sync engine is gone — the daemon owns team
-    // sync now. Forward to the daemon's team-sync endpoint for the workspace.
-    let result = super::team_sync_proxy::daemon_team_sync(Some(&workspace), true).await?;
+        .and_then(|cw| cw.clone());
+    let result = super::team_sync_proxy::daemon_team_sync(workspace.as_deref(), true).await?;
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
 }
 

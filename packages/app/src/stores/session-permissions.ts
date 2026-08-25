@@ -13,7 +13,7 @@ import { appDisplayName } from "@/lib/build-config";
 import { notificationService } from "@/lib/notification-service";
 import { shouldAutoAuthorize } from "@/lib/permission-policy";
 import type { PermissionAskedEvent } from "./session-types";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { effectiveWorkspacePath } from "@/lib/effective-workspace";
 import type {
   PendingPermissionEntry,
   ToolCallPermission,
@@ -42,7 +42,10 @@ async function loadPermissionConfig(): Promise<Record<string, string>> {
   if (_permConfigCache) return _permConfigCache;
   if (!isTauri()) return {};
 
-  const workspacePath = useWorkspaceStore.getState().workspacePath;
+  // Falls back to the daemon's default workspace: tool permissions are config
+  // the daemon reads wherever it runs, and returning {} with no folder open
+  // meant every "always allow" the user had set was invisible to this session.
+  const workspacePath = await effectiveWorkspacePath();
   if (!workspacePath) return {};
 
   if (_permConfigLoading) return {};
@@ -76,7 +79,7 @@ const _alwaysAllowedPermissions = new Set<string>();
 async function setPermissionAllowInConfig(permissionType: string): Promise<void> {
   if (!isTauri()) return;
 
-  const workspacePath = useWorkspaceStore.getState().workspacePath;
+  const workspacePath = await effectiveWorkspacePath();
   if (!workspacePath) return;
 
   if (_permConfigCache?.[permissionType] === "allow") return;
@@ -111,7 +114,7 @@ type SessionGet = () => SessionState;
 async function persistAllowlistRule(perm: PermissionAskedEvent): Promise<void> {
   if (!isTauri()) return;
 
-  const workspacePath = useWorkspaceStore.getState().workspacePath;
+  const workspacePath = await effectiveWorkspacePath();
   if (!workspacePath) return;
 
   const projectId = "global";

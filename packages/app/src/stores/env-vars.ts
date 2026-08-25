@@ -73,12 +73,18 @@ interface EnvVarsState {
   setHasChanges: (hasChanges: boolean) => void
 }
 
-function requireWorkspacePath(): string {
-  const workspacePath = useWorkspaceStore.getState().workspacePath
-  if (!workspacePath) {
-    throw new Error('No workspace selected')
-  }
-  return workspacePath
+/**
+ * The workspace to hand the env commands — or null, which is a valid answer.
+ *
+ * Neither half of this catalog is per-project: personal vars live in the
+ * home-scoped secret store, team vars come from the Cloud API. The Rust side
+ * resolves the daemon's own default workspace when it gets none. This used to
+ * throw "No workspace selected", which killed the entire Env panel before a
+ * folder was opened — and `loadSection('env')` swallows that throw, so the
+ * section showed a stale count and no error at all.
+ */
+function currentWorkspacePath(): string | null {
+  return useWorkspaceStore.getState().workspacePath
 }
 
 async function fetchEnvCatalog(): Promise<EnvCatalog> {
@@ -90,7 +96,7 @@ async function fetchEnvCatalog(): Promise<EnvCatalog> {
     // Must travel with the token: runtime server selection lives here, and a
     // token minted by the selected server is a 401 anywhere else.
     cloudApiUrl: getEffectiveServerConfigSync().cloudApiUrl,
-    workspacePath: requireWorkspacePath(),
+    workspacePath: currentWorkspacePath(),
   })
 }
 
@@ -122,7 +128,7 @@ export const useEnvVarsStore = create<EnvVarsState>((set) => ({
         // a bearer. Personal values never leave the machine and ignore it.
         accessToken: scope === 'team' ? await getFreshAccessToken().catch(() => null) : null,
         cloudApiUrl: getEffectiveServerConfigSync().cloudApiUrl,
-        workspacePath: requireWorkspacePath(),
+        workspacePath: currentWorkspacePath(),
       })
       const catalog = await fetchEnvCatalog()
       set({ envVars: catalog.personal, teamSecrets: catalog.team, hasChanges: true })
@@ -139,7 +145,7 @@ export const useEnvVarsStore = create<EnvVarsState>((set) => ({
         teamId: useCurrentTeamStore.getState().team?.id,
         accessToken: scope === 'team' ? await getFreshAccessToken().catch(() => null) : null,
         cloudApiUrl: getEffectiveServerConfigSync().cloudApiUrl,
-        workspacePath: requireWorkspacePath(),
+        workspacePath: currentWorkspacePath(),
       })
       const catalog = await fetchEnvCatalog()
       set({ envVars: catalog.personal, teamSecrets: catalog.team, hasChanges: true })
@@ -149,7 +155,7 @@ export const useEnvVarsStore = create<EnvVarsState>((set) => ({
   getEnvVarValue: async (key: string) => {
     return invoke<string>('env_var_get', {
       key,
-      workspacePath: requireWorkspacePath(),
+      workspacePath: currentWorkspacePath(),
     })
   },
 

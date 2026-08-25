@@ -32,10 +32,13 @@ export function TeamDirInitPanel() {
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
-  const ready = Boolean(workspacePath && isTauri())
+  // A workspace is not required: the repair this button performs is "create the
+  // team's directory", which belongs to the team. When a folder IS open its
+  // team links get repaired too, as a bonus.
+  const ready = isTauri()
 
   async function handleInit() {
-    if (!workspacePath || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
@@ -62,7 +65,7 @@ export function TeamDirInitPanel() {
       <p className="max-w-[280px] text-[12.5px] leading-relaxed text-muted-foreground">
         {t(
           'teamShare.dirMissingBody',
-          'Team sync is on, but this workspace has no link to the shared folder. Rebuilding it re-creates the link and pulls the team content down.',
+          "Team sync is on, but the team's folder is not on this machine yet. Rebuilding creates it and pulls the team content down.",
         )}
       </p>
 
@@ -73,7 +76,7 @@ export function TeamDirInitPanel() {
         </Button>
       ) : (
         <p className="text-[12px] text-muted-foreground">
-          {t('teamShare.dirMissingNeedsWorkspace', 'Open a team workspace first.')}
+          {t('teamShare.dirMissingNeedsDesktop', 'This can only be repaired from the desktop app.')}
         </p>
       )}
 

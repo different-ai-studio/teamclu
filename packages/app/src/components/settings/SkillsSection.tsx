@@ -29,7 +29,6 @@ import {
 } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { SKILLS_CHANGED_EVENT } from '@/hooks/useAppInit'
-import { useWorkspaceStore } from '@/stores/workspace'
 import {
   encodeWorkspaceId,
   getDaemonPermissions,
@@ -63,6 +62,7 @@ import type { SkillPermission, SkillPermissionMap } from '@/lib/opencode/config'
 import { resolveSkillPermission } from '@/lib/opencode/config'
 import type { SkillSource } from '@/lib/skills/types'
 import { INHERENT_SKILL_NAMES } from '@/lib/skills/types'
+import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
 import { ClawHubMarketplace } from './ClawHubMarketplace'
 import { SkillsDiagnosticsDialog } from './SkillsDiagnosticsDialog'
 
@@ -120,7 +120,7 @@ export const SkillsSection = React.memo(function SkillsSection({
   onSharedSearchQueryChange,
 }: SkillsSectionProps) {
   const { t } = useTranslation()
-  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const workspacePath = useEffectiveWorkspacePath()
   const [activeTab, setActiveTab] = React.useState<SkillsTab>('installed')
   const [skills, setSkills] = React.useState<Skill[]>([])
   const [isLoading, setIsLoading] = React.useState(false)

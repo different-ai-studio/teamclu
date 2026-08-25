@@ -13,7 +13,6 @@ import {
   UserRound,
   WandSparkles,
 } from "lucide-react"
-import { useWorkspaceStore } from "@/stores/workspace"
 import { useSessionStore } from "@/stores/session"
 import { useUIStore } from "@/stores/ui"
 import { cn } from "@/lib/utils"
@@ -47,6 +46,7 @@ import {
   saveRole,
 } from "@/lib/roles/loader"
 import type { AttachableSkill, RoleEditorState, RoleRecord } from "@/lib/roles/types"
+import { useEffectiveWorkspacePath } from "@/lib/effective-workspace"
 
 type EditorMode = "structured" | "markdown"
 
@@ -66,7 +66,7 @@ export const RolesSection = React.memo(function RolesSection({
   onDataChange,
 }: RolesSectionProps) {
   const { t } = useTranslation()
-  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const workspacePath = useEffectiveWorkspacePath()
   const [roles, setRoles] = React.useState<RoleRecord[]>([])
   const [attachableSkills, setAttachableSkills] = React.useState<AttachableSkill[]>([])
   const [isLoading, setIsLoading] = React.useState(false)

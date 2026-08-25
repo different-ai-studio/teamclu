@@ -619,6 +619,19 @@ export async function getDaemonProviders(
   return result.ok ? result.data : null
 }
 
+/**
+ * The device's providers, with no workspace involved (#742).
+ *
+ * Credentials are per-machine — which is why the write side (`/auth`,
+ * `/oauth/*`, `/auth-methods`) has been device-level all along. Only the
+ * listing was still workspace-scoped, so the models panel went blank before a
+ * folder was opened even though the credentials behind it were right there.
+ */
+export async function getDeviceProviders(): Promise<DaemonProviderInfo[] | null> {
+  const result = await daemonFetch<DaemonProviderInfo[]>(`/v1/providers`)
+  return result.ok ? result.data : null
+}
+
 // ─── Provider auth catalog & OAuth (Phase 1 catalog, Phase 2 execution) ─────
 
 export type DaemonProviderAuthMethod = {
@@ -1500,18 +1513,17 @@ export interface DaemonTeamLinkResult {
  * lazily later, so a failure here is non-fatal to enabling team-share.
  */
 export async function linkDaemonTeamWorkspace(
-  workspacePath: string,
+  workspacePath: string | null,
   options?: { strict?: boolean },
 ): Promise<DaemonTeamLinkResult | null> {
-  const path = workspacePath.trim()
-  if (!path) {
-    if (options?.strict) throw new Error('workspace path is required to link team directory')
-    return null
-  }
+  // No workspace is a valid request: the team's own directory belongs to the
+  // team, and materializing it is the half of this call a client with no folder
+  // open actually needs. The daemon then skips the workspace link only.
+  const path = workspacePath?.trim() || null
   try {
     const result = await daemonFetch<DaemonTeamLinkResult>('/v1/team/link', {
       method: 'POST',
-      body: JSON.stringify({ path }),
+      body: JSON.stringify(path ? { path } : {}),
     })
     if (!result.ok) {
       const msg = result.error ?? 'daemon team link failed'
