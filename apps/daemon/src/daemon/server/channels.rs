@@ -378,17 +378,25 @@ impl DaemonServer {
             .unwrap_or_else(|_| "{\"keys\":[]}".to_string())
     }
 
-    /// Handle a `channel-send` envelope: push text at a channel, full stop.
+    /// Handle a `channel-send` envelope: push text (and optionally one file)
+    /// at a channel, full stop.
     ///
-    /// No reply token, and no session write. The caller is the desktop app's
-    /// own cron delivery, announcing the result of a run that already has its
-    /// own session — there is no chat it is replying to, so there is nothing
-    /// for a token to authorize and nothing to attach the message to.
+    /// No reply token, and no session write. The callers are the desktop app's
+    /// own cron delivery and its `introspect` send tool, announcing something
+    /// that already has its own session — there is no chat being replied to, so
+    /// there is nothing for a token to authorize and nothing to attach to.
     ///
     /// Kept separate from `mcp-send` rather than relaxing that path: a token is
     /// exactly what stops an agent from addressing a chat it was never part of,
     /// and the two callers have opposite trust stories — one is a model, the
     /// other is the application that owns this daemon.
+    ///
+    /// #933: `media_base64` exists so the desktop stopped calling
+    /// `teamclu_gateway::wecom::*` straight from `introspect_api.rs`. That path
+    /// reached the chat without the daemon knowing, using workspace credentials
+    /// instead of the daemon's. It still does not write a session row — the
+    /// caller has no session to write to — but channel I/O now happens in
+    /// exactly one process.
     pub(crate) async fn handle_channel_send(
         &self,
         payload: &serde_json::Value,
@@ -413,8 +421,11 @@ impl DaemonServer {
         if target.is_empty() {
             anyhow::bail!("channel-send: 'target' is required");
         }
-        if message.trim().is_empty() {
-            anyhow::bail!("channel-send: 'message' is required");
+        // Decoded before the emptiness check: a file with no caption is a
+        // legitimate send, so "message is required" only holds without one.
+        let media = decode_channel_send_media(payload)?;
+        if message.trim().is_empty() && media.is_none() {
+            anyhow::bail!("channel-send: 'message' or 'media_base64' is required");
         }
         // Same guard as the agent path: a half-resolved route delivers nowhere
         // while reporting success.
@@ -425,9 +436,14 @@ impl DaemonServer {
             .channel_mgr
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("channel manager not running"))?;
-        mgr.dispatch_send(channel, target, Some(message), None)
-            .await?;
-        Ok(serde_json::json!({ "channel": channel, "target": target }))
+        let media_sent = media.is_some();
+        let text = (!message.trim().is_empty()).then_some(message);
+        mgr.dispatch_send(channel, target, text, media).await?;
+        Ok(serde_json::json!({
+            "channel": channel,
+            "target": target,
+            "media_sent": media_sent,
+        }))
     }
 
     /// Handle a `mcp-send` JSON envelope from the `amuxd mcp-server` bridge.
@@ -504,15 +520,9 @@ impl DaemonServer {
                 .get("reply_token")
                 .and_then(|v| v.as_str())
                 .and_then(crate::channels::reply_token::session_for);
-            if resolved.is_none() {
-                // Without a session the file cannot join a reply OR be recorded
-                // at all — it reaches the chat and exists nowhere else, which
-                // is the exact hole #933 opened with.
-                tracing::warn!(
-                    binding,
-                    "mcp-send: reply token carries no session; file will not be recorded"
-                );
-            }
+            // The no-session case is warned about (and still delivered) by
+            // `record_outbound_send` below, which is the one place that knows
+            // whether there was anything to record.
             if let Some(session_id) = resolved {
                 let open = crate::channels::core::turn_attachments::is_open(&session_id);
                 // Which of the two paths ran is otherwise invisible, and they
@@ -531,14 +541,17 @@ impl DaemonServer {
             }
         }
 
-        mgr.dispatch_send(channel, target, message, file_path)
+        // Record first, render second (#933). The old order pushed to the
+        // channel and then mirrored into the session, so a push that succeeded
+        // followed by a failed mirror put the message in WeCom and nowhere
+        // else — invisible on the desktop and unrecoverable. Writing first
+        // inverts which failure is possible: a session row whose delivery
+        // failed is at least visible, and the error is returned to the agent.
+        let media = self
+            .record_outbound_send(mgr, payload, message, file_path)
             .await?;
 
-        // The chat now has the file; the session must get it too. Without this
-        // an agent-sent attachment lived only in WeCom — the desktop showed the
-        // reply text and no file, because nothing had ever written one.
-        self.record_outbound_send(mgr, payload, message, file_path)
-            .await;
+        mgr.dispatch_send(channel, target, message, media).await?;
 
         // `dispatch_send` returned Ok, so the channel adapter confirmed the
         // send. Echo the resolved binding/target so the caller's ACK can be
@@ -553,11 +566,6 @@ impl DaemonServer {
         }))
     }
 
-    /// Mirror an outbound `send` into the session it was sent from.
-    ///
-    /// Best-effort by design: the message has already reached the chat, so a
-    /// failure here must not turn a delivered send into a reported error. It
-    /// only costs the desktop its copy, which is what a warn is for.
     /// Park a file against the in-flight turn instead of pushing it now.
     ///
     /// Nothing is recorded here: the core writes one message when the turn
@@ -635,22 +643,27 @@ impl DaemonServer {
         }))
     }
 
+    /// Write an outbound `send` into the session, and hand back the bytes for
+    /// the channel to render.
+    ///
+    /// Runs BEFORE `dispatch_send`, not after (#933). It returns the media
+    /// rather than letting the transport re-read the path, so the file is read
+    /// once and cannot reach a chat without this having run first.
+    ///
+    /// A missing session is not fatal: cron bindings and pre-token turns have
+    /// none, and refusing to deliver would be a worse answer than delivering
+    /// something the desktop cannot show. That case warns and sends anyway.
     async fn record_outbound_send(
         &self,
         mgr: &ChannelManager,
         payload: &serde_json::Value,
         message: Option<&str>,
         file_path: Option<&str>,
-    ) {
-        let Some(session_id) = payload
+    ) -> anyhow::Result<Option<crate::channels::manager::OutboundMedia>> {
+        let session_id = payload
             .get("reply_token")
             .and_then(|v| v.as_str())
-            .and_then(crate::channels::reply_token::session_for)
-        else {
-            // Pre-dates this turn's token, or a cron binding that has no cloud
-            // session. Nothing to attach the record to.
-            return;
-        };
+            .and_then(crate::channels::reply_token::session_for);
 
         let store = mgr.store();
         let sender = mgr.agent_actor_id().to_string();
@@ -659,30 +672,47 @@ impl DaemonServer {
         let Some(path) = file_path else {
             // A text-only proactive send. The gateway records its own replies,
             // but a `send` with no file is a message the session has not seen.
-            if caption.is_empty() {
-                return;
+            if let Some(session_id) = session_id {
+                if !caption.is_empty() {
+                    if let Err(e) = store
+                        .record_agent_reply(&session_id, &sender, &caption, None)
+                        .await
+                    {
+                        warn!(session_id, error = %e, "mcp-send: recording the sent text failed");
+                    }
+                }
             }
-            if let Err(e) = store
-                .record_agent_reply(&session_id, &sender, &caption, None)
-                .await
-            {
-                warn!(session_id, error = %e, "mcp-send: recording the sent text failed");
-            }
-            return;
+            return Ok(None);
         };
 
-        let bytes = match tokio::fs::read(path).await {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(path, error = %e, "mcp-send: re-reading the sent file failed");
-                return;
-            }
-        };
+        // Read before anything else: a file we cannot read is a send that
+        // cannot happen, and failing here means the agent is told so instead
+        // of getting a success for a delivery that never left.
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("mcp-send: read {path}: {e}"))?;
         let filename = std::path::Path::new(path)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("file")
             .to_string();
+        let media = crate::channels::manager::OutboundMedia {
+            bytes: bytes.clone(),
+            filename: filename.clone(),
+        };
+
+        let Some(session_id) = session_id else {
+            // Pre-dates this turn's token, or a cron binding with no cloud
+            // session. The file still goes out, but nothing will show it in
+            // the app — which is the hole #933 opened with, narrowed to the
+            // one case that has nowhere to write.
+            warn!(
+                filename,
+                "mcp-send: reply token carries no session; sending without recording"
+            );
+            return Ok(Some(media));
+        };
+
         let mime = teamclu_gateway::wecom::resolve_mime(&bytes, Some(&filename));
         let size = bytes.len();
         // Same team/session-scoped layout the inbound path uses, so both
@@ -730,6 +760,8 @@ impl DaemonServer {
         {
             warn!(session_id, error = %e, "mcp-send: recording the sent attachment failed");
         }
+
+        Ok(Some(media))
     }
 
     // `handle_prompt_await` (cron-style ACP turn) lives in `server/cron.rs`.
@@ -902,6 +934,37 @@ fn apply_gateway_locale(locale: Option<&str>) {
 /// Guards against the observed failure where an unresolved originating chat
 /// produced a target such as `current` or `chat:current`, which WeCom would
 /// silently misroute while the send was still reported as delivered.
+/// Pull an optional single attachment out of a `channel-send` envelope.
+///
+/// Base64 because the control channel is one line of JSON — the same shape the
+/// desktop's `introspect_api` already spoke, so moving that caller onto the
+/// daemon did not need a new transport.
+fn decode_channel_send_media(
+    payload: &serde_json::Value,
+) -> anyhow::Result<Option<crate::channels::manager::OutboundMedia>> {
+    use base64::Engine as _;
+
+    let Some(b64) = payload.get("media_base64").and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
+    if b64.is_empty() {
+        return Ok(None);
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| anyhow::anyhow!("channel-send: invalid media_base64: {e}"))?;
+    let filename = payload
+        .get("media_filename")
+        .and_then(|v| v.as_str())
+        .filter(|f| !f.trim().is_empty())
+        .unwrap_or("file")
+        .to_string();
+    Ok(Some(crate::channels::manager::OutboundMedia {
+        bytes,
+        filename,
+    }))
+}
+
 fn placeholder_target_reason(target: &str) -> Option<&'static str> {
     let target = target.trim();
     if target.is_empty() {

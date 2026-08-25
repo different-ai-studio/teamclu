@@ -34,6 +34,17 @@ struct RunningChannels {
     seatalk: Option<SeaTalkGateway>,
 }
 
+/// A file on its way out to a chat, already uploaded and recorded as a session
+/// attachment.
+///
+/// The bytes are carried rather than re-read from disk so there is exactly one
+/// read per send, and — more to the point — so `dispatch_send` cannot be handed
+/// a path it would push without the session ever knowing (#933).
+pub struct OutboundMedia {
+    pub bytes: Vec<u8>,
+    pub filename: String,
+}
+
 pub struct ChannelManager {
     cfg: DaemonConfig,
     acp: Arc<dyn AgentHandle>,
@@ -250,12 +261,18 @@ impl ChannelManager {
     /// chat_type=1, `chat` → group chat with chat_type=2; for SeaTalk,
     /// `user` → employee_code DM, `chat` → group_id). WeCom and SeaTalk are
     /// wired; other channels return an explanatory error until ported.
+    ///
+    /// Takes bytes, not a path (#933): this used to read the file off disk
+    /// itself, which is how a file could reach a chat without ever becoming a
+    /// session attachment. Now the only way to get an `OutboundMedia` is to
+    /// have gone through the session write first, so the ordering is a
+    /// property of the signature rather than of the caller remembering.
     pub async fn dispatch_send(
         &self,
         channel: &str,
         target: &str,
         message: Option<&str>,
-        file_path: Option<&str>,
+        media: Option<OutboundMedia>,
     ) -> anyhow::Result<()> {
         let running = self.running.lock().await;
         match channel {
@@ -278,20 +295,8 @@ impl ChannelManager {
                     None => &running.wecom[0],
                 };
                 let (kind, id) = parse_send_target(target)?;
-                let media: Option<(Vec<u8>, String)> = match file_path {
-                    Some(p) => {
-                        let bytes = tokio::fs::read(p)
-                            .await
-                            .map_err(|e| anyhow::anyhow!("read {p}: {e}"))?;
-                        let filename = std::path::Path::new(p)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("file")
-                            .to_string();
-                        Some((bytes, filename))
-                    }
-                    None => None,
-                };
+                let media: Option<(Vec<u8>, String)> =
+                    media.map(|m| (m.bytes, m.filename));
                 let text = message.unwrap_or("");
                 let result = match kind {
                     "user" => g.send_to_user_with_optional_media(id, text, media).await,
@@ -307,7 +312,7 @@ impl ChannelManager {
                     .ok_or_else(|| anyhow::anyhow!("seatalk not running"))?;
                 let (kind, id) = parse_send_target(target)?;
                 let text = message.unwrap_or("");
-                if file_path.is_some() {
+                if media.is_some() {
                     anyhow::bail!("seatalk: file send not supported yet");
                 }
                 let result = match kind {

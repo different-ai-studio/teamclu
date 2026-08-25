@@ -3,11 +3,11 @@
 // channel gateways itself — amuxd owns those instances and persists their
 // config in `daemon.toml`. The three commands here just forward to amuxd.
 //
-// Cron and `introspect_api` still reach into the underlying
-// `teamclu_gateway::*` modules for direct send helpers (e.g.
-// `gateway::email::send_notification_email`, `gateway::wecom::send_proactive_message`),
-// so we keep `pub use teamclu_gateway::*` to preserve their `crate::commands::gateway::*`
-// import paths. The legacy per-platform `*Gateway` slots that used to live here
+// Cron still reaches into the underlying `teamclu_gateway::*` modules for
+// direct send helpers (e.g. `gateway::email::send_notification_email`), so we
+// keep `pub use teamclu_gateway::*` to preserve its `crate::commands::gateway::*`
+// import paths. `introspect_api` no longer does — its WeCom send goes through
+// amuxd now (#933). The legacy per-platform `*Gateway` slots that used to live here
 // are gone, and so is the `SessionMapping` that sat beside them — with the map
 // went the last reason for a `GatewayState`, so there is no app-level gateway
 // state left at all.
