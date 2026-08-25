@@ -5,10 +5,10 @@ import { ArrowLeft, FolderSearch, Loader2, Save } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { useWorkspaceStore } from '@/stores/workspace'
 import { encodeWorkspaceId, putDaemonSkill } from '@/lib/daemon-local-client'
 import { revealInFinder } from '@/components/workspace/file-tree-operations'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
+import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
 import { useIsDark } from './use-is-dark'
 
 const CodeEditor = lazy(() => import('@/components/editors/CodeEditor'))
@@ -35,7 +35,7 @@ type Load =
 export function SkillFileEditor({ slug, rel }: { slug: string; rel: string }) {
   const { t } = useTranslation()
   const isDark = useIsDark()
-  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const workspacePath = useEffectiveWorkspacePath()
   // Same two-step lookup as SkillDetail: a personal skill colliding with a
   // registry name is addressed as `personal:<slug>`, and cross-links between
   // skills select by bare slug.

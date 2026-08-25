@@ -16,6 +16,7 @@ import {
   type SkillLocalState,
 } from '@/lib/skills/auto-follow'
 import { useCurrentTeamStore } from '@/stores/current-team'
+import { effectiveWorkspacePath } from '@/lib/effective-workspace'
 import { useTabsStore } from '@/stores/tabs'
 import {
   decodeTeamShareTarget,
@@ -344,8 +345,18 @@ export interface TeamSkillFileDiff {
   binary: boolean
 }
 
-function workspacePath(): string | null {
-  return useWorkspaceStore.getState().workspacePath
+/**
+ * The workspace these daemon calls address.
+ *
+ * Falls back to the daemon's own default workspace when no folder is open:
+ * team-shared config (MCP servers, skills, their local counterparts) is not
+ * per-project, and the daemon runs in that directory itself whenever nothing
+ * else is picked — so it is the config a gateway session or a global cron job
+ * would use. Returning null here meant every one of these actions refused, or
+ * silently produced an empty list, on a client with no folder open.
+ */
+function workspacePath(): Promise<string | null> {
+  return effectiveWorkspacePath()
 }
 
 function currentTeamId(): string | null {
@@ -829,7 +840,7 @@ async function materializeSkill(
   opts: { force?: boolean; archiveUnmanaged?: boolean } = {},
 ): Promise<{ archivedPath?: string }> {
   const backend = getBackend()
-  const wsPath = workspacePath()
+  const wsPath = await workspacePath()
   const detail = await backend.teamSkills.getTeamSkill(teamId, slug)
   const { url } = await backend.teamSkills.resolveDownload(teamId, slug, version)
   // Download URLs are storage-presigned (S3/MinIO/Supabase). Passing a Bearer
@@ -1174,7 +1185,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   },
 
   createPersonalMcp: async (input) => {
-    const wsPath = workspacePath()
+    const wsPath = await workspacePath()
     if (!wsPath) throw new Error('no workspace open')
     const name = (input.name ?? '').trim()
     if (!name) throw new Error('name is required')
@@ -1190,7 +1201,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     if (!item || (item.kind !== 'personal' && item.kind !== 'builtin')) {
       throw new Error(`mcp server ${id} is not editable in this workspace`)
     }
-    const wsPath = workspacePath()
+    const wsPath = await workspacePath()
     if (!wsPath) throw new Error('no workspace open')
     const wid = encodeWorkspaceId(wsPath)
     const current = await getDaemonMcp(wid)
@@ -1205,7 +1216,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     if (!item || (item.kind !== 'personal' && item.kind !== 'builtin')) {
       throw new Error(`mcp server ${id} has no local toggle`)
     }
-    const wsPath = workspacePath()
+    const wsPath = await workspacePath()
     if (!wsPath) throw new Error('no workspace open')
     const wid = encodeWorkspaceId(wsPath)
     const current = await getDaemonMcp(wid)
@@ -1256,7 +1267,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   sharePersonalSkill: async (slug, input) => {
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
-    const wsPath = workspacePath()
+    const wsPath = await workspacePath()
     const skill = get().skills.items.find((s) => s.slug === slug)
     if (!skill || skill.kind !== 'personal') {
       throw new Error(`${slug} is not a personal skill`)
@@ -1358,7 +1369,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   publishSkillVersion: async (slug, input) => {
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
-    const wsPath = workspacePath()
+    const wsPath = await workspacePath()
     const skill = get().skills.items.find((s) => s.slug === slug)
     if (!skill) throw new Error(`${slug} is not in the registry`)
 
@@ -1542,7 +1553,11 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
 
     for (const slug of plan.remove) {
       try {
-        await invoke('team_skill_uninstall', { workspacePath: workspacePath(), slug, isGlobal: true })
+        await invoke('team_skill_uninstall', {
+          workspacePath: await workspacePath(),
+          slug,
+          isGlobal: true,
+        })
         delete states[slug]
         delete errors[slug]
       } catch {
@@ -1647,7 +1662,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   },
 
   loadSection: async (section, opts) => {
-    const wsPath = workspacePath()
+    const wsPath = await workspacePath()
 
     if (section === 'env') {
       try {
@@ -1736,7 +1751,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   },
 
   loadMcpTools: async (opts) => {
-    const wsPath = workspacePath()
+    const wsPath = await workspacePath()
     if (!wsPath) return
     // The probe asks the LOCAL daemon about the LOCAL workspace. Applying that
     // to a remote Agent's rows by name reports this machine's health and tool

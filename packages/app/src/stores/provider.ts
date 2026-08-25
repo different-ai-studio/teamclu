@@ -11,6 +11,7 @@ import {
   deleteDaemonDeviceProviderAuth,
   deleteDaemonProviderAuth,
   getDaemonProviders,
+  getDeviceProviders,
   getDaemonDeviceProviderAuthMethods,
   postDaemonDeviceProviderOAuthAuthorize,
   postDaemonDeviceProviderOAuthCallback,
@@ -27,6 +28,7 @@ import {
   providerApiKeyName,
 } from '@/lib/opencode/config'
 import { TEAM_SHARED_PROVIDER_ID } from '@/lib/team-provider'
+import { effectiveWorkspacePath } from '@/lib/effective-workspace'
 
 const DEFAULT_CONNECTABLE_PROVIDERS: ProviderEntry[] = [
   { id: 'openai', name: 'OpenAI', configured: false },
@@ -265,19 +267,30 @@ function mergeProviderEntries(
 
 const daemonProvidersInflight = new Map<string, Promise<DaemonProviderInfo[] | null>>()
 
-async function loadDaemonProvidersForWorkspace(workspacePath: string): Promise<DaemonProviderInfo[] | null> {
-  const existing = daemonProvidersInflight.get(workspacePath)
+/** Cache key for the workspace-less read; a path can never collide with it. */
+const DEVICE_SCOPE = '\0device'
+
+async function loadDaemonProvidersForWorkspace(
+  workspacePath: string | null,
+): Promise<DaemonProviderInfo[] | null> {
+  const key = workspacePath ?? DEVICE_SCOPE
+  const existing = daemonProvidersInflight.get(key)
   if (existing) return existing
 
-  const request = getDaemonProviders(encodeWorkspaceId(workspacePath)).finally(() => {
-    daemonProvidersInflight.delete(workspacePath)
+  // No workspace: read the device-level list. Provider credentials are
+  // per-machine, so this is the same data the workspace route would merge into
+  // its answer — minus the workspace overrides there is no workspace for.
+  const request = (
+    workspacePath ? getDaemonProviders(encodeWorkspaceId(workspacePath)) : getDeviceProviders()
+  ).finally(() => {
+    daemonProvidersInflight.delete(key)
   })
-  daemonProvidersInflight.set(workspacePath, request)
+  daemonProvidersInflight.set(key, request)
   return request
 }
 
 async function loadDaemonProviderSnapshot(
-  workspacePath: string,
+  workspacePath: string | null,
   disconnectedIds: Set<string>,
 ): Promise<{
   configuredProviders: ConfiguredProvider[]
@@ -458,11 +471,8 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
   refreshProviders: async () => {
     set({ providersLoading: true })
     try {
-      const workspacePath = useWorkspaceStore.getState().workspacePath
-      if (!workspacePath) {
-        set({ providersLoading: false })
-        return
-      }
+      // Null is fine — the snapshot then reads the device-level provider list.
+      const workspacePath = await effectiveWorkspacePath()
       const snapshot = await loadDaemonProviderSnapshot(workspacePath, get()._disconnectedIds)
       if (!snapshot) {
         set({ providersLoading: false })
@@ -478,11 +488,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
   refreshConfiguredProviders: async () => {
     set({ configuredProvidersLoading: true })
     try {
-      const workspacePath = useWorkspaceStore.getState().workspacePath
-      if (!workspacePath) {
-        set({ configuredProvidersLoading: false })
-        return
-      }
+      const workspacePath = await effectiveWorkspacePath()
       const snapshot = await loadDaemonProviderSnapshot(workspacePath, get()._disconnectedIds)
       if (!snapshot) {
         set({ configuredProvidersLoading: false })

@@ -7,8 +7,8 @@ import { SettingCard, SectionHeader } from './shared'
 import { toast } from 'sonner'
 import { appStoragePrefix } from '@/lib/build-config'
 import { isTauri } from '@/lib/utils'
-import { useWorkspaceStore } from '@/stores/workspace'
 import { encodeWorkspaceId, reloadDaemonRuntime } from '@/lib/daemon-local-client'
+import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
 
 // Legacy global storage key — kept only for one-time migration into
 // per-workspace teamclu.json.
@@ -16,7 +16,7 @@ const LEGACY_STORAGE_KEY = `${appStoragePrefix}-system-prompt`
 
 export const PromptSection = React.memo(function PromptSection() {
   const { t } = useTranslation()
-  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const workspacePath = useEffectiveWorkspacePath()
   const [systemPrompt, setSystemPrompt] = React.useState('')
 
   React.useEffect(() => {

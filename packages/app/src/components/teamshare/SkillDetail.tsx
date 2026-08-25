@@ -31,7 +31,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import { useWorkspaceStore } from '@/stores/workspace'
 import { encodeWorkspaceId, putDaemonSkill } from '@/lib/daemon-local-client'
 import {
   useTeamShareBrowserStore,
@@ -51,6 +50,7 @@ import {
 import { useIsDark } from './use-is-dark'
 import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
+import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
 
 type SkillConfirmAction = 'delete' | 'uninstall'
 
@@ -846,7 +846,7 @@ function DiffSheet({
 export function SkillDetail({ slug }: { slug: string }) {
   const { t } = useTranslation()
   const isDark = useIsDark()
-  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const workspacePath = useEffectiveWorkspacePath()
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
   // By id, not slug: a personal skill colliding with a registry name carries
   // `personal:<slug>`, and matching on slug would resolve both rows to the

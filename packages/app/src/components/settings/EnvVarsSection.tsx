@@ -703,8 +703,8 @@ export const EnvVarsSection = React.memo(function EnvVarsSection() {
   const isLoading = envLoading
 
   React.useEffect(() => {
-    if (!workspacePath) return
-
+    // No workspace gate: personal env is home-scoped and team env is cloud —
+    // the catalog loads either way (see `currentWorkspacePath` in the store).
     void (async () => {
       await loadEnvCatalog()
       const err = useEnvVarsStore.getState().error

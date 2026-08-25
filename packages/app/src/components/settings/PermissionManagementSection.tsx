@@ -14,7 +14,6 @@ import {
   Save,
   Database,
 } from 'lucide-react'
-import { useWorkspaceStore } from '@/stores/workspace'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -27,6 +26,7 @@ import {
 } from '@/components/ui/select'
 import { SettingCard, SectionHeader } from './shared'
 import { invalidatePermissionConfigCache } from '@/stores/session-permissions'
+import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
 import {
   encodeWorkspaceId,
   getDaemonToolPermissions,
@@ -87,7 +87,7 @@ const PERMISSION_LABELS: Record<keyof PermissionConfig, { label: string; desc: s
 
 export const PermissionManagementSection = React.memo(function PermissionManagementSection() {
   const { t } = useTranslation()
-  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const workspacePath = useEffectiveWorkspacePath()
 
   // Allowlist state (flat list from daemon)
   const [allowlistRules, setAllowlistRules] = React.useState<DaemonAllowlistRule[]>([])
