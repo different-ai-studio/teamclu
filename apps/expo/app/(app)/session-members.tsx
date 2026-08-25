@@ -411,6 +411,7 @@ export default function SessionMembersRoute() {
           sessionId,
           agentType: plan.agentType,
           initialPrompt: "",
+          resetBackendBinding: true,
         });
         showToast("success", t("Runtime restart requested"));
       } catch (err) {

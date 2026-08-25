@@ -21,23 +21,7 @@ impl DaemonServer {
     /// Per-agent updates should go through `publish_runtime_state_by_id`.
     pub(crate) async fn merged_agent_list(&self) -> amux::AgentList {
         let agents = self.agents.lock().await;
-        let mut agent_list = agents.to_proto_agent_list();
-        let active_ids: std::collections::HashSet<String> = agent_list
-            .runtimes
-            .iter()
-            .map(|a| a.runtime_id.clone())
-            .collect();
-        for mut session_info in self.sessions.to_proto_agent_list() {
-            if !active_ids.contains(&session_info.runtime_id) {
-                // Historical rows carry no catalog of their own — they were
-                // written by a runtime that is no longer attached. Publishing
-                // them empty is what pinned every non-newest session's pill at
-                // "connecting" with no model name.
-                agents.fill_catalog(&mut session_info);
-                agent_list.runtimes.push(session_info);
-            }
-        }
-        agent_list
+        agents.to_proto_agent_list()
     }
 
     /// Publish the actor snapshot after attachment changes. Per-spawn
@@ -169,13 +153,9 @@ impl DaemonServer {
     /// cloud session UUID on their in-memory `RuntimeHandle` instead,
     /// so when the persisted lookup misses we fall back to RuntimeManager.
     pub(crate) async fn target_sessions(&self, agent_id: &str) -> Vec<String> {
-        if let Some(sid) = self
-            .sessions
-            .find_by_id(agent_id)
-            .map(|s| s.session_id.clone())
-            .filter(|s| !s.is_empty())
-        {
-            return vec![sid];
+        // RuntimeManager keys attachments by cloud session id.
+        if !agent_id.is_empty() {
+            return vec![agent_id.to_string()];
         }
         let live = self
             .agents
@@ -286,10 +266,6 @@ impl DaemonServer {
                     handle.status = amux::AgentStatus::Error;
                 }
             }
-            if let Some(session) = self.sessions.find_by_id_mut(agent_id) {
-                session.status = amux::AgentStatus::Error as i32;
-                let _ = self.sessions.save(&self.sessions_path);
-            }
             let _ = self.publish_actor_state().await;
         }
 
@@ -370,10 +346,6 @@ impl DaemonServer {
                         .unwrap_or(amux::AgentStatus::Unknown);
                 }
             }
-            if let Some(session) = self.sessions.find_by_id_mut(agent_id) {
-                session.status = sc.new_status;
-                let _ = self.sessions.save(&self.sessions_path);
-            }
             self.publish_runtime_state_by_id(agent_id).await;
             if became_idle {
                 self.remote_tool_turn_contexts
@@ -396,15 +368,9 @@ impl DaemonServer {
 
         // Update session on tool use
         if let Some(amux::acp_event::Event::ToolUse(_)) = acp_event.event {
-            {
-                let mut agents = self.agents.lock().await;
-                if let Some(handle) = agents.get_handle_mut(agent_id) {
-                    handle.tool_use_count += 1;
-                }
-            }
-            if let Some(session) = self.sessions.find_by_id_mut(agent_id) {
-                session.tool_use_count += 1;
-                let _ = self.sessions.save(&self.sessions_path);
+            let mut agents = self.agents.lock().await;
+            if let Some(handle) = agents.get_handle_mut(agent_id) {
+                handle.tool_use_count += 1;
             }
         }
 
@@ -628,12 +594,6 @@ impl DaemonServer {
                 .lock()
                 .await
                 .clear_runtime(rid);
-            if let Some(s) = self.sessions.find_by_id_mut(rid) {
-                s.status = amux::AgentStatus::Stopped as i32;
-            }
-        }
-        if !superseded.is_empty() {
-            let _ = self.sessions.save(&self.sessions_path);
         }
         vec![keep]
     }
@@ -982,17 +942,6 @@ impl DaemonServer {
             self.persist_runtime_cursor(runtime_id, &id).await;
         }
         Some(messages)
-    }
-
-    pub(crate) fn mark_superseded_runtime_rows_stopped(&mut self, superseded: &[String]) {
-        for runtime_id in superseded {
-            if let Some(s) = self.sessions.find_by_id_mut(runtime_id) {
-                s.status = amux::AgentStatus::Stopped as i32;
-            }
-        }
-        if !superseded.is_empty() {
-            let _ = self.sessions.save(&self.sessions_path);
-        }
     }
 
     /// Replay any session messages that arrived before this runtime was spawned.

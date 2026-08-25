@@ -166,7 +166,7 @@ final class RuntimeStartRpcTests: XCTestCase {
         ))
 
         let final = await outcome
-        guard case .rejected(let reason) = final else {
+        guard case .rejected(let reason, _) = final else {
             return XCTFail("expected .rejected, got \(final)")
         }
         XCTAssertEqual(reason, "no workspace")
@@ -214,7 +214,7 @@ final class RuntimeStartRpcTests: XCTestCase {
         ))
 
         let final = await outcome
-        guard case .rejected(let reason) = final else {
+        guard case .rejected(let reason, _) = final else {
             return XCTFail("expected .rejected, got \(final)")
         }
         XCTAssertEqual(reason, "internal")
@@ -233,7 +233,7 @@ final class RuntimeStartRpcTests: XCTestCase {
             sessionId: "",
             initialPrompt: "hi"
         )
-        guard case .rejected(let reason) = outcome else {
+        guard case .rejected(let reason, _) = outcome else {
             return XCTFail("expected .rejected, got \(outcome)")
         }
         XCTAssertEqual(reason, "mqtt not configured")

@@ -1168,10 +1168,11 @@ impl DaemonServer {
                         &start.worktree,
                         &start.session_id,
                         &start.initial_prompt,
-                        None,
-                        &sender_actor_id,
-                    )
-                    .await;
+                None,
+                &sender_actor_id,
+                false,
+            )
+            .await;
 
                 match outcome {
                     Ok(res) => {
@@ -1211,171 +1212,63 @@ impl DaemonServer {
                         .lock()
                         .await
                         .clear_runtime(agent_id);
-                    if let Some(session) = self.sessions.find_by_id_mut(agent_id) {
-                        session.status = amux::AgentStatus::Stopped as i32;
-                        let _ = self.sessions.save(&self.sessions_path);
-                    }
-                    self.publish_runtime_state_by_id(agent_id).await;
+                    self.publish_runtime_detached(agent_id).await;
                     info!(agent_id, peer_id, "agent stopped");
                 }
             }
 
             amux::acp_command::Command::SendPrompt(prompt) => {
-                // Lazy resume: if agent is not live but exists in session store,
-                // spawn a new ACP process and resume the session.
                 let needs_resume = self.agents.lock().await.get_handle(agent_id).is_none();
                 if needs_resume {
-                    if let Some(stored) = self.sessions.find_by_id(agent_id) {
-                        let at = amux::AgentType::try_from(stored.agent_type)
-                            .unwrap_or(amux::AgentType::ClaudeCode);
-                        let worktree = stored.worktree.clone();
-                        let ws_id = stored.workspace_id.clone();
-                        let acp_sid = stored.acp_session_id.clone();
-                        let session_id = stored.session_id.clone();
-                        info!(agent_id, "lazy-resuming historical session");
-                        let remote_workspace_id = (!ws_id.is_empty()).then_some(ws_id.clone());
-                        let context = match self
-                            .assemble_stored_execution_context(&worktree, &ws_id)
-                            .await
-                        {
-                            Ok(context) => context,
-                            Err(e) => {
-                                warn!(
-                                    agent_id,
-                                    worktree = %worktree,
-                                    error = %e,
-                                    "lazy-resume: assemble execution context failed"
-                                );
-                                return;
-                            }
-                        };
-                        // A stored session with no cloud session id cannot be
-                        // re-attached: the attachment map is keyed by it.
-                        if session_id.is_empty() {
-                            warn!(
-                                agent_id,
-                                "lazy-resume: stored session has no cloud session id; skipping"
-                            );
-                            return;
-                        }
-                        let resume_res = self
-                            .agents
-                            .lock()
-                            .await
-                            .resume_agent(
+                    let session_id = agent_id.to_string();
+                    let agent_type = {
+                        let agents = self.agents.lock().await;
+                        agents.default_agent_type()
+                    };
+                    let workspace_id = self
+                        .resolve_collab_workspace_id(&session_id)
+                        .await
+                        .or_else(|| {
+                            self.resolve_binding_workspace_for_cold_attach(
                                 &session_id,
-                                &acp_sid,
-                                at,
-                                &ws_id,
-                                remote_workspace_id.as_deref(),
+                                agent_type,
+                                None,
+                            )
+                        });
+                    if let Some(workspace_id) = workspace_id {
+                        match self
+                            .attach_collab_from_binding(
+                                &session_id,
+                                agent_type,
+                                &workspace_id,
                                 "",
                                 None,
-                                context,
+                                true,
+                                Some(&sender_actor_id),
+                                "legacy_send_prompt",
                             )
-                            .await;
-                        match resume_res {
-                            Ok(new_acp_sid) => {
-                                let team_id = self.config.team_id.clone().unwrap_or_default();
-                                if !session_id.is_empty() && !sender_actor_id.is_empty() {
-                                    self.bind_remote_tool_member(
-                                        agent_id,
-                                        &session_id,
-                                        &sender_actor_id,
-                                        &team_id,
-                                    )
-                                    .await;
-                                }
-                                // Forward model_id if the client requested one
-                                let desired_model = prompt.model_id.clone();
-                                if !desired_model.is_empty() {
-                                    let mut agents = self.agents.lock().await;
-                                    match agents.send_set_model(agent_id, &desired_model).await {
-                                        Ok(()) => {
-                                            agents.set_current_model(agent_id, &desired_model);
-                                        }
-                                        Err(e) => {
-                                            warn!(agent_id, model_id = %desired_model, "set_model after resume failed: {}", e);
-                                        }
-                                    }
-                                }
-                                self.prepare_remote_tool_context_for_turn(
+                            .await
+                        {
+                            Ok(None) => {}
+                            Ok(Some(_)) => {}
+                            Err(err) => {
+                                self.publish_session_event(
                                     agent_id,
-                                    &session_id,
-                                    &sender_actor_id,
-                                )
-                                .await;
-                                let requester =
-                                    (!sender_actor_id.is_empty()).then(|| sender_actor_id.clone());
-                                let send_res = self
-                                    .agents
-                                    .lock()
-                                    .await
-                                    .send_prompt_with_requester(
-                                        agent_id,
-                                        &prompt.text,
-                                        prompt.attachment_urls.clone(),
-                                        requester,
-                                        None,
-                                    )
-                                    .await;
-                                if let Err(e) = send_res {
-                                    warn!(agent_id, "lazy resume prompt send failed: {}", e);
-                                    self.publish_session_event(
-                                        agent_id,
-                                        amux::SessionEvent {
-                                            event: Some(
-                                                amux::session_event::Event::PromptRejected(
-                                                    amux::PromptRejected {
-                                                        command_id,
-                                                        reason: format!(
-                                                        "failed to send prompt after resume: {}",
-                                                        e
-                                                    ),
-                                                    },
-                                                ),
+                                    amux::SessionEvent {
+                                        event: Some(
+                                            amux::session_event::Event::PromptRejected(
+                                                amux::PromptRejected {
+                                                    command_id,
+                                                    reason: err.error_message,
+                                                },
                                             ),
-                                        },
-                                    )
-                                    .await;
-                                    return;
-                                }
-                                // Update stored session with potentially new acp_session_id
-                                if let Some(s) = self.sessions.find_by_id_mut(agent_id) {
-                                    s.acp_session_id = new_acp_sid;
-                                    s.session_id = session_id.clone();
-                                    s.status = amux::AgentStatus::Active as i32;
-                                    s.last_prompt = prompt.text.clone();
-                                }
-                                let _ = self.sessions.save(&self.sessions_path);
-                                info!(agent_id, peer_id, "session resumed, prompt sent");
-                                self.publish_session_event(
-                                    agent_id,
-                                    amux::SessionEvent {
-                                        event: Some(amux::session_event::Event::PromptAccepted(
-                                            amux::PromptAccepted { command_id },
-                                        )),
+                                        ),
                                     },
                                 )
                                 .await;
-                                self.publish_runtime_state_by_id(agent_id).await;
-                            }
-                            Err(e) => {
-                                warn!(agent_id, "lazy resume failed: {}", e);
-                                self.publish_session_event(
-                                    agent_id,
-                                    amux::SessionEvent {
-                                        event: Some(amux::session_event::Event::PromptRejected(
-                                            amux::PromptRejected {
-                                                command_id,
-                                                reason: format!("session resume failed: {}", e),
-                                            },
-                                        )),
-                                    },
-                                )
-                                .await;
+                                return;
                             }
                         }
-                        return;
                     }
                 }
 
@@ -1462,10 +1355,6 @@ impl DaemonServer {
                                 handle.status = amux::AgentStatus::Active;
                                 handle.current_prompt = prompt.text.clone();
                             }
-                        }
-                        if let Some(session) = self.sessions.find_by_id_mut(agent_id) {
-                            session.last_prompt = prompt.text.clone();
-                            let _ = self.sessions.save(&self.sessions_path);
                         }
                         info!(agent_id, peer_id, "prompt sent to agent");
                         self.publish_session_event(

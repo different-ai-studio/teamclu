@@ -27,12 +27,15 @@ export type RuntimeStartArgs = {
   agentType: number;
   initialPrompt?: string;
   modelId?: string;
+  resetBackendBinding?: boolean;
   timeoutMs?: number;
 };
 
 export type RuntimeStopArgs = {
   targetActorId: string;
   runtimeId: string;
+  purgeBinding?: boolean;
+  workspaceId?: string;
   timeoutMs?: number;
 };
 
@@ -177,6 +180,7 @@ export function createRuntimeRpcClient(deps: RuntimeRpcClientDeps): RuntimeRpcCl
         agentType: args.agentType,
         initialPrompt: args.initialPrompt ?? "",
         modelId: args.modelId ?? "",
+        resetBackendBinding: args.resetBackendBinding ?? false,
       });
       const request = create(RpcRequestSchema, {
         requestId,
@@ -259,7 +263,11 @@ export function createRuntimeRpcClient(deps: RuntimeRpcClientDeps): RuntimeRpcCl
       const requesterClientId =
         deps.requesterClientId?.(requestId) ??
         defaultRequesterClientId(deps.requesterActorId, requestId);
-      const stop = create(RuntimeStopRequestSchema, { runtimeId });
+      const stop = create(RuntimeStopRequestSchema, {
+        runtimeId,
+        purgeBinding: args.purgeBinding ?? false,
+        workspaceId: args.workspaceId ?? "",
+      });
       const request = create(RpcRequestSchema, {
         requestId,
         requesterClientId,

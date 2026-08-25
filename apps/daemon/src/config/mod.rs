@@ -34,7 +34,7 @@ pub use roles_skills::{
     is_inherent_skill, scan_roles_skills_state, team_skill_roots, ManagedSkillDto, RoleRecordDto,
     RoleSkillLinkDto, RolesSkillsMetricsDto, RolesSkillsStateDto,
 };
-pub use session_store::{SessionStore, StoredSession};
+pub use session_store::{SessionBinding, SessionStore};
 pub use workspace_control::{
     decode_workspace_path, encode_workspace_path, AllowlistDecision, AllowlistRule, ApplyOutcome,
     McpServerConfig, NullWorkspaceControlStore, OpenCodeCompatStore, PermissionAction,

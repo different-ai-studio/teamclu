@@ -16,7 +16,7 @@ use crate::backend::{
 };
 use crate::channels::{AmuxdAgentHandle, AmuxdChannelStore, ChannelManager};
 use crate::collab::{AuthManager, AuthResult, PeerState, PeerTracker, PermissionManager};
-use crate::config::{DaemonConfig, SessionStore, StoredSession};
+use crate::config::{DaemonConfig, SessionBinding, SessionStore};
 use crate::daemon::binding_target::parse_binding_to_target;
 use crate::daemon::runtime_cursor::{
     compute_effective_cursor_from_messages, last_unanswered_mention_idx,
@@ -2094,7 +2094,7 @@ impl DaemonServer {
                                 )
                             };
                             for runtime_id in evicted_runtime_ids {
-                                self.publish_runtime_stopped(&runtime_id).await;
+                                self.publish_runtime_detached(&runtime_id).await;
                             }
                             // Covers every attach/detach, including the gateway
                             // and cron spawns that never reach
@@ -2536,6 +2536,7 @@ impl DaemonServer {
                     "",
                     None,
                     "",
+                    false,
                 )
                 .await
             {
@@ -3906,6 +3907,7 @@ pub(crate) mod tests {
                 "",
                 None,
                 "",
+                false,
             )
             .await;
         let err = match result {
@@ -3949,6 +3951,7 @@ pub(crate) mod tests {
                 "",
                 None,
                 "",
+                false,
             )
             .await;
 
@@ -3988,6 +3991,7 @@ pub(crate) mod tests {
                 "",
                 None,
                 "",
+                false,
             )
             .await;
 
@@ -4051,6 +4055,7 @@ pub(crate) mod tests {
                 "",
                 None,
                 "",
+                false,
             )
             .await;
 
@@ -4127,6 +4132,7 @@ pub(crate) mod tests {
                 "",
                 None,
                 "",
+                false,
             )
             .await
             .unwrap_or_else(|error| panic!("desktop spawn failed: {}", error.error_message));
@@ -4197,6 +4203,7 @@ pub(crate) mod tests {
                 "",
                 None,
                 "",
+                false,
             )
             .await
             .unwrap_or_else(|error| panic!("desktop spawn failed: {}", error.error_message));
@@ -4218,15 +4225,12 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let mut stored = make_stored_session(
-            "resume-cross-entry",
+        fixture.server.sessions.upsert(SessionBinding::new(
             "resume-session-cross-entry",
-            amux::AgentType::Opencode,
             "ws-a",
-            1,
-        );
-        stored.worktree = workspace.path().to_string_lossy().into_owned();
-        fixture.server.sessions.upsert(stored);
+            amux::AgentType::Opencode as i32,
+            "acp-resume-cross-entry",
+        ));
         assert!(
             fixture
                 .server
@@ -4851,86 +4855,18 @@ pub(crate) mod tests {
         );
     }
 
-    pub(crate) fn make_stored_session(
-        runtime_id: &str,
-        session_id: &str,
+    pub(crate) fn make_session_binding(
+        cloud_session_id: &str,
         agent_type: amux::AgentType,
         workspace_id: &str,
-        created_at: i64,
-    ) -> StoredSession {
-        StoredSession {
-            runtime_id: runtime_id.to_string(),
-            acp_session_id: format!("acp-{runtime_id}"),
-            session_id: session_id.to_string(),
-            agent_type: agent_type as i32,
-            workspace_id: workspace_id.to_string(),
-            worktree: "/tmp/wt".to_string(),
-            status: amux::AgentStatus::Active as i32,
-            created_at,
-            last_prompt: String::new(),
-            last_output_summary: String::new(),
-            tool_use_count: 0,
-        }
-    }
-
-    #[test]
-    pub(crate) fn dedup_resumable_runtimes_keeps_only_newest_for_session() {
-        // Same conversation accumulated several historical runtimes across
-        // restarts / model-switches / workspace-changes. The daemon is one
-        // participant, so only the single newest may resume; everything else
-        // is superseded — including runtimes for other agent_types/workspaces.
-        let stored = vec![
-            make_stored_session("rt-old", "s1", amux::AgentType::ClaudeCode, "ws-1", 100),
-            make_stored_session("rt-mid", "s1", amux::AgentType::ClaudeCode, "ws-1", 200),
-            make_stored_session("rt-new", "s1", amux::AgentType::ClaudeCode, "ws-1", 300),
-            make_stored_session("rt-other", "s1", amux::AgentType::Codex, "ws-1", 150),
-        ];
-
-        let (keep, mut superseded) =
-            crate::daemon::session_resume::dedup_resumable_runtimes(stored);
-        superseded.sort();
-
-        assert_eq!(
-            keep.iter()
-                .map(|s| s.runtime_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["rt-new"],
-            "keep only the single newest runtime for the session"
-        );
-        assert_eq!(
-            superseded,
-            vec![
-                "rt-mid".to_string(),
-                "rt-old".to_string(),
-                "rt-other".to_string()
-            ],
-            "every other runtime is superseded regardless of agent_type/workspace"
-        );
-    }
-
-    #[test]
-    pub(crate) fn dedup_resumable_runtimes_collapses_across_workspaces() {
-        // Two live runtimes in different workspaces for the same conversation
-        // each answered the same @mention (the duplicate-reply bug). Only the
-        // newest survives; the cross-workspace duplicate is superseded.
-        let stored = vec![
-            make_stored_session("rt-a", "s1", amux::AgentType::ClaudeCode, "ws-1", 100),
-            make_stored_session("rt-b", "s1", amux::AgentType::ClaudeCode, "ws-2", 50),
-        ];
-
-        let (keep, superseded) = crate::daemon::session_resume::dedup_resumable_runtimes(stored);
-        assert_eq!(
-            keep.iter()
-                .map(|s| s.runtime_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["rt-a"],
-            "newest runtime wins across workspaces"
-        );
-        assert_eq!(
-            superseded,
-            vec!["rt-b".to_string()],
-            "older cross-workspace duplicate is superseded"
-        );
+        acp_session_id: &str,
+    ) -> SessionBinding {
+        SessionBinding::new(
+            cloud_session_id,
+            workspace_id,
+            agent_type as i32,
+            acp_session_id,
+        )
     }
 
     #[tokio::test]

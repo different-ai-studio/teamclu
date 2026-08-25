@@ -519,6 +519,8 @@ export interface RuntimeStartArgs {
   agentType: number         // amux.AgentType enum (e.g., AgentType.CLAUDE_CODE)
   initialPrompt?: string
   modelId?: string
+  /** Discard stored backend binding and spawn a fresh backend session. */
+  resetBackendBinding?: boolean
   timeoutMs?: number
 }
 
@@ -532,6 +534,7 @@ export async function runtimeStart(args: RuntimeStartArgs): Promise<RuntimeStart
       agentType: args.agentType,
       initialPrompt: args.initialPrompt ?? '',
       modelId: args.modelId ?? '',
+      resetBackendBinding: args.resetBackendBinding ?? false,
     })
     req.method = { case: 'runtimeStart', value: start }
   }, args.targetActorId, args.timeoutMs)
@@ -552,12 +555,20 @@ export async function runtimeStart(args: RuntimeStartArgs): Promise<RuntimeStart
 export interface RuntimeStopArgs {
   targetActorId: string
   runtimeId: string
+  /** removeAgent: delete runtimes.toml binding rows for this session */
+  purgeBinding?: boolean
+  /** optional precise delete when purgeBinding (empty = all workspaces) */
+  workspaceId?: string
   timeoutMs?: number
 }
 
 export async function runtimeStop(args: RuntimeStopArgs): Promise<RuntimeStopResult> {
   const response = await sendRequest((req) => {
-    const stop = create(RuntimeStopRequestSchema, { runtimeId: args.runtimeId })
+    const stop = create(RuntimeStopRequestSchema, {
+      runtimeId: args.runtimeId,
+      purgeBinding: args.purgeBinding ?? false,
+      workspaceId: args.workspaceId ?? '',
+    })
     req.method = { case: 'runtimeStop', value: stop }
   }, args.targetActorId, args.timeoutMs)
 

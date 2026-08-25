@@ -1,190 +1,196 @@
-//! Single implementation for resuming collab runtimes from `sessions.toml` /
-//! Cloud `backend_session_id`. `runtimeStart` and MQTT `session/live` are thin
-//! wrappers that differ only in how they select stored rows.
+//! Collab session cold attach: resume backend sessions from `runtimes.toml` bindings.
 
 use tracing::{info, warn};
 
+use crate::config::SessionBinding;
+use crate::daemon::session_resume::{resolve_backend_session_id, BACKEND_SESSION_NOT_RESUMABLE};
 use crate::proto::amux;
 
-use crate::daemon::session_resume::{
-    dedup_resumable_runtimes, resolve_backend_session_id, stored_sessions_for_collab_resume,
-    CollabResumeFilter,
-};
-
-use super::{DaemonServer, StartRuntimeOutcome};
-
-/// Outcome of [`DaemonServer::resume_stored_collab_runtimes`].
-pub(super) struct ResumeStoredResult {
-    /// Runtimes that were cold-started via `resume_agent` in this call.
-    pub resumed_runtime_ids: Vec<String>,
-    /// First deduped row that was already live in memory (no resume attempted).
-    pub already_live_first: Option<String>,
-}
+use super::{DaemonServer, StartRuntimeError, StartRuntimeOutcome};
 
 impl DaemonServer {
-    /// Resume zero or more stored rows for one cloud session.
-    ///
-    /// - `MatchAgentWorkspace`: `runtimeStart` — only rows for the requested agent/workspace.
-    /// - `SessionOnly`: MQTT lazy path — all resumable rows, then global dedup to one.
-    pub(super) async fn resume_stored_collab_runtimes(
-        &mut self,
+    /// Resolve workspace for MQTT / cold paths: participant row, then default.
+    pub(super) async fn resolve_collab_workspace_id(
+        &self,
         cloud_session_id: &str,
-        filter: CollabResumeFilter<'_>,
-        initial_prompt: &str,
-        initial_model_override: Option<&str>,
-        log_label: &'static str,
-        mcp_config_path: Option<std::path::PathBuf>,
-        bind_member_actor_id: Option<&str>,
-    ) -> ResumeStoredResult {
-        let mut out = ResumeStoredResult {
-            resumed_runtime_ids: Vec::new(),
-            already_live_first: None,
-        };
-
-        if cloud_session_id.is_empty() {
-            return out;
-        }
-
-        let stored_sessions =
-            stored_sessions_for_collab_resume(&self.sessions, cloud_session_id, filter);
-        if stored_sessions.is_empty() {
-            return out;
-        }
-
-        let (keep, superseded) = dedup_resumable_runtimes(stored_sessions);
-        if !superseded.is_empty() {
-            self.mark_superseded_runtime_rows_stopped(&superseded);
-            info!(
-                session_id = %cloud_session_id,
-                superseded = ?superseded,
-                log_label,
-                "resume_stored_collab_runtimes: marked superseded duplicate runtimes Stopped"
-            );
-        }
-
-        for stored in keep {
-            if self
-                .agents
-                .lock()
-                .await
-                .get_handle(&stored.runtime_id)
-                .is_some()
-            {
-                if out.already_live_first.is_none() {
-                    out.already_live_first = Some(stored.runtime_id.clone());
-                }
-                continue;
-            }
-
-            let at =
-                amux::AgentType::try_from(stored.agent_type).unwrap_or(amux::AgentType::ClaudeCode);
-            let remote_workspace_id =
-                (!stored.workspace_id.is_empty()).then_some(stored.workspace_id.clone());
-
-            let acp_resume = resolve_backend_session_id(
-                &self.sessions,
-                cloud_session_id,
-                at,
-                &stored.workspace_id,
-            )
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| stored.acp_session_id.clone());
-            if acp_resume.is_empty() {
-                continue;
-            }
-
-            info!(
-                runtime_id = %stored.runtime_id,
-                session_id = %cloud_session_id,
-                backend_session_id = %acp_resume,
-                log_label,
-                "resume_stored_collab_runtimes: resuming stored runtime with prior ACP session"
-            );
-
-            let context = match self
-                .assemble_stored_execution_context(&stored.worktree, &stored.workspace_id)
-                .await
-            {
-                Ok(context) => context,
-                Err(e) => {
-                    warn!(
-                        runtime_id = %stored.runtime_id,
-                        worktree = %stored.worktree,
-                        error = %e,
-                        log_label,
-                        "resume_stored_collab_runtimes: assemble execution context failed"
-                    );
-                    continue;
-                }
-            };
-
-            let resume_res = self
-                .agents
-                .lock()
-                .await
-                .resume_agent(
-                    cloud_session_id,
-                    &acp_resume,
-                    at,
-                    &stored.workspace_id,
-                    remote_workspace_id.as_deref(),
-                    initial_prompt,
-                    mcp_config_path.clone(),
-                    context,
-                )
-                .await;
-
-            let new_acp_sid = match resume_res {
-                Ok(sid) => sid,
-                Err(e) => {
-                    warn!(
-                        runtime_id = %stored.runtime_id,
-                        session_id = %cloud_session_id,
-                        log_label,
-                        "resume_stored_collab_runtimes: resume_agent failed: {}",
-                        e
-                    );
-                    continue;
-                }
-            };
-
-            self.finalize_stored_runtime_resume(
-                &stored.runtime_id,
-                cloud_session_id,
-                &new_acp_sid,
-                initial_model_override,
-            )
-            .await;
-            if let Some(member) = bind_member_actor_id.filter(|s| !s.is_empty()) {
-                let team_id = self.config.team_id.clone().unwrap_or_default();
-                self.ensure_live_runtime_remote_tools(
-                    &stored.runtime_id,
-                    cloud_session_id,
-                    member,
-                    &team_id,
-                )
-                .await;
-            }
-            out.resumed_runtime_ids.push(stored.runtime_id);
-        }
-
-        if let Some(member) = bind_member_actor_id.filter(|s| !s.is_empty()) {
-            if let Some(runtime_id) = &out.already_live_first {
-                let team_id = self.config.team_id.clone().unwrap_or_default();
-                self.ensure_live_runtime_remote_tools(
-                    runtime_id,
-                    cloud_session_id,
-                    member,
-                    &team_id,
-                )
-                .await;
+    ) -> Option<String> {
+        if let Ok(Some(ws)) = self
+            .backend
+            .fetch_session_workspace(cloud_session_id, self.backend.actor_id())
+            .await
+        {
+            if !ws.trim().is_empty() {
+                return Some(ws);
             }
         }
-
-        out
+        let default = self.resolve_default_workspace_for_publish().await.0;
+        if default.trim().is_empty() {
+            None
+        } else {
+            Some(default)
+        }
     }
 
-    /// `runtimeStart` after daemon restart: reuse stored runtime_id + ACP session.
+    /// Pick a unique binding when workspace is unknown. Returns None if ambiguous.
+    pub(super) fn resolve_binding_workspace_for_cold_attach(
+        &self,
+        cloud_session_id: &str,
+        agent_type: amux::AgentType,
+        workspace_hint: Option<&str>,
+    ) -> Option<String> {
+        if let Some(ws) = workspace_hint.filter(|s| !s.is_empty()) {
+            return Some(ws.to_string());
+        }
+        let matches: Vec<_> = self
+            .sessions
+            .all_for_session(cloud_session_id)
+            .into_iter()
+            .filter(|b| b.agent_type == agent_type as i32)
+            .collect();
+        match matches.len() {
+            0 => None,
+            1 => Some(matches[0].workspace_id.clone()),
+            _ => {
+                warn!(
+                    session_id = %cloud_session_id,
+                    count = matches.len(),
+                    "cold attach: ambiguous bindings for session; skipping auto-resume"
+                );
+                None
+            }
+        }
+    }
+
+    /// Attach a live runtime for `(session, workspace, agent_type)` using stored binding.
+    pub(super) async fn attach_collab_from_binding(
+        &mut self,
+        cloud_session_id: &str,
+        agent_type: amux::AgentType,
+        workspace_id: &str,
+        initial_prompt: &str,
+        initial_model_override: Option<&str>,
+        forbid_new_session_fallback: bool,
+        bind_member_actor_id: Option<&str>,
+        log_label: &'static str,
+    ) -> Result<Option<String>, StartRuntimeError> {
+        if cloud_session_id.is_empty() || workspace_id.is_empty() {
+            return Ok(None);
+        }
+
+        if self
+            .agents
+            .lock()
+            .await
+            .get_handle(cloud_session_id)
+            .is_some()
+        {
+            return Ok(Some(cloud_session_id.to_string()));
+        }
+
+        let Some(acp_resume) =
+            resolve_backend_session_id(&self.sessions, cloud_session_id, agent_type, workspace_id)
+        else {
+            return Ok(None);
+        };
+
+        let worktree = match self.workspace_resolver.resolve(workspace_id).await {
+            Ok(ws) if !ws.path.trim().is_empty() => ws.path,
+            _ => {
+                warn!(
+                    session_id = %cloud_session_id,
+                    workspace_id = %workspace_id,
+                    log_label,
+                    "attach_collab_from_binding: workspace resolve failed"
+                );
+                return Ok(None);
+            }
+        };
+
+        let context = match self
+            .assemble_stored_execution_context(&worktree, workspace_id)
+            .await
+        {
+            Ok(context) => context,
+            Err(e) => {
+                warn!(
+                    session_id = %cloud_session_id,
+                    workspace_id = %workspace_id,
+                    error = %e,
+                    log_label,
+                    "attach_collab_from_binding: assemble execution context failed"
+                );
+                return Ok(None);
+            }
+        };
+
+        info!(
+            session_id = %cloud_session_id,
+            workspace_id = %workspace_id,
+            backend_session_id = %acp_resume,
+            log_label,
+            "attach_collab_from_binding: resuming stored backend session"
+        );
+
+        let resume_res = self
+            .agents
+            .lock()
+            .await
+            .resume_agent(
+                cloud_session_id,
+                &acp_resume,
+                agent_type,
+                workspace_id,
+                Some(workspace_id),
+                initial_prompt,
+                None,
+                forbid_new_session_fallback,
+                context,
+            )
+            .await;
+
+        let new_acp_sid = match resume_res {
+            Ok(sid) => sid,
+            Err(e) if forbid_new_session_fallback => {
+                return Err(StartRuntimeError {
+                    error_code: BACKEND_SESSION_NOT_RESUMABLE.to_string(),
+                    error_message: format!("backend session {acp_resume} not resumable: {e}"),
+                    failed_stage: "binding_resume".to_string(),
+                });
+            }
+            Err(e) => {
+                warn!(
+                    session_id = %cloud_session_id,
+                    log_label,
+                    "attach_collab_from_binding: resume failed: {e}"
+                );
+                return Ok(None);
+            }
+        };
+
+        self.finalize_binding_resume(
+            cloud_session_id,
+            workspace_id,
+            agent_type,
+            &new_acp_sid,
+            initial_model_override,
+        )
+        .await;
+
+        if let Some(member) = bind_member_actor_id.filter(|s| !s.is_empty()) {
+            let team_id = self.config.team_id.clone().unwrap_or_default();
+            self.ensure_live_runtime_remote_tools(
+                cloud_session_id,
+                cloud_session_id,
+                member,
+                &team_id,
+            )
+            .await;
+        }
+
+        Ok(Some(cloud_session_id.to_string()))
+    }
+
+    /// `runtimeStart` cold path after warm dedup miss.
     pub(super) async fn try_resume_runtime_for_start(
         &mut self,
         cloud_session_id: &str,
@@ -193,79 +199,105 @@ impl DaemonServer {
         initial_prompt: &str,
         initial_model_override: Option<&str>,
         requester_actor_id: &str,
-    ) -> Option<StartRuntimeOutcome> {
+    ) -> Result<Option<StartRuntimeOutcome>, StartRuntimeError> {
         if cloud_session_id.is_empty() || workspace_id.is_empty() {
-            return None;
+            return Ok(None);
         }
 
-        let team_id = self.config.team_id.clone().unwrap_or_default();
-        let bind_member = (!requester_actor_id.is_empty()).then_some(requester_actor_id);
-
-        let result = self
-            .resume_stored_collab_runtimes(
+        let runtime_id = self
+            .attach_collab_from_binding(
                 cloud_session_id,
-                CollabResumeFilter::MatchAgentWorkspace {
-                    agent_type,
-                    workspace_id,
-                },
+                agent_type,
+                workspace_id,
                 initial_prompt,
                 initial_model_override,
+                true,
+                (!requester_actor_id.is_empty()).then_some(requester_actor_id),
                 "runtime_start",
-                None,
-                bind_member,
             )
-            .await;
+            .await?;
 
-        let runtime_id = result
-            .already_live_first
-            .or_else(|| result.resumed_runtime_ids.into_iter().next())?;
-
-        if !requester_actor_id.is_empty() {
-            self.ensure_live_runtime_remote_tools(
-                &runtime_id,
-                cloud_session_id,
-                requester_actor_id,
-                &team_id,
-            )
-            .await;
-        }
-
-        Some(StartRuntimeOutcome {
-            runtime_id,
+        Ok(runtime_id.map(|id| StartRuntimeOutcome {
+            runtime_id: id,
             session_id: cloud_session_id.to_string(),
-        })
+        }))
     }
 
-    /// MQTT `session/live`: no in-memory runtime — resume from disk if possible.
+    /// MQTT `session/live`: no in-memory runtime — resume from binding if possible.
     pub(super) async fn resume_historical_runtimes_for_session(
         &mut self,
         session_id: &str,
         requester_actor_id: Option<&str>,
     ) -> bool {
-        let result = self
-            .resume_stored_collab_runtimes(
-                session_id,
-                CollabResumeFilter::SessionOnly,
-                "",
-                None,
-                "session_live",
-                None,
-                requester_actor_id,
-            )
-            .await;
+        let bindings: Vec<SessionBinding> = self
+            .sessions
+            .all_for_session(session_id)
+            .into_iter()
+            .cloned()
+            .collect();
+        if bindings.is_empty() {
+            return false;
+        }
 
-        !result.resumed_runtime_ids.is_empty() || result.already_live_first.is_some()
+        let workspace_hint = self.resolve_collab_workspace_id(session_id).await;
+        let binding_count = bindings.len();
+
+        for binding in bindings {
+            let agent_type = match amux::AgentType::try_from(binding.agent_type) {
+                Ok(at) => at,
+                Err(_) => {
+                    let agents = self.agents.lock().await;
+                    agents.default_agent_type()
+                }
+            };
+
+            let workspace_id = if let Some(hint) = workspace_hint.clone().filter(|w| !w.is_empty())
+            {
+                if hint != binding.workspace_id && binding_count > 1 {
+                    continue;
+                }
+                hint
+            } else {
+                binding.workspace_id.clone()
+            };
+
+            match self
+                .attach_collab_from_binding(
+                    session_id,
+                    agent_type,
+                    &workspace_id,
+                    "",
+                    None,
+                    false,
+                    requester_actor_id,
+                    "session_live",
+                )
+                .await
+            {
+                Ok(Some(_)) => return true,
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!(
+                        session_id = %session_id,
+                        workspace_id = %workspace_id,
+                        agent_type = ?agent_type,
+                        error = %e.error_message,
+                        "resume_historical_runtimes_for_session: binding resume failed"
+                    );
+                }
+            }
+        }
+        false
     }
 
-    pub(super) async fn finalize_stored_runtime_resume(
+    pub(super) async fn finalize_binding_resume(
         &mut self,
-        runtime_id: &str,
         cloud_session_id: &str,
-        new_acp_sid: &str,
+        workspace_id: &str,
+        agent_type: amux::AgentType,
+        acp_session_id: &str,
         initial_model_override: Option<&str>,
     ) {
-        // The catch-up cursor lives on the participant row now, addressed by
-        // (session, actor) — a resumed attachment has no runtime row to look up.
         match self
             .backend
             .fetch_session_cursor(cloud_session_id, self.backend.actor_id())
@@ -275,38 +307,55 @@ impl DaemonServer {
                 self.agents
                     .lock()
                     .await
-                    .set_session_cursor(runtime_id, cursor);
+                    .set_session_cursor(cloud_session_id, cursor);
             }
             Err(e) => {
                 warn!(
-                    runtime_id,
                     session_id = %cloud_session_id,
-                    "fetch_session_cursor failed after resume: {}",
-                    e
+                    "fetch_session_cursor failed after resume: {e}"
                 );
             }
         }
 
-        if let Some(s) = self.sessions.find_by_id_mut(runtime_id) {
-            s.acp_session_id = new_acp_sid.to_string();
-            s.status = amux::AgentStatus::Active as i32;
-        }
+        self.sessions.upsert(SessionBinding::new(
+            cloud_session_id,
+            workspace_id,
+            agent_type as i32,
+            acp_session_id,
+        ));
         let _ = self.sessions.save(&self.sessions_path);
 
         if let Some(model_id) = initial_model_override.filter(|m| !m.is_empty()) {
             let mut agents = self.agents.lock().await;
-            if let Err(e) = agents.send_set_model(runtime_id, model_id).await {
+            if let Err(e) = agents.send_set_model(cloud_session_id, model_id).await {
                 warn!(
-                    runtime_id,
-                    model_id, "set_model after stored resume failed: {}", e
+                    session_id = %cloud_session_id,
+                    model_id,
+                    "set_model after binding resume failed: {e}"
                 );
             } else {
-                agents.set_current_model(runtime_id, model_id);
+                agents.set_current_model(cloud_session_id, model_id);
             }
         }
 
-        self.publish_runtime_state_by_id(runtime_id).await;
-        self.catchup_runtime(runtime_id).await;
+        self.publish_runtime_state_by_id(cloud_session_id).await;
+        self.catchup_runtime(cloud_session_id).await;
+    }
+
+    pub(super) fn upsert_session_binding(
+        &mut self,
+        cloud_session_id: &str,
+        workspace_id: &str,
+        agent_type: amux::AgentType,
+        acp_session_id: &str,
+    ) {
+        self.sessions.upsert(SessionBinding::new(
+            cloud_session_id,
+            workspace_id,
+            agent_type as i32,
+            acp_session_id,
+        ));
+        let _ = self.sessions.save(&self.sessions_path);
     }
 }
 
@@ -316,7 +365,8 @@ mod tests {
 
     use crate::backend::mock::MockBackend;
     use crate::backend::{Backend, WorkspaceRow};
-    use crate::daemon::server::tests::{make_stored_session, test_server_with_cloud_api};
+    use crate::config::SessionBinding;
+    use crate::daemon::server::tests::test_server_with_cloud_api;
     use crate::proto::amux;
     use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 
@@ -340,15 +390,12 @@ mod tests {
             let mut manager = fixture.server.agents.lock().await;
             crate::runtime::test_support::install_capturing_backend(&mut manager)
         };
-        let mut stored = make_stored_session(
-            "runtime-a",
+        fixture.server.sessions.upsert(SessionBinding::new(
             "session-a",
-            amux::AgentType::Opencode,
             "ws-a",
-            1,
-        );
-        stored.worktree = workspace.path().to_string_lossy().into_owned();
-        fixture.server.sessions.upsert(stored);
+            amux::AgentType::Opencode as i32,
+            "acp-a",
+        ));
 
         assert!(
             fixture
@@ -380,15 +427,12 @@ mod tests {
             let mut manager = fixture.server.agents.lock().await;
             crate::runtime::test_support::install_capturing_backend(&mut manager)
         };
-        let mut stored = make_stored_session(
-            "runtime-gateway",
+        fixture.server.sessions.upsert(SessionBinding::new(
             "session-gateway",
-            amux::AgentType::Opencode,
             "gateway:wecom://bot/chat",
-            1,
-        );
-        stored.worktree = workspace.path().to_string_lossy().into_owned();
-        fixture.server.sessions.upsert(stored);
+            amux::AgentType::Opencode as i32,
+            "acp-gw",
+        ));
 
         assert!(
             !fixture

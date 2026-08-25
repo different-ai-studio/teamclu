@@ -1,125 +1,71 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::proto::amux;
+/// Persistent `(cloud session, workspace, agent type) → backend session id` map.
+/// Lives in `runtimes.toml`. No lifecycle/status — row presence means resumable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionBinding {
+    #[serde(default, alias = "session_id", alias = "collab_session_id")]
+    pub cloud_session_id: String,
+    pub workspace_id: String,
+    pub agent_type: i32,
+    pub acp_session_id: String,
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SessionStore {
-    #[serde(default)]
-    pub sessions: Vec<StoredSession>,
+    #[serde(default, alias = "sessions")]
+    pub bindings: Vec<SessionBinding>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Legacy on-disk row (pre-binding refactor). Used only for migration.
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyStoredSession {
+    #[serde(default)]
+    runtime_id: String,
+    #[serde(default)]
+    acp_session_id: String,
+    #[serde(default, alias = "collab_session_id")]
+    session_id: String,
+    #[serde(default)]
+    agent_type: i32,
+    #[serde(default)]
+    workspace_id: String,
+    #[serde(default)]
+    status: i32,
+    #[serde(default)]
+    created_at: i64,
+}
 
-    fn make_session(
-        runtime_id: &str,
-        session_id: &str,
-        status: amux::AgentStatus,
-    ) -> StoredSession {
-        StoredSession {
-            runtime_id: runtime_id.to_string(),
-            acp_session_id: format!("acp-{runtime_id}"),
-            session_id: session_id.to_string(),
-            agent_type: amux::AgentType::ClaudeCode as i32,
-            workspace_id: "workspace-1".to_string(),
-            worktree: "/tmp/workspace-1".to_string(),
-            status: status as i32,
-            created_at: 1,
-            last_prompt: String::new(),
-            last_output_summary: String::new(),
-            tool_use_count: 0,
+#[derive(Debug, Default, Deserialize)]
+struct LegacySessionStore {
+    #[serde(default)]
+    sessions: Vec<LegacyStoredSession>,
+}
+
+impl SessionBinding {
+    pub fn new(
+        cloud_session_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        agent_type: i32,
+        acp_session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            cloud_session_id: cloud_session_id.into(),
+            workspace_id: workspace_id.into(),
+            agent_type,
+            acp_session_id: acp_session_id.into(),
         }
     }
 
-    #[test]
-    fn resumable_for_collab_session_returns_non_stopped_runtime_ids() {
-        let mut store = SessionStore::default();
-        store.upsert(make_session(
-            "rt-active",
-            "session-1",
-            amux::AgentStatus::Active,
-        ));
-        store.upsert(make_session(
-            "rt-stopped",
-            "session-1",
-            amux::AgentStatus::Stopped,
-        ));
-        store.upsert(make_session(
-            "rt-other",
-            "session-2",
-            amux::AgentStatus::Active,
-        ));
-
-        let ids: Vec<String> = store
-            .resumable_sessions_for_session("session-1")
-            .into_iter()
-            .map(|s| s.runtime_id)
-            .collect();
-
-        assert_eq!(ids, vec!["rt-active".to_string()]);
+    fn composite_key(&self) -> (String, String, i32) {
+        (
+            self.cloud_session_id.clone(),
+            self.workspace_id.clone(),
+            self.agent_type,
+        )
     }
-
-    #[test]
-    fn supersede_stale_for_session_marks_older_rows_stopped() {
-        let mut store = SessionStore::default();
-        store.upsert(make_session(
-            "rt-old",
-            "session-1",
-            amux::AgentStatus::Active,
-        ));
-        store.upsert(make_session(
-            "rt-keep",
-            "session-1",
-            amux::AgentStatus::Active,
-        ));
-
-        let superseded = store.supersede_stale_for_session(
-            "session-1",
-            "workspace-1",
-            amux::AgentType::ClaudeCode as i32,
-            "rt-keep",
-        );
-
-        assert_eq!(superseded.len(), 1);
-        assert_eq!(superseded[0], "rt-old");
-        assert_eq!(
-            store.find_by_id("rt-old").unwrap().status,
-            amux::AgentStatus::Stopped as i32
-        );
-        assert_eq!(
-            store.find_by_id("rt-keep").unwrap().status,
-            amux::AgentStatus::Active as i32
-        );
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredSession {
-    /// Daemon's 8-char runtime/spawn id. Pre-rename TOML files used
-    /// `session_id` for this slot, but post-rename TOML carries both
-    /// `runtime_id` (the 8-char) and `session_id` (the cloud session UUID),
-    /// so a `session_id` alias here would collide with the real
-    /// `session_id` field below. Old single-field TOML files now need
-    /// a one-time migration if they exist; in practice the dual-field
-    /// schema has been on disk for everyone.
-    pub runtime_id: String,
-    #[serde(default)]
-    pub acp_session_id: String,
-    /// Cloud `sessions.id` UUID this runtime is bound to. Old TOML used
-    /// `collab_session_id`; alias preserves back-compat. Empty when the
-    /// runtime is session-less (legacy bare-agent spawn).
-    #[serde(default, alias = "collab_session_id")]
-    pub session_id: String,
-    pub agent_type: i32,
-    pub workspace_id: String,
-    pub worktree: String,
-    pub status: i32,
-    pub created_at: i64,
-    pub last_prompt: String,
-    pub last_output_summary: String,
-    pub tool_use_count: i32,
 }
 
 impl SessionStore {
@@ -130,14 +76,79 @@ impl SessionStore {
 
     pub fn load(path: &Path) -> crate::error::Result<Self> {
         if !path.exists() {
-            return Ok(Self { sessions: vec![] });
+            return Ok(Self::default());
         }
         let content = std::fs::read_to_string(path).map_err(|e| {
             crate::error::AmuxError::Config(format!("read {}: {}", path.display(), e))
         })?;
-        toml::from_str(&content).map_err(|e| {
+
+        // Legacy `[[sessions]]` rows must go through migration dedup even when
+        // they deserialize via the `sessions` alias on `bindings`.
+        if content.contains("[[sessions]]") {
+            let legacy: LegacySessionStore = toml::from_str(&content).map_err(|e| {
+                crate::error::AmuxError::Config(format!("parse {}: {}", path.display(), e))
+            })?;
+            return Ok(Self::from_legacy_rows(legacy.sessions));
+        }
+
+        let store: SessionStore = toml::from_str(&content).map_err(|e| {
             crate::error::AmuxError::Config(format!("parse {}: {}", path.display(), e))
-        })
+        })?;
+        Ok(store.deduped())
+    }
+
+    /// Collapse duplicate composite keys (last row wins). Safety net for hand-edited files.
+    fn deduped(self) -> Self {
+        let mut by_key: HashMap<(String, String, i32), SessionBinding> = HashMap::new();
+        for binding in self.bindings {
+            by_key.insert(binding.composite_key(), binding);
+        }
+        Self {
+            bindings: by_key.into_values().collect(),
+        }
+    }
+
+    fn from_legacy_rows(rows: Vec<LegacyStoredSession>) -> Self {
+        let mut grouped: HashMap<(String, String, i32), Vec<&LegacyStoredSession>> =
+            HashMap::new();
+        for row in &rows {
+            let session_id = if !row.session_id.is_empty() {
+                row.session_id.clone()
+            } else {
+                row.runtime_id.clone()
+            };
+            if session_id.is_empty() || row.workspace_id.is_empty() {
+                continue;
+            }
+            grouped
+                .entry((session_id, row.workspace_id.clone(), row.agent_type))
+                .or_default()
+                .push(row);
+        }
+
+        let mut bindings = Vec::new();
+        for ((cloud_session_id, workspace_id, agent_type), mut group) in grouped {
+            group.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            let Some(acp_session_id) = group
+                .iter()
+                .find_map(|row| {
+                    if row.acp_session_id.is_empty() {
+                        None
+                    } else {
+                        Some(row.acp_session_id.clone())
+                    }
+                })
+            else {
+                continue;
+            };
+            bindings.push(SessionBinding {
+                cloud_session_id,
+                workspace_id,
+                agent_type,
+                acp_session_id,
+            });
+        }
+        Self { bindings }
     }
 
     pub fn save(&self, path: &Path) -> crate::error::Result<()> {
@@ -150,107 +161,174 @@ impl SessionStore {
         Ok(())
     }
 
-    pub fn upsert(&mut self, session: StoredSession) {
+    pub fn upsert(&mut self, binding: SessionBinding) {
+        let key = binding.composite_key();
         if let Some(existing) = self
-            .sessions
+            .bindings
             .iter_mut()
-            .find(|s| s.runtime_id == session.runtime_id)
+            .find(|b| b.composite_key() == key)
         {
-            *existing = session;
+            *existing = binding;
         } else {
-            self.sessions.push(session);
+            self.bindings.push(binding);
         }
     }
 
-    /// Mark older rows for the same `(session_id, workspace_id, agent_type)`
-    /// as Stopped, keeping `keep_runtime_id` as the sole resumable row.
-    pub fn supersede_stale_for_session(
-        &mut self,
-        session_id: &str,
+    pub fn lookup(
+        &self,
+        cloud_session_id: &str,
         workspace_id: &str,
         agent_type: i32,
-        keep_runtime_id: &str,
-    ) -> Vec<String> {
-        let mut superseded = Vec::new();
-        for stored in &mut self.sessions {
-            if stored.session_id != session_id
-                || stored.workspace_id != workspace_id
-                || stored.agent_type != agent_type
-                || stored.runtime_id == keep_runtime_id
-            {
-                continue;
-            }
-            if amux::AgentStatus::try_from(stored.status) == Ok(amux::AgentStatus::Stopped) {
-                continue;
-            }
-            stored.status = amux::AgentStatus::Stopped as i32;
-            superseded.push(stored.runtime_id.clone());
-        }
-        superseded
+    ) -> Option<&SessionBinding> {
+        self.bindings.iter().find(|b| {
+            b.cloud_session_id == cloud_session_id
+                && b.workspace_id == workspace_id
+                && b.agent_type == agent_type
+        })
     }
 
-    pub fn find_by_id(&self, runtime_id: &str) -> Option<&StoredSession> {
-        self.sessions.iter().find(|s| s.runtime_id == runtime_id)
-    }
-
-    pub fn find_by_id_mut(&mut self, runtime_id: &str) -> Option<&mut StoredSession> {
-        self.sessions
-            .iter_mut()
-            .find(|s| s.runtime_id == runtime_id)
-    }
-
-    pub fn resumable_sessions_for_session(&self, session_id: &str) -> Vec<StoredSession> {
-        self.sessions
+    pub fn all_for_session(&self, cloud_session_id: &str) -> Vec<&SessionBinding> {
+        self.bindings
             .iter()
-            .filter(|s| {
-                s.session_id == session_id
-                    && amux::AgentStatus::try_from(s.status) != Ok(amux::AgentStatus::Stopped)
-            })
-            .cloned()
+            .filter(|b| b.cloud_session_id == cloud_session_id)
             .collect()
     }
 
-    pub fn to_proto_agent_list(&self) -> Vec<amux::RuntimeInfo> {
-        self.sessions.iter().map(Self::session_to_info).collect()
+    pub fn delete(&mut self, cloud_session_id: &str, workspace_id: &str, agent_type: i32) {
+        self.bindings.retain(|b| {
+            !(b.cloud_session_id == cloud_session_id
+                && b.workspace_id == workspace_id
+                && b.agent_type == agent_type)
+        });
     }
 
-    pub fn to_proto_agent_info(&self, runtime_id: &str) -> Option<amux::RuntimeInfo> {
-        self.find_by_id(runtime_id).map(Self::session_to_info)
+    pub fn delete_for_session(&mut self, cloud_session_id: &str) {
+        self.bindings
+            .retain(|b| b.cloud_session_id != cloud_session_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upsert_keeps_composite_key_unique() {
+        let mut store = SessionStore::default();
+        store.upsert(SessionBinding::new("s1", "ws-a", 1, "acp-1"));
+        store.upsert(SessionBinding::new("s1", "ws-a", 1, "acp-2"));
+        assert_eq!(store.bindings.len(), 1);
+        assert_eq!(store.lookup("s1", "ws-a", 1).unwrap().acp_session_id, "acp-2");
     }
 
-    fn session_to_info(s: &StoredSession) -> amux::RuntimeInfo {
-        amux::RuntimeInfo {
-            runtime_id: s.runtime_id.clone(),
-            agent_type: s.agent_type,
-            worktree: s.worktree.clone(),
-            branch: String::new(),
-            status: s.status,
-            started_at: s.created_at,
-            current_prompt: s.last_prompt.clone(),
-            workspace_id: s.workspace_id.clone(),
-            session_title: String::new(),
-            last_output_summary: s.last_output_summary.clone(),
-            tool_use_count: s.tool_use_count,
-            // No static fallback: historical/non-running sessions advertise no
-            // models. Live agents get their real serve catalog merged in by
-            // `DaemonServer::merged_agent_list` from
-            // `RuntimeManager::to_proto_agent_list` once re-spawned. Clients
-            // (incl. iOS) hide the model picker until the runtime advertises.
-            available_models: Vec::new(),
-            current_model: String::new(),
-            // Stored sessions represent runtimes the daemon will re-spawn.
-            // ACTIVE is a steady-state assumption; Phase 1b will wire proper
-            // state transitions (STARTING while spawn is in flight, FAILED
-            // if spawn fails).
-            state: amux::RuntimeLifecycle::Active as i32,
-            stage: String::new(),
-            error_code: String::new(),
-            error_message: String::new(),
-            failed_stage: String::new(),
-            // Slash commands are reported by ACP at runtime — historical
-            // sessions don't have any cached until the agent boots and
-            // emits AvailableCommandsUpdate.
-            available_commands: vec![],
-        }
+    #[test]
+    fn migrate_legacy_stopped_row_is_resurrected() {
+        let legacy = LegacySessionStore {
+            sessions: vec![LegacyStoredSession {
+                runtime_id: "rt-1".into(),
+                acp_session_id: "acp-old".into(),
+                session_id: "cloud-1".into(),
+                agent_type: 3,
+                workspace_id: "ws-a".into(),
+                status: crate::proto::amux::AgentStatus::Stopped as i32,
+                created_at: 10,
+            }],
+        };
+        let store = SessionStore::from_legacy_rows(legacy.sessions);
+        assert_eq!(store.bindings.len(), 1);
+        assert_eq!(store.lookup("cloud-1", "ws-a", 3).unwrap().acp_session_id, "acp-old");
+    }
+
+    #[test]
+    fn migrate_legacy_picks_newest_non_empty_acp_for_same_key() {
+        let legacy = LegacySessionStore {
+            sessions: vec![
+                LegacyStoredSession {
+                    runtime_id: "old".into(),
+                    acp_session_id: "acp-old".into(),
+                    session_id: "cloud-1".into(),
+                    agent_type: 3,
+                    workspace_id: "ws-a".into(),
+                    status: 0,
+                    created_at: 1,
+                },
+                LegacyStoredSession {
+                    runtime_id: "new".into(),
+                    acp_session_id: "acp-new".into(),
+                    session_id: "cloud-1".into(),
+                    agent_type: 3,
+                    workspace_id: "ws-a".into(),
+                    status: 0,
+                    created_at: 5,
+                },
+            ],
+        };
+        let store = SessionStore::from_legacy_rows(legacy.sessions);
+        assert_eq!(store.bindings.len(), 1);
+        assert_eq!(
+            store.lookup("cloud-1", "ws-a", 3).unwrap().acp_session_id,
+            "acp-new"
+        );
+    }
+
+    #[test]
+    fn migrate_legacy_skips_group_with_empty_acp() {
+        let legacy = LegacySessionStore {
+            sessions: vec![LegacyStoredSession {
+                runtime_id: "rt".into(),
+                acp_session_id: String::new(),
+                session_id: "cloud-1".into(),
+                agent_type: 3,
+                workspace_id: "ws-a".into(),
+                status: 0,
+                created_at: 1,
+            }],
+        };
+        let store = SessionStore::from_legacy_rows(legacy.sessions);
+        assert!(store.bindings.is_empty());
+    }
+
+    #[test]
+    fn load_legacy_sessions_alias_runs_migration_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runtimes.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[sessions]]
+runtime_id = "old"
+session_id = "cloud-1"
+agent_type = 3
+workspace_id = "ws-a"
+acp_session_id = "acp-old"
+created_at = 1
+
+[[sessions]]
+runtime_id = "new"
+session_id = "cloud-1"
+agent_type = 3
+workspace_id = "ws-a"
+acp_session_id = "acp-new"
+created_at = 5
+"#,
+        )
+        .unwrap();
+        let store = SessionStore::load(&path).unwrap();
+        assert_eq!(store.bindings.len(), 1);
+        assert_eq!(
+            store.lookup("cloud-1", "ws-a", 3).unwrap().acp_session_id,
+            "acp-new"
+        );
+    }
+
+    #[test]
+    fn delete_for_session_removes_all_workspace_rows() {
+        let mut store = SessionStore::default();
+        store.upsert(SessionBinding::new("s1", "ws-a", 1, "acp-a"));
+        store.upsert(SessionBinding::new("s1", "ws-b", 1, "acp-b"));
+        store.upsert(SessionBinding::new("s2", "ws-a", 1, "acp-c"));
+        store.delete_for_session("s1");
+        assert_eq!(store.bindings.len(), 1);
+        assert_eq!(store.bindings[0].cloud_session_id, "s2");
     }
 }

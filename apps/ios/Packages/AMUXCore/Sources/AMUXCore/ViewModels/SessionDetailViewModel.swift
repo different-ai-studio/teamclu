@@ -1014,7 +1014,7 @@ public final class SessionDetailViewModel {
                 sessionId: sessionID,
                 initialPrompt: ""
             )
-            if case .rejected(let reason) = outcome {
+            if case .rejected(let reason, _) = outcome {
                 print("[SessionDetailVM] addAgent: runtimeStart rejected: \(reason)")
             }
         } else {
@@ -1121,9 +1121,10 @@ public final class SessionDetailViewModel {
                 workspaceId: workspaceID,
                 worktree: worktreePath,
                 sessionId: sessionID,
-                initialPrompt: ""
+                initialPrompt: "",
+                resetBackendBinding: true
             )
-            if case .rejected(let reason) = outcome {
+            if case .rejected(let reason, _) = outcome {
                 print("[SessionDetailVM] restartAgent: runtimeStart rejected: \(reason)")
             }
 
@@ -1279,12 +1280,22 @@ public final class SessionDetailViewModel {
             let routeActor = self.routeActorID(forAgentActorID: actorID)
             let runtimeID = self.attachmentAddress(forAgentActorID: actorID)
 
+            let purgeWorkspaceID = self.memberSheetAgents
+                .first(where: { $0.id == actorID })?
+                .workspaceID
+                ?? self.memberSheetAgents.first(where: { $0.id == actorID })?.workspacePath
+                ?? ""
+
             // 1. Stop the agent's runtime (best-effort).
             if let routeActor, !routeActor.isEmpty,
                let runtimeID, !runtimeID.isEmpty,
                let teamcluService = self.teamcluService {
                 let (ok, err) = await teamcluService.runtimeStopRpc(
-                    targetActorID: routeActor, runtimeID: runtimeID)
+                    targetActorID: routeActor,
+                    runtimeID: runtimeID,
+                    purgeBinding: true,
+                    workspaceID: purgeWorkspaceID
+                )
                 if !ok {
                     print("[SessionDetailVM] removeAgent: runtimeStop failed: \(err)")
                 }

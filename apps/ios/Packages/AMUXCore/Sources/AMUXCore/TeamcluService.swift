@@ -1162,12 +1162,16 @@ public final class TeamcluService {
     /// RPC's `(success, error)` is the synchronous accept gate. The response
     /// lands on our own actor's persistently-subscribed rpc/res topic.
     public func runtimeStopRpc(targetActorID: String,
-                               runtimeID: String) async -> (Bool, String) {
+                               runtimeID: String,
+                               purgeBinding: Bool = false,
+                               workspaceID: String = "") async -> (Bool, String) {
         guard let rpcClient else { return (false, "mqtt not configured") }
         guard !targetActorID.isEmpty else { return (false, "no target actor id") }
 
         var stop = Teamclu_RuntimeStopRequest()
         stop.runtimeID = runtimeID
+        stop.purgeBinding = purgeBinding
+        stop.workspaceID = workspaceID
 
         var rpcReq = Teamclu_RpcRequest()
         rpcReq.requestID = String(UUID().uuidString.prefix(8)).lowercased()
@@ -1316,10 +1320,11 @@ public final class TeamcluService {
         workspaceId: String,
         worktree: String,
         sessionId: String,
-        initialPrompt: String
+        initialPrompt: String,
+        resetBackendBinding: Bool = false
     ) async -> RuntimeStartOutcome {
-        guard let rpcClient else { return .rejected("mqtt not configured") }
-        guard !targetActorID.isEmpty else { return .rejected("no target actor id") }
+        guard let rpcClient else { return .rejected(reason: "mqtt not configured") }
+        guard !targetActorID.isEmpty else { return .rejected(reason: "no target actor id") }
 
         var start = Teamclu_RuntimeStartRequest()
         start.agentType = agentType
@@ -1327,6 +1332,7 @@ public final class TeamcluService {
         start.worktree = worktree
         start.sessionID = sessionId
         start.initialPrompt = initialPrompt
+        start.resetBackendBinding = resetBackendBinding
 
         var rpcReq = Teamclu_RpcRequest()
         rpcReq.requestID = String(UUID().uuidString.prefix(8)).lowercased()
@@ -1344,7 +1350,7 @@ public final class TeamcluService {
         print("[runtimeStartRpc] publishing requestID=\(requestId) → actor=\(targetActorID)")
         guard let response = await rpcClient.invoke(request: rpcReq, teamID: teamId, targetActorID: targetActorID, timeout: 15) else {
             print("[runtimeStartRpc] TIMEOUT waiting for response to requestID=\(requestId)")
-            return .rejected("timeout")
+            return .rejected(reason: "timeout")
         }
 
         print("[runtimeStartRpc] matched response success=\(response.success) error=\(response.error)")
@@ -1355,15 +1361,15 @@ public final class TeamcluService {
                 let reason = result.rejectedReason.isEmpty
                     ? (response.error.isEmpty ? "rejected" : response.error)
                     : result.rejectedReason
-                return .rejected(reason)
+                return .rejected(reason: reason, errorCode: result.errorCode)
             }
         }
-        return .rejected(response.error.isEmpty ? "no result" : response.error)
+        return .rejected(reason: response.error.isEmpty ? "no result" : response.error)
     }
 
     public enum RuntimeStartOutcome: Sendable {
         case accepted(runtimeID: String, sessionID: String)
-        case rejected(String)
+        case rejected(reason: String, errorCode: String = "")
     }
 
     private func configureRuntime(
