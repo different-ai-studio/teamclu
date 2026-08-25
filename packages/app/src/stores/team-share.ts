@@ -46,6 +46,8 @@ export interface ShareStatus {
   enabledAt?: string | null
   // Per-workspace link to the daemon's single global copy, and where that
   // global copy lives on disk (~/.amuxd/teams/<team_id>/teamclu-team).
+  // Absent when the status was read without a workspace — there is no single
+  // workspace whose link it could describe.
   linkStatus?: LinkStatus
   globalPath?: string | null
 }
@@ -66,7 +68,12 @@ export interface TeamShareState {
   loading: boolean
   lastError: string | null
 
-  refresh(teamId: string, workspacePath: string): Promise<ShareStatus>
+  /**
+   * Read the team's share mode. `workspacePath` is optional and only decorates
+   * the result with that workspace's `linkStatus` — the mode is the team's, and
+   * comes from the Cloud API.
+   */
+  refresh(teamId: string, workspacePath?: string | null): Promise<ShareStatus>
   /**
    * Save the team secret and deliver it to the daemon. Resolves to a warning
    * string when the save succeeded but the daemon did not take delivery — the
@@ -105,7 +112,7 @@ export const useTeamShareStore = create<TeamShareState>((set) => ({
   async refresh(teamId, workspacePath) {
     if (!isTauri()) return { ...EMPTY_STATUS }
 
-    const key = `${teamId}\0${workspacePath}`
+    const key = `${teamId}\0${workspacePath ?? ''}`
     if (shareRefreshInflight && shareRefreshInflightKey === key) {
       return shareRefreshInflight
     }
@@ -120,7 +127,7 @@ export const useTeamShareStore = create<TeamShareState>((set) => ({
         const cloudApiUrl = getCloudApiUrlForNativeCommand()
         const raw = await invoke<ShareStatus>('team_share_get_status', {
           teamId,
-          workspacePath,
+          workspacePath: workspacePath ?? null,
           accessToken,
           cloudApiUrl,
         })

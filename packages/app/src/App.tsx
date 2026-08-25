@@ -829,10 +829,18 @@ function AppContent() {
   }, [currentTeamId]);
 
   // Keep team-share status fresh so the top-right "team shared files" tab shows
-  // only when share is actually enabled (shareMode != null). Without this the
-  // status would stay null until the user visited the panel or Settings → Team.
+  // only when share is actually enabled (shareMode != null). This is the ONLY
+  // place that loads it, and everything downstream reads the result: the sidebar
+  // tab (`teamShareActive`), the cloud-sync button's `available`, and the sync
+  // status poll in useAppInit.
+  //
+  // Deliberately not gated on a workspace. Share mode is the team's and comes
+  // from the Cloud API; a workspace only decorates the result with its own
+  // `linkStatus`. The old `!workspacePath` guard meant a client with no folder
+  // open reported "share is off" for a team where it is on — which is what left
+  // the sync button greyed out and the shared-files tab hidden.
   useEffect(() => {
-    if (!currentTeamId || !workspacePath) return;
+    if (!currentTeamId) return;
     void refreshTeamShare(currentTeamId, workspacePath);
   }, [currentTeamId, workspacePath, refreshTeamShare]);
 
