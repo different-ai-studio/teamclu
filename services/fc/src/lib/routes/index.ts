@@ -23,6 +23,7 @@ import { registerTeamSkills } from "./team-skills.js";
 import { registerMarketplace } from "./marketplace.js";
 import { registerTeamMcp } from "./team-mcp.js";
 import { registerTeamEnvSecrets } from "./team-env-secrets.js";
+import { registerTeamVoice } from "./team-voice.js";
 
 export function registerAllRoutes(router) {
   registerAuth(router);
@@ -47,6 +48,9 @@ export function registerAllRoutes(router) {
   // broader team match.
   registerTeamMcp(router);
   registerTeamEnvSecrets(router);
+  // Same ordering reason again: owns /v1/teams/:teamId/voice/* and must be
+  // registered before workspaces' broader team match can shadow it.
+  registerTeamVoice(router);
   registerWorkspaces(router);
   registerSystem(router);
   registerActors(router);

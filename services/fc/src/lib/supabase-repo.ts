@@ -926,6 +926,54 @@ export function createSupabaseBusinessRepository(options) {
       };
     },
 
+    // Mints a short-lived Alibaba NLS credential for the ESP32 voice terminal's
+    // daemon. FC holds the AccessKey; what leaves here expires on its own. See
+    // lib/aliyun-nls.ts for why the audio does not pass through this service,
+    // and why the credentials come from a dedicated VOICE_* profile instead of
+    // the deployment's default AccessKey (which is MinIO's on self-host).
+    //
+    // Nothing is persisted: an NLS token is derived state with its own expiry,
+    // so storing it would create a second copy to invalidate for no gain.
+    async mintVoiceCredentials(teamId) {
+      // Membership first, before any upstream call. A non-member must not be
+      // able to spend this deployment's NLS quota, or learn whether voice is
+      // configured at all.
+      await requireCallerTeamMember(teamId);
+
+      const nls = await import("./aliyun-nls.js");
+      const resolve = options?.resolveVoiceProfile ?? nls.resolveVoiceProfile;
+      const mint = options?.createNlsToken ?? nls.createNlsToken;
+
+      const { profile, error } = resolve();
+      if (!profile) {
+        // Name the missing variable. "not configured" with nothing named is
+        // what made the app-deploy failure cost an SSH session to diagnose.
+        throw new ApiError(503, "voice_unavailable", error ?? "voice is not configured");
+      }
+
+      let token;
+      try {
+        token = await mint(profile);
+      } catch (e) {
+        // 502, not 503: the deployment IS configured and the vendor call
+        // failed. Different cause, different fix.
+        throw new ApiError(
+          502,
+          "voice_upstream_failed",
+          e instanceof Error ? e.message : "NLS token request failed",
+        );
+      }
+
+      return {
+        gatewayEndpoint: profile.gatewayEndpoint,
+        appKey: profile.appKey,
+        token: token.token,
+        expiresAt: token.expiresAt,
+        sttModel: profile.sttModel,
+        ttsVoice: profile.ttsVoice,
+      };
+    },
+
     // Idempotently issues the CALLER's own per-member LiteLLM virtual key,
     // auto-provisioning the team's LiteLLM team first if it hasn't been set
     // up yet (A2-1). There is intentionally NO actorId parameter: the caller

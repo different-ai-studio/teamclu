@@ -88,6 +88,18 @@ resources:
         # reverse proxy that terminates them, so this is normally blank here —
         # declared so the two targets stay in step (deploy-env-parity.test.ts).
         APPS_PUBLIC_DOMAIN: ${env('APPS_PUBLIC_DOMAIN', '')}
+        # Speech (STT/TTS) for the voice terminal. Deliberately its OWN
+        # AccessKey rather than ACCESS_KEY_ID above: on self-host that one is
+        # MinIO's, and signing an NLS request with it fails in a way that names
+        # no variable. Declared here (usually blank on this target) so both
+        # deploy targets stay in step — see deploy-env-parity.test.ts.
+        VOICE_ACCESS_KEY_ID: ${env('VOICE_ACCESS_KEY_ID', '')}
+        VOICE_ACCESS_KEY_SECRET: ${env('VOICE_ACCESS_KEY_SECRET', '')}
+        VOICE_NLS_APPKEY: ${env('VOICE_NLS_APPKEY', '')}
+        VOICE_REGION: ${env('VOICE_REGION', '')}
+        VOICE_NLS_GATEWAY: ${env('VOICE_NLS_GATEWAY', '')}
+        VOICE_STT_MODEL: ${env('VOICE_STT_MODEL', '')}
+        VOICE_TTS_VOICE: ${env('VOICE_TTS_VOICE', '')}
         PUSH_WEBHOOK_SECRET: ${env('PUSH_WEBHOOK_SECRET')}
         MARKETPLACE_ADMIN_SECRET: ${env('MARKETPLACE_ADMIN_SECRET', '')}
         AGENT_MANAGEMENT_GRANT_SECRET: ${env('AGENT_MANAGEMENT_GRANT_SECRET', '')}

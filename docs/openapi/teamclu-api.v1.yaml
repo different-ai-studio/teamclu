@@ -2719,6 +2719,46 @@ paths:
           $ref: "#/components/responses/Error"
         "503":
           $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/voice/credentials:
+    post:
+      operationId: mintTeamVoiceCredentials
+      summary: Mint a short-lived speech (STT/TTS) credential
+      description: |
+        Issues a short-lived Alibaba NLS token so a caller (today: the amuxd
+        daemon behind the ESP32 voice terminal) can reach speech recognition
+        and synthesis **directly**. Audio never transits this API.
+
+        This mirrors the LiteLLM pattern: the deployment's AccessKey stays
+        server-side and only an expiring, project-scoped token is handed out.
+        Callers should refresh on `expiresAt` rather than caching indefinitely.
+
+        Requires team membership. Returns 503 `voice_unavailable` when the
+        deployment has no `VOICE_*` profile configured (the error names the
+        missing variable), and 502 `voice_upstream_failed` when the profile is
+        present but the vendor call failed.
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: A freshly minted speech credential.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceCredentialsResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/litellm/keys:
     get:
       operationId: listTeamLiteLlmKeys
@@ -6186,6 +6226,35 @@ components:
           type: string
         litellmKey:
           type: string
+    VoiceCredentialsResponse:
+      type: object
+      required: [gatewayEndpoint, appKey, token, expiresAt, sttModel, ttsVoice]
+      properties:
+        gatewayEndpoint:
+          type: string
+          description: >
+            WebSocket URL of the speech gateway, e.g.
+            `wss://nls-gateway-cn-shanghai.aliyuncs.com/ws/v1`. Both recognition
+            and synthesis speak this one endpoint.
+        appKey:
+          type: string
+          description: NLS project appkey — selects which project's models and quota to use.
+        token:
+          type: string
+          description: Short-lived bearer token for the gateway. Never the deployment's AccessKey.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When `token` stops working. Refresh on this, do not cache past it.
+        sttModel:
+          type: string
+          description: Streaming recognition model id, e.g. `paraformer-realtime-v2`.
+        ttsVoice:
+          type: string
+          description: >
+            Synthesis voice id, e.g. `zhixiaobai` / `xiaoyun` / `siqi`. These are
+            classic NLS voice names; CosyVoice/DashScope names are a different
+            product and the gateway rejects them.
     LiteLlmMemberKeyResponse:
       type: object
       required: [key, aiGatewayEndpoint]

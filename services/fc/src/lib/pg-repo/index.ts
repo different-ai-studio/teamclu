@@ -19,6 +19,8 @@ import { makeTeamSkillsRepo } from "./team-skills.js";
 import { makeMarketplaceRepo } from "./marketplace.js";
 import { makeTeamMcpRepo } from "./team-mcp.js";
 import { makeTeamEnvSecretsRepo } from "./team-env-secrets.js";
+import { makeTeamVoiceRepo } from "./team-voice.js";
+import { createNlsToken, resolveVoiceProfile } from "../aliyun-nls.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createPgBusinessRepository({ db, accessToken, userId, callerActorId, provisionLiteLlm, fetchLiteLlmModels: fetchLiteLlmModelsOpt, provisionMemberKey, queryLiteLlmUsage, startDeploy, finalizeDeploy, dispatchPush, publishReadEvent, deleteMemberKey }: { db: PgDatabase<any, any>; accessToken?: string; userId?: string; callerActorId?: string; provisionLiteLlm?: TeamsRepoDeps["provisionLiteLlm"]; fetchLiteLlmModels?: TeamsRepoDeps["fetchLiteLlmModels"]; provisionMemberKey?: TeamsRepoDeps["provisionMemberKey"]; queryLiteLlmUsage?: TeamsRepoDeps["queryLiteLlmUsage"]; deleteMemberKey?: TeamsRepoDeps["deleteMemberKey"]; startDeploy?: AppsRepoDeps["startDeploy"]; finalizeDeploy?: AppsRepoDeps["finalizeDeploy"]; dispatchPush?: MessagesRepoDeps["dispatchPush"]; publishReadEvent?: SessionsRepoDeps["publishReadEvent"] }) {
@@ -69,6 +71,13 @@ export function createPgBusinessRepository({ db, accessToken, userId, callerActo
   const marketplaceRepo = makeMarketplaceRepo(db, ctx);
   const teamMcpRepo = makeTeamMcpRepo(db, ctx);
   const teamEnvSecretsRepo = makeTeamEnvSecretsRepo(db, ctx);
+  // Voice reads its own `VOICE_*` env profile rather than the deployment's
+  // default AccessKey, which is MinIO's on self-host — see aliyun-nls.ts.
+  const teamVoiceRepo = makeTeamVoiceRepo(db, {
+    ...ctx,
+    resolveVoiceProfile: () => resolveVoiceProfile(),
+    createNlsToken: (profile) => createNlsToken(profile),
+  });
   return {
     ...teamsRepo,
     ...ideasRepo,
@@ -88,6 +97,7 @@ export function createPgBusinessRepository({ db, accessToken, userId, callerActo
     ...marketplaceRepo,
     ...teamMcpRepo,
     ...teamEnvSecretsRepo,
+    ...teamVoiceRepo,
     ...makeAttachmentsRepo(),
     listTeams: (args: { limit?: number } = {}) => teamsRepo.listTeams(args, teamsCtx),
     listAllMyTeams: () => teamsRepo.listAllMyTeams(teamsCtx),

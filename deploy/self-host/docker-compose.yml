@@ -356,6 +356,24 @@ services:
       # Defaults to https://oss-<APPS_REGION>.aliyuncs.com; override only for a
       # VPC/internal OSS endpoint.
       APPS_OSS_ENDPOINT: "${APPS_OSS_ENDPOINT:-}"
+      # Speech (STT/TTS) for the ESP32 voice terminal. FC mints a short-lived
+      # Alibaba NLS token from these; the AccessKey itself never leaves the
+      # container and audio never transits FC (the daemon connects to the NLS
+      # gateway directly). Separate from ACCESS_KEY_ID above for the same
+      # reason APPS_* is: that one is MinIO's here. Leave blank and
+      # POST /v1/teams/:id/voice/credentials answers 503 naming the empty one.
+      VOICE_ACCESS_KEY_ID: "${VOICE_ACCESS_KEY_ID:-}"
+      VOICE_ACCESS_KEY_SECRET: "${VOICE_ACCESS_KEY_SECRET:-}"
+      # NLS project appkey. NLS rejects every request without one, so it is
+      # required alongside the key pair rather than optional.
+      VOICE_NLS_APPKEY: "${VOICE_NLS_APPKEY:-}"
+      # Defaults to cn-shanghai, where the speech models are published.
+      VOICE_REGION: "${VOICE_REGION:-}"
+      # Defaults to wss://nls-gateway-<VOICE_REGION>.aliyuncs.com/ws/v1.
+      VOICE_NLS_GATEWAY: "${VOICE_NLS_GATEWAY:-}"
+      # Model / voice selection; both have sane defaults in aliyun-nls.ts.
+      VOICE_STT_MODEL: "${VOICE_STT_MODEL:-}"
+      VOICE_TTS_VOICE: "${VOICE_TTS_VOICE:-}"
       # Parent domain for per-app vanity hostnames
       # (<slug>-<id8>.<this>). Blank = feature off: apps keep their raw
       # Function Compute trigger URL and Caddy never asks about a certificate.
