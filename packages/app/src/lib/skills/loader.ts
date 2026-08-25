@@ -98,20 +98,35 @@ async function loadSkillsFromDir(
 
 export { collectTeamSkillPaths, readConfigSkillPaths } from '@/lib/team-skill-paths'
 
-/** Return all known skill directories for the current workspace/user context. */
+/**
+ * Every skill directory scanned for the current workspace/user context, in the
+ * daemon's resolution order — highest precedence first.
+ *
+ * The order is the one `skill_dir_specs` ranks by
+ * (`apps/daemon/src/config/roles_skills.rs`), because it is what decides which
+ * copy of a duplicated slug an agent actually loads. Callers that only need the
+ * set (watchers, diagnostics) are unaffected by it; the skills column shows the
+ * list to the user, where "which of these wins" is the whole point.
+ */
 export async function getSkillDirectories(workspacePath: string | null): Promise<string[]> {
   const home = trimTrailingPathSeparators(await homeDir())
-  const dirs = new Set<string>([`${home}/.claude/skills`, `${home}/.agents/skills`])
+  const dirs = new Set<string>()
 
+  // rank 1
+  if (workspacePath) dirs.add(`${workspacePath}/.claude/skills`)
+  // rank 2 — ahead of the personal roots on purpose: this is where team packs
+  // are installed, and a team skill is a team standard.
+  dirs.add(`${home}/.agents/skills`)
+  // rank 3
+  if (workspacePath) dirs.add(`${workspacePath}/.agents/skills`)
+  // rank 4
   if (workspacePath) {
-    dirs.add(`${workspacePath}/.claude/skills`)
-    dirs.add(`${workspacePath}/.agents/skills`)
-
-    const configPaths = await collectTeamSkillPaths(workspacePath)
-    for (const dirPath of configPaths) {
+    for (const dirPath of await collectTeamSkillPaths(workspacePath)) {
       dirs.add(dirPath)
     }
   }
+  // rank 5
+  dirs.add(`${home}/.claude/skills`)
 
   return Array.from(dirs)
 }
