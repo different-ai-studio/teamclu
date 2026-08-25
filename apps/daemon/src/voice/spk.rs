@@ -133,6 +133,43 @@ pub trait ReplySpeaker: Send + Sync {
 /// boundaries, so this buffers across them: encoding whatever arrived as one
 /// packet would produce frames the device's fixed-size decode buffer cannot
 /// take.
+/// Makeup gain applied before the soft knee. Speech from NLS arrives around
+/// -14 dBFS RMS with peaks near full scale — a crest factor of about 14 dB —
+/// so raising the synthesis volume alone runs the peaks into the rail while
+/// the loudness a listener perceives barely moves. That combination is exactly
+/// what a small speaker reported as "quiet, and distorted".
+const MAKEUP_GAIN: f32 = 2.0;
+
+/// Below this the transfer is exactly linear, so ordinary speech is amplified
+/// and nothing else.
+const KNEE: f32 = 0.6;
+
+/// Asymptotic ceiling. Deliberately short of 1.0: Opus is lossy, and a decoded
+/// sample can exceed the peak that went in — measured at +0.3 dB on this very
+/// path. Encoding speech that already touches 0 dBFS makes that overshoot wrap
+/// around int16, which is heard as a crack rather than as volume. This leaves
+/// it somewhere to go.
+const CEILING: f32 = 0.92;
+
+/// Amplify, then bend rather than break.
+///
+/// A hard clip at the ceiling would trade wraparound for a different kind of
+/// buzz. `tanh` above the knee compresses peaks smoothly and asymptotically —
+/// no input, however loud, reaches the ceiling — so what is lost is a little
+/// dynamic range at the top rather than the shape of the waveform.
+fn limit(sample: i16) -> i16 {
+    let x = sample as f32 / 32768.0 * MAKEUP_GAIN;
+    let mag = x.abs();
+    let y = if mag <= KNEE {
+        x
+    } else {
+        let over = (mag - KNEE) / (CEILING - KNEE);
+        let shaped = KNEE + (CEILING - KNEE) * over.tanh();
+        shaped.copysign(x)
+    };
+    (y * 32767.0).round().clamp(-32767.0, 32767.0) as i16
+}
+
 pub struct SpkEncoder {
     enc: audiopus::coder::Encoder,
     pending: Vec<i16>,
@@ -153,7 +190,7 @@ impl SpkEncoder {
 
     /// Feed PCM; returns every complete frame now available.
     pub fn push(&mut self, samples: &[i16]) -> Vec<Vec<u8>> {
-        self.pending.extend_from_slice(samples);
+        self.pending.extend(samples.iter().map(|&s| limit(s)));
         let mut out = Vec::new();
         while self.pending.len() >= SPK_FRAME_SAMPLES {
             let frame: Vec<i16> = self.pending.drain(..SPK_FRAME_SAMPLES).collect();
@@ -281,8 +318,11 @@ impl ReplySpeaker for SpeechSynthesizer {
         .await;
         // Puts the face on the Think screen. Its own timeout is now running,
         // so everything below is on a clock the user can see.
-        self.send_ctl(&key, serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "thinking" }))
-            .await;
+        self.send_ctl(
+            &key,
+            serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "thinking" }),
+        )
+        .await;
 
         let cancel = Arc::new(AtomicBool::new(false));
         self.active.lock().await.insert(
@@ -402,7 +442,10 @@ async fn run_turn(
             Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
                 // Dropped deltas mean a gap in the spoken reply, not a reason
                 // to abandon it.
-                warn!(skipped = n, "voice: session event lag; reply will have a gap");
+                warn!(
+                    skipped = n,
+                    "voice: session event lag; reply will have a gap"
+                );
                 continue;
             }
             Ok(Err(broadcast::error::RecvError::Closed)) => {
@@ -735,6 +778,57 @@ mod tests {
     }
 
     // ---- encoder -------------------------------------------------------
+
+    #[test]
+    fn the_limiter_amplifies_speech_and_never_reaches_the_ceiling() {
+        // The two properties that matter. Ordinary speech has to get louder,
+        // or the limiter is pointless; nothing may reach full scale, or Opus's
+        // overshoot wraps and the reply cracks — which is the defect this
+        // exists to fix, not a theoretical concern.
+        let quiet = 3_000i16; // ~-20 dBFS, a typical speech sample
+        assert!(
+            limit(quiet) > quiet,
+            "speech below the knee must be amplified: {} -> {}",
+            quiet,
+            limit(quiet)
+        );
+
+        for s in [i16::MIN, -32767, -20000, -1, 0, 1, 20000, 32767] {
+            let out = limit(s) as i32;
+            assert!(
+                out.abs() <= (CEILING * 32767.0) as i32,
+                "{s} became {out}, at or past the ceiling"
+            );
+            if s != 0 {
+                assert_eq!(
+                    out.signum(),
+                    (s as i32).signum(),
+                    "{s} changed sign — that is the wraparound we are preventing"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_limiter_raises_rms_without_clipping_a_full_scale_ramp() {
+        // A ramp through the whole range: every input the encoder can ever see.
+        let input: Vec<i16> = (-32768..=32767).step_by(7).map(|v| v as i16).collect();
+        let output: Vec<i16> = input.iter().map(|&s| limit(s)).collect();
+
+        let rms = |v: &[i16]| {
+            (v.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / v.len() as f64).sqrt()
+        };
+        assert!(
+            rms(&output) > rms(&input),
+            "rms fell: {:.0} -> {:.0}",
+            rms(&input),
+            rms(&output)
+        );
+        assert!(
+            output.iter().all(|&s| (s as i32).abs() < 32767),
+            "something reached full scale"
+        );
+    }
 
     #[test]
     fn encoder_emits_one_packet_per_20ms() {

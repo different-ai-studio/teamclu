@@ -63,13 +63,16 @@ impl Default for AliyunTtsConfig {
         Self {
             sample_rate: TTS_SAMPLE_RATE,
             speech_rate: 0,
-            // Full scale, not NLS's default of 50. Loudness belongs to the
-            // device, which has its own control (and a small speaker); with
-            // both ends attenuating, a reply arrived at roughly a quarter of
-            // what the hardware can do and was reported as too quiet to use.
-            // Synthesise at full amplitude and let the one knob a person can
-            // actually reach decide how loud the room gets.
-            volume: 100,
+            // 85, not NLS's default of 50 and not the 100 tried before it.
+            // Measured on this path: 50 peaks at 51% of full scale, 100 peaks
+            // at exactly 100% and puts samples on the rail at -32768. Opus
+            // then overshoots by ~0.3 dB, which wraps int16 and cracks.
+            // 85 peaks around 87%, which survives the encoder intact.
+            //
+            // Loudness is not this knob's job — the crest factor is ~14 dB, so
+            // gain here buys clipping long before it buys volume. `spk::limit`
+            // is what makes a reply loud.
+            volume: 85,
         }
     }
 }
@@ -389,6 +392,125 @@ mod live {
 
     fn from_env_or_skip() -> Option<Arc<dyn CredentialSource>> {
         StaticCredentials::from_env().map(|c| Arc::new(c) as Arc<dyn CredentialSource>)
+    }
+
+    #[tokio::test]
+    #[ignore = "measurement: spends vendor quota; needs TEAMCLU_VOICE_*"]
+    async fn measures_amplitude_across_volumes() {
+        // "Quiet AND distorted" is the signature of clipping, not of a speaker
+        // at its limit — a speaker at its limit is loud and distorted. This
+        // walks NLS's `volume` and reports what actually comes back, so the
+        // setting is chosen from the waveform rather than by ear.
+        let Some(creds) = from_env_or_skip() else {
+            eprintln!("no TEAMCLU_VOICE_* in env; skipping");
+            return;
+        };
+        for vol in [50u32, 70, 85, 100] {
+            let cfg = AliyunTtsConfig {
+                volume: vol,
+                ..Default::default()
+            };
+            let p = AliyunTtsProvider::new(creds.clone()).with_config(cfg);
+            let stream = p.speak().await.expect("stream opens");
+            stream
+                .text_tx
+                .send("今天天气不错，我们出去走走吧。".to_string())
+                .await
+                .expect("send");
+            drop(stream.text_tx);
+
+            let mut rx = stream.audio_rx;
+            let (mut peak, mut sumsq, mut n, mut clipped) = (0i32, 0f64, 0usize, 0usize);
+            while let Some(c) = rx.recv().await {
+                for &s in &c.samples {
+                    let a = (s as i32).abs();
+                    if a > peak {
+                        peak = a;
+                    }
+                    // Within a hair of full scale: what a clipped peak looks
+                    // like once it has been flattened.
+                    if a >= 32700 {
+                        clipped += 1;
+                    }
+                    sumsq += (s as f64) * (s as f64);
+                    n += 1;
+                }
+            }
+            let rms = (sumsq / n.max(1) as f64).sqrt();
+            eprintln!(
+                "volume={vol:3}  peak={peak:5} ({:.1}% FS)  rms={rms:7.0} ({:.1}% FS)  clipped={clipped} of {n}",
+                peak as f64 / 327.68,
+                rms / 327.68,
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "measurement: spends vendor quota; needs TEAMCLU_VOICE_*"]
+    async fn measures_opus_overshoot_at_full_scale() {
+        // A lossy codec's output can exceed its input's peak. Feed it speech
+        // that already touches 0 dBFS and the overshoot has nowhere to go but
+        // around, which is heard as a crack rather than as loudness. This
+        // measures whether that is happening on the real downlink path.
+        let Some(creds) = from_env_or_skip() else {
+            eprintln!("no TEAMCLU_VOICE_* in env; skipping");
+            return;
+        };
+        for vol in [85u32, 100] {
+            let cfg = AliyunTtsConfig {
+                volume: vol,
+                ..Default::default()
+            };
+            let p = AliyunTtsProvider::new(creds.clone()).with_config(cfg);
+            let stream = p.speak().await.expect("stream opens");
+            stream
+                .text_tx
+                .send("今天天气不错，我们出去走走吧。".to_string())
+                .await
+                .expect("send");
+            drop(stream.text_tx);
+            let mut pcm: Vec<i16> = Vec::new();
+            let mut rx = stream.audio_rx;
+            while let Some(c) = rx.recv().await {
+                pcm.extend_from_slice(&c.samples);
+            }
+
+            // Exactly the encoder the device is fed from.
+            let mut enc = crate::voice::spk::SpkEncoder::new(24_000).expect("encoder");
+            let mut dec = audiopus::coder::Decoder::new(
+                audiopus::SampleRate::Hz16000,
+                audiopus::Channels::Mono,
+            )
+            .expect("decoder");
+
+            let (mut before, mut after, mut wrapped) = (0i32, 0i32, 0usize);
+            for &s in &pcm {
+                before = before.max((s as i32).abs());
+            }
+            let mut out = vec![0i16; 320];
+            for frame in pcm.chunks(320) {
+                for packet in enc.push(frame) {
+                    if dec.decode(Some(&packet), &mut out[..], false).is_ok() {
+                        for (i, &d) in out.iter().enumerate() {
+                            after = after.max((d as i32).abs());
+                            // Sign flipped against a large input sample: the
+                            // fingerprint of an int16 wrap, not of quiet audio.
+                            if let Some(&src) = frame.get(i) {
+                                let (src, dv) = (src as i32, d as i32);
+                                if src.abs() > 30000 && (src > 0) != (dv > 0) && dv.abs() > 30000 {
+                                    wrapped += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "volume={vol:3}  peak before opus={before:5} ({:.1}% FS)  after={after:5} ({:.1}% FS)  wrapped={wrapped}",
+                before as f64 / 327.68,
+                after as f64 / 327.68,
+            );
+        }
     }
 
     #[tokio::test]
