@@ -2261,8 +2261,7 @@ fn clean_email_body(body: &str) -> String {
 
 /// Send a standalone notification email.
 /// Properly handles Gmail OAuth2 (XOAUTH2) and custom SMTP authentication.
-/// Returns the normalized outgoing Message-ID on success, which can be used
-/// to register the email in SessionMapping for reply tracking.
+/// Returns the normalized outgoing Message-ID on success.
 pub async fn send_notification_email(
     config: &EmailConfig,
     workspace_path: &str,
@@ -2340,9 +2339,9 @@ fn send_notification_email_sync(
         builder = builder.header(ReplyToHeader(params.from_email.clone()));
     }
 
-    // Generate and set Message-ID header (same as gateway reply).
-    // This allows the cron scheduler to register the outgoing message-id
-    // in SessionMapping so user replies can be resolved to the same session.
+    // Generate and set Message-ID header (same as gateway reply), so a
+    // reply threads against it. `email_db.rs` is what resolves it back to a
+    // session on the way in.
     let outgoing_message_id = generate_outgoing_message_id(&params.base_email);
     builder = builder.header(MessageIdHeader(outgoing_message_id.clone()));
 

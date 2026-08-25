@@ -25,7 +25,6 @@ pub mod kook_config;
 pub mod pending_question;
 pub mod seatalk;
 pub mod seatalk_config;
-pub mod session;
 pub mod session_queue;
 pub mod wechat;
 pub mod wechat_config;
@@ -47,7 +46,6 @@ pub use pending_question::{
 };
 pub use seatalk::SeaTalkGateway;
 pub use seatalk_config::*;
-pub use session::SessionMapping;
 pub use wechat::WeChatGateway;
 pub use wechat_config::*;
 pub use wecom::WeComGateway;

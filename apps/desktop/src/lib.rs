@@ -334,7 +334,6 @@ pub fn run() {
         })
         .manage(commands::window::WindowRegistry::default())
         .manage(commands::filewatcher::FileWatcherState::default())
-        .manage(commands::gateway::GatewayState::default())
         .manage(commands::cron::CronState::default())
         .manage(local_cache::commands::LocalCacheState::default())
         .manage(commands::amuxd_supervisor::AmuxdSupervisor::new())
@@ -400,7 +399,6 @@ pub fn run() {
             commands::gateway::qr::poll_wechat_qr_status,
             commands::gateway::qr::start_wecom_qr_auth,
             commands::gateway::qr::poll_wecom_qr_auth,
-            commands::gateway::sync_gateway_session_model,
             commands::gateway::load_shortcuts,
             commands::gateway::save_shortcuts,
             commands::gateway::load_system_prompt,

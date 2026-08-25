@@ -23,47 +23,29 @@ impl DeliveryManager {
     /// Send a notification through the specified channel.
     /// Reads fresh config from teamclu.json each time so channel setting changes
     /// are picked up without requiring a restart.
-    ///
-    /// Returns `Some(message_id)` for Email (the outgoing SMTP Message-ID),
-    /// or `None` for Discord/Feishu (no message-id concept needed for session tracking).
     pub async fn send_notification(
         &self,
         channel: &DeliveryChannel,
         target: &str,
         message: &str,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<(), String> {
         if matches!(channel, DeliveryChannel::Wecom | DeliveryChannel::Seatalk) {
             match channel {
                 DeliveryChannel::Wecom => self.send_wecom(target, message).await?,
                 DeliveryChannel::Seatalk => self.send_seatalk(target, message).await?,
                 _ => unreachable!(),
             }
-            return Ok(None);
+            return Ok(());
         }
 
         let config = self.read_teamclu_config()?;
         match channel {
-            DeliveryChannel::Discord => {
-                self.send_discord(&config, target, message).await?;
-                Ok(None)
-            }
-            DeliveryChannel::Feishu => {
-                self.send_feishu(&config, target, message).await?;
-                Ok(None)
-            }
-            DeliveryChannel::Email => {
-                let message_id = self.send_email(&config, target, message).await?;
-                Ok(Some(message_id))
-            }
-            DeliveryChannel::Kook => {
-                self.send_kook(&config, target, message).await?;
-                Ok(None)
-            }
-            DeliveryChannel::Wechat => {
-                self.send_wechat(&config, target, message).await?;
-                Ok(None)
-            }
-            DeliveryChannel::Wecom | DeliveryChannel::Seatalk => Ok(None),
+            DeliveryChannel::Discord => self.send_discord(&config, target, message).await,
+            DeliveryChannel::Feishu => self.send_feishu(&config, target, message).await,
+            DeliveryChannel::Email => self.send_email(&config, target, message).await,
+            DeliveryChannel::Kook => self.send_kook(&config, target, message).await,
+            DeliveryChannel::Wechat => self.send_wechat(&config, target, message).await,
+            DeliveryChannel::Wecom | DeliveryChannel::Seatalk => Ok(()),
         }
     }
 
@@ -187,13 +169,16 @@ impl DeliveryManager {
 
     /// Send via Email — delegates to gateway::email::send_notification_email.
     /// Properly handles Gmail OAuth2 (XOAUTH2) and custom SMTP.
-    /// Returns the outgoing Message-ID for session registration.
+    ///
+    /// The outgoing Message-ID it returns is dropped here: the header is what
+    /// makes a reply thread, and `email_db.rs` is what resolves that reply back
+    /// to a session on the way in.
     async fn send_email(
         &self,
         config: &serde_json::Value,
         target: &str,
         message: &str,
-    ) -> Result<String, String> {
+    ) -> Result<(), String> {
         let email_val = &config["channels"]["email"];
         if email_val.is_null() {
             return Err(format!(
@@ -214,6 +199,7 @@ impl DeliveryManager {
             message,
         )
         .await
+        .map(|_message_id| ())
     }
 
     // ==================== Kook ====================
