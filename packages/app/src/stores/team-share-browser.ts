@@ -1267,6 +1267,10 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   sharePersonalSkill: async (slug, input) => {
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
+    // The Agent whose disk this pack ends up on. Sharing is only reachable when
+    // that Agent is this machine — `localSkillFiles` hands back the files to
+    // share from nowhere else — so this is the local daemon's actor.
+    const subjectActorId = get().subjectActorId
     const wsPath = await workspacePath()
     const skill = get().skills.items.find((s) => s.slug === slug)
     if (!skill || skill.kind !== 'personal') {
@@ -1342,7 +1346,16 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     })
     await ensureAgentsSkillsPaths(wsPath)
 
-    await backend.teamSkills.installTeamSkill(teamId, input.slug, { version: 1 })
+    // Against the Agent, not the member. `team_skill_install_from_dir` above put
+    // the pack in this machine's skills root, and the machine is an Agent — the
+    // daemon's inventory answers "what do I have installed" about its own actor,
+    // so a record on the member is one nothing that renders this list ever reads.
+    // That is how a freshly shared skill used to disappear from the column the
+    // moment it was shared.
+    await backend.teamSkills.installTeamSkill(teamId, input.slug, {
+      version: 1,
+      ...(subjectActorId ? { actorId: subjectActorId } : {}),
+    })
 
     // Retire the original now that the pack exists and the server knows about
     // it. Leaving it produces two files answering to one name, and the pack
@@ -1369,6 +1382,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   publishSkillVersion: async (slug, input) => {
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
+    const subjectActorId = get().subjectActorId
     const wsPath = await workspacePath()
     const skill = get().skills.items.find((s) => s.slug === slug)
     if (!skill) throw new Error(`${slug} is not in the registry`)
@@ -1421,7 +1435,12 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         isGlobal: true,
       },
     })
-    await backend.teamSkills.installTeamSkill(teamId, slug, { version: version.version })
+    // Same reason as Share: the pack landed on this Agent's disk, so this Agent
+    // is who the install belongs to.
+    await backend.teamSkills.installTeamSkill(teamId, slug, {
+      version: version.version,
+      ...(subjectActorId ? { actorId: subjectActorId } : {}),
+    })
 
     // Publishing a version off local edits forks this skill from the
     // marketplace copy it was adopted from. Staying subscribed would let the

@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { eq } from "drizzle-orm";
 import { makeTestDb } from "./db/pglite.js";
 import { createPgBusinessRepository } from "../src/lib/pg-repo/index.js";
-import { actors, members, teamMembers } from "../src/db/schema/index.js";
+import { actors, agents, members, teamMembers } from "../src/db/schema/index.js";
 
 const BOOTSTRAP = `
 create table if not exists team_skills (
@@ -82,6 +82,17 @@ create table if not exists team_skill_installs (
   installed_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+-- The upsert in installTeamSkill names exactly this index as its conflict
+-- target, so without it every install here dies inside pglite rather than in
+-- the gate under test. coalesce is in the key because NULLs never collide in
+-- a unique index — mirrors 20260806000000_team_skills_registry.sql.
+create unique index if not exists uniq_team_skill_install
+  on team_skill_installs (
+    actor_id,
+    skill_id,
+    scope,
+    coalesce(workspace_id, '00000000-0000-0000-0000-000000000000'::uuid)
+  );
 `;
 
 async function seedMember(db: any, teamId: string, userId: string, role = "member") {
@@ -92,6 +103,21 @@ async function seedMember(db: any, teamId: string, userId: string, role = "membe
   await db.insert(members).values({ id: actor.id, status: "active" });
   await db.insert(teamMembers).values({ teamId, memberId: actor.id, role });
   return actor;
+}
+
+async function seedAgentActor(db: any, teamId: string, ownerMemberId: string, visibility: string) {
+  const [agentActor] = await db
+    .insert(actors)
+    .values({ teamId, actorType: "agent", displayName: "TestBot" })
+    .returning();
+  await db.insert(agents).values({
+    id: agentActor.id,
+    agentKind: "claude",
+    status: "active",
+    visibility,
+    ownerMemberId,
+  });
+  return agentActor;
 }
 
 /** A team whose owner published `deploy-check`, plus an unrelated plain member. */
@@ -121,6 +147,54 @@ async function scenario() {
 
   return { db, team, ownerActor, memberActor, memberRepo };
 }
+
+/**
+ * A member's own machine is an agent, and it is the actor the daemon's inventory
+ * answers about. Sharing or publishing a skill from the desktop installs into
+ * that machine's skills root, so the install has to be recordable against it —
+ * the alternative is a record on the member that the machine's own inventory
+ * never reads, which is how a freshly shared skill vanished from the column.
+ *
+ * Its visibility is `personal`; the pre-existing team-agent gate needs admin and
+ * would have refused this outright.
+ */
+test("a member may install on a personal agent they own", async () => {
+  const { db, team, memberActor, memberRepo } = await scenario();
+  const agentActor = await seedAgentActor(db, team.id, memberActor.id, "personal");
+
+  const install = await memberRepo.installTeamSkill(team.id, "deploy-check", {
+    actorId: agentActor.id,
+    version: 1,
+  });
+
+  assert.equal(install.actorId, agentActor.id);
+});
+
+/** Ownership, not agent-ness: somebody else's machine stays off limits. */
+test("a member may not install on an agent they do not own", async () => {
+  const { db, team, ownerActor, memberRepo } = await scenario();
+  const agentActor = await seedAgentActor(db, team.id, ownerActor.id, "personal");
+
+  await assert.rejects(
+    () => memberRepo.installTeamSkill(team.id, "deploy-check", { actorId: agentActor.id, version: 1 }),
+    /personal/,
+  );
+});
+
+/** And the install the owner just recorded is theirs to take back. */
+test("an owner may uninstall from their own personal agent", async () => {
+  const { db, team, memberActor, memberRepo } = await scenario();
+  const agentActor = await seedAgentActor(db, team.id, memberActor.id, "personal");
+  await memberRepo.installTeamSkill(team.id, "deploy-check", {
+    actorId: agentActor.id,
+    version: 1,
+  });
+
+  await memberRepo.uninstallTeamSkill(team.id, "deploy-check", { actorId: agentActor.id });
+
+  const rows = await memberRepo.listTeamSkillInstalls(team.id, { actorId: agentActor.id });
+  assert.equal(rows.length, 0);
+});
 
 test("a plain member can publish a new version of somebody else's skill", async () => {
   const { team, ownerActor, memberActor, memberRepo } = await scenario();
