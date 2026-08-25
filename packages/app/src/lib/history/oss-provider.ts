@@ -10,7 +10,8 @@ export class OssHistoryProvider implements HistoryProvider {
   private readonly versionToHash = new Map<number, string>()
 
   constructor(
-    private readonly workspacePath: string,
+    /** Optional; the daemon keys versions by team + sync key, not by workspace. */
+    private readonly workspacePath: string | null,
     private readonly path: string,
   ) {}
 

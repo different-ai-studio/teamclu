@@ -61,6 +61,9 @@ vi.mock('@/lib/history/oss-provider', () => ({
 vi.mock('@/components/editors/utils', () => ({
   getEditorType: () => 'code',
   supportsPreview: () => null,
+  // CodeEditor calls this during render; without it the mock throws mid-render
+  // and the failure surfaces as an unrelated "no export defined" error.
+  getLanguageFromFilename: () => 'markdown',
 }))
 
 vi.mock('@/components/editors/useAutoSave', () => ({
@@ -154,7 +157,36 @@ describe('FileEditor', () => {
     expect(screen.queryByTitle(/查看历史|View history|历史/i)).toBeNull()
   })
 
-  it('renders the history button for team files and toggles history view', async () => {
+  /**
+   * Team content is exactly what sync carries: the `knowledge/` prefix. This
+   * file arrives under the workspace `team-knowledge` symlink — the spelling
+   * the workspace file panel produces — and maps to the same sync key as the
+   * copy the Knowledge column opens by its real ~/.amuxd path.
+   */
+  it('renders the history button for team knowledge files and toggles history view', async () => {
+    isTauriMock.mockReturnValue(true)
+    render(
+      <FileEditor
+        content=""
+        filename="note.md"
+        filePath="/workspace/team-knowledge/note.md"
+        onClose={() => {}}
+      />,
+    )
+    const button = await screen.findByTitle(/查看历史|View history|历史/i)
+    fireEvent.click(button)
+    await waitFor(() =>
+      expect(screen.getByText('该文件还没有提交历史')).toBeDefined(),
+    )
+    isTauriMock.mockReturnValue(false)
+  })
+
+  /**
+   * `teamclu-team/` is a tree sync retired — nothing under it has versions. It
+   * used to get the button anyway, which offered a history that could only ever
+   * come back empty.
+   */
+  it('does not render the history button for retired teamclu-team content', () => {
     isTauriMock.mockReturnValue(true)
     render(
       <FileEditor
@@ -164,11 +196,7 @@ describe('FileEditor', () => {
         onClose={() => {}}
       />,
     )
-    const button = await screen.findByTitle(/查看历史|View history|历史/i)
-    fireEvent.click(button)
-    await waitFor(() =>
-      expect(screen.getByText('该文件还没有提交历史')).toBeDefined(),
-    )
+    expect(screen.queryByTitle(/查看历史|View history|历史/i)).toBeNull()
     isTauriMock.mockReturnValue(false)
   })
 })

@@ -2,10 +2,14 @@
 //!
 //! The desktop app drives team sync over the daemon's loopback HTTP API rather
 //! than running OSS sync itself. `POST /v1/team/sync` kicks a sync for the
-//! workspace's onboarded team; `GET /v1/team/sync/status` reads the cached last
+//! daemon's onboarded team; `GET /v1/team/sync/status` reads the cached last
 //! status. The daemon is single-team, so the team_id is resolved from
 //! `daemon.toml` (teamclu.json carries no team_id) — same lookup as
 //! `/v1/team/link`.
+//!
+//! `workspacePath` is optional and only ever used to repair that workspace's
+//! team links as a side effect. What gets synced is the team's own tree under
+//! the amuxd home, so a client with no folder open can still sync.
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -18,7 +22,10 @@ use crate::sync::versions::{ChangedFile, VersionEntry};
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncRequest {
-    pub workspace_path: String,
+    /// Optional. Present only so this call can also repair that workspace's
+    /// team links; it never decides what is synced.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
     /// When `true`, run sync even if `team_share.auto_sync` is `false`.
     #[serde(default)]
     pub force_sync: bool,
@@ -30,24 +37,27 @@ pub struct SyncResponse {
     pub status: crate::sync::dispatch::SyncStatus,
 }
 
-/// `POST /v1/team/sync` — body `{ "workspacePath": "<abs path>" }`.
+/// `POST /v1/team/sync` — body `{ "workspacePath"?: "<abs path>" }`.
 pub async fn sync_now(
     principal: Principal,
     State(state): State<HttpState>,
     Json(body): Json<SyncRequest>,
 ) -> Result<Json<SyncResponse>, HttpError> {
     require_scope(&principal, "workspace:write")?;
-    let workspace_path = body.workspace_path.trim();
-    if workspace_path.is_empty() {
-        return Err(HttpError::validation("workspacePath must not be empty"));
+    let workspace_path = body
+        .workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+    let team_id = active_team_id()?;
+    // Opportunistic repair of the caller's workspace links, when it named one.
+    if let Some(path) = workspace_path {
+        crate::team_link::ensure_team_link(&team_id, path);
     }
-    let team_id = team_id_for_workspace(workspace_path)?;
-    crate::team_link::ensure_team_link(&team_id, workspace_path);
     let status = state
         .sync_dispatcher
         .sync_team(
             &team_id,
-            workspace_path,
             crate::sync::dispatch::SyncOptions {
                 force: body.force_sync,
             },
@@ -129,7 +139,7 @@ pub async fn reconcile_cloud_config(
             (!trimmed.is_empty()).then_some(trimmed)
         })
         .map(Ok)
-        .unwrap_or_else(|| team_id_for_workspace(""))?;
+        .unwrap_or_else(active_team_id)?;
 
     let outcome = reconcile_team_cloud_after_write(&state, &team_id).await?;
 
@@ -246,7 +256,7 @@ pub async fn install_team_mcp(
     Path(name): Path<String>,
 ) -> Result<Json<TeamMcpInstallResponse>, HttpError> {
     require_scope(&principal, "workspace:write")?;
-    let team_id = team_id_for_workspace("")?;
+    let team_id = active_team_id()?;
     let backend = state
         .backend
         .as_ref()
@@ -269,7 +279,7 @@ pub async fn uninstall_team_mcp(
     Path(name): Path<String>,
 ) -> Result<Json<TeamMcpInstallResponse>, HttpError> {
     require_scope(&principal, "workspace:write")?;
-    let team_id = team_id_for_workspace("")?;
+    let team_id = active_team_id()?;
     let backend = state
         .backend
         .as_ref()
@@ -878,7 +888,9 @@ pub async fn list_changed(
 
 /// Resolve the team_id for a workspace from the daemon's onboarded team
 /// (teamclu.json carries no team_id; daemon.toml does — same as /v1/team/link).
-fn team_id_for_workspace(_workspace_path: &str) -> Result<String, HttpError> {
+/// The team this daemon is onboarded to. Named for what it reads: `daemon.toml`,
+/// never the workspace.
+fn active_team_id() -> Result<String, HttpError> {
     let config = crate::config::DaemonConfig::load(&crate::config::DaemonConfig::default_path())
         .map_err(|e| HttpError::internal(format!("load daemon config: {e}")))?;
     config
@@ -893,6 +905,24 @@ fn team_id_for_workspace(_workspace_path: &str) -> Result<String, HttpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The desktop can trigger a sync with no folder open. `workspacePath` used
+    /// to be required and rejected as a validation error when empty, which made
+    /// "no workspace" look like "cannot sync" for a tree that belongs to the
+    /// team, not to any workspace.
+    #[test]
+    fn sync_request_accepts_a_body_without_a_workspace() {
+        let body: SyncRequest = serde_json::from_str(r#"{"forceSync":true}"#).unwrap();
+        assert_eq!(body.workspace_path, None);
+        assert!(body.force_sync);
+
+        // An older client still sends one, and it still comes through — that is
+        // what asks for the workspace's team links to be repaired.
+        let with_ws: SyncRequest =
+            serde_json::from_str(r#"{"workspacePath":"/tmp/ws","forceSync":false}"#).unwrap();
+        assert_eq!(with_ws.workspace_path.as_deref(), Some("/tmp/ws"));
+        assert!(!with_ws.force_sync);
+    }
 
     #[test]
     fn mcp_workspace_paths_include_the_daemon_default_workspace() {

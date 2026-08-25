@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next'
 import { History } from 'lucide-react'
 import { useVersionHistoryStore } from '@/stores/version-history'
 import { useCurrentTeamStore } from '@/stores/current-team'
+import { useWorkspaceStore } from '@/stores/workspace'
+import { globalTeamKnowledgeShareDir, teamSyncKeyForPath } from '@/lib/team-skill-paths'
 import { VersionList } from '@/components/version/VersionList'
 import { VersionPreview } from '@/components/version/VersionPreview'
 
@@ -16,6 +18,23 @@ import { VersionPreview } from '@/components/version/VersionPreview'
 export function KnowledgeVersionHistory({ path }: { path: string }) {
   const { t } = useTranslation()
   const teamId = useCurrentTeamStore((s) => s.team?.id)
+  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+
+  // The daemon addresses versions by sync key (`knowledge/<rel>`), never by an
+  // absolute path — the tab carries the absolute one because that is what
+  // identifies the document on this machine.
+  const [knowledgeDir, setKnowledgeDir] = React.useState<string | null>(null)
+  React.useEffect(() => {
+    let cancelled = false
+    globalTeamKnowledgeShareDir()
+      .then((dir) => { if (!cancelled) setKnowledgeDir(dir) })
+      .catch(() => { if (!cancelled) setKnowledgeDir(null) })
+    return () => { cancelled = true }
+  }, [])
+  const syncKey = React.useMemo(
+    () => teamSyncKeyForPath(path, { knowledgeDir, workspacePath }),
+    [path, knowledgeDir, workspacePath],
+  )
 
   const fileVersions = useVersionHistoryStore((s) => s.fileVersions)
   const selectedRef = useVersionHistoryStore((s) => s.selectedRef)
@@ -33,13 +52,13 @@ export function KnowledgeVersionHistory({ path }: { path: string }) {
 
   React.useEffect(() => {
     selectFile(path)
-    if (teamId) void loadFileVersions(teamId, path)
-  }, [path, teamId, selectFile, loadFileVersions])
+    if (teamId && syncKey) void loadFileVersions(teamId, syncKey)
+  }, [path, syncKey, teamId, selectFile, loadFileVersions])
 
   React.useEffect(() => {
     let cancelled = false
-    if (teamId && selectedRef) {
-      void fetchVersionContent(teamId, path, selectedRef).then((content) => {
+    if (teamId && syncKey && selectedRef) {
+      void fetchVersionContent(teamId, syncKey, selectedRef).then((content) => {
         if (!cancelled) setVersionContent(content)
       })
     } else {
@@ -48,17 +67,17 @@ export function KnowledgeVersionHistory({ path }: { path: string }) {
     return () => {
       cancelled = true
     }
-  }, [teamId, path, selectedRef, fetchVersionContent])
+  }, [teamId, syncKey, selectedRef, fetchVersionContent])
 
   const handleRestore = React.useCallback(async () => {
-    if (!teamId || !selectedRef) return
+    if (!teamId || !syncKey || !selectedRef) return
     setRestoring(true)
     try {
-      await restoreFileVersion(teamId, path, selectedRef)
+      await restoreFileVersion(teamId, syncKey, selectedRef)
     } finally {
       setRestoring(false)
     }
-  }, [teamId, path, selectedRef, restoreFileVersion])
+  }, [teamId, syncKey, selectedRef, restoreFileVersion])
 
   return (
     <div className="flex h-full min-h-0 flex-col">

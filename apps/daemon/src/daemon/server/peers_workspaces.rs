@@ -282,22 +282,17 @@ impl DaemonServer {
         if !team_id.trim().is_empty() {
             let gate = crate::team_link::team_share_gate(self.backend.as_ref(), team_id).await;
             crate::team_link::materialize_or_teardown(gate, team_id, &canonical_str);
-            // Clone the team's shared repo now instead of waiting for a daemon
-            // restart. The periodic sync timer captures its workspace list once
-            // at boot; on a fresh install that list was empty (the workspace
-            // wasn't cloud-registered yet), so without this the team dirs
-            // (knowledge/, skills/, .mcp/) never materialize until the next
-            // restart re-captures the now-registered workspace. Fire-and-forget
-            // so registration stays responsive; failures (e.g. team secret not
-            // delivered yet) are logged and left to the timer / secret self-heal.
-            // Fire-and-forget initial sync only when auto_sync is enabled.
+            // Pull the team's shared tree now instead of waiting for the timer's
+            // next tick, so the team dirs (knowledge/, .mcp/) are there by the
+            // time the user looks. Fire-and-forget so registration stays
+            // responsive; failures (e.g. team secret not delivered yet) are
+            // logged and left to the timer / secret self-heal.
             if crate::config::DaemonConfig::team_share_auto_sync_enabled_from_disk() {
                 let dispatcher = self.sync_dispatcher.clone();
                 let team = team_id.to_string();
-                let path = canonical_str.clone();
                 tokio::spawn(async move {
                     let status = dispatcher
-                        .sync_team(&team, &path, crate::sync::dispatch::SyncOptions::default())
+                        .sync_team(&team, crate::sync::dispatch::SyncOptions::default())
                         .await;
                     match status.last_error {
                         Some(err) => warn!(

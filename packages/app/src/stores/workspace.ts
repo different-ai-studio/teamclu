@@ -115,6 +115,18 @@ interface WorkspaceState {
 
   // File browser state
   fileTree: FileNode[];
+  /**
+   * File trees rooted OUTSIDE the workspace, keyed by root path; the value is
+   * that root's children.
+   *
+   * The team Knowledge column browses the daemon's real directory
+   * (`~/.amuxd/teams/<id>/shared/knowledge`) — the same absolute path the OSS
+   * sync engine owns — and never the per-workspace `team-knowledge` symlink.
+   * That tree cannot live in `fileTree`: `fileTree` is workspace-rooted and is
+   * what the right-hand file panel renders, so a foreign root parked in it
+   * would show up there as a stray top-level folder.
+   */
+  externalTrees: Record<string, FileNode[]>;
   expandedPaths: Set<string>; // Tracks which directories are expanded (decoupled from tree data)
   loadingPaths: Set<string>; // Tracks which directories are currently loading
   selectedFile: string | null;
@@ -149,6 +161,9 @@ interface WorkspaceState {
   // File tree actions
   loadDirectory: (path: string) => Promise<FileNode[]>;
   expandDirectory: (path: string) => Promise<void>;
+  openExternalRoot: (rootPath: string) => Promise<void>;
+  refreshExternalRoot: (rootPath: string) => Promise<void>;
+  closeExternalRoot: (rootPath: string) => Promise<void>;
   collapseDirectory: (path: string) => void;
   collapseAll: () => void;
   refreshFileTree: () => Promise<void>;
@@ -263,6 +278,17 @@ function updateNodeChildren(
 // leave the new file invisible.
 const expandChain = new Map<string, Promise<void>>();
 
+/**
+ * The registered external root that owns `path`, or null when the workspace
+ * owns it. Prefix match on a path boundary so `/a/bc` never matches root `/a/b`.
+ */
+function externalRootFor(roots: string[], path: string): string | null {
+  for (const root of roots) {
+    if (path === root || path.startsWith(`${root}/`)) return root;
+  }
+  return null;
+}
+
 function findNodeByPath(nodes: FileNode[], path: string): FileNode | null {
   for (const node of nodes) {
     if (node.path === path) return node;
@@ -299,6 +325,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   isPanelOpen: false,
   activeTab: "shortcuts",
   fileTree: [],
+  externalTrees: {},
   expandedPaths: new Set<string>(),
   loadingPaths: new Set<string>(),
   selectedFile: null,
@@ -354,6 +381,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       }
 
       await refreshFileTree();
+      // A paste can land inside an external root (the Knowledge tree), which
+      // the workspace refresh above does not touch.
+      if (externalRootFor(Object.keys(get().externalTrees), targetDir)) {
+        await get().expandDirectory(targetDir);
+      }
       return allSuccess;
     } catch (error) {
       console.error("[Workspace] Paste failed:", error);
@@ -562,8 +594,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   // Load directory contents using Tauri FS plugin
   loadDirectory: async (path: string): Promise<FileNode[]> => {
-    const { workspacePath } = get();
-    if (!workspacePath) {
+    const { workspacePath, externalTrees } = get();
+    // An external root reads against itself. `read_workspace_directory` only
+    // checks that the target sits under the root it is handed, so the team
+    // knowledge dir under ~/.amuxd browses even with no workspace open.
+    const base = externalRootFor(Object.keys(externalTrees), path) ?? workspacePath;
+    if (!base) {
       console.log("[Workspace] No workspace path set");
       return [];
     }
@@ -575,9 +611,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
 
     try {
-      const fullPath = path === "." ? workspacePath : path;
+      const fullPath = path === "." ? base : path;
       console.log("[Workspace] Loading directory:", fullPath);
-      const nodes = await readWorkspaceDirectory(workspacePath, fullPath);
+      const nodes = await readWorkspaceDirectory(base, fullPath);
       console.log("[Workspace] Found", nodes.length, "entries");
 
       const visibleNodes = [...nodes];
@@ -616,8 +652,27 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       // Load children
       const children = await loadDirectory(path);
 
+      // Whichever tree owns this path is the one that gets rewritten.
+      const externalRoot = externalRootFor(Object.keys(get().externalTrees), path);
+      const currentExternal = externalRoot
+        ? (get().externalTrees[externalRoot] ?? [])
+        : [];
+      const updatedExternal = externalRoot
+        ? {
+            ...get().externalTrees,
+            // The root itself holds no node of its own — its children ARE the
+            // tree — so it merges directly instead of going through the tree walk.
+            [externalRoot]:
+              path === externalRoot
+                ? mergeLoadedChildren(currentExternal, children)
+                : updateNodeChildren(currentExternal, path, children),
+          }
+        : get().externalTrees;
+
       // Update only the target node's children in the tree (minimal copy)
-      const updatedTree = updateNodeChildren(get().fileTree, path, children);
+      const updatedTree = externalRoot
+        ? get().fileTree
+        : updateNodeChildren(get().fileTree, path, children);
 
       // Always clone CURRENT expandedPaths to avoid race conditions —
       // the Set reference may have been replaced by refreshFileTree during the await
@@ -628,6 +683,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
       set({
         fileTree: updatedTree,
+        externalTrees: updatedExternal,
         expandedPaths: nextExpanded,
         loadingPaths: doneLoading,
       });
@@ -646,6 +702,88 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       // Last one out clears the slot, so the map cannot grow unbounded.
       if (expandChain.get(path) === settled) expandChain.delete(path);
     }
+  },
+
+  /**
+   * Register a root outside the workspace, list it, and watch it.
+   *
+   * The watch is what makes a teammate's synced note appear without a manual
+   * refresh: the daemon writes into its own directory, and a recursive watch on
+   * the workspace never saw those writes — `notify` does not follow the
+   * `team-knowledge` symlink, so the real directory was watched by nobody.
+   *
+   * Idempotent, and re-listing is the point: a create or delete inside the
+   * knowledge tree refreshes it by calling this again.
+   */
+  openExternalRoot: async (rootPath: string) => {
+    if (!(rootPath in get().externalTrees)) {
+      set({ externalTrees: { ...get().externalTrees, [rootPath]: [] } });
+      // Awaited, and before the listing: a watch started afterwards would miss
+      // anything written while the first listing was in flight.
+      await startWatching(rootPath);
+    }
+    await get().expandDirectory(rootPath);
+  },
+
+  /**
+   * Re-list an external root and every expanded directory under it.
+   *
+   * `refreshFileTree`'s counterpart for a tree that is not the workspace's.
+   * Expansions that no longer exist on disk are dropped; the workspace's own
+   * expansions are never touched.
+   */
+  refreshExternalRoot: async (rootPath: string) => {
+    const { loadDirectory } = get();
+    if (!(rootPath in get().externalTrees)) return;
+
+    const expandedPaths = get().expandedPaths;
+    const stillValid = new Set<string>();
+    const refreshExpanded = async (tree: FileNode[]): Promise<FileNode[]> =>
+      Promise.all(
+        tree.map(async (node) => {
+          if (node.type === "directory" && expandedPaths.has(node.path)) {
+            const children = await loadDirectory(node.path);
+            stillValid.add(node.path);
+            return { ...node, children: await refreshExpanded(children) };
+          }
+          return node;
+        }),
+      );
+
+    const refreshed = await refreshExpanded(await loadDirectory(rootPath));
+
+    const nextExpanded = new Set<string>();
+    for (const path of get().expandedPaths) {
+      const underRoot = path === rootPath || path.startsWith(`${rootPath}/`);
+      // The root is the tree rather than a node in it, so it stays expanded.
+      if (!underRoot || path === rootPath || stillValid.has(path)) {
+        nextExpanded.add(path);
+      }
+    }
+
+    set({
+      externalTrees: { ...get().externalTrees, [rootPath]: refreshed },
+      expandedPaths: nextExpanded,
+    });
+  },
+
+  /**
+   * Forget an external root and stop watching it. Used when the root itself
+   * changes — switching teams repoints the knowledge dir at another directory,
+   * and the old one must stop reporting.
+   */
+  closeExternalRoot: async (rootPath: string) => {
+    const externalTrees = { ...get().externalTrees };
+    if (!(rootPath in externalTrees)) return;
+    delete externalTrees[rootPath];
+
+    const nextExpanded = new Set<string>();
+    for (const path of get().expandedPaths) {
+      if (path !== rootPath && !path.startsWith(`${rootPath}/`)) nextExpanded.add(path);
+    }
+
+    set({ externalTrees, expandedPaths: nextExpanded });
+    await stopWatching(rootPath);
   },
 
   // Collapse a directory node
@@ -747,6 +885,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     };
 
     const refreshedTree = await refreshExpanded(rootNodes);
+    // This rebuilds the WORKSPACE tree only. Expansions inside an external root
+    // are not represented in `rootNodes`, so dropping them here would collapse
+    // the Knowledge tree every time a workspace file changed.
+    const externalRoots = Object.keys(get().externalTrees);
+    for (const path of expandedPaths) {
+      if (externalRootFor(externalRoots, path)) stillValid.add(path);
+    }
     set({
       fileTree: refreshedTree,
       expandedPaths: stillValid,
@@ -777,8 +922,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   // Select and load a file using Tauri FS plugin
   selectFile: async (path: string, line?: number, heading?: string) => {
-    const { workspacePath, fileTree } = get();
-    const knownNode = findNodeByPath(fileTree, path);
+    const { workspacePath, fileTree, externalTrees } = get();
+    // Reads are rooted at whichever tree owns the path: the workspace, or an
+    // external root such as the team knowledge dir under ~/.amuxd.
+    const readRoot = externalRootFor(Object.keys(externalTrees), path) ?? workspacePath;
+    const knownNode =
+      findNodeByPath(fileTree, path) ??
+      findNodeByPath(Object.values(externalTrees).flat(), path);
 
     if (knownNode?.type === "directory") {
       set({
@@ -837,10 +987,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         // The viewer will detect the file type from filename and show an appropriate message
         set({ fileContent: "", isLoadingFile: false });
       } else if (isPreviewableBinary) {
-        if (!workspacePath) {
+        if (!readRoot) {
           throw new Error("No workspace path set");
         }
-        const bytes = await readWorkspaceBinaryFile(workspacePath, path);
+        const bytes = await readWorkspaceBinaryFile(readRoot, path);
 
         // Convert to base64
         let binary = "";
@@ -870,10 +1020,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           isLoadingFile: false,
         });
       } else {
-        if (!workspacePath) {
+        if (!readRoot) {
           throw new Error("No workspace path set");
         }
-        const content = await readWorkspaceTextFile(workspacePath, path);
+        const content = await readWorkspaceTextFile(readRoot, path);
         set({ fileContent: content, isLoadingFile: false });
       }
     } catch (error) {
@@ -889,8 +1039,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   // Unlike selectFile, this does NOT set fileContent: null or isLoadingFile: true,
   // so the editor stays mounted and can apply the change incrementally.
   reloadSelectedFile: async () => {
-    const { selectedFile, workspacePath } = get();
-    if (!selectedFile || !workspacePath) return;
+    const { selectedFile, workspacePath, externalTrees } = get();
+    if (!selectedFile) return;
+    const readRoot =
+      externalRootFor(Object.keys(externalTrees), selectedFile) ?? workspacePath;
+    if (!readRoot) return;
 
     // In web mode, nothing to reload
     if (!isTauri()) return;
@@ -915,7 +1068,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         await selectFile(selectedFile);
       } else {
         // Text files: just re-read content and update — no unmount cycle
-        const content = await readWorkspaceTextFile(workspacePath, selectedFile);
+        const content = await readWorkspaceTextFile(readRoot, selectedFile);
         set({ fileContent: content });
       }
     } catch (error) {

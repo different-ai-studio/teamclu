@@ -728,6 +728,45 @@ pub fn ensure_instruction_plugin(workspace_path: &Path) -> Result<(), WorkspaceC
     Ok(())
 }
 
+/// Rebuild `<workspace>/team-knowledge` on every workspace init, so a stale,
+/// dangling or missing link never survives one.
+///
+/// Two attempts, in order. The workspace-derived one chains through this
+/// workspace's own `teamclu-team` link; when THAT link is the thing that went
+/// missing it can derive nothing, and the workspace was previously stuck
+/// without a knowledge link until something else re-linked the team. So fall
+/// back to the daemon's active team, which is where the knowledge dir lives
+/// anyway.
+///
+/// The fallback only ever re-points at a directory that already exists: it is
+/// gated on the team's synced `knowledge/` dir being there, so it cannot
+/// resurrect a link for a team whose share was torn down (which would fight
+/// `team_link::materialize_or_teardown`), and it skips app checkouts for the
+/// same reason `ensure_team_link` does.
+fn ensure_workspace_knowledge_link(workspace_path: &Path) {
+    use crate::config::workspace_link::{
+        ensure_team_knowledge_link, ensure_team_knowledge_link_from_workspace, LinkStatus,
+    };
+
+    let mut status = ensure_team_knowledge_link_from_workspace(workspace_path);
+    if matches!(status, LinkStatus::Fallback) {
+        let team_id = crate::config::layout::active_team();
+        // Same target `ensure_team_knowledge_link` would link to.
+        let knowledge_dir =
+            crate::config::global_team_store::sync_content_root(&team_id).join("knowledge");
+        let is_app = workspace_path
+            .to_str()
+            .is_some_and(crate::team_link::is_app_workspace);
+        if team_id != crate::config::layout::UNCLAIMED_TEAM && !is_app && knowledge_dir.is_dir() {
+            status = ensure_team_knowledge_link(workspace_path, &team_id);
+        }
+    }
+    tracing::debug!(
+        workspace = %workspace_path.display(),
+        "workspace team-knowledge link: {status:?}"
+    );
+}
+
 /// Prepare a workspace directory for OpenCode/ACP agent use.
 pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
     if !workspace_path.is_dir() {
@@ -736,10 +775,7 @@ pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlEr
         ));
     }
 
-    // Re-ensure the workspace team-knowledge link on every open/switch so a
-    // stale or dangling symlink never survives. No team_id here: it chains
-    // through the workspace own teamclu-team link.
-    let _ = crate::config::workspace_link::ensure_team_knowledge_link_from_workspace(workspace_path);
+    ensure_workspace_knowledge_link(workspace_path);
 
     install_instruction_plugin_file(workspace_path)?;
     materialize_opencode_for_prepare(workspace_path)?;
@@ -2413,6 +2449,53 @@ mod tests {
         );
         assert!(!dir.path().join(".opencode/skills").exists());
         assert!(!dir.path().join(".opencode/data").exists());
+    }
+
+    /// A workspace can lose `teamclu-team` (never linked, torn down, deleted by
+    /// hand). The workspace-derived repair then has nothing to chain through,
+    /// and before this the workspace stayed without a knowledge link until
+    /// something else re-linked the team. Every init rebuilds it now.
+    #[test]
+    fn prepare_workspace_rebuilds_team_knowledge_without_the_team_link() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let amuxd = home.path().join(".amuxd");
+        std::fs::create_dir_all(&amuxd).unwrap();
+        std::fs::write(amuxd.join("daemon.toml"), "active_team = \"team-abc\"\n").unwrap();
+        let knowledge = amuxd.join("teams/team-abc/shared/knowledge");
+        std::fs::create_dir_all(&knowledge).unwrap();
+
+        let ws = tempfile::tempdir().unwrap();
+        assert!(!ws.path().join("teamclu-team").exists());
+
+        prepare_workspace(ws.path()).unwrap();
+
+        let link = ws.path().join("team-knowledge");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "team-knowledge must be rebuilt from the active team"
+        );
+        assert_eq!(std::fs::read_link(&link).unwrap(), knowledge);
+    }
+
+    /// The fallback re-points at a directory that exists; it never materializes
+    /// one. A team whose share was torn down has no `shared/knowledge`, and
+    /// re-creating a link into it would fight `materialize_or_teardown`.
+    #[test]
+    fn prepare_workspace_leaves_team_knowledge_alone_when_the_team_dir_is_gone() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let amuxd = home.path().join(".amuxd");
+        std::fs::create_dir_all(&amuxd).unwrap();
+        std::fs::write(amuxd.join("daemon.toml"), "active_team = \"team-abc\"\n").unwrap();
+
+        let ws = tempfile::tempdir().unwrap();
+        prepare_workspace(ws.path()).unwrap();
+
+        assert!(!ws.path().join("team-knowledge").exists());
     }
 
     #[test]

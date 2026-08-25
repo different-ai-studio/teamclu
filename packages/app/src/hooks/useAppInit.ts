@@ -30,7 +30,7 @@ import { useWorkspaceRuntimeRefreshStore } from "@/stores/workspace-runtime-refr
 import { useTeamShareStore } from "@/stores/team-share";
 import { useOssSyncStore } from "@/stores/oss-sync";
 import { getSkillDirectories, loadAllSkills } from "@/lib/skills/loader";
-import { DEFAULT_WORKSPACE_PATH, TEAM_REPO_DIR } from "@/lib/build-config";
+import { DEFAULT_WORKSPACE_PATH } from "@/lib/build-config";
 import { WORKSPACE_STORAGE_KEY } from "@/stores/workspace";
 import { markStartup } from "@/lib/startup-perf";
 
@@ -467,51 +467,19 @@ export function useGitReposInit() {
 
   }, [workspacePath, workspaceReady]);
 
-  // Real-time: refresh team-git file status and member roles when team files change
-  useEffect(() => {
-    if (!workspacePath || !isTauri()) return;
-    let unlistenFileChange: (() => void) | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let cancelled = false;
-
-    const normalizePath = (value: string) => value.replace(/\\/g, "/").replace(/\/$/, "");
-    const teamDirPrefix = `${workspacePath}/${TEAM_REPO_DIR}/`;
-
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      if (cancelled) return;
-      listen<{ path: string; kind: string }>("file-change", (event) => {
-        const path = normalizePath(event.payload.path);
-
-        if (!path.startsWith(teamDirPrefix)) return;
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(async () => {
-          if (useTeamShareStore.getState().status.mode === "oss") {
-            // Re-scan per-file sync status for tree coloring.
-            void useOssSyncStore.getState().refresh(workspacePath);
-          }
-        }, 500);
-      }).then((fn) => {
-        if (cancelled) {
-          fn();
-          return;
-        }
-        unlistenFileChange = fn;
-      });
-    });
-
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-      unlistenFileChange?.();
-    };
-  }, [workspacePath]);
-
-  // Initial population of per-file team sync status for file-tree coloring,
-  // re-run whenever the cloud share mode changes, so the teamclu-team files
-  // are colored on first paint too.
+  // Team sync status, read once share mode is known.
+  //
+  // Not gated on a workspace: the status the daemon reports is per team.
+  //
+  // What used to be here as well — a `file-change` listener under
+  // `<workspace>/teamclu-team/` that re-read this status on every team file
+  // write — is gone. It existed to repaint per-file sync badges, which the
+  // daemon stopped exposing (`fileSyncStatusMap` has been `{}` since), and it
+  // watched a tree sync retired: team content lives in the team's own
+  // `shared/knowledge` now, which that path never pointed at.
   const shareMode = useTeamShareStore((s) => s.status.mode);
   useEffect(() => {
-    if (!workspacePath || !isTauri()) return;
+    if (!isTauri()) return;
     if (shareMode === "oss") {
       void useOssSyncStore.getState().refresh(workspacePath);
     }

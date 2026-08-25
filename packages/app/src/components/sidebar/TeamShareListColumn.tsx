@@ -34,6 +34,7 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useFileChangeListener } from '@/hooks/useFileChangeListener'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend/provider'
 import {
@@ -260,7 +261,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
 
   // Inline "name this thing" row at the top of the knowledge tree.
   const [rootCreating, setRootCreating] = React.useState<'file' | 'folder' | null>(null)
-  const refreshFileTree = useWorkspaceStore((s) => s.refreshFileTree)
+  const openExternalRoot = useWorkspaceStore((s) => s.openExternalRoot)
   const selectFile = useWorkspaceStore((s) => s.selectFile)
 
   const [query, setQuery] = React.useState('')
@@ -321,6 +322,19 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     }
     if (syncAvailable) await syncNow()
   }, [section, loadSection, syncAvailable, syncNow])
+
+  // A write inside the knowledge dir — a teammate's note arriving over sync, an
+  // agent editing a document — also changes the count in this header and in the
+  // nav rail. The tree refreshes itself (FileBrowser watches the same root);
+  // this is the other half.
+  useFileChangeListener(
+    () => {
+      void loadSection('knowledge', { force: true })
+    },
+    500,
+    section === 'knowledge' && !!knowledgeRoot,
+    (event) => !!knowledgeRoot && event.payload.path.startsWith(`${knowledgeRoot}/`),
+  )
 
   // Reload after any successful cloud sync, ours or another surface's.
   React.useEffect(() => {
@@ -652,7 +666,9 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         ? await createNewFolder(knowledgeRoot, trimmed)
         : await createNewFile(knowledgeRoot, trimmed)
     if (!ok) return
-    await refreshFileTree()
+    // The knowledge tree is its own root in the store — re-list THAT. The
+    // workspace tree has nothing to do with this column any more.
+    await openExternalRoot(knowledgeRoot)
     void loadSection('knowledge', { force: true })
     if (rootCreating !== 'folder') selectFile(`${knowledgeRoot}/${trimmed}`)
   }
@@ -771,6 +787,66 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           </Button>
         </div>
       </div>
+
+      {(section === 'skills' || section === 'mcp') && (
+        <div className="border-b border-border px-3 py-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-9 w-full justify-between bg-panel px-2.5 text-[12.5px] font-medium"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="truncate">
+                    {manageableAgents.find((agent) => agent.id === subjectActorId)?.display_name ||
+                      t('teamShare.selectAgent', '选择 Agent')}
+                  </span>
+                  {subjectActorId && (
+                    <span
+                      className={cn(
+                        'h-1.5 w-1.5 shrink-0 rounded-full',
+                        presenceByActor[subjectActorId]?.online ? 'bg-emerald-500' : 'bg-faint',
+                      )}
+                    />
+                  )}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 text-faint" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-[240px]">
+              {manageableAgents.length === 0 ? (
+                <DropdownMenuItem disabled>
+                  {t('teamShare.noManageableAgents', '没有可管理的 Agent')}
+                </DropdownMenuItem>
+              ) : (
+                manageableAgents.map((agent) => (
+                  <DropdownMenuItem
+                    key={agent.id}
+                    onSelect={() => void setSubjectActor(agent.id)}
+                    className="flex items-center gap-2"
+                  >
+                    <span
+                      className={cn(
+                        'h-1.5 w-1.5 rounded-full',
+                        presenceByActor[agent.id]?.online ? 'bg-emerald-500' : 'bg-faint',
+                      )}
+                    />
+                    <span className="min-w-0 flex-1 truncate">{agent.display_name || agent.id}</span>
+                    {presenceByActor[agent.id]?.online === false ? (
+                      <span className="font-mono text-[10.5px] text-faint">
+                        {t('common.offline', '离线')}
+                      </span>
+                    ) : null}
+                    {agent.id === subjectActorId && <Check className="h-3.5 w-3.5" />}
+                  </DropdownMenuItem>
+                ))
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
 
       {searchOpen && (
         <div className="border-b border-border px-3 py-2">
@@ -1006,65 +1082,6 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           ))
         )}
       </div>
-      {(section === 'skills' || section === 'mcp') && (
-        <div className="border-t border-border p-3">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-9 w-full justify-between bg-panel px-2.5 text-[12.5px] font-medium"
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  <span className="truncate">
-                    {manageableAgents.find((agent) => agent.id === subjectActorId)?.display_name ||
-                      t('teamShare.selectAgent', '选择 Agent')}
-                  </span>
-                  {subjectActorId && (
-                    <span
-                      className={cn(
-                        'h-1.5 w-1.5 shrink-0 rounded-full',
-                        presenceByActor[subjectActorId]?.online ? 'bg-emerald-500' : 'bg-faint',
-                      )}
-                    />
-                  )}
-                </span>
-                <ChevronDown className="h-3.5 w-3.5 text-faint" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-[240px]">
-              {manageableAgents.length === 0 ? (
-                <DropdownMenuItem disabled>
-                  {t('teamShare.noManageableAgents', '没有可管理的 Agent')}
-                </DropdownMenuItem>
-              ) : (
-                manageableAgents.map((agent) => (
-                  <DropdownMenuItem
-                    key={agent.id}
-                    onSelect={() => void setSubjectActor(agent.id)}
-                    className="flex items-center gap-2"
-                  >
-                    <span
-                      className={cn(
-                        'h-1.5 w-1.5 rounded-full',
-                        presenceByActor[agent.id]?.online ? 'bg-emerald-500' : 'bg-faint',
-                      )}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{agent.display_name || agent.id}</span>
-                    {presenceByActor[agent.id]?.online === false ? (
-                      <span className="font-mono text-[10.5px] text-faint">
-                        {t('common.offline', '离线')}
-                      </span>
-                    ) : null}
-                    {agent.id === subjectActorId && <Check className="h-3.5 w-3.5" />}
-                  </DropdownMenuItem>
-                ))
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      )}
     </div>
   )
 }

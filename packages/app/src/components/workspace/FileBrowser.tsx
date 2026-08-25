@@ -62,6 +62,9 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
   const workspacePath = useWorkspaceStore(s => s.workspacePath)
   const isPanelOpen = useWorkspaceStore(s => s.isPanelOpen)
   const fileTree = useWorkspaceStore(s => s.fileTree)
+  const externalTrees = useWorkspaceStore(s => s.externalTrees)
+  const openExternalRoot = useWorkspaceStore(s => s.openExternalRoot)
+  const refreshExternalRoot = useWorkspaceStore(s => s.refreshExternalRoot)
   const refreshFileTree = useWorkspaceStore(s => s.refreshFileTree)
   const collapseAll = useWorkspaceStore(s => s.collapseAll)
   const undo = useWorkspaceStore(s => s.undo)
@@ -78,6 +81,16 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
   // Multi-root trees have no single directory to fall back to, so only the
   // single-root form tells FileTree where untargeted drops and pastes belong.
   const singleRootPath = rootPaths && rootPaths.length > 0 ? undefined : rootPath
+  // A root outside the workspace — the team Knowledge tree, which browses the
+  // daemon's real `~/.amuxd/teams/<id>/shared/knowledge` directory rather than
+  // the workspace `team-knowledge` symlink. It carries its own tree in the
+  // store, so none of the workspace-tree lookups below apply to it.
+  const isExternalRoot =
+    !!singleRootPath &&
+    !(
+      workspacePath &&
+      (singleRootPath === workspacePath || singleRootPath.startsWith(`${workspacePath}/`))
+    )
 
   // OSS team-share "sync now" — only surfaced when this workspace actually has
   // OSS sync state (oss_sync_status reports a teamId). Non-team / git-mode
@@ -110,8 +123,9 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
       })
     }
     if (!rootPath) return undefined
+    if (isExternalRoot) return externalTrees[rootPath] ?? []
     return findSubtree(fileTree, rootPath) ?? []
-  }, [rootPaths, rootLabels, rootPath, fileTree])
+  }, [rootPaths, rootLabels, rootPath, fileTree, isExternalRoot, externalTrees])
 
   // Ensure custom rootPath(s) are present in the global tree before we try to
   // render them as virtual roots. In practice the initial attempt can race the
@@ -142,25 +156,59 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
           expandWithAncestors(p)
         }
       }
+    } else if (rootPath && isExternalRoot) {
+      // Never in `fileTree` by design: it is registered as its own root, and
+      // `undefined` (not an empty array) is what "not registered yet" means.
+      if (externalTrees[rootPath] === undefined) void openExternalRoot(rootPath)
     } else if (rootPath && needsLoad(rootPath)) {
       expandWithAncestors(rootPath)
     }
-  }, [rootPaths, rootPath, fileTree])
+  }, [rootPaths, rootPath, fileTree, isExternalRoot, externalTrees, openExternalRoot])
+
+  // Re-list an already-registered external root on mount. The store owns both
+  // the tree and its watch, so both outlive this component — anything that
+  // landed while the column was closed is not in the rendered tree yet.
+  React.useEffect(() => {
+    if (!isExternalRoot || !rootPath) return
+    if (useWorkspaceStore.getState().externalTrees[rootPath] === undefined) return
+    void useWorkspaceStore.getState().refreshExternalRoot(rootPath)
+  }, [isExternalRoot, rootPath])
 
   // Auto-refresh file tree when panel opens (default variant) or when mounted (panel variant)
   React.useEffect(() => {
-    const shouldRefresh = variant === 'panel'
-      ? workspacePath && fileTree.length === 0
-      : isPanelOpen && workspacePath && fileTree.length === 0
+    // An external root does not read from the workspace tree, so refreshing it
+    // would be pure IPC for a tree nothing here renders.
+    const shouldRefresh = isExternalRoot
+      ? false
+      : variant === 'panel'
+        ? workspacePath && fileTree.length === 0
+        : isPanelOpen && workspacePath && fileTree.length === 0
 
     if (shouldRefresh) {
       console.log('[FileBrowser] Auto-refreshing file tree for:', workspacePath)
       refreshFileTree()
     }
-  }, [variant, isPanelOpen, workspacePath, fileTree.length, refreshFileTree])
+  }, [variant, isPanelOpen, workspacePath, fileTree.length, refreshFileTree, isExternalRoot])
 
   // Listen for file-change events from Tauri file watcher
-  useFileChangeListener(() => refreshFileTree(), 300, !!workspacePath)
+  useFileChangeListener(() => refreshFileTree(), 300, !!workspacePath && !isExternalRoot)
+
+  // An external root is watched in its own right (see `openExternalRoot`) and is
+  // not part of the workspace tree, so it re-lists itself — and only for events
+  // that landed inside it, which is also what keeps the debounce from being
+  // starved by unrelated workspace writes.
+  useFileChangeListener(
+    () => {
+      if (rootPath) void refreshExternalRoot(rootPath)
+    },
+    300,
+    isExternalRoot,
+    (event) => {
+      if (!rootPath) return false
+      const changed = event.payload.path
+      return changed === rootPath || changed.startsWith(`${rootPath}/`)
+    },
+  )
 
   // Ctrl/Cmd+Z undo handler
   React.useEffect(() => {
