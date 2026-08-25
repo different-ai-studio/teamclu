@@ -17,7 +17,7 @@ vi.mock('@/stores/mqtt-reconnect', () => ({
 }))
 
 function entry(id: string, uiState: EngagedAgentUiEntry['uiState']): EngagedAgentUiEntry {
-  return { agent: { id, displayName: id }, uiState }
+  return { agent: { id, displayName: id }, uiState, syncHint: null }
 }
 
 describe('useReensureRuntimesOnMqttReconnect', () => {

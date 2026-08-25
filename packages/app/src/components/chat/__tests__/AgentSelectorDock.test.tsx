@@ -65,7 +65,7 @@ function dockProps(
   const engagedAgents = partial.engagedAgents ?? []
   const engagedUiEntries: EngagedAgentUiEntry[] =
     partial.engagedUiEntries ??
-    engagedAgents.map((agent) => ({ agent, uiState: 'ready' as const }))
+    engagedAgents.map((agent) => ({ agent, uiState: 'ready' as const, syncHint: null }))
   return {
     activeSessionId: null as string | null,
     engagedUiEntries,
@@ -115,7 +115,7 @@ describe('AgentSelectorDock', () => {
       <AgentSelectorDock
         {...dockProps({
           engagedAgents: [agent],
-          engagedUiEntries: [{ agent, uiState: 'ready' }],
+          engagedUiEntries: [{ agent, uiState: 'ready', syncHint: null }],
         })}
       />,
     )
@@ -349,6 +349,7 @@ describe('AgentSelectorDock', () => {
             {
               agent: { id: 'a-1', displayName: 'Ghost Bot' },
               uiState: 'offline',
+              syncHint: null,
             },
           ],
         })}
@@ -374,6 +375,7 @@ describe('AgentSelectorDock', () => {
             {
               agent: { id: 'a-1', displayName: 'OpenCode Bot' },
               uiState: 'ready',
+              syncHint: null,
             },
           ],
         })}

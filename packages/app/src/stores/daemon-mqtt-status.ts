@@ -9,9 +9,15 @@ import { QUICK_CHAT_DAEMON_PROBE_INTERVAL_MS } from '@/lib/session-agent-probe'
 const DAEMON_MQTT_STARTUP_SETTLE_MS = 15_000
 const DAEMON_MQTT_STARTUP_RETRY_MS = 1_000
 
+/** Consecutive raw false polls before UI surfaces a disconnect (sidebar, pill). */
+export const DAEMON_MQTT_UI_FALSE_STREAK_REQUIRED = 2
+
 type DaemonMqttStatusState = {
-  /** Daemon's own MQTT link from `GET /v1/info`. `null` = unknown / daemon unreachable. */
+  /** Latest raw reading from `GET /v1/info`. `null` = unknown / daemon unreachable. */
   connected: boolean | null
+  /** Debounced reading for UI — filters transient rebuild windows. */
+  uiConnected: boolean | null
+  falseStreak: number
   setConnected: (connected: boolean | null) => void
   refresh: () => Promise<void>
 }
@@ -26,6 +32,8 @@ type DaemonMqttStatusState = {
  */
 export const useDaemonMqttStatusStore = create<DaemonMqttStatusState>((set) => ({
   connected: null,
+  uiConnected: null,
+  falseStreak: 0,
   setConnected: (connected) => set({ connected }),
   refresh: async () => {
     const connected = await getDaemonMqttConnected()
@@ -41,11 +49,35 @@ let startupDeadline = 0
 let pollingGeneration = 0
 let unsubscribeProbe: (() => void) | null = null
 
+function nextUiConnected(
+  raw: boolean | null,
+  prevUi: boolean | null,
+  prevStreak: number,
+): { uiConnected: boolean | null; falseStreak: number } {
+  if (raw === true) {
+    return { uiConnected: true, falseStreak: 0 }
+  }
+  if (raw === false) {
+    const falseStreak = prevStreak + 1
+    if (falseStreak >= DAEMON_MQTT_UI_FALSE_STREAK_REQUIRED) {
+      return { uiConnected: false, falseStreak }
+    }
+    return { uiConnected: prevUi, falseStreak }
+  }
+  return { uiConnected: null, falseStreak: 0 }
+}
+
 function publishMqttStatus(connected: boolean | null): void {
-  useDaemonMqttStatusStore.getState().setConnected(connected)
+  const prev = useDaemonMqttStatusStore.getState()
+  const { uiConnected, falseStreak } = nextUiConnected(
+    connected,
+    prev.uiConnected,
+    prev.falseStreak,
+  )
+  useDaemonMqttStatusStore.setState({ connected, uiConnected, falseStreak })
   // Warm the short-TTL device-reachability cache on every tick, not only when
   // the value flips — the runtime-start gate reads it synchronously and a
-  // change-only write would leave it permanently expired.
+  // change-only write would leave it permanently expired. Always the raw poll.
   const actorId = getKnownLocalDaemonActorId()
   if (actorId) noteLocalDaemonSignals({ actorId, daemonMqttConnected: connected })
 }
@@ -97,7 +129,7 @@ function stopPolling() {
   startupDeadline = 0
   unsubscribeProbe?.()
   unsubscribeProbe = null
-  useDaemonMqttStatusStore.setState({ connected: null })
+  useDaemonMqttStatusStore.setState({ connected: null, uiConnected: null, falseStreak: 0 })
 }
 
 /**
@@ -117,16 +149,20 @@ export function subscribeDaemonMqttStatus(): () => void {
 }
 
 /**
- * Daemon's own MQTT connection state. Pass `enabled: false` while the daemon is
- * not expected to be up (onboarding incomplete) to avoid pointless polling.
+ * Daemon's own MQTT connection state for UI (sidebar, settings, pill sync hint).
+ * Pass `enabled: false` while the daemon is not expected to be up (onboarding
+ * incomplete) to avoid pointless polling.
+ *
+ * Returns a debounced value: one transient false poll does not flip UI to
+ * disconnected. Runtime gates still read the raw poll via `noteLocalDaemonSignals`.
  */
 export function useDaemonMqttConnected(enabled = true): boolean | null {
-  const connected = useDaemonMqttStatusStore((s) => s.connected)
+  const uiConnected = useDaemonMqttStatusStore((s) => s.uiConnected)
   React.useEffect(() => {
     if (!enabled) return
     return subscribeDaemonMqttStatus()
   }, [enabled])
-  return enabled ? connected : null
+  return enabled ? uiConnected : null
 }
 
 /** @internal test helper */

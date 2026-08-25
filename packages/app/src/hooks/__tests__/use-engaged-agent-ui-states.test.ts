@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   presenceByActor: {} as Record<string, { online: boolean } | undefined>,
   probeResult: 'reachable' as 'reachable' | 'unreachable',
   localDaemonActorId: 'local-agent' as string | null,
+  daemonMqttConnected: true as boolean | null,
 }))
 
 vi.mock('@/stores/runtime-state-store', async (importOriginal) => {
@@ -59,12 +60,16 @@ vi.mock('@/lib/local-daemon-identity', () => ({
   noteLocalDaemonActorId: vi.fn(),
 }))
 
+vi.mock('@/stores/daemon-mqtt-status', () => ({
+  useDaemonMqttConnected: () => mocks.daemonMqttConnected,
+}))
+
 describe('hasAnyNonReadyEngaged', () => {
   it('returns true when any engaged agent is not ready', () => {
     expect(
       hasAnyNonReadyEngaged([
-        { agent: { id: 'a', displayName: 'A' }, uiState: 'ready' },
-        { agent: { id: 'b', displayName: 'B' }, uiState: 'offline' },
+        { agent: { id: 'a', displayName: 'A' }, uiState: 'ready', syncHint: null },
+        { agent: { id: 'b', displayName: 'B' }, uiState: 'offline', syncHint: null },
       ]),
     ).toBe(true)
   })
@@ -72,7 +77,7 @@ describe('hasAnyNonReadyEngaged', () => {
   it('returns false when all engaged agents are ready', () => {
     expect(
       hasAnyNonReadyEngaged([
-        { agent: { id: 'a', displayName: 'A' }, uiState: 'ready' },
+        { agent: { id: 'a', displayName: 'A' }, uiState: 'ready', syncHint: null },
       ]),
     ).toBe(false)
   })
@@ -86,6 +91,7 @@ describe('useEngagedAgentUiStates', () => {
     mocks.presenceByActor = {}
     mocks.probeResult = 'reachable'
     mocks.localDaemonActorId = 'local-agent'
+    mocks.daemonMqttConnected = true
   })
 
   it('marks agent offline when presence is false despite active runtime retain', () => {

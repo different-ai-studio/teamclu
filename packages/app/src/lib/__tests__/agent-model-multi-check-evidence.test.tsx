@@ -292,7 +292,7 @@ describe("agent model multi-check UI evidence", () => {
         activeSessionId="session-1"
         engagedAgents={[{ id: "agent-mac", displayName: "MACPRO" }]}
         engagedUiEntries={[
-          { agent: { id: "agent-mac", displayName: "MACPRO" }, uiState: "ready" },
+          { agent: { id: "agent-mac", displayName: "MACPRO" }, uiState: "ready", syncHint: null },
         ]}
         agentToRuntimeId={new Map([["agent-mac", "rt-1"]])}
         agentToBackendType={new Map([["agent-mac", "opencode"]])}

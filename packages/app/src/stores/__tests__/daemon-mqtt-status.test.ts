@@ -42,7 +42,9 @@ describe('daemon-mqtt-status store', () => {
     const release = subscribeDaemonMqttStatus()
     expect(getDaemonMqttConnected).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(0)
-    expect(useDaemonMqttStatusStore.getState().connected).toBe(true)
+    const state = useDaemonMqttStatusStore.getState()
+    expect(state.connected).toBe(true)
+    expect(state.uiConnected).toBe(true)
     release()
   })
 
@@ -90,7 +92,10 @@ describe('daemon-mqtt-status store', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(useDaemonMqttStatusStore.getState().connected).toBe(true)
     release()
-    expect(useDaemonMqttStatusStore.getState().connected).toBeNull()
+    const state = useDaemonMqttStatusStore.getState()
+    expect(state.connected).toBeNull()
+    expect(state.uiConnected).toBeNull()
+    expect(state.falseStreak).toBe(0)
   })
 
   it('is idempotent when a release function is called twice', async () => {
@@ -131,7 +136,38 @@ describe('daemon-mqtt-status store', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(getDaemonMqttConnected).toHaveBeenCalledTimes(1)
+    const state = useDaemonMqttStatusStore.getState()
+    expect(state.connected).toBe(false)
+    // One transient false after a stable true — UI stays up until debounce trips.
+    expect(state.uiConnected).toBe(true)
+    expect(state.falseStreak).toBe(1)
+    release()
+  })
+
+  it('debounces UI disconnect until consecutive false polls', async () => {
+    getDaemonMqttConnected.mockResolvedValue(false)
+    const release = subscribeDaemonMqttStatus()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(useDaemonMqttStatusStore.getState().uiConnected).toBeNull()
+
+    getDaemonMqttConnected.mockResolvedValue(true)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(useDaemonMqttStatusStore.getState().uiConnected).toBe(true)
+
+    getDaemonMqttConnected.mockResolvedValue(false)
+    await vi.advanceTimersByTimeAsync(20_000)
     expect(useDaemonMqttStatusStore.getState().connected).toBe(false)
+    expect(useDaemonMqttStatusStore.getState().uiConnected).toBe(true)
+    expect(useDaemonMqttStatusStore.getState().falseStreak).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(useDaemonMqttStatusStore.getState().uiConnected).toBe(false)
+    expect(useDaemonMqttStatusStore.getState().falseStreak).toBe(2)
+
+    getDaemonMqttConnected.mockResolvedValue(true)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(useDaemonMqttStatusStore.getState().uiConnected).toBe(true)
+    expect(useDaemonMqttStatusStore.getState().falseStreak).toBe(0)
     release()
   })
 })

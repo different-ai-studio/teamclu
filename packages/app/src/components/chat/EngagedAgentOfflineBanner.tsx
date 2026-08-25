@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { AlertCircle } from 'lucide-react'
 import type { AttachedAgent } from '@/packages/ai/prompt-input-insert-hooks'
 import type { EngagedAgentUiEntry } from '@/hooks/use-engaged-agent-ui-states'
-import type { SessionAgentUiState } from '@/lib/session-agent-ui-state'
+import type { SessionAgentUiState, SessionAgentSyncHint } from '@/lib/session-agent-ui-state'
 
 type Props = {
   entries: EngagedAgentUiEntry[]
@@ -151,4 +151,17 @@ export function pillSuffixForUiState(
     default:
       return null
   }
+}
+
+export function pillSuffixForAgentPill(
+  uiState: SessionAgentUiState,
+  syncHint: SessionAgentSyncHint,
+  t: (key: string, fallback: string) => string,
+): string | null {
+  const hardFailure = pillSuffixForUiState(uiState, t)
+  if (hardFailure !== null) return hardFailure
+  if (syncHint === 'degraded') {
+    return t('chat.sessionAgent.pillSyncDegraded', 'Team sync interrupted')
+  }
+  return null
 }
