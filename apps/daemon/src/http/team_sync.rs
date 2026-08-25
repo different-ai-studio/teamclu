@@ -1195,6 +1195,14 @@ fn local_changes(
         let status = match state.files.get(&file.rel_path) {
             // Never synced from here: new, whatever the cheap check thinks.
             None => "new",
+            // A tombstoned entry means the team no longer has this path, so a
+            // file sitting there again is a NEW document that happens to reuse
+            // the name — not an edit of something the team still has. Checked
+            // before `dirty` on purpose: re-creating the exact old content
+            // leaves the hash unchanged, and the push phase resurrects such a
+            // path regardless (`readd_paths` in the engine), so skipping it
+            // here would hide a push that is definitely going to happen.
+            Some(f) if f.deleted_local => "new",
             Some(_) if file.dirty => "modified",
             Some(_) => continue,
         };
@@ -1465,6 +1473,36 @@ mod tests {
             None,
             "a file that matches what was synced is not a change"
         );
+    }
+
+    #[test]
+    fn a_recreated_document_reads_as_new_not_as_an_edit() {
+        let fx = ConflictFixture::new();
+        let body = b"exactly what was there before";
+        fx.write("knowledge/reborn.md", std::str::from_utf8(body).unwrap());
+
+        let mut st = crate::sync::oss::state::LocalSyncState::load_at(&fx.team_id).unwrap();
+        st.upsert(
+            "knowledge/reborn.md",
+            1,
+            "c".into(),
+            crate::sync::oss::crypto::sha256_hex(body),
+            crate::sync::oss::crypto::sha256_hex(body),
+            0,
+            body.len() as u64,
+        );
+        // The team deleted it; this device recorded the tombstone.
+        st.mark_tombstoned("knowledge/reborn.md", 2);
+        st.save_at(&fx.team_id).unwrap();
+        let st = crate::sync::oss::state::LocalSyncState::load_at(&fx.team_id).unwrap();
+
+        let changes = local_changes(&fx.root.to_string_lossy(), &st);
+
+        // Identical content, so the cheap dirty check says "unchanged" — but
+        // the push WILL resurrect this path, and to the user it is a new note.
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0].path, "knowledge/reborn.md");
+        assert_eq!(changes[0].status, "new");
     }
 
     /// The old implementation read the `dirty` flags out of sync state, which
