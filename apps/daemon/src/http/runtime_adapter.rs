@@ -50,6 +50,17 @@ pub struct CreateSessionParams {
     #[serde(default)]
     #[allow(dead_code)]
     pub metadata: Option<serde_json::Value>,
+    /// Permission handling for the spawned runtime. `None` keeps the default
+    /// (`Ask`), which is what an interactive client wants.
+    ///
+    /// **`serde(skip)` is the point.** This struct is deserialized straight
+    /// from an HTTP request body; a field that crossed the wire would let any
+    /// caller holding a session token ask for auto-approval of every tool the
+    /// agent runs. It is settable only in-process, by a caller that knows
+    /// there is no human to ask — today that is the voice router, whose
+    /// device has no approval surface at all.
+    #[serde(skip)]
+    pub permission: Option<crate::runtime::PermissionPolicy>,
 }
 
 /// Snapshot a created or fetched session — returned by both
@@ -559,6 +570,8 @@ struct ManagedSession {
     next_seq: u64,
     active_turn_id: Option<Uuid>,
     buffered_output: String,
+    /// The policy this session was created under, so a restart reproduces it.
+    permission: Option<crate::runtime::PermissionPolicy>,
 }
 
 impl RuntimeManagerAdapter {
@@ -660,6 +673,7 @@ impl RuntimeManagerAdapter {
         workspace_id: Option<String>,
         model: Option<String>,
         initial_prompt: Option<String>,
+        permission: Option<crate::runtime::PermissionPolicy>,
     ) -> Result<String, HttpError> {
         #[cfg(test)]
         {
@@ -706,6 +720,7 @@ impl RuntimeManagerAdapter {
                 workspace_id,
                 model,
                 initial_prompt,
+                permission,
             )
             .await
         }
@@ -718,6 +733,7 @@ impl RuntimeManagerAdapter {
         workspace_id: Option<String>,
         model: Option<String>,
         initial_prompt: Option<String>,
+        permission: Option<crate::runtime::PermissionPolicy>,
     ) -> Result<String, HttpError> {
         let context = self
             .resolve_spawn_execution_context(workspace_id.as_deref())
@@ -729,6 +745,7 @@ impl RuntimeManagerAdapter {
             model,
             initial_prompt,
             context,
+            permission,
         )
         .await
     }
@@ -766,6 +783,7 @@ impl RuntimeManagerAdapter {
         model: Option<String>,
         initial_prompt: Option<String>,
         worktree: &str,
+        permission: Option<crate::runtime::PermissionPolicy>,
     ) -> Result<String, HttpError> {
         let context = self
             .assemble_execution_context(worktree, workspace_id.as_deref())
@@ -777,6 +795,7 @@ impl RuntimeManagerAdapter {
             model,
             initial_prompt,
             context,
+            permission,
         )
         .await
     }
@@ -788,8 +807,16 @@ impl RuntimeManagerAdapter {
         workspace_id: Option<String>,
         model: Option<String>,
         initial_prompt: Option<String>,
-        context: crate::runtime::execution_context::ExecutionContext,
+        mut context: crate::runtime::execution_context::ExecutionContext,
+        permission: Option<crate::runtime::PermissionPolicy>,
     ) -> Result<String, HttpError> {
+        // Applied here rather than inside `assemble_execution_context`, which
+        // every HTTP session shares: making that one full-access would hand
+        // auto-approval to the browser setup UI and anything else on this
+        // plane. `None` leaves the context's own default alone.
+        if permission.is_some() {
+            context.spawn_env.permission = permission;
+        }
         let worktree = context.working_directory.to_string_lossy().into_owned();
         if let Some(ref refresh) = self.refresh {
             crate::runtime::refresh::refresh_watch::suppress_for_workspace_path(
@@ -1017,6 +1044,7 @@ impl RuntimeManagerAdapter {
                     next_seq: 0,
                     active_turn_id: None,
                     buffered_output: String::new(),
+                    permission: params.permission,
                 },
             );
         }
@@ -1139,6 +1167,7 @@ impl RuntimeAdapter for RuntimeManagerAdapter {
                 params.workspace_id.clone(),
                 params.model.clone(),
                 None,
+                params.permission,
             )
             .await?;
         let snapshot = self.insert_managed_session(owner_token_id, session_id, &params, runtime_id);
@@ -1326,7 +1355,7 @@ impl RuntimeAdapter for RuntimeManagerAdapter {
     }
 
     async fn restart_session(&self, session_id: Uuid) -> Result<SessionSnapshot, HttpError> {
-        let (agent_type, workspace_id, current_model, runtime_id) = {
+        let (agent_type, workspace_id, current_model, runtime_id, permission) = {
             let sessions = self.sessions.read();
             let session = sessions
                 .get(&session_id)
@@ -1336,6 +1365,7 @@ impl RuntimeAdapter for RuntimeManagerAdapter {
                 session.workspace_id.clone(),
                 session.snapshot.current_model.clone(),
                 session.runtime_id.clone(),
+                session.permission,
             )
         };
 
@@ -1354,6 +1384,10 @@ impl RuntimeAdapter for RuntimeManagerAdapter {
                 workspace_id.clone(),
                 current_model.clone(),
                 None,
+                // Carried, not re-derived: a restarted voice session that came
+                // back as `Ask` would hang on the first tool with nobody to
+                // answer, which is the failure this whole field exists to stop.
+                permission,
             )
             .await?;
 
@@ -1603,6 +1637,7 @@ mod tests {
                 None,
                 None,
                 workspace.path().to_string_lossy().as_ref(),
+                None,
             )
             .await
             .unwrap();
@@ -1643,6 +1678,7 @@ mod tests {
                 Uuid::new_v4(),
                 amux::AgentType::Opencode,
                 Some("cloud-workspace-uuid".into()),
+                None,
                 None,
                 None,
             )
@@ -1687,6 +1723,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1714,6 +1751,7 @@ mod tests {
             .create_session(
                 token_id,
                 CreateSessionParams {
+                    permission: None,
                     agent_type: "stub".into(),
                     workspace_id: None,
                     model: None,
@@ -1769,6 +1807,7 @@ mod tests {
             .create_session(
                 token_id,
                 CreateSessionParams {
+                    permission: None,
                     agent_type: "stub".into(),
                     workspace_id: None,
                     model: None,
@@ -1808,6 +1847,7 @@ mod tests {
             .create_session(
                 token_id,
                 CreateSessionParams {
+                    permission: None,
                     agent_type: "opencode".into(),
                     workspace_id: Some("ws-1".into()),
                     model: None,
@@ -1844,6 +1884,7 @@ mod tests {
             .create_session(
                 token_id,
                 CreateSessionParams {
+                    permission: None,
                     agent_type: "opencode".into(),
                     workspace_id: Some("ws-1".into()),
                     model: None,
@@ -1901,6 +1942,7 @@ mod tests {
             .create_session(
                 token_id,
                 CreateSessionParams {
+                    permission: None,
                     agent_type: "opencode".into(),
                     workspace_id: Some("ws-1".into()),
                     model: None,

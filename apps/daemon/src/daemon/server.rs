@@ -4454,6 +4454,7 @@ pub(crate) mod tests {
             Some("ws-a".into()),
             None,
             None,
+            None,
         )
         .await
         .unwrap();

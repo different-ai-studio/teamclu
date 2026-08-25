@@ -130,6 +130,20 @@ impl ChatSink {
                 "source": "stopwatch",
                 "actor_id": key.actor_id,
             })),
+            // A device has no approval surface: a permission card raised here
+            // is shown to nobody, and the runtime's watchdog reads "waiting on
+            // the user" as healthy rather than stalled, so the turn parks
+            // forever and the device sits on Think until its own deadline.
+            // Observed exactly that — the agent answered a spoken question
+            // with two `bash` calls and the turn never moved again.
+            //
+            // Same reasoning as gateway and cron sessions (see
+            // `PermissionPolicy`), and the same trade: a spoken sentence can
+            // now run any tool the agent chooses, with no confirmation. That
+            // is a real widening of what a paired device can do, and it is why
+            // the field is `serde(skip)` — the daemon decides this, never a
+            // request.
+            permission: Some(crate::runtime::PermissionPolicy::Full),
         };
         match self
             .runtime
@@ -239,6 +253,7 @@ mod tests {
     struct FakeRuntime {
         created: AtomicUsize,
         created_with: Mutex<Option<String>>,
+        created_permission: Mutex<Option<crate::runtime::PermissionPolicy>>,
         prompts: Mutex<Vec<(Uuid, String)>>,
         session_id: Uuid,
         /// When set, `get_session` fails — i.e. the device named a session the
@@ -255,6 +270,7 @@ mod tests {
             Self {
                 created: AtomicUsize::new(0),
                 created_with: Mutex::new(None),
+                created_permission: Mutex::new(None),
                 prompts: Mutex::new(Vec::new()),
                 session_id: Uuid::new_v4(),
                 known_session: None,
@@ -312,6 +328,7 @@ mod tests {
         ) -> Result<SessionSnapshot, HttpError> {
             self.created.fetch_add(1, Ordering::SeqCst);
             *self.created_with.lock().await = Some(_p.agent_type.clone());
+            *self.created_permission.lock().await = _p.permission;
             Ok(SessionSnapshot {
                 session_id: self.session_id,
                 agent_type: "local".into(),
@@ -400,6 +417,7 @@ mod tests {
             model: None,
             initial_prompt: None,
             metadata: None,
+            permission: None,
         }
     }
 
@@ -547,6 +565,28 @@ mod tests {
         assert_eq!(rt.created.load(Ordering::SeqCst), 1);
         let prompts = rt.prompts.lock().await;
         assert_ne!(prompts[0].0.to_string(), bogus);
+    }
+
+    #[tokio::test]
+    async fn a_device_turn_runs_with_full_access() {
+        // The device has no screen to approve on. Under the default `Ask` the
+        // agent's first tool call raises a card nobody sees, the runtime
+        // watchdog counts "waiting on the user" as healthy, and the turn parks
+        // forever — observed on hardware as a spoken question answered by two
+        // `bash` calls and then silence.
+        //
+        // This is a security-relevant default, not an incidental one: it lets
+        // a spoken sentence run any tool the agent picks. It is asserted so it
+        // cannot be widened or narrowed by accident.
+        let rt = Arc::new(FakeRuntime::new());
+        let sink = ChatSink::new(rt.clone(), Uuid::new_v4(), None);
+        sink.on_final("t1", "a1", Intent::Chat, None, "看看磁盘还剩多少")
+            .await;
+
+        assert_eq!(
+            *rt.created_permission.lock().await,
+            Some(crate::runtime::PermissionPolicy::Full)
+        );
     }
 
     #[tokio::test]
