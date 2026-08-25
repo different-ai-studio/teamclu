@@ -55,6 +55,18 @@ void captureTask(void*)
         g_captured.fetch_add(1);
 
         const int n = opus_encode(g_enc, pcm.data(), kFrameSamples, packet.data(), kMaxPacket);
+
+        // Once per turn, after the first encode — that is the high-water point,
+        // and guessing this number is what produced the scheduler corruption
+        // above. Reported in bytes of headroom LEFT; a small figure here means
+        // the stack above needs raising again.
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            mclog::tagInfo(kTag, "capture stack headroom: {} bytes",
+                           uxTaskGetStackHighWaterMark(nullptr));
+        }
+
         if (n <= 0) {
             g_dropped_tx.fetch_add(1);
             continue;
@@ -69,8 +81,9 @@ void captureTask(void*)
         }
     }
 
-    mclog::tagInfo(kTag, "capture task done: captured={} published={} dropped={}",
-                   g_captured.load(), g_published.load(), g_dropped_tx.load());
+    mclog::tagInfo(kTag, "capture task done: captured={} published={} dropped={} stack_headroom={}",
+                   g_captured.load(), g_published.load(), g_dropped_tx.load(),
+                   uxTaskGetStackHighWaterMark(nullptr));
     g_capture_task = nullptr;
     vTaskDelete(nullptr);
 }
@@ -113,7 +126,16 @@ bool init()
 
 void startCapture(face::Mode mode)
 {
-    if (g_enc == nullptr || g_capturing.load()) {
+    // Say why, once per attempt. A silent return here is how a device ends up
+    // publishing turn_start/turn_end with zero mic frames in between: amuxd
+    // opens an STT stream, gets nothing, and reports an empty transcript —
+    // with nothing anywhere naming the cause.
+    if (g_enc == nullptr) {
+        mclog::tagError(kTag, "capture skipped: no Opus encoder (audio::init failed)");
+        return;
+    }
+    if (g_capturing.load()) {
+        mclog::tagWarn(kTag, "capture skipped: already capturing");
         return;
     }
     if (!GetHAL().setAudioSampleRate(kVoiceSampleRate)) {
@@ -128,7 +150,19 @@ void startCapture(face::Mode mode)
 
     // 4 kB: the task holds a 320-sample PCM vector and a 256-byte packet, but
     // opus_encode itself is the real consumer and is not shy with stack.
-    if (xTaskCreate(captureTask, "voice_cap", 8192, nullptr, 5, &g_capture_task) != pdPASS) {
+    // 32 KB. `opus_encode` is stack-hungry — CELT builds large arrays on the
+    // stack — and this is a MEASURED figure, not a guess: at 24576 the task
+    // reported 1248 bytes of headroom left, i.e. ~23 KB actually used. The
+    // original 8192 overflowed into the adjacent TCB, and the symptom was not
+    // a stack-overflow report but a crash inside the SCHEDULER
+    // (prvSelectHighestPriorityTaskSMP reading 0xa5a5a5a5 out of a corrupted
+    // ready list) — canary checking only runs at a context switch, by which
+    // point the damage is done.
+    //
+    // The ~9 KB of margin over the measurement is deliberate: encoder stack use
+    // varies with content and complexity, and the failure mode is not a clean
+    // crash but silent corruption of another task.
+    if (xTaskCreate(captureTask, "voice_cap", 32768, nullptr, 5, &g_capture_task) != pdPASS) {
         mclog::tagError(kTag, "capture task create failed");
         g_capturing.store(false);
         GetHAL().setAudioSampleRate(kIdleSampleRate);

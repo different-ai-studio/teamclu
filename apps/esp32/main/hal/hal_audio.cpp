@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: MIT
  */
 #include "hal.h"
+
+#include <atomic>
 #include "utils/settings/settings.h"
 #include <algorithm>
 #include <cmath>
@@ -80,7 +82,9 @@ public:
             .channel         = 1,
             .sample_rate     = static_cast<uint32_t>(sample_rate),
         };
-        esp_codec_dev_open(_codec_dev, &fs);
+        if (esp_codec_dev_open(_codec_dev, &fs) == ESP_OK) {
+            _codec_open = true;
+        }
     }
 
     void updateSpectrum(Hal::AudioSpectrumFrame& frame)
@@ -137,23 +141,59 @@ public:
         }
     }
 
+    // Switch the codec (and the I2S channel clock with it) to another rate.
+    //
+    // A voice turn runs at 16 kHz because Opus has no 44.1 kHz mode, and the UI
+    // sounds run at 44.1 kHz, so this is called twice per turn. The vendored
+    // HAL never anticipated a rate change at runtime — everything below exists
+    // to make one safe while other tasks are using the device.
     bool reopen(int new_rate)
     {
-        std::lock_guard<std::mutex> lock(_mutex);
         if (new_rate == sample_rate) {
             return true;
         }
-        esp_codec_dev_close(_codec_dev);
-        esp_codec_dev_sample_info_t fs = {
-            .bits_per_sample = 16,
-            .channel         = 1,
-            .sample_rate     = static_cast<uint32_t>(new_rate),
-        };
-        if (esp_codec_dev_open(_codec_dev, &fs) != ESP_OK) {
+
+        // Stop the play task before the device changes underneath it, and drop
+        // whatever it was going to play: those samples belong to the old rate.
+        _codec_suspended = true;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _audio_data.clear();
+        }
+        // Breaks it out of its chunk loop now rather than at the end of the
+        // buffer — it polls the notification between chunks.
+        if (_task_handle != nullptr) {
+            xTaskNotifyGive(_task_handle);
+        }
+
+        bool ok = false;
+        {
+            // Taking this waits out any chunk already in flight, so the close
+            // below cannot land in the middle of a write or a read.
+            std::lock_guard<std::mutex> codec(_codec_mutex);
+            if (_codec_open.load()) {
+                esp_codec_dev_close(_codec_dev);
+                _codec_open = false;
+            }
+            esp_codec_dev_sample_info_t fs = {
+                .bits_per_sample = 16,
+                .channel         = 1,
+                .sample_rate     = static_cast<uint32_t>(new_rate),
+            };
+            if (esp_codec_dev_open(_codec_dev, &fs) == ESP_OK) {
+                _codec_open = true;
+                sample_rate = new_rate;
+                ok          = true;
+            }
+        }
+
+        // Released even on failure: leaving playback suspended would silence
+        // the device for good after one bad reopen.
+        _codec_suspended = false;
+        if (!ok) {
             mclog::tagError(_tag, "codec reopen at {} Hz failed", new_rate);
             return false;
         }
-        sample_rate = new_rate;
         mclog::tagInfo(_tag, "codec reopened at {} Hz", new_rate);
         return true;
     }
@@ -162,14 +202,21 @@ public:
     {
         std::lock_guard<std::mutex> lock(_mutex);
 
-        esp_codec_dev_set_in_gain(_codec_dev, gain);
-
         size_t sample_count = (size_t)(sample_rate * durationMs / 1000);
         size_t byte_size    = sample_count * sizeof(int16_t);
 
         data.resize(sample_count);
 
-        esp_err_t ret = esp_codec_dev_read(_codec_dev, data.data(), byte_size);
+        esp_err_t ret;
+        {
+            std::lock_guard<std::mutex> codec(_codec_mutex);
+            if (!_codec_open.load()) {
+                data.clear();
+                return;
+            }
+            esp_codec_dev_set_in_gain(_codec_dev, gain);
+            ret = esp_codec_dev_read(_codec_dev, data.data(), byte_size);
+        }
         if (ret != ESP_OK) {
             mclog::tagError(_tag, "record failed: {}", ret);
             data.clear();
@@ -216,30 +263,61 @@ private:
                         interrupted = true;
                         break;
                     }
+                    // A rate change is pending: abandon the rest. These samples
+                    // were prepared for the rate the device is leaving.
+                    if (_codec_suspended.load()) {
+                        interrupted = true;
+                        break;
+                    }
 
                     size_t remain        = total_samples - offset;
                     size_t write_samples = (remain > CHUNK_SAMPLES) ? CHUNK_SAMPLES : remain;
 
-                    esp_codec_dev_write(_codec_dev, (void*)&current_data[offset], write_samples * sizeof(int16_t));
+                    {
+                        std::lock_guard<std::mutex> codec(_codec_mutex);
+                        if (!_codec_open.load()) {
+                            interrupted = true;
+                            break;
+                        }
+                        esp_codec_dev_write(_codec_dev, (void*)&current_data[offset],
+                                            write_samples * sizeof(int16_t));
+                    }
                     offset += write_samples;
                 }
 
                 if (interrupted) {
-                    // Stop current playback immediately and flush DMA
-                    i2s_channel_disable(_tx_handle);
-                    i2s_channel_enable(_tx_handle);
+                    // Stop current playback immediately and flush DMA.
+                    // Skipped while a reopen is pending: it is about to cycle
+                    // the channel itself, and disabling one it already
+                    // disabled is the `channel has not been enabled yet` error.
+                    if (!_codec_suspended.load()) {
+                        std::lock_guard<std::mutex> codec(_codec_mutex);
+                        if (_codec_open.load()) {
+                            i2s_channel_disable(_tx_handle);
+                            i2s_channel_enable(_tx_handle);
+                        }
+                    }
                     continue;
                 }
 
                 // Normal finish, play silence to avoid pop/waiting
-                esp_codec_dev_write(_codec_dev, (void*)_silence_buffer.data(),
-                                    _silence_buffer.size() * sizeof(int16_t));
+                {
+                    std::lock_guard<std::mutex> codec(_codec_mutex);
+                    if (_codec_open.load()) {
+                        esp_codec_dev_write(_codec_dev, (void*)_silence_buffer.data(),
+                                            _silence_buffer.size() * sizeof(int16_t));
+                    }
+                }
             }
         }
     }
 
     void _write(const std::vector<int16_t>& data)
     {
+        std::lock_guard<std::mutex> codec(_codec_mutex);
+        if (!_codec_open.load()) {
+            return;
+        }
         esp_codec_dev_write(_codec_dev, (void*)data.data(), data.size() * sizeof(int16_t));
         esp_codec_dev_write(_codec_dev, (void*)_silence_buffer.data(), _silence_buffer.size() * sizeof(int16_t));
     }
@@ -305,6 +383,13 @@ private:
             return false;
         }
 
+        // try_to_lock, not lock: the spectrum is decoration on the render
+        // loop. Blocking it behind a voice turn's reads would stall the UI, and
+        // a dropped hop costs one frame of animation.
+        std::unique_lock<std::mutex> codec(_codec_mutex, std::try_to_lock);
+        if (!codec.owns_lock() || !_codec_open.load()) {
+            return false;
+        }
         esp_err_t ret = esp_codec_dev_read(_codec_dev, _spectrum_pcm_hop.data(), sizeof(int16_t) * spectrum_hop_size);
         if (ret != ESP_OK) {
             return false;
@@ -443,6 +528,24 @@ private:
 
     TaskHandle_t _task_handle;
     std::mutex _mutex;
+    // Serialises every esp_codec_dev_* call. `_mutex` does NOT: the play task
+    // copies its buffer under it, then releases and writes for the length of
+    // the audio, so `reopen()` could close the device mid-write. Three tasks
+    // reach the device (play, voice capture, spectrum) and reopen comes from a
+    // fourth, which is what crashed the capture path with PC=0x0.
+    //
+    // Held per call rather than per buffer: playback is already chunked at 512
+    // samples, so a reopen waits one chunk (~32 ms at 16 kHz) instead of a
+    // whole utterance.
+    std::mutex _codec_mutex;
+    // Tracks whether the device is open, so close is never called on a closed
+    // one — that is what produced `i2s_channel_disable: the channel has not
+    // been enabled yet`.
+    std::atomic<bool> _codec_open{false};
+    // Set while a reopen is pending. The play task checks it between chunks
+    // and abandons the buffer: continuing would feed 44.1 kHz samples into a
+    // device that is about to become 16 kHz.
+    std::atomic<bool> _codec_suspended{false};
     std::vector<int16_t> _audio_data;
     std::vector<int16_t> _silence_buffer;
     std::array<int16_t, spectrum_hop_size> _spectrum_pcm_hop                       = {};

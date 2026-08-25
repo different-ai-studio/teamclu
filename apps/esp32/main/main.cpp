@@ -88,7 +88,7 @@ face::Hooks makeHooks()
     // Opens the turn on amuxd: its router keys an STT stream off this and the
     // intent, then expects mic frames to follow. Audio capture itself is next.
     h.onCaptureStart = [](face::Mode m) {
-        mclog::info(kTag, "capture start ({})", m == face::Mode::Chat ? "chat" : "note");
+        mclog::tagInfo(kTag, "capture start ({})", m == face::Mode::Chat ? "chat" : "note");
         // ctl first: amuxd keys an STT stream off turn_start, so a mic frame
         // that beats it to the broker has nowhere to land.
         net::sendTurnStart(m);
@@ -99,7 +99,7 @@ face::Hooks makeHooks()
     // provider drain a final transcript — so this must be sent even when no
     // audio followed, or the turn is left open.
     h.onCaptureEnd = [](face::Mode m) {
-        mclog::info(kTag, "capture end ({})", m == face::Mode::Chat ? "chat" : "note");
+        mclog::tagInfo(kTag, "capture end ({})", m == face::Mode::Chat ? "chat" : "note");
         // Stop the mic before announcing the end, so no frame arrives after
         // amuxd has already dropped the stream's sender.
         audio::stopCapture();
@@ -111,24 +111,24 @@ face::Hooks makeHooks()
     // is precisely the failure that cannot be tolerated (plan §5). amuxd closes
     // the stream without expecting a final.
     h.onCancelPlayback = []() {
-        mclog::info(kTag, "cancel playback");
+        mclog::tagInfo(kTag, "cancel playback");
         audio::endPlayback();
         net::sendBargeIn();
     };
 
     // Screen and CPU handling live in the sleep policy, which sees the Sleep
     // screen as `userAsleep`. These hooks only record the intent.
-    h.onEnterSleep = []() { mclog::info(kTag, "sleep"); };
-    h.onExitSleep = []() { mclog::info(kTag, "wake"); };
+    h.onEnterSleep = []() { mclog::tagInfo(kTag, "sleep"); };
+    h.onExitSleep = []() { mclog::tagInfo(kTag, "wake"); };
 
     h.onPowerOff = []() {
-        mclog::info(kTag, "power off requested");
+        mclog::tagInfo(kTag, "power off requested");
         // MILESTONE 2: real power-down via the M5PM1. Reboot is a stand-in that
         // is at least observably distinct from sleep.
         GetHAL().reboot();
     };
 
-    h.onOpenNotes = []() { mclog::info(kTag, "open notes"); };
+    h.onOpenNotes = []() { mclog::tagInfo(kTag, "open notes"); };
 
     return h;
 }
@@ -153,7 +153,7 @@ extern "C" void app_main(void)
     state.addNote("11:38", "问 CST820B 中断脚");
 
     if (!audio::init()) {
-        mclog::warn(kTag, "audio unavailable; voice will be control-only");
+        mclog::tagWarn(kTag, "audio unavailable; voice will be control-only");
     }
 
     power::BatteryLog battery;
@@ -187,7 +187,7 @@ extern "C" void app_main(void)
             GetHAL().delay(40);
         }
         if (bothHeld) {
-            mclog::info(kTag, "both buttons held at boot: forgetting provisioning");
+            mclog::tagInfo(kTag, "both buttons held at boot: forgetting provisioning");
             GetHAL().vibrate(120, 100);
             net::forgetProvisioning();
         }
@@ -213,7 +213,7 @@ extern "C" void app_main(void)
         audio::onSpkFrame(data, len);
     });
 
-    mclog::info(kTag, "face up, device {}", state.deviceCode());
+    mclog::tagInfo(kTag, "face up, device {}", state.deviceCode());
 
     std::uint32_t lastClockMs = 0;
 
@@ -260,7 +260,7 @@ extern "C" void app_main(void)
                             return face::ErrorKind::NoAgent;  // §3.1: laptop asleep
                         return face::ErrorKind::Upstream;  // STT/LLM/TTS
                     }();
-                    mclog::info(kTag, "ctl error: {} {}",
+                    mclog::tagInfo(kTag, "ctl error: {} {}",
                                 ctl.code, ctl.message);
                     // Tear the audio down too: otherwise a mid-turn failure
                     // leaves the capture task running and the codec parked at
@@ -284,7 +284,7 @@ extern "C" void app_main(void)
                 case net::IncomingCtl::Kind::SpkEnd: {
                     audio::endPlayback();
                     const auto st = audio::stats();
-                    mclog::info(kTag, "turn audio: tx {}/{} (drop {}), rx {} (drop {})",
+                    mclog::tagInfo(kTag, "turn audio: tx {}/{} (drop {}), rx {} (drop {})",
                                 st.framesPublished, st.framesCaptured, st.framesDroppedTx,
                                 st.framesPlayed, st.framesDroppedRx);
                     state.onAgentDone();
@@ -295,20 +295,20 @@ extern "C" void app_main(void)
                     // session a turn belongs to and deliberately does not trust
                     // an id the device supplies, so this is logged to make the
                     // round-trip visible and nothing more.
-                    mclog::info(kTag, "ctl session: {}", ctl.session);
+                    mclog::tagInfo(kTag, "ctl session: {}", ctl.session);
                     break;
                 case net::IncomingCtl::Kind::NoteSaved:
                     // The note actually landed. Before this existed the face
                     // showed "saved" on a timer whether or not anything was
                     // stored — see face_state::commitHold.
-                    mclog::info(kTag, "ctl note_saved: {} {}", ctl.time, ctl.text);
+                    mclog::tagInfo(kTag, "ctl note_saved: {} {}", ctl.time, ctl.text);
                     state.onNoteSaved(now, ctl.time, ctl.text);
                     break;
                 case net::IncomingCtl::Kind::Unknown:
                     // Forward-compat: a future amuxd ctl type. Log + ignore
                     // rather than render, so the device never wedges on an
                     // upgrade it doesn't understand.
-                    mclog::info(kTag, "ctl unknown type, ignored");
+                    mclog::tagInfo(kTag, "ctl unknown type, ignored");
                     break;
             }
         }
