@@ -28,6 +28,31 @@ impl AmuxdChannelStore {
     /// Naming the daemon's agent here is what would make the loopback copy
     /// engage a second turn. The reply is already on its way back to the chat,
     /// so nothing downstream needs to be told to answer it.
+    ///
+    /// #933 lists "replace this with claim-before-publish so cross-channel
+    /// `@somebody` is visible" as work to do. Checked 2026-08-25: the claim is
+    /// already here — `GatewayLiveNotifier::message_created` claims the id in
+    /// the shared `MessageDedup` before publishing, and `route_session_message`
+    /// reads the same map. So the belt is on and this constant is only braces.
+    ///
+    /// It stays anyway, because carrying real mentions would currently feed
+    /// nobody:
+    ///
+    /// - Desktop routes an inbound live envelope's `mentionActorIds` into the
+    ///   ACP debug panel only. The message list, unread state and the status
+    ///   dot never see it (the dot reads the *outbox*, i.e. what this client
+    ///   sent).
+    /// - `route_session_message` and `push_message_to_mentioned_externals` are
+    ///   the daemon-side consumers, and both sit behind the dedup gate that the
+    ///   publish already closed — for a gateway-written message neither runs.
+    /// - WeCom has no structured mention field to carry in the first place:
+    ///   `@<display name> 正文` in the text is all its callback gives (see
+    ///   `strip_group_mention_prefix`). Feishu does have one.
+    ///
+    /// So the order is: give inbound mentions a consumer first, then plumb
+    /// `InboundMessage.mentions` through `SessionWriter`. Dropping the constant
+    /// before that changes nothing a user can see and re-opens the double-turn
+    /// this guards against.
     const NO_MENTIONS: &'static str = r#"{"mention_actor_ids":[]}"#;
 
     async fn announce(

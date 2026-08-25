@@ -9,7 +9,6 @@ use tokio::sync::RwLock;
 use super::delivery::DeliveryManager;
 use super::storage::CronStorage;
 use super::types::*;
-use crate::commands::gateway::SessionMapping;
 use crate::process_util::CommandNoWindow;
 
 const CRON_RUN_HEARTBEAT_INTERVAL_SECS: u64 = 30;
@@ -21,8 +20,6 @@ const STALE_RUN_ERROR: &str =
 pub struct CronScheduler {
     storage: CronStorage,
     delivery: Arc<RwLock<Option<DeliveryManager>>>,
-    /// Shared session mapping with gateways — used to look up existing sessions
-    session_mapping: Arc<RwLock<Option<SessionMapping>>>,
     /// Generation counter: incremented on each start/stop to uniquely identify
     /// scheduler instances. Prevents old tick loops from continuing after restart.
     generation: Arc<RwLock<u64>>,
@@ -37,7 +34,6 @@ impl Clone for CronScheduler {
         Self {
             storage: self.storage.clone(),
             delivery: Arc::clone(&self.delivery),
-            session_mapping: Arc::clone(&self.session_mapping),
             generation: Arc::clone(&self.generation),
             app_handle: Arc::clone(&self.app_handle),
             execution_workspace: Arc::clone(&self.execution_workspace),
@@ -50,7 +46,6 @@ impl CronScheduler {
         Self {
             storage,
             delivery: Arc::new(RwLock::new(None)),
-            session_mapping: Arc::new(RwLock::new(None)),
             generation: Arc::new(RwLock::new(0)),
             app_handle: Arc::new(std::sync::Mutex::new(None)),
             execution_workspace: Arc::new(RwLock::new(None)),
@@ -140,12 +135,6 @@ impl CronScheduler {
     pub async fn set_delivery(&self, delivery: DeliveryManager) {
         let mut d = self.delivery.write().await;
         *d = Some(delivery);
-    }
-
-    /// Set the shared session mapping (from gateway state)
-    pub async fn set_session_mapping(&self, mapping: SessionMapping) {
-        let mut sm = self.session_mapping.write().await;
-        *sm = Some(mapping);
     }
 
     /// Start the scheduler background loop
@@ -294,23 +283,8 @@ impl CronScheduler {
         // Check before starting work
         check_generation!();
 
-        // Email delivery still needs a unique per-run session_key so that
-        // outgoing Message-ID/subject can be registered for inbound reply
-        // routing (see Step 3 below). The amuxd path itself uses a separate
-        // `cron/<job_id>/<run_id>` key for the ACP session.
-        let is_email_delivery = matches!(
-            &job.delivery,
-            Some(d) if d.channel == DeliveryChannel::Email
-        );
-        let email_session_key = if is_email_delivery {
-            Some(format!("email:thread:cron:{}:{}", job.id, run_id))
-        } else {
-            None
-        };
-
         // ── New cron-to-amuxd execution flow ─────────────────────────────
-        // (Replaces the OpenCode HTTP path. See spec
-        //  docs/superpowers/specs/2026-05-17-cron-to-amuxd-design.md §3.)
+        // (Replaces the OpenCode HTTP path.)
 
         let session_key = format!("cron/{}/{}", job.id, run_id);
         let working_directory = Self::working_directory_for_run(execution_workspace.as_deref());
@@ -476,50 +450,12 @@ impl CronScheduler {
                         .send_notification(&delivery.channel, &delivery.to, &delivery_message)
                         .await
                     {
-                        Ok(outgoing_message_id) => {
+                        Ok(()) => {
                             record.delivery_status = Some("delivered".to_string());
                             println!(
                                 "[Cron] Delivered results for job '{}' via {:?}",
                                 job.name, delivery.channel
                             );
-
-                            // For email delivery: register the outgoing Message-ID
-                            // and subject in SessionMapping so user replies resolve
-                            // to the same ACP session (conversation continuity).
-                            // NOTE: SessionMapping::get_email_session_by_* are
-                            // currently uncalled from anywhere outside this file —
-                            // EmailDb is the active store. Pre-existing dead path
-                            // preserved here so the registration is in place if
-                            // the lookup is re-wired. See spec §3 / Open items.
-                            if let (Some(msg_id), Some(session_key)) =
-                                (outgoing_message_id, &email_session_key)
-                            {
-                                let sm_guard = self.session_mapping.read().await;
-                                if let Some(mapping) = sm_guard.as_ref() {
-                                    // Register message-id -> session_key
-                                    mapping
-                                        .set_email_message_session(
-                                            msg_id.clone(),
-                                            session_key.clone(),
-                                        )
-                                        .await;
-                                    // Register subject -> session_key for fallback matching
-                                    let subject =
-                                        crate::commands::gateway::email::normalize_subject(
-                                            "[TeamClu] Cron Job Notification",
-                                        );
-                                    mapping
-                                        .set_email_subject_session(
-                                            subject.clone(),
-                                            session_key.clone(),
-                                        )
-                                        .await;
-                                    println!(
-                                        "[Cron] Registered email session: msg_id='{}', subject='{}', session_key='{}'",
-                                        msg_id, subject, session_key
-                                    );
-                                }
-                            }
                         }
                         Err(e) => {
                             let err_msg = format!("Delivery failed: {}", e);

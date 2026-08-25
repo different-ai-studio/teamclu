@@ -137,7 +137,6 @@ pub async fn cron_init(
     window: tauri::WebviewWindow,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     cron_state: State<'_, CronState>,
-    gateway_state: State<'_, crate::commands::gateway::GatewayState>,
     scope: Option<CronScope>,
     workspace_path: Option<String>,
 ) -> Result<(), String> {
@@ -158,12 +157,6 @@ pub async fn cron_init(
         .set_execution_workspace(execution_workspace)
         .await;
     instance.scheduler.set_app_handle(app);
-
-    let session_mapping = gateway_state.shared_session_mapping.clone();
-    instance
-        .scheduler
-        .set_session_mapping(session_mapping)
-        .await;
 
     let delivery_mgr = DeliveryManager::new(storage_path.clone());
     instance.scheduler.set_delivery(delivery_mgr).await;

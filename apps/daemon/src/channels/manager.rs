@@ -34,6 +34,17 @@ struct RunningChannels {
     seatalk: Option<SeaTalkGateway>,
 }
 
+/// A file on its way out to a chat, already uploaded and recorded as a session
+/// attachment.
+///
+/// The bytes are carried rather than re-read from disk so there is exactly one
+/// read per send, and — more to the point — so `dispatch_send` cannot be handed
+/// a path it would push without the session ever knowing (#933).
+pub struct OutboundMedia {
+    pub bytes: Vec<u8>,
+    pub filename: String,
+}
+
 pub struct ChannelManager {
     cfg: DaemonConfig,
     acp: Arc<dyn AgentHandle>,
@@ -131,7 +142,7 @@ impl ChannelManager {
             // shorter and a message waiting behind a healthy long turn gets
             // dropped for being late.
             queue: Arc::new(
-                teamclu_gateway::session_queue::SessionQueue::with_message_timeout(
+                crate::channels::session_queue::SessionQueue::with_message_timeout(
                     std::time::Duration::from_secs(driver.caps().turn_timeout_secs),
                 ),
             ),
@@ -250,12 +261,18 @@ impl ChannelManager {
     /// chat_type=1, `chat` → group chat with chat_type=2; for SeaTalk,
     /// `user` → employee_code DM, `chat` → group_id). WeCom and SeaTalk are
     /// wired; other channels return an explanatory error until ported.
+    ///
+    /// Takes bytes, not a path (#933): this used to read the file off disk
+    /// itself, which is how a file could reach a chat without ever becoming a
+    /// session attachment. Now the only way to get an `OutboundMedia` is to
+    /// have gone through the session write first, so the ordering is a
+    /// property of the signature rather than of the caller remembering.
     pub async fn dispatch_send(
         &self,
         channel: &str,
         target: &str,
         message: Option<&str>,
-        file_path: Option<&str>,
+        media: Option<OutboundMedia>,
     ) -> anyhow::Result<()> {
         let running = self.running.lock().await;
         match channel {
@@ -278,20 +295,7 @@ impl ChannelManager {
                     None => &running.wecom[0],
                 };
                 let (kind, id) = parse_send_target(target)?;
-                let media: Option<(Vec<u8>, String)> = match file_path {
-                    Some(p) => {
-                        let bytes = tokio::fs::read(p)
-                            .await
-                            .map_err(|e| anyhow::anyhow!("read {p}: {e}"))?;
-                        let filename = std::path::Path::new(p)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("file")
-                            .to_string();
-                        Some((bytes, filename))
-                    }
-                    None => None,
-                };
+                let media: Option<(Vec<u8>, String)> = media.map(|m| (m.bytes, m.filename));
                 let text = message.unwrap_or("");
                 let result = match kind {
                     "user" => g.send_to_user_with_optional_media(id, text, media).await,
@@ -307,7 +311,7 @@ impl ChannelManager {
                     .ok_or_else(|| anyhow::anyhow!("seatalk not running"))?;
                 let (kind, id) = parse_send_target(target)?;
                 let text = message.unwrap_or("");
-                if file_path.is_some() {
+                if media.is_some() {
                     anyhow::bail!("seatalk: file send not supported yet");
                 }
                 let result = match kind {
@@ -318,7 +322,9 @@ impl ChannelManager {
                 result.map_err(|e| anyhow::anyhow!("seatalk send: {e}"))
             }
             "feishu" | "discord" | "kook" | "wechat" | "email" => {
-                anyhow::bail!("{channel}: send not yet implemented in v2; only WeCom/SeaTalk are wired")
+                anyhow::bail!(
+                    "{channel}: send not yet implemented in v2; only WeCom/SeaTalk are wired"
+                )
             }
             other => anyhow::bail!("unknown channel: {other}"),
         }
@@ -481,6 +487,10 @@ impl ChannelManager {
             }
         }
         gw.set_config(cfg).await;
+        // Discord gains dedup, commands and long-answer splitting from the
+        // core; the inline path had its own tracker and its own filters.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
+            .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }
@@ -509,12 +519,10 @@ impl ChannelManager {
                 bot_name: bot.bot_name.clone(),
             };
             gw.set_config(cfg).await;
-            if crate::channels::core::sink::core_pipeline_enabled() {
-                // One pipeline for every channel; the gateway is left with the
-                // protocol. `TEAMCLU_GATEWAY_CORE=0` keeps the inline handler.
-                gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver())))
-                    .await;
-            }
+            // One pipeline for every channel; the gateway is left with the
+            // protocol.
+            gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver())))
+                .await;
             match gw.start().await {
                 Ok(()) => {
                     println!("[ChannelManager] wecom bot {} started", bot.bot_id);
@@ -544,12 +552,10 @@ impl ChannelManager {
             chats: Default::default(),
         };
         gw.set_config(cfg).await;
-        if crate::channels::core::sink::core_pipeline_enabled() {
-            // Feishu gains streaming from this: it always could edit a sent
-            // message, the inline path just never did.
-            gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
-                .await;
-        }
+        // Feishu gains streaming from this: it always could edit a sent
+        // message, the inline path just never did.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
+            .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }
@@ -577,6 +583,10 @@ impl ChannelManager {
             guilds: Default::default(),
         };
         gw.set_config(cfg).await;
+        // KOOK gains dedup, commands and a per-channel turn timeout here; the
+        // inline path had its own tracker and its own command handling.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
+            .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }
@@ -597,6 +607,10 @@ impl ChannelManager {
             ..Default::default()
         };
         gw.set_config(cfg).await;
+        // WeChat gains dedup (it had none — iLink redelivery meant a repeat
+        // turn), commands and a per-channel turn timeout.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
+            .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }
@@ -626,6 +640,11 @@ impl ChannelManager {
         };
         gw.set_workspace_path(&self.workspace_path).await;
         gw.set_config(cfg).await;
+        // Email gains commands, one dedup mechanism instead of its own UID
+        // watermark, and a 900s turn timeout — the IM-shaped 180s would abandon
+        // a normal mail round trip.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
+            .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }
@@ -661,7 +680,19 @@ impl ChannelManager {
             group_allow_from: c.group_allow_from.clone(),
             ..Default::default()
         };
+        let dm_thread = cfg.dm_thread_session;
+        let group_thread = cfg.group_thread_session;
         gw.set_config(cfg).await;
+        // SeaTalk gains dedup, commands, attachments-as-text and a per-channel
+        // turn timeout from this; it had none of them on the inline path.
+        gw.use_core_pipeline(
+            self.core_sink_for(Arc::new(
+                gw.as_driver()
+                    .await
+                    .with_thread_sessions(dm_thread, group_thread),
+            )),
+        )
+        .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }

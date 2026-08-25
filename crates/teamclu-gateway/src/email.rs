@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -8,7 +9,7 @@ use crate::email_config::{
     EmailConfig, EmailGatewayStatus, EmailGatewayStatusResponse, EmailProvider,
 };
 use crate::email_db::EmailDb;
-use crate::{i18n, AgentHandle, ChannelStore};
+use crate::{AgentHandle, ChannelStore};
 
 /// Maximum number of processed message UIDs to keep in the dedup set.
 /// With UID watermark, this set only grows within a single gateway session,
@@ -258,6 +259,13 @@ pub struct EmailGateway {
     email_db: Arc<RwLock<Option<EmailDb>>>,
     /// Pending questions waiting for email replies
     pub pending_questions: Arc<super::PendingQuestionStore>,
+    /// Set once the daemon wires the core pipeline; the inline path is skipped.
+    inbound_sink: Arc<RwLock<Option<Arc<dyn crate::driver::InboundSink>>>>,
+    /// Last inbound mail per thread, so the driver can address its reply.
+    reply_targets: ReplyTargets,
+    /// Whose mailbox this is, as `EmailDb` keys it. Filled in when the IMAP
+    /// loop derives it from the provider config.
+    account_key: Arc<RwLock<String>>,
 }
 
 impl EmailGateway {
@@ -283,6 +291,25 @@ impl EmailGateway {
             generation: Arc::new(AtomicU64::new(0)),
             email_db: Arc::new(RwLock::new(None)),
             pending_questions: Arc::new(super::PendingQuestionStore::new()),
+            inbound_sink: Arc::new(RwLock::new(None)),
+            reply_targets: Arc::new(RwLock::new(ReplyTargetStore::default())),
+            account_key: Arc::new(RwLock::new(String::new())),
+        }
+    }
+
+    /// Hand inbound mail to the core instead of the inline handler.
+    pub async fn use_core_pipeline(&self, sink: Arc<dyn crate::driver::InboundSink>) {
+        *self.inbound_sink.write().await = Some(sink);
+    }
+
+    /// A driver for the core to render replies through.
+    pub async fn as_driver(&self) -> EmailDriver {
+        EmailDriver {
+            config: self.config.read().await.clone(),
+            workspace_path: self.workspace_path.read().await.clone().unwrap_or_default(),
+            reply_targets: Arc::clone(&self.reply_targets),
+            email_db: Arc::clone(&self.email_db),
+            account_key: Arc::clone(&self.account_key),
         }
     }
 
@@ -563,6 +590,11 @@ fn run_email_gateway_blocking(
         EmailProvider::Custom => config.username.clone(),
     };
     println!("[Email] Account key: {}", account_key);
+    // The driver needs it to index the ids it sends; it is derived here, from
+    // provider config, so this is the only place that knows it.
+    rt_handle.block_on(async {
+        *gateway.account_key.write().await = account_key.clone();
+    });
 
     loop {
         if shutdown_flag.load(Ordering::SeqCst) {
@@ -1130,17 +1162,62 @@ fn handle_imap_connection(
                             let filter_result = check_email_filter(config, &email_msg);
                             match filter_result {
                                 FilterResult::Allow => {
-                                    if let Err(e) = process_and_reply_sync(
-                                        gateway,
-                                        config,
-                                        &email_msg,
-                                        access_token,
-                                        rt_handle,
-                                        email_db,
-                                        account_key,
-                                        &gateway.pending_questions,
-                                    ) {
-                                        println!("[Email] Failed to process message: {}", e);
+                                    // The core pipeline, when the daemon has
+                                    // wired it. The thread key is resolved here
+                                    // because it needs an EmailDb lookup, which
+                                    // `ChannelDriver::binding` cannot do.
+                                    if let Some(sink) =
+                                        rt_handle.block_on(gateway.inbound_sink.read()).clone()
+                                    {
+                                        let thread_key = resolve_thread_key_sync(
+                                            gateway,
+                                            &email_msg,
+                                            rt_handle,
+                                            email_db,
+                                            account_key,
+                                        );
+                                        rt_handle.block_on(async {
+                                            gateway
+                                                .reply_targets
+                                                .write()
+                                                .await
+                                                .insert(thread_key.clone(), email_msg.clone());
+                                            // Index the incoming id under this
+                                            // thread's binding. The outbound half
+                                            // happens in `EmailDriver::deliver`;
+                                            // both are needed or the next reply
+                                            // forks into a new session.
+                                            if let Some(db) = email_db {
+                                                let incoming =
+                                                    normalize_message_id(&email_msg.message_id);
+                                                if !incoming.is_empty() {
+                                                    let binding = crate::binding::email_thread(
+                                                        account_key,
+                                                        &thread_key,
+                                                    );
+                                                    if let Err(e) = db
+                                                        .store_message_thread(
+                                                            account_key,
+                                                            &incoming,
+                                                            Some(&email_msg.subject),
+                                                            None,
+                                                            Some(&binding),
+                                                        )
+                                                        .await
+                                                    {
+                                                        println!(
+                                                            "[Email] Warning: failed to index incoming message_id: {e}"
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            sink.accept(normalize_email(
+                                                account_key,
+                                                &email_msg,
+                                                &thread_key,
+                                            ))
+                                            .await;
+                                        });
                                     }
                                 }
                                 FilterResult::RecipientAliasNotMatched => {
@@ -1216,7 +1293,7 @@ fn handle_imap_connection(
 // ==================== Email Parsing ====================
 
 #[derive(Clone)]
-struct EmailMessage {
+pub(crate) struct EmailMessage {
     uid: u32,
     from: String,
     recipients: Vec<String>,
@@ -1565,263 +1642,308 @@ fn resolve_email_session_binding_sync(
     Ok(resolved)
 }
 
-fn process_and_reply_sync(
-    gateway: &EmailGateway,
-    config: &EmailConfig,
-    email: &EmailMessage,
-    access_token: Option<&str>,
-    rt_handle: &tokio::runtime::Handle,
-    email_db: Option<&EmailDb>,
-    account_key: &str,
-    pending_questions: &Arc<super::PendingQuestionStore>,
-) -> Result<(), String> {
-    let resolved_binding =
-        resolve_email_session_binding_sync(gateway, email, rt_handle, email_db, account_key)?;
+// ==================== Transport driver (core pipeline) ====================
 
-    // Build message content — send only the email body text to the amuxd agent runtime.
-    let message_content = if email.body_text.is_empty() {
+/// What a reply needs that the conversation id cannot carry.
+///
+/// Mail replies must reproduce `In-Reply-To` / `References` and the original
+/// subject or the thread splits, and the recipient is the original sender —
+/// none of which survive a round trip through a single id string. So the
+/// inbound side stashes the message here, keyed by conversation id, and the
+/// driver picks it up. Same shape as WeCom's reply context and WeChat's
+/// context-token cache: transport state, held by the transport.
+pub(crate) type ReplyTargets = Arc<RwLock<ReplyTargetStore>>;
+
+/// Bounded map of thread key → the mail to answer.
+///
+/// Every neighbouring cache in this crate is capped (`ProcessedMessageTracker`
+/// at `MAX_PROCESSED_MESSAGES`, the core's dedup FIFO at 1000) and this one has
+/// to be too: it holds a whole `EmailMessage`, body included, one per distinct
+/// thread, for as long as the daemon runs. A busy mailbox would grow it without
+/// bound. Oldest-first eviction — a thread that has been quiet for hundreds of
+/// mails is one whose reply already went out.
+#[derive(Default)]
+pub(crate) struct ReplyTargetStore {
+    entries: HashMap<String, EmailMessage>,
+    order: std::collections::VecDeque<String>,
+}
+
+/// Enough threads for any real mailbox's working set, small enough to bound the
+/// retained bodies.
+const MAX_REPLY_TARGETS: usize = 256;
+
+impl ReplyTargetStore {
+    pub(crate) fn insert(&mut self, thread_key: String, msg: EmailMessage) {
+        if self.entries.insert(thread_key.clone(), msg).is_none() {
+            self.order.push_back(thread_key);
+        }
+        while self.order.len() > MAX_REPLY_TARGETS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+
+    pub(crate) fn get(&self, thread_key: &str) -> Option<&EmailMessage> {
+        self.entries.get(thread_key)
+    }
+}
+
+fn email_caps() -> crate::driver::ChannelCaps {
+    crate::driver::ChannelCaps {
+        // There is no "edit the mail I already sent". The core buffers the
+        // whole answer and sends once — which is why declaring this honestly
+        // matters: a channel that claimed streaming would send one mail per
+        // frame, five mails to a question.
+        streaming_edit: false,
+        media_upload: false,
+        interactive: false,
+        threading: crate::driver::Threading::MailHeaders,
+        // Mail has no practical body limit; splitting would be worse.
+        max_chars: 100_000,
+        // A mail round trip is minutes, not the IM-shaped 180s. The inline path
+        // only got away with the short timeout because it blocked on the reply
+        // rather than queueing the turn.
+        turn_timeout_secs: 900,
+    }
+}
+
+/// Conversation id for a mail thread. Only the thread key needs to survive —
+/// everything else a reply needs is in [`ReplyTargets`].
+fn mail_conv_id(thread_key: &str) -> String {
+    thread_key.to_string()
+}
+
+/// Normalize a parsed email into the shape the core consumes.
+///
+/// `thread_key` is resolved by the caller because it needs an `EmailDb` lookup
+/// over the `In-Reply-To` / `References` chain, and [`ChannelDriver::binding`]
+/// is sync and pure by contract.
+fn normalize_email(
+    account_key: &str,
+    email: &EmailMessage,
+    thread_key: &str,
+) -> crate::driver::InboundMessage {
+    let body = if email.body_text.is_empty() {
         "(empty body)".to_string()
     } else {
         clean_email_body(&email.body_text)
     };
-
-    // /answer command — routes reply to the most recent pending question.
-    if let Some(answer_text) = super::PendingQuestionStore::parse_answer_command(&message_content) {
-        if let Some(qid) = rt_handle.block_on(pending_questions.try_answer(answer_text)) {
-            println!(
-                "[Email] Question {} answered via /answer: {}",
-                qid, answer_text
-            );
-        } else {
-            println!("[Email] /answer command received but no pending questions");
-        }
-        return Ok(());
-    }
-
-    // If this email is a reply to one of our previously-forwarded questions,
-    // resolve it now and short-circuit.
-    for mid in extract_message_ids(&email.in_reply_to) {
-        let normalized = normalize_message_id(&mid);
-        if let Some(entry) = rt_handle.block_on(async { pending_questions.take(&normalized).await })
-        {
-            let _ = entry.answer_tx.send(message_content.clone());
-            println!(
-                "[Email] Question {} answered via email reply",
-                entry.question_id
-            );
-            return Ok(());
-        }
-    }
-
-    // Detect slash commands in the email body. /help and /sessions are
-    // handled without resolving a session; /stop, /reset, /model dispatch
-    // after session resolve below.
-    let trimmed_body = message_content.trim();
-    let slash_lower = if !trimmed_body.is_empty() && trimmed_body.starts_with('/') {
-        // Only consider the first line for slash-detection (emails often have
-        // signatures/quotes underneath).
-        trimmed_body
-            .lines()
-            .next()
-            .map(|l| l.trim().to_lowercase())
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let slash = crate::commands::parse_slash(&slash_lower);
-
-    let locale = i18n::locale();
-
-    // `/help` and `/skills` need no session, so they answer without opening
-    // one. Everything else dispatches after the session resolve below.
-    if let Some((cmd_name, cmd_arg)) = &slash {
-        if !crate::commands::needs_session(cmd_name) {
-            let replied = rt_handle.block_on(crate::commands::run_slash(
-                cmd_name,
-                cmd_arg.as_deref(),
-                gateway.agent.as_ref(),
-                gateway.store.as_ref(),
-                &String::new(),
-                locale,
-            ));
-            if let Ok(Some(reply_text)) = replied {
-                let _ = send_reply_sync(config, email, &reply_text, access_token)?;
-                return Ok(());
-            }
-        }
-    }
-
-    // ============ the amuxd agent runtime + ChannelStore path ============
-    //
-    // If the inbound email is part of an existing thread we've seen before
-    // (`In-Reply-To` / `References` matched a Message-ID we persisted, or
-    // the subject matches a recent thread), reuse the original thread's
-    // binding so `ensure_session` joins the same backend session row.
-    // First-time threads fall back to a binding derived from the current
-    // message's id.
-    let binding = if let Some(b) = resolved_binding.clone() {
-        b
-    } else {
-        let thread_key = build_thread_session_key(email)
-            .strip_prefix("email:thread:")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| email.uid.to_string());
-        crate::binding::email_thread(account_key, &thread_key)
-    };
-    let urn = crate::binding::urn_email_user(&email.from);
-    let sender_display = if email.from.is_empty() {
+    let display = if email.from.is_empty() {
         "Email user".to_string()
     } else {
         email.from.clone()
     };
-    let subject_as_title = if email.subject.trim().is_empty() {
-        format!("Email: {}", sender_display)
-    } else {
-        normalize_subject(&email.subject)
-    };
-    let incoming_message_id = normalize_message_id(&email.message_id);
-
-    let team_id = gateway.team_id.clone();
-    let primary_agent_actor_id = gateway.primary_agent_actor_id.clone();
-    let agent_owner_actor_ids = gateway.agent_owner_actor_ids.clone();
-    let store = gateway.store.clone();
-    let agent = gateway.agent.clone();
-    let message_content_for_async = message_content.clone();
-    let slash_for_async = slash.clone();
-
-    let (acp_session_id, session_id, outgoing_reply_text) = rt_handle.block_on(async {
-        let external_actor_id = store
-            .ensure_external_actor(&team_id, "email", &urn, &sender_display)
-            .await
-            .map_err(|e| format!("ensure_external_actor: {e}"))?;
-
-        let outcome = store
-            .ensure_session(
-                &team_id,
-                &binding,
-                &subject_as_title,
-                &primary_agent_actor_id,
-                &agent_owner_actor_ids,
-                std::slice::from_ref(&external_actor_id),
-            )
-            .await
-            .map_err(|e| format!("ensure_session: {e}"))?;
-
-        store
-            .add_participant(&outcome.session_id, &external_actor_id)
-            .await
-            .map_err(|e| format!("add_participant: {e}"))?;
-
-        // Slash-command dispatch against the resolved session.
-        if let Some((cmd_name, cmd_arg)) = &slash_for_async {
-            let reply_text = crate::commands::run_slash(
-                cmd_name,
-                cmd_arg.as_deref(),
-                agent.as_ref(),
-                store.as_ref(),
-                &outcome.acp_session_id,
-                locale,
-            )
-            .await
-            .unwrap_or(None)
-            .unwrap_or_else(|| crate::commands::unknown_command_reply(cmd_name, locale));
-            return Ok::<_, String>((outcome.acp_session_id, outcome.session_id, reply_text));
-        }
-
-        let msg_id_opt = if incoming_message_id.is_empty() {
-            None
+    crate::driver::InboundMessage {
+        conversation: crate::driver::Conversation {
+            channel: "email",
+            bot_id: Some(account_key.to_string()),
+            kind: crate::driver::ConversationKind::MailThread,
+            id: mail_conv_id(thread_key),
+        },
+        sender: crate::driver::ExternalSender {
+            external_id: email.from.clone(),
+            display_name: display,
+            email: Some(email.from.clone()),
+        },
+        external_message_id: if email.message_id.is_empty() {
+            format!("uid:{}", email.uid)
         } else {
-            Some(incoming_message_id.as_str())
+            normalize_message_id(&email.message_id)
+        },
+        text: body,
+        attachments: Vec::new(),
+        // Every mail to the address is addressed to us; there is no mention
+        // concept to invent one from.
+        addressed_to_bot: true,
+        quoted_text: None,
+        reply_context: Some(normalize_message_id(&email.message_id)),
+    }
+}
+
+/// Email as a transport driver.
+pub struct EmailDriver {
+    config: EmailConfig,
+    workspace_path: String,
+    reply_targets: ReplyTargets,
+    /// Thread index. A mail thread finds its session through `EmailDb`, and
+    /// both directions must be recorded or the next reply forks into a new
+    /// session: the inbound id is indexed where the mail arrives, the outbound
+    /// one here, because only `deliver` learns it.
+    email_db: Arc<RwLock<Option<EmailDb>>>,
+    account_key: Arc<RwLock<String>>,
+}
+
+#[async_trait::async_trait]
+impl crate::driver::ChannelDriver for EmailDriver {
+    fn id(&self) -> crate::driver::ChannelId {
+        "email"
+    }
+
+    fn caps(&self) -> crate::driver::ChannelCaps {
+        email_caps()
+    }
+
+    fn binding(&self, conversation: &crate::driver::Conversation) -> String {
+        crate::binding::email_thread(
+            conversation.bot_id.as_deref().unwrap_or_default(),
+            &conversation.id,
+        )
+    }
+
+    fn sender_urn(
+        &self,
+        _conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        crate::binding::urn_email_user(&sender.external_id)
+    }
+
+    fn session_title(
+        &self,
+        _conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        // The subject, like the inline path titled it — otherwise every mail
+        // from one correspondent shows up as the same "Email: alice@corp.com"
+        // and the session list cannot tell three conversations apart.
+        //
+        // `try_read` rather than blocking: this trait method is sync and runs
+        // on a runtime thread, so a `block_on` here could park a worker. The
+        // inbound path fills the entry before handing the message to the core,
+        // so the lock is free in practice; losing the subject to contention
+        // costs a title, not correctness.
+        let subject = self.reply_targets.try_read().ok().and_then(|m| {
+            m.get(&_conversation.id)
+                .map(|e| normalize_subject(&e.subject).to_string())
+        });
+        match subject {
+            Some(s) if !s.trim().is_empty() => s,
+            _ => format!("Email: {}", sender.display_name),
+        }
+    }
+
+    async fn deliver(
+        &self,
+        to: &crate::driver::Conversation,
+        _reply_context: Option<&str>,
+        msg: &crate::driver::OutboundMessage,
+    ) -> Result<crate::driver::DeliveryId, crate::driver::DriverError> {
+        if msg.text.trim().is_empty() {
+            return Ok(crate::driver::DeliveryId(to.id.clone()));
+        }
+        let original = self
+            .reply_targets
+            .read()
+            .await
+            .get(&to.id)
+            .cloned()
+            .ok_or_else(|| {
+                crate::driver::DriverError::Transport(format!(
+                    "no inbound mail recorded for thread {} — cannot address a reply",
+                    to.id
+                ))
+            })?;
+
+        let config = self.config.clone();
+        let workspace = self.workspace_path.clone();
+        let body = msg.text.clone();
+
+        // Gmail needs an OAuth token, and fetching it is async; SMTP itself is
+        // blocking, so the token comes first and the send goes to a blocking
+        // task.
+        let access_token = if config.provider == EmailProvider::Gmail {
+            let mgr = GmailTokenManager::new(
+                &config.gmail_client_id,
+                &config.gmail_client_secret,
+                &config.gmail_email,
+                &workspace,
+            );
+            Some(
+                mgr.get_access_token()
+                    .await
+                    .map_err(crate::driver::DriverError::Transport)?,
+            )
+        } else {
+            None
         };
-        store
-            .record_message(
-                &outcome.session_id,
-                &external_actor_id,
-                &message_content_for_async,
-                msg_id_opt,
-            )
+
+        let outgoing_message_id = tokio::task::spawn_blocking(move || {
+            send_reply_sync(&config, &original, &body, access_token.as_deref())
+        })
+        .await
+        .map_err(|e| crate::driver::DriverError::Transport(format!("smtp task panicked: {e}")))?
+        .map_err(crate::driver::DriverError::Transport)?;
+
+        // Index the id we just sent under this thread's binding, so the user's
+        // reply (In-Reply-To: <that id>) resolves back here. Without it the
+        // thread index is never written and every reply opens a new session —
+        // which is exactly what deleting the inline path silently caused.
+        self.index_thread_id(&to.id, &outgoing_message_id, None)
+            .await;
+
+        Ok(crate::driver::DeliveryId(to.id.clone()))
+    }
+}
+
+impl EmailDriver {
+    /// Record `message_id → binding` for this thread, best effort.
+    ///
+    /// Only the binding is load-bearing: `resolve_email_session_binding_sync`
+    /// returns as soon as it finds one, and the core turns it back into a
+    /// session. `subject` feeds the fallback for clients that strip threading
+    /// headers.
+    async fn index_thread_id(&self, thread_key: &str, message_id: &str, subject: Option<&str>) {
+        let message_id = normalize_message_id(message_id);
+        if message_id.is_empty() {
+            return;
+        }
+        let account_key = self.account_key.read().await.clone();
+        if account_key.is_empty() {
+            return;
+        }
+        let binding = crate::binding::email_thread(&account_key, thread_key);
+        let guard = self.email_db.read().await;
+        let Some(db) = guard.as_ref() else { return };
+        if let Err(e) = db
+            .store_message_thread(&account_key, &message_id, subject, None, Some(&binding))
             .await
-            .map_err(|e| format!("record_message in: {e}"))?;
+        {
+            println!("[Email] Warning: failed to index message_id {message_id}: {e}");
+        }
+    }
+}
 
-        let reply = agent
-            .send_prompt(
-                &outcome.acp_session_id,
-                &sender_display,
-                &message_content_for_async,
-                // Mail is not an IM: a round trip that takes many minutes is
-                // normal, so this one keeps its own generous bound.
-                std::time::Duration::from_secs(900),
-            )
-            .await
-            .map_err(|e| format!("agent.send_prompt: {e}"))?;
-
-        store
-            .record_agent_reply(
-                &outcome.session_id,
-                &primary_agent_actor_id,
-                &reply.reply_text,
-                None,
-            )
-            .await
-            .map_err(|e| format!("record_agent_reply out: {e}"))?;
-
-        Ok::<_, String>((outcome.acp_session_id, outcome.session_id, reply.reply_text))
-    })?;
-    let _ = acp_session_id;
-
-    // Send the SMTP reply (this is the email-specific delivery channel).
-    let outgoing_message_id = send_reply_sync(config, email, &outgoing_reply_text, access_token)?;
-
-    let session_id_clone = session_id.clone();
-    let outgoing_message_id_clone = outgoing_message_id.clone();
-    let incoming_message_id_for_db = incoming_message_id.clone();
-    let subject_for_db = email.subject.clone();
-    let binding_for_db = binding.clone();
-
-    // Store email indexes in email_db so subsequent replies in the same thread
-    // can be resolved back to this session_id without a backend lookup.
-    rt_handle.block_on(async move {
-        if let Some(db) = email_db {
-            if !incoming_message_id_for_db.is_empty() {
-                if let Err(e) = db
-                    .store_message_thread(
-                        account_key,
-                        &incoming_message_id_for_db,
-                        Some(&subject_for_db),
-                        Some(&session_id_clone),
-                        Some(&binding_for_db),
-                    )
-                    .await
-                {
-                    println!(
-                        "[Email] Warning: failed to store incoming message_id in db: {}",
-                        e
-                    );
-                }
-            }
-
-            if !outgoing_message_id_clone.is_empty() {
-                if let Err(e) = db
-                    .store_message_thread(
-                        account_key,
-                        &outgoing_message_id_clone,
-                        Some(&subject_for_db),
-                        Some(&session_id_clone),
-                        Some(&binding_for_db),
-                    )
-                    .await
-                {
-                    println!(
-                        "[Email] Warning: failed to store outgoing message_id in db: {}",
-                        e
-                    );
-                }
+/// The thread key a mail belongs to, as the core's conversation id.
+///
+/// Reuses the inline path's resolution exactly — an existing thread found via
+/// `In-Reply-To` / `References` (or the subject fallback) keeps its key, so a
+/// reply lands in the session the thread already has; a first-time mail derives
+/// one from its own Message-ID.
+fn resolve_thread_key_sync(
+    gateway: &EmailGateway,
+    email: &EmailMessage,
+    rt_handle: &tokio::runtime::Handle,
+    email_db: Option<&EmailDb>,
+    account_key: &str,
+) -> String {
+    let resolved =
+        resolve_email_session_binding_sync(gateway, email, rt_handle, email_db, account_key)
+            .ok()
+            .flatten();
+    if let Some(binding) = resolved {
+        // `email://{account}/thread/{key}` — take the key back out so the core
+        // can rebuild the same binding through the driver.
+        if let Some(key) = binding.rsplit("/thread/").next() {
+            if !key.is_empty() && key != binding {
+                return key.to_string();
             }
         }
-    });
-
-    println!("[Email] Reply sent to {}", email.from);
-    Ok(())
+    }
+    build_thread_session_key(email)
+        .strip_prefix("email:thread:")
+        .map(str::to_string)
+        .unwrap_or_else(|| email.uid.to_string())
 }
 
 fn send_rejection_reply_sync(
@@ -2261,15 +2383,17 @@ fn clean_email_body(body: &str) -> String {
 
 /// Send a standalone notification email.
 /// Properly handles Gmail OAuth2 (XOAUTH2) and custom SMTP authentication.
-/// Returns the normalized outgoing Message-ID on success, which can be used
-/// to register the email in SessionMapping for reply tracking.
+///
+/// The outgoing Message-ID is set on the wire but not returned: nothing indexes
+/// it. Replies to mail sent this way do NOT resolve back to a session — see the
+/// note at the Message-ID header below.
 pub async fn send_notification_email(
     config: &EmailConfig,
     workspace_path: &str,
     to_addr: &str,
     subject: &str,
     body_text: &str,
-) -> Result<String, String> {
+) -> Result<(), String> {
     // Get access token for Gmail OAuth2 (async, must happen before spawn_blocking)
     let access_token = if config.provider == EmailProvider::Gmail {
         let token_manager = GmailTokenManager::new(
@@ -2305,14 +2429,13 @@ pub async fn send_notification_email(
 /// Synchronous helper for sending a notification email via SMTP.
 /// Uses shared helpers (resolve_smtp_params, build_from_mailbox, build_smtp_transport)
 /// so it automatically inherits display_name, alias, and auth features from the gateway.
-/// Returns the normalized outgoing Message-ID.
 fn send_notification_email_sync(
     config: &EmailConfig,
     access_token: Option<&str>,
     to: &str,
     subject: &str,
     body: &str,
-) -> Result<String, String> {
+) -> Result<(), String> {
     use lettre::{
         message::{Mailbox, Message},
         Transport,
@@ -2340,9 +2463,14 @@ fn send_notification_email_sync(
         builder = builder.header(ReplyToHeader(params.from_email.clone()));
     }
 
-    // Generate and set Message-ID header (same as gateway reply).
-    // This allows the cron scheduler to register the outgoing message-id
-    // in SessionMapping so user replies can be resolved to the same session.
+    // Generate and set Message-ID header (same as gateway reply) so the
+    // recipient's client threads the conversation.
+    //
+    // Note this id is NOT indexed. Gateway mail is indexed on both legs
+    // (`EmailDriver::deliver` and the IMAP loop), but this function is the
+    // standalone notification sender used by cron, which has no account_key
+    // and no thread binding to index against — so a reply to mail sent through
+    // here still lands in a fresh session. See #933.
     let outgoing_message_id = generate_outgoing_message_id(&params.base_email);
     builder = builder.header(MessageIdHeader(outgoing_message_id.clone()));
 
@@ -2359,5 +2487,5 @@ fn send_notification_email_sync(
         "[Email] Notification sent to {} (message-id: {})",
         to, outgoing_message_id
     );
-    Ok(normalize_message_id(&outgoing_message_id))
+    Ok(())
 }

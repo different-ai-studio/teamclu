@@ -251,16 +251,48 @@ pub async fn channel_send_at(
     target: &str,
     message: &str,
 ) -> Result<(), String> {
+    channel_send_media_at(sock_path, channel, target, message, None).await
+}
+
+/// One optional attachment, as raw bytes plus the name to show.
+pub struct ChannelSendMedia<'a> {
+    pub bytes: &'a [u8],
+    pub filename: &'a str,
+}
+
+/// Send through amuxd, optionally with a file.
+///
+/// The media path exists so the desktop stopped calling
+/// `teamclu_gateway::wecom::*` directly from `introspect_api.rs` (#933): that
+/// reached the chat without amuxd knowing and read credentials from the
+/// workspace rather than `daemon.toml`. Costs a dependency — with amuxd down
+/// this now fails instead of sending — which is the trade the issue accepts,
+/// on the grounds that a message nobody can account for is worse than one that
+/// visibly did not send.
+pub async fn channel_send_media_at(
+    sock_path: &Path,
+    channel: &str,
+    target: &str,
+    message: &str,
+    media: Option<ChannelSendMedia<'_>>,
+) -> Result<(), String> {
+    use base64::Engine as _;
+
     // `channel-send`, not `mcp-send`: this is the app announcing a run, not an
     // agent replying to anyone. The old envelope borrowed the agent path with a
     // placeholder binding, and stopped working the day that path started
     // requiring a real reply token — silently, because delivery is best-effort.
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "cmd": "channel-send",
         "channel": channel,
         "target": target,
         "message": message,
     });
+    if let Some(m) = media {
+        payload["media_base64"] =
+            serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(m.bytes));
+        payload["media_filename"] = serde_json::Value::String(m.filename.to_string());
+    }
     amuxd_json_roundtrip(sock_path, &payload).await
 }
 

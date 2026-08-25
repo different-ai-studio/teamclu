@@ -1,16 +1,14 @@
 use serenity::all::{
     async_trait, Client, Command, CommandOptionType, Context, CreateCommand, CreateCommandOption,
     CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse,
-    EditMessage, EventHandler, GatewayIntents, Http, Interaction, Message, Ready,
+    EventHandler, GatewayIntents, Http, Interaction, Message, Ready,
 };
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::config::{DiscordConfig, GatewayStatus, GatewayStatusResponse};
 
-use crate::{
-    i18n, AgentHandle, ChannelStore, FilterResult, ProcessedMessageTracker, MAX_PROCESSED_MESSAGES,
-};
+use crate::{i18n, AgentHandle, ChannelStore, FilterResult};
 
 /// Discord bot handler
 pub struct DiscordHandler {
@@ -22,10 +20,10 @@ pub struct DiscordHandler {
     agent_owner_actor_ids: Vec<String>,
     status_tx: mpsc::Sender<GatewayStatusResponse>,
     bot_user_id: Arc<RwLock<Option<u64>>>,
-    /// Tracker for processed message IDs to prevent duplicate processing
-    processed_messages: Arc<RwLock<ProcessedMessageTracker>>,
     /// Pending question store for question forwarding
     pending_questions: Arc<super::PendingQuestionStore>,
+    /// Set once the daemon wires the core pipeline; the inline path is skipped.
+    inbound_sink: Option<Arc<dyn crate::driver::InboundSink>>,
 }
 
 impl DiscordHandler {
@@ -39,6 +37,7 @@ impl DiscordHandler {
         agent_owner_actor_ids: Vec<String>,
         status_tx: mpsc::Sender<GatewayStatusResponse>,
         pending_questions: Arc<super::PendingQuestionStore>,
+        inbound_sink: Option<Arc<dyn crate::driver::InboundSink>>,
     ) -> Self {
         Self {
             config,
@@ -49,19 +48,18 @@ impl DiscordHandler {
             agent_owner_actor_ids,
             status_tx,
             bot_user_id: Arc::new(RwLock::new(None)),
-            processed_messages: Arc::new(RwLock::new(ProcessedMessageTracker::new(
-                MAX_PROCESSED_MESSAGES,
-            ))),
             pending_questions,
+            inbound_sink,
         }
     }
 
-    /// Check if a message has already been processed, and mark it as processed if not
-    async fn mark_message_processed(&self, message_id: u64) -> bool {
-        let mut tracker = self.processed_messages.write().await;
-        tracker.is_duplicate(&message_id.to_string())
+    /// Update gateway status
+    async fn update_status(&self, status: GatewayStatusResponse) {
+        let _ = self.status_tx.send(status).await;
     }
+}
 
+impl DiscordHandler {
     /// Check if a message should be processed based on config
     async fn should_process_message(&self, msg: &Message, ctx: &Context) -> FilterResult {
         // Ignore bot messages
@@ -214,231 +212,6 @@ impl DiscordHandler {
         println!("[Discord] Message allowed");
         FilterResult::Allow
     }
-
-    /// Process a message via the amuxd agent runtime + ChannelStore.
-    async fn process_message(&self, msg: &Message, ctx: &Context) {
-        println!("[Discord] process_message called");
-        let _config = self.config.read().await;
-        let is_dm = msg.guild_id.is_none();
-        println!("[Discord] is_dm: {}", is_dm);
-
-        // Clean message content first (remove bot mention if present)
-        let mut content = msg.content.clone();
-        let bot_id_value = *self.bot_user_id.read().await;
-        if let Some(id) = bot_id_value {
-            content = content
-                .replace(&format!("<@{}>", id), "")
-                .replace(&format!("<@!{}>", id), "")
-                .trim()
-                .to_string();
-        }
-
-        if content.is_empty() {
-            return;
-        }
-
-        let locale = i18n::locale();
-
-        // Slash commands run off the one shared table. `/help` and `/skills`
-        // need no session, so they answer here instead of opening one; the rest
-        // fall through to the session-resolve path and dispatch there.
-        let slash = crate::commands::parse_slash(&content);
-        if let Some((cmd_name, cmd_arg)) = &slash {
-            if !crate::commands::needs_session(cmd_name) {
-                if let Ok(Some(reply_text)) = crate::commands::run_slash(
-                    cmd_name,
-                    cmd_arg.as_deref(),
-                    self.agent.as_ref(),
-                    self.store.as_ref(),
-                    &String::new(),
-                    locale,
-                )
-                .await
-                {
-                    let _ = msg.reply(&ctx.http, &reply_text).await;
-                    return;
-                }
-            }
-        }
-
-        // Build the binding URI using application id (the bot's own user id)
-        // and the channel id (works for both DMs and guild channels).
-        // bot_user_id is populated in the `ready()` handler before any message
-        // arrives, so this should always be Some by the time we get here.
-        let application_id = match bot_id_value {
-            Some(id) => id.to_string(),
-            None => match ctx.http.get_current_user().await {
-                Ok(user) => user.id.to_string(),
-                Err(e) => {
-                    eprintln!(
-                        "[Discord] bot_user_id not initialized and get_current_user failed: {}",
-                        e
-                    );
-                    let _ = msg
-                        .reply(&ctx.http, format!("Error: bot not ready: {}", e))
-                        .await;
-                    return;
-                }
-            },
-        };
-        let binding = crate::binding::discord(&application_id, &msg.channel_id.to_string());
-
-        // Resolve / create the external actor for the message author.
-        let external_actor_id = match self
-            .store
-            .ensure_external_actor(
-                &self.team_id,
-                "discord",
-                &crate::binding::urn_discord_user(&msg.author.id.to_string()),
-                &msg.author.name,
-            )
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                let _ = msg.reply(&ctx.http, format!("Error (actor): {}", e)).await;
-                return;
-            }
-        };
-
-        // Build a session title: DMs vs. channels.
-        let session_title = if is_dm {
-            format!("Discord DM: {}", msg.author.name)
-        } else {
-            format!("Discord: #{}", msg.channel_id)
-        };
-
-        let outcome = match self
-            .store
-            .ensure_session(
-                &self.team_id,
-                &binding,
-                &session_title,
-                &self.primary_agent_actor_id,
-                &self.agent_owner_actor_ids,
-                std::slice::from_ref(&external_actor_id),
-            )
-            .await
-        {
-            Ok(o) => o,
-            Err(e) => {
-                let _ = msg
-                    .reply(&ctx.http, format!("Error (session): {}", e))
-                    .await;
-                return;
-            }
-        };
-
-        if let Err(e) = self
-            .store
-            .add_participant(&outcome.session_id, &external_actor_id)
-            .await
-        {
-            eprintln!("[Discord] add_participant failed: {}", e);
-        }
-
-        // Slash-command dispatch against the resolved session.
-        if let Some((cmd_name, cmd_arg)) = &slash {
-            let reply_text = crate::commands::run_slash(
-                cmd_name,
-                cmd_arg.as_deref(),
-                self.agent.as_ref(),
-                self.store.as_ref(),
-                &outcome.acp_session_id,
-                locale,
-            )
-            .await
-            .unwrap_or(None)
-            .unwrap_or_else(|| crate::commands::unknown_command_reply(cmd_name, locale));
-            let _ = msg.reply(&ctx.http, &reply_text).await;
-            return;
-        }
-
-        if let Err(e) = self
-            .store
-            .record_message(
-                &outcome.session_id,
-                &external_actor_id,
-                &content,
-                Some(&msg.id.to_string()),
-            )
-            .await
-        {
-            eprintln!("[Discord] record_message (user) failed: {}", e);
-        }
-
-        // Send immediate "Thinking..." reply so the user knows the bot is processing.
-        let processing_msg = msg.reply(&ctx.http, "🤔 Thinking...").await.ok();
-        let typing = msg.channel_id.start_typing(&ctx.http);
-
-        // Drive a single agent turn through amuxd.
-        let turn = self
-            .agent
-            .send_prompt(
-                &outcome.acp_session_id,
-                &msg.author.name,
-                &content,
-                crate::driver::ChannelCaps::MINIMAL.turn_timeout(),
-            )
-            .await;
-
-        match turn {
-            Ok(reply) => {
-                if let Err(e) = self
-                    .store
-                    .record_agent_reply(
-                        &outcome.session_id,
-                        &self.primary_agent_actor_id,
-                        &reply.reply_text,
-                        None,
-                    )
-                    .await
-                {
-                    eprintln!("[Discord] record_agent_reply failed: {}", e);
-                }
-
-                let chunks = split_message(&reply.reply_text, 2000);
-                if let Some(mut proc_msg) = processing_msg {
-                    let edit = EditMessage::new().content(&chunks[0]);
-                    let _ = proc_msg.edit(&ctx.http, edit).await;
-                    for chunk in chunks.iter().skip(1) {
-                        if let Err(e) = msg.channel_id.say(&ctx.http, chunk).await {
-                            eprintln!("Failed to send Discord message: {}", e);
-                        }
-                    }
-                } else {
-                    let mut is_first = true;
-                    for chunk in chunks {
-                        let result = if is_first {
-                            is_first = false;
-                            msg.reply(&ctx.http, &chunk).await
-                        } else {
-                            msg.channel_id.say(&ctx.http, &chunk).await
-                        };
-                        if let Err(e) = result {
-                            eprintln!("Failed to send Discord message: {}", e);
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                let err_text = format!("❌ Error: {}", e);
-                if let Some(mut proc_msg) = processing_msg {
-                    let edit = EditMessage::new().content(&err_text);
-                    let _ = proc_msg.edit(&ctx.http, edit).await;
-                } else {
-                    let _ = msg.reply(&ctx.http, &err_text).await;
-                }
-            }
-        }
-
-        drop(typing);
-    }
-
-    /// Update gateway status
-    async fn update_status(&self, status: GatewayStatusResponse) {
-        let _ = self.status_tx.send(status).await;
-    }
 }
 
 #[async_trait]
@@ -449,15 +222,6 @@ impl EventHandler for DiscordHandler {
             "[Discord] Received message {} from {}: {}",
             message_id, msg.author.name, msg.content
         );
-
-        // Check for duplicate message processing
-        if self.mark_message_processed(message_id).await {
-            println!(
-                "[Discord] Message {} already processed, skipping",
-                message_id
-            );
-            return;
-        }
 
         // Check if this is a reply to a pending question
         if let Some(ref referenced) = msg.referenced_message {
@@ -498,35 +262,39 @@ impl EventHandler for DiscordHandler {
             return;
         }
 
-        let filter_result = self.should_process_message(&msg, &ctx).await;
-        println!(
-            "[Discord] Filter result: {:?}, guild_id: {:?}, channel_id: {}",
-            filter_result, msg.guild_id, msg.channel_id
-        );
-
-        match filter_result {
-            FilterResult::Allow => {
-                println!("[Discord] Processing message {}...", message_id);
-                self.process_message(&msg, &ctx).await;
-                println!("[Discord] Message {} processed", message_id);
-            }
+        // Everything a session needs happens in the core: dedup, the
+        // allowlists that used to be `should_process_message`, commands,
+        // writing, and the turn itself.
+        // The allowlist stays here, not in the core: it is per-channel config
+        // and the core has no policy layer. Dropping it when the inline turn
+        // path went away would have quietly opened the bot to everyone.
+        match self.should_process_message(&msg, &ctx).await {
+            FilterResult::Allow => {}
             FilterResult::UserNotAllowed => {
-                println!("[Discord] User not in whitelist, sending rejection");
                 let _ = msg.reply(
                     &ctx.http,
                     "Sorry, you are not authorized to use this bot. Please contact the administrator to request access."
                 ).await;
+                return;
             }
             FilterResult::ChannelNotConfigured => {
-                println!("[Discord] Channel not configured, sending hint");
                 let _ = msg.reply(
                     &ctx.http,
                     "This channel is not configured for the bot. Please ask the administrator to add this server/channel in TeamClu settings."
                 ).await;
+                return;
             }
-            FilterResult::Ignore => {
-                println!("[Discord] Message filtered out (silent)");
-            }
+            FilterResult::Ignore => return,
+        }
+
+        let Some(sink) = self.inbound_sink.clone() else {
+            println!("[Discord] no core pipeline wired; dropping message {message_id}");
+            return;
+        };
+        let bot_id = *self.bot_user_id.read().await;
+        match normalize_message(&msg, bot_id) {
+            Some(inbound) => sink.accept(inbound).await,
+            None => println!("[Discord] message {message_id} carried nothing actionable"),
         }
     }
 
@@ -784,6 +552,7 @@ pub struct DiscordGateway {
     is_running: Arc<RwLock<bool>>,
     /// Pending question store for question forwarding
     pending_questions: Arc<super::PendingQuestionStore>,
+    inbound_sink: Arc<RwLock<Option<Arc<dyn crate::driver::InboundSink>>>>,
 }
 
 impl DiscordGateway {
@@ -805,7 +574,18 @@ impl DiscordGateway {
             status: Arc::new(RwLock::new(GatewayStatusResponse::default())),
             is_running: Arc::new(RwLock::new(false)),
             pending_questions: Arc::new(super::PendingQuestionStore::new()),
+            inbound_sink: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Hand inbound messages to the core instead of the inline handler.
+    pub async fn use_core_pipeline(&self, sink: Arc<dyn crate::driver::InboundSink>) {
+        *self.inbound_sink.write().await = Some(sink);
+    }
+
+    /// A driver for the core to render replies through.
+    pub async fn as_driver(&self) -> DiscordDriver {
+        DiscordDriver::new(self.config.read().await.token.clone())
     }
 
     /// Update the configuration
@@ -875,6 +655,7 @@ impl DiscordGateway {
             self.agent_owner_actor_ids.clone(),
             status_tx,
             Arc::clone(&self.pending_questions),
+            self.inbound_sink.read().await.clone(),
         );
 
         // Build client
@@ -1012,7 +793,156 @@ impl Clone for DiscordGateway {
             status: Arc::clone(&self.status),
             is_running: Arc::clone(&self.is_running),
             pending_questions: Arc::clone(&self.pending_questions),
+            inbound_sink: Arc::clone(&self.inbound_sink),
         }
+    }
+}
+
+// ==================== Transport driver (core pipeline) ====================
+
+fn discord_caps() -> crate::driver::ChannelCaps {
+    crate::driver::ChannelCaps {
+        // Discord can edit a message it sent, but this driver does not hold the
+        // http context needed to do it from `update`. Claiming the capability
+        // would stream edits into an error, so it stays false until it is real.
+        streaming_edit: false,
+        media_upload: false,
+        interactive: false,
+        threading: crate::driver::Threading::ReplyTo,
+        // Discord's hard limit is 2000; `split_message` exists for exactly this.
+        max_chars: 2000,
+        turn_timeout_secs: 180,
+    }
+}
+
+/// Normalize a Discord message into the shape the core consumes.
+///
+/// `bot_id` strips the bot's own mention — it is connection state (set in
+/// `ready()`), not a property of the message.
+fn normalize_message(msg: &Message, bot_id: Option<u64>) -> Option<crate::driver::InboundMessage> {
+    if msg.author.bot {
+        return None;
+    }
+    let mut content = msg.content.clone();
+    if let Some(id) = bot_id {
+        content = content
+            .replace(&format!("<@{id}>",), "")
+            .replace(&format!("<@!{id}>"), "")
+            .trim()
+            .to_string();
+    }
+    let is_dm = msg.guild_id.is_none();
+    // No bot id means `ready()` has not landed yet. The binding is scoped by
+    // it, so an empty one would open a *different* session for this channel
+    // and every later message would resolve elsewhere — silently. The inline
+    // path guarded this explicitly; dropping the message is the same call.
+    let Some(application_id) = bot_id.map(|id| id.to_string()) else {
+        println!(
+            "[Discord] bot id not known yet; dropping message {}",
+            msg.id.get()
+        );
+        return None;
+    };
+
+    Some(crate::driver::InboundMessage {
+        conversation: crate::driver::Conversation {
+            channel: "discord",
+            // The application id is what the binding is scoped by, and it is
+            // only known once connected — carry it rather than re-fetching.
+            bot_id: Some(application_id),
+            kind: if is_dm {
+                crate::driver::ConversationKind::Direct
+            } else {
+                crate::driver::ConversationKind::Group
+            },
+            id: msg.channel_id.get().to_string(),
+        },
+        sender: crate::driver::ExternalSender {
+            external_id: msg.author.id.get().to_string(),
+            display_name: msg.author.name.clone(),
+            email: None,
+        },
+        external_message_id: msg.id.get().to_string(),
+        text: content,
+        attachments: Vec::new(),
+        // A DM is addressed by definition; in a guild the gateway only receives
+        // what its intents allow, which is what the inline path relied on too.
+        addressed_to_bot: true,
+        quoted_text: msg
+            .referenced_message
+            .as_ref()
+            .map(|r| r.content.clone())
+            .filter(|c| !c.is_empty()),
+        reply_context: Some(msg.id.get().to_string()),
+    })
+}
+
+/// Discord as a transport driver.
+pub struct DiscordDriver {
+    token: String,
+}
+
+impl DiscordDriver {
+    pub fn new(token: String) -> Self {
+        Self { token }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::driver::ChannelDriver for DiscordDriver {
+    fn id(&self) -> crate::driver::ChannelId {
+        "discord"
+    }
+
+    fn caps(&self) -> crate::driver::ChannelCaps {
+        discord_caps()
+    }
+
+    fn binding(&self, conversation: &crate::driver::Conversation) -> String {
+        crate::binding::discord(
+            conversation.bot_id.as_deref().unwrap_or_default(),
+            &conversation.id,
+        )
+    }
+
+    fn sender_urn(
+        &self,
+        _conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        crate::binding::urn_discord_user(&sender.external_id)
+    }
+
+    fn session_title(
+        &self,
+        conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        match conversation.kind {
+            crate::driver::ConversationKind::Group => {
+                format!("Discord: #{}", conversation.id)
+            }
+            _ => format!("Discord DM: {}", sender.display_name),
+        }
+    }
+
+    async fn deliver(
+        &self,
+        to: &crate::driver::Conversation,
+        _reply_context: Option<&str>,
+        msg: &crate::driver::OutboundMessage,
+    ) -> Result<crate::driver::DeliveryId, crate::driver::DriverError> {
+        if msg.text.trim().is_empty() {
+            return Ok(crate::driver::DeliveryId(to.id.clone()));
+        }
+        // Discord rejects anything over 2000 chars outright, so a long answer
+        // goes out as several messages rather than being truncated.
+        for chunk in split_message(&msg.text, discord_caps().max_chars) {
+            send_channel_message(&self.token, &to.id, &chunk)
+                .await
+                .map_err(crate::driver::DriverError::Transport)?;
+        }
+        Ok(crate::driver::DeliveryId(to.id.clone()))
     }
 }
 

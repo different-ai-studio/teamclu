@@ -2483,10 +2483,33 @@ export function createSupabaseBusinessRepository(options) {
         actor_id: input.actorId,
       };
       if (input.role !== undefined) row.role = input.role;
+      // DO NOTHING, not DO UPDATE. `session_participants` has INSERT and
+      // SELECT policies and no UPDATE one, so an upsert onto a row that
+      // already existed was refused outright:
+      //
+      //   forbidden: new row violates row-level security policy
+      //              (USING expression) for table "session_participants"
+      //
+      // Which is every gateway message after the first: `ensureGatewaySession`
+      // already adds the sender as a participant, so the daemon's follow-up
+      // join always conflicts. It warned once per message, forever, and the
+      // "repaired on the next message" the daemon's comment promised could
+      // never happen.
+      //
+      // Re-joining no longer rewrites `role`. That is the safer half of the
+      // change: the caller always sends "member", so the old path quietly
+      // demoted an owner on every message they sent through a channel.
+      const { error: insertError } = await supabase
+        .from("session_participants")
+        .upsert(row, { onConflict: "session_id,actor_id", ignoreDuplicates: true });
+      if (insertError) throw insertError;
+      // `ignoreDuplicates` returns no rows for the conflict case, so the read
+      // is separate rather than chained off the write.
       const { data, error } = await supabase
         .from("session_participants")
-        .upsert(row, { onConflict: "session_id,actor_id" })
         .select("session_id, actor_id, role, joined_at")
+        .eq("session_id", sessionId)
+        .eq("actor_id", input.actorId)
         .single();
       if (error) throw error;
       return {

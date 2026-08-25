@@ -1,15 +1,59 @@
 # 网关架构重做：渠道退回传输驱动
 
 - **Date**: 2026-08-18
-- **Status**: Design proposal — 待评审，未实现
+- **Status**: 基本实现 —— 八个渠道全部退回传输驱动，inline 实现与能力开关已删除。只剩撤 `checkout_turn_for_acp`（见 §6.5）。进度见 §0
 - **Scope**: `crates/teamclu-gateway`（17.3k 行，8 个渠道），以 **WeCom / 飞书 / 邮件** 三个渠道为设计基准
 - **Related**: #933（网关收拢为传输适配器）。#933 是"把 session 写入收成一套"，本文是"把渠道本身收成一套"，两者共用同一层写入服务
 
 ---
 
+## 0. 实现进度（2026-08-25 收尾后核实）
+
+本文写于设计阶段。#978 落了一部分，随后 #933 的收尾把其余大部分做完了。
+读正文时以本节为准。
+
+**已落地**
+
+- §3 / §4 的内核流水线：`Core::handle`（dedup → addressed? → route → identity → command? → write → turn → render），写入固定在 turn 之前。实现在 `apps/daemon/src/channels/core/`
+- 六个 trait：`DedupStore` / `SessionRouter` / `IdentityMapper` / `SessionWriter` / `TurnRunner` / `CommandRunner`
+- §5 全部四步：**八个渠道都实现了 `ChannelDriver`**（WeCom、飞书随 #978；邮件、KOOK、SeaTalk、Discord、微信随本次），八个渠道的 inline 实现全部删除，`TEAMCLU_GATEWAY_CORE` 开关一并删掉——不再存在「两套并存」
+
+  > 这一句一度是假的：WeCom 与飞书的 inline 只是变成了 `inbound_sink` 分支之后的死代码，没被删，共约 950 行。code review 揪出来了，那里面还留着一条**未净化的 bucket key**——正是本次修掉的 `Invalid key` bug 的同一份代码。现已删除。
+- §6 删除清单：`session.rs` 已删；`session_queue.rs` 已移入 daemon；`workspace_instructions.rs` 已移入 `teamclu-runtime-env`
+- §4.2 第三条旁路（desktop `introspect_api` 的 `POST /send-wecom`）已改为经 amuxd
+- 写入服务：`SessionManager::emit_session_message`，cron 与 agent 回复共用一份实现
+- `/workspace` 不再写 `daemon.toml`，只作用于当前会话
+
+`crates/teamclu-gateway` 17.3k → 18.9k（#978 加了驱动）→ **17612 行**（删掉 inline 之后）。
+
+**未落地：只剩撤 `checkout_turn_for_acp`（P2.5）**
+
+见 §6.5——上手核出两条改变原计划的事实，其中一条（事件泵挂在 `mqtt_up` 上）
+是硬拦路虎。
+
+**两处原文已被现实推翻**
+
+- §5 结尾「中途不存在两套并存但都不完整的状态」：#978 之后确实出现过那个状态（内核挂在开关后与 inline 并存），现已消除
+- §7 第 6 条担心 `session.rs` 退休要迁移老会话：不成立，它是只写不读的，所有 getter 全仓零调用，`set_persist_path` 也从没人调过（那份 JSON 根本没落过盘）
+
+**一处能力缺口（本次未动，属产品决定）**
+
+`pending_question.rs`（664 行）整套交互式提问是**死的**：全仓没有任何地方
+往 store 里 insert（`handle_question_event` 零调用方），所以 `/answer` 永远
+回「没有待回答的问题」，企微卡片按钮也永远找不到对应问题。接上还是删掉，
+需要先定。
+
+**一处仍留在渠道里，是有意的**
+
+白名单（`check_dm_allowed` / `should_process_message` / `check_email_filter` …）
+没有跟着 inline 实现一起删。内核没有 policy 这一层，而 allowlist 规则是渠道
+自己的配置——一起删等于把机器人对所有人敞开。统一的 policy 层是后续的事。
+
+---
+
 ## 1. 现状：每个渠道都是一份从零开始的实现
 
-`crates/teamclu-gateway` 目前共享的只有两个 trait（`AgentHandle`、`ChannelStore`）、命令解析（`commands.rs`，#934 刚收拢）、一个本地 session JSON 映射（`session.rs`）、排队器（`session_queue.rs`）和 i18n。**其余每个渠道各写一遍**：连接与重连、去重、白名单过滤、@ 规则、流式节流、附件、渲染、错误回复。
+`crates/teamclu-gateway` 目前共享的只有两个 trait（`AgentHandle`、`ChannelStore`）、命令解析（`commands.rs`，#934 刚收拢）、~~一个本地 session JSON 映射（`session.rs`）~~（已删，见 §0）、排队器（`session_queue.rs`）和 i18n。**其余每个渠道各写一遍**：连接与重连、去重、白名单过滤、@ 规则、流式节流、附件、渲染、错误回复。
 
 后果不是"代码重复"这么温和 —— 是**功能能力按渠道随机分布**。实测三个渠道：
 
@@ -20,11 +64,13 @@
 | 流式回复 | ✅ `send_prompt_streamed` + 卡片更新节流 | ❌ 阻塞 `send_prompt` | ❌ 阻塞 |
 | 去重 | 内存 `mark_message_processed` | 无（依赖平台不重投） | UID 水位 + `email_db.rs`（507 行） |
 | 交互式提问 | ✅ 模板卡片 | ❌ | ❌ |
-| 会话映射 | binding → acp → cloud session | 同左 + `session.rs` 里的 `feishu:<chat_id>` | 同左 + `email:thread:<msg_id>` 索引 |
+| 会话映射 | binding → acp → cloud session | 同左 + ~~`session.rs` 里的 `feishu:<chat_id>`~~（已删） | 同左 + `email:thread:<msg_id>` 索引 |
 
 也就是说：**新接一个渠道 = 从零开始，且大概率停在"能收发文本"这一档**。飞书和邮件就停在这一档。用户在企微能发图片、能看流式、能被追问，换到飞书同一个 session 就全没了 —— 但那是同一个 session。
 
-还有一个隐蔽问题：session 身份有**两套**。`ChannelStore::ensure_session` 给的是云端 session id，而 `session.rs` 里另有一份按 `"feishu:<chat_id>"` / `"email:thread:<id>"` 为键的本地 JSON 映射（存 opencode session id 和模型偏好）。两套都在用，谁是权威没有定义。
+~~还有一个隐蔽问题：session 身份有**两套**。`ChannelStore::ensure_session` 给的是云端 session id，而 `session.rs` 里另有一份按 `"feishu:<chat_id>"` / `"email:thread:<id>"` 为键的本地 JSON 映射（存 opencode session id 和模型偏好）。两套都在用，谁是权威没有定义。~~
+
+> 2026-08-25：这一段已不成立。核实下来那份映射是**只写不读**的（所有 getter 全仓零调用，连落盘都没发生过），并不是两套都在用。`session.rs` 已删除，云端 session id 是唯一权威。见 §0。
 
 ---
 
@@ -123,7 +169,7 @@ pub trait ChannelDriver: Send + Sync {
 驱动 → InboundMessage
         │
         ├─ 去重       (channel, external_message_id) —— 一个存储，替换掉三套各自的做法
-        ├─ 路由       conversation → binding → session（退休 session.rs 那份本地 JSON 映射）
+        ├─ 路由       conversation → binding → session（session.rs 那份本地 JSON 映射已删）
         ├─ 身份       external user → external actor + 加入 participant
         ├─ 准入       白名单 / 群 @ 规则 / 命令识别（commands.rs）
         ├─ 写入       ★ session 写入服务（#933）：入库 + 广播 + 附件，双向同一条路径
@@ -179,13 +225,34 @@ gateway crate 只认注入进来的两个 trait（`AgentHandle` / `ChannelStore`
 
 每步都能单独上线，中途不存在"两套并存但都不完整"的状态。
 
+> ⚠️ 2026-08-25：这一句没兑现。第 1、2 步落地后，内核挂在 `TEAMCLU_GATEWAY_CORE` 开关之后与 inline 路径并存，五个渠道仍走 inline。见 §0。
+
 ## 6. 迁移完成后可以删除
 
 - 各渠道的去重实现（`mark_message_processed`、UID 集合、`email_db.rs` 的去重部分）
-- `session.rs` 的本地 session 映射（云端 session 成为唯一权威）
+- ~~`session.rs` 的本地 session 映射（云端 session 成为唯一权威）~~ ✅ 已删除
 - 各渠道的 turn 驱动与流式节流散落实现
 - `ChannelManager::dispatch_send` 的旁路文件语义（#933 第 3 条）
 - desktop `introspect_api.rs` 里对 gateway crate 渠道函数的直接调用（§4.2 第三条路），改为经 daemon
+
+---
+
+## 6.5 撤 `checkout_turn_for_acp` 之前必须先解决的两件事
+
+2026-08-25 上手实做时核出来的，两条都改变了原计划。
+
+**一、P2.5「必须与 P4 同批」的理由不成立。** 原话是「今天『一个 agent 同时只跑一轮』这个不变量，正是 `checkout_turn_for_acp` 天然给的（`event_rx` 只有一份）」。看代码不是：`run_turn` 在 checkout **之前**就先拿了 `turn_lock`（`agent_handle.rs:804`，checkout 在 `:809`），那是一把每 agent 的互斥锁，不变量由它保证。撤 checkout 不会因此放进两条并发消息。排队器该上移（已做，见 §6 表），但不是因为这个。
+
+**二、真正的拦路虎是事件泵挂在 `mqtt_up` 上。** `server.rs:2070` 的 `poll_events()` 只在 MQTT 连着时才跑。今天网关 turn 不受影响，因为它自己把 `event_rx` 拿走了、直接收事件；一旦改成依赖主循环泵事件，**MQTT 一断，网关聊天就整个不响应**——而不是降级成「没有实时推送」。
+
+所以撤 checkout 至少要连带做完：
+
+1. 定下 §4 的接口方向（服务推 vs 适配器订阅），这条 §7 第 1 项还没拍板
+2. 让事件泵不再被 `mqtt_up` 门住，或者让 turn 自己驱动一次泵
+3. 处理 `broadcast` 的 `Lagged`：中间帧丢了无所谓，**终帧丢了气泡永远收不了口**
+4. 出站写入改由 `emit_agent_message` 独占，否则内核的 `write_reply` 会和它各写一条
+
+真机验收（企微流式卡片 + 邮件 FinalOnly）是这条的必要条件，不是可选项。
 
 ---
 
@@ -196,7 +263,7 @@ gateway crate 只认注入进来的两个 trait（`AgentHandle` / `ChannelStore`
 3. **流式节流属于驱动**：企微卡片更新有频率限制，飞书消息更新也有。内核只管"文本又长了"，节流规则留在驱动里，否则内核会长出渠道细节。
 4. **多 bot**：企业微信已经一个渠道多 bot，`bot_id` 必须进 `Conversation` 的键，否则两个 bot 的同名群会撞。
 5. **附件惰性获取**：入站附件用闭包而非字节，是为了让"纯文本消息立即开始 turn"（WeCom 现在的行为）不被附件下载拖慢；但闭包的生命周期要跨过 turn，需要明确谁持有。
-6. **兼容期**：`session.rs` 的本地映射退休时，已有的 `feishu:<chat_id>` / `email:thread:<id>` 记录需要迁移到云端 session 绑定，否则老会话会断。
+6. ~~**兼容期**：`session.rs` 的本地映射退休时，已有的 `feishu:<chat_id>` / `email:thread:<id>` 记录需要迁移到云端 session 绑定，否则老会话会断。~~ 2026-08-25 已不成立：`session.rs` 现在只写不读，读方按其调用方自己的注释早已是死路（`EmailDb` 才是活的存储），直接删即可。见 §0。
 7. **desktop 直连渠道要不要一起收**（§4.2 第三条路）：改成经 daemon 会让 desktop 多一个"daemon 不在跑就发不出去"的失败态 —— 现在它是自己直接发的，不依赖 daemon。是接受这个新依赖，还是给 introspect 的 send 保留一条明确标注"不入 session"的旁路？倾向前者：一条发得出去但没人看得见的消息，比发不出去更难排查。
 
 ---

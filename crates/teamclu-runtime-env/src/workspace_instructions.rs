@@ -1,9 +1,30 @@
 //! Per-workspace static instructions (`teamclu.json.systemPrompt`) and Claude
 //! Code `CLAUDE.md` sync helpers shared by desktop Tauri and amuxd.
+//!
+//! Lives here rather than in `teamclu-gateway` (#933): a transport adapter has
+//! no business rewriting a workspace's agent instructions, and both the desktop
+//! and the daemon need these without pulling in a channel crate. It reads the
+//! raw JSON rather than the gateway's channel-aware config type, which is what
+//! made the move possible at all.
 
 use std::path::Path;
 
-use crate::{ensure_teamclu_dir, read_config, TEAMCLU_DIR};
+use crate::storage_namespace::WORKSPACE_CONFIG_FILE as CONFIG_FILE_NAME;
+use crate::WORKSPACE_META_DIR as TEAMCLU_DIR;
+
+fn ensure_teamclu_dir(workspace_path: &str) -> Result<(), String> {
+    let dir = format!("{workspace_path}/{TEAMCLU_DIR}");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create {TEAMCLU_DIR} directory: {e}"))
+}
+
+/// The workspace config as raw JSON. Deliberately untyped: this module only
+/// wants `systemPrompt`, and typing it would drag the channel config along.
+fn read_config_json(workspace_path: &str) -> Option<serde_json::Value> {
+    let path = format!("{workspace_path}/{TEAMCLU_DIR}/{CONFIG_FILE_NAME}");
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
 
 const CLAUDE_MD_REL: &str = "instructions/CLAUDE.md";
 const BLOCK_START: &str = "<!-- teamclu:system-prompt v1 -->";
@@ -11,11 +32,9 @@ const BLOCK_END: &str = "<!-- /teamclu:system-prompt -->";
 
 /// Load `systemPrompt` from `{workspace}/.teamclu/teamclu.json`. Returns "" if unset.
 pub fn load_system_prompt(workspace_path: &str) -> String {
-    read_config(workspace_path)
-        .ok()
+    read_config_json(workspace_path)
         .and_then(|config| {
             config
-                .other
                 .get("systemPrompt")
                 .and_then(|v| v.as_str())
                 .map(str::trim)
@@ -71,7 +90,7 @@ fn upsert_marked_block(existing: &str, prompt: &str) -> String {
     out
 }
 
-/// Upsert the TeamClu-managed block in `.teamclu/instructions/CLAUDE.md`.
+/// Upsert the TeamClu-managed block in `<workspace>/.teamclu/instructions/CLAUDE.md`.
 pub fn sync_teamclu_claude_md(workspace_path: &str, prompt: &str) -> Result<(), String> {
     ensure_teamclu_dir(workspace_path)?;
     let path = claude_md_path(workspace_path);
@@ -93,7 +112,7 @@ pub fn sync_teamclu_claude_md(workspace_path: &str, prompt: &str) -> Result<(), 
     std::fs::write(&path, next).map_err(|e| format!("Failed to write CLAUDE.md: {e}"))
 }
 
-/// Whether the managed system-prompt block exists in `.teamclu/instructions/CLAUDE.md`.
+/// Whether the managed system-prompt block exists in `<workspace>/.teamclu/instructions/CLAUDE.md`.
 pub fn claude_md_block_present(workspace_path: &str) -> bool {
     let path = claude_md_path(workspace_path);
     let Ok(content) = std::fs::read_to_string(&path) else {
@@ -112,7 +131,7 @@ mod tests {
         let teamclu = dir.path().join(TEAMCLU_DIR);
         std::fs::create_dir_all(&teamclu).unwrap();
         std::fs::write(
-            teamclu.join(crate::CONFIG_FILE_NAME),
+            teamclu.join(CONFIG_FILE_NAME),
             r#"{"systemPrompt":"请使用中文回答"}"#,
         )
         .unwrap();

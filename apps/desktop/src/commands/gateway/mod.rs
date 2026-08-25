@@ -3,41 +3,24 @@
 // channel gateways itself — amuxd owns those instances and persists their
 // config in `daemon.toml`. The three commands here just forward to amuxd.
 //
-// Cron and `introspect_api` still reach into the underlying
-// `teamclu_gateway::*` modules for direct send helpers (e.g.
-// `gateway::email::send_notification_email`, `gateway::wecom::send_proactive_message`),
-// so we keep `pub use teamclu_gateway::*` to preserve their `crate::commands::gateway::*`
-// import paths. Likewise we keep a slim `GatewayState` carrying just the
-// shared `SessionMapping` (cron consumes it for session lookup); the legacy
-// per-platform `*Gateway` slots that used to live here are gone.
+// Cron still reaches into the underlying `teamclu_gateway::*` modules for
+// direct send helpers (e.g. `gateway::email::send_notification_email`), so we
+// keep `pub use teamclu_gateway::*` to preserve its `crate::commands::gateway::*`
+// import paths. `introspect_api` no longer does — its WeCom send goes through
+// amuxd now (#933). The legacy per-platform `*Gateway` slots that used to live here
+// are gone, and so is the `SessionMapping` that sat beside them — with the map
+// went the last reason for a `GatewayState`, so there is no app-level gateway
+// state left at all.
 
 pub use teamclu_gateway::*;
 
 pub mod qr;
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
 use crate::commands::amuxd_control;
-
-/// Slim per-app state. The legacy `*Gateway` slots were removed (amuxd owns
-/// those now); only the cross-component session map remains, used by the
-/// cron scheduler for session-id <-> chat-target lookup.
-pub struct GatewayState {
-    pub shared_session_mapping: SessionMapping,
-    pub session_initialized: Mutex<bool>,
-}
-
-impl Default for GatewayState {
-    fn default() -> Self {
-        Self {
-            shared_session_mapping: SessionMapping::new(),
-            session_initialized: Mutex::new(false),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelStatus {
@@ -223,36 +206,6 @@ pub async fn test_seatalk_credentials(
     SeaTalkGateway::test_credentials(&app_id, &app_secret).await
 }
 
-/// Persist a per-session model preference for gateway-backed chats.
-/// The mapping is keyed by the logical session id used by the desktop UI.
-#[tauri::command]
-pub async fn sync_gateway_session_model(
-    session_id: String,
-    model: Option<String>,
-    gateway_state: State<'_, GatewayState>,
-) -> Result<bool, String> {
-    if session_id.trim().is_empty() {
-        return Ok(false);
-    }
-
-    match model {
-        Some(model_key) if !model_key.trim().is_empty() => {
-            gateway_state
-                .shared_session_mapping
-                .set_model(session_id, model_key)
-                .await;
-        }
-        _ => {
-            gateway_state
-                .shared_session_mapping
-                .remove_model(&session_id)
-                .await;
-        }
-    }
-
-    Ok(true)
-}
-
 // ─── Workspace teamclu.json helpers (not channel-specific) ───────────────────
 //
 // These four commands manage non-channel fields of the workspace-level
@@ -328,7 +281,7 @@ pub fn save_system_prompt(
         "systemPrompt",
         serde_json::json!(prompt),
     )?;
-    teamclu_gateway::sync_teamclu_claude_md(&workspace_path, &prompt)
+    teamclu_runtime_env::sync_teamclu_claude_md(&workspace_path, &prompt)
 }
 
 /// Report the app's UI language to amuxd, which is what the gateways reply in.

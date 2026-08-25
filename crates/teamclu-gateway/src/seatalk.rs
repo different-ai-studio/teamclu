@@ -9,7 +9,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
 use crate::seatalk_config::{SeaTalkConfig, SeaTalkGatewayStatus, SeaTalkGatewayStatusResponse};
 use crate::{
-    i18n, AgentHandle, ChannelStore, FilterResult, ProcessedMessageTracker, MAX_PROCESSED_MESSAGES,
+    AgentHandle, ChannelStore, FilterResult, ProcessedMessageTracker, MAX_PROCESSED_MESSAGES,
 };
 
 const SEATALK_API_BASE: &str = "https://openapi.seatalk.io";
@@ -191,42 +191,6 @@ impl SeaTalkClient {
         }
         Ok(())
     }
-
-    async fn set_group_typing(&self, group_id: &str, thread_id: Option<&str>) -> Result<(), String> {
-        let mut body = json!({ "group_id": group_id });
-        if let Some(tid) = thread_id {
-            body["thread_id"] = json!(tid);
-        }
-        let _ = self
-            .api_call(
-                reqwest::Method::POST,
-                "/messaging/v2/group_chat_typing",
-                Some(body),
-                true,
-            )
-            .await;
-        Ok(())
-    }
-
-    async fn set_single_typing(
-        &self,
-        employee_code: &str,
-        thread_id: Option<&str>,
-    ) -> Result<(), String> {
-        let mut body = json!({ "employee_code": employee_code });
-        if let Some(tid) = thread_id {
-            body["thread_id"] = json!(tid);
-        }
-        let _ = self
-            .api_call(
-                reqwest::Method::POST,
-                "/messaging/v2/single_chat_typing",
-                Some(body),
-                true,
-            )
-            .await;
-        Ok(())
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -238,17 +202,15 @@ struct WsEnvelope {
     message: Option<String>,
 }
 
+/// What the callback loop needs. The agent/store/actor fields went away with
+/// the inline turn path — the core owns all of that now, and this is left with
+/// the connection, the policy config, and the sink to push into.
 #[derive(Clone)]
 struct HandlerContext {
-    app_id: String,
     config: Arc<RwLock<SeaTalkConfig>>,
-    agent: Arc<dyn AgentHandle>,
-    store: Arc<dyn ChannelStore>,
-    team_id: String,
-    primary_agent_actor_id: String,
-    agent_owner_actor_ids: Vec<String>,
     client: Arc<SeaTalkClient>,
     processed_events: Arc<RwLock<ProcessedMessageTracker>>,
+    inbound_sink: Option<Arc<dyn crate::driver::InboundSink>>,
 }
 
 pub struct SeaTalkGateway {
@@ -262,6 +224,7 @@ pub struct SeaTalkGateway {
     status: Arc<RwLock<SeaTalkGatewayStatusResponse>>,
     is_running: Arc<RwLock<bool>>,
     processed_events: Arc<RwLock<ProcessedMessageTracker>>,
+    inbound_sink: Arc<RwLock<Option<Arc<dyn crate::driver::InboundSink>>>>,
 }
 
 impl SeaTalkGateway {
@@ -285,7 +248,19 @@ impl SeaTalkGateway {
             processed_events: Arc::new(RwLock::new(ProcessedMessageTracker::new(
                 MAX_PROCESSED_MESSAGES,
             ))),
+            inbound_sink: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Hand inbound messages to the core instead of the inline handler.
+    pub async fn use_core_pipeline(&self, sink: Arc<dyn crate::driver::InboundSink>) {
+        *self.inbound_sink.write().await = Some(sink);
+    }
+
+    /// A driver for the core to render replies through.
+    pub async fn as_driver(&self) -> SeaTalkDriver {
+        let cfg = self.config.read().await.clone();
+        SeaTalkDriver::new(cfg.app_id.clone(), cfg.app_secret.clone())
     }
 
     pub async fn set_config(&self, config: SeaTalkConfig) {
@@ -381,13 +356,8 @@ impl SeaTalkGateway {
         ));
 
         let ctx = HandlerContext {
-            app_id: config.app_id.clone(),
+            inbound_sink: self.inbound_sink.read().await.clone(),
             config: Arc::clone(&self.config),
-            agent: Arc::clone(&self.agent),
-            store: Arc::clone(&self.store),
-            team_id: self.team_id.clone(),
-            primary_agent_actor_id: self.primary_agent_actor_id.clone(),
-            agent_owner_actor_ids: self.agent_owner_actor_ids.clone(),
             client,
             processed_events: Arc::clone(&self.processed_events),
         };
@@ -587,14 +557,308 @@ impl SeaTalkGateway {
     }
 }
 
-async fn handle_callback_event(ctx: &HandlerContext, event: &serde_json::Value) -> Result<(), String> {
+fn check_dm_allowed(cfg: &SeaTalkConfig, employee_code: &str, email: Option<&str>) -> bool {
+    match cfg.dm_policy.as_str() {
+        "open" => cfg.allow_from.iter().any(|e| e.trim() == "*") || cfg.allow_from.is_empty(),
+        _ => is_sender_allowed(employee_code, email, &cfg.allow_from),
+    }
+}
+
+fn check_group_allowed(
+    cfg: &SeaTalkConfig,
+    group_id: &str,
+    employee_code: &str,
+    email: Option<&str>,
+) -> FilterResult {
+    if cfg.group_policy == "disabled" {
+        return FilterResult::Ignore;
+    }
+
+    let group_ok = match cfg.group_policy.as_str() {
+        "open" => true,
+        "allowlist" => {
+            if cfg.group_allow_from.is_empty() {
+                true
+            } else {
+                cfg.group_allow_from
+                    .iter()
+                    .any(|g| g == group_id || g == "*")
+            }
+        }
+        _ => false,
+    };
+
+    if !group_ok {
+        return FilterResult::ChannelNotConfigured;
+    }
+
+    if let Some(group_cfg) = cfg.groups.get(group_id) {
+        if !group_cfg.allow {
+            return FilterResult::ChannelNotConfigured;
+        }
+        if !group_cfg.users.is_empty() && !is_sender_allowed(employee_code, email, &group_cfg.users)
+        {
+            return FilterResult::UserNotAllowed;
+        }
+    }
+
+    if !cfg.group_sender_allow_from.is_empty()
+        && !is_sender_allowed(employee_code, email, &cfg.group_sender_allow_from)
+    {
+        return FilterResult::UserNotAllowed;
+    }
+
+    FilterResult::Allow
+}
+
+fn is_sender_allowed(employee_code: &str, email: Option<&str>, allow_from: &[String]) -> bool {
+    allow_from.iter().any(|entry| {
+        let e = entry.trim();
+        e == "*" || e == employee_code || email.is_some_and(|mail| e.eq_ignore_ascii_case(mail))
+    })
+}
+
+// ==================== Transport driver (core pipeline) ====================
+
+/// SeaTalk conversation ids carry the thread inline, because [`Conversation`]
+/// has no thread field and SeaTalk replies must go back to the thread they came
+/// from. `binding()` decides whether the thread also separates *sessions* (that
+/// is config), while `deliver()` always uses it to address the reply.
+const THREAD_SEP: &str = "#t=";
+
+fn encode_conv_id(chat_id: &str, thread_id: Option<&str>) -> String {
+    match thread_id {
+        Some(t) if !t.is_empty() => format!("{chat_id}{THREAD_SEP}{t}"),
+        _ => chat_id.to_string(),
+    }
+}
+
+fn decode_conv_id(id: &str) -> (&str, Option<&str>) {
+    match id.split_once(THREAD_SEP) {
+        Some((chat, thread)) => (chat, Some(thread)),
+        None => (id, None),
+    }
+}
+
+fn seatalk_caps() -> crate::driver::ChannelCaps {
+    crate::driver::ChannelCaps {
+        // SeaTalk's OpenAPI posts messages; there is no edit endpoint, so a
+        // streamed reply would have to be N messages. The core buffers instead.
+        streaming_edit: false,
+        // `dispatch_send` has rejected SeaTalk file sends all along; saying so
+        // here is what makes the core degrade an attachment into text rather
+        // than fail the turn.
+        media_upload: false,
+        interactive: false,
+        threading: crate::driver::Threading::Inline,
+        max_chars: 4000,
+        turn_timeout_secs: 180,
+    }
+}
+
+/// Normalize a SeaTalk callback event into the shape the core consumes.
+///
+/// Pure: no config, no network. Policy (allowlists, thread-per-session) stays
+/// with the driver and the core, which is the whole point of the split.
+pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver::InboundMessage> {
+    let event_type = event["event_type"].as_str().unwrap_or("");
+    let event_id = event["event_id"].as_str().unwrap_or("");
+    if event_id.is_empty() {
+        return None;
+    }
+    let payload = &event["event"];
+
+    let (kind, chat_id, sender_val, is_dm) = match event_type {
+        "message_from_bot_subscriber" => (
+            crate::driver::ConversationKind::Direct,
+            sender_identity(payload),
+            payload.clone(),
+            true,
+        ),
+        "new_mentioned_message_received_from_group_chat" | "new_message_received_from_thread" => {
+            let group_id = payload["group_id"]
+                .as_str()
+                .or_else(|| payload["group"]["group_id"].as_str())
+                .unwrap_or("")
+                .to_string();
+            (
+                crate::driver::ConversationKind::Group,
+                group_id,
+                payload["message"]["sender"].clone(),
+                false,
+            )
+        }
+        _ => return None,
+    };
+    if chat_id.is_empty() {
+        return None;
+    }
+
+    let message = &payload["message"];
+    let employee_code = if is_dm {
+        chat_id.clone()
+    } else {
+        sender_identity(&sender_val)
+    };
+    if employee_code.is_empty() {
+        return None;
+    }
+    let email = sender_val["email"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let thread_id = optional_id(message["thread_id"].as_str()).map(str::to_string);
+    let text = extract_message_text(message);
+    // A bare `@Bot` with nothing after it: the inline path answered so the user
+    // could see the bot was alive. `Core::handle` returns `Empty` on blank
+    // text, so without this the mention gets silence.
+    let text = if text.is_empty() && matches!(kind, crate::driver::ConversationKind::Group) {
+        "你好，请直接说明需要我帮你做什么。".to_string()
+    } else {
+        text
+    };
+
+    Some(crate::driver::InboundMessage {
+        conversation: crate::driver::Conversation {
+            channel: "seatalk",
+            bot_id: None,
+            kind,
+            id: encode_conv_id(&chat_id, thread_id.as_deref()),
+        },
+        sender: crate::driver::ExternalSender {
+            display_name: email.clone().unwrap_or_else(|| employee_code.clone()),
+            external_id: employee_code,
+            email,
+        },
+        external_message_id: event_id.to_string(),
+        text,
+        attachments: Vec::new(),
+        // SeaTalk only delivers group messages the bot was mentioned in, and a
+        // DM is addressed by definition.
+        addressed_to_bot: true,
+        quoted_text: None,
+        reply_context: None,
+    })
+}
+
+/// SeaTalk as a transport driver.
+pub struct SeaTalkDriver {
+    app_id: String,
+    client: SeaTalkClient,
+    /// Whether a thread splits the session, mirroring the inline path's config.
+    dm_thread_session: bool,
+    group_thread_session: bool,
+}
+
+impl SeaTalkDriver {
+    pub fn new(app_id: String, app_secret: String) -> Self {
+        Self {
+            client: SeaTalkClient::new(app_id.clone(), app_secret),
+            app_id,
+            dm_thread_session: false,
+            group_thread_session: false,
+        }
+    }
+
+    pub fn with_thread_sessions(mut self, dm: bool, group: bool) -> Self {
+        self.dm_thread_session = dm;
+        self.group_thread_session = group;
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::driver::ChannelDriver for SeaTalkDriver {
+    fn id(&self) -> crate::driver::ChannelId {
+        "seatalk"
+    }
+
+    fn caps(&self) -> crate::driver::ChannelCaps {
+        seatalk_caps()
+    }
+
+    fn binding(&self, conversation: &crate::driver::Conversation) -> String {
+        let (chat, thread) = decode_conv_id(&conversation.id);
+        match conversation.kind {
+            crate::driver::ConversationKind::Group => match thread {
+                Some(t) if self.group_thread_session => {
+                    crate::binding::seatalk_group_thread(&self.app_id, chat, t)
+                }
+                _ => crate::binding::seatalk_group(&self.app_id, chat),
+            },
+            _ => match thread {
+                Some(t) if self.dm_thread_session => {
+                    crate::binding::seatalk_dm_thread(&self.app_id, chat, t)
+                }
+                _ => crate::binding::seatalk_dm(&self.app_id, chat),
+            },
+        }
+    }
+
+    fn sender_urn(
+        &self,
+        _conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        crate::binding::urn_seatalk_user(&self.app_id, &sender.external_id)
+    }
+
+    fn session_title(
+        &self,
+        conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        let (chat, _) = decode_conv_id(&conversation.id);
+        match conversation.kind {
+            crate::driver::ConversationKind::Group => format!("SeaTalk group: {chat}"),
+            _ => format!(
+                "SeaTalk DM: {}",
+                if sender.display_name.is_empty() {
+                    chat
+                } else {
+                    sender.display_name.as_str()
+                }
+            ),
+        }
+    }
+
+    async fn deliver(
+        &self,
+        to: &crate::driver::Conversation,
+        _reply_context: Option<&str>,
+        msg: &crate::driver::OutboundMessage,
+    ) -> Result<crate::driver::DeliveryId, crate::driver::DriverError> {
+        let (chat, thread) = decode_conv_id(&to.id);
+        let text = if msg.text.trim().is_empty() {
+            return Ok(crate::driver::DeliveryId(to.id.clone()));
+        } else {
+            msg.text.as_str()
+        };
+        let result = match to.kind {
+            crate::driver::ConversationKind::Group => {
+                self.client.send_group_text(chat, text, thread).await
+            }
+            _ => self.client.send_single_text(chat, text, thread).await,
+        };
+        result.map_err(crate::driver::DriverError::Transport)?;
+        Ok(crate::driver::DeliveryId(to.id.clone()))
+    }
+}
+
+async fn handle_callback_event(
+    ctx: &HandlerContext,
+    event: &serde_json::Value,
+) -> Result<(), String> {
     let event_id = event["event_id"].as_str().unwrap_or("").to_string();
     let event_type = event["event_type"].as_str().unwrap_or("").to_string();
     if event_id.is_empty() {
         eprintln!(
             "[SeaTalk] dropping event without event_id type={} keys={:?}",
             event_type,
-            event.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>())
+            event
+                .as_object()
+                .map(|o| o.keys().cloned().collect::<Vec<_>>())
         );
         return Ok(());
     }
@@ -607,172 +871,79 @@ async fn handle_callback_event(ctx: &HandlerContext, event: &serde_json::Value) 
     }
 
     println!("[SeaTalk] handle event_id={event_id} type={event_type}");
+
+    // Lifecycle events never open a session; everything else is a message and
+    // belongs to the core (dedup, routing, identity, commands, writing, turn).
+    // Only the three message types go further. Everything else — lifecycle,
+    // and anything SeaTalk adds later — returns here: the old `match` had an
+    // `other =>` arm, and without it an unknown event fell into the *group*
+    // allowlist check, where a missing `group_id` meant firing a rejection at
+    // an empty chat id.
     match event_type.as_str() {
-        "message_from_bot_subscriber" => handle_dm_event(ctx, event).await,
-        "new_mentioned_message_received_from_group_chat" | "new_message_received_from_thread" => {
-            handle_group_event(ctx, event).await
-        }
+        "message_from_bot_subscriber"
+        | "new_mentioned_message_received_from_group_chat"
+        | "new_message_received_from_thread" => {}
         "bot_added_to_group_chat" | "bot_removed_from_group_chat" | "new_bot_subscriber" => {
             println!("[SeaTalk] lifecycle event type={event_type} (ignored)");
-            Ok(())
+            return Ok(());
         }
         other => {
             println!("[SeaTalk] unhandled event_type={other}");
+            return Ok(());
+        }
+    }
+
+    let Some(sink) = ctx.inbound_sink.clone() else {
+        eprintln!("[SeaTalk] no core pipeline wired; dropping event_id={event_id}");
+        return Ok(());
+    };
+
+    // The allowlist stays here, not in the core: it is per-channel config and
+    // the core has no policy layer. Losing it with the inline handlers would
+    // have quietly opened the bot to everyone.
+    let cfg = ctx.config.read().await.clone();
+    let payload = &event["event"];
+    let allowed = if event_type == "message_from_bot_subscriber" {
+        let code = sender_identity(payload);
+        check_dm_allowed(&cfg, &code, payload["email"].as_str())
+    } else {
+        let group_id = payload["group_id"]
+            .as_str()
+            .or_else(|| payload["group"]["group_id"].as_str())
+            .unwrap_or("");
+        let sender = &payload["message"]["sender"];
+        let code = sender_identity(sender);
+        match check_group_allowed(&cfg, group_id, &code, sender["email"].as_str()) {
+            FilterResult::Allow => true,
+            FilterResult::UserNotAllowed => {
+                let _ = ctx
+                    .client
+                    .send_group_text(
+                        group_id,
+                        "Sorry, you are not authorized to use this bot.",
+                        optional_id(payload["message"]["thread_id"].as_str()),
+                    )
+                    .await;
+                false
+            }
+            _ => false,
+        }
+    };
+    if !allowed {
+        println!("[SeaTalk] event_id={event_id} blocked by policy");
+        return Ok(());
+    }
+
+    match normalize_event(event) {
+        Some(inbound) => {
+            sink.accept(inbound).await;
+            Ok(())
+        }
+        None => {
+            println!("[SeaTalk] event carried nothing actionable; ignoring");
             Ok(())
         }
     }
-}
-
-async fn handle_dm_event(ctx: &HandlerContext, event: &serde_json::Value) -> Result<(), String> {
-    let payload = &event["event"];
-    let employee_code = sender_identity(payload);
-    let email = payload["email"].as_str();
-    let message = &payload["message"];
-
-    if employee_code.is_empty() {
-        eprintln!("[SeaTalk] dm event missing sender identity: {payload}");
-        return Ok(());
-    }
-
-    let cfg = ctx.config.read().await.clone();
-    if !check_dm_allowed(&cfg, &employee_code, email) {
-        println!("[SeaTalk] dm blocked by policy for {employee_code}");
-        return Ok(());
-    }
-
-    let text = extract_message_text(message);
-    if text.is_empty() {
-        println!("[SeaTalk] dm empty text from {employee_code}, ignore");
-        return Ok(());
-    }
-
-    let thread_id = optional_id(message["thread_id"].as_str());
-    let message_id = message["message_id"].as_str().unwrap_or("").to_string();
-    let binding = if cfg.dm_thread_session {
-        if let Some(tid) = thread_id {
-            crate::binding::seatalk_dm_thread(&ctx.app_id, &employee_code, tid)
-        } else {
-            crate::binding::seatalk_dm(&ctx.app_id, &employee_code)
-        }
-    } else {
-        crate::binding::seatalk_dm(&ctx.app_id, &employee_code)
-    };
-
-    let sender_display = email
-        .map(str::to_string)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| employee_code.clone());
-
-    process_inbound(
-        ctx,
-        &binding,
-        &format!("SeaTalk DM: {sender_display}"),
-        &sender_display,
-        &employee_code,
-        email,
-        true,
-        &text,
-        &message_id,
-        &employee_code,
-        None,
-        thread_id,
-    )
-    .await
-}
-
-async fn handle_group_event(ctx: &HandlerContext, event: &serde_json::Value) -> Result<(), String> {
-    let payload = &event["event"];
-    // Mention events use event.group_id; some lifecycle payloads nest it.
-    let group_id = payload["group_id"]
-        .as_str()
-        .or_else(|| payload["group"]["group_id"].as_str())
-        .unwrap_or("");
-    let message = &payload["message"];
-
-    if group_id.is_empty() {
-        eprintln!("[SeaTalk] group event missing group_id: {payload}");
-        return Ok(());
-    }
-
-    let sender = &message["sender"];
-    let employee_code = sender_identity(sender);
-    let email = sender["email"].as_str();
-
-    if employee_code.is_empty() {
-        eprintln!("[SeaTalk] group event missing sender identity in {group_id}: {sender}");
-        return Ok(());
-    }
-
-    let cfg = ctx.config.read().await.clone();
-    match check_group_allowed(&cfg, group_id, &employee_code, email) {
-        FilterResult::Allow => {}
-        FilterResult::Ignore => {
-            println!("[SeaTalk] group policy disabled, ignore group={group_id}");
-            return Ok(());
-        }
-        FilterResult::ChannelNotConfigured => {
-            println!("[SeaTalk] group {group_id} not in allowlist, ignore");
-            return Ok(());
-        }
-        FilterResult::UserNotAllowed => {
-            let _ = ctx
-                .client
-                .send_group_text(
-                    group_id,
-                    "Sorry, you are not authorized to use this bot.",
-                    optional_id(message["thread_id"].as_str()),
-                )
-                .await;
-            return Ok(());
-        }
-    }
-
-    let text = extract_message_text(message);
-    let text = if text.is_empty() {
-        // Bare @Bot with no question — still acknowledge so users know we're live.
-        "你好，请直接说明需要我帮你做什么。".to_string()
-    } else {
-        text
-    };
-
-    let thread_id = optional_id(message["thread_id"].as_str());
-    let message_id = message["message_id"].as_str().unwrap_or("").to_string();
-    let binding = if cfg.group_thread_session {
-        if let Some(tid) = thread_id {
-            crate::binding::seatalk_group_thread(&ctx.app_id, group_id, tid)
-        } else {
-            crate::binding::seatalk_group(&ctx.app_id, group_id)
-        }
-    } else {
-        crate::binding::seatalk_group(&ctx.app_id, group_id)
-    };
-
-    let sender_display = email
-        .map(str::to_string)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| employee_code.clone());
-
-    println!(
-        "[SeaTalk] group mention group={group_id} from={sender_display} text_len={} thread={:?}",
-        text.len(),
-        thread_id
-    );
-
-    process_inbound(
-        ctx,
-        &binding,
-        &format!("SeaTalk group: {group_id}"),
-        &sender_display,
-        &employee_code,
-        email,
-        false,
-        &text,
-        &message_id,
-        &employee_code,
-        Some(group_id),
-        thread_id,
-    )
-    .await
 }
 
 /// Prefer employee_code; fall back to seatalk_id when SeaTalk omits the former.
@@ -790,161 +961,6 @@ fn optional_id(value: Option<&str>) -> Option<&str> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn process_inbound(
-    ctx: &HandlerContext,
-    binding: &str,
-    session_title: &str,
-    sender_display: &str,
-    employee_code: &str,
-    _email: Option<&str>,
-    is_dm: bool,
-    text: &str,
-    message_id: &str,
-    reply_target: &str,
-    group_id: Option<&str>,
-    thread_id: Option<&str>,
-) -> Result<(), String> {
-    let urn = crate::binding::urn_seatalk_user(&ctx.app_id, employee_code);
-    let external_actor_id = ctx
-        .store
-        .ensure_external_actor(&ctx.team_id, "seatalk", &urn, sender_display)
-        .await
-        .map_err(|e| format!("ensure_external_actor: {e}"))?;
-
-    println!(
-        "[SeaTalk] ensure_session binding={binding} title={session_title} actor={external_actor_id}"
-    );
-    let outcome = ctx
-        .store
-        .ensure_session(
-            &ctx.team_id,
-            binding,
-            session_title,
-            &ctx.primary_agent_actor_id,
-            &ctx.agent_owner_actor_ids,
-            std::slice::from_ref(&external_actor_id),
-        )
-        .await
-        .map_err(|e| format!("ensure_session: {e}"))?;
-
-    let _ = ctx
-        .store
-        .add_participant(&outcome.session_id, &external_actor_id)
-        .await;
-
-    // Every slash command goes through the one shared table — SeaTalk used to
-    // recognise only /stop /reset /model and had no /help at all.
-    if let Some((cmd_name, cmd_arg)) = crate::commands::parse_slash(text) {
-        let locale = i18n::locale();
-        let reply_text = crate::commands::run_slash(
-            &cmd_name,
-            cmd_arg.as_deref(),
-            ctx.agent.as_ref(),
-            ctx.store.as_ref(),
-            &outcome.acp_session_id,
-            locale,
-        )
-        .await
-        .unwrap_or(None)
-        .unwrap_or_else(|| crate::commands::unknown_command_reply(&cmd_name, locale));
-        return send_reply(ctx, is_dm, reply_target, group_id, thread_id, &reply_text).await;
-    }
-
-    let _ = ctx
-        .store
-        .record_message(
-            &outcome.session_id,
-            &external_actor_id,
-            text,
-            Some(message_id),
-        )
-        .await;
-
-    if is_dm {
-        let _ = ctx
-            .client
-            .set_single_typing(reply_target, thread_id)
-            .await;
-    } else if let Some(gid) = group_id {
-        let _ = ctx.client.set_group_typing(gid, thread_id).await;
-    }
-
-    println!(
-        "[SeaTalk] send_prompt session={} acp={} from={sender_display}",
-        outcome.session_id, outcome.acp_session_id
-    );
-    let reply = match ctx
-        .agent
-        .send_prompt(
-            &outcome.acp_session_id,
-            sender_display,
-            text,
-            crate::driver::ChannelCaps::MINIMAL.turn_timeout(),
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let detail = e.to_string();
-            let err = format!("send_prompt: {detail}");
-            eprintln!("[SeaTalk] {err}");
-            let user_msg = if detail.contains("Invalid User API Key") || detail.contains("API Key")
-            {
-                "Agent 未就绪：本地 API Key 无效，请在 TeamClu 设置里更新模型/Provider 凭证后重试。"
-                    .to_string()
-            } else {
-                format!("抱歉，处理失败：{detail}")
-            };
-            let _ = send_reply(ctx, is_dm, reply_target, group_id, thread_id, &user_msg).await;
-            return Err(err);
-        }
-    };
-
-    let _ = ctx
-        .store
-        .record_agent_reply(
-            &outcome.session_id,
-            &ctx.primary_agent_actor_id,
-            &reply.reply_text,
-            None,
-        )
-        .await;
-
-    println!(
-        "[SeaTalk] reply ready chars={} dm={is_dm} target={reply_target} group={:?}",
-        reply.reply_text.len(),
-        group_id
-    );
-    send_reply(
-        ctx,
-        is_dm,
-        reply_target,
-        group_id,
-        thread_id,
-        &reply.reply_text,
-    )
-    .await
-}
-
-async fn send_reply(
-    ctx: &HandlerContext,
-    is_dm: bool,
-    reply_target: &str,
-    group_id: Option<&str>,
-    thread_id: Option<&str>,
-    text: &str,
-) -> Result<(), String> {
-    if is_dm {
-        ctx.client
-            .send_single_text(reply_target, text, thread_id)
-            .await
-    } else if let Some(gid) = group_id {
-        ctx.client.send_group_text(gid, text, thread_id).await
-    } else {
-        Ok(())
-    }
-}
-
 fn extract_message_text(message: &serde_json::Value) -> String {
     let tag = message["tag"].as_str().unwrap_or("");
     match tag {
@@ -973,67 +989,6 @@ fn strip_leading_mentions(text: &str) -> String {
         rest = stripped[end..].trim_start();
     }
     rest.trim().to_string()
-}
-
-fn check_dm_allowed(cfg: &SeaTalkConfig, employee_code: &str, email: Option<&str>) -> bool {
-    match cfg.dm_policy.as_str() {
-        "open" => cfg.allow_from.iter().any(|e| e.trim() == "*")
-            || cfg.allow_from.is_empty(),
-        _ => is_sender_allowed(employee_code, email, &cfg.allow_from),
-    }
-}
-
-fn check_group_allowed(
-    cfg: &SeaTalkConfig,
-    group_id: &str,
-    employee_code: &str,
-    email: Option<&str>,
-) -> FilterResult {
-    if cfg.group_policy == "disabled" {
-        return FilterResult::Ignore;
-    }
-
-    let group_ok = match cfg.group_policy.as_str() {
-        "open" => true,
-        "allowlist" => {
-            if cfg.group_allow_from.is_empty() {
-                true
-            } else {
-                cfg.group_allow_from.iter().any(|g| g == group_id || g == "*")
-            }
-        }
-        _ => false,
-    };
-
-    if !group_ok {
-        return FilterResult::ChannelNotConfigured;
-    }
-
-    if let Some(group_cfg) = cfg.groups.get(group_id) {
-        if !group_cfg.allow {
-            return FilterResult::ChannelNotConfigured;
-        }
-        if !group_cfg.users.is_empty()
-            && !is_sender_allowed(employee_code, email, &group_cfg.users)
-        {
-            return FilterResult::UserNotAllowed;
-        }
-    }
-
-    if !cfg.group_sender_allow_from.is_empty()
-        && !is_sender_allowed(employee_code, email, &cfg.group_sender_allow_from)
-    {
-        return FilterResult::UserNotAllowed;
-    }
-
-    FilterResult::Allow
-}
-
-fn is_sender_allowed(employee_code: &str, email: Option<&str>, allow_from: &[String]) -> bool {
-    allow_from.iter().any(|entry| {
-        let e = entry.trim();
-        e == "*" || e == employee_code || email.is_some_and(|mail| e.eq_ignore_ascii_case(mail))
-    })
 }
 
 fn chunk_text(text: &str, limit: usize) -> Vec<String> {
@@ -1071,6 +1026,7 @@ impl Clone for SeaTalkGateway {
             status: Arc::clone(&self.status),
             is_running: Arc::clone(&self.is_running),
             processed_events: Arc::clone(&self.processed_events),
+            inbound_sink: Arc::clone(&self.inbound_sink),
         }
     }
 }

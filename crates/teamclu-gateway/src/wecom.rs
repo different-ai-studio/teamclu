@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use tokio::sync::{mpsc, oneshot, RwLock};
 
-use crate::{commands, driver, AgentHandle, AttachmentRecord, ChannelStore};
+use crate::{driver, AgentHandle, ChannelStore};
 
 /// Global reference to the active WeComGateway for proactive message sending.
 static ACTIVE_GATEWAY: OnceLock<Arc<RwLock<Option<WeComGateway>>>> = OnceLock::new();
@@ -314,28 +314,6 @@ fn extract_filename_from_content_disposition(header: &str) -> Option<String> {
     None
 }
 
-/// Decide the MIME type for a downloaded media payload.
-///
-/// Tries the filename hint first because it can distinguish OOXML subtypes
-/// (xlsx vs docx vs pptx) that share identical ZIP magic bytes. Falls back
-/// to magic-byte detection, then to `application/octet-stream` — never to
-/// `image/png`, which previously caused Excel files to be saved as `.png`.
-/// Format a byte count as a short human-readable size (e.g. "332 KB").
-fn human_readable_size(bytes: usize) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
-    let mut size = bytes as f64;
-    let mut unit = 0;
-    while size >= 1024.0 && unit < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{} {}", bytes, UNITS[unit])
-    } else {
-        format!("{:.1} {}", size, UNITS[unit])
-    }
-}
-
 /// Best-effort MIME for a file: trust the extension, fall back to magic
 /// bytes, then to a generic binary. Public because the daemon's outbound
 /// send path records attachments too, and both directions must label the
@@ -345,34 +323,6 @@ pub fn resolve_mime(bytes: &[u8], filename_hint: Option<&str>) -> String {
         .and_then(detect_mime_from_filename)
         .or_else(|| detect_mime_from_magic(bytes))
         .unwrap_or_else(|| "application/octet-stream".into())
-}
-
-/// File extension (without dot) for a known MIME type. Returns `bin` for
-/// unknown types so saved filenames don't end in something like `.sheet`.
-fn mime_to_ext(mime: &str) -> &'static str {
-    match mime {
-        "image/jpeg" => "jpg",
-        "image/png" => "png",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        "image/bmp" => "bmp",
-        "image/svg+xml" => "svg",
-        "application/pdf" => "pdf",
-        "application/msword" => "doc",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
-        "application/vnd.ms-excel" => "xls",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
-        "application/vnd.ms-powerpoint" => "ppt",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => "pptx",
-        "text/csv" => "csv",
-        "text/plain" => "txt",
-        "application/json" => "json",
-        "application/xml" => "xml",
-        "text/html" => "html",
-        "text/markdown" => "md",
-        "application/zip" => "zip",
-        _ => "bin",
-    }
 }
 
 /// Extract the lowercase extension from a filename, rejecting dotfiles
@@ -550,7 +500,6 @@ pub const WECOM_WS_ENDPOINT: &str = "wss://openws.work.weixin.qq.com";
 const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 #[allow(dead_code)]
 const HEARTBEAT_TIMEOUT_SECS: u64 = 6;
-use crate::{ProcessedMessageTracker, MAX_PROCESSED_MESSAGES};
 
 /// Pending WebSocket response channels, keyed by req_id.
 /// Used for request–response patterns (e.g. media upload) over the multiplexed WS.
@@ -571,7 +520,7 @@ type PendingResponses =
 /// that froze. 2.1s keeps it at ~28/minute with room for the final message.
 const STREAM_FRAME_MIN_GAP: std::time::Duration = std::time::Duration::from_millis(2100);
 
-/// How long to wait for WeCom's verdict on the frame the user is left with.
+#[allow(dead_code)]
 const TERMINAL_FRAME_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Paces the frames of one streamed reply.
@@ -626,32 +575,6 @@ impl StreamPacer {
     }
 }
 
-/// Collapse a burst of queued progressive updates down to the newest one.
-///
-/// Each update carries the whole reply so far, so the ones in between are pure
-/// overdraw — and every extra rewrite is another chance for WeCom to reject one
-/// as a version conflict.
-fn drain_to_latest(first: String, rx: &mut mpsc::Receiver<String>) -> String {
-    let mut latest = first;
-    while let Ok(newer) = rx.try_recv() {
-        latest = newer;
-    }
-    latest
-}
-
-/// WeCom reports a frame's status at the top level on some commands and inside
-/// `body` on others; either one saying "not zero" means the frame was rejected.
-fn ack_errcode(ack: &serde_json::Value) -> i64 {
-    ack.get("errcode")
-        .and_then(|c| c.as_i64())
-        .or_else(|| {
-            ack.get("body")
-                .and_then(|b| b.get("errcode"))
-                .and_then(|c| c.as_i64())
-        })
-        .unwrap_or(0)
-}
-
 #[derive(Clone)]
 pub struct WeComGateway {
     config: Arc<RwLock<WeComConfig>>,
@@ -664,7 +587,6 @@ pub struct WeComGateway {
     shutdown_tx: Arc<RwLock<Option<oneshot::Sender<()>>>>,
     status: Arc<RwLock<WeComGatewayStatusResponse>>,
     is_running: Arc<RwLock<bool>>,
-    processed_messages: Arc<RwLock<ProcessedMessageTracker>>,
     pending_questions: Arc<super::PendingQuestionStore>,
     shared_ws_sink: Arc<RwLock<Option<WsSink>>>,
     card_metadata: Arc<RwLock<std::collections::HashMap<String, CardMetadata>>>,
@@ -1380,9 +1302,6 @@ impl WeComGateway {
             shutdown_tx: Arc::new(RwLock::new(None)),
             status: Arc::new(RwLock::new(WeComGatewayStatusResponse::default())),
             is_running: Arc::new(RwLock::new(false)),
-            processed_messages: Arc::new(RwLock::new(ProcessedMessageTracker::new(
-                MAX_PROCESSED_MESSAGES,
-            ))),
             pending_questions: Arc::new(super::PendingQuestionStore::new()),
             shared_ws_sink: Arc::new(RwLock::new(None)),
             card_metadata: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -1781,7 +1700,9 @@ impl WeComGateway {
         &self,
         msg: WeComMsgCallback,
         req_id: String,
-        ws_sink: WsSink,
+        // The core renders the reply now; the socket is no longer the
+        // callback's business.
+        _ws_sink: WsSink,
     ) {
         let userid = msg.from.as_ref().map(|f| f.userid.as_str()).unwrap_or("");
         println!(
@@ -1802,709 +1723,7 @@ impl WeComGateway {
                 Some(inbound) => sink.accept(inbound).await,
                 None => println!("[WeCom] Unsupported message type: {}", msg.msgtype),
             }
-            return;
         }
-
-        // Deduplication
-        if !self.mark_message_processed(&msg.msgid).await {
-            return;
-        }
-
-        // Extract content based on msgtype. WeCom puts content in type-specific
-        // fields (text.content, voice.content, image.url, …) and bundles an
-        // attachment sent with a caption into a single `mixed` message.
-        let (mut text_content, pending_media) = match extract_message_parts(&msg) {
-            Some(parts) => parts,
-            None => {
-                println!("[WeCom] Unsupported message type: {}", msg.msgtype);
-                return;
-            }
-        };
-
-        // Strip @mention prefix in group messages (e.g. "@蕉你一手 /help" → "/help").
-        // Same rule as the core path — a bot name with spaces in it used to
-        // leave half the name in front of the command.
-        if msg.chattype == "group" && !text_content.is_empty() {
-            let bot_name = self.config.read().await.bot_name.clone();
-            {
-                text_content = strip_group_mention_prefix(
-                    &text_content,
-                    driver::ConversationKind::Group,
-                    bot_name.as_deref(),
-                );
-            }
-        }
-
-        // Extract quoted/referenced message content
-        // WeCom puts quoted messages in a "quote" field with structure:
-        //   { "msgtype": "text", "text": { "content": "..." } }
-        if let Some(ref quote) = msg.quote {
-            let quoted_text = quote
-                .get("text")
-                .and_then(|t| t.get("content"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            // Check for question marker in quoted text
-            if let Some(qid) = super::extract_question_marker(quoted_text) {
-                if let Some(entry) = self.pending_questions.take_by_question_id(qid).await {
-                    let _ = entry.answer_tx.send(text_content.clone());
-                    println!(
-                        "[WeCom] Question {} answered via quote reply",
-                        entry.question_id
-                    );
-                    return;
-                }
-            }
-
-            // Original behavior: prepend quoted text for context
-            if !quoted_text.is_empty() {
-                text_content = format!(
-                    "[Quoted message]\n{}\n[End quoted message]\n\n{}",
-                    quoted_text, text_content
-                );
-            }
-        }
-
-        // Collect raw inbound attachments. WeCom delivers images/files
-        // encrypted under a per-message aeskey; decrypt now, defer the
-        // backend attachment upload until we know the resolved session_id.
-        struct InboundFile {
-            bytes: Vec<u8>,
-            filename: String,
-            mime: String,
-        }
-        let mut inbound_files: Vec<InboundFile> = Vec::new();
-        // Why the sender hears about these: a media item that never decodes
-        // used to drop the whole message on the floor with no reply at all.
-        let mut media_errors: Vec<String> = Vec::new();
-        for (idx, media) in pending_media.iter().enumerate() {
-            let aeskey = media.aeskey.as_deref().unwrap_or("");
-            match download_and_decrypt_wecom_media(
-                &media.url,
-                aeskey,
-                media.filename_hint.as_deref(),
-            )
-            .await
-            {
-                Ok((bytes, detected_mime)) => {
-                    if bytes.len() > 50 * 1024 * 1024 {
-                        eprintln!(
-                            "[WeCom] file too large ({} bytes); skipping attachment",
-                            bytes.len()
-                        );
-                        media_errors.push(format!("file too large ({} bytes)", bytes.len()));
-                    } else {
-                        let filename = media.filename_hint.clone().unwrap_or_else(|| {
-                            // Index included because one `mixed` message can carry
-                            // several images: a millisecond timestamp alone would
-                            // collide and they'd overwrite each other in the cache.
-                            format!(
-                                "wecom-{}-{}.{}",
-                                chrono::Utc::now().timestamp_millis(),
-                                idx,
-                                mime_to_ext(&detected_mime)
-                            )
-                        });
-                        inbound_files.push(InboundFile {
-                            bytes,
-                            filename,
-                            mime: detected_mime,
-                        });
-                    }
-                }
-                // stdout, not tracing: this is where every other WeCom
-                // diagnostic goes, so a failed image is findable next to the
-                // callback that carried it.
-                Err(e) => {
-                    eprintln!("[WeCom] media fetch/decrypt failed: {e}");
-                    media_errors.push(e);
-                }
-            }
-        }
-
-        // For inbound attachments, allow empty text — the agent should still
-        // see the files. Only drop the event when there's no text AND no
-        // files we successfully decoded.
-        if text_content.trim().is_empty() && inbound_files.is_empty() {
-            if !media_errors.is_empty() {
-                let locale = i18n::locale();
-                let _ = self
-                    .send_reply(
-                        &req_id,
-                        &i18n::t(
-                            i18n::MsgKey::AttachmentFailed(&media_errors.join("; ")),
-                            locale,
-                        ),
-                        &ws_sink,
-                    )
-                    .await;
-            }
-            return;
-        }
-
-        // Auto-record ownerId on first DM if not yet set
-        if msg.chattype == "single" && !userid.is_empty() {
-            let config = self.config.read().await;
-            if config.owner_id.is_none() {
-                drop(config);
-                let mut config = self.config.write().await;
-                // Double-check after acquiring write lock
-                if config.owner_id.is_none() {
-                    config.owner_id = Some(userid.to_string());
-                    println!("[WeCom] Auto-recorded ownerId: {}", userid);
-                    // Persist to config file
-                    if let Ok(mut file_config) = super::read_config(&self.workspace_path) {
-                        let channels = file_config
-                            .channels
-                            .get_or_insert_with(super::config::ChannelsConfig::default);
-                        if let Some(ref mut wecom) = channels.wecom {
-                            wecom.owner_id = Some(userid.to_string());
-                        } else {
-                            channels.wecom = Some(WeComConfig {
-                                owner_id: Some(userid.to_string()),
-                                ..Default::default()
-                            });
-                        }
-                        let _ = super::write_config(&self.workspace_path, &file_config);
-                    }
-                }
-            }
-        }
-
-        // Check for /answer command — routes reply to the most recent pending question
-        if let Some(answer_text) = super::PendingQuestionStore::parse_answer_command(&text_content)
-        {
-            let locale = i18n::locale();
-            if let Some(qid) = self.pending_questions.try_answer(answer_text).await {
-                println!(
-                    "[WeCom] Question {} answered via /answer: {}",
-                    qid, answer_text
-                );
-                let _ = self
-                    .send_reply(
-                        &req_id,
-                        &i18n::t(i18n::MsgKey::AnswerSubmitted(answer_text), locale),
-                        &ws_sink,
-                    )
-                    .await;
-            } else {
-                let _ = self
-                    .send_reply(
-                        &req_id,
-                        &i18n::t(i18n::MsgKey::NoPendingQuestions, locale),
-                        &ws_sink,
-                    )
-                    .await;
-            }
-            return;
-        }
-
-        // Slash commands that don't need a resolved session (/help, unknown)
-        // are short-circuited here; those that do need a session fall through
-        // and are dispatched after session resolve below.
-        let trimmed_early = text_content.trim();
-        if !trimmed_early.is_empty() && trimmed_early.starts_with('/') {
-            if let Some((cmd_name, _)) = commands::parse_slash(trimmed_early) {
-                // One rule for every channel, in commands.rs — this used to be
-                // a hand-kept list that omitted agent commands, so `/compact`
-                // was dispatched with an empty session id and came back
-                // "unknown command".
-                if !commands::needs_session(&cmd_name) {
-                    // /help or any agent-advertised command that doesn't need a session
-                    // is handled generically; unknown commands also land here.
-                    // We have no session yet, so pass a placeholder session id.
-                    use std::sync::{Arc as SArc, Mutex};
-                    let locale = i18n::locale();
-                    let reply_cell: SArc<Mutex<Option<String>>> = SArc::new(Mutex::new(None));
-                    let reply_cell_clone = reply_cell.clone();
-                    let handled = commands::dispatch(
-                        &cmd_name,
-                        None,
-                        self.agent.as_ref(),
-                        self.store.as_ref(),
-                        &String::new(),
-                        locale,
-                        move |r| {
-                            *reply_cell_clone.lock().unwrap() = Some(r);
-                        },
-                    )
-                    .await
-                    .unwrap_or(false);
-                    let reply_text = reply_cell.lock().unwrap().take();
-                    if handled {
-                        if let Some(text) = reply_text {
-                            let _ = self.send_reply(&req_id, &text, &ws_sink).await;
-                        }
-                    } else {
-                        let _ = self
-                            .send_reply(
-                                &req_id,
-                                &i18n::t(
-                                    i18n::MsgKey::UnknownCommand(&format!("/{cmd_name}")),
-                                    locale,
-                                ),
-                                &ws_sink,
-                            )
-                            .await;
-                    }
-                    return;
-                }
-                // session-requiring commands fall through to session resolve below.
-            }
-        }
-
-        // Determine chat type and build binding URI per spec:
-        //   wecom://{corp_id}/{agent_id}/{single|external-single|group}/{userid|chat_id}
-        // WSS smart-bot only exposes bot_id; use it for both corp_id and agent_id slots.
-        let chat_type_str = msg.chattype.as_str();
-        let bot_id = {
-            let cfg = self.config.read().await;
-            cfg.bot_id.clone()
-        };
-        let chat_id = msg.chatid.clone();
-
-        // Group only flows when the bot is @-mentioned (per spec — only @bot exchanges persist).
-        // WeCom's group callback already strips/keeps the @mention prefix in text_content; presence
-        // of the message itself signals delivery to the bot, which only happens on @mention.
-        // We additionally guard non-text/non-bot-mention noise by requiring non-empty trimmed text.
-        if chat_type_str == "group" {
-            // The "@蕉你一手" prefix was stripped earlier. If text is now empty
-            // and there are no attachments (e.g. an image sent with no caption),
-            // ignore — otherwise let it through so the agent sees the files.
-            if text_content.trim().is_empty() && inbound_files.is_empty() {
-                println!("[WeCom] Group message dropped: no text and no attachments");
-                return;
-            }
-        }
-
-        let binding = match chat_type_str {
-            "single" => crate::binding::wecom_dm(&bot_id, &bot_id, userid),
-            "external-single" => crate::binding::wecom_external_dm(&bot_id, &bot_id, userid),
-            "group" => crate::binding::wecom_group(&bot_id, &bot_id, &chat_id),
-            _ => {
-                println!("[WeCom] Unknown chattype: {}", chat_type_str);
-                return;
-            }
-        };
-
-        let source_id_urn = if chat_type_str == "external-single" {
-            crate::binding::urn_wecom_ext(&bot_id, userid)
-        } else {
-            crate::binding::urn_wecom_user(&bot_id, userid)
-        };
-
-        let sender_display_name = userid.to_string();
-
-        let external_actor_id = match self
-            .store
-            .ensure_external_actor(&self.team_id, "wecom", &source_id_urn, &sender_display_name)
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                let _ = self
-                    .send_reply(&req_id, &format!("Error (actor): {}", e), &ws_sink)
-                    .await;
-                return;
-            }
-        };
-
-        let session_title = match chat_type_str {
-            "single" => format!("WeCom DM: {}", sender_display_name),
-            "external-single" => format!("WeCom external: {}", sender_display_name),
-            "group" => format!("WeCom group: {}", chat_id),
-            _ => "WeCom".to_string(),
-        };
-
-        let outcome = match self
-            .store
-            .ensure_session(
-                &self.team_id,
-                &binding,
-                &session_title,
-                &self.primary_agent_actor_id,
-                &self.agent_owner_actor_ids,
-                std::slice::from_ref(&external_actor_id),
-            )
-            .await
-        {
-            Ok(o) => o,
-            Err(e) => {
-                let _ = self
-                    .send_reply(&req_id, &format!("Error (session): {}", e), &ws_sink)
-                    .await;
-                return;
-            }
-        };
-
-        if let Err(e) = self
-            .store
-            .add_participant(&outcome.session_id, &external_actor_id)
-            .await
-        {
-            eprintln!("[WeCom] add_participant failed: {}", e);
-        }
-
-        // Slash-command dispatch: two-layer (agent-advertised commands first, then
-        // gateway meta-commands: /help, /model, /sessions,
-        // /workspace, /new, /stop, /ctx).
-        if let Some((cmd_name, cmd_arg)) = commands::parse_slash(text_content.trim()) {
-            use std::sync::{Arc as SArc, Mutex};
-            let locale = i18n::locale();
-            let reply_cell: SArc<Mutex<Option<String>>> = SArc::new(Mutex::new(None));
-            let reply_cell_clone = reply_cell.clone();
-            let handled = commands::dispatch(
-                &cmd_name,
-                cmd_arg.as_deref(),
-                self.agent.as_ref(),
-                self.store.as_ref(),
-                &outcome.acp_session_id,
-                locale,
-                move |r| {
-                    *reply_cell_clone.lock().unwrap() = Some(r);
-                },
-            )
-            .await
-            .unwrap_or(false);
-            let reply_text = reply_cell.lock().unwrap().take();
-            if handled {
-                if let Some(text) = reply_text {
-                    let _ = self.send_reply(&req_id, &text, &ws_sink).await;
-                }
-            } else {
-                let _ = self
-                    .send_reply(
-                        &req_id,
-                        &i18n::t(
-                            i18n::MsgKey::UnknownCommand(&format!("/{cmd_name}")),
-                            locale,
-                        ),
-                        &ws_sink,
-                    )
-                    .await;
-            }
-            return;
-        }
-
-        // Dual-write attachments: save to local cache for the agent to read,
-        // then upload to backend attachment storage in parallel with the agent turn so the
-        // bot reply latency is unaffected by upload time.
-        let local_dir = dirs::config_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-            .join("amux")
-            .join("attachments")
-            .join(&outcome.session_id);
-        if !inbound_files.is_empty() {
-            if let Err(e) = tokio::fs::create_dir_all(&local_dir).await {
-                tracing::warn!("attachment cache mkdir failed: {e}");
-            }
-        }
-
-        // (bucket_path, filename, mime, size, local_path, inline_data_url)
-        // `inline_data_url` is set for small images so the Tauri/iOS clients can
-        // render an actual thumbnail (same convention the desktop client's own
-        // upload path uses) instead of a bare filename placeholder.
-        type AttachmentDescriptor = (
-            String,
-            String,
-            String,
-            usize,
-            Option<String>,
-            Option<String>,
-        );
-        const INLINE_IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
-        let mut attachment_descriptors: Vec<AttachmentDescriptor> = Vec::new();
-        let mut upload_handles: Vec<tokio::task::JoinHandle<Result<String, String>>> = Vec::new();
-        let mut local_paths_for_prompt: Vec<String> = Vec::new();
-
-        for f in inbound_files {
-            let local_path = local_dir.join(&f.filename);
-            if let Err(e) = tokio::fs::write(&local_path, &f.bytes).await {
-                tracing::warn!("attachment local write failed for {:?}: {e}", local_path);
-                continue;
-            }
-            let local_path_str = local_path.to_string_lossy().to_string();
-            local_paths_for_prompt.push(local_path_str.clone());
-
-            let bucket_path = format!(
-                "{}/{}/{}-{}",
-                self.team_id,
-                outcome.session_id,
-                uuid::Uuid::new_v4(),
-                f.filename,
-            );
-
-            let inline_data_url =
-                if f.mime.starts_with("image/") && f.bytes.len() <= INLINE_IMAGE_MAX_BYTES {
-                    Some(format!(
-                        "data:{};base64,{}",
-                        f.mime,
-                        base64::engine::general_purpose::STANDARD.encode(&f.bytes)
-                    ))
-                } else {
-                    None
-                };
-
-            attachment_descriptors.push((
-                bucket_path.clone(),
-                f.filename.clone(),
-                f.mime.clone(),
-                f.bytes.len(),
-                Some(local_path_str),
-                inline_data_url,
-            ));
-
-            // Parallel upload — does not block the agent turn.
-            let store = self.store.clone();
-            let mime = f.mime.clone();
-            let bytes = f.bytes;
-            upload_handles.push(tokio::spawn(async move {
-                store
-                    .upload_attachment(&bucket_path, bytes, &mime)
-                    .await
-                    .map_err(|e| e.to_string())
-            }));
-        }
-
-        // Build prompt with local-path references so the agent can `Read` them.
-        let mut prompt_text = text_content.clone();
-        if !local_paths_for_prompt.is_empty() {
-            prompt_text.push_str("\n\n[Attached files — read these with the Read tool]\n");
-            for p in &local_paths_for_prompt {
-                prompt_text.push_str(&format!("- {}\n", p));
-            }
-        }
-        // Partial failure: the turn goes ahead on what did arrive, but the agent
-        // is told what didn't so it can say so instead of ignoring it.
-        if !media_errors.is_empty() {
-            prompt_text.push_str(&format!(
-                "\n[{} attachment(s) the user sent could not be retrieved: {}]\n",
-                media_errors.len(),
-                media_errors.join("; ")
-            ));
-        }
-
-        // Persist the inbound message BEFORE the turn, not after it.
-        //
-        // This used to sit below `send_prompt_streamed`, so the user's own
-        // message did not exist anywhere until the agent had finished — a turn
-        // that takes three minutes left every other client (the desktop, iOS)
-        // showing nothing at all for three minutes, then both rows at once.
-        // The cost is that a message carrying attachments now waits for their
-        // upload before the turn starts; a text-only message (the common case)
-        // has no handles to await and starts immediately.
-        //
-        // Upload failure falls back to a metadata-only record pointing at the
-        // local cache so the agent's reply still has context, even though Tauri
-        // clients won't be able to download.
-        let mut attachments: Vec<AttachmentRecord> = Vec::new();
-        // Rendering fragments for the stored user-message content, using the
-        // same placeholder conventions the desktop client's own upload path
-        // produces (`packages/app/src/packages/ai/message.tsx::parseMessageContent`):
-        // images small enough to inline get `[Image: name]\n<data-url>` so
-        // Tauri/iOS clients render a real thumbnail; everything else falls
-        // back to a `[Attachment: name] (size)` chip.
-        let mut content_fragments: Vec<String> = Vec::new();
-        for ((bucket_path, filename, mime, size, local_path, inline_data_url), handle) in
-            attachment_descriptors.into_iter().zip(upload_handles)
-        {
-            let upload_result = handle
-                .await
-                .unwrap_or_else(|_| Err("upload task panic".into()));
-            if let Err(e) = &upload_result {
-                tracing::warn!("attachment upload failed (kept local copy): {e}");
-            }
-            let bucket_path = if upload_result.is_ok() {
-                bucket_path
-            } else {
-                String::new()
-            };
-
-            content_fragments.push(match &inline_data_url {
-                Some(data_url) => format!("[Image: {}]\n{}", filename, data_url),
-                None => format!("[Attachment: {}] ({})", filename, human_readable_size(size)),
-            });
-
-            attachments.push(AttachmentRecord {
-                filename,
-                mime,
-                size,
-                bucket_path,
-                local_path,
-            });
-        }
-
-        // Build the stored user-message content so Tauri/iOS clients see the
-        // attached files rendered (image thumbnail or file chip) rather than a
-        // raw text placeholder.
-        let user_content = if content_fragments.is_empty() {
-            text_content.clone()
-        } else if text_content.trim().is_empty() {
-            content_fragments.join("\n")
-        } else {
-            format!("{}\n{}", text_content, content_fragments.join("\n"))
-        };
-
-        if let Err(e) = self
-            .store
-            .record_message_with_attachments(
-                &outcome.session_id,
-                &external_actor_id,
-                &user_content,
-                Some(&msg.msgid),
-                attachments,
-            )
-            .await
-        {
-            eprintln!(
-                "[WeCom] record_message_with_attachments (user) failed: {}",
-                e
-            );
-        }
-
-        // Show an immediate placeholder so the sender doesn't see "no reply"
-        // while the agent thinks. WeCom's stream msgtype lets us replace the
-        // bubble's content by re-sending the same `id` — first chunk goes
-        // out with finish=false, the final reply re-uses the same id with
-        // finish=true so the placeholder is overwritten in place.
-        let stream_id = uuid::Uuid::new_v4().to_string();
-        let pacer = StreamPacer::new(&req_id, &stream_id, &ws_sink);
-        let _ = pacer.send("💭 正在思考…", false).await;
-
-        // Progressive rendering: `send_prompt_streamed` pushes the cumulative
-        // reply text as the agent produces it, and each update overwrites the
-        // same bubble. Runs on its own task so the turn is never blocked by a
-        // slow WebSocket write; dropping `update_tx` (when the turn returns)
-        // closes the channel and ends the task.
-        let (update_tx, mut update_rx) = mpsc::channel::<String>(32);
-        let stream_task = {
-            let pacer = pacer.clone();
-            tokio::spawn(async move {
-                while let Some(text) = update_rx.recv().await {
-                    let latest = drain_to_latest(text, &mut update_rx);
-                    if let Err(e) = pacer.send(&latest, false).await {
-                        eprintln!("[WeCom] Stream update failed: {}", e);
-                        break;
-                    }
-                }
-            })
-        };
-
-        // Drive a single agent turn through amuxd — runs in parallel with the
-        // attachment uploads spawned above.
-        let reply_result = self
-            .agent
-            .send_prompt_streamed(
-                &outcome.acp_session_id,
-                &sender_display_name,
-                &prompt_text,
-                update_tx,
-                wecom_caps().turn_timeout(),
-            )
-            .await;
-
-        // Drain pending updates before the final frame: a `finish=false`
-        // chunk landing after `finish=true` would re-open the bubble and
-        // leave stale text in it.
-        let _ = stream_task.await;
-
-        let reply = match reply_result {
-            Ok(r) => r,
-            Err(e) => {
-                self.send_terminal_frame(&pacer, &format!("Error: {}", e), &ws_sink)
-                    .await;
-                return;
-            }
-        };
-
-        if let Err(e) = self
-            .store
-            .record_agent_reply(
-                &outcome.session_id,
-                &self.primary_agent_actor_id,
-                &reply.reply_text,
-                None,
-            )
-            .await
-        {
-            eprintln!("[WeCom] record_agent_reply failed: {}", e);
-        }
-
-        // Group chats prepend a plain `@userid` so the final stream chunk
-        // visually marks who the reply is for. WeCom's stream msgtype has no
-        // documented mention markup (`<@id>` rendered as literal text), so
-        // this is presentational only — no push notification, no clickable
-        // mention. Single/external-single chats stay prefix-free.
-        let final_text = if chat_type_str == "group" {
-            format!("@{} {}", userid, reply.reply_text)
-        } else {
-            reply.reply_text.clone()
-        };
-
-        self.send_terminal_frame(&pacer, &final_text, &ws_sink)
-            .await;
-    }
-
-    /// Deliver the frame the user is left with, and confirm it actually landed.
-    ///
-    /// WeCom acks every `aibot_respond_msg` on the message's req_id, and a
-    /// rewrite that loses a race against another write to the same bubble comes
-    /// back as errcode 6000 — the frame is silently dropped. Unchecked, that
-    /// leaves the sender looking at "💭 正在思考…" forever while the agent's
-    /// answer is already recorded everywhere else. The documented remedy is to
-    /// retry; a fresh stream id (a new bubble, so a different resource) is the
-    /// last resort.
-    ///
-    /// Frames of a turn all share one req_id, so a straggling ack for an
-    /// earlier progressive frame could in principle be matched here. Pacing
-    /// makes that unlikely, and the cost is at worst one redundant rewrite with
-    /// identical content.
-    async fn send_terminal_frame(&self, pacer: &StreamPacer, text: &str, ws_sink: &WsSink) {
-        let req_id = pacer.req_id.clone();
-        for attempt in 1..=3 {
-            let (tx, rx) = oneshot::channel();
-            self.pending_responses
-                .lock()
-                .await
-                .insert(req_id.clone(), tx);
-
-            if let Err(e) = pacer.send(text, true).await {
-                eprintln!("[WeCom] Final reply send failed: {}", e);
-                self.pending_responses.lock().await.remove(&req_id);
-                return;
-            }
-
-            match tokio::time::timeout(TERMINAL_FRAME_ACK_TIMEOUT, rx).await {
-                Ok(Ok(ack)) => {
-                    let errcode = ack_errcode(&ack);
-                    if errcode == 0 {
-                        return;
-                    }
-                    eprintln!(
-                        "[WeCom] Final reply rejected (code={}), attempt {}/3",
-                        errcode, attempt
-                    );
-                }
-                // No verdict in time, or the waiter was dropped. The socket
-                // accepted the frame and that is the only evidence available,
-                // so treat it as delivered rather than duplicating the reply.
-                _ => {
-                    self.pending_responses.lock().await.remove(&req_id);
-                    return;
-                }
-            }
-        }
-
-        eprintln!("[WeCom] Final reply still rejected; retrying in a fresh bubble");
-        if let Err(e) = self.send_reply(&req_id, text, ws_sink).await {
-            eprintln!("[WeCom] Final reply fallback failed: {}", e);
-        }
-    }
-
-    async fn mark_message_processed(&self, msg_id: &str) -> bool {
-        let mut tracker = self.processed_messages.write().await;
-        !tracker.is_duplicate(msg_id)
     }
 
     /// Handle enter_chat event — send welcome message
@@ -2726,39 +1945,6 @@ impl WeComGateway {
         Ok(())
     }
 
-    async fn send_stream_chunk(
-        &self,
-        req_id: &str,
-        stream_id: &str,
-        content: &str,
-        finish: bool,
-        ws_sink: &WsSink,
-    ) -> Result<(), String> {
-        use futures_util::SinkExt;
-
-        let reply = serde_json::json!({
-            "cmd": "aibot_respond_msg",
-            "headers": { "req_id": req_id },
-            "body": {
-                "msgtype": "stream",
-                "stream": {
-                    "id": stream_id,
-                    "finish": finish,
-                    "content": content,
-                },
-            }
-        });
-
-        ws_sink
-            .lock()
-            .await
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                reply.to_string().into(),
-            ))
-            .await
-            .map_err(|e| format!("Failed to send reply: {}", e))
-    }
-
     /// Static version of send_stream_chunk for use in spawned tasks (no &self needed)
     async fn send_stream_chunk_static(
         req_id: &str,
@@ -2832,13 +2018,6 @@ impl WeComGateway {
             chatid, chat_type
         );
         Ok(())
-    }
-
-    /// Simple non-streaming reply (for slash commands and errors)
-    async fn send_reply(&self, req_id: &str, text: &str, ws_sink: &WsSink) -> Result<(), String> {
-        let stream_id = uuid::Uuid::new_v4().to_string();
-        self.send_stream_chunk(req_id, &stream_id, text, true, ws_sink)
-            .await
     }
 
     /// Send a WS command and wait for the response (matched by req_id).
@@ -3359,16 +2538,6 @@ mod mime_tests {
     }
 
     #[test]
-    fn mime_to_ext_xlsx() {
-        assert_eq!(mime_to_ext(XLSX_MIME), "xlsx");
-    }
-
-    #[test]
-    fn mime_to_ext_unknown_returns_bin() {
-        assert_eq!(mime_to_ext("application/x-totally-unknown"), "bin");
-    }
-
-    #[test]
     fn ext_from_filename_xlsx_with_chinese_stem() {
         assert_eq!(ext_from_filename("Q3 报表.xlsx"), Some("xlsx".to_string()));
     }
@@ -3520,45 +2689,6 @@ mod message_parts_tests {
 mod stream_frame_tests {
     use super::*;
     use serde_json::json;
-
-    #[tokio::test]
-    async fn a_burst_of_updates_collapses_to_the_newest() {
-        let (tx, mut rx) = mpsc::channel::<String>(8);
-        for text in ["He", "Hell", "Hello wo", "Hello world"] {
-            tx.send(text.to_string()).await.unwrap();
-        }
-        let first = rx.recv().await.unwrap();
-        assert_eq!(drain_to_latest(first, &mut rx), "Hello world");
-    }
-
-    #[tokio::test]
-    async fn a_lone_update_survives_unchanged() {
-        let (tx, mut rx) = mpsc::channel::<String>(8);
-        tx.send("only".to_string()).await.unwrap();
-        let first = rx.recv().await.unwrap();
-        assert_eq!(drain_to_latest(first, &mut rx), "only");
-    }
-
-    #[test]
-    fn version_conflict_ack_is_read_as_a_rejection() {
-        // The shape WeCom actually sent when the reply went missing.
-        let ack = json!({
-            "errcode": 6000,
-            "errmsg": "more than one callers at the same time, data version conflict. please retry later"
-        });
-        assert_eq!(ack_errcode(&ack), 6000);
-    }
-
-    #[test]
-    fn rejection_nested_under_body_is_found_too() {
-        assert_eq!(ack_errcode(&json!({ "body": { "errcode": 45033 }})), 45033);
-    }
-
-    #[test]
-    fn a_clean_ack_reads_as_success() {
-        assert_eq!(ack_errcode(&json!({ "errcode": 0, "body": {}})), 0);
-        assert_eq!(ack_errcode(&json!({ "body": { "msgid": "x" }})), 0);
-    }
 }
 
 #[cfg(test)]

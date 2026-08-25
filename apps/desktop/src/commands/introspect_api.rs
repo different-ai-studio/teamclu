@@ -115,6 +115,18 @@ pub async fn start_introspect_api(app: AppHandle) -> anyhow::Result<()> {
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
+/// Proactive WeCom send from the agent's `introspect` tool.
+///
+/// Forwards to amuxd rather than calling `teamclu_gateway::wecom::*` here
+/// (#933). This used to be the third way a message could reach a chat —
+/// alongside the gateway and the MCP `send` tool — and the only one the daemon
+/// never saw: it read WeCom credentials out of the workspace `teamclu.json`,
+/// pushed over its own HTTP client, and left no trace anywhere a user could
+/// look. Now channel I/O happens in one process, with one set of credentials
+/// and one placeholder-target guard.
+///
+/// Still does not produce a session row: `channel-send` carries no reply token
+/// and this caller has no session to attach to. That half of #933 stays open.
 async fn handle_send_wecom(app: &AppHandle, body: &[u8]) -> Result<String, String> {
     use base64::Engine as _;
 
@@ -133,47 +145,54 @@ async fn handle_send_wecom(app: &AppHandle, body: &[u8]) -> Result<String, Strin
         target
     };
 
-    // Parse target format: "single:{userid}" or "group:{chatid}" or bare chatid
-    let (chatid, chat_type) = if let Some(userid) = target.strip_prefix("single:") {
-        (userid, 1u32)
+    // This API's shape is `single:`/`group:`/bare; amuxd dispatch speaks
+    // `user:`/`chat:`. Translate here rather than teaching the daemon a second
+    // target vocabulary.
+    let dispatch_target = if let Some(userid) = target.strip_prefix("single:") {
+        format!("user:{userid}")
     } else if let Some(chatid) = target.strip_prefix("group:") {
-        (chatid, 2u32)
+        format!("chat:{chatid}")
     } else {
-        // Treat bare value as single user (chat_type=1)
-        (target, 1u32)
+        format!("user:{target}")
     };
 
-    // Send text message if provided
-    if !message.is_empty() {
-        teamclu_gateway::wecom::send_proactive_message(chatid, chat_type, message).await?;
+    let media_bytes = match v.get("media_base64").and_then(|v| v.as_str()) {
+        Some(b64) => Some(
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| format!("Invalid media base64: {}", e))?,
+        ),
+        None => None,
+    };
+    let media_filename = v
+        .get("media_filename")
+        .and_then(|v| v.as_str())
+        .unwrap_or("file");
+
+    if message.is_empty() && media_bytes.is_none() {
+        return Err("send-wecom: 'message' or 'media_base64' is required".to_string());
     }
 
-    // Send media file if provided (image/voice/video/file)
-    let media_sent = if let Some(b64) = v.get("media_base64").and_then(|v| v.as_str()) {
-        let data = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .map_err(|e| format!("Invalid media base64: {}", e))?;
-        let filename = v
-            .get("media_filename")
-            .and_then(|v| v.as_str())
-            .unwrap_or("file");
-        let media_type = v
-            .get("media_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or_else(|| detect_media_type(filename));
+    let media = media_bytes
+        .as_ref()
+        .map(|bytes| super::cron::amuxd_client::ChannelSendMedia {
+            bytes,
+            filename: media_filename,
+        });
 
-        teamclu_gateway::wecom::upload_and_send_media(
-            chatid, chat_type, &data, filename, media_type,
-        )
-        .await?;
-        true
-    } else {
-        false
-    };
+    super::cron::amuxd_client::channel_send_media_at(
+        &super::amuxd_control::endpoint(),
+        "wecom",
+        &dispatch_target,
+        message,
+        media,
+    )
+    .await?;
 
     Ok(format!(
-        r#"{{"ok":true,"chatid":"{}","chat_type":{},"media_sent":{}}}"#,
-        chatid, chat_type, media_sent
+        r#"{{"ok":true,"target":"{}","media_sent":{}}}"#,
+        dispatch_target,
+        media_bytes.is_some()
     ))
 }
 
@@ -279,21 +298,6 @@ fn resolve_wecom_owner_id(app: &AppHandle) -> Result<String, String> {
         )?;
 
     Ok(owner_id)
-}
-
-/// Detect WeCom media type from filename extension.
-fn detect_media_type(filename: &str) -> &'static str {
-    let ext = filename
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" => "image",
-        "mp3" | "amr" | "wav" | "ogg" | "m4a" | "aac" => "voice",
-        "mp4" | "mov" | "avi" | "mkv" | "wmv" => "video",
-        _ => "file",
-    }
 }
 
 // ─── Env Var Handlers ────────────────────────────────────────────────────────

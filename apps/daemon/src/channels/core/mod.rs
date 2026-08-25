@@ -97,6 +97,48 @@ pub trait SessionWriter: Send + Sync {
     ) -> Result<SessionAttachment, CoreError>;
 }
 
+/// An object-store-safe form of `filename`, for use inside a bucket key.
+///
+/// The attachment store rejects keys with non-ASCII bytes — a reply carrying
+/// `诗一首.md` came back `validation_failed: Invalid key`, so the file reached
+/// the chat while the session copy had no download. Only the *path* is
+/// sanitized: `AttachmentRecord.filename` keeps the original, which is what
+/// clients display.
+pub fn safe_object_name(filename: &str) -> String {
+    fn scrub(part: &str) -> String {
+        let mut out = String::with_capacity(part.len());
+        let mut last_underscore = false;
+        for c in part.chars() {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
+                out.push(c);
+                last_underscore = false;
+            } else if !last_underscore {
+                // Collapse runs, so a wholly non-ASCII name does not become a
+                // string of underscores as long as the original.
+                out.push('_');
+                last_underscore = true;
+            }
+        }
+        out.trim_matches(['_', '.'].as_slice()).to_string()
+    }
+
+    // Stem and extension are scrubbed apart, because trimming the joined
+    // string ate the dot and turned `诗一首.md` into `md` — an extension
+    // masquerading as the whole name.
+    let (stem, ext) = match filename.rsplit_once('.') {
+        Some((stem, ext)) if !ext.is_empty() => (stem, Some(ext)),
+        _ => (filename, None),
+    };
+    let stem = match scrub(stem) {
+        s if s.is_empty() => "file".to_string(),
+        s => s,
+    };
+    match ext.map(scrub) {
+        Some(e) if !e.is_empty() => format!("{stem}.{e}"),
+        _ => stem,
+    }
+}
+
 /// An attachment resolved to bytes, ready to upload.
 #[derive(Debug, Clone)]
 pub struct PendingUpload {

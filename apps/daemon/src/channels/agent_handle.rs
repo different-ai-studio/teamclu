@@ -153,14 +153,12 @@ pub struct AmuxdAgentHandle {
     /// Per-session workspace override: logical_session_id → workspace_id.
     /// In-memory only — cleared across daemon restarts.
     pub workspace_override: Arc<Mutex<HashMap<String, String>>>,
-    /// Per-bot (WeCom) runtime config keyed by bot_id. Consulted in
-    /// `resolve_or_spawn` and `send_prompt`, and rewritten in place by
-    /// `set_workspace` so a `/workspace` switch takes effect without waiting
-    /// for a `channel-reload`.
+    /// Per-bot (WeCom) runtime config keyed by bot_id, consulted in
+    /// `resolve_or_spawn` and `send_prompt`.
+    ///
+    /// Read-only from a chat's point of view since #933: `/workspace` no longer
+    /// rewrites it (or `daemon.toml`) — it scopes to the session instead.
     pub bot_configs: Arc<Mutex<HashMap<String, BotRuntimeConfig>>>,
-    /// `daemon.toml`, so a bot's new default workspace survives a restart
-    /// instead of living only in the map above.
-    pub daemon_config_path: std::path::PathBuf,
 }
 
 /// Returned by `resolve_or_spawn`. `spawned` is true iff this call was
@@ -401,61 +399,6 @@ impl AmuxdAgentHandle {
         Ok(looked_up
             .and_then(|(_, binding)| binding)
             .filter(|b| !b.is_empty()))
-    }
-
-    /// The WeCom bot this session belongs to, if any. Picking a per-bot runtime
-    /// config is best-effort, so a failed lookup falls back to the global
-    /// default here rather than failing the caller.
-    async fn bot_id_for_session(&self, session: &AmuxSessionId) -> Option<String> {
-        let binding = self.binding_for_session(session).await.ok().flatten()?;
-        bot_id_from_binding(&binding).map(str::to_string)
-    }
-
-    /// Point `bot_id` at `workspace_id` in both `daemon.toml` and the live
-    /// config map. The on-disk write goes first: if it fails the caller gets
-    /// an error and the running config is left untouched, rather than drifting
-    /// out of sync with the file it will be reloaded from.
-    async fn persist_bot_workspace(
-        &self,
-        bot_id: &str,
-        workspace_id: &str,
-    ) -> Result<(), AgentError> {
-        crate::config::edit::set_wecom_bot_workspace(
-            &self.daemon_config_path,
-            bot_id,
-            workspace_id,
-        )
-        .map_err(|e| AgentError::Internal(format!("persist bot workspace: {e}")))?;
-
-        let path = self.workspace_dir_for_id(workspace_id).await?;
-        let mut configs = self.bot_configs.lock().await;
-        let config = configs.entry(bot_id.to_string()).or_default();
-        config.workspace_id = Some(workspace_id.to_string());
-        config.workspace_dir = Some(path);
-        Ok(())
-    }
-
-    /// Drop every runtime belonging to `bot_id` so the bot's other chats pick
-    /// up the new workspace on their next message instead of staying on the
-    /// old one until they happen to be reset.
-    async fn reset_sessions_for_bot(&self, bot_id: &str) {
-        let dropped: Vec<String> = {
-            let mut map = self.logical_to_acp.lock().await;
-            let victims: Vec<String> = map
-                .iter()
-                .filter(|(_, s)| bot_id_from_binding(&s.binding) == Some(bot_id))
-                .map(|(_, s)| s.real_acp_sid.clone())
-                .collect();
-            map.retain(|_, s| bot_id_from_binding(&s.binding) != Some(bot_id));
-            victims
-        };
-        if dropped.is_empty() {
-            return;
-        }
-        let mut mgr = self.manager.lock().await;
-        for real in dropped {
-            let _ = mgr.cancel_by_acp_session(&real).await;
-        }
     }
 
     /// Resolve a workspace_id to its local path via the `WorkspaceResolver`
@@ -1532,22 +1475,19 @@ impl AgentHandle for AmuxdAgentHandle {
             }
             Some(_) => {}
         }
-        // On a WeCom bot this is the bot's *default*, not just this chat's:
-        // persist it to daemon.toml and update the in-memory config so every
-        // one of that bot's sessions picks it up, this one included.
+        // Scoped to this session, always (#933).
         //
-        // No per-session override is written in that case — it outranks the
-        // bot config, so leaving one behind would pin this chat to today's
-        // choice and silently ignore the next `/workspace`.
-        if let Some(bot_id) = self.bot_id_for_session(session).await {
-            self.persist_bot_workspace(&bot_id, workspace_id).await?;
-            self.workspace_override.lock().await.remove(session);
-            self.reset_sessions_for_bot(&bot_id).await;
-            return Ok(());
-        }
-
-        // Channels with no bot identity (Discord, Feishu, …) have nowhere to
-        // persist a default, so the switch stays scoped to this session.
+        // On a WeCom bot this used to write the bot's *default* into
+        // `daemon.toml` and reset every one of that bot's sessions. There is no
+        // permission model on a chat command, so that meant anyone who could
+        // message the bot — in any chat it was in — could repoint everybody
+        // else's workspace and drop their sessions. A transport adapter has no
+        // business writing daemon config, and a chat command should change the
+        // chat it was typed in.
+        //
+        // The cost is that the choice no longer survives a daemon restart for
+        // WeCom; setting a bot's default is a settings operation, not a thing
+        // a passer-by types into a group chat.
         {
             let mut overrides = self.workspace_override.lock().await;
             overrides.insert(session.to_string(), workspace_id.to_string());
@@ -1609,7 +1549,6 @@ pub(crate) mod tests {
             workspace_resolver: Arc::new(crate::config::WorkspaceResolver::new(backend)),
             workspace_override: Arc::new(Mutex::new(HashMap::new())),
             bot_configs: Arc::new(Mutex::new(HashMap::new())),
-            daemon_config_path: std::path::PathBuf::from("/nonexistent/daemon.toml"),
         }
     }
 

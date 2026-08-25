@@ -416,8 +416,15 @@ pub fn t(key: MsgKey, locale: Locale) -> String {
         (NoWorkspaceNumber(n, total), En) => format!("No workspace #{}. Use /workspace to list them ({} available).", n, total),
         (NoWorkspaceNumber(n, total), ZhCN) => format!("没有第 #{} 个工作区。使用 /workspace 查看列表（共 {} 个）。", n, total),
 
-        (DefaultWorkspaceSet(id), En) => format!("Default workspace set: {}", id),
-        (DefaultWorkspaceSet(id), ZhCN) => format!("已设置默认工作区: {}", id),
+        // Scoped to this chat and not durable since #933 — `/workspace` no
+        // longer writes daemon.toml, so saying "default" would promise more
+        // than it does.
+        (DefaultWorkspaceSet(id), En) => {
+            format!("Workspace for this chat: {} (until the daemon restarts)", id)
+        }
+        (DefaultWorkspaceSet(id), ZhCN) => {
+            format!("本会话工作区已切换: {}（daemon 重启后失效）", id)
+        }
 
         (NoSkillsFound, En) => "No workspace skills found.".into(),
         (NoSkillsFound, ZhCN) => "未找到工作区技能。".into(),

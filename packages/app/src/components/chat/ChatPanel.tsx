@@ -1,7 +1,6 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { AlertCircle, Archive, ArrowLeft, Bot, Loader2, RefreshCw } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
 import {
   cn,
   isTauri,
@@ -983,17 +982,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     const modelID = idx > 0 ? activeSessionModelId.slice(idx + 1) : activeSessionModelId;
     setStoreSelectedModel({ providerID, modelID, name: modelID });
   }, [activeSessionModelId, setStoreSelectedModel]);
-
-  React.useEffect(() => {
-    if (!isTauri() || !activeSessionId) return;
-
-    invoke<boolean>("sync_gateway_session_model", {
-      sessionId: activeSessionId,
-      model: activeSessionModelId || null,
-    }).catch((error) => {
-      console.warn("[ChatPanel] Failed to sync gateway session model:", error);
-    });
-  }, [activeSessionId, activeSessionModelId]);
 
   // Per-actor draft + voice insert live in ChatInputArea.
 
