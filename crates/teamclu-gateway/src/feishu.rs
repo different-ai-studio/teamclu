@@ -2,7 +2,6 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, RwLock};
 
 use crate::feishu_config::{FeishuConfig, FeishuGatewayStatus, FeishuGatewayStatusResponse};
-use crate::i18n;
 
 use crate::{
     AgentHandle, ChannelStore, FilterResult, ProcessedMessageTracker, MAX_PROCESSED_MESSAGES,
@@ -636,6 +635,12 @@ async fn get_ws_endpoint(app_id: &str, app_secret: &str) -> Result<(String, i32)
 }
 
 /// Bundle of state passed to spawned message handler tasks.
+///
+/// The agent / store / actor fields are inert since the inline turn path went
+/// away — the core owns all of that now. They stay only because the caller
+/// still threads them in; dropping them means reshaping `FeishuGateway::new`
+/// too, which is cleanup for its own commit (#933).
+#[allow(dead_code)]
 #[derive(Clone)]
 struct HandlerContext {
     config: Arc<RwLock<FeishuConfig>>,
@@ -1322,314 +1327,30 @@ async fn handle_binary_frame(
 
 /// Handle an im.message.receive_v1 event
 async fn handle_message_event(event: &serde_json::Value, ctx: &HandlerContext) {
-    // The core pipeline, when the daemon has wired it. Dedup lives inside it,
-    // so this branch sits above the inline tracker.
-    if let Some(sink) = ctx.inbound_sink.clone() {
-        match normalize_event(event, &ctx.app_id) {
-            Some(inbound) => sink.accept(inbound).await,
-            None => println!("[Feishu] Event carried nothing actionable; ignoring"),
-        }
+    let Some(sink) = ctx.inbound_sink.clone() else {
+        println!("[Feishu] no core pipeline wired; dropping event");
         return;
-    }
+    };
 
-    let sender = &event["sender"];
-    let sender_open_id = sender["sender_id"]["open_id"]
+    // The allowlist stays here, not in the core: it is per-channel config and
+    // the core has no policy layer. Losing it with the inline handler would
+    // have quietly opened the bot to every chat it is in.
+    let chat_id = event["message"]["chat_id"].as_str().unwrap_or("");
+    let sender_id = event["sender"]["sender_id"]["open_id"]
         .as_str()
-        .unwrap_or("")
-        .to_string();
-    let sender_type = sender["sender_type"].as_str().unwrap_or("");
-
-    if sender_type == "app" {
-        println!("[Feishu] Ignoring bot message");
-        return;
-    }
-
-    let message = &event["message"];
-    let message_id = message["message_id"].as_str().unwrap_or("").to_string();
-    let chat_id = message["chat_id"].as_str().unwrap_or("").to_string();
-    let chat_type = message["chat_type"].as_str().unwrap_or("");
-    let msg_type = message["message_type"].as_str().unwrap_or("");
-
-    println!(
-        "[Feishu] Message: sender={}, chat_id={}, chat_type={}, msg_type={}",
-        sender_open_id, chat_id, chat_type, msg_type
-    );
-
-    // Extract text content
-    let content_str = message["content"].as_str().unwrap_or("{}");
-    let content_json: serde_json::Value = serde_json::from_str(content_str).unwrap_or_default();
-
-    let text_content = match msg_type {
-        "text" => content_json["text"].as_str().unwrap_or("").to_string(),
-        "post" => extract_post_text(&content_json),
-        "image" => {
-            // Inbound media attachments are not supported in the v2 agent path (text-only).
-            println!("[Feishu] Ignoring inbound image (text-only agent path)");
-            return;
-        }
-        _ => {
-            println!("[Feishu] Unsupported message type: {}", msg_type);
-            return;
-        }
-    };
-
-    // Clean @mentions
-    let clean_text = clean_at_mentions(&text_content);
-
-    if clean_text.is_empty() {
-        return;
-    }
-
-    // Group only flows when the bot is @-mentioned (per spec — only @bot exchanges persist).
-    // Feishu's subscription model only delivers group messages when the bot is mentioned,
-    // but guard explicitly via the `mentions` field for safety.
-    if chat_type == "group" {
-        let mentions_bot = message["mentions"]
-            .as_array()
-            .map(|arr| !arr.is_empty())
-            .unwrap_or(false);
-        if !mentions_bot {
-            println!("[Feishu] Group message without bot @-mention, ignoring");
-            return;
-        }
-    }
-
-    // Check config filter
+        .unwrap_or("");
     let cfg = ctx.config.read().await.clone();
-    let filter = check_feishu_allowed(&cfg, &chat_id, &sender_open_id);
-    let token_manager = TokenManager::new(&ctx.app_id, &ctx.app_secret);
-
-    match filter {
+    match check_feishu_allowed(&cfg, chat_id, sender_id) {
         FilterResult::Allow => {}
-        FilterResult::Ignore => return,
-        FilterResult::UserNotAllowed => {
-            if let Ok(token) = token_manager.get_tenant_token().await {
-                let _ = reply_feishu_message(&token, &message_id,
-                    "Sorry, you are not authorized to use this bot. Please contact the administrator to request access.").await;
-            }
-            return;
-        }
-        FilterResult::ChannelNotConfigured => {
-            if let Ok(token) = token_manager.get_tenant_token().await {
-                let _ = reply_feishu_message(&token, &message_id,
-                    "This chat is not configured for the bot. Please ask the administrator to add this chat in TeamClu settings.").await;
-            }
+        other => {
+            println!("[Feishu] chat={chat_id} blocked by policy: {other:?}");
             return;
         }
     }
 
-    let locale = i18n::locale();
-
-    // Slash commands run off the one shared table. `/help` and `/skills` need
-    // no session, so they answer here rather than opening one; everything else
-    // falls through to the session-resolve path below and dispatches there.
-    let slash = crate::commands::parse_slash(&clean_text);
-    if let Some((cmd_name, cmd_arg)) = &slash {
-        if !crate::commands::needs_session(cmd_name) {
-            if let Ok(Some(reply_text)) = crate::commands::run_slash(
-                cmd_name,
-                cmd_arg.as_deref(),
-                ctx.agent.as_ref(),
-                ctx.store.as_ref(),
-                &String::new(),
-                locale,
-            )
-            .await
-            {
-                if let Ok(token) = token_manager.get_tenant_token().await {
-                    let _ = reply_feishu_message(&token, &message_id, &reply_text).await;
-                }
-                return;
-            }
-        }
-    }
-
-    // Build the binding URI: feishu://{app_id}/{chat_id}
-    let binding = crate::binding::feishu(&ctx.app_id, &chat_id);
-
-    // Resolve / create the external actor for the message author.
-    let sender_display = if sender_open_id.is_empty() {
-        "feishu-user".to_string()
-    } else {
-        sender_open_id.clone()
-    };
-
-    let external_actor_id = match ctx
-        .store
-        .ensure_external_actor(
-            &ctx.team_id,
-            "feishu",
-            &crate::binding::urn_feishu_user(&ctx.app_id, &sender_open_id),
-            &sender_display,
-        )
-        .await
-    {
-        Ok(id) => id,
-        Err(e) => {
-            if let Ok(token) = token_manager.get_tenant_token().await {
-                let _ = reply_feishu_message(&token, &message_id, &format!("Error (actor): {}", e))
-                    .await;
-            }
-            return;
-        }
-    };
-
-    // Build session title: DMs vs. groups.
-    let session_title = if chat_type == "p2p" {
-        format!("Feishu DM: {}", sender_display)
-    } else {
-        format!("Feishu group: {}", chat_id)
-    };
-
-    let outcome = match ctx
-        .store
-        .ensure_session(
-            &ctx.team_id,
-            &binding,
-            &session_title,
-            &ctx.primary_agent_actor_id,
-            &ctx.agent_owner_actor_ids,
-            std::slice::from_ref(&external_actor_id),
-        )
-        .await
-    {
-        Ok(o) => o,
-        Err(e) => {
-            if let Ok(token) = token_manager.get_tenant_token().await {
-                let _ =
-                    reply_feishu_message(&token, &message_id, &format!("Error (session): {}", e))
-                        .await;
-            }
-            return;
-        }
-    };
-
-    if let Err(e) = ctx
-        .store
-        .add_participant(&outcome.session_id, &external_actor_id)
-        .await
-    {
-        eprintln!("[Feishu] add_participant failed: {}", e);
-    }
-
-    // Slash-command dispatch against the resolved session.
-    if let Some((cmd_name, cmd_arg)) = &slash {
-        let reply_text = crate::commands::run_slash(
-            cmd_name,
-            cmd_arg.as_deref(),
-            ctx.agent.as_ref(),
-            ctx.store.as_ref(),
-            &outcome.acp_session_id,
-            locale,
-        )
-        .await
-        .unwrap_or(None)
-        .unwrap_or_else(|| crate::commands::unknown_command_reply(cmd_name, locale));
-        if let Ok(token) = token_manager.get_tenant_token().await {
-            let _ = reply_feishu_message(&token, &message_id, &reply_text).await;
-        }
-        return;
-    }
-
-    if let Err(e) = ctx
-        .store
-        .record_message(
-            &outcome.session_id,
-            &external_actor_id,
-            &clean_text,
-            Some(&message_id),
-        )
-        .await
-    {
-        eprintln!("[Feishu] record_message (user) failed: {}", e);
-    }
-
-    // Send "Thinking..." card so the user gets immediate feedback.
-    let processing_msg_id = if let Ok(token) = token_manager.get_tenant_token().await {
-        reply_feishu_card_message(&token, &message_id, "🤔 Thinking...", None)
-            .await
-            .ok()
-    } else {
-        None
-    };
-
-    // Drive a single agent turn through amuxd.
-    let reply = match ctx
-        .agent
-        .send_prompt(
-            &outcome.acp_session_id,
-            &sender_display,
-            &clean_text,
-            feishu_caps().turn_timeout(),
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            if let Ok(token) = token_manager.get_tenant_token().await {
-                let err_text = format!("❌ Error: {}", e);
-                if let Some(ref proc_id) = processing_msg_id {
-                    if !proc_id.is_empty() {
-                        let _ = update_feishu_message(&token, proc_id, &err_text).await;
-                    } else {
-                        let _ = reply_feishu_message(&token, &message_id, &err_text).await;
-                    }
-                } else {
-                    let _ = reply_feishu_message(&token, &message_id, &err_text).await;
-                }
-            }
-            return;
-        }
-    };
-
-    if let Err(e) = ctx
-        .store
-        .record_agent_reply(
-            &outcome.session_id,
-            &ctx.primary_agent_actor_id,
-            &reply.reply_text,
-            None,
-        )
-        .await
-    {
-        eprintln!("[Feishu] record_agent_reply failed: {}", e);
-    }
-
-    if let Ok(token) = token_manager.get_tenant_token().await {
-        let chunks = split_message(&reply.reply_text, 4000);
-        if let Some(ref proc_id) = processing_msg_id {
-            if !proc_id.is_empty() {
-                match update_feishu_message(&token, proc_id, &chunks[0]).await {
-                    Ok(_) => {}
-                    Err(_) => {
-                        let _ = reply_feishu_message(&token, &message_id, &chunks[0]).await;
-                    }
-                }
-                for chunk in chunks.iter().skip(1) {
-                    let _ = send_feishu_message(&token, &chat_id, chunk).await;
-                }
-            } else {
-                let mut first = true;
-                for chunk in chunks {
-                    if first {
-                        first = false;
-                        let _ = reply_feishu_message(&token, &message_id, &chunk).await;
-                    } else {
-                        let _ = send_feishu_message(&token, &chat_id, &chunk).await;
-                    }
-                }
-            }
-        } else {
-            let mut first = true;
-            for chunk in chunks {
-                if first {
-                    first = false;
-                    let _ = reply_feishu_message(&token, &message_id, &chunk).await;
-                } else {
-                    let _ = send_feishu_message(&token, &chat_id, &chunk).await;
-                }
-            }
-        }
+    match normalize_event(event, &ctx.app_id) {
+        Some(inbound) => sink.accept(inbound).await,
+        None => println!("[Feishu] Event carried nothing actionable; ignoring"),
     }
 }
 
@@ -1815,54 +1536,6 @@ fn build_simple_card(text: &str, title: Option<&str>) -> serde_json::Value {
     card
 }
 
-/// Reply to a Feishu message with an interactive card (supports subsequent updates).
-async fn reply_feishu_card_message(
-    token: &str,
-    message_id: &str,
-    text: &str,
-    title: Option<&str>,
-) -> Result<String, String> {
-    let client = crate::http_client_secs(30);
-    let url = format!(
-        "{}/open-apis/im/v1/messages/{}/reply",
-        FEISHU_API_BASE, message_id
-    );
-
-    let card = build_simple_card(text, title);
-    let body = serde_json::json!({
-        "content": card.to_string(),
-        "msg_type": "interactive"
-    });
-
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Content-Type", "application/json; charset=utf-8")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to reply card: {}", e))?;
-
-    let resp: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse: {}", e))?;
-    let code = resp["code"].as_i64().unwrap_or(-1);
-    if code != 0 {
-        let msg = resp["msg"].as_str().unwrap_or("Unknown");
-        return Err(format!("Card reply error (code {}): {}", code, msg));
-    }
-    let reply_msg_id = resp["data"]["message_id"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    println!(
-        "[Feishu] Card reply sent to {} (reply_id={})",
-        message_id, reply_msg_id
-    );
-    Ok(reply_msg_id)
-}
-
 /// Send a text message to a Feishu chat using app credentials.
 /// Standalone utility — obtains a tenant token internally and sends the message.
 /// Used by both the gateway and cron delivery.
@@ -1908,45 +1581,4 @@ async fn send_feishu_message(token: &str, chat_id: &str, text: &str) -> Result<(
         return Err(format!("Send error (code {}): {}", code, msg));
     }
     Ok(())
-}
-
-fn split_message(content: &str, max_len: usize) -> Vec<String> {
-    if content.len() <= max_len {
-        return vec![content.to_string()];
-    }
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    for line in content.lines() {
-        if current.len() + line.len() + 1 > max_len {
-            if !current.is_empty() {
-                chunks.push(std::mem::take(&mut current));
-            }
-            if line.len() > max_len {
-                let mut remaining = line;
-                while remaining.len() > max_len {
-                    let at = remaining
-                        .char_indices()
-                        .take_while(|(i, _)| *i < max_len)
-                        .last()
-                        .map(|(i, c)| i + c.len_utf8())
-                        .unwrap_or(max_len);
-                    let (chunk, rest) = remaining.split_at(at);
-                    chunks.push(chunk.to_string());
-                    remaining = rest;
-                }
-                current = remaining.to_string();
-            } else {
-                current = line.to_string();
-            }
-        } else {
-            if !current.is_empty() {
-                current.push('\n');
-            }
-            current.push_str(line);
-        }
-    }
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-    chunks
 }

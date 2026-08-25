@@ -263,6 +263,9 @@ pub struct EmailGateway {
     inbound_sink: Arc<RwLock<Option<Arc<dyn crate::driver::InboundSink>>>>,
     /// Last inbound mail per thread, so the driver can address its reply.
     reply_targets: ReplyTargets,
+    /// Whose mailbox this is, as `EmailDb` keys it. Filled in when the IMAP
+    /// loop derives it from the provider config.
+    account_key: Arc<RwLock<String>>,
 }
 
 impl EmailGateway {
@@ -290,6 +293,7 @@ impl EmailGateway {
             pending_questions: Arc::new(super::PendingQuestionStore::new()),
             inbound_sink: Arc::new(RwLock::new(None)),
             reply_targets: Arc::new(RwLock::new(HashMap::new())),
+            account_key: Arc::new(RwLock::new(String::new())),
         }
     }
 
@@ -304,6 +308,8 @@ impl EmailGateway {
             config: self.config.read().await.clone(),
             workspace_path: self.workspace_path.read().await.clone().unwrap_or_default(),
             reply_targets: Arc::clone(&self.reply_targets),
+            email_db: Arc::clone(&self.email_db),
+            account_key: Arc::clone(&self.account_key),
         }
     }
 
@@ -584,6 +590,11 @@ fn run_email_gateway_blocking(
         EmailProvider::Custom => config.username.clone(),
     };
     println!("[Email] Account key: {}", account_key);
+    // The driver needs it to index the ids it sends; it is derived here, from
+    // provider config, so this is the only place that knows it.
+    rt_handle.block_on(async {
+        *gateway.account_key.write().await = account_key.clone();
+    });
 
     loop {
         if shutdown_flag.load(Ordering::SeqCst) {
@@ -1171,6 +1182,35 @@ fn handle_imap_connection(
                                                 .write()
                                                 .await
                                                 .insert(thread_key.clone(), email_msg.clone());
+                                            // Index the incoming id under this
+                                            // thread's binding. The outbound half
+                                            // happens in `EmailDriver::deliver`;
+                                            // both are needed or the next reply
+                                            // forks into a new session.
+                                            if let Some(db) = email_db {
+                                                let incoming =
+                                                    normalize_message_id(&email_msg.message_id);
+                                                if !incoming.is_empty() {
+                                                    let binding = crate::binding::email_thread(
+                                                        account_key,
+                                                        &thread_key,
+                                                    );
+                                                    if let Err(e) = db
+                                                        .store_message_thread(
+                                                            account_key,
+                                                            &incoming,
+                                                            Some(&email_msg.subject),
+                                                            None,
+                                                            Some(&binding),
+                                                        )
+                                                        .await
+                                                    {
+                                                        println!(
+                                                            "[Email] Warning: failed to index incoming message_id: {e}"
+                                                        );
+                                                    }
+                                                }
+                                            }
                                             sink.accept(normalize_email(
                                                 account_key,
                                                 &email_msg,
@@ -1691,6 +1731,12 @@ pub struct EmailDriver {
     config: EmailConfig,
     workspace_path: String,
     reply_targets: ReplyTargets,
+    /// Thread index. A mail thread finds its session through `EmailDb`, and
+    /// both directions must be recorded or the next reply forks into a new
+    /// session: the inbound id is indexed where the mail arrives, the outbound
+    /// one here, because only `deliver` learns it.
+    email_db: Arc<RwLock<Option<EmailDb>>>,
+    account_key: Arc<RwLock<String>>,
 }
 
 #[async_trait::async_trait]
@@ -1723,7 +1769,23 @@ impl crate::driver::ChannelDriver for EmailDriver {
         _conversation: &crate::driver::Conversation,
         sender: &crate::driver::ExternalSender,
     ) -> String {
-        format!("Email: {}", sender.display_name)
+        // The subject, like the inline path titled it — otherwise every mail
+        // from one correspondent shows up as the same "Email: alice@corp.com"
+        // and the session list cannot tell three conversations apart.
+        //
+        // `try_read` rather than blocking: this trait method is sync and runs
+        // on a runtime thread, so a `block_on` here could park a worker. The
+        // inbound path fills the entry before handing the message to the core,
+        // so the lock is free in practice; losing the subject to contention
+        // costs a title, not correctness.
+        let subject = self.reply_targets.try_read().ok().and_then(|m| {
+            m.get(&_conversation.id)
+                .map(|e| normalize_subject(&e.subject).to_string())
+        });
+        match subject {
+            Some(s) if !s.trim().is_empty() => s,
+            _ => format!("Email: {}", sender.display_name),
+        }
     }
 
     async fn deliver(
@@ -1771,14 +1833,49 @@ impl crate::driver::ChannelDriver for EmailDriver {
             None
         };
 
-        tokio::task::spawn_blocking(move || {
+        let outgoing_message_id = tokio::task::spawn_blocking(move || {
             send_reply_sync(&config, &original, &body, access_token.as_deref())
         })
         .await
         .map_err(|e| crate::driver::DriverError::Transport(format!("smtp task panicked: {e}")))?
         .map_err(crate::driver::DriverError::Transport)?;
 
+        // Index the id we just sent under this thread's binding, so the user's
+        // reply (In-Reply-To: <that id>) resolves back here. Without it the
+        // thread index is never written and every reply opens a new session —
+        // which is exactly what deleting the inline path silently caused.
+        self.index_thread_id(&to.id, &outgoing_message_id, None)
+            .await;
+
         Ok(crate::driver::DeliveryId(to.id.clone()))
+    }
+}
+
+impl EmailDriver {
+    /// Record `message_id → binding` for this thread, best effort.
+    ///
+    /// Only the binding is load-bearing: `resolve_email_session_binding_sync`
+    /// returns as soon as it finds one, and the core turns it back into a
+    /// session. `subject` feeds the fallback for clients that strip threading
+    /// headers.
+    async fn index_thread_id(&self, thread_key: &str, message_id: &str, subject: Option<&str>) {
+        let message_id = normalize_message_id(message_id);
+        if message_id.is_empty() {
+            return;
+        }
+        let account_key = self.account_key.read().await.clone();
+        if account_key.is_empty() {
+            return;
+        }
+        let binding = crate::binding::email_thread(&account_key, thread_key);
+        let guard = self.email_db.read().await;
+        let Some(db) = guard.as_ref() else { return };
+        if let Err(e) = db
+            .store_message_thread(&account_key, &message_id, subject, None, Some(&binding))
+            .await
+        {
+            println!("[Email] Warning: failed to index message_id {message_id}: {e}");
+        }
     }
 }
 
@@ -2334,13 +2431,11 @@ fn send_notification_email_sync(
     // Generate and set Message-ID header (same as gateway reply) so the
     // recipient's client threads the conversation.
     //
-    // Note this id is NOT indexed: `EmailDb::store_message_thread` is only
-    // called from the inbound reply path (`process_and_reply_sync`), so a reply
-    // to mail sent through here misses both the message-id and the subject
-    // index and lands in a fresh session. A dead `SessionMapping` registration
-    // used to sit at the cron call site pretending otherwise; it was removed
-    // rather than left as a decoy. Wiring this up needs an account_key and a
-    // session binding that the cron path does not have — see #933.
+    // Note this id is NOT indexed. Gateway mail is indexed on both legs
+    // (`EmailDriver::deliver` and the IMAP loop), but this function is the
+    // standalone notification sender used by cron, which has no account_key
+    // and no thread binding to index against — so a reply to mail sent through
+    // here still lands in a fresh session. See #933.
     let outgoing_message_id = generate_outgoing_message_id(&params.base_email);
     builder = builder.header(MessageIdHeader(outgoing_message_id.clone()));
 

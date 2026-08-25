@@ -16,7 +16,9 @@
 
 - §3 / §4 的内核流水线：`Core::handle`（dedup → addressed? → route → identity → command? → write → turn → render），写入固定在 turn 之前。实现在 `apps/daemon/src/channels/core/`
 - 六个 trait：`DedupStore` / `SessionRouter` / `IdentityMapper` / `SessionWriter` / `TurnRunner` / `CommandRunner`
-- §5 全部四步：**八个渠道都实现了 `ChannelDriver`**（WeCom、飞书随 #978；邮件、KOOK、SeaTalk、Discord、微信随本次），各自的 inline 实现已删除，`TEAMCLU_GATEWAY_CORE` 开关一并删掉——不再存在「两套并存」
+- §5 全部四步：**八个渠道都实现了 `ChannelDriver`**（WeCom、飞书随 #978；邮件、KOOK、SeaTalk、Discord、微信随本次），八个渠道的 inline 实现全部删除，`TEAMCLU_GATEWAY_CORE` 开关一并删掉——不再存在「两套并存」
+
+  > 这一句一度是假的：WeCom 与飞书的 inline 只是变成了 `inbound_sink` 分支之后的死代码，没被删，共约 950 行。code review 揪出来了，那里面还留着一条**未净化的 bucket key**——正是本次修掉的 `Invalid key` bug 的同一份代码。现已删除。
 - §6 删除清单：`session.rs` 已删；`session_queue.rs` 已移入 daemon；`workspace_instructions.rs` 已移入 `teamclu-runtime-env`
 - §4.2 第三条旁路（desktop `introspect_api` 的 `POST /send-wecom`）已改为经 amuxd
 - 写入服务：`SessionManager::emit_session_message`，cron 与 agent 回复共用一份实现
