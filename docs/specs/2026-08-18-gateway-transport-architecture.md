@@ -1,35 +1,51 @@
 # 网关架构重做：渠道退回传输驱动
 
 - **Date**: 2026-08-18
-- **Status**: 部分实现 —— 内核与 WeCom / 飞书两个驱动已随 #978 于 2026-08-19 合并；其余渠道、cron、出站顺序、旁路清理未做。见下方「实现进度」
+- **Status**: 基本实现 —— 八个渠道全部退回传输驱动，inline 实现与能力开关已删除。只剩撤 `checkout_turn_for_acp`（见 §6.5）。进度见 §0
 - **Scope**: `crates/teamclu-gateway`（17.3k 行，8 个渠道），以 **WeCom / 飞书 / 邮件** 三个渠道为设计基准
 - **Related**: #933（网关收拢为传输适配器）。#933 是"把 session 写入收成一套"，本文是"把渠道本身收成一套"，两者共用同一层写入服务
 
 ---
 
-## 0. 实现进度（2026-08-25 核实，对照 main `30873c7c`）
+## 0. 实现进度（2026-08-25 收尾后核实）
 
-本文写于设计阶段。#978 已经落了其中一部分，下面是与代码的对照，读正文时请以这里为准。
+本文写于设计阶段。#978 落了一部分，随后 #933 的收尾把其余大部分做完了。
+读正文时以本节为准。
 
-**已落地** —— `apps/daemon/src/channels/core/`（约 2.3k 行）：
+**已落地**
 
-- §3 / §4 的内核流水线：`Core::handle`（dedup → addressed? → route → identity → command? → write → turn → render），写入固定在 turn 之前
+- §3 / §4 的内核流水线：`Core::handle`（dedup → addressed? → route → identity → command? → write → turn → render），写入固定在 turn 之前。实现在 `apps/daemon/src/channels/core/`
 - 六个 trait：`DedupStore` / `SessionRouter` / `IdentityMapper` / `SessionWriter` / `TurnRunner` / `CommandRunner`
-- §5 第 1、2 步：WeCom（`crates/teamclu-gateway/src/wecom.rs:1070`）与飞书（同目录 `feishu.rs:805`）已实现 `ChannelDriver`。注意这两个驱动在 gateway crate 里，不在上面那个 daemon 目录下；trait 定义在 `driver.rs`，内核在 daemon 侧
-- 出站附件挂到本轮回复（`core/turn_attachments.rs`）
+- §5 全部四步：**八个渠道都实现了 `ChannelDriver`**（WeCom、飞书随 #978；邮件、KOOK、SeaTalk、Discord、微信随本次），各自的 inline 实现已删除，`TEAMCLU_GATEWAY_CORE` 开关一并删掉——不再存在「两套并存」
+- §6 删除清单：`session.rs` 已删；`session_queue.rs` 已移入 daemon；`workspace_instructions.rs` 已移入 `teamclu-runtime-env`
+- §4.2 第三条旁路（desktop `introspect_api` 的 `POST /send-wecom`）已改为经 amuxd
+- 写入服务：`SessionManager::emit_session_message`，cron 与 agent 回复共用一份实现
+- `/workspace` 不再写 `daemon.toml`，只作用于当前会话
 
-**未落地**：
+`crates/teamclu-gateway` 17.3k → 18.9k（#978 加了驱动）→ **17612 行**（删掉 inline 之后）。
 
-- §5 第 3、4 步 —— 邮件 / KOOK / SeaTalk / Discord / 微信仍是 inline 实现
-- §6 的删除清单只执行了第一项（`session.rs`，见下），其余未动。`crates/teamclu-gateway` 曾从 17.3k 涨到 18.9k，删掉 `session.rs` 后为 **18454 行**
-- §4.2 第三条旁路（desktop `introspect_api.rs:89` 的 `POST /send-wecom`）原样保留
-- #933 侧：cron 写入、claim-before-publish（`backend_store.rs:31` 仍写死空 mention）、出站顺序反转、撤 `checkout_turn_for_acp`
+**未落地：只剩撤 `checkout_turn_for_acp`（P2.5）**
 
-**一处预判落空**：§5 结尾写着「中途不存在"两套并存但都不完整"的状态」。实际上内核挂在 env 开关 `TEAMCLU_GATEWAY_CORE`（`core/sink.rs:150`，默认开）之后，inline 路径仍然编译、仍然可达，五个渠道还在用它 —— 正是那个状态。收尾时要连开关一起删。
+见 §6.5——上手核出两条改变原计划的事实，其中一条（事件泵挂在 `mqtt_up` 上）
+是硬拦路虎。
 
-**一处已完成**：`session.rs` 已删除。§7 第 6 条担心它退休需要迁移老会话，事后证明不必 —— 它是只写不读的：所有 getter 全仓零调用，`set_persist_path` 也从没人调过（那份 `.teamclu/sessions.json` 根本没落过盘），写入方只剩 `cron/scheduler.rs` 的两个 `set_email_*`。连同 desktop 侧写入一并删除，没有迁移。
+**两处原文已被现实推翻**
 
-> ⚠️ 本文**第 1、2、6、7 节仍按删除前的状态描述 `session.rs`**，下面已逐处就地标注。读到那些段落时以本节为准。
+- §5 结尾「中途不存在两套并存但都不完整的状态」：#978 之后确实出现过那个状态（内核挂在开关后与 inline 并存），现已消除
+- §7 第 6 条担心 `session.rs` 退休要迁移老会话：不成立，它是只写不读的，所有 getter 全仓零调用，`set_persist_path` 也从没人调过（那份 JSON 根本没落过盘）
+
+**一处能力缺口（本次未动，属产品决定）**
+
+`pending_question.rs`（664 行）整套交互式提问是**死的**：全仓没有任何地方
+往 store 里 insert（`handle_question_event` 零调用方），所以 `/answer` 永远
+回「没有待回答的问题」，企微卡片按钮也永远找不到对应问题。接上还是删掉，
+需要先定。
+
+**一处仍留在渠道里，是有意的**
+
+白名单（`check_dm_allowed` / `should_process_message` / `check_email_filter` …）
+没有跟着 inline 实现一起删。内核没有 policy 这一层，而 allowlist 规则是渠道
+自己的配置——一起删等于把机器人对所有人敞开。统一的 policy 层是后续的事。
 
 ---
 
@@ -216,6 +232,25 @@ gateway crate 只认注入进来的两个 trait（`AgentHandle` / `ChannelStore`
 - 各渠道的 turn 驱动与流式节流散落实现
 - `ChannelManager::dispatch_send` 的旁路文件语义（#933 第 3 条）
 - desktop `introspect_api.rs` 里对 gateway crate 渠道函数的直接调用（§4.2 第三条路），改为经 daemon
+
+---
+
+## 6.5 撤 `checkout_turn_for_acp` 之前必须先解决的两件事
+
+2026-08-25 上手实做时核出来的，两条都改变了原计划。
+
+**一、P2.5「必须与 P4 同批」的理由不成立。** 原话是「今天『一个 agent 同时只跑一轮』这个不变量，正是 `checkout_turn_for_acp` 天然给的（`event_rx` 只有一份）」。看代码不是：`run_turn` 在 checkout **之前**就先拿了 `turn_lock`（`agent_handle.rs:804`，checkout 在 `:809`），那是一把每 agent 的互斥锁，不变量由它保证。撤 checkout 不会因此放进两条并发消息。排队器该上移（已做，见 §6 表），但不是因为这个。
+
+**二、真正的拦路虎是事件泵挂在 `mqtt_up` 上。** `server.rs:2070` 的 `poll_events()` 只在 MQTT 连着时才跑。今天网关 turn 不受影响，因为它自己把 `event_rx` 拿走了、直接收事件；一旦改成依赖主循环泵事件，**MQTT 一断，网关聊天就整个不响应**——而不是降级成「没有实时推送」。
+
+所以撤 checkout 至少要连带做完：
+
+1. 定下 §4 的接口方向（服务推 vs 适配器订阅），这条 §7 第 1 项还没拍板
+2. 让事件泵不再被 `mqtt_up` 门住，或者让 turn 自己驱动一次泵
+3. 处理 `broadcast` 的 `Lagged`：中间帧丢了无所谓，**终帧丢了气泡永远收不了口**
+4. 出站写入改由 `emit_agent_message` 独占，否则内核的 `write_reply` 会和它各写一条
+
+真机验收（企微流式卡片 + 邮件 FinalOnly）是这条的必要条件，不是可选项。
 
 ---
 
