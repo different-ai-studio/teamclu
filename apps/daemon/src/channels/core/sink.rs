@@ -7,12 +7,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::channels::session_queue::{EnqueueResult, QueuedMessage, RejectReason, SessionQueue};
 use async_trait::async_trait;
 use teamclu_gateway::driver::{
     ChannelDriver, Conversation, InboundMessage, InboundSink, OutboundMessage,
 };
 use teamclu_gateway::i18n::{self, MsgKey};
-use teamclu_gateway::session_queue::{EnqueueResult, QueuedMessage, RejectReason, SessionQueue};
 
 use super::{Core, Outcome};
 

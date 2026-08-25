@@ -25,7 +25,6 @@ pub mod kook_config;
 pub mod pending_question;
 pub mod seatalk;
 pub mod seatalk_config;
-pub mod session_queue;
 pub mod wechat;
 pub mod wechat_config;
 pub mod wecom;
