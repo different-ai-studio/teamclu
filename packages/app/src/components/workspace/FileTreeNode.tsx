@@ -17,6 +17,8 @@ import {
   MessageSquarePlus,
   AppWindow,
   History,
+  AlertTriangle,
+  Cloud,
 } from "lucide-react";
 
 import { cn } from '@/lib/utils';
@@ -25,6 +27,8 @@ import { useTabsStore } from '@/stores/tabs';
 import { useCurrentTeamStore } from '@/stores/current-team';
 import { useVersionHistoryStore } from '@/stores/version-history';
 import { encodeVersionHistoryTarget } from '@/lib/tabs/teamshare-target';
+import type { SyncBadge } from '@/lib/team-sync-badges';
+import { openKnowledgeConflict, openCloudVersion } from '@/lib/tabs/knowledge-tabs';
 import { getFileIcon } from '@/lib/file-icons';
 import { formatDateTime, formatRelativeTime } from '@/lib/date-format';
 import type { FileNode } from "@/stores/workspace";
@@ -56,12 +60,31 @@ export function openVersionHistory(path: string, label: string) {
   });
 }
 
-function getSyncStatusTextColor(status: 'synced' | 'modified' | 'new' | 'conflict'): string {
+function getSyncStatusTextColor(status: SyncBadge): string {
   switch (status) {
-    case 'synced': return ''
-    case 'modified': return 'text-yellow-500'
-    case 'new': return 'text-green-500'
+    case 'local-new': return 'text-green-500'
+    case 'local-modified': return 'text-yellow-500'
+    case 'remote-ahead': return 'text-blue-500'
+    // Both sides touched it: the next sync WILL conflict. Loud enough to act on
+    // before that happens, quieter than the conflict that already did.
+    case 'both': return 'text-orange-500'
     case 'conflict': return 'text-red-500'
+  }
+}
+
+/** Hover text: a colour on its own does not say what to do about it. */
+function syncStatusHint(status: SyncBadge, t: (k: string, d: string) => string): string {
+  switch (status) {
+    case 'local-new':
+      return t('syncBadge.localNew', 'New here — not in the cloud yet')
+    case 'local-modified':
+      return t('syncBadge.localModified', 'Edited here — not pushed yet')
+    case 'remote-ahead':
+      return t('syncBadge.remoteAhead', 'A newer version is waiting in the cloud')
+    case 'both':
+      return t('syncBadge.both', 'Changed on both sides — the next sync will conflict')
+    case 'conflict':
+      return t('knowledgeConflict.rowHint', 'Both sides changed this document — pick which version to keep')
   }
 }
 
@@ -180,8 +203,13 @@ export interface FileTreeItemProps {
   teamSyncing?: boolean;
   /** ISO timestamp of last successful team repo sync (for relative-time label) */
   teamLastSyncAt?: string | null;
-  /** Sync status for team files */
-  syncStatus?: 'synced' | 'modified' | 'new' | 'conflict' | null;
+  /**
+   * What this document's sync state is, for team knowledge. `null` for
+   * everything else — a workspace file has no cloud counterpart to differ from.
+   */
+  syncStatus?: SyncBadge | null;
+  /** True for a team-knowledge document, which has a cloud copy to look at. */
+  isTeamKnowledge?: boolean;
   compactName?: string;
   compactedPaths?: string[];
   onCollapseCompacted: (paths: string[]) => void;
@@ -228,6 +256,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   isTeamCluTeam,
   teamSyncing,
   teamLastSyncAt,
+  isTeamKnowledge,
   syncStatus,
   onSelectFile,
   onSelectFileRange,
@@ -312,6 +341,9 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   const FileIcon = fileIconInfo?.icon || File;
   const fileIconColor = fileIconInfo?.color || "text-muted-foreground";
   const isKnowledgeDir = isDirectory && node.name === 'team-knowledge' && !node.path.includes('/.trash/');
+  // A team document both sides changed. The row is red either way; this is what
+  // decides whether it also offers the way in to resolving it.
+  const needsConflictDecision = syncStatus === 'conflict' && !isDirectory;
 
   if (isRenaming) {
     return (
@@ -357,6 +389,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
         isCutTarget && "opacity-50",
       )}
       style={{ paddingLeft: `${level * 12 + 8}px` }}
+      title={syncStatus ? syncStatusHint(syncStatus, t) : undefined}
     >
       {isDirectory ? (
         <span className="w-4 h-4 flex items-center justify-center shrink-0">
@@ -398,6 +431,29 @@ export const FileTreeItem = React.memo(function FileTreeItem({
       >
         {displayName}
       </span>
+
+      {needsConflictDecision && (
+        // The row is already red; this is the part that says a HUMAN has to do
+        // something, and is the only entry point into the decision view.
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => {
+            e.stopPropagation();
+            openKnowledgeConflict(node.path, t('knowledgeConflict.tabLabel', 'Conflict'));
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.stopPropagation();
+            openKnowledgeConflict(node.path, t('knowledgeConflict.tabLabel', 'Conflict'));
+          }}
+          className="ml-auto flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-red-500 hover:bg-red-500/10"
+          title={t('knowledgeConflict.rowHint', 'Both sides changed this document — pick which version to keep')}
+        >
+          <AlertTriangle className="h-3 w-3" />
+          {t('knowledgeConflict.needsDecision', 'Decide')}
+        </span>
+      )}
 
       {isTeamCluTeam && !teamSyncing && teamLastSyncAt && (
         <span
@@ -482,6 +538,22 @@ export const FileTreeItem = React.memo(function FileTreeItem({
           {t("fileExplorer.duplicate", "Duplicate")}
           <ContextMenuShortcut>⌘D</ContextMenuShortcut>
         </ContextMenuItem>
+        {needsConflictDecision && (
+          <ContextMenuItem
+            onSelect={guardedMenuAction(() => openKnowledgeConflict(node.path, t('knowledgeConflict.tabLabel', 'Conflict')))}
+          >
+            <AlertTriangle className="h-4 w-4" />
+            {t('knowledgeConflict.resolveAction', 'Resolve conflict')}
+          </ContextMenuItem>
+        )}
+        {isTeamKnowledge && (
+          <ContextMenuItem
+            onSelect={guardedMenuAction(() => openCloudVersion(node.path, t('cloudVersion.tabLabel', 'Cloud version')))}
+          >
+            <Cloud className="h-4 w-4" />
+            {t('cloudVersion.menuItem', 'Show the cloud version')}
+          </ContextMenuItem>
+        )}
         {!isDirectory && (
           <ContextMenuItem
             onSelect={guardedMenuAction(() => openVersionHistory(node.path, t("versionHistory.title", "Version history")))}

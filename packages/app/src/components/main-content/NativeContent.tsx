@@ -2,9 +2,13 @@ import { useTranslation } from "react-i18next"
 import { FileQuestion } from "lucide-react"
 import { VersionHistoryTab } from "@/components/version/VersionHistoryTab"
 import { KnowledgeVersionHistory } from "@/components/teamshare/KnowledgeVersionHistory"
+import { KnowledgeConflictResolver } from "@/components/teamshare/KnowledgeConflictResolver"
+import { KnowledgeCloudVersion } from "@/components/teamshare/KnowledgeCloudVersion"
 import { TeamShareTabContent } from "@/components/teamshare/TeamShareTabContent"
 import { ActorDetailPane } from "@/components/main-content/ActorDetailPane"
 import {
+  decodeCloudVersionTarget,
+  decodeKnowledgeConflictTarget,
   decodeTeamShareTarget,
   decodeVersionHistoryTarget,
 } from "@/lib/tabs/teamshare-target"
@@ -28,6 +32,12 @@ export function NativeContent({ target }: NativeContentProps) {
 
   const actorId = decodeActorTarget(target)
   if (actorId) return <ActorDetailPane actorId={actorId} />
+
+  const conflictPath = decodeKnowledgeConflictTarget(target)
+  if (conflictPath) return <KnowledgeConflictResolver path={conflictPath} />
+
+  const cloudPath = decodeCloudVersionTarget(target)
+  if (cloudPath) return <KnowledgeCloudVersion path={cloudPath} />
 
   const versionPath = decodeVersionHistoryTarget(target)
   if (versionPath !== undefined) {

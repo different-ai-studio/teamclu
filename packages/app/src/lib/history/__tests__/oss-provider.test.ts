@@ -1,12 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const listVersions = vi.fn()
-const getVersionContent = vi.fn()
+const fetchVersionContent = vi.fn()
 
 vi.mock('@/stores/oss-sync', () => ({
-  useOssSyncStore: {
-    getState: () => ({ listVersions, getVersionContent }),
-  },
+  useOssSyncStore: { getState: () => ({ listVersions }) },
+}))
+vi.mock('@/stores/current-team', () => ({
+  useCurrentTeamStore: { getState: () => ({ team: { id: 'team-1' } }) },
+}))
+vi.mock('@/stores/version-history', () => ({
+  useVersionHistoryStore: { getState: () => ({ fetchVersionContent }) },
 }))
 
 import { OssHistoryProvider } from '../oss-provider'
@@ -14,7 +18,7 @@ import { OssHistoryProvider } from '../oss-provider'
 describe('OssHistoryProvider', () => {
   beforeEach(() => {
     listVersions.mockReset()
-    getVersionContent.mockReset()
+    fetchVersionContent.mockReset()
   })
 
   it('maps VersionInfo to HistoryEntry and resolves parentRef from loaded versions', async () => {
@@ -68,11 +72,17 @@ describe('OssHistoryProvider', () => {
     expect(listVersions).toHaveBeenLastCalledWith('/ws', 'a.md', 'CURSOR1')
   })
 
-  it('getContent delegates to store; empty ref yields empty string', async () => {
-    getVersionContent.mockResolvedValue('plain text')
+  it('reads content through the daemon call that resolves a blob', async () => {
+    // The old route (`oss_sync_get_version_content`) had no implementation and
+    // returned an error for every ref, so the editor's history preview failed
+    // on exactly the files that have history.
+    fetchVersionContent.mockResolvedValue('plain text')
     const p = new OssHistoryProvider('/ws', 'a.md')
+
     expect(await p.getContent('h9')).toBe('plain text')
-    expect(getVersionContent).toHaveBeenCalledWith('/ws', 'h9')
+    // Keyed by team + sync key, never by workspace — the same document has the
+    // same history whichever surface opened it.
+    expect(fetchVersionContent).toHaveBeenCalledWith('team-1', 'a.md', 'h9')
     expect(await p.getContent('')).toBe('')
   })
 })

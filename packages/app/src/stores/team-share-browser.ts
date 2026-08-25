@@ -16,6 +16,7 @@ import {
   type SkillLocalState,
 } from '@/lib/skills/auto-follow'
 import { useCurrentTeamStore } from '@/stores/current-team'
+import { isConflictSidecarName } from '@/stores/team-conflicts'
 import { effectiveWorkspacePath } from '@/lib/effective-workspace'
 import { useTabsStore } from '@/stores/tabs'
 import {
@@ -381,7 +382,12 @@ async function listTeamKnowledge(knowledgeDir: string): Promise<TeamKnowledgeIte
   const entries = await readDir(knowledgeDir)
   // Dotfiles are deliberately not filtered: the tree renders them, so counting
   // them is what keeps the two numbers equal.
+  //
+  // Conflict sidecars ARE filtered, for the same reason: the tree hides them
+  // and marks the document they belong to instead, so counting them here would
+  // put a number next to the header that no visible row accounts for.
   return entries
+    .filter((entry) => !isConflictSidecarName(entry.name))
     .map((entry) => ({
       path: `${knowledgeDir}/${entry.name}`,
       relPath: entry.name,

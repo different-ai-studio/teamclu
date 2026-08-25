@@ -154,12 +154,28 @@ pub fn is_conflict_file(rel_path: &str) -> bool {
     has_conflict_infix(filename)
 }
 
-/// Check if a filename has the `.conflict.` infix marker.
+/// Whether a filename is one the conflict writer produced:
+/// `<stem>.conflict.<unix_ts>.<hash>[.<ext>]`.
+///
+/// The timestamp is what makes it ours. Accepting any name with a `.conflict.`
+/// infix swept up ordinary documents — `merge.conflict.md` is a note somebody
+/// wrote — and that had two consequences: sync silently refused to upload it
+/// (sidecars are never pushed), and the conflicts endpoint listed it as a
+/// decision that could never be made, because reversing the name to find "the
+/// document it belongs to" fails and the resolve guard then rejects it.
 fn has_conflict_infix(name: &str) -> bool {
-    // Must have at least two dots and the word "conflict" between them:
-    // <stem>.conflict.<ts>.<hash>.<ext>
-    let parts: Vec<&str> = name.splitn(2, ".conflict.").collect();
-    parts.len() == 2
+    let Some((_, suffix)) = name.split_once(".conflict.") else {
+        return false;
+    };
+    let mut parts = suffix.split('.');
+    let Some(ts) = parts.next() else {
+        return false;
+    };
+    if ts.is_empty() || !ts.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    // A hash segment always follows the timestamp; the extension is optional.
+    parts.next().is_some_and(|hash| !hash.is_empty())
 }
 
 #[cfg(test)]
@@ -176,6 +192,12 @@ mod tests {
             "knowledge/bar.conflict.1748332800.def67890"
         ));
         assert!(!is_conflict_file("knowledge/foo.md"));
+        // A document somebody named after the word: not ours, must sync
+        // normally and must never appear as a decision to make.
+        assert!(!is_conflict_file("knowledge/merge.conflict.md"));
+        assert!(!is_conflict_file("knowledge/notes.conflict.draft.md"));
+        // Shaped like ours but with no hash segment.
+        assert!(!is_conflict_file("knowledge/foo.conflict.1748332800"));
         assert!(!is_conflict_file("knowledge/conflict.md")); // "conflict" not after "."
         assert!(!is_conflict_file("knowledge/my.conflict")); // no dot after "conflict"
     }

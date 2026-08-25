@@ -461,6 +461,9 @@ pub fn run() {
             commands::team_sync_proxy::team_file_versions,
             commands::team_sync_proxy::team_file_content,
             commands::team_sync_proxy::team_changed_files,
+            commands::team_sync_proxy::team_conflicts,
+            commands::team_sync_proxy::team_remote_pending,
+            commands::team_sync_proxy::team_resolve_conflict,
             commands::team_sync_proxy::team_restore_file_version,
             commands::deps::check_dependencies,
             commands::deps::opencode_versions,
@@ -553,7 +556,6 @@ pub fn run() {
             commands::team_sync_proxy::oss_sync_status,
             commands::team_sync_proxy::team_env_runtime_status,
             commands::team_sync_proxy::oss_sync_list_versions,
-            commands::team_sync_proxy::oss_sync_get_version_content,
             commands::team_sync_proxy::oss_sync_restore_version,
             commands::team_sync_proxy::oss_sync_resolve_conflict,
         ])

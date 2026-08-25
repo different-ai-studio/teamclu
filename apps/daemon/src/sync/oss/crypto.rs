@@ -6,7 +6,7 @@
 //!   0: "AMXC" magic (4) · 4: version=1 (1) · 5: nonce (12) · 17: ciphertext
 //!   ciphertext = AES-256-GCM(plaintext)
 //!
-//! **v2** (optional deflate; what [`encrypt_blob_compressed`] writes):
+//! **v2** (optional deflate; READ ONLY — nothing in the product writes it):
 //!   0: "AMXC" magic (4) · 4: version=2 (1) · 5: flags (1) · 6: nonce (12) · 18: ciphertext
 //!   ciphertext = AES-256-GCM(payload), where payload = deflate(plaintext) if
 //!   `flags & FLAG_DEFLATE`, else plaintext. Compression is applied BEFORE
@@ -15,16 +15,22 @@
 //!
 //! `content_hash` (wire) = sha256(blob bytes); `plain_hash` (local) = sha256(plaintext).
 //!
-//! Rollout: this daemon can READ v1 and v2 unconditionally. Writing v2 is opt-in
-//! (callers use [`encrypt_blob_compressed`]) and must only be enabled once the
-//! whole fleet runs a v2-read-capable daemon — old daemons reject version 2.
+//! Both versions stay readable forever: team knowledge written before the move
+//! to plaintext blobs is still in object storage, and this is the only way back
+//! to it. The only writer left is the local secret store (team env
+//! credentials), which uses v1.
 
-use std::io::{Read, Write};
+use std::io::Read;
+#[cfg(test)]
+use std::io::Write;
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use flate2::read::DeflateDecoder;
+// Writing deflate is test-only now; reading it is not (legacy v2 blobs).
+#[cfg(test)]
 use flate2::write::DeflateEncoder;
+#[cfg(test)]
 use flate2::Compression;
 use sha2::{Digest, Sha256};
 
@@ -50,9 +56,13 @@ pub fn encrypt_blob(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String>
     Ok(blob)
 }
 
-/// Encrypt plaintext into a v2 AMXC blob, deflating the plaintext first when that
-/// actually shrinks it (incompressible input is stored raw to avoid negative
-/// gains). Reduces OSS blob/egress size for text-y content.
+/// Encrypt plaintext into a v2 AMXC blob, deflating the plaintext first when
+/// that actually shrinks it.
+///
+/// Test-only: nothing writes v2 any more (knowledge content goes up as
+/// plaintext), but blobs written by older daemons are still out there, so the
+/// READ path must keep working — and testing a reader needs a writer.
+#[cfg(test)]
 pub fn encrypt_blob_compressed(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
     let mut flags = 0u8;
     let payload = match deflate(plaintext) {
@@ -72,6 +82,37 @@ pub fn encrypt_blob_compressed(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u
     blob.extend_from_slice(&nonce_bytes);
     blob.extend_from_slice(&ciphertext);
     Ok(blob)
+}
+
+/// Whether a blob carries the AMXC envelope, i.e. whether it needs a key at all.
+///
+/// Knowledge content is uploaded as PLAINTEXT (see `engine::prepare_upload`);
+/// this is what lets a pull still read everything written before that change.
+/// The version byte is checked as well as the magic so a document that happens
+/// to begin with the four bytes `AMXC` is not mistaken for an envelope — it
+/// would have to also carry 0x01 or 0x02 in its fifth byte to fool this.
+pub fn is_encrypted_blob(bytes: &[u8]) -> bool {
+    bytes.len() > HEADER_LEN_V1
+        && &bytes[0..4] == MAGIC
+        && matches!(bytes[4], VERSION_V1 | VERSION_V2)
+}
+
+/// Turn a blob fetched from object storage into file bytes.
+///
+/// The single entry point for every read path — the sync pull, the version
+/// preview, the restore. Knowledge content is uploaded as plaintext, so most
+/// blobs need nothing done to them; anything carrying the AMXC envelope was
+/// written before that change and still needs the team key, which this device
+/// may simply not have (the key is pasted by hand and nothing ever checked that
+/// two members pasted the same one).
+pub fn decode_blob(blob: Vec<u8>, key: Option<&[u8; 32]>) -> Result<Vec<u8>, String> {
+    if !is_encrypted_blob(&blob) {
+        return Ok(blob);
+    }
+    let key = key.ok_or_else(|| {
+        "crypto: blob is encrypted but this device has no team secret to decrypt it".to_string()
+    })?;
+    decrypt_blob(&blob, key)
 }
 
 /// Decrypt an AMXC blob (v1 or v2), returning plaintext.
@@ -144,6 +185,8 @@ fn aes_decrypt(nonce_bytes: &[u8], ciphertext: &[u8], key: &[u8; 32]) -> Result<
         .map_err(|e| format!("crypto: AES-GCM decrypt failed: {e}"))
 }
 
+/// Deflate-compress bytes. Test-only, with [`encrypt_blob_compressed`].
+#[cfg(test)]
 fn deflate(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut enc = DeflateEncoder::new(Vec::new(), Compression::default());
     enc.write_all(data)
@@ -163,6 +206,49 @@ fn inflate(data: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_handles_both_shapes_and_refuses_to_guess() {
+        let key = [7u8; 32];
+        let plain = b"# note\n\njust text".to_vec();
+
+        // What every new write looks like: no key involved.
+        assert_eq!(decode_blob(plain.clone(), None).unwrap(), plain);
+        assert_eq!(decode_blob(plain.clone(), Some(&key)).unwrap(), plain);
+
+        // What is already in object storage.
+        let envelope = encrypt_blob(&plain, &key).unwrap();
+        assert_eq!(decode_blob(envelope.clone(), Some(&key)).unwrap(), plain);
+
+        // No key, or the wrong one: an error, never ciphertext handed back as
+        // if it were the document.
+        assert!(decode_blob(envelope.clone(), None).is_err());
+        assert!(decode_blob(envelope, Some(&[1u8; 32])).is_err());
+    }
+
+    #[test]
+    fn envelopes_are_recognised_and_plaintext_is_not() {
+        let key = [7u8; 32];
+        assert!(is_encrypted_blob(
+            &encrypt_blob(b"hello world", &key).unwrap()
+        ));
+        assert!(is_encrypted_blob(
+            &encrypt_blob_compressed(b"hello world", &key).unwrap()
+        ));
+
+        // What a knowledge document now looks like on the wire.
+        assert!(!is_encrypted_blob(
+            b"# A note\n\nplain markdown, no envelope"
+        ));
+        assert!(!is_encrypted_blob(b""));
+        assert!(!is_encrypted_blob(b"AMXC"));
+        // Magic without a version byte we ever wrote is a document, not an
+        // envelope — and treating it as one would strand the file forever.
+        let mut impostor = b"AMXC".to_vec();
+        impostor.push(9);
+        impostor.extend_from_slice(&[0u8; 32]);
+        assert!(!is_encrypted_blob(&impostor));
+    }
     use crate::team_shared_env::derive_key;
 
     fn test_key() -> [u8; 32] {

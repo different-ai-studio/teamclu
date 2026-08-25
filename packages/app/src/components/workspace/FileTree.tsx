@@ -8,6 +8,10 @@ import { isChatInputDropTarget, isPointOverElement } from '@/lib/chat-file-drop'
 import { copyToClipboard, isTauri } from '@/lib/utils';
 import { useWorkspaceStore, type FileNode } from "@/stores/workspace";
 import { useOssSyncStore } from "@/stores/oss-sync";
+import { useTeamConflictsStore, isConflictSidecarName } from "@/stores/team-conflicts";
+import { useTeamSyncStatusStore } from "@/stores/team-sync-status";
+import { buildBadgeMap, badgeForDirectory } from "@/lib/team-sync-badges";
+import { teamSyncKeyForPath } from "@/lib/team-skill-paths";
 import {
   hasSystemClipboardFiles,
   writeSystemClipboardFiles,
@@ -38,10 +42,6 @@ import {
 } from "./file-tree-operations";
 import { TEAM_REPO_DIR, appShortName } from "@/lib/build-config";
 
-// Team-file sync coloring states (shared by git + OSS modes). `conflict` is
-// OSS-only; git mode never produces it.
-type FileSyncStatusKind = 'modified' | 'new' | 'conflict';
-
 // Flattened tree node for virtualization
 interface FlatTreeNode {
   node: FileNode;
@@ -50,6 +50,47 @@ interface FlatTreeNode {
   compactName?: string;
   /** All directory paths in a compacted chain (for collapsing all at once) */
   compactedPaths?: string[];
+}
+
+/**
+ * Drop conflict sidecars from a team-knowledge tree.
+ *
+ * A sidecar is a local-only copy the sync engine parked next to a document it
+ * had to overwrite. Listing it turns one conflict into two near-identical rows
+ * with no explanation; the document's own row carries the badge instead, and the
+ * sidecar is what the decision view reads.
+ *
+ * Returns the SAME array when nothing was pruned, so the common case costs one
+ * walk and no downstream re-render.
+ */
+function pruneConflictSidecars(
+  nodes: FileNode[],
+  opts: { knowledgeDir?: string | null; workspacePath?: string | null },
+): FileNode[] {
+  let changed = false;
+  const out: FileNode[] = [];
+  for (const node of nodes) {
+    if (
+      node.type !== "directory" &&
+      isConflictSidecarName(node.name) &&
+      // Only inside team knowledge: a workspace source file may legitimately be
+      // called `foo.conflict.ts`, and hiding it would be a bug of our own.
+      teamSyncKeyForPath(node.path, opts) !== null
+    ) {
+      changed = true;
+      continue;
+    }
+    if (node.children) {
+      const children = pruneConflictSidecars(node.children, opts);
+      if (children !== node.children) {
+        changed = true;
+        out.push({ ...node, children });
+        continue;
+      }
+    }
+    out.push(node);
+  }
+  return changed ? out : nodes;
 }
 
 // Filter tree nodes recursively based on filter text.
@@ -188,7 +229,13 @@ export function FileTree({
 }: FileTreeProps) {
   const { t } = useTranslation();
   const storeFileTree = useWorkspaceStore(s => s.fileTree);
-  const fileTree = nodesProp ?? storeFileTree;
+  const rawFileTree = nodesProp ?? storeFileTree;
+  // Team-knowledge conflicts. `bySyncKey` is empty in the overwhelmingly common
+  // case, which is what keeps the per-row lookup below free.
+  const conflictsBySyncKey = useTeamConflictsStore(s => s.bySyncKey);
+  const knowledgeDir = useTeamConflictsStore(s => s.knowledgeDir);
+  const localBySyncKey = useTeamSyncStatusStore(s => s.localBySyncKey);
+  const remoteBySyncKey = useTeamSyncStatusStore(s => s.remoteBySyncKey);
   const expandedPaths = useWorkspaceStore(s => s.expandedPaths);
   const loadingPaths = useWorkspaceStore(s => s.loadingPaths);
   const selectedFile = useWorkspaceStore(s => s.selectedFile);
@@ -201,6 +248,18 @@ export function FileTree({
   const expandDirectory = useWorkspaceStore(s => s.expandDirectory);
   const collapseDirectory = useWorkspaceStore(s => s.collapseDirectory);
   const setFocusedPath = useWorkspaceStore(s => s.setFocusedPath);
+  const fileTree = useMemo(
+    () => pruneConflictSidecars(rawFileTree, { knowledgeDir, workspacePath }),
+    [rawFileTree, knowledgeDir, workspacePath],
+  );
+  // One badge per document, folded from the three things that can be true of
+  // it: a conflict sidecar on disk, a local change not yet pushed, a cloud
+  // version not yet pulled.
+  const badges = useMemo(
+    () => buildBadgeMap({ conflicts: conflictsBySyncKey, local: localBySyncKey, remote: remoteBySyncKey }),
+    [conflictsBySyncKey, localBySyncKey, remoteBySyncKey],
+  );
+  const anyBadges = useMemo(() => Object.keys(badges).length > 0, [badges]);
   const pushUndo = useWorkspaceStore(s => s.pushUndo);
   const refreshFileTree = useWorkspaceStore(s => s.refreshFileTree);
   const revealFile = useWorkspaceStore(s => s.revealFile);
@@ -264,42 +323,12 @@ export function FileTree({
   const pushUndoRef = useRef(pushUndo);
   useEffect(() => { pushUndoRef.current = pushUndo; }, [pushUndo]);
 
-  // Pre-compute sync status data for team files. The daemon no longer exposes
-  // per-file sync status, so files get no per-file sync badges (only the folder
-  // spinner / last-sync tooltip from the aggregate `syncing` / `lastSyncAt`).
-  const ossSyncing = useOssSyncStore(s => s.syncing);
-  const ossLastSyncAt = useOssSyncStore(s => s.lastSyncAt);
-
-  // Per-file status is not available via the daemon.
-  const fileSyncStatusMap = useMemo<Record<string, FileSyncStatusKind>>(
-    () => ({}),
-    [],
-  );
-
-  // Drives the teamclu-team folder spinner / last-sync tooltip.
-  const teamSyncing = ossSyncing;
-  const teamLastSyncAt = ossLastSyncAt;
-
-  const syncDirtyDirectories = useMemo(() => {
-    const dirtyDirs = new Map<string, FileSyncStatusKind>();
-    if (!workspacePath) return dirtyDirs;
-
-    // conflict > modified > new priority
-    const rank: Record<FileSyncStatusKind, number> = { new: 0, modified: 1, conflict: 2 };
-    for (const [relPath, status] of Object.entries(fileSyncStatusMap)) {
-      // Build absolute path and propagate to parent directories
-      const absPath = `${workspacePath}/${TEAM_REPO_DIR}/${relPath}`;
-      let dir = absPath.substring(0, absPath.lastIndexOf("/"));
-      while (dir && dir.length > workspacePath.length) {
-        const existing = dirtyDirs.get(dir);
-        if (!existing || rank[status] > rank[existing]) {
-          dirtyDirs.set(dir, status);
-        }
-        dir = dir.substring(0, dir.lastIndexOf("/"));
-      }
-    }
-    return dirtyDirs;
-  }, [fileSyncStatusMap, workspacePath]);
+  // Drives the teamclu-team folder spinner / last-sync tooltip. Per-file status
+  // is keyed by SYNC KEY now (see `badges` above), not by a workspace-relative
+  // path — the same document is reachable through two different absolute paths
+  // and only the sync key is the same on both.
+  const teamSyncing = useOssSyncStore(s => s.syncing);
+  const teamLastSyncAt = useOssSyncStore(s => s.lastSyncAt);
 
   const collapseCompacted = useCallback((paths: string[]) => {
     const nextExpanded = new Set(useWorkspaceStore.getState().expandedPaths);
@@ -1150,17 +1179,22 @@ export function FileTree({
     isTeamCluTeam: node.name === TEAM_REPO_DIR && node.type === "directory" && level === 0,
     teamSyncing: node.name === TEAM_REPO_DIR && node.type === "directory" && level === 0 ? teamSyncing : undefined,
     teamLastSyncAt: node.name === TEAM_REPO_DIR && node.type === "directory" && level === 0 ? teamLastSyncAt : undefined,
+    // Team knowledge only, and on every surface the document appears on: the
+    // Knowledge column and the workspace `team-knowledge` link are two
+    // spellings of the same file, and `teamSyncKeyForPath` maps both.
     syncStatus: (() => {
-      if (!node.path.includes(`/${TEAM_REPO_DIR}/`)) return null;
-      if (node.type === 'directory') {
-        return syncDirtyDirectories.get(node.path) ?? null;
-      }
-      // Extract relative path within teamclu-team/
-      const teamDirPrefix = `${workspacePath}/${TEAM_REPO_DIR}/`;
-      if (!node.path.startsWith(teamDirPrefix)) return null;
-      const relPath = node.path.slice(teamDirPrefix.length);
-      return fileSyncStatusMap[relPath] ?? null;
+      if (!anyBadges) return null;
+      const syncKey = teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath });
+      if (!syncKey) return null;
+      return node.type === 'directory'
+        ? badgeForDirectory(syncKey, badges)
+        : (badges[syncKey] ?? null);
     })(),
+    // Whether the row has a cloud counterpart at all — which is what decides
+    // if "show the cloud version" is a meaningful thing to offer on it.
+    isTeamKnowledge:
+      node.type !== 'directory' &&
+      teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath }) !== null,
     onSelectFile: selectFile,
     onSelectFileRange: selectFileRange,
     onToggleFileSelection: toggleFileSelection,

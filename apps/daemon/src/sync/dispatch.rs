@@ -24,6 +24,11 @@ pub struct SyncStatus {
     /// Set when sync was skipped because `team_share.auto_sync` is disabled.
     #[serde(default)]
     pub skipped: bool,
+    /// How far the RUNNING tick has got. `None` whenever nothing is running —
+    /// it is live state, not a record of the last tick, so a finished sync can
+    /// never be left looking like an in-flight one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<crate::sync::oss::SyncProgress>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -40,6 +45,10 @@ pub struct SyncDispatcher {
     backend: Option<Arc<dyn crate::backend::Backend>>,
     locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     status: Arc<Mutex<HashMap<String, SyncStatus>>>,
+    /// Progress of in-flight ticks. A std mutex, not the tokio one the rest of
+    /// this struct uses: the engine reports from inside its transfer loops, in
+    /// sync code, and this lock is only ever held for one map write.
+    progress: Arc<std::sync::Mutex<HashMap<String, crate::sync::oss::SyncProgress>>>,
 }
 
 impl SyncDispatcher {
@@ -49,6 +58,7 @@ impl SyncDispatcher {
             backend,
             locks: Arc::new(Mutex::new(HashMap::new())),
             status: Arc::new(Mutex::new(HashMap::new())),
+            progress: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -78,12 +88,20 @@ impl SyncDispatcher {
     }
 
     pub async fn status(&self, team_id: &str) -> SyncStatus {
-        self.status
+        let mut status: SyncStatus = self
+            .status
             .lock()
             .await
             .get(team_id)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        status.progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(team_id)
+            .copied();
+        status
     }
 
     async fn team_lock(&self, team_id: &str) -> Arc<Mutex<()>> {
@@ -108,7 +126,23 @@ impl SyncDispatcher {
             let mut s = self.status.lock().await;
             s.entry(team_id.to_string()).or_default().syncing = true;
         }
-        let result = self.run_once(team_id, options).await;
+        let sink = {
+            let map = self.progress.clone();
+            let key = team_id.to_string();
+            crate::sync::oss::ProgressSink::new(move |p| {
+                map.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(key.clone(), p);
+            })
+        };
+        let result = self.run_once(team_id, options, &sink).await;
+        // Drop the live progress before publishing the result: a reader that
+        // catches the gap must see "not syncing" with no bar, never a finished
+        // sync still showing 7/10.
+        self.progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(team_id);
         let mut s = self.status.lock().await;
         let entry = s.entry(team_id.to_string()).or_default();
         match result {
@@ -131,7 +165,12 @@ impl SyncDispatcher {
         entry.clone()
     }
 
-    async fn run_once(&self, team_id: &str, options: SyncOptions) -> Result<SyncStatus, String> {
+    async fn run_once(
+        &self,
+        team_id: &str,
+        options: SyncOptions,
+        progress: &crate::sync::oss::ProgressSink,
+    ) -> Result<SyncStatus, String> {
         if !options.force && !crate::config::DaemonConfig::team_share_auto_sync_enabled_from_disk()
         {
             return Ok(SyncStatus {
@@ -142,30 +181,20 @@ impl SyncDispatcher {
         }
         use crate::sync::oss;
 
-        // The precondition is the team secret, not a cloud flag.
+        // No precondition left to check here.
         //
-        // This used to ask FC for the team's `share_mode` and do nothing unless
-        // it read `"oss"`. Nothing in the product sets that flag any more — no
-        // client ships a call to `POST /v1/teams/:id/share-mode` — so every team
-        // created since reads as "off" and never synced, silently, with a
-        // successful-looking status. The secret is the honest precondition: it
-        // is what encrypts and decrypts the content, a team without one cannot
-        // sync no matter what any flag says, and one with it always can.
-        let Ok(secret) = self.secrets.resolve_team_secret(team_id, None) else {
-            // Not an error: a team that never set up sharing has nothing to
-            // sync, and a red banner for that is noise, not information.
-            return Ok(SyncStatus {
-                skipped: true,
-                last_sync_at: now_rfc3339(),
-                ..Default::default()
-            });
-        };
+        // `share_mode` went first (nothing in the product ever set it), and the
+        // team secret follows it now that knowledge content is uploaded as
+        // plaintext: a team without a secret syncs fine, and one with a secret
+        // additionally gets to read the blobs written before that change. The
+        // secret is therefore fetched, not required.
+        let secret = self.secrets.resolve_team_secret(team_id, None).ok();
 
         let content_root_dir = crate::config::global_team_store::sync_content_root(team_id);
         let jwt = self.oss_jwt().await?;
         let fc = oss::fc_client::FcClient::new(self.fc_endpoint()?, jwt);
         let content_root = content_root_dir.to_string_lossy().to_string();
-        let r = oss::tick(&content_root, team_id, &secret, &fc)
+        let r = oss::tick_with_progress(&content_root, team_id, secret.as_deref(), &fc, progress)
             .await
             .map_err(|e| e.to_string())?;
         Ok(SyncStatus {
@@ -188,6 +217,35 @@ fn now_rfc3339() -> String {
 mod tests {
     use super::*;
     use crate::backend::mock::MockBackend;
+    use crate::sync::oss::{SyncPhase, SyncProgress};
+
+    /// The desktop reads this JSON verbatim and renders a bar from it, so the
+    /// field names and the phase spelling are a contract, not an implementation
+    /// detail.
+    #[test]
+    fn progress_serializes_as_the_client_reads_it() {
+        let status = SyncStatus {
+            syncing: true,
+            progress: Some(SyncProgress {
+                phase: SyncPhase::Pulling,
+                done: 3,
+                total: 12,
+            }),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&status).unwrap();
+        assert_eq!(v["progress"]["phase"], "pulling");
+        assert_eq!(v["progress"]["done"], 3);
+        assert_eq!(v["progress"]["total"], 12);
+    }
+
+    /// An idle daemon must not carry a stale bar: the field is absent, which is
+    /// what the client treats as "nothing running".
+    #[test]
+    fn an_idle_status_carries_no_progress_at_all() {
+        let v = serde_json::to_value(SyncStatus::default()).unwrap();
+        assert!(v.get("progress").is_none(), "{v}");
+    }
 
     /// A dispatcher over a throwaway secret store, plus the mock backend.
     fn dispatcher_with_mock(tmp: &tempfile::TempDir) -> (SyncDispatcher, Arc<MockBackend>) {
@@ -284,7 +342,7 @@ mod tests {
     /// the honest precondition is the team secret: without it there is nothing
     /// to encrypt or decrypt with, and a red banner would be noise.
     #[tokio::test]
-    async fn a_team_without_a_secret_skips_rather_than_erroring() {
+    async fn a_team_without_a_secret_still_syncs() {
         let _lock = crate::config::global_team_store::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -301,8 +359,21 @@ mod tests {
             .sync_team("no-secret-team", SyncOptions { force: true })
             .await;
 
-        assert!(st.skipped);
-        assert!(st.last_error.is_none());
+        // Knowledge content is plaintext now, so a missing team secret is no
+        // longer a reason to do nothing — it only means blobs written before
+        // that change cannot be decoded. Skipping here is what made a device
+        // with no secret look permanently, silently idle.
+        assert!(!st.skipped, "a missing secret must not stop a sync");
+        // The mock exposes no cloud URL, so the tick gets as far as asking for
+        // one and stops there. That it got that far is the point.
+        assert!(
+            st.last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("FC endpoint"),
+            "unexpected error: {:?}",
+            st.last_error
+        );
 
         if let Some(v) = orig {
             std::env::set_var("AMUXD_HOME", v);

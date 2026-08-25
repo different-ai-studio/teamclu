@@ -33,6 +33,27 @@ pub struct FileState {
     pub deleted_local: bool,
 }
 
+/// A file the server offered that this device could not decode or write.
+///
+/// Kept so the pull can move PAST it — the sync cursor used to be held at the
+/// first unreadable file, which stopped every later document in the team from
+/// ever arriving. The entry is retried on every tick, so this is a "keep
+/// trying" list, not a "give up" list: dropping it instead would lose the file
+/// permanently, since the manifest is queried by `afterSeq`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuarantinedPull {
+    /// Blob hash to re-fetch (also what the FC download endpoint takes).
+    pub cipher_hash: String,
+    /// Server version this blob belongs to.
+    pub version: i32,
+    /// Why it failed last time, for the log and for support.
+    pub reason: String,
+    /// How many ticks have tried. Never used to stop trying — a key can be
+    /// delivered, or a bad blob re-uploaded, long after the first failure.
+    pub attempts: u32,
+}
+
 /// Full local sync state file (schema v1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +65,11 @@ pub struct LocalSyncState {
     pub last_sync_at: String,
     /// Map from relative path (e.g. "skills/foo.md") to per-file state.
     pub files: HashMap<String, FileState>,
+    /// Files the pull could not apply, by path. `serde(default)` so a state file
+    /// written by an older daemon still loads — the schema version is unchanged
+    /// on purpose, since old daemons can read the new file too (they ignore it).
+    #[serde(default)]
+    pub quarantined: HashMap<String, QuarantinedPull>,
 }
 
 impl LocalSyncState {
@@ -90,6 +116,7 @@ impl LocalSyncState {
             last_server_seq: 0,
             last_sync_at: String::new(),
             files: HashMap::new(),
+            quarantined: HashMap::new(),
         };
         let body = match std::fs::read_to_string(&path) {
             Ok(body) => body,
@@ -130,6 +157,12 @@ impl LocalSyncState {
         std::fs::rename(&tmp, &path).map_err(|e| format!("rename sync state: {e}"))
     }
 
+    /// An empty state, for tests that need one without touching the disk.
+    #[cfg(test)]
+    pub fn new_for_test(team_id: &str) -> Self {
+        Self::new(team_id)
+    }
+
     fn new(team_id: &str) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
@@ -137,7 +170,26 @@ impl LocalSyncState {
             last_server_seq: 0,
             last_sync_at: "".to_string(),
             files: HashMap::new(),
+            quarantined: HashMap::new(),
         }
+    }
+
+    /// Record (or re-record) a file the pull could not apply.
+    pub fn quarantine(&mut self, path: &str, cipher_hash: &str, version: i32, reason: String) {
+        let attempts = self
+            .quarantined
+            .get(path)
+            .map(|q| q.attempts.saturating_add(1))
+            .unwrap_or(1);
+        self.quarantined.insert(
+            path.to_string(),
+            QuarantinedPull {
+                cipher_hash: cipher_hash.to_string(),
+                version,
+                reason,
+                attempts,
+            },
+        );
     }
 
     /// Insert or update a file entry after a successful download/upload.
@@ -151,6 +203,8 @@ impl LocalSyncState {
         mtime: u64,
         size: u64,
     ) {
+        // Whatever went wrong with this path before, it just landed.
+        self.quarantined.remove(path);
         self.files.insert(
             path.to_string(),
             FileState {
@@ -173,6 +227,11 @@ impl LocalSyncState {
     /// re-add push with parentVersion=0, which conflicts against the tombstone
     /// forever and never resurrects the file.)
     pub fn mark_tombstoned(&mut self, path: &str, version: i32) {
+        // A file that was quarantined and has since been deleted server-side
+        // must stop being retried: its blob is gone, so every future attempt is
+        // a guaranteed 404 and the count next to "cannot sync" would never
+        // clear.
+        self.quarantined.remove(path);
         if let Some(f) = self.files.get_mut(path) {
             f.synced_version = version;
             f.deleted_local = true;
@@ -251,6 +310,72 @@ mod tests {
         assert_eq!(f.synced_version, 3);
         assert_eq!(f.synced_cipher_hash, "cipherhash");
         assert!(!f.dirty);
+    }
+
+    #[test]
+    fn a_state_file_from_an_older_daemon_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".teamclu").join("sync").join("state.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // No `quarantined` key at all — written before the field existed.
+        std::fs::write(
+            &path,
+            r#"{"schemaVersion":1,"teamId":"t","lastServerSeq":5,"lastSyncAt":"","files":{}}"#,
+        )
+        .unwrap();
+
+        let state = LocalSyncState::load(dir.path().to_str().unwrap(), "t").unwrap();
+        assert_eq!(state.last_server_seq, 5);
+        assert!(state.quarantined.is_empty());
+    }
+
+    #[test]
+    fn a_server_side_deletion_retires_a_quarantined_file() {
+        let mut state = LocalSyncState::new("t");
+        state.files.insert(
+            "knowledge/gone.md".into(),
+            FileState {
+                synced_version: 1,
+                synced_cipher_hash: "c".into(),
+                synced_plain_hash: "p".into(),
+                local_plain_hash: "p".into(),
+                mtime: 0,
+                size: 0,
+                dirty: false,
+                deleted_local: false,
+            },
+        );
+        state.quarantine("knowledge/gone.md", "hash1", 1, "decrypt failed".into());
+
+        state.mark_tombstoned("knowledge/gone.md", 2);
+
+        assert!(
+            state.quarantined.is_empty(),
+            "there is nothing left to retry once the server dropped the file"
+        );
+    }
+
+    #[test]
+    fn quarantine_counts_attempts_and_clears_when_the_file_finally_lands() {
+        let mut state = LocalSyncState::new("t");
+        state.quarantine("knowledge/a.md", "hash1", 3, "decrypt failed".into());
+        state.quarantine("knowledge/a.md", "hash1", 3, "decrypt failed".into());
+        assert_eq!(state.quarantined["knowledge/a.md"].attempts, 2);
+        assert_eq!(state.quarantined["knowledge/a.md"].version, 3);
+
+        state.upsert(
+            "knowledge/a.md",
+            3,
+            "hash1".into(),
+            "plain".into(),
+            "plain".into(),
+            1,
+            2,
+        );
+        assert!(
+            state.quarantined.is_empty(),
+            "a successful pull retires the quarantine entry"
+        );
     }
 
     #[test]

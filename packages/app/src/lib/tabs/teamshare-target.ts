@@ -25,6 +25,12 @@ const PREFIX = 'teamshare:'
 /** Version history is not team-share-specific, so it keeps its own prefix. */
 const VERSION_HISTORY = 'version-history'
 
+/** The conflict-decision view for one team document. */
+const KNOWLEDGE_CONFLICT = 'knowledge-conflict'
+
+/** The read-only "what does the cloud hold" view for one team document. */
+const CLOUD_VERSION = 'knowledge-cloud'
+
 export function encodeTeamShareTarget(t: TeamShareTarget): string {
   switch (t.kind) {
     case 'skill':
@@ -102,9 +108,40 @@ export function decodeVersionHistoryTarget(target: string): string | null | unde
   return target.slice(VERSION_HISTORY.length + 1) || null
 }
 
+export function encodeKnowledgeConflictTarget(path: string): string {
+  return `${KNOWLEDGE_CONFLICT}/${path}`
+}
+
+/**
+ * The document whose conflict a target names, `undefined` when it is not a
+ * conflict target. Unlike version history there is no browse-all form: a
+ * decision is always about one document.
+ */
+export function decodeKnowledgeConflictTarget(target: string): string | undefined {
+  if (!target.startsWith(`${KNOWLEDGE_CONFLICT}/`)) return undefined
+  return target.slice(KNOWLEDGE_CONFLICT.length + 1) || undefined
+}
+
+export function encodeCloudVersionTarget(path: string): string {
+  return `${CLOUD_VERSION}/${path}`
+}
+
+/** The document whose cloud copy a target names, `undefined` when it is not one. */
+export function decodeCloudVersionTarget(target: string): string | undefined {
+  if (!target.startsWith(`${CLOUD_VERSION}/`)) return undefined
+  return target.slice(CLOUD_VERSION.length + 1) || undefined
+}
+
 /** Every target this module owns, for bulk close when the team changes. */
 export function isTeamShareOwnedTarget(target: string): boolean {
-  return target.startsWith(PREFIX) || decodeVersionHistoryTarget(target) !== undefined
+  return (
+    target.startsWith(PREFIX) ||
+    decodeVersionHistoryTarget(target) !== undefined ||
+    // A conflict belongs to the team whose tree it is in; keeping the tab open
+    // across a team switch would offer a decision about another team's file.
+    decodeKnowledgeConflictTarget(target) !== undefined ||
+    decodeCloudVersionTarget(target) !== undefined
+  )
 }
 
 /**
