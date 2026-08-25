@@ -54,7 +54,7 @@ pub struct AliyunTtsConfig {
     pub sample_rate: u32,
     /// -500..500, NLS's speed scale. 0 is the voice's natural rate.
     pub speech_rate: i32,
-    /// 0..100.
+    /// 0..100. Synthesis gain, not user-facing loudness — see the default.
     pub volume: u32,
 }
 
@@ -63,7 +63,13 @@ impl Default for AliyunTtsConfig {
         Self {
             sample_rate: TTS_SAMPLE_RATE,
             speech_rate: 0,
-            volume: 50,
+            // Full scale, not NLS's default of 50. Loudness belongs to the
+            // device, which has its own control (and a small speaker); with
+            // both ends attenuating, a reply arrived at roughly a quarter of
+            // what the hardware can do and was reported as too quiet to use.
+            // Synthesise at full amplitude and let the one knob a person can
+            // actually reach decide how loud the room gets.
+            volume: 100,
         }
     }
 }
