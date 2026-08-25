@@ -5,7 +5,7 @@ import { FolderPlus, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
-import { linkDaemonTeamWorkspace } from '@/lib/daemon-local-client'
+import { linkDaemonTeamWorkspace, TEAM_LINK_LEGACY_DAEMON } from '@/lib/daemon-local-client'
 import { isTauri } from '@/lib/utils'
 
 /**
@@ -47,8 +47,33 @@ export function TeamDirInitPanel() {
       // directly, so there is no cached workspace tree standing between the
       // repair and the column noticing it.
       await loadSection('knowledge', { force: true })
+
+      // "The call succeeded" is not "the repair worked". A daemon older than
+      // the knowledge relocation materializes the previous layout
+      // (`shared/teamclu-team/knowledge`) and answers 200 — nothing this column
+      // reads has changed, no exception was thrown, and the panel re-renders
+      // itself unchanged. That is indistinguishable from a dead button, and it
+      // is what a user actually hit: four clicks, four 200s, no feedback.
+      //
+      // So check the outcome, not the call.
+      if (!useTeamShareBrowserStore.getState().knowledgeRoot) {
+        setError(
+          t(
+            'teamShare.dirMissingStillMissing',
+            'Rebuilt, but the team folder is still not here. The local daemon is probably out of date — restart or update it, then try again.',
+          ),
+        )
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      setError(
+        msg === TEAM_LINK_LEGACY_DAEMON
+          ? t(
+              'teamShare.dirMissingDaemonTooOld',
+              'The local daemon is too old to create the team folder on its own. Restart or update it, then try again.',
+            )
+          : msg,
+      )
     } finally {
       setBusy(false)
     }
