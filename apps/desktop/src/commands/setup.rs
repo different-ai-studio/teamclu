@@ -1,5 +1,7 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::process_util::CommandNoWindow;
@@ -77,19 +79,68 @@ fn locate_bundled_sidecar(base_name: &str) -> Option<PathBuf> {
     None
 }
 
+/// How long one `amuxd doctor` answer may be reused.
+///
+/// Deliberately short. This is not a cache in the "avoid work" sense — it exists
+/// because a cold first launch asks three times inside the same second
+/// (`AuthGate`'s background probe, plus the setup screen's runtime scan and
+/// requirement probe), and every one of those spawns the sidecar, which in turn
+/// spawns `opencode`/`git`/`node`/`pi`/`claude --version`. On Windows each of
+/// those is a `.cmd` shim through `cmd.exe` under a real-time virus scanner, so
+/// the duplicate runs are most of what "scanning for runtimes" spends.
+const DOCTOR_CACHE_TTL: Duration = Duration::from_secs(3);
+
+type DoctorCache = tokio::sync::Mutex<Option<(Instant, serde_json::Value)>>;
+static DOCTOR_CACHE: OnceLock<DoctorCache> = OnceLock::new();
+
+fn doctor_cache() -> &'static DoctorCache {
+    DOCTOR_CACHE.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+/// Forget the cached answer. An install exists precisely to change what doctor
+/// would say, so anything less than this would report the machine as it was
+/// before the install that just finished.
+///
+/// Awaits the lock rather than trying it: a doctor run in flight holds it for
+/// its whole duration, and clearing "if convenient" would leave that run's
+/// pre-install answer in the cache.
+pub(crate) async fn invalidate_doctor_cache() {
+    *doctor_cache().lock().await = None;
+}
+
 /// Run the bundled `amuxd doctor` and return its parsed JSON (opencode/git/amuxd
 /// status). amuxd resolves opencode/amuxd by absolute path, so this is accurate
 /// even when the app/daemon PATH excludes those dirs.
+///
+/// Callers that arrive together are coalesced: the lock is held across the
+/// sidecar run, so the second and third caller wait for the first and then read
+/// its result instead of spawning their own.
 pub(crate) async fn read_doctor<R: Runtime>(
     app: &AppHandle<R>,
     local_agent: Option<&str>,
 ) -> Option<serde_json::Value> {
-    use tauri_plugin_shell::process::CommandEvent;
-    use tauri_plugin_shell::ShellExt;
     // `local_agent` is no longer passed to the sidecar: `amuxd doctor` reports
     // every runtime in one pass now, so there is nothing left to select. Callers
     // still name the runtime they care about and pick its key out of the result.
+    // That is also what makes one shared cache entry correct — the answer does
+    // not depend on who asked.
     let _ = local_agent;
+    let mut cache = doctor_cache().lock().await;
+    if let Some((measured_at, value)) = cache.as_ref() {
+        if measured_at.elapsed() < DOCTOR_CACHE_TTL {
+            return Some(value.clone());
+        }
+    }
+    // A failed run is not cached: it is usually a spawn error, and repeating it
+    // costs less than pinning "we could not tell" for the next few seconds.
+    let value = run_doctor(app).await?;
+    *cache = Some((Instant::now(), value.clone()));
+    Some(value)
+}
+
+async fn run_doctor<R: Runtime>(app: &AppHandle<R>) -> Option<serde_json::Value> {
+    use tauri_plugin_shell::process::CommandEvent;
+    use tauri_plugin_shell::ShellExt;
     let command =
         crate::commands::with_amuxd_brand_env(app.shell().sidecar("amuxd").ok()?.args(["doctor"]));
     let (mut rx, _child) = command.spawn().ok()?;
@@ -566,12 +617,16 @@ pub async fn restart_local_daemon<R: Runtime>(app: AppHandle<R>) -> Result<(), S
 
 #[tauri::command]
 pub async fn setup_install<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
-    match id.as_str() {
+    let result = match id.as_str() {
         "amuxd" => install_amuxd(&app).await,
         "opencode" => install_opencode(&app).await,
         "pi" => install_pi(&app).await,
         other => Err(format!("unknown requirement: {other}")),
-    }
+    };
+    // Also on failure: a half-finished install still moves the machine, and the
+    // re-probe that follows must see it rather than the cached "before".
+    invalidate_doctor_cache().await;
+    result
 }
 
 #[cfg(test)]

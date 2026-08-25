@@ -85,6 +85,19 @@ fn progress(event: &str, message: &str) {
     );
 }
 
+/// A progress line that also names the source this install is pulling from.
+///
+/// `route` is one of [`crate::route_probe::route`]. Emitted at the download
+/// itself rather than at the decision above it, so the mirror-failed fallback
+/// inside [`direct_install`] corrects the answer instead of leaving the wizard
+/// claiming a source we stopped using.
+fn progress_route(event: &str, message: &str, route: &str) {
+    println!(
+        "{}",
+        serde_json::json!({ "event": event, "message": message, "route": route })
+    );
+}
+
 /// Final "ok" line after an install/update, naming the version that actually
 /// landed — the UI surfaces this, and it is the only version amuxd reports.
 fn report_installed() {
@@ -341,7 +354,11 @@ fn direct_install(mirror_version: Option<&str>) -> anyhow::Result<()> {
 
     if let Some(version) = mirror_version {
         let url = mirror_asset_url(version, asset);
-        progress("download", &format!("downloading {url}"));
+        progress_route(
+            "download",
+            &format!("downloading {url}"),
+            crate::route_probe::route::SELF_HOSTED,
+        );
         match download_bytes(&url) {
             Ok(bytes) => {
                 progress("unpack", &format!("unpacking {asset}"));
@@ -358,7 +375,11 @@ fn direct_install(mirror_version: Option<&str>) -> anyhow::Result<()> {
     }
 
     let url = download_url(asset);
-    progress("download", &format!("downloading {url}"));
+    progress_route(
+        "download",
+        &format!("downloading {url}"),
+        crate::route_probe::route::OFFICIAL,
+    );
     let bytes = download_bytes(&url)?;
     progress("unpack", &format!("unpacking {asset}"));
     unpack_opencode(asset, &bytes, &dest)
@@ -412,6 +433,10 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
         progress("upgrade", "updating opencode to the latest release");
     }
 
+    // Announced before the sample runs. Measuring the route costs a 5s connect
+    // budget plus a 4s transfer deadline, and saying so only afterwards left the
+    // wizard sitting on the previous line for all of it.
+    progress("probe", "checking which download route is fastest");
     let upstream = current_asset().and_then(measure_upstream_route);
     match upstream {
         Some(sample) if sample.meets(&upstream_probe()) => {
@@ -455,6 +480,11 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
 
     #[cfg(not(windows))]
     {
+        progress_route(
+            "install",
+            "running the official opencode installer",
+            crate::route_probe::route::OFFICIAL,
+        );
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg("curl -fsSL https://opencode.ai/install | bash")

@@ -75,12 +75,37 @@ export type SetupProgress = {
  * "installing…".
  */
 export type InstallProgress = {
-  /** amuxd's step name: download | unpack | install | mirror | upgrade | output | ok. */
+  /** amuxd's step name: probe | download | unpack | install | mirror | upgrade | output | ok. */
   event: string
   /** One line, already trimmed to something a narrow row can show. */
   message: string
   /** 0–100 while a sized download is in flight; null when the step has no measurable size. */
   percent: number | null
+  /** Set on the line where amuxd commits to a source. See [`InstallRoute`]. */
+  route?: InstallRoute
+}
+
+/**
+ * Which source an install is pulling from, as amuxd reports it.
+ *
+ * The question a user watching a slow first run actually has is "is this going
+ * through the official servers or through something of ours?" — so these are
+ * named for that rather than for the URL, and the wizard keeps the answer on
+ * screen after the progress line carrying it has scrolled away.
+ */
+export type InstallRoute = 'official' | 'public-mirror' | 'self-hosted' | 'custom'
+
+const INSTALL_ROUTES: readonly InstallRoute[] = [
+  'official',
+  'public-mirror',
+  'self-hosted',
+  'custom',
+]
+
+function parseRoute(value: unknown): InstallRoute | undefined {
+  return typeof value === 'string' && (INSTALL_ROUTES as readonly string[]).includes(value)
+    ? (value as InstallRoute)
+    : undefined
 }
 
 /** Clamp to the 0–100 a progress bar can actually draw. */
@@ -111,7 +136,8 @@ export function parseProgressLine(line: string): InstallProgress | null {
           : total !== null && total > 0 && downloaded !== null
             ? clampPercent((downloaded / total) * 100)
             : null
-      return { event, message: lastLine(message), percent }
+      const route = parseRoute(parsed.route)
+      return { event, message: lastLine(message), percent, ...(route ? { route } : {}) }
     } catch {
       // Not amuxd's shape after all — fall through and show it as text.
     }
@@ -137,6 +163,14 @@ type SetupState = {
   output: Record<string, string[]>
   /** Latest parsed step per requirement id, for the install row's progress bar. */
   progress: Record<string, InstallProgress>
+  /**
+   * The source the current (or last) install settled on.
+   *
+   * Kept apart from `progress` on purpose: `progress` is cleared the moment the
+   * install finishes, and the whole point of this is to still be on screen
+   * afterwards. Replaced when the next install picks its own source.
+   */
+  installRoute: { id: string; choice: InstallRoute } | null
   errors: Record<string, string>
   loaded: boolean
   /** Set when the requirement probe itself failed, so the UI can say so. */
@@ -151,12 +185,9 @@ type SetupState = {
    */
   listRequirements: (agent?: string) => Promise<void>
   listAgentRuntimes: () => Promise<void>
-  install: (id: string, opts?: { minDurationMs?: number }) => Promise<void>
+  install: (id: string) => Promise<void>
   requiredSatisfied: () => boolean
 }
-
-/** Resolve after `ms`, used to keep a fast install's loading state visible. */
-const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 export const useSetupStore = create<SetupState>((set, get) => ({
   requirements: [],
@@ -164,6 +195,7 @@ export const useSetupStore = create<SetupState>((set, get) => ({
   installing: null,
   output: {},
   progress: {},
+  installRoute: null,
   errors: {},
   loaded: false,
   probeError: null,
@@ -217,21 +249,8 @@ export const useSetupStore = create<SetupState>((set, get) => ({
     }
   },
 
-  install: async (id: string, opts?: { minDurationMs?: number }) => {
-    const minDurationMs = opts?.minDurationMs ?? 0
-    if (!isTauri()) {
-      // Browser/dev preview: no real install, but still honor the minimum
-      // duration so the loading effect (e.g. amuxd auto-install) is visible.
-      if (minDurationMs > 0) {
-        set((s) => ({ installing: id, errors: { ...s.errors, [id]: '' }, progress: without(s.progress, id) }))
-        await delay(minDurationMs)
-        set((s) => ({
-          installing: null,
-          requirements: s.requirements.map((r) => (r.id === id ? { ...r, present: true } : r)),
-        }))
-      }
-      return
-    }
+  install: async (id: string) => {
+    if (!isTauri()) return
     const { invoke } = await import('@tauri-apps/api/core')
     const { listen } = await import('@tauri-apps/api/event')
     // Clear any prior error, log, and progress for this id so a retry starts
@@ -241,6 +260,8 @@ export const useSetupStore = create<SetupState>((set, get) => ({
       errors: { ...s.errors, [id]: '' },
       output: without(s.output, id),
       progress: without(s.progress, id),
+      // The previous install's source is not this one's answer.
+      installRoute: null,
     }))
     // Listener lives only for this install and is removed in finally. The wizard
     // is modal/non-dismissible during install, so unmount-mid-install is not a
@@ -249,24 +270,16 @@ export const useSetupStore = create<SetupState>((set, get) => ({
       applyProgress(event.payload)
     })
     try {
-      // Run the real install and the minimum-duration timer concurrently so a
-      // near-instant install (e.g. amuxd copy) still shows ~minDurationMs of
-      // loading without padding genuinely slow installs.
-      await Promise.all([
-        (async () => {
-          await invoke('setup_install', { id })
-          // Re-probe against the runtime just installed, not the build default —
-          // otherwise installing pi refreshes opencode's row and pi still reads
-          // as missing.
-          const probeAgent = id === 'pi' || id === 'opencode' ? id : localAgent
-          const requirements = await invoke<RequirementStatus[]>('setup_list_requirements', {
-            localAgent: probeAgent,
-          })
-          set({ requirements })
-          if (id === 'pi' || id === 'opencode') await get().listAgentRuntimes()
-        })(),
-        minDurationMs > 0 ? delay(minDurationMs) : Promise.resolve(),
-      ])
+      await invoke('setup_install', { id })
+      // Re-probe against the runtime just installed, not the build default —
+      // otherwise installing pi refreshes opencode's row and pi still reads
+      // as missing.
+      const probeAgent = id === 'pi' || id === 'opencode' ? id : localAgent
+      const requirements = await invoke<RequirementStatus[]>('setup_list_requirements', {
+        localAgent: probeAgent,
+      })
+      set({ requirements })
+      if (id === 'pi' || id === 'opencode') await get().listAgentRuntimes()
     } catch (e) {
       set((s) => ({ errors: { ...s.errors, [id]: String(e) } }))
     } finally {
@@ -287,6 +300,7 @@ export function applyProgress(p: SetupProgress) {
   useSetupStore.setState((s) => {
     const output = { ...s.output }
     let progress = s.progress
+    let installRoute = s.installRoute
     const errors = { ...s.errors }
     let requirements = s.requirements
 
@@ -303,6 +317,10 @@ export function applyProgress(p: SetupProgress) {
         const percent =
           step.percent ?? (previous && previous.event === step.event ? previous.percent : null)
         progress = { ...progress, [p.id]: { ...step, percent } }
+        // Sticky: amuxd names the source once, on the line where it commits to
+        // it, and then goes back to narrating bytes. Survives `done`, which
+        // clears `progress`.
+        if (step.route) installRoute = { id: p.id, choice: step.route }
       }
     }
     if (p.status === 'failed' && p.error) {
@@ -312,6 +330,6 @@ export function applyProgress(p: SetupProgress) {
       requirements = requirements.map((r) => (r.id === p.id ? { ...r, present: true } : r))
       progress = without(progress, p.id)
     }
-    return { output, progress, errors, requirements }
+    return { output, progress, installRoute, errors, requirements }
   })
 }

@@ -94,6 +94,31 @@ describe('progress line parsing', () => {
   it('ignores blank lines', () => {
     expect(parseProgressLine('   ')).toBeNull()
   })
+
+  // The line where amuxd commits to a source. The wizard shows this one in the
+  // user's own words, so the machine-readable half has to survive parsing.
+  it('carries the source amuxd committed to', () => {
+    const step = parseProgressLine(
+      JSON.stringify({
+        event: 'source',
+        message: 'mirror measured at 8.0 MB/s; installing through the mirror',
+        route: 'public-mirror',
+      }),
+    )
+    expect(step).toEqual({
+      event: 'source',
+      message: 'mirror measured at 8.0 MB/s; installing through the mirror',
+      percent: null,
+      route: 'public-mirror',
+    })
+  })
+
+  // A newer amuxd naming a route this build has no label for must not reach the
+  // UI as a raw string.
+  it('drops a route it does not recognise', () => {
+    const step = parseProgressLine(JSON.stringify({ event: 'source', message: 'x', route: 'moon' }))
+    expect(step?.route).toBeUndefined()
+  })
 })
 
 describe('install progress state', () => {
@@ -107,6 +132,7 @@ describe('install progress state', () => {
       installing: 'opencode',
       output: {},
       progress: {},
+      installRoute: null,
       errors: {},
     })
   })
@@ -170,5 +196,37 @@ describe('install progress state', () => {
     })
     applyProgress({ id: 'opencode', status: 'done', line: null, error: null })
     expect(useSetupStore.getState().progress['opencode']).toBeUndefined()
+  })
+
+  // amuxd names its source once and then goes back to narrating bytes, so the
+  // answer has to be remembered rather than read off the current line — and it
+  // outlives `done`, which is exactly when the user is still looking at it.
+  it('remembers the download source, including after the install finishes', () => {
+    applyProgress({
+      id: 'opencode',
+      status: 'running',
+      line: JSON.stringify({
+        event: 'source',
+        message: 'official release unreachable; using the mirror',
+        route: 'self-hosted',
+      }),
+      error: null,
+    })
+    expect(useSetupStore.getState().installRoute).toEqual({
+      id: 'opencode',
+      choice: 'self-hosted',
+    })
+
+    applyProgress({
+      id: 'opencode',
+      status: 'running',
+      line: JSON.stringify({ event: 'download', message: 'downloading x', percent: 10 }),
+      error: null,
+    })
+    applyProgress({ id: 'opencode', status: 'done', line: null, error: null })
+    expect(useSetupStore.getState().installRoute).toEqual({
+      id: 'opencode',
+      choice: 'self-hosted',
+    })
   })
 })

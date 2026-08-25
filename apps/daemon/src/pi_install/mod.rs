@@ -172,6 +172,18 @@ pub(super) fn progress(event: &str, message: &str) {
     );
 }
 
+/// A progress line that also names the source this install settled on.
+///
+/// `route` is one of [`crate::route_probe::route`]. The message stays the
+/// human-readable detail (measured speeds, which URL); `route` is the part the
+/// wizard can translate and keep on screen after the line itself scrolls away.
+pub(super) fn progress_route(event: &str, message: &str, route: &str) {
+    println!(
+        "{}",
+        serde_json::json!({ "event": event, "message": message, "route": route })
+    );
+}
+
 const PI_NPM_PKG: &str = "@earendil-works/pi-coding-agent";
 const PI_MIRROR_BASE: &str = "https://teamclaw.ucar.cc/pi";
 const OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
@@ -320,25 +332,43 @@ fn resolve_registry_source(package: &str, version: &str) -> RegistrySource {
     // would be worse than anything we could pick for them.
     if let Some(configured) = npm_configured_registry() {
         if !is_official_registry(&configured) {
-            progress(
+            progress_route(
                 "source",
                 &format!("npm is configured with {configured}; installing through it"),
+                crate::route_probe::route::CUSTOM,
             );
             return RegistrySource::NpmDefault;
         }
     }
+
+    // Said before the measuring starts, not after it. Each sample gets a 5s
+    // connect budget and a 4s transfer deadline, so this decision is up to nine
+    // seconds of pure network work — and it used to announce itself only once it
+    // was over, leaving the wizard frozen on the previous line for the whole
+    // window. On the networks where the answer actually matters, that is exactly
+    // the window that runs long.
+    progress("probe", "checking which download route is fastest");
 
     // Both routes are measured every time. Skipping the mirror whenever the
     // official registry cleared some bar was the tempting shortcut, and it is
     // exactly how a user on a 1.2 MB/s route keeps an install that the mirror
     // would have served six times faster. One 512 KiB sample is cheaper than
     // being wrong about that.
+    //
+    // Concurrently, though: back to back they were two full budgets — up to
+    // ~18s before npm was even invoked — and the case where both run long is
+    // the same slow network the probe exists to detect. A panicking probe
+    // counts as "no answer" rather than taking the install down with it.
     let probe = registry_probe();
-    let official = probe.measure(&tarball_url(OFFICIAL_REGISTRY, package, version));
-    let mirror = probe.measure(&tarball_url(CN_NPM_REGISTRY, package, version));
+    let (official, mirror) = std::thread::scope(|scope| {
+        let official =
+            scope.spawn(|| probe.measure(&tarball_url(OFFICIAL_REGISTRY, package, version)));
+        let mirror = scope.spawn(|| probe.measure(&tarball_url(CN_NPM_REGISTRY, package, version)));
+        (official.join().ok().flatten(), mirror.join().ok().flatten())
+    });
     match (&official, &mirror) {
         (_, Some(mirror_sample)) if mirror_wins(official.as_ref(), mirror_sample, &probe) => {
-            progress(
+            progress_route(
                 "source",
                 &format!(
                     "{CN_NPM_REGISTRY} measured at {:.1} MB/s against {} for the official registry; \
@@ -348,24 +378,27 @@ fn resolve_registry_source(package: &str, version: &str) -> RegistrySource {
                         .map(|s| format!("{:.1} MB/s", s.mib_per_sec()))
                         .unwrap_or_else(|| "no answer".to_string())
                 ),
+                crate::route_probe::route::PUBLIC_MIRROR,
             );
             RegistrySource::Mirror(CN_NPM_REGISTRY)
         }
         (Some(sample), _) => {
-            progress(
+            progress_route(
                 "source",
                 &format!(
                     "npm registry measured at {:.1} MB/s and the mirror is no better; \
                      installing from upstream",
                     sample.mib_per_sec()
                 ),
+                crate::route_probe::route::OFFICIAL,
             );
             RegistrySource::NpmDefault
         }
         (None, _) => {
-            progress(
+            progress_route(
                 "source",
                 "no npm registry is reachable; falling back to the OSS bundle",
+                crate::route_probe::route::SELF_HOSTED,
             );
             RegistrySource::OssBundle
         }
