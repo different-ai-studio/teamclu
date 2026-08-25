@@ -102,6 +102,7 @@ import { useTeamShareBrowserStore } from "@/stores/team-share-browser";
 import { TeamShareDetailContent } from "@/components/teamshare/TeamShareTabContent";
 import { IdeasDetailColumn } from "@/components/panel/IdeaDetailPane";
 import { useTerminalStore } from "@/stores/terminal-store";
+import { useHeaderPreferencesStore } from "@/stores/header-preferences-store";
 import { TabBar } from "@/components/tab-bar/TabBar";
 import { TabContentRenderer } from "@/components/tab-bar/TabContentRenderer";
 import { WebViewToolbar } from "@/components/tab-bar/WebViewToolbar";
@@ -657,6 +658,11 @@ function AppContent() {
   // before the user ever opens the panel or Settings → Team.
   const refreshTeamShare = useTeamShareStore((s) => s.refresh);
   const mainContentLayout = useUIStore((s) => s.mainContentLayout);
+  // Header icon visibility — additive gates on top of the capability/session
+  // conditions below. Defaults hidden; users enable per-icon in Settings →
+  // General → "会话头部图标". See stores/header-preferences-store.ts.
+  const showTerminalToggle = useHeaderPreferencesStore((s) => s.showTerminalToggle);
+  const showChangesTab = useHeaderPreferencesStore((s) => s.showChangesTab);
   const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
   const hasActiveFileTab = !!useTabsStore(selectActiveTab);
   const hasHiddenTabs = useTabsStore(selectHasHiddenTabs);
@@ -1127,7 +1133,7 @@ function AppContent() {
                   <AppWindow className="h-4 w-4" />
                 </button>
               )}
-              {capabilities.workspace && workspacePath && (
+              {capabilities.workspace && workspacePath && showTerminalToggle && (
                 <TerminalToggleButton workspacePath={workspacePath} />
               )}
               {hasCurrentSession && !isSoloBuild() && (
@@ -1142,7 +1148,7 @@ function AppContent() {
                   left nav, where the same tree renders in column two with its
                   editor in column three. Kept out of the header so the two do
                   not diverge. */}
-              {capabilities.workspace && hasCurrentSession && (
+              {capabilities.workspace && hasCurrentSession && showChangesTab && (
                 <HeaderPanelTab
                   icon={FolderGit}
                   label={t("navigation.changes", "Changes")}

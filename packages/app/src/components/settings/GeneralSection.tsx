@@ -13,6 +13,8 @@ import {
   User,
   Bug,
   PanelBottom,
+  TerminalSquare,
+  FolderGit,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn, isTauri } from '@/lib/utils'
@@ -33,6 +35,7 @@ import { SettingCard, SectionHeader, ToggleSwitch } from './shared'
 import { TeamDefaultAgentCard } from './TeamDefaultAgentCard'
 import { SwitchTeamDialog } from '@/components/auth/SwitchTeamDialog'
 import { useAcpDebugStore } from '@/stores/acp-debug-store'
+import { useHeaderPreferencesStore } from '@/stores/header-preferences-store'
 import { appStoragePrefix, buildConfig } from '@/lib/build-config'
 import { NOTIFICATION_LEVEL_KEY } from '@/lib/notification-service'
 import { LANGUAGE_OPTIONS, getPreferredLanguage, normalizeSupportedLanguage, persistLanguage } from '@/lib/locale'
@@ -152,6 +155,10 @@ export const GeneralSection = React.memo(function GeneralSection() {
   }, [])
   const acpStreamDebugEnabled = useAcpDebugStore((s) => s.enabled)
   const setAcpStreamDebugEnabled = useAcpDebugStore((s) => s.setEnabled)
+  const showTerminalToggle = useHeaderPreferencesStore((s) => s.showTerminalToggle)
+  const setShowTerminalToggle = useHeaderPreferencesStore((s) => s.setShowTerminalToggle)
+  const showChangesTab = useHeaderPreferencesStore((s) => s.showChangesTab)
+  const setShowChangesTab = useHeaderPreferencesStore((s) => s.setShowChangesTab)
   const [closePref, setClosePref] = React.useState<'ask' | 'tray' | 'quit'>('ask')
   React.useEffect(() => {
     if (!isTauri()) return
@@ -417,6 +424,51 @@ export const GeneralSection = React.memo(function GeneralSection() {
               <ToggleSwitch
                 enabled={acpStreamDebugEnabled}
                 onChange={setAcpStreamDebugEnabled}
+              />
+            </div>
+          </div>
+        </div>
+      </SettingCard>
+
+      <SettingCard>
+        <h4 className="font-medium mb-4 flex items-center gap-2">
+          <PanelBottom className="h-4 w-4 text-muted-foreground" />
+          {t('settings.general.headerIcons', '会话头部图标')}
+        </h4>
+        <p className="text-xs text-muted-foreground mb-4">
+          {t('settings.general.headerIconsDesc', '控制会话右上角操作图标的显示。默认隐藏，需要时在此开启。')}
+        </p>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <label className="text-[13px] font-medium flex items-center gap-2">
+                <TerminalSquare className="h-4 w-4 text-muted-foreground" />
+                {t('settings.general.showTerminalToggle', '终端开关')}
+              </label>
+              <p className="text-xs text-muted-foreground">
+                {t('settings.general.showTerminalToggleDesc', '在会话右上角显示终端面板开关。快捷键 Ctrl+` 始终可用，不受此设置影响。')}
+              </p>
+            </div>
+            <ToggleSwitch
+              enabled={showTerminalToggle}
+              onChange={setShowTerminalToggle}
+            />
+          </div>
+
+          <div className="border-t pt-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-1">
+                <label className="text-[13px] font-medium flex items-center gap-2">
+                  <FolderGit className="h-4 w-4 text-muted-foreground" />
+                  {t('settings.general.showChangesTab', '文件更改')}
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  {t('settings.general.showChangesTabDesc', '在会话右上角显示本会话的文件更改入口。仅在有活跃会话时显示。')}
+                </p>
+              </div>
+              <ToggleSwitch
+                enabled={showChangesTab}
+                onChange={setShowChangesTab}
               />
             </div>
           </div>

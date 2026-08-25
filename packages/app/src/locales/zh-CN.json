@@ -1335,7 +1335,13 @@
       "notifImportant": "仅重要通知",
       "notifMute": "静音",
       "acpStreamDebug": "ACP 流调试",
-      "acpStreamDebugDesc": "在聊天区域上方显示实时 ACP 事件流"
+      "acpStreamDebugDesc": "在聊天区域上方显示实时 ACP 事件流",
+      "headerIcons": "会话头部图标",
+      "headerIconsDesc": "控制会话右上角操作图标的显示。默认隐藏，需要时在此开启。",
+      "showTerminalToggle": "终端开关",
+      "showTerminalToggleDesc": "在会话右上角显示终端面板开关。快捷键 Ctrl+` 始终可用，不受此设置影响。",
+      "showChangesTab": "文件更改",
+      "showChangesTabDesc": "在会话右上角显示本会话的文件更改入口。仅在有活跃会话时显示。"
     },
     "llm": {
       "cursorTitle": "Cursor 模型",
