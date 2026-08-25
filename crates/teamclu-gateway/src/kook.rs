@@ -107,6 +107,8 @@ pub struct KookGateway {
     processed_messages: Arc<RwLock<ProcessedMessageTracker>>,
     /// Bot's own user ID (fetched via /user/me on startup)
     bot_user_id: Arc<RwLock<Option<String>>>,
+    /// Set once the daemon wires the core pipeline; the inline path is skipped.
+    inbound_sink: Arc<RwLock<Option<Arc<dyn crate::driver::InboundSink>>>>,
 }
 
 impl KookGateway {
@@ -135,7 +137,18 @@ impl KookGateway {
                 MAX_PROCESSED_MESSAGES,
             ))),
             bot_user_id: Arc::new(RwLock::new(None)),
+            inbound_sink: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Hand inbound messages to the core instead of the inline handler.
+    pub async fn use_core_pipeline(&self, sink: Arc<dyn crate::driver::InboundSink>) {
+        *self.inbound_sink.write().await = Some(sink);
+    }
+
+    /// A driver for the core to render replies through.
+    pub async fn as_driver(&self) -> KookDriver {
+        KookDriver::new(self.config.read().await.token.clone())
     }
 
     pub async fn set_config(&self, config: KookConfig) {
@@ -732,6 +745,16 @@ impl KookGateway {
 
         match filter_result {
             FilterResult::Allow => {
+                // The core pipeline, when the daemon has wired it. Dedup,
+                // routing, identity, commands and writing live there.
+                if let Some(sink) = self.inbound_sink.read().await.clone() {
+                    let bot_id = self.bot_user_id.read().await.clone();
+                    let content = self.strip_mentions(&msg_data.content, bot_id.as_deref());
+                    if let Some(inbound) = normalize_message(&msg_data, &content) {
+                        sink.accept(inbound).await;
+                    }
+                    return Ok(());
+                }
                 self.process_and_reply(&msg_data).await?;
             }
             FilterResult::Ignore => {
@@ -1290,6 +1313,228 @@ impl KookGateway {
     }
 }
 
+// ==================== Transport driver (core pipeline) ====================
+
+/// KOOK addresses a DM reply by the *author*, but keys the binding on the DM
+/// channel code. [`Conversation`] has one id field, so both ride in it.
+const DM_SEP: &str = "|u=";
+
+fn encode_dm_id(target_id: &str, author_id: &str) -> String {
+    format!("{target_id}{DM_SEP}{author_id}")
+}
+
+fn decode_conv_id(id: &str) -> (&str, Option<&str>) {
+    match id.split_once(DM_SEP) {
+        Some((target, author)) => (target, Some(author)),
+        None => (id, None),
+    }
+}
+
+fn kook_caps() -> crate::driver::ChannelCaps {
+    crate::driver::ChannelCaps {
+        // KOOK has a message-update endpoint, but this driver does not speak it
+        // yet; claiming the capability would make the core stream edits into a
+        // method that returns an error.
+        streaming_edit: false,
+        media_upload: false,
+        interactive: false,
+        threading: crate::driver::Threading::ReplyTo,
+        max_chars: 4000,
+        turn_timeout_secs: 180,
+    }
+}
+
+/// Normalize a KOOK message into the shape the core consumes.
+///
+/// `content` is the text with the bot mention already stripped — that needs the
+/// bot's own user id, which is connection state rather than a property of the
+/// event, so the caller does it.
+fn normalize_message(
+    msg: &KookMessageData,
+    content: &str,
+) -> Option<crate::driver::InboundMessage> {
+    if msg.msg_id.is_empty() || msg.author_id.is_empty() {
+        return None;
+    }
+    let is_dm = msg.channel_type == "PERSON";
+    let scope = if is_dm {
+        "dm".to_string()
+    } else {
+        msg.extra
+            .get("guild_id")
+            .and_then(|g| g.as_str())
+            .unwrap_or("unknown")
+            .to_string()
+    };
+    let display = msg
+        .extra
+        .get("author")
+        .and_then(|a| a.get("username"))
+        .and_then(|u| u.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| msg.author_id.clone());
+
+    Some(crate::driver::InboundMessage {
+        conversation: crate::driver::Conversation {
+            channel: "kook",
+            // The guild (or "dm") decides the binding scope, so it travels as
+            // the bot_id slot rather than being re-derived downstream.
+            bot_id: Some(scope),
+            kind: if is_dm {
+                crate::driver::ConversationKind::Direct
+            } else {
+                crate::driver::ConversationKind::Group
+            },
+            id: if is_dm {
+                encode_dm_id(&msg.target_id, &msg.author_id)
+            } else {
+                msg.target_id.clone()
+            },
+        },
+        sender: crate::driver::ExternalSender {
+            external_id: msg.author_id.clone(),
+            display_name: display,
+            email: None,
+        },
+        external_message_id: msg.msg_id.clone(),
+        text: content.to_string(),
+        attachments: Vec::new(),
+        // KOOK only pushes DMs and channel messages the bot can see; the inline
+        // path treated every delivered message as addressed, and so does this.
+        addressed_to_bot: true,
+        quoted_text: None,
+        reply_context: Some(msg.msg_id.clone()),
+    })
+}
+
+/// KOOK as a transport driver.
+pub struct KookDriver {
+    token: String,
+}
+
+impl KookDriver {
+    pub fn new(token: String) -> Self {
+        Self { token }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::driver::ChannelDriver for KookDriver {
+    fn id(&self) -> crate::driver::ChannelId {
+        "kook"
+    }
+
+    fn caps(&self) -> crate::driver::ChannelCaps {
+        kook_caps()
+    }
+
+    fn binding(&self, conversation: &crate::driver::Conversation) -> String {
+        let (target, _) = decode_conv_id(&conversation.id);
+        let scope = conversation.bot_id.as_deref().unwrap_or("unknown");
+        crate::binding::kook(scope, target)
+    }
+
+    fn sender_urn(
+        &self,
+        _conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        crate::binding::urn_kook_user(&sender.external_id)
+    }
+
+    fn session_title(
+        &self,
+        conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        let (target, _) = decode_conv_id(&conversation.id);
+        match conversation.kind {
+            crate::driver::ConversationKind::Group => format!("Kook: #{target}"),
+            _ => format!("Kook DM: {}", sender.display_name),
+        }
+    }
+
+    async fn deliver(
+        &self,
+        to: &crate::driver::Conversation,
+        reply_context: Option<&str>,
+        msg: &crate::driver::OutboundMessage,
+    ) -> Result<crate::driver::DeliveryId, crate::driver::DriverError> {
+        if msg.text.trim().is_empty() {
+            return Ok(crate::driver::DeliveryId(to.id.clone()));
+        }
+        let (target, dm_author) = decode_conv_id(&to.id);
+        let is_dm = matches!(to.kind, crate::driver::ConversationKind::Direct);
+        let addressee = if is_dm {
+            dm_author.unwrap_or(target)
+        } else {
+            target
+        };
+
+        send_kook_card(&self.token, addressee, &msg.text, reply_context, is_dm)
+            .await
+            .map_err(crate::driver::DriverError::Transport)?;
+        Ok(crate::driver::DeliveryId(to.id.clone()))
+    }
+}
+
+/// Post one kmarkdown card, to a DM or a channel.
+///
+/// Shares the card shape with the inline `send_reply` so a reply looks the same
+/// whichever path produced it.
+async fn send_kook_card(
+    token: &str,
+    target_id: &str,
+    text: &str,
+    quote: Option<&str>,
+    is_dm: bool,
+) -> Result<(), String> {
+    let client = crate::http_client_secs(30);
+    let card = json!([{
+        "type": "card",
+        "theme": "primary",
+        "size": "lg",
+        "modules": [{
+            "type": "section",
+            "text": { "type": "kmarkdown", "content": text }
+        }]
+    }]);
+    let endpoint = if is_dm {
+        format!("{}/direct-message/create", KOOK_API_BASE)
+    } else {
+        format!("{}/message/create", KOOK_API_BASE)
+    };
+    let mut body = json!({
+        "type": 10,
+        "target_id": target_id,
+        "content": serde_json::to_string(&card).unwrap(),
+    });
+    if let Some(q) = quote {
+        body["quote"] = json!(q);
+    }
+    let resp = client
+        .post(&endpoint)
+        .header("Authorization", format!("Bot {token}"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send reply: {e}"))?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse reply response: {e}"))?;
+    if let Some(code) = body.get("code").and_then(|c| c.as_i64()) {
+        if code != 0 {
+            let message = body
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error");
+            return Err(format!("Reply API error ({code}): {message}"));
+        }
+    }
+    Ok(())
+}
+
 impl Clone for KookGateway {
     fn clone(&self) -> Self {
         Self {
@@ -1307,6 +1552,7 @@ impl Clone for KookGateway {
             last_sn: Arc::clone(&self.last_sn),
             processed_messages: Arc::clone(&self.processed_messages),
             bot_user_id: Arc::clone(&self.bot_user_id),
+            inbound_sink: Arc::clone(&self.inbound_sink),
         }
     }
 }

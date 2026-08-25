@@ -486,6 +486,10 @@ impl ChannelManager {
             }
         }
         gw.set_config(cfg).await;
+        // Discord gains dedup, commands and long-answer splitting from the
+        // core; the inline path had its own tracker and its own filters.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
+            .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }
@@ -514,12 +518,10 @@ impl ChannelManager {
                 bot_name: bot.bot_name.clone(),
             };
             gw.set_config(cfg).await;
-            if crate::channels::core::sink::core_pipeline_enabled() {
-                // One pipeline for every channel; the gateway is left with the
-                // protocol. `TEAMCLU_GATEWAY_CORE=0` keeps the inline handler.
-                gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver())))
-                    .await;
-            }
+            // One pipeline for every channel; the gateway is left with the
+            // protocol.
+            gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver())))
+                .await;
             match gw.start().await {
                 Ok(()) => {
                     println!("[ChannelManager] wecom bot {} started", bot.bot_id);
@@ -549,12 +551,10 @@ impl ChannelManager {
             chats: Default::default(),
         };
         gw.set_config(cfg).await;
-        if crate::channels::core::sink::core_pipeline_enabled() {
-            // Feishu gains streaming from this: it always could edit a sent
-            // message, the inline path just never did.
-            gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
-                .await;
-        }
+        // Feishu gains streaming from this: it always could edit a sent
+        // message, the inline path just never did.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
+            .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }
@@ -582,6 +582,10 @@ impl ChannelManager {
             guilds: Default::default(),
         };
         gw.set_config(cfg).await;
+        // KOOK gains dedup, commands and a per-channel turn timeout here; the
+        // inline path had its own tracker and its own command handling.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
+            .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }
@@ -602,6 +606,10 @@ impl ChannelManager {
             ..Default::default()
         };
         gw.set_config(cfg).await;
+        // WeChat gains dedup (it had none — iLink redelivery meant a repeat
+        // turn), commands and a per-channel turn timeout.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
+            .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }
@@ -631,6 +639,11 @@ impl ChannelManager {
         };
         gw.set_workspace_path(&self.workspace_path).await;
         gw.set_config(cfg).await;
+        // Email gains commands, one dedup mechanism instead of its own UID
+        // watermark, and a 900s turn timeout — the IM-shaped 180s would abandon
+        // a normal mail round trip.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
+            .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }
@@ -666,7 +679,15 @@ impl ChannelManager {
             group_allow_from: c.group_allow_from.clone(),
             ..Default::default()
         };
+        let dm_thread = cfg.dm_thread_session;
+        let group_thread = cfg.group_thread_session;
         gw.set_config(cfg).await;
+        // SeaTalk gains dedup, commands, attachments-as-text and a per-channel
+        // turn timeout from this; it had none of them on the inline path.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(
+            gw.as_driver().await.with_thread_sessions(dm_thread, group_thread),
+        )))
+        .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
         Ok(gw)
     }

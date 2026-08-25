@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -258,6 +259,10 @@ pub struct EmailGateway {
     email_db: Arc<RwLock<Option<EmailDb>>>,
     /// Pending questions waiting for email replies
     pub pending_questions: Arc<super::PendingQuestionStore>,
+    /// Set once the daemon wires the core pipeline; the inline path is skipped.
+    inbound_sink: Arc<RwLock<Option<Arc<dyn crate::driver::InboundSink>>>>,
+    /// Last inbound mail per thread, so the driver can address its reply.
+    reply_targets: ReplyTargets,
 }
 
 impl EmailGateway {
@@ -283,6 +288,22 @@ impl EmailGateway {
             generation: Arc::new(AtomicU64::new(0)),
             email_db: Arc::new(RwLock::new(None)),
             pending_questions: Arc::new(super::PendingQuestionStore::new()),
+            inbound_sink: Arc::new(RwLock::new(None)),
+            reply_targets: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Hand inbound mail to the core instead of the inline handler.
+    pub async fn use_core_pipeline(&self, sink: Arc<dyn crate::driver::InboundSink>) {
+        *self.inbound_sink.write().await = Some(sink);
+    }
+
+    /// A driver for the core to render replies through.
+    pub async fn as_driver(&self) -> EmailDriver {
+        EmailDriver {
+            config: self.config.read().await.clone(),
+            workspace_path: self.workspace_path.read().await.clone().unwrap_or_default(),
+            reply_targets: Arc::clone(&self.reply_targets),
         }
     }
 
@@ -1130,6 +1151,35 @@ fn handle_imap_connection(
                             let filter_result = check_email_filter(config, &email_msg);
                             match filter_result {
                                 FilterResult::Allow => {
+                                    // The core pipeline, when the daemon has
+                                    // wired it. The thread key is resolved here
+                                    // because it needs an EmailDb lookup, which
+                                    // `ChannelDriver::binding` cannot do.
+                                    if let Some(sink) =
+                                        rt_handle.block_on(gateway.inbound_sink.read()).clone()
+                                    {
+                                        let thread_key = resolve_thread_key_sync(
+                                            gateway,
+                                            &email_msg,
+                                            rt_handle,
+                                            email_db,
+                                            account_key,
+                                        );
+                                        rt_handle.block_on(async {
+                                            gateway
+                                                .reply_targets
+                                                .write()
+                                                .await
+                                                .insert(thread_key.clone(), email_msg.clone());
+                                            sink.accept(normalize_email(
+                                                account_key,
+                                                &email_msg,
+                                                &thread_key,
+                                            ))
+                                            .await;
+                                        });
+                                        continue;
+                                    }
                                     if let Err(e) = process_and_reply_sync(
                                         gateway,
                                         config,
@@ -1563,6 +1613,218 @@ fn resolve_email_session_binding_sync(
         None
     });
     Ok(resolved)
+}
+
+// ==================== Transport driver (core pipeline) ====================
+
+/// What a reply needs that the conversation id cannot carry.
+///
+/// Mail replies must reproduce `In-Reply-To` / `References` and the original
+/// subject or the thread splits, and the recipient is the original sender —
+/// none of which survive a round trip through a single id string. So the
+/// inbound side stashes the message here, keyed by conversation id, and the
+/// driver picks it up. Same shape as WeCom's reply context and WeChat's
+/// context-token cache: transport state, held by the transport.
+pub(crate) type ReplyTargets = Arc<RwLock<HashMap<String, EmailMessage>>>;
+
+fn email_caps() -> crate::driver::ChannelCaps {
+    crate::driver::ChannelCaps {
+        // There is no "edit the mail I already sent". The core buffers the
+        // whole answer and sends once — which is why declaring this honestly
+        // matters: a channel that claimed streaming would send one mail per
+        // frame, five mails to a question.
+        streaming_edit: false,
+        media_upload: false,
+        interactive: false,
+        threading: crate::driver::Threading::MailHeaders,
+        // Mail has no practical body limit; splitting would be worse.
+        max_chars: 100_000,
+        // A mail round trip is minutes, not the IM-shaped 180s. The inline path
+        // only got away with the short timeout because it blocked on the reply
+        // rather than queueing the turn.
+        turn_timeout_secs: 900,
+    }
+}
+
+/// Conversation id for a mail thread. Only the thread key needs to survive —
+/// everything else a reply needs is in [`ReplyTargets`].
+fn mail_conv_id(thread_key: &str) -> String {
+    thread_key.to_string()
+}
+
+/// Normalize a parsed email into the shape the core consumes.
+///
+/// `thread_key` is resolved by the caller because it needs an `EmailDb` lookup
+/// over the `In-Reply-To` / `References` chain, and [`ChannelDriver::binding`]
+/// is sync and pure by contract.
+fn normalize_email(
+    account_key: &str,
+    email: &EmailMessage,
+    thread_key: &str,
+) -> crate::driver::InboundMessage {
+    let body = if email.body_text.is_empty() {
+        "(empty body)".to_string()
+    } else {
+        clean_email_body(&email.body_text)
+    };
+    let display = if email.from.is_empty() {
+        "Email user".to_string()
+    } else {
+        email.from.clone()
+    };
+    crate::driver::InboundMessage {
+        conversation: crate::driver::Conversation {
+            channel: "email",
+            bot_id: Some(account_key.to_string()),
+            kind: crate::driver::ConversationKind::MailThread,
+            id: mail_conv_id(thread_key),
+        },
+        sender: crate::driver::ExternalSender {
+            external_id: email.from.clone(),
+            display_name: display,
+            email: Some(email.from.clone()),
+        },
+        external_message_id: if email.message_id.is_empty() {
+            format!("uid:{}", email.uid)
+        } else {
+            normalize_message_id(&email.message_id)
+        },
+        text: body,
+        attachments: Vec::new(),
+        // Every mail to the address is addressed to us; there is no mention
+        // concept to invent one from.
+        addressed_to_bot: true,
+        quoted_text: None,
+        reply_context: Some(normalize_message_id(&email.message_id)),
+    }
+}
+
+/// Email as a transport driver.
+pub struct EmailDriver {
+    config: EmailConfig,
+    workspace_path: String,
+    reply_targets: ReplyTargets,
+}
+
+#[async_trait::async_trait]
+impl crate::driver::ChannelDriver for EmailDriver {
+    fn id(&self) -> crate::driver::ChannelId {
+        "email"
+    }
+
+    fn caps(&self) -> crate::driver::ChannelCaps {
+        email_caps()
+    }
+
+    fn binding(&self, conversation: &crate::driver::Conversation) -> String {
+        crate::binding::email_thread(
+            conversation.bot_id.as_deref().unwrap_or_default(),
+            &conversation.id,
+        )
+    }
+
+    fn sender_urn(
+        &self,
+        _conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        crate::binding::urn_email_user(&sender.external_id)
+    }
+
+    fn session_title(
+        &self,
+        _conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        format!("Email: {}", sender.display_name)
+    }
+
+    async fn deliver(
+        &self,
+        to: &crate::driver::Conversation,
+        _reply_context: Option<&str>,
+        msg: &crate::driver::OutboundMessage,
+    ) -> Result<crate::driver::DeliveryId, crate::driver::DriverError> {
+        if msg.text.trim().is_empty() {
+            return Ok(crate::driver::DeliveryId(to.id.clone()));
+        }
+        let original = self
+            .reply_targets
+            .read()
+            .await
+            .get(&to.id)
+            .cloned()
+            .ok_or_else(|| {
+                crate::driver::DriverError::Transport(format!(
+                    "no inbound mail recorded for thread {} — cannot address a reply",
+                    to.id
+                ))
+            })?;
+
+        let config = self.config.clone();
+        let workspace = self.workspace_path.clone();
+        let body = msg.text.clone();
+
+        // Gmail needs an OAuth token, and fetching it is async; SMTP itself is
+        // blocking, so the token comes first and the send goes to a blocking
+        // task.
+        let access_token = if config.provider == EmailProvider::Gmail {
+            let mgr = GmailTokenManager::new(
+                &config.gmail_client_id,
+                &config.gmail_client_secret,
+                &config.gmail_email,
+                &workspace,
+            );
+            Some(
+                mgr.get_access_token()
+                    .await
+                    .map_err(crate::driver::DriverError::Transport)?,
+            )
+        } else {
+            None
+        };
+
+        tokio::task::spawn_blocking(move || {
+            send_reply_sync(&config, &original, &body, access_token.as_deref())
+        })
+        .await
+        .map_err(|e| crate::driver::DriverError::Transport(format!("smtp task panicked: {e}")))?
+        .map_err(crate::driver::DriverError::Transport)?;
+
+        Ok(crate::driver::DeliveryId(to.id.clone()))
+    }
+}
+
+/// The thread key a mail belongs to, as the core's conversation id.
+///
+/// Reuses the inline path's resolution exactly — an existing thread found via
+/// `In-Reply-To` / `References` (or the subject fallback) keeps its key, so a
+/// reply lands in the session the thread already has; a first-time mail derives
+/// one from its own Message-ID.
+fn resolve_thread_key_sync(
+    gateway: &EmailGateway,
+    email: &EmailMessage,
+    rt_handle: &tokio::runtime::Handle,
+    email_db: Option<&EmailDb>,
+    account_key: &str,
+) -> String {
+    let resolved =
+        resolve_email_session_binding_sync(gateway, email, rt_handle, email_db, account_key)
+            .ok()
+            .flatten();
+    if let Some(binding) = resolved {
+        // `email://{account}/thread/{key}` — take the key back out so the core
+        // can rebuild the same binding through the driver.
+        if let Some(key) = binding.rsplit("/thread/").next() {
+            if !key.is_empty() && key != binding {
+                return key.to_string();
+            }
+        }
+    }
+    build_thread_session_key(email)
+        .strip_prefix("email:thread:")
+        .map(str::to_string)
+        .unwrap_or_else(|| email.uid.to_string())
 }
 
 fn process_and_reply_sync(

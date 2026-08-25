@@ -192,7 +192,11 @@ impl SeaTalkClient {
         Ok(())
     }
 
-    async fn set_group_typing(&self, group_id: &str, thread_id: Option<&str>) -> Result<(), String> {
+    async fn set_group_typing(
+        &self,
+        group_id: &str,
+        thread_id: Option<&str>,
+    ) -> Result<(), String> {
         let mut body = json!({ "group_id": group_id });
         if let Some(tid) = thread_id {
             body["thread_id"] = json!(tid);
@@ -249,6 +253,9 @@ struct HandlerContext {
     agent_owner_actor_ids: Vec<String>,
     client: Arc<SeaTalkClient>,
     processed_events: Arc<RwLock<ProcessedMessageTracker>>,
+    /// Set once the daemon wires the core pipeline; when present the inline
+    /// path below is skipped entirely.
+    inbound_sink: Option<Arc<dyn crate::driver::InboundSink>>,
 }
 
 pub struct SeaTalkGateway {
@@ -262,6 +269,7 @@ pub struct SeaTalkGateway {
     status: Arc<RwLock<SeaTalkGatewayStatusResponse>>,
     is_running: Arc<RwLock<bool>>,
     processed_events: Arc<RwLock<ProcessedMessageTracker>>,
+    inbound_sink: Arc<RwLock<Option<Arc<dyn crate::driver::InboundSink>>>>,
 }
 
 impl SeaTalkGateway {
@@ -285,7 +293,19 @@ impl SeaTalkGateway {
             processed_events: Arc::new(RwLock::new(ProcessedMessageTracker::new(
                 MAX_PROCESSED_MESSAGES,
             ))),
+            inbound_sink: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Hand inbound messages to the core instead of the inline handler.
+    pub async fn use_core_pipeline(&self, sink: Arc<dyn crate::driver::InboundSink>) {
+        *self.inbound_sink.write().await = Some(sink);
+    }
+
+    /// A driver for the core to render replies through.
+    pub async fn as_driver(&self) -> SeaTalkDriver {
+        let cfg = self.config.read().await.clone();
+        SeaTalkDriver::new(cfg.app_id.clone(), cfg.app_secret.clone())
     }
 
     pub async fn set_config(&self, config: SeaTalkConfig) {
@@ -381,6 +401,7 @@ impl SeaTalkGateway {
         ));
 
         let ctx = HandlerContext {
+            inbound_sink: self.inbound_sink.read().await.clone(),
             app_id: config.app_id.clone(),
             config: Arc::clone(&self.config),
             agent: Arc::clone(&self.agent),
@@ -587,14 +608,239 @@ impl SeaTalkGateway {
     }
 }
 
-async fn handle_callback_event(ctx: &HandlerContext, event: &serde_json::Value) -> Result<(), String> {
+// ==================== Transport driver (core pipeline) ====================
+
+/// SeaTalk conversation ids carry the thread inline, because [`Conversation`]
+/// has no thread field and SeaTalk replies must go back to the thread they came
+/// from. `binding()` decides whether the thread also separates *sessions* (that
+/// is config), while `deliver()` always uses it to address the reply.
+const THREAD_SEP: &str = "#t=";
+
+fn encode_conv_id(chat_id: &str, thread_id: Option<&str>) -> String {
+    match thread_id {
+        Some(t) if !t.is_empty() => format!("{chat_id}{THREAD_SEP}{t}"),
+        _ => chat_id.to_string(),
+    }
+}
+
+fn decode_conv_id(id: &str) -> (&str, Option<&str>) {
+    match id.split_once(THREAD_SEP) {
+        Some((chat, thread)) => (chat, Some(thread)),
+        None => (id, None),
+    }
+}
+
+fn seatalk_caps() -> crate::driver::ChannelCaps {
+    crate::driver::ChannelCaps {
+        // SeaTalk's OpenAPI posts messages; there is no edit endpoint, so a
+        // streamed reply would have to be N messages. The core buffers instead.
+        streaming_edit: false,
+        // `dispatch_send` has rejected SeaTalk file sends all along; saying so
+        // here is what makes the core degrade an attachment into text rather
+        // than fail the turn.
+        media_upload: false,
+        interactive: false,
+        threading: crate::driver::Threading::Inline,
+        max_chars: 4000,
+        turn_timeout_secs: 180,
+    }
+}
+
+/// Normalize a SeaTalk callback event into the shape the core consumes.
+///
+/// Pure: no config, no network. Policy (allowlists, thread-per-session) stays
+/// with the driver and the core, which is the whole point of the split.
+pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver::InboundMessage> {
+    let event_type = event["event_type"].as_str().unwrap_or("");
+    let event_id = event["event_id"].as_str().unwrap_or("");
+    if event_id.is_empty() {
+        return None;
+    }
+    let payload = &event["event"];
+
+    let (kind, chat_id, sender_val, is_dm) = match event_type {
+        "message_from_bot_subscriber" => (
+            crate::driver::ConversationKind::Direct,
+            sender_identity(payload),
+            payload.clone(),
+            true,
+        ),
+        "new_mentioned_message_received_from_group_chat" | "new_message_received_from_thread" => {
+            let group_id = payload["group_id"]
+                .as_str()
+                .or_else(|| payload["group"]["group_id"].as_str())
+                .unwrap_or("")
+                .to_string();
+            (
+                crate::driver::ConversationKind::Group,
+                group_id,
+                payload["message"]["sender"].clone(),
+                false,
+            )
+        }
+        _ => return None,
+    };
+    if chat_id.is_empty() {
+        return None;
+    }
+
+    let message = &payload["message"];
+    let employee_code = if is_dm {
+        chat_id.clone()
+    } else {
+        sender_identity(&sender_val)
+    };
+    if employee_code.is_empty() {
+        return None;
+    }
+    let email = sender_val["email"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let thread_id = optional_id(message["thread_id"].as_str()).map(str::to_string);
+    let text = extract_message_text(message);
+
+    Some(crate::driver::InboundMessage {
+        conversation: crate::driver::Conversation {
+            channel: "seatalk",
+            bot_id: None,
+            kind,
+            id: encode_conv_id(&chat_id, thread_id.as_deref()),
+        },
+        sender: crate::driver::ExternalSender {
+            display_name: email.clone().unwrap_or_else(|| employee_code.clone()),
+            external_id: employee_code,
+            email,
+        },
+        external_message_id: event_id.to_string(),
+        text,
+        attachments: Vec::new(),
+        // SeaTalk only delivers group messages the bot was mentioned in, and a
+        // DM is addressed by definition.
+        addressed_to_bot: true,
+        quoted_text: None,
+        reply_context: None,
+    })
+}
+
+/// SeaTalk as a transport driver.
+pub struct SeaTalkDriver {
+    app_id: String,
+    client: SeaTalkClient,
+    /// Whether a thread splits the session, mirroring the inline path's config.
+    dm_thread_session: bool,
+    group_thread_session: bool,
+}
+
+impl SeaTalkDriver {
+    pub fn new(app_id: String, app_secret: String) -> Self {
+        Self {
+            client: SeaTalkClient::new(app_id.clone(), app_secret),
+            app_id,
+            dm_thread_session: false,
+            group_thread_session: false,
+        }
+    }
+
+    pub fn with_thread_sessions(mut self, dm: bool, group: bool) -> Self {
+        self.dm_thread_session = dm;
+        self.group_thread_session = group;
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::driver::ChannelDriver for SeaTalkDriver {
+    fn id(&self) -> crate::driver::ChannelId {
+        "seatalk"
+    }
+
+    fn caps(&self) -> crate::driver::ChannelCaps {
+        seatalk_caps()
+    }
+
+    fn binding(&self, conversation: &crate::driver::Conversation) -> String {
+        let (chat, thread) = decode_conv_id(&conversation.id);
+        match conversation.kind {
+            crate::driver::ConversationKind::Group => match thread {
+                Some(t) if self.group_thread_session => {
+                    crate::binding::seatalk_group_thread(&self.app_id, chat, t)
+                }
+                _ => crate::binding::seatalk_group(&self.app_id, chat),
+            },
+            _ => match thread {
+                Some(t) if self.dm_thread_session => {
+                    crate::binding::seatalk_dm_thread(&self.app_id, chat, t)
+                }
+                _ => crate::binding::seatalk_dm(&self.app_id, chat),
+            },
+        }
+    }
+
+    fn sender_urn(
+        &self,
+        _conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        crate::binding::urn_seatalk_user(&self.app_id, &sender.external_id)
+    }
+
+    fn session_title(
+        &self,
+        conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        let (chat, _) = decode_conv_id(&conversation.id);
+        match conversation.kind {
+            crate::driver::ConversationKind::Group => format!("SeaTalk group: {chat}"),
+            _ => format!(
+                "SeaTalk DM: {}",
+                if sender.display_name.is_empty() {
+                    chat
+                } else {
+                    sender.display_name.as_str()
+                }
+            ),
+        }
+    }
+
+    async fn deliver(
+        &self,
+        to: &crate::driver::Conversation,
+        _reply_context: Option<&str>,
+        msg: &crate::driver::OutboundMessage,
+    ) -> Result<crate::driver::DeliveryId, crate::driver::DriverError> {
+        let (chat, thread) = decode_conv_id(&to.id);
+        let text = if msg.text.trim().is_empty() {
+            return Ok(crate::driver::DeliveryId(to.id.clone()));
+        } else {
+            msg.text.as_str()
+        };
+        let result = match to.kind {
+            crate::driver::ConversationKind::Group => {
+                self.client.send_group_text(chat, text, thread).await
+            }
+            _ => self.client.send_single_text(chat, text, thread).await,
+        };
+        result.map_err(crate::driver::DriverError::Transport)?;
+        Ok(crate::driver::DeliveryId(to.id.clone()))
+    }
+}
+
+async fn handle_callback_event(
+    ctx: &HandlerContext,
+    event: &serde_json::Value,
+) -> Result<(), String> {
     let event_id = event["event_id"].as_str().unwrap_or("").to_string();
     let event_type = event["event_type"].as_str().unwrap_or("").to_string();
     if event_id.is_empty() {
         eprintln!(
             "[SeaTalk] dropping event without event_id type={} keys={:?}",
             event_type,
-            event.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>())
+            event
+                .as_object()
+                .map(|o| o.keys().cloned().collect::<Vec<_>>())
         );
         return Ok(());
     }
@@ -607,6 +853,18 @@ async fn handle_callback_event(ctx: &HandlerContext, event: &serde_json::Value) 
     }
 
     println!("[SeaTalk] handle event_id={event_id} type={event_type}");
+
+    // The core pipeline, when the daemon has wired it. Dedup, routing, identity
+    // and writing all live there; this branch sits above the inline handlers so
+    // none of that runs twice.
+    if let Some(sink) = ctx.inbound_sink.clone() {
+        match normalize_event(event) {
+            Some(inbound) => sink.accept(inbound).await,
+            None => println!("[SeaTalk] event carried nothing actionable; ignoring"),
+        }
+        return Ok(());
+    }
+
     match event_type.as_str() {
         "message_from_bot_subscriber" => handle_dm_event(ctx, event).await,
         "new_mentioned_message_received_from_group_chat" | "new_message_received_from_thread" => {
@@ -861,10 +1119,7 @@ async fn process_inbound(
         .await;
 
     if is_dm {
-        let _ = ctx
-            .client
-            .set_single_typing(reply_target, thread_id)
-            .await;
+        let _ = ctx.client.set_single_typing(reply_target, thread_id).await;
     } else if let Some(gid) = group_id {
         let _ = ctx.client.set_group_typing(gid, thread_id).await;
     }
@@ -977,8 +1232,7 @@ fn strip_leading_mentions(text: &str) -> String {
 
 fn check_dm_allowed(cfg: &SeaTalkConfig, employee_code: &str, email: Option<&str>) -> bool {
     match cfg.dm_policy.as_str() {
-        "open" => cfg.allow_from.iter().any(|e| e.trim() == "*")
-            || cfg.allow_from.is_empty(),
+        "open" => cfg.allow_from.iter().any(|e| e.trim() == "*") || cfg.allow_from.is_empty(),
         _ => is_sender_allowed(employee_code, email, &cfg.allow_from),
     }
 }
@@ -999,7 +1253,9 @@ fn check_group_allowed(
             if cfg.group_allow_from.is_empty() {
                 true
             } else {
-                cfg.group_allow_from.iter().any(|g| g == group_id || g == "*")
+                cfg.group_allow_from
+                    .iter()
+                    .any(|g| g == group_id || g == "*")
             }
         }
         _ => false,
@@ -1013,8 +1269,7 @@ fn check_group_allowed(
         if !group_cfg.allow {
             return FilterResult::ChannelNotConfigured;
         }
-        if !group_cfg.users.is_empty()
-            && !is_sender_allowed(employee_code, email, &group_cfg.users)
+        if !group_cfg.users.is_empty() && !is_sender_allowed(employee_code, email, &group_cfg.users)
         {
             return FilterResult::UserNotAllowed;
         }
@@ -1071,6 +1326,7 @@ impl Clone for SeaTalkGateway {
             status: Arc::clone(&self.status),
             is_running: Arc::clone(&self.is_running),
             processed_events: Arc::clone(&self.processed_events),
+            inbound_sink: Arc::clone(&self.inbound_sink),
         }
     }
 }

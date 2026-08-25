@@ -142,18 +142,6 @@ impl InboundSink for CoreSink {
     }
 }
 
-/// Whether this daemon routes gateways through the core pipeline.
-///
-/// On by default. `TEAMCLU_GATEWAY_CORE=0` falls back to each gateway's inline
-/// handler — a switch for the first live round trip, to be deleted with the
-/// inline handlers once that has happened.
-pub fn core_pipeline_enabled() -> bool {
-    !matches!(
-        std::env::var("TEAMCLU_GATEWAY_CORE").as_deref(),
-        Ok("0") | Ok("false") | Ok("off")
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,26 +159,4 @@ mod tests {
         assert!(!is_command(""));
     }
 
-    #[test]
-    fn the_core_pipeline_is_on_unless_explicitly_turned_off() {
-        // A typo'd value must not silently disable it: only the three spellings
-        // of "off" count, everything else stays on.
-        let cases = [
-            (None, true),
-            (Some("0"), false),
-            (Some("false"), false),
-            (Some("off"), false),
-            (Some("1"), true),
-            (Some("yes"), true),
-            (Some(""), true),
-        ];
-        for (value, expected) in cases {
-            match value {
-                Some(v) => std::env::set_var("TEAMCLU_GATEWAY_CORE", v),
-                None => std::env::remove_var("TEAMCLU_GATEWAY_CORE"),
-            }
-            assert_eq!(core_pipeline_enabled(), expected, "for {value:?}");
-        }
-        std::env::remove_var("TEAMCLU_GATEWAY_CORE");
-    }
 }

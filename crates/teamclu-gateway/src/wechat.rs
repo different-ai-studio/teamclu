@@ -356,6 +356,154 @@ pub struct WeChatGateway {
     pending_questions: Arc<super::PendingQuestionStore>,
     /// Cache of from_user_id -> context_token for replies
     context_tokens: Arc<RwLock<HashMap<String, String>>>,
+    /// Set once the daemon wires the core pipeline; the inline path is skipped.
+    inbound_sink: Arc<RwLock<Option<Arc<dyn crate::driver::InboundSink>>>>,
+}
+
+// ==================== Transport driver (core pipeline) ====================
+
+fn wechat_caps() -> crate::driver::ChannelCaps {
+    crate::driver::ChannelCaps {
+        streaming_edit: false,
+        media_upload: false,
+        interactive: false,
+        threading: crate::driver::Threading::Inline,
+        max_chars: 2000,
+        turn_timeout_secs: 180,
+    }
+}
+
+/// Normalize an iLink user message into the shape the core consumes.
+///
+/// `client_id` is iLink's per-message id and doubles as the dedup key. It is
+/// optional on the wire, so a message without one falls back to sender+text —
+/// weaker, but the alternative is no dedup at all, which is what the inline
+/// path had.
+fn normalize_message(
+    account_id: &str,
+    sender_id: &str,
+    text: &str,
+    client_id: Option<&str>,
+) -> crate::driver::InboundMessage {
+    let external_message_id = client_id
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            sender_id.hash(&mut h);
+            text.hash(&mut h);
+            format!("wechat-derived:{:x}", h.finish())
+        });
+    let display = if sender_id.is_empty() {
+        "WeChat user".to_string()
+    } else {
+        sender_id.to_string()
+    };
+    crate::driver::InboundMessage {
+        conversation: crate::driver::Conversation {
+            channel: "wechat",
+            bot_id: Some(account_id.to_string()),
+            // Personal WeChat via iLink is DM-only — there is no group concept
+            // to model, which is why there is no mention filter either.
+            kind: crate::driver::ConversationKind::Direct,
+            id: sender_id.to_string(),
+        },
+        sender: crate::driver::ExternalSender {
+            external_id: sender_id.to_string(),
+            display_name: display,
+            email: None,
+        },
+        external_message_id,
+        text: text.to_string(),
+        attachments: Vec::new(),
+        addressed_to_bot: true,
+        quoted_text: None,
+        reply_context: None,
+    }
+}
+
+/// WeChat (iLink) as a transport driver.
+pub struct WeChatDriver {
+    base_url: String,
+    bot_token: String,
+    account_id: String,
+    /// Shared with the gateway, not copied: a reply needs the context token
+    /// from the user's latest inbound message.
+    context_tokens: Arc<RwLock<HashMap<String, String>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::driver::ChannelDriver for WeChatDriver {
+    fn id(&self) -> crate::driver::ChannelId {
+        "wechat"
+    }
+
+    fn caps(&self) -> crate::driver::ChannelCaps {
+        wechat_caps()
+    }
+
+    fn binding(&self, conversation: &crate::driver::Conversation) -> String {
+        crate::binding::wechat_dm(
+            conversation.bot_id.as_deref().unwrap_or(&self.account_id),
+            &conversation.id,
+        )
+    }
+
+    fn sender_urn(
+        &self,
+        conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        crate::binding::urn_wechat_user(
+            conversation.bot_id.as_deref().unwrap_or(&self.account_id),
+            &sender.external_id,
+        )
+    }
+
+    fn session_title(
+        &self,
+        _conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        format!("WeChat DM: {}", sender.display_name)
+    }
+
+    async fn deliver(
+        &self,
+        to: &crate::driver::Conversation,
+        _reply_context: Option<&str>,
+        msg: &crate::driver::OutboundMessage,
+    ) -> Result<crate::driver::DeliveryId, crate::driver::DriverError> {
+        if msg.text.trim().is_empty() {
+            return Ok(crate::driver::DeliveryId(to.id.clone()));
+        }
+        let context_token = self
+            .context_tokens
+            .read()
+            .await
+            .get(&to.id)
+            .cloned()
+            .ok_or_else(|| {
+                crate::driver::DriverError::Transport(format!(
+                    "No context_token for user {}. User must send a message first.",
+                    to.id
+                ))
+            })?;
+        let client = crate::http_client_secs(30);
+        send_text_message(
+            &client,
+            &self.base_url,
+            &self.bot_token,
+            &to.id,
+            &msg.text,
+            &context_token,
+        )
+        .await
+        .map_err(crate::driver::DriverError::Transport)?;
+        Ok(crate::driver::DeliveryId(to.id.clone()))
+    }
 }
 
 impl WeChatGateway {
@@ -380,6 +528,7 @@ impl WeChatGateway {
             is_running: Arc::new(RwLock::new(false)),
             pending_questions: Arc::new(super::PendingQuestionStore::new()),
             context_tokens: Arc::new(RwLock::new(HashMap::new())),
+            inbound_sink: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -395,6 +544,26 @@ impl WeChatGateway {
         let mut s = self.status.write().await;
         s.status = status;
         s.error_message = error;
+    }
+
+    /// Hand inbound messages to the core instead of the inline handler.
+    pub async fn use_core_pipeline(&self, sink: Arc<dyn crate::driver::InboundSink>) {
+        *self.inbound_sink.write().await = Some(sink);
+    }
+
+    /// A driver for the core to render replies through.
+    ///
+    /// Shares the live `context_tokens` map rather than a snapshot: WeChat
+    /// replies need the token from the user's most recent inbound message, and
+    /// a copy taken at startup would be empty.
+    pub async fn as_driver(&self) -> WeChatDriver {
+        let cfg = self.config.read().await.clone();
+        WeChatDriver {
+            base_url: cfg.base_url,
+            bot_token: cfg.bot_token,
+            account_id: cfg.account_id,
+            context_tokens: Arc::clone(&self.context_tokens),
+        }
     }
 
     /// Get cached context_token for a user (used by cron delivery)
@@ -617,6 +786,19 @@ impl WeChatGateway {
 
                             let preview: String = text.chars().take(50).collect();
                             println!("[WeChat] Message from {}: {}...", sender_id, preview);
+
+                            // The core pipeline, when the daemon has wired it.
+                            if let Some(sink) = self.inbound_sink.read().await.clone() {
+                                let account = self.config.read().await.account_id.clone();
+                                sink.accept(normalize_message(
+                                    &account,
+                                    &sender_id,
+                                    &text,
+                                    msg.client_id.as_deref(),
+                                ))
+                                .await;
+                                continue;
+                            }
 
                             // Forward to amuxd agent session
                             let gateway = self.clone();

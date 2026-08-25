@@ -26,6 +26,8 @@ pub struct DiscordHandler {
     processed_messages: Arc<RwLock<ProcessedMessageTracker>>,
     /// Pending question store for question forwarding
     pending_questions: Arc<super::PendingQuestionStore>,
+    /// Set once the daemon wires the core pipeline; the inline path is skipped.
+    inbound_sink: Option<Arc<dyn crate::driver::InboundSink>>,
 }
 
 impl DiscordHandler {
@@ -39,6 +41,7 @@ impl DiscordHandler {
         agent_owner_actor_ids: Vec<String>,
         status_tx: mpsc::Sender<GatewayStatusResponse>,
         pending_questions: Arc<super::PendingQuestionStore>,
+        inbound_sink: Option<Arc<dyn crate::driver::InboundSink>>,
     ) -> Self {
         Self {
             config,
@@ -53,6 +56,7 @@ impl DiscordHandler {
                 MAX_PROCESSED_MESSAGES,
             ))),
             pending_questions,
+            inbound_sink,
         }
     }
 
@@ -498,6 +502,17 @@ impl EventHandler for DiscordHandler {
             return;
         }
 
+        // The core pipeline, when the daemon has wired it. Sits below the
+        // pending-question branches (an answer is not a new turn) and above the
+        // filter, because policy is the core's job now.
+        if let Some(sink) = self.inbound_sink.clone() {
+            let bot_id = *self.bot_user_id.read().await;
+            if let Some(inbound) = normalize_message(&msg, bot_id) {
+                sink.accept(inbound).await;
+            }
+            return;
+        }
+
         let filter_result = self.should_process_message(&msg, &ctx).await;
         println!(
             "[Discord] Filter result: {:?}, guild_id: {:?}, channel_id: {}",
@@ -784,6 +799,7 @@ pub struct DiscordGateway {
     is_running: Arc<RwLock<bool>>,
     /// Pending question store for question forwarding
     pending_questions: Arc<super::PendingQuestionStore>,
+    inbound_sink: Arc<RwLock<Option<Arc<dyn crate::driver::InboundSink>>>>,
 }
 
 impl DiscordGateway {
@@ -805,7 +821,18 @@ impl DiscordGateway {
             status: Arc::new(RwLock::new(GatewayStatusResponse::default())),
             is_running: Arc::new(RwLock::new(false)),
             pending_questions: Arc::new(super::PendingQuestionStore::new()),
+            inbound_sink: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Hand inbound messages to the core instead of the inline handler.
+    pub async fn use_core_pipeline(&self, sink: Arc<dyn crate::driver::InboundSink>) {
+        *self.inbound_sink.write().await = Some(sink);
+    }
+
+    /// A driver for the core to render replies through.
+    pub async fn as_driver(&self) -> DiscordDriver {
+        DiscordDriver::new(self.config.read().await.token.clone())
     }
 
     /// Update the configuration
@@ -875,6 +902,7 @@ impl DiscordGateway {
             self.agent_owner_actor_ids.clone(),
             status_tx,
             Arc::clone(&self.pending_questions),
+            self.inbound_sink.read().await.clone(),
         );
 
         // Build client
@@ -1012,7 +1040,146 @@ impl Clone for DiscordGateway {
             status: Arc::clone(&self.status),
             is_running: Arc::clone(&self.is_running),
             pending_questions: Arc::clone(&self.pending_questions),
+            inbound_sink: Arc::clone(&self.inbound_sink),
         }
+    }
+}
+
+// ==================== Transport driver (core pipeline) ====================
+
+fn discord_caps() -> crate::driver::ChannelCaps {
+    crate::driver::ChannelCaps {
+        // Discord can edit a message it sent, but this driver does not hold the
+        // http context needed to do it from `update`. Claiming the capability
+        // would stream edits into an error, so it stays false until it is real.
+        streaming_edit: false,
+        media_upload: false,
+        interactive: false,
+        threading: crate::driver::Threading::ReplyTo,
+        // Discord's hard limit is 2000; `split_message` exists for exactly this.
+        max_chars: 2000,
+        turn_timeout_secs: 180,
+    }
+}
+
+/// Normalize a Discord message into the shape the core consumes.
+///
+/// `bot_id` strips the bot's own mention — it is connection state (set in
+/// `ready()`), not a property of the message.
+fn normalize_message(msg: &Message, bot_id: Option<u64>) -> Option<crate::driver::InboundMessage> {
+    if msg.author.bot {
+        return None;
+    }
+    let mut content = msg.content.clone();
+    if let Some(id) = bot_id {
+        content = content
+            .replace(&format!("<@{id}>",), "")
+            .replace(&format!("<@!{id}>"), "")
+            .trim()
+            .to_string();
+    }
+    let is_dm = msg.guild_id.is_none();
+    let application_id = bot_id.map(|id| id.to_string()).unwrap_or_default();
+
+    Some(crate::driver::InboundMessage {
+        conversation: crate::driver::Conversation {
+            channel: "discord",
+            // The application id is what the binding is scoped by, and it is
+            // only known once connected — carry it rather than re-fetching.
+            bot_id: Some(application_id),
+            kind: if is_dm {
+                crate::driver::ConversationKind::Direct
+            } else {
+                crate::driver::ConversationKind::Group
+            },
+            id: msg.channel_id.get().to_string(),
+        },
+        sender: crate::driver::ExternalSender {
+            external_id: msg.author.id.get().to_string(),
+            display_name: msg.author.name.clone(),
+            email: None,
+        },
+        external_message_id: msg.id.get().to_string(),
+        text: content,
+        attachments: Vec::new(),
+        // A DM is addressed by definition; in a guild the gateway only receives
+        // what its intents allow, which is what the inline path relied on too.
+        addressed_to_bot: true,
+        quoted_text: msg
+            .referenced_message
+            .as_ref()
+            .map(|r| r.content.clone())
+            .filter(|c| !c.is_empty()),
+        reply_context: Some(msg.id.get().to_string()),
+    })
+}
+
+/// Discord as a transport driver.
+pub struct DiscordDriver {
+    token: String,
+}
+
+impl DiscordDriver {
+    pub fn new(token: String) -> Self {
+        Self { token }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::driver::ChannelDriver for DiscordDriver {
+    fn id(&self) -> crate::driver::ChannelId {
+        "discord"
+    }
+
+    fn caps(&self) -> crate::driver::ChannelCaps {
+        discord_caps()
+    }
+
+    fn binding(&self, conversation: &crate::driver::Conversation) -> String {
+        crate::binding::discord(
+            conversation.bot_id.as_deref().unwrap_or_default(),
+            &conversation.id,
+        )
+    }
+
+    fn sender_urn(
+        &self,
+        _conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        crate::binding::urn_discord_user(&sender.external_id)
+    }
+
+    fn session_title(
+        &self,
+        conversation: &crate::driver::Conversation,
+        sender: &crate::driver::ExternalSender,
+    ) -> String {
+        match conversation.kind {
+            crate::driver::ConversationKind::Group => {
+                format!("Discord: #{}", conversation.id)
+            }
+            _ => format!("Discord DM: {}", sender.display_name),
+        }
+    }
+
+    async fn deliver(
+        &self,
+        to: &crate::driver::Conversation,
+        _reply_context: Option<&str>,
+        msg: &crate::driver::OutboundMessage,
+    ) -> Result<crate::driver::DeliveryId, crate::driver::DriverError> {
+        if msg.text.trim().is_empty() {
+            return Ok(crate::driver::DeliveryId(to.id.clone()));
+        }
+        // Discord rejects anything over 2000 chars outright, so a long answer
+        // goes out as several messages rather than being truncated.
+        for chunk in split_message(&msg.text, discord_caps().max_chars) {
+            send_channel_message(&self.token, &to.id, &chunk)
+                .await
+                .map_err(crate::driver::DriverError::Transport)?;
+        }
+        Ok(crate::driver::DeliveryId(to.id.clone()))
     }
 }
 
