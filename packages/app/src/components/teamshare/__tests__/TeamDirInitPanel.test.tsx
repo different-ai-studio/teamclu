@@ -15,6 +15,7 @@ vi.mock('@/lib/utils', () => ({
 const linkDaemonTeamWorkspace = vi.fn()
 vi.mock('@/lib/daemon-local-client', () => ({
   linkDaemonTeamWorkspace: (...args: unknown[]) => linkDaemonTeamWorkspace(...args),
+  TEAM_LINK_LEGACY_DAEMON: 'team_link_legacy_daemon',
 }))
 
 const workspaceState = vi.hoisted(() => ({
@@ -26,10 +27,12 @@ vi.mock('@/stores/workspace', () => ({
 }))
 
 const loadSection = vi.fn()
-vi.mock('@/stores/team-share-browser', () => ({
-  useTeamShareBrowserStore: (sel: (s: { loadSection: typeof loadSection }) => unknown) =>
-    sel({ loadSection }),
-}))
+const browserState = vi.hoisted(() => ({ knowledgeRoot: null as string | null }))
+vi.mock('@/stores/team-share-browser', () => {
+  const store = (sel: (s: { loadSection: typeof loadSection }) => unknown) => sel({ loadSection })
+  store.getState = () => ({ loadSection, knowledgeRoot: browserState.knowledgeRoot })
+  return { useTeamShareBrowserStore: store }
+})
 
 import { TeamDirInitPanel } from '../TeamDirInitPanel'
 
@@ -39,6 +42,9 @@ describe('TeamDirInitPanel', () => {
     isTauriMock.mockReturnValue(true)
     workspaceState.workspacePath = '/workspace'
     linkDaemonTeamWorkspace.mockResolvedValue({ ok: true })
+    // The repair worked unless a test says otherwise.
+    browserState.knowledgeRoot = '/home/u/.amuxd/teams/t/shared/knowledge'
+    loadSection.mockResolvedValue(undefined)
   })
 
   it('rebuilds the team folder, then re-resolves the root without the workspace tree', async () => {
@@ -88,5 +94,52 @@ describe('TeamDirInitPanel', () => {
 
     expect(screen.queryByRole('button', { name: 'Rebuild team folder' })).toBeNull()
     expect(screen.getByText('This can only be repaired from the desktop app.')).toBeTruthy()
+  })
+
+  /**
+   * A daemon older than the knowledge relocation materializes the previous
+   * layout and answers 200: the call succeeded, nothing this column reads
+   * changed, and the panel re-rendered itself unchanged. Four clicks, four
+   * 200s, no feedback — which is what a dead button looks like.
+   */
+  it('reports a repair that succeeded without producing a team folder', async () => {
+    browserState.knowledgeRoot = null
+    render(<TeamDirInitPanel />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rebuild team folder' }))
+
+    expect(
+      await screen.findByText(
+        'Rebuilt, but the team folder is still not here. The local daemon is probably out of date — restart or update it, then try again.',
+      ),
+    ).toBeTruthy()
+  })
+
+  it('says nothing when the repair actually produced one', async () => {
+    render(<TeamDirInitPanel />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rebuild team folder' }))
+
+    await waitFor(() => expect(loadSection).toHaveBeenCalled())
+    expect(screen.queryByText(/still not here/)).toBeNull()
+  })
+
+  /**
+   * An older daemon requires `path` and answers 422 to the pathless call. Its
+   * raw complaint is a serde deserialization message — recognised here so the
+   * user is told what to do about it instead.
+   */
+  it('translates an out-of-date daemon into an actionable message', async () => {
+    workspaceState.workspacePath = null
+    linkDaemonTeamWorkspace.mockRejectedValue(new Error('team_link_legacy_daemon'))
+    render(<TeamDirInitPanel />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rebuild team folder' }))
+
+    expect(
+      await screen.findByText(
+        'The local daemon is too old to create the team folder on its own. Restart or update it, then try again.',
+      ),
+    ).toBeTruthy()
   })
 })
