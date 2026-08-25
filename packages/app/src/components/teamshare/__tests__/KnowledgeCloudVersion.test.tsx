@@ -17,15 +17,13 @@ vi.mock('@/lib/utils', () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }))
 
-const { toastSuccess, toastError, loadFileVersions, fetchVersionContent, restoreFileVersion, loadConflicts } =
-  vi.hoisted(() => ({
-    toastSuccess: vi.fn(),
-    toastError: vi.fn(),
-    loadFileVersions: vi.fn(),
-    fetchVersionContent: vi.fn(),
-    restoreFileVersion: vi.fn(),
-    loadConflicts: vi.fn(),
-  }))
+const { toastSuccess, toastError, invoke, loadConflicts } = vi.hoisted(() => ({
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+  invoke: vi.fn(),
+  loadConflicts: vi.fn(),
+}))
+vi.mock('@tauri-apps/api/core', () => ({ invoke }))
 
 vi.mock('sonner', () => ({ toast: { success: toastSuccess, error: toastError } }))
 vi.mock('@/stores/current-team', () => ({
@@ -42,31 +40,30 @@ vi.mock('@/lib/team-skill-paths', () => ({
   teamSyncKeyForPath: (abs: string) => (abs.startsWith('/kb/') ? `knowledge/${abs.slice(4)}` : null),
 }))
 
-const versionsState = vi.hoisted(() => ({ fileVersions: [] as { ref: string; author: string | null; timestamp: string }[] }))
-vi.mock('@/stores/version-history', () => {
-  const state = () => ({
-    ...versionsState,
-    loadFileVersions,
-    fetchVersionContent,
-    restoreFileVersion,
-  })
-  const store = (sel: (s: ReturnType<typeof state>) => unknown) => sel(state())
-  store.getState = state
-  return { useVersionHistoryStore: store }
-})
-
 import { KnowledgeCloudVersion } from '../KnowledgeCloudVersion'
 
 const DOC = '/kb/note.md'
 
-beforeEach(() => {
-  vi.clearAllMocks()
-  versionsState.fileVersions = [
+/** The daemon's two reads, in the order the view makes them. */
+function daemonAnswers(opts: {
+  versions?: { ref: string; author: string | null; timestamp: string }[]
+  content?: string | null
+} = {}) {
+  const versions = opts.versions ?? [
     { ref: 'hash-newest', author: '海港', timestamp: '2026-08-25T10:00:00Z' },
     { ref: 'hash-older', author: '海港', timestamp: '2026-08-24T10:00:00Z' },
   ]
-  fetchVersionContent.mockResolvedValue('# 云端的内容\n')
-  restoreFileVersion.mockResolvedValue(undefined)
+  const content = opts.content === undefined ? '# 云端的内容\n' : opts.content
+  invoke.mockImplementation((cmd: string) => {
+    if (cmd === 'team_file_versions') return Promise.resolve({ versions })
+    if (cmd === 'team_file_content') return Promise.resolve({ content })
+    return Promise.resolve(undefined)
+  })
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  daemonAnswers()
 })
 
 describe('KnowledgeCloudVersion', () => {
@@ -76,20 +73,40 @@ describe('KnowledgeCloudVersion', () => {
     await waitFor(() => expect(screen.getByText(/云端的内容/)).toBeTruthy())
     // The list is newest-first; anything else would quietly show history as if
     // it were the current state.
-    expect(fetchVersionContent).toHaveBeenCalledWith('team-1', 'knowledge/note.md', 'hash-newest')
+    expect(invoke).toHaveBeenCalledWith('team_file_content', {
+      teamId: 'team-1',
+      path: 'knowledge/note.md',
+      ref: 'hash-newest',
+    })
   })
 
   it('says so when the cloud has never seen the document', async () => {
-    versionsState.fileVersions = []
+    daemonAnswers({ versions: [] })
     render(<KnowledgeCloudVersion path={DOC} />)
 
     await waitFor(() => expect(screen.getByText(/only exists here/)).toBeTruthy())
-    expect(fetchVersionContent).not.toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalledWith('team_file_content', expect.anything())
+  })
+
+  it('never shows one document under another document name', async () => {
+    // Found on a real machine: this view used the shared version-history store,
+    // so the second document opened read the FIRST one's `versions[0]` before
+    // its own load finished. Blobs are content-addressed, so the daemon
+    // returned that other document's text — under this document's name.
+    const { unmount } = render(<KnowledgeCloudVersion path={DOC} />)
+    await waitFor(() => expect(screen.getByText(/云端的内容/)).toBeTruthy())
+    unmount()
+
+    daemonAnswers({ versions: [] })
+    render(<KnowledgeCloudVersion path="/kb/never-pushed.md" />)
+
+    await waitFor(() => expect(screen.getByText(/only exists here/)).toBeTruthy())
+    expect(screen.queryByText(/云端的内容/)).toBeNull()
   })
 
   it('explains an unreadable copy instead of rendering nothing', async () => {
     // A legacy encrypted blob this device has no key for comes back as null.
-    fetchVersionContent.mockResolvedValue(null)
+    daemonAnswers({ content: null })
     render(<KnowledgeCloudVersion path={DOC} />)
 
     await waitFor(() => expect(screen.getByText(/cannot be read here/)).toBeTruthy())
@@ -105,13 +122,17 @@ describe('KnowledgeCloudVersion', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Overwrite' }))
 
     await waitFor(() =>
-      expect(restoreFileVersion).toHaveBeenCalledWith('team-1', 'knowledge/note.md', 'hash-newest'),
+      expect(invoke).toHaveBeenCalledWith('team_restore_file_version', {
+        teamId: 'team-1',
+        path: 'knowledge/note.md',
+        ref: 'hash-newest',
+      }),
     )
   })
 
   it('refuses to guess for a file outside the knowledge tree', () => {
     render(<KnowledgeCloudVersion path="/somewhere/else/note.md" />)
     expect(screen.getByText(/not part of the team knowledge base/)).toBeTruthy()
-    expect(loadFileVersions).not.toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalled()
   })
 })

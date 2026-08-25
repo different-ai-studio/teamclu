@@ -37,6 +37,12 @@ pub enum SyncError {
     #[error("internal: {0}")]
     Internal(String),
 
+    /// FC has no such row (HTTP 404 on a non-batch endpoint). For a version
+    /// listing that is not an error at all — a document the cloud has never
+    /// seen simply has no versions — so callers get to decide.
+    #[error("not found: {0}")]
+    NotFound(String),
+
     /// The FC instance does not implement a batch endpoint (HTTP 404). Signals the
     /// engine to fall back to the per-file path. See engine.rs batch fallback.
     #[error("batch endpoint unsupported (404)")]
@@ -57,6 +63,17 @@ impl From<std::io::Error> for SyncError {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn not_found_reads_as_absence_not_failure() {
+        // The message a caller logs when it does treat it as an error.
+        assert_eq!(
+            SyncError::NotFound("file not found".into()).to_string(),
+            "not found: file not found"
+        );
+    }
+
     use super::*;
     use crate::sync::oss::path_validator::PathValidationError;
 

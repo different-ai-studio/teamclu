@@ -618,6 +618,15 @@ async fn map_fc_response<T: serde::de::DeserializeOwned>(
             ));
         }
 
+        // 404 on these endpoints means "no such row", which several callers can
+        // answer with an empty result instead of failing. Batch endpoints map
+        // their own 404 to `BatchUnsupported` before ever reaching here.
+        if status.as_u16() == 404 {
+            return Err(SyncError::NotFound(
+                body["error"].as_str().unwrap_or("not found").to_string(),
+            ));
+        }
+
         Err(SyncError::Internal(format!(
             "FC returned HTTP {}: {}",
             status,

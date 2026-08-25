@@ -19,9 +19,15 @@ import {
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
-import { useVersionHistoryStore } from '@/stores/version-history'
 import { teamSyncKeyForPath } from '@/lib/team-skill-paths'
 import { formatDateTime } from '@/lib/date-format'
+
+/** One entry of a document's cloud history, as the daemon reports it. */
+interface CloudVersion {
+  ref: string
+  author: string | null
+  timestamp: string
+}
 
 /**
  * What the cloud currently holds for one document, as text.
@@ -38,17 +44,13 @@ export function KnowledgeCloudVersion({ path }: { path: string }) {
   const knowledgeDir = useTeamConflictsStore((s) => s.knowledgeDir)
   const loadConflicts = useTeamConflictsStore((s) => s.load)
 
-  const versions = useVersionHistoryStore((s) => s.fileVersions)
-  const loadFileVersions = useVersionHistoryStore((s) => s.loadFileVersions)
-  const fetchVersionContent = useVersionHistoryStore((s) => s.fetchVersionContent)
-  const restoreFileVersion = useVersionHistoryStore((s) => s.restoreFileVersion)
-
   const syncKey = React.useMemo(
     () => teamSyncKeyForPath(path, { knowledgeDir, workspacePath }),
     [path, knowledgeDir, workspacePath],
   )
 
   const [content, setContent] = React.useState<string | null>(null)
+  const [current, setCurrent] = React.useState<CloudVersion | null>(null)
   const [state, setState] = React.useState<'loading' | 'ready' | 'missing' | 'unreadable'>(
     'loading',
   )
@@ -60,34 +62,52 @@ export function KnowledgeCloudVersion({ path }: { path: string }) {
     if (!knowledgeDir) void loadConflicts()
   }, [knowledgeDir, loadConflicts])
 
-  React.useEffect(() => {
-    if (!teamId || !syncKey) return
-    void loadFileVersions(teamId, syncKey)
-  }, [teamId, syncKey, loadFileVersions])
-
-  // `versions[0]` is what the cloud holds now; the rest is history.
-  const current = versions[0] ?? null
-
+  // Deliberately component-local rather than the shared version-history store.
+  // That store keeps ONE list for the whole app, so a second document's view
+  // read the first one's `versions[0]` before its own load finished — and since
+  // blobs are content-addressed, the daemon happily returned that other
+  // document's text under this document's name. Nothing about this view is
+  // worth sharing across tabs.
   React.useEffect(() => {
     let cancelled = false
     if (!teamId || !syncKey) return
-    if (!current) {
-      // No row in the cloud at all — a document that has never been pushed.
-      setState(versions.length === 0 ? 'missing' : 'loading')
-      return
-    }
     setState('loading')
-    void fetchVersionContent(teamId, syncKey, current.ref).then((text) => {
-      if (cancelled) return
-      // Null means the daemon could not turn the blob into text: an old
-      // encrypted version this device has no key for, or a binary document.
-      setContent(text)
-      setState(text === null ? 'unreadable' : 'ready')
-    })
+    setContent(null)
+    setCurrent(null)
+    void (async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        const list = await invoke<{ versions: CloudVersion[] }>('team_file_versions', {
+          teamId,
+          path: syncKey,
+        })
+        if (cancelled) return
+        // Newest first (FC orders by version desc), so [0] is what the cloud
+        // holds now and the rest is history.
+        const top = list.versions?.[0] ?? null
+        if (!top) {
+          setState('missing')
+          return
+        }
+        setCurrent(top)
+        const res = await invoke<{ content: string | null }>('team_file_content', {
+          teamId,
+          path: syncKey,
+          ref: top.ref,
+        })
+        if (cancelled) return
+        setContent(res.content ?? null)
+        // Null means the daemon could not turn the blob into text: an old
+        // encrypted version this device has no key for, or a binary document.
+        setState(res.content == null ? 'unreadable' : 'ready')
+      } catch {
+        if (!cancelled) setState('unreadable')
+      }
+    })()
     return () => {
       cancelled = true
     }
-  }, [teamId, syncKey, current, versions.length, fetchVersionContent])
+  }, [teamId, syncKey])
 
   const name = path.slice(path.lastIndexOf('/') + 1)
 
@@ -95,14 +115,15 @@ export function KnowledgeCloudVersion({ path }: { path: string }) {
     if (!teamId || !syncKey || !current) return
     setRestoring(true)
     try {
-      await restoreFileVersion(teamId, syncKey, current.ref)
+      const { invoke } = await import('@tauri-apps/api/core')
+      await invoke('team_restore_file_version', { teamId, path: syncKey, ref: current.ref })
       toast.success(t('cloudVersion.restored', 'The cloud version was written to this document'))
     } catch (e) {
       toast.error(t('cloudVersion.restoreFailed', 'Could not restore: {{msg}}', { msg: String(e) }))
     } finally {
       setRestoring(false)
     }
-  }, [teamId, syncKey, current, restoreFileVersion, t])
+  }, [teamId, syncKey, current, t])
 
   if (!syncKey) {
     return (

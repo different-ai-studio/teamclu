@@ -955,10 +955,15 @@ pub async fn list_versions(
 ) -> Result<Json<ListVersionsResponse>, HttpError> {
     require_scope(&principal, "workspace:read")?;
     let (fc, _secret) = fc_client_from_store(&state, &q.team_id, q.fc_endpoint).await?;
-    let (infos, next_cursor) = fc
-        .list_versions(&q.team_id, &q.path, q.cursor)
-        .await
-        .map_err(|e| HttpError::internal(e.to_string()))?;
+    let (infos, next_cursor) = match fc.list_versions(&q.team_id, &q.path, q.cursor).await {
+        Ok(page) => page,
+        // A document the cloud has never seen has no versions. Reporting that
+        // as a server error made every "what does the cloud have" surface show
+        // a failure for the most ordinary case there is: a note written here
+        // and not pushed yet.
+        Err(crate::sync::oss::error::SyncError::NotFound(_)) => (Vec::new(), None),
+        Err(e) => return Err(HttpError::internal(e.to_string())),
+    };
     let entries = infos
         .into_iter()
         .map(|v| VersionEntry {
