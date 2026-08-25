@@ -149,6 +149,8 @@
     "skillDiffEmpty": "Nothing to compare.",
     "skillDiffBinary": "Binary file — not shown.",
     "skillDiffFailed": "Could not load changes: {{msg}}",
+    "skillScanPaths": "Scan paths",
+    "skillScanPathsHint": "Skills are loaded from these directories, highest precedence first",
     "browseMarketplace": "Browse marketplace",
     "marketplaceTitle": "Skills Marketplace",
     "marketplaceEmpty": "The catalog is empty",

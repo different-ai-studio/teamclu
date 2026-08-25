@@ -61,6 +61,8 @@ import {
 import { detailSelectionForSection } from '@/lib/tabs/teamshare-target'
 import type { ConnectedAgentRow } from '@/lib/backend/types'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
+import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
+import { SkillScanPaths } from './SkillScanPaths'
 
 const SECTION_META: Record<
   TeamShareSection,
@@ -263,6 +265,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const [rootCreating, setRootCreating] = React.useState<'file' | 'folder' | null>(null)
   const openExternalRoot = useWorkspaceStore((s) => s.openExternalRoot)
   const selectFile = useWorkspaceStore((s) => s.selectFile)
+  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
 
   const [query, setQuery] = React.useState('')
   const [searchOpen, setSearchOpen] = React.useState(false)
@@ -1082,6 +1085,12 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           ))
         )}
       </div>
+
+      {/* Local roots only — a remote Agent's skills live on a disk these paths
+          say nothing about. */}
+      {section === 'skills' && subjectActorId && subjectActorId === getKnownLocalDaemonActorId() && (
+        <SkillScanPaths workspacePath={workspacePath} refreshKey={treeRefreshKey} />
+      )}
     </div>
   )
 }

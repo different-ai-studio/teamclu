@@ -149,6 +149,8 @@
     "skillDiffEmpty": "没有可对比的内容。",
     "skillDiffBinary": "二进制文件，不显示。",
     "skillDiffFailed": "无法加载改动：{{msg}}",
+    "skillScanPaths": "扫描目录",
+    "skillScanPathsHint": "Skills 从这些目录加载，优先级从高到低",
     "browseMarketplace": "浏览市场",
     "marketplaceTitle": "Skills 市场",
     "marketplaceEmpty": "目录为空",
