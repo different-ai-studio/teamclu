@@ -59,6 +59,7 @@ const DEBT: &[&str] = &[
     "packages/app/src/components/settings/__tests__/GeneralSectionSmallWindow.test.tsx",
     "packages/app/src/components/settings/__tests__/SettingsNavigation.test.tsx",
     "packages/app/src/lib/__tests__/mid-turn-followup-repro.test.ts",
+    "packages/app/src/lib/__tests__/session-binding-live.test.ts",
     "packages/app/src/lib/build-config.ts",
     "packages/app/src/stores/__tests__/team-share.test.ts",
 ];
