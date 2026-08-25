@@ -543,12 +543,18 @@ pub async fn list_conflicts(
 fn conflict_entries(root: &std::path::Path) -> Vec<ConflictEntry> {
     let mut out = crate::sync::oss::scanner::scan_conflict_files(&root.to_string_lossy())
         .into_iter()
-        .map(|sidecar| ConflictEntry {
-            path: crate::sync::oss::conflict::original_from_conflict(&sidecar)
-                .unwrap_or_else(|| sidecar.clone()),
-            conflicted_at: crate::sync::oss::conflict::conflict_timestamp(&sidecar),
-            sidecar,
-            kind: "oss-sidecar".into(),
+        // A name that does not reverse into a document is not a decision anyone
+        // can make: `resolve` requires the sidecar to belong to the path, so
+        // listing it would put a permanent badge on the panel with nothing
+        // behind it. `is_conflict_file` should already have excluded these.
+        .filter_map(|sidecar| {
+            let path = crate::sync::oss::conflict::original_from_conflict(&sidecar)?;
+            Some(ConflictEntry {
+                path,
+                conflicted_at: crate::sync::oss::conflict::conflict_timestamp(&sidecar),
+                sidecar,
+                kind: "oss-sidecar".into(),
+            })
         })
         .collect::<Vec<_>>();
     // WalkDir yields filesystem order, which is stable on neither platform.
@@ -640,6 +646,15 @@ fn apply_conflict_decision(
 ) -> Result<Option<String>, DecisionError> {
     crate::sync::oss::path_validator::validate(path)
         .map_err(|e| DecisionError::Invalid(format!("invalid path: {e}")))?;
+    // `validate` deliberately still accepts the RETIRED prefixes (`skills/`,
+    // `.mcp/`, `_secrets/`, …) so a legacy manifest row cannot abort a pull.
+    // This endpoint writes and deletes what it is handed, and the only thing it
+    // is ever asked about is a document — so it takes the narrower rule.
+    if !is_live_sync_prefix(path) {
+        return Err(DecisionError::Invalid(format!(
+            "path is not team knowledge content: {path}"
+        )));
+    }
 
     let root = crate::config::global_team_store::sync_content_root(team_id);
 
@@ -655,6 +670,11 @@ fn apply_conflict_decision(
 
     crate::sync::oss::path_validator::validate(&sidecar)
         .map_err(|e| DecisionError::Invalid(format!("invalid sidecar: {e}")))?;
+    if !is_live_sync_prefix(&sidecar) {
+        return Err(DecisionError::Invalid(format!(
+            "sidecar is not team knowledge content: {sidecar}"
+        )));
+    }
     // This deletes a file the caller names, so the name has to be a sidecar OF
     // THIS DOCUMENT — never an arbitrary path under the team tree.
     if !crate::sync::oss::scanner::is_conflict_file(&sidecar) {
@@ -711,6 +731,15 @@ fn apply_conflict_decision(
     Ok(Some(sidecar))
 }
 
+/// Whether a sync path belongs to a prefix the product still carries.
+///
+/// Narrower than `path_validator::validate` on purpose — see the call sites.
+fn is_live_sync_prefix(path: &str) -> bool {
+    crate::sync::oss::path_validator::ALLOWED_PREFIXES
+        .iter()
+        .any(|p| path.starts_with(p))
+}
+
 /// The newest sidecar on disk for one document, by the timestamp in its name.
 fn newest_sidecar_for(root: &std::path::Path, path: &str) -> Option<String> {
     crate::sync::oss::scanner::scan_conflict_files(&root.to_string_lossy())
@@ -726,8 +755,15 @@ fn newest_sidecar_for(root: &std::path::Path, path: &str) -> Option<String> {
 /// `shared/` tree: a leftover inside it would be scanned as a brand new document
 /// and pushed to the whole team on the next tick.
 fn write_atomic(team_id: &str, path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-    let tmp = crate::config::global_team_store::global_sync_state_path(team_id)
-        .with_file_name("conflict-restore.tmp");
+    // One temp file per call. A single fixed name meant two concurrent
+    // decisions (two windows, or a user clicking down a list of conflicts)
+    // wrote the same path: one document could be restored with the other's
+    // bytes, or the second rename could fail after its sidecar was gone.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let ticket = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = crate::config::global_team_store::global_sync_state_path(team_id).with_file_name(
+        format!("conflict-restore.{}.{ticket}.tmp", std::process::id()),
+    );
     if let Some(parent) = tmp.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
@@ -1654,6 +1690,47 @@ mod tests {
         assert!(matches!(err, DecisionError::Invalid(_)), "{err:?}");
         assert_eq!(fx.read("knowledge/secret.md"), "someone else's document");
         assert!(fx.exists("knowledge/secret.conflict.1000.aabbccdd.md"));
+    }
+
+    #[test]
+    fn a_document_named_after_the_word_conflict_is_not_a_decision() {
+        // `merge.conflict.md` is a note somebody wrote. Treating it as a
+        // sidecar put a badge on the panel that could never be cleared: the
+        // name does not reverse into a document, so `resolve` rejects it.
+        let fx = ConflictFixture::new();
+        fx.write("knowledge/merge.conflict.md", "a note about merging");
+        fx.write(
+            "knowledge/real.conflict.1000.aabbccdd.md",
+            "the losing copy",
+        );
+
+        let entries = conflict_entries(&fx.root);
+
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].path, "knowledge/real.md");
+    }
+
+    #[test]
+    fn resolve_refuses_paths_outside_the_content_the_product_syncs() {
+        // `path_validator::validate` still accepts retired prefixes so a legacy
+        // manifest row cannot abort a pull. This endpoint writes and deletes
+        // what it is handed, so it takes the narrower rule.
+        let fx = ConflictFixture::new();
+        for path in [
+            "_secrets/key.txt",
+            "skills/pack/SKILL.md",
+            ".mcp/memory.json",
+        ] {
+            let sidecar = format!("{path}.conflict.1000.aabbccdd");
+            let err = apply_conflict_decision(
+                &fx.team_id,
+                path,
+                Some(&sidecar),
+                crate::sync::oss::ConflictChoice::KeepLocal,
+            )
+            .unwrap_err();
+            assert!(matches!(err, DecisionError::Invalid(_)), "{path}: {err:?}");
+        }
     }
 
     #[test]
