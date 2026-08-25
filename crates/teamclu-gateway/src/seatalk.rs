@@ -710,6 +710,14 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
 
     let thread_id = optional_id(message["thread_id"].as_str()).map(str::to_string);
     let text = extract_message_text(message);
+    // A bare `@Bot` with nothing after it: the inline path answered so the user
+    // could see the bot was alive. `Core::handle` returns `Empty` on blank
+    // text, so without this the mention gets silence.
+    let text = if text.is_empty() && matches!(kind, crate::driver::ConversationKind::Group) {
+        "你好，请直接说明需要我帮你做什么。".to_string()
+    } else {
+        text
+    };
 
     Some(crate::driver::InboundMessage {
         conversation: crate::driver::Conversation {
@@ -866,12 +874,23 @@ async fn handle_callback_event(
 
     // Lifecycle events never open a session; everything else is a message and
     // belongs to the core (dedup, routing, identity, commands, writing, turn).
+    // Only the three message types go further. Everything else — lifecycle,
+    // and anything SeaTalk adds later — returns here: the old `match` had an
+    // `other =>` arm, and without it an unknown event fell into the *group*
+    // allowlist check, where a missing `group_id` meant firing a rejection at
+    // an empty chat id.
     match event_type.as_str() {
+        "message_from_bot_subscriber"
+        | "new_mentioned_message_received_from_group_chat"
+        | "new_message_received_from_thread" => {}
         "bot_added_to_group_chat" | "bot_removed_from_group_chat" | "new_bot_subscriber" => {
             println!("[SeaTalk] lifecycle event type={event_type} (ignored)");
             return Ok(());
         }
-        _ => {}
+        other => {
+            println!("[SeaTalk] unhandled event_type={other}");
+            return Ok(());
+        }
     }
 
     let Some(sink) = ctx.inbound_sink.clone() else {

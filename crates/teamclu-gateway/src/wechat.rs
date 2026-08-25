@@ -387,11 +387,17 @@ fn normalize_message(
         .filter(|c| !c.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| {
+            // iLink omitted `client_id`. Hashing sender+text alone would make
+            // "ok" sent twice look like a redelivery and swallow the second —
+            // and those short repeats are exactly what people send. The
+            // arrival time makes each one distinct while still collapsing an
+            // actual redelivery, which arrives in the same poll batch.
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
             let mut h = DefaultHasher::new();
             sender_id.hash(&mut h);
             text.hash(&mut h);
+            chrono::Utc::now().timestamp().hash(&mut h);
             format!("wechat-derived:{:x}", h.finish())
         });
     let display = if sender_id.is_empty() {

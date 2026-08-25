@@ -832,7 +832,17 @@ fn normalize_message(msg: &Message, bot_id: Option<u64>) -> Option<crate::driver
             .to_string();
     }
     let is_dm = msg.guild_id.is_none();
-    let application_id = bot_id.map(|id| id.to_string()).unwrap_or_default();
+    // No bot id means `ready()` has not landed yet. The binding is scoped by
+    // it, so an empty one would open a *different* session for this channel
+    // and every later message would resolve elsewhere — silently. The inline
+    // path guarded this explicitly; dropping the message is the same call.
+    let Some(application_id) = bot_id.map(|id| id.to_string()) else {
+        println!(
+            "[Discord] bot id not known yet; dropping message {}",
+            msg.id.get()
+        );
+        return None;
+    };
 
     Some(crate::driver::InboundMessage {
         conversation: crate::driver::Conversation {

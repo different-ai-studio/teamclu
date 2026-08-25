@@ -704,7 +704,17 @@ paths:
           $ref: "#/components/responses/Error"
     post:
       operationId: upsertSessionParticipant
-      summary: Add or update session participant
+      summary: Add session participant (join if absent)
+      description: |
+        Adds the actor to the session. If they are already a participant the
+        existing row is left untouched and returned as-is — including its
+        current `role`, which this endpoint does not change.
+
+        `session_participants` carries INSERT and SELECT policies and no UPDATE
+        one, so the previous upsert was refused by RLS on every repeat call.
+        Re-joining also used to rewrite `role`, which silently demoted an owner
+        to `member` each time they spoke through a channel. Use a dedicated
+        role-change path if promotion is needed.
       tags: [Sessions]
       parameters:
         - $ref: "#/components/parameters/SessionId"

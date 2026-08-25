@@ -934,6 +934,15 @@ export function makeSessionsRepo(db: DbLike, ctx: SessionsCtx = {}, deps: Sessio
         )
         .limit(1);
 
+      // The write and the read are separate statements, so the row can be gone
+      // by now (a concurrent removeSessionParticipant). Say so instead of
+      // dereferencing undefined and surfacing an opaque 500.
+      if (!r) {
+        throw new Error(
+          `upsertSessionParticipant: participant ${input.actorId} not found in session ${sessionId} after insert`,
+        );
+      }
+
       return {
         sessionId: r.sessionId,
         actorId: r.actorId,

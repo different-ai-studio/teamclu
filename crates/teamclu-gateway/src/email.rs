@@ -292,7 +292,7 @@ impl EmailGateway {
             email_db: Arc::new(RwLock::new(None)),
             pending_questions: Arc::new(super::PendingQuestionStore::new()),
             inbound_sink: Arc::new(RwLock::new(None)),
-            reply_targets: Arc::new(RwLock::new(HashMap::new())),
+            reply_targets: Arc::new(RwLock::new(ReplyTargetStore::default())),
             account_key: Arc::new(RwLock::new(String::new())),
         }
     }
@@ -1652,7 +1652,42 @@ fn resolve_email_session_binding_sync(
 /// inbound side stashes the message here, keyed by conversation id, and the
 /// driver picks it up. Same shape as WeCom's reply context and WeChat's
 /// context-token cache: transport state, held by the transport.
-pub(crate) type ReplyTargets = Arc<RwLock<HashMap<String, EmailMessage>>>;
+pub(crate) type ReplyTargets = Arc<RwLock<ReplyTargetStore>>;
+
+/// Bounded map of thread key → the mail to answer.
+///
+/// Every neighbouring cache in this crate is capped (`ProcessedMessageTracker`
+/// at `MAX_PROCESSED_MESSAGES`, the core's dedup FIFO at 1000) and this one has
+/// to be too: it holds a whole `EmailMessage`, body included, one per distinct
+/// thread, for as long as the daemon runs. A busy mailbox would grow it without
+/// bound. Oldest-first eviction — a thread that has been quiet for hundreds of
+/// mails is one whose reply already went out.
+#[derive(Default)]
+pub(crate) struct ReplyTargetStore {
+    entries: HashMap<String, EmailMessage>,
+    order: std::collections::VecDeque<String>,
+}
+
+/// Enough threads for any real mailbox's working set, small enough to bound the
+/// retained bodies.
+const MAX_REPLY_TARGETS: usize = 256;
+
+impl ReplyTargetStore {
+    pub(crate) fn insert(&mut self, thread_key: String, msg: EmailMessage) {
+        if self.entries.insert(thread_key.clone(), msg).is_none() {
+            self.order.push_back(thread_key);
+        }
+        while self.order.len() > MAX_REPLY_TARGETS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+
+    pub(crate) fn get(&self, thread_key: &str) -> Option<&EmailMessage> {
+        self.entries.get(thread_key)
+    }
+}
 
 fn email_caps() -> crate::driver::ChannelCaps {
     crate::driver::ChannelCaps {

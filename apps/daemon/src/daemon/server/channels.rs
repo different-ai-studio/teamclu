@@ -949,6 +949,20 @@ fn decode_channel_send_media(
     if b64.is_empty() {
         return Ok(None);
     }
+    // The control socket reads the whole envelope as one line before parsing,
+    // so an uncapped attachment is buffered, copied into a serde_json::Value,
+    // and decoded again — roughly 3x the file resident on the daemon's control
+    // path. The response direction already caps at 1 MB; this is the request
+    // side finally carrying bytes, so it needs its own bound. Checked before
+    // decoding, so an oversize payload never allocates.
+    const MAX_MEDIA_BYTES: usize = 32 * 1024 * 1024;
+    let max_b64 = MAX_MEDIA_BYTES / 3 * 4 + 4;
+    if b64.len() > max_b64 {
+        anyhow::bail!(
+            "channel-send: media_base64 is {} bytes, over the {MAX_MEDIA_BYTES}-byte limit",
+            b64.len()
+        );
+    }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .map_err(|e| anyhow::anyhow!("channel-send: invalid media_base64: {e}"))?;
