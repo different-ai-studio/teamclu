@@ -33,12 +33,19 @@ export function registerTeams(router) {
 
   // POST /v1/teams — slim team creation (Task 3 of share-onboarding refactor).
   //
-  // LiteLLM provisioning is now an explicit second step that the client
-  // triggers via POST /v1/teams/:teamId/litellm/setup. This route only writes
-  // the teams row + the bare team_workspace_config row (sync_mode=NULL,
-  // litellm_team_id=NULL). The response still includes aiGatewayEndpoint and
-  // litellmKey as null fields for back-compat with the Rust client
-  // (`Option<String>` — see apps/desktop/src/commands/oss_sync/fc_client.rs).
+  // This route only writes the teams row + the bare team_workspace_config row
+  // (sync_mode=NULL, litellm_team_id=NULL); LiteLLM is provisioned separately.
+  //
+  // Not via POST /v1/teams/:teamId/litellm/setup, which this comment used to
+  // name: no client calls that route. Provisioning happens lazily on the first
+  // POST /v1/teams/:teamId/litellm/member-key, which the daemon fires itself
+  // (`runtime/managed_llm.rs`) and which auto-provisions when
+  // `litellm_team_id` is still NULL (`supabase-repo.ts` `ensureMemberKey`).
+  // The explicit /setup route remains for ops and for tests.
+  //
+  // The response still includes aiGatewayEndpoint and litellmKey as null
+  // fields for back-compat with the Rust client (`Option<String>` — see
+  // apps/desktop/src/commands/oss_sync/fc_client.rs).
   router.post("/v1/teams", async (ctx) => {
     const body = ctx.json;
     // name is optional: when omitted, the repository seeds it from the caller's
