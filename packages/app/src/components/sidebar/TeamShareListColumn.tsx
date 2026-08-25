@@ -788,6 +788,66 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         </div>
       </div>
 
+      {(section === 'skills' || section === 'mcp') && (
+        <div className="border-b border-border px-3 py-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-9 w-full justify-between bg-panel px-2.5 text-[12.5px] font-medium"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="truncate">
+                    {manageableAgents.find((agent) => agent.id === subjectActorId)?.display_name ||
+                      t('teamShare.selectAgent', '选择 Agent')}
+                  </span>
+                  {subjectActorId && (
+                    <span
+                      className={cn(
+                        'h-1.5 w-1.5 shrink-0 rounded-full',
+                        presenceByActor[subjectActorId]?.online ? 'bg-emerald-500' : 'bg-faint',
+                      )}
+                    />
+                  )}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 text-faint" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-[240px]">
+              {manageableAgents.length === 0 ? (
+                <DropdownMenuItem disabled>
+                  {t('teamShare.noManageableAgents', '没有可管理的 Agent')}
+                </DropdownMenuItem>
+              ) : (
+                manageableAgents.map((agent) => (
+                  <DropdownMenuItem
+                    key={agent.id}
+                    onSelect={() => void setSubjectActor(agent.id)}
+                    className="flex items-center gap-2"
+                  >
+                    <span
+                      className={cn(
+                        'h-1.5 w-1.5 rounded-full',
+                        presenceByActor[agent.id]?.online ? 'bg-emerald-500' : 'bg-faint',
+                      )}
+                    />
+                    <span className="min-w-0 flex-1 truncate">{agent.display_name || agent.id}</span>
+                    {presenceByActor[agent.id]?.online === false ? (
+                      <span className="font-mono text-[10.5px] text-faint">
+                        {t('common.offline', '离线')}
+                      </span>
+                    ) : null}
+                    {agent.id === subjectActorId && <Check className="h-3.5 w-3.5" />}
+                  </DropdownMenuItem>
+                ))
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
+
       {searchOpen && (
         <div className="border-b border-border px-3 py-2">
           <input
@@ -1022,65 +1082,6 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           ))
         )}
       </div>
-      {(section === 'skills' || section === 'mcp') && (
-        <div className="border-t border-border p-3">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-9 w-full justify-between bg-panel px-2.5 text-[12.5px] font-medium"
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  <span className="truncate">
-                    {manageableAgents.find((agent) => agent.id === subjectActorId)?.display_name ||
-                      t('teamShare.selectAgent', '选择 Agent')}
-                  </span>
-                  {subjectActorId && (
-                    <span
-                      className={cn(
-                        'h-1.5 w-1.5 shrink-0 rounded-full',
-                        presenceByActor[subjectActorId]?.online ? 'bg-emerald-500' : 'bg-faint',
-                      )}
-                    />
-                  )}
-                </span>
-                <ChevronDown className="h-3.5 w-3.5 text-faint" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-[240px]">
-              {manageableAgents.length === 0 ? (
-                <DropdownMenuItem disabled>
-                  {t('teamShare.noManageableAgents', '没有可管理的 Agent')}
-                </DropdownMenuItem>
-              ) : (
-                manageableAgents.map((agent) => (
-                  <DropdownMenuItem
-                    key={agent.id}
-                    onSelect={() => void setSubjectActor(agent.id)}
-                    className="flex items-center gap-2"
-                  >
-                    <span
-                      className={cn(
-                        'h-1.5 w-1.5 rounded-full',
-                        presenceByActor[agent.id]?.online ? 'bg-emerald-500' : 'bg-faint',
-                      )}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{agent.display_name || agent.id}</span>
-                    {presenceByActor[agent.id]?.online === false ? (
-                      <span className="font-mono text-[10.5px] text-faint">
-                        {t('common.offline', '离线')}
-                      </span>
-                    ) : null}
-                    {agent.id === subjectActorId && <Check className="h-3.5 w-3.5" />}
-                  </DropdownMenuItem>
-                ))
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      )}
     </div>
   )
 }
