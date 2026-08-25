@@ -141,6 +141,30 @@ public:
         }
     }
 
+    // Continuous playback: write straight through, no interrupt, no silence
+    // tail, no notify.
+    //
+    // Neither existing path can carry a stream. `play(async=true)` OVERWRITES
+    // `_audio_data` and notifies the task to abandon what it was writing and
+    // flush DMA — correct when a new sound effect should cut off the old one,
+    // catastrophic at 50 frames a second, where every frame kills its
+    // predecessor and almost nothing reaches the speaker. `play(async=false)`
+    // writes correctly but appends `_silence_buffer` (100 ms) after each call,
+    // which for a 20 ms frame is five parts silence to one part speech.
+    //
+    // Blocking is the feature: I2S DMA back-pressure is what paces playback,
+    // and the caller is the voice playback task, which exists to absorb
+    // exactly this.
+    bool writeStream(const int16_t* samples, std::size_t count)
+    {
+        std::lock_guard<std::mutex> codec(_codec_mutex);
+        if (!_codec_open.load() || samples == nullptr || count == 0) {
+            return false;
+        }
+        return esp_codec_dev_write(_codec_dev, (void*)samples,
+                                   count * sizeof(int16_t)) == ESP_CODEC_DEV_OK;
+    }
+
     // Switch the codec (and the I2S channel clock with it) to another rate.
     //
     // A voice turn runs at 16 kHz because Opus has no 44.1 kHz mode, and the UI
@@ -327,6 +351,14 @@ private:
         mclog::tagInfo(_tag, "i2s init");
 
         i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_PORT, I2S_ROLE_MASTER);
+        // Zero each DMA buffer once it has been sent. The default is false,
+        // which means a TX underrun REPLAYS the last buffer — forever, if
+        // nothing writes again. With one-shot sound effects that was invisible,
+        // because every one ends with a silence write, so the thing on repeat
+        // was silence. A voice reply exposed it: the moment the stream stopped,
+        // the last 20 ms of speech looped as continuous noise, and every gap in
+        // the stream did the same mid-reply.
+        chan_cfg.auto_clear = true;
         i2s_std_config_t std_cfg   = {
             .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(static_cast<uint32_t>(sample_rate)),
             .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
@@ -611,6 +643,11 @@ void Hal::audioRecord(std::vector<int16_t>& data, uint16_t durationMs, float gai
 void Hal::audioPlay(std::vector<int16_t>& data, bool async)
 {
     _audio_codec.play(data, async);
+}
+
+bool Hal::audioWriteStream(const int16_t* samples, std::size_t count)
+{
+    return _audio_codec.writeStream(samples, count);
 }
 
 int Hal::getAudioSampleRate()

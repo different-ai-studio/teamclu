@@ -202,6 +202,11 @@ public:
     bool setAudioSampleRate(int rate);
     void audioRecord(std::vector<int16_t>& data, uint16_t durationMs, float gain = 30.0f);
     void audioPlay(std::vector<int16_t>& data, bool async = true);
+    // Append `count` samples to the running output. Unlike `audioPlay`, this
+    // neither interrupts what is playing nor pads with silence — it is the
+    // path for continuous audio (voice replies). Blocks until the codec
+    // accepts the samples; returns false if the codec is closed.
+    bool audioWriteStream(const int16_t* samples, std::size_t count);
 
     struct AudioSpectrumFrame {
         static constexpr std::size_t bandCount = 20;
