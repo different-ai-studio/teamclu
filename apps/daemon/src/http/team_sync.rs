@@ -508,15 +508,27 @@ pub async fn get_secrets(
 // Task 12: conflict + version endpoints
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConflictEntry {
+    /// Sync key of the DOCUMENT that conflicted (`knowledge/<rel>`) — the file
+    /// the user recognises, and the one a decision is made about.
     pub path: String,
+    /// Sync key of the sidecar holding the local version that lost.
+    pub sidecar: String,
+    /// Unix seconds recorded in the sidecar's name, when parseable. The
+    /// sidecar's own mtime is not the same thing — a copy or a restore moves it.
+    pub conflicted_at: Option<u64>,
     pub kind: String,
 }
 
-/// `GET /v1/team/conflicts?teamId=...` — list OSS sidecar conflicts on disk
-/// under the global team dir.
+/// `GET /v1/team/conflicts?teamId=...` — one entry per OSS conflict sidecar on
+/// disk under the global team dir.
+///
+/// The sidecar is the only DURABLE record that a conflict happened: the
+/// `conflicts` counter in `/v1/team/sync/status` is per-tick and resets on the
+/// next one, so "how many conflicts are waiting for me" can only be read from
+/// this scan.
 pub async fn list_conflicts(
     principal: Principal,
     State(_state): State<HttpState>,
@@ -524,14 +536,31 @@ pub async fn list_conflicts(
 ) -> Result<Json<Vec<ConflictEntry>>, HttpError> {
     require_scope(&principal, "workspace:read")?;
     let root = crate::config::global_team_store::sync_content_root(&q.team_id);
-    let out = crate::sync::oss::scanner::scan_conflict_files(&root.to_string_lossy())
+    Ok(Json(conflict_entries(&root)))
+}
+
+/// Every conflict sidecar under one team's synced tree, as decisions to make.
+fn conflict_entries(root: &std::path::Path) -> Vec<ConflictEntry> {
+    let mut out = crate::sync::oss::scanner::scan_conflict_files(&root.to_string_lossy())
         .into_iter()
-        .map(|path| ConflictEntry {
-            path,
+        .map(|sidecar| ConflictEntry {
+            path: crate::sync::oss::conflict::original_from_conflict(&sidecar)
+                .unwrap_or_else(|| sidecar.clone()),
+            conflicted_at: crate::sync::oss::conflict::conflict_timestamp(&sidecar),
+            sidecar,
             kind: "oss-sidecar".into(),
         })
         .collect::<Vec<_>>();
-    Ok(Json(out))
+    // WalkDir yields filesystem order, which is stable on neither platform.
+    // Sort so a poll every few seconds does not reshuffle the list under the
+    // user's cursor; newest conflict first within one document.
+    out.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then(b.conflicted_at.cmp(&a.conflicted_at))
+            .then(a.sidecar.cmp(&b.sidecar))
+    });
+    out
 }
 
 #[derive(Debug, Deserialize)]
@@ -539,42 +568,177 @@ pub async fn list_conflicts(
 pub struct ResolveRequest {
     pub team_id: String,
     pub path: String,
+    /// Which sidecar this decision is about. One document can accumulate
+    /// several (it conflicted more than once), and each is its own decision.
+    /// Optional for older callers: the newest sidecar is used when absent.
+    #[serde(default)]
+    pub sidecar: Option<String>,
     pub choice: crate::sync::oss::ConflictChoice,
 }
 
-/// `POST /v1/team/conflicts/resolve` — resolve an OSS sidecar conflict by
-/// recording the user's KeepRemote/KeepLocal choice in the per-team sync state.
-/// Ported from desktop `oss_sync_resolve_conflict`, operating on the global
-/// per-team `LocalSyncState` rather than a workspace path.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveResponse {
+    pub ok: bool,
+    /// The sidecar that was acted on; `None` when there was nothing left to do.
+    pub sidecar: Option<String>,
+}
+
+/// `POST /v1/team/conflicts/resolve` — carry out the user's decision on ONE
+/// conflict sidecar.
+///
+/// What the disk looks like when this is called: the sync engine wrote the
+/// user's bytes to the sidecar and then let the remote version overwrite the
+/// original (`engine.rs` PULL/PUSH conflict paths). So:
+///
+/// - `KeepLocal` means "put my bytes back and send them up" — copy the sidecar
+///   over the original and mark the entry dirty. The next push CAS-es against
+///   the remote version the engine already recorded, so it wins rather than
+///   conflicting a second time.
+/// - `KeepRemote` means "throw mine away" — the original is ALREADY the remote
+///   version, so there is nothing to write, only the losing copy to clear.
+///
+/// Both branches delete the sidecar. It is local-only (the scanner never
+/// uploads `*.conflict.*`), so leaving it behind would just accumulate junk in
+/// the user's knowledge tree — which is exactly what happened before this
+/// endpoint did any disk work at all.
 pub async fn resolve_conflict(
     principal: Principal,
     State(_state): State<HttpState>,
     Json(body): Json<ResolveRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
+) -> Result<Json<ResolveResponse>, HttpError> {
     require_scope(&principal, "workspace:write")?;
-    // Validate the wire path for consistency (used only to index state here).
-    crate::sync::oss::path_validator::validate(&body.path)
-        .map_err(|e| HttpError::validation(format!("invalid path: {e}")))?;
-    let mut st = crate::sync::oss::state::LocalSyncState::load_at(&body.team_id)
-        .map_err(|e| HttpError::internal(format!("load sync state: {e}")))?;
-    match body.choice {
+    let sidecar = apply_conflict_decision(
+        &body.team_id,
+        &body.path,
+        body.sidecar.as_deref(),
+        body.choice,
+    )
+    .map_err(|e| match e {
+        DecisionError::Invalid(m) => HttpError::validation(m),
+        DecisionError::Failed(m) => HttpError::internal(m),
+    })?;
+    Ok(Json(ResolveResponse { ok: true, sidecar }))
+}
+
+/// Why a decision could not be carried out: a caller mistake (rejected) versus a
+/// disk failure (retryable). The handler is the only place that knows these are
+/// HTTP statuses, which keeps the logic below testable without a server.
+#[derive(Debug)]
+enum DecisionError {
+    Invalid(String),
+    Failed(String),
+}
+
+/// Carry out one conflict decision on disk + in sync state. Returns the sidecar
+/// that was acted on, or `None` when there was nothing left to resolve.
+fn apply_conflict_decision(
+    team_id: &str,
+    path: &str,
+    sidecar: Option<&str>,
+    choice: crate::sync::oss::ConflictChoice,
+) -> Result<Option<String>, DecisionError> {
+    crate::sync::oss::path_validator::validate(path)
+        .map_err(|e| DecisionError::Invalid(format!("invalid path: {e}")))?;
+
+    let root = crate::config::global_team_store::sync_content_root(team_id);
+
+    let sidecar = match sidecar.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => Some(s.to_string()),
+        None => newest_sidecar_for(&root, path),
+    };
+    // Nothing on disk: already resolved elsewhere, or removed by hand. A second
+    // click must read as "done", not as a 500.
+    let Some(sidecar) = sidecar else {
+        return Ok(None);
+    };
+
+    crate::sync::oss::path_validator::validate(&sidecar)
+        .map_err(|e| DecisionError::Invalid(format!("invalid sidecar: {e}")))?;
+    // This deletes a file the caller names, so the name has to be a sidecar OF
+    // THIS DOCUMENT — never an arbitrary path under the team tree.
+    if !crate::sync::oss::scanner::is_conflict_file(&sidecar) {
+        return Err(DecisionError::Invalid(format!(
+            "not a conflict sidecar: {sidecar}"
+        )));
+    }
+    if crate::sync::oss::conflict::original_from_conflict(&sidecar).as_deref() != Some(path) {
+        return Err(DecisionError::Invalid(format!(
+            "sidecar {sidecar} does not belong to {path}"
+        )));
+    }
+
+    let sidecar_abs = root.join(&sidecar);
+    let original_abs = root.join(path);
+    for abs in [&sidecar_abs, &original_abs] {
+        crate::sync::oss::path_validator::validate_no_symlink_escape(&root, abs)
+            .map_err(|e| DecisionError::Invalid(format!("invalid path: {e}")))?;
+    }
+
+    let mut st = crate::sync::oss::state::LocalSyncState::load_at(team_id)
+        .map_err(|e| DecisionError::Failed(format!("load sync state: {e}")))?;
+
+    match choice {
+        crate::sync::oss::ConflictChoice::KeepLocal => {
+            if sidecar_abs.is_file() {
+                let bytes = std::fs::read(&sidecar_abs)
+                    .map_err(|e| DecisionError::Failed(format!("read sidecar: {e}")))?;
+                // Restore first, delete second: a failure in between leaves the
+                // user's bytes recoverable from the sidecar rather than gone.
+                write_atomic(team_id, &original_abs, &bytes)
+                    .map_err(|e| DecisionError::Failed(format!("restore local copy: {e}")))?;
+            }
+            let _ = std::fs::remove_file(&sidecar_abs);
+            if let Some(fs) = st.files.get_mut(path) {
+                // mtime/size are deliberately left at the last-synced baseline:
+                // the scanner compares them against disk to decide what to
+                // re-hash, and the file it must re-hash is exactly this one.
+                fs.dirty = true;
+                fs.deleted_local = false;
+            }
+        }
         crate::sync::oss::ConflictChoice::KeepRemote => {
-            // Mark local as matching synced (non-dirty); next tick won't re-upload.
-            if let Some(fs) = st.files.get_mut(&body.path) {
+            let _ = std::fs::remove_file(&sidecar_abs);
+            if let Some(fs) = st.files.get_mut(path) {
                 fs.local_plain_hash = fs.synced_plain_hash.clone();
                 fs.dirty = false;
             }
         }
-        crate::sync::oss::ConflictChoice::KeepLocal => {
-            // Mark dirty=true so the next push uploads the local version.
-            if let Some(fs) = st.files.get_mut(&body.path) {
-                fs.dirty = true;
-            }
-        }
     }
-    st.save_at(&body.team_id)
-        .map_err(|e| HttpError::internal(format!("save sync state: {e}")))?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+
+    st.save_at(team_id)
+        .map_err(|e| DecisionError::Failed(format!("save sync state: {e}")))?;
+    Ok(Some(sidecar))
+}
+
+/// The newest sidecar on disk for one document, by the timestamp in its name.
+fn newest_sidecar_for(root: &std::path::Path, path: &str) -> Option<String> {
+    crate::sync::oss::scanner::scan_conflict_files(&root.to_string_lossy())
+        .into_iter()
+        .filter(|s| crate::sync::oss::conflict::original_from_conflict(s).as_deref() == Some(path))
+        .max_by_key(|s| crate::sync::oss::conflict::conflict_timestamp(s).unwrap_or(0))
+}
+
+/// Write `bytes` to `path` via a temp file + rename, so a crash mid-write cannot
+/// leave a half-restored document.
+///
+/// The temp file lives beside the team's `state.json`, OUTSIDE the synced
+/// `shared/` tree: a leftover inside it would be scanned as a brand new document
+/// and pushed to the whole team on the next tick.
+fn write_atomic(team_id: &str, path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = crate::config::global_team_store::global_sync_state_path(team_id)
+        .with_file_name("conflict-restore.tmp");
+    if let Some(parent) = tmp.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("rename onto {}: {e}", path.display())
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -869,6 +1033,253 @@ fn active_team_id() -> Result<String, HttpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── conflict listing + resolution ────────────────────────────────────────
+    //
+    // These drive `apply_conflict_decision` / `conflict_entries` directly rather
+    // than the axum handlers: the handlers add only scope checks and the
+    // validation→HTTP-status mapping, while everything that can corrupt a user's
+    // document lives here.
+
+    /// A team tree with one synced document that has been overwritten by the
+    /// remote version, and the user's own bytes parked in a sidecar — exactly
+    /// the state `engine.rs` leaves behind after a conflict.
+    struct ConflictFixture {
+        _home: tempfile::TempDir,
+        _guard: crate::test_brand_env::BrandEnvGuard,
+        team_id: String,
+        root: std::path::PathBuf,
+    }
+
+    impl ConflictFixture {
+        fn new() -> Self {
+            let home = tempfile::tempdir().unwrap();
+            let guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+            let team_id = "team-conflict".to_string();
+            let root = crate::config::global_team_store::sync_content_root(&team_id);
+            std::fs::create_dir_all(root.join("knowledge")).unwrap();
+            Self {
+                _home: home,
+                _guard: guard,
+                team_id,
+                root,
+            }
+        }
+
+        fn write(&self, rel: &str, body: &str) {
+            let abs = self.root.join(rel);
+            std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            std::fs::write(abs, body).unwrap();
+        }
+
+        fn read(&self, rel: &str) -> String {
+            std::fs::read_to_string(self.root.join(rel)).unwrap()
+        }
+
+        fn exists(&self, rel: &str) -> bool {
+            self.root.join(rel).exists()
+        }
+
+        /// Seed the sync-state entry the engine would have written when the
+        /// remote version landed: synced to the remote hash, not dirty.
+        fn seed_state(&self, rel: &str, synced_plain_hash: &str) {
+            let mut st = crate::sync::oss::state::LocalSyncState::load_at(&self.team_id).unwrap();
+            st.upsert(
+                rel,
+                7,
+                "remote-cipher".into(),
+                synced_plain_hash.into(),
+                synced_plain_hash.into(),
+                1_748_332_800,
+                11,
+            );
+            st.save_at(&self.team_id).unwrap();
+        }
+
+        fn state_for(&self, rel: &str) -> crate::sync::oss::state::FileState {
+            crate::sync::oss::state::LocalSyncState::load_at(&self.team_id)
+                .unwrap()
+                .files
+                .get(rel)
+                .cloned()
+                .unwrap()
+        }
+    }
+
+    #[test]
+    fn keep_local_restores_the_users_bytes_and_queues_them_for_push() {
+        let fx = ConflictFixture::new();
+        fx.write("knowledge/note.md", "remote wins");
+        fx.write("knowledge/note.conflict.1000.aabbccdd.md", "my draft");
+        fx.seed_state("knowledge/note.md", "hash-of-remote");
+
+        let acted = apply_conflict_decision(
+            &fx.team_id,
+            "knowledge/note.md",
+            Some("knowledge/note.conflict.1000.aabbccdd.md"),
+            crate::sync::oss::ConflictChoice::KeepLocal,
+        )
+        .unwrap();
+
+        assert_eq!(
+            acted.as_deref(),
+            Some("knowledge/note.conflict.1000.aabbccdd.md")
+        );
+        // The document now holds what the user wrote, not what the remote sent.
+        assert_eq!(fx.read("knowledge/note.md"), "my draft");
+        assert!(!fx.exists("knowledge/note.conflict.1000.aabbccdd.md"));
+        let entry = fx.state_for("knowledge/note.md");
+        assert!(entry.dirty, "the restored copy has to be pushed");
+        assert!(!entry.deleted_local);
+        // The CAS parent stays the remote version the engine recorded, which is
+        // what makes the next push win instead of conflicting again.
+        assert_eq!(entry.synced_version, 7);
+    }
+
+    #[test]
+    fn keep_remote_clears_the_losing_copy_and_leaves_the_document_alone() {
+        let fx = ConflictFixture::new();
+        fx.write("knowledge/note.md", "remote wins");
+        fx.write("knowledge/note.conflict.1000.aabbccdd.md", "my draft");
+        fx.seed_state("knowledge/note.md", "hash-of-remote");
+
+        apply_conflict_decision(
+            &fx.team_id,
+            "knowledge/note.md",
+            Some("knowledge/note.conflict.1000.aabbccdd.md"),
+            crate::sync::oss::ConflictChoice::KeepRemote,
+        )
+        .unwrap();
+
+        assert_eq!(fx.read("knowledge/note.md"), "remote wins");
+        assert!(!fx.exists("knowledge/note.conflict.1000.aabbccdd.md"));
+        let entry = fx.state_for("knowledge/note.md");
+        assert!(!entry.dirty);
+        assert_eq!(entry.local_plain_hash, entry.synced_plain_hash);
+    }
+
+    #[test]
+    fn resolving_the_same_conflict_twice_is_idempotent() {
+        let fx = ConflictFixture::new();
+        fx.write("knowledge/note.md", "remote wins");
+        fx.write("knowledge/note.conflict.1000.aabbccdd.md", "my draft");
+
+        for _ in 0..2 {
+            // A double click, or two windows racing, must not 500 the second one.
+            apply_conflict_decision(
+                &fx.team_id,
+                "knowledge/note.md",
+                Some("knowledge/note.conflict.1000.aabbccdd.md"),
+                crate::sync::oss::ConflictChoice::KeepRemote,
+            )
+            .unwrap();
+        }
+        // Nothing named, nothing left on disk → "already done", not an error.
+        let acted = apply_conflict_decision(
+            &fx.team_id,
+            "knowledge/note.md",
+            None,
+            crate::sync::oss::ConflictChoice::KeepRemote,
+        )
+        .unwrap();
+        assert_eq!(acted, None);
+    }
+
+    #[test]
+    fn the_newest_sidecar_is_taken_when_the_caller_names_none() {
+        let fx = ConflictFixture::new();
+        fx.write("knowledge/note.md", "remote wins");
+        fx.write("knowledge/note.conflict.1000.aaaaaaaa.md", "older draft");
+        fx.write("knowledge/note.conflict.2000.bbbbbbbb.md", "newer draft");
+
+        let acted = apply_conflict_decision(
+            &fx.team_id,
+            "knowledge/note.md",
+            None,
+            crate::sync::oss::ConflictChoice::KeepLocal,
+        )
+        .unwrap();
+
+        assert_eq!(
+            acted.as_deref(),
+            Some("knowledge/note.conflict.2000.bbbbbbbb.md")
+        );
+        assert_eq!(fx.read("knowledge/note.md"), "newer draft");
+        // The older one survives as its own pending decision.
+        assert!(fx.exists("knowledge/note.conflict.1000.aaaaaaaa.md"));
+    }
+
+    #[test]
+    fn a_sidecar_belonging_to_another_document_is_refused() {
+        let fx = ConflictFixture::new();
+        fx.write("knowledge/note.md", "remote wins");
+        fx.write("knowledge/secret.md", "someone else's document");
+        fx.write("knowledge/secret.conflict.1000.aabbccdd.md", "draft");
+
+        // This endpoint deletes (and overwrites) what it is handed, so a
+        // mismatched pair is the one thing it must never carry out.
+        let err = apply_conflict_decision(
+            &fx.team_id,
+            "knowledge/note.md",
+            Some("knowledge/secret.conflict.1000.aabbccdd.md"),
+            crate::sync::oss::ConflictChoice::KeepLocal,
+        )
+        .unwrap_err();
+        assert!(matches!(err, DecisionError::Invalid(_)), "{err:?}");
+        assert_eq!(fx.read("knowledge/secret.md"), "someone else's document");
+        assert!(fx.exists("knowledge/secret.conflict.1000.aabbccdd.md"));
+    }
+
+    #[test]
+    fn a_plain_document_cannot_be_passed_off_as_a_sidecar() {
+        let fx = ConflictFixture::new();
+        fx.write("knowledge/note.md", "remote wins");
+        fx.write("knowledge/keepme.md", "not a sidecar");
+
+        let err = apply_conflict_decision(
+            &fx.team_id,
+            "knowledge/note.md",
+            Some("knowledge/keepme.md"),
+            crate::sync::oss::ConflictChoice::KeepRemote,
+        )
+        .unwrap_err();
+        assert!(matches!(err, DecisionError::Invalid(_)), "{err:?}");
+        assert!(fx.exists("knowledge/keepme.md"));
+    }
+
+    #[test]
+    fn traversal_out_of_the_team_tree_is_refused() {
+        let fx = ConflictFixture::new();
+        let err = apply_conflict_decision(
+            &fx.team_id,
+            "knowledge/../../../etc/passwd",
+            None,
+            crate::sync::oss::ConflictChoice::KeepRemote,
+        )
+        .unwrap_err();
+        assert!(matches!(err, DecisionError::Invalid(_)), "{err:?}");
+    }
+
+    #[test]
+    fn conflict_entries_name_the_document_not_the_sidecar() {
+        let fx = ConflictFixture::new();
+        fx.write("knowledge/note.md", "remote wins");
+        fx.write("knowledge/note.conflict.1000.aaaaaaaa.md", "older");
+        fx.write("knowledge/note.conflict.2000.bbbbbbbb.md", "newer");
+        fx.write("knowledge/plain.md", "no conflict here");
+
+        let entries = conflict_entries(&fx.root);
+
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        assert!(entries.iter().all(|e| e.path == "knowledge/note.md"));
+        // Newest first, so the decision the user most likely wants leads.
+        assert_eq!(entries[0].conflicted_at, Some(2000));
+        assert_eq!(entries[1].conflicted_at, Some(1000));
+        assert_eq!(
+            entries[0].sidecar,
+            "knowledge/note.conflict.2000.bbbbbbbb.md"
+        );
+    }
 
     /// The desktop can trigger a sync with no folder open. `workspacePath` used
     /// to be required and rejected as a validation error when empty, which made

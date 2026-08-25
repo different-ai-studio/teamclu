@@ -27,6 +27,14 @@ export interface VersionInfo {
   message: string | null
 }
 
+/** How far the running daemon tick has got (`GET /v1/team/sync/status`). */
+export interface SyncProgress {
+  phase: 'checking' | 'pulling' | 'pushing' | 'deleting'
+  done: number
+  /** `0` means the phase cannot say — render indeterminate, not 0%. */
+  total: number
+}
+
 export interface VersionPage {
   versions: VersionInfo[]
   nextCursor: string | null
@@ -59,6 +67,12 @@ export interface OssSyncState {
    */
   failed: number
   lastError: string | null
+  /**
+   * Live progress of the running tick, `null` when nothing is running. The
+   * daemon omits the field entirely when idle, so this never shows a finished
+   * sync's last position.
+   */
+  progress: SyncProgress | null
 
   /**
    * Team sync is per TEAM, not per workspace: the daemon syncs
@@ -107,6 +121,7 @@ interface SyncStatusResult {
   pushed: number
   conflicts: number
   failed?: number
+  progress?: SyncProgress | null
 }
 
 interface SyncNowResult {
@@ -120,6 +135,13 @@ interface SyncNowResult {
 // Zustand store
 // ---------------------------------------------------------------------------
 
+/**
+ * True while THIS app is waiting on `oss_sync_now`. Module-scoped rather than
+ * store state: it exists only to keep a concurrent status poll from clearing
+ * `syncing` mid-flight, and nothing renders it.
+ */
+let localSyncInFlight = false
+
 export const useOssSyncStore = create<OssSyncState>((set, get) => ({
   teamId: null,
   mode: null,
@@ -130,13 +152,14 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
   conflicts: 0,
   failed: 0,
   lastError: null,
+  progress: null,
 
   async refresh(workspacePath?: string | null) {
     if (!isTauri()) return
     const teamId = activeTeamId()
     if (!teamId) {
       // No active team → nothing to report; keep an empty, non-error status.
-      set({ teamId: null, mode: null, pulled: 0, pushed: 0, conflicts: 0 })
+      set({ teamId: null, mode: null, pulled: 0, pushed: 0, conflicts: 0, progress: null })
       return
     }
     try {
@@ -148,7 +171,11 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
         teamId,
         mode: status.mode ?? null,
         lastSyncAt: status.lastSyncAt ?? null,
-        syncing: status.syncing ?? false,
+        // A status poll must not switch the indicator off underneath a sync
+        // this app started: the daemon flips `syncing` a moment after the
+        // request lands, and the gap would make the bar flicker away.
+        syncing: localSyncInFlight || (status.syncing ?? false),
+        progress: status.progress ?? null,
         pulled: status.pulled ?? 0,
         pushed: status.pushed ?? 0,
         conflicts: status.conflicts ?? 0,
@@ -167,6 +194,7 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
       set({ lastError: 'No active team to sync.' })
       return
     }
+    localSyncInFlight = true
     set({ syncing: true, lastError: null })
     try {
       const result = await invoke<SyncNowResult>('oss_sync_now', {
@@ -184,7 +212,8 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
     } catch (e) {
       set({ lastError: String(e) })
     } finally {
-      set({ syncing: false })
+      localSyncInFlight = false
+      set({ syncing: false, progress: null })
     }
   },
 

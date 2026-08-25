@@ -3,10 +3,11 @@
 //! Name format: `<dir>/<stem>.conflict.<unix_ts>.<short_cipher_hash[0..8]>.<ext>`
 //! (or no ext if original had none).
 //!
-//! NOTE: `original_from_conflict` is reserved for the OSS conflict resolution UI.
-#![allow(dead_code)]
-//!
 //! Scanner skips all `*.conflict.*` files so they are never uploaded.
+//!
+//! [`original_from_conflict`] and [`conflict_timestamp`] are the read side:
+//! `GET /v1/team/conflicts` turns a sidecar back into "which document conflicted,
+//! and when", which is what the resolution UI decides against.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -93,6 +94,18 @@ pub fn original_from_conflict(rel_path: &str) -> Option<String> {
         Some(d) => format!("{d}/{original_name}"),
         None => original_name,
     })
+}
+
+/// The unix timestamp a sidecar records in its name, or `None` when the name is
+/// not a sidecar (or carries a timestamp we cannot parse).
+///
+/// This is the only record of *when* the conflict happened: the sidecar's own
+/// mtime is the time it was written to this disk, which a restore, a copy or a
+/// backup restore all move.
+pub fn conflict_timestamp(rel_path: &str) -> Option<u64> {
+    let filename = rel_path.rsplit('/').next().unwrap_or(rel_path);
+    let (_, suffix) = filename.split_once(".conflict.")?;
+    suffix.split('.').next()?.parse::<u64>().ok()
 }
 
 #[cfg(test)]
@@ -204,6 +217,23 @@ mod tests {
                 "failed roundtrip for {original}"
             );
         }
+    }
+
+    #[test]
+    fn test_conflict_timestamp() {
+        assert_eq!(
+            conflict_timestamp("knowledge/foo.conflict.1748332800.abc123de.md"),
+            Some(1748332800)
+        );
+        // No extension
+        assert_eq!(
+            conflict_timestamp("knowledge/Makefile.conflict.9999.deadbeef"),
+            Some(9999)
+        );
+        // Not a sidecar
+        assert_eq!(conflict_timestamp("knowledge/foo.md"), None);
+        // Sidecar-shaped but the timestamp slot is not a number
+        assert_eq!(conflict_timestamp("knowledge/foo.conflict.x.abc.md"), None);
     }
 
     #[tokio::test]

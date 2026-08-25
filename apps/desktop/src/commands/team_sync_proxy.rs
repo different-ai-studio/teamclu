@@ -18,7 +18,7 @@
 //!   - `POST /v1/team/secrets`           `{ teamId, ossTeamSecret? }`   scope `workspace:write`
 //!   - `POST /v1/team/link`              `{ path }`                    scope `workspace:write`
 //!   - `GET  /v1/team/conflicts?teamId`                               scope `workspace:read`
-//!   - `POST /v1/team/conflicts/resolve` `{ teamId, path, choice }`   scope `workspace:write`
+//!   - `POST /v1/team/conflicts/resolve` `{ teamId, path, sidecar?, choice }` scope `workspace:write`
 //!   - `GET  /v1/team/versions?teamId&path[&cursor]`                  scope `workspace:read`
 //!   - `POST /v1/team/versions/restore`  `{ teamId, path, contentHash }` scope `workspace:write`
 
@@ -306,22 +306,31 @@ pub async fn daemon_team_conflicts(team_id: &str) -> Result<serde_json::Value, S
     .await
 }
 
-/// `POST /v1/team/conflicts/resolve` `{ teamId, path, choice }`.
+/// `POST /v1/team/conflicts/resolve` `{ teamId, path, sidecar?, choice }`.
+///
+/// `sidecar` names WHICH conflict is being decided — one document can carry
+/// several, each its own decision. Omitting it lets the daemon pick the newest,
+/// which is what the pre-sidecar callers implicitly meant.
 pub async fn daemon_team_resolve_conflict(
     team_id: &str,
     path: &str,
+    sidecar: Option<&str>,
     choice: &str,
 ) -> Result<(), String> {
+    let mut body = serde_json::json!({
+        "teamId": team_id,
+        "path": path,
+        "choice": choice,
+    });
+    if let Some(sidecar) = sidecar.map(str::trim).filter(|s| !s.is_empty()) {
+        body["sidecar"] = serde_json::Value::String(sidecar.to_string());
+    }
     daemon_request_unit(
         reqwest::Method::POST,
         "/v1/team/conflicts/resolve",
         "",
         &["workspace:write"],
-        Some(&serde_json::json!({
-            "teamId": team_id,
-            "path": path,
-            "choice": choice,
-        })),
+        Some(&body),
     )
     .await
 }
@@ -571,7 +580,7 @@ pub async fn oss_sync_resolve_conflict(
     choice: String,
 ) -> Result<(), String> {
     let _ = &workspace_path;
-    daemon_team_resolve_conflict(&team_id, &path, &choice).await
+    daemon_team_resolve_conflict(&team_id, &path, None, &choice).await
 }
 
 fn team_sync_success_payload() -> serde_json::Value {
@@ -683,6 +692,31 @@ pub async fn team_changed_files(team_id: String) -> Result<serde_json::Value, St
         None,
     )
     .await
+}
+
+/// `GET /v1/team/conflicts` — the conflicts waiting for a decision.
+///
+/// Each entry is one sidecar: `{ path, sidecar, conflictedAt, kind }`, where
+/// `path` is the document and `sidecar` the local copy that lost. This scan is
+/// the only durable record of a conflict — the counter in `oss_sync_status` is
+/// per-tick and resets on the next one.
+#[tauri::command]
+pub async fn team_conflicts(team_id: String) -> Result<serde_json::Value, String> {
+    daemon_team_conflicts(&team_id).await
+}
+
+/// `POST /v1/team/conflicts/resolve` — carry out one conflict decision.
+///
+/// `choice` is `keepLocal` (restore my copy over the document and push it) or
+/// `keepRemote` (drop my copy; the document already holds the remote version).
+#[tauri::command]
+pub async fn team_resolve_conflict(
+    team_id: String,
+    path: String,
+    sidecar: Option<String>,
+    choice: String,
+) -> Result<(), String> {
+    daemon_team_resolve_conflict(&team_id, &path, sidecar.as_deref(), &choice).await
 }
 
 /// `POST /v1/team/versions/restore` — restore a file to a version-ref.

@@ -24,6 +24,11 @@ pub struct SyncStatus {
     /// Set when sync was skipped because `team_share.auto_sync` is disabled.
     #[serde(default)]
     pub skipped: bool,
+    /// How far the RUNNING tick has got. `None` whenever nothing is running —
+    /// it is live state, not a record of the last tick, so a finished sync can
+    /// never be left looking like an in-flight one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<crate::sync::oss::SyncProgress>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -40,6 +45,10 @@ pub struct SyncDispatcher {
     backend: Option<Arc<dyn crate::backend::Backend>>,
     locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     status: Arc<Mutex<HashMap<String, SyncStatus>>>,
+    /// Progress of in-flight ticks. A std mutex, not the tokio one the rest of
+    /// this struct uses: the engine reports from inside its transfer loops, in
+    /// sync code, and this lock is only ever held for one map write.
+    progress: Arc<std::sync::Mutex<HashMap<String, crate::sync::oss::SyncProgress>>>,
 }
 
 impl SyncDispatcher {
@@ -49,6 +58,7 @@ impl SyncDispatcher {
             backend,
             locks: Arc::new(Mutex::new(HashMap::new())),
             status: Arc::new(Mutex::new(HashMap::new())),
+            progress: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -78,12 +88,20 @@ impl SyncDispatcher {
     }
 
     pub async fn status(&self, team_id: &str) -> SyncStatus {
-        self.status
+        let mut status: SyncStatus = self
+            .status
             .lock()
             .await
             .get(team_id)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        status.progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(team_id)
+            .copied();
+        status
     }
 
     async fn team_lock(&self, team_id: &str) -> Arc<Mutex<()>> {
@@ -108,7 +126,23 @@ impl SyncDispatcher {
             let mut s = self.status.lock().await;
             s.entry(team_id.to_string()).or_default().syncing = true;
         }
-        let result = self.run_once(team_id, options).await;
+        let sink = {
+            let map = self.progress.clone();
+            let key = team_id.to_string();
+            crate::sync::oss::ProgressSink::new(move |p| {
+                map.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(key.clone(), p);
+            })
+        };
+        let result = self.run_once(team_id, options, &sink).await;
+        // Drop the live progress before publishing the result: a reader that
+        // catches the gap must see "not syncing" with no bar, never a finished
+        // sync still showing 7/10.
+        self.progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(team_id);
         let mut s = self.status.lock().await;
         let entry = s.entry(team_id.to_string()).or_default();
         match result {
@@ -131,7 +165,12 @@ impl SyncDispatcher {
         entry.clone()
     }
 
-    async fn run_once(&self, team_id: &str, options: SyncOptions) -> Result<SyncStatus, String> {
+    async fn run_once(
+        &self,
+        team_id: &str,
+        options: SyncOptions,
+        progress: &crate::sync::oss::ProgressSink,
+    ) -> Result<SyncStatus, String> {
         if !options.force && !crate::config::DaemonConfig::team_share_auto_sync_enabled_from_disk()
         {
             return Ok(SyncStatus {
@@ -165,7 +204,7 @@ impl SyncDispatcher {
         let jwt = self.oss_jwt().await?;
         let fc = oss::fc_client::FcClient::new(self.fc_endpoint()?, jwt);
         let content_root = content_root_dir.to_string_lossy().to_string();
-        let r = oss::tick(&content_root, team_id, &secret, &fc)
+        let r = oss::tick_with_progress(&content_root, team_id, &secret, &fc, progress)
             .await
             .map_err(|e| e.to_string())?;
         Ok(SyncStatus {
@@ -188,6 +227,35 @@ fn now_rfc3339() -> String {
 mod tests {
     use super::*;
     use crate::backend::mock::MockBackend;
+    use crate::sync::oss::{SyncPhase, SyncProgress};
+
+    /// The desktop reads this JSON verbatim and renders a bar from it, so the
+    /// field names and the phase spelling are a contract, not an implementation
+    /// detail.
+    #[test]
+    fn progress_serializes_as_the_client_reads_it() {
+        let status = SyncStatus {
+            syncing: true,
+            progress: Some(SyncProgress {
+                phase: SyncPhase::Pulling,
+                done: 3,
+                total: 12,
+            }),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&status).unwrap();
+        assert_eq!(v["progress"]["phase"], "pulling");
+        assert_eq!(v["progress"]["done"], 3);
+        assert_eq!(v["progress"]["total"], 12);
+    }
+
+    /// An idle daemon must not carry a stale bar: the field is absent, which is
+    /// what the client treats as "nothing running".
+    #[test]
+    fn an_idle_status_carries_no_progress_at_all() {
+        let v = serde_json::to_value(SyncStatus::default()).unwrap();
+        assert!(v.get("progress").is_none(), "{v}");
+    }
 
     /// A dispatcher over a throwaway secret store, plus the mock backend.
     fn dispatcher_with_mock(tmp: &tempfile::TempDir) -> (SyncDispatcher, Arc<MockBackend>) {

@@ -8,6 +8,8 @@ import { isChatInputDropTarget, isPointOverElement } from '@/lib/chat-file-drop'
 import { copyToClipboard, isTauri } from '@/lib/utils';
 import { useWorkspaceStore, type FileNode } from "@/stores/workspace";
 import { useOssSyncStore } from "@/stores/oss-sync";
+import { useTeamConflictsStore, isConflictSidecarName } from "@/stores/team-conflicts";
+import { teamSyncKeyForPath } from "@/lib/team-skill-paths";
 import {
   hasSystemClipboardFiles,
   writeSystemClipboardFiles,
@@ -50,6 +52,47 @@ interface FlatTreeNode {
   compactName?: string;
   /** All directory paths in a compacted chain (for collapsing all at once) */
   compactedPaths?: string[];
+}
+
+/**
+ * Drop conflict sidecars from a team-knowledge tree.
+ *
+ * A sidecar is a local-only copy the sync engine parked next to a document it
+ * had to overwrite. Listing it turns one conflict into two near-identical rows
+ * with no explanation; the document's own row carries the badge instead, and the
+ * sidecar is what the decision view reads.
+ *
+ * Returns the SAME array when nothing was pruned, so the common case costs one
+ * walk and no downstream re-render.
+ */
+function pruneConflictSidecars(
+  nodes: FileNode[],
+  opts: { knowledgeDir?: string | null; workspacePath?: string | null },
+): FileNode[] {
+  let changed = false;
+  const out: FileNode[] = [];
+  for (const node of nodes) {
+    if (
+      node.type !== "directory" &&
+      isConflictSidecarName(node.name) &&
+      // Only inside team knowledge: a workspace source file may legitimately be
+      // called `foo.conflict.ts`, and hiding it would be a bug of our own.
+      teamSyncKeyForPath(node.path, opts) !== null
+    ) {
+      changed = true;
+      continue;
+    }
+    if (node.children) {
+      const children = pruneConflictSidecars(node.children, opts);
+      if (children !== node.children) {
+        changed = true;
+        out.push({ ...node, children });
+        continue;
+      }
+    }
+    out.push(node);
+  }
+  return changed ? out : nodes;
 }
 
 // Filter tree nodes recursively based on filter text.
@@ -188,7 +231,11 @@ export function FileTree({
 }: FileTreeProps) {
   const { t } = useTranslation();
   const storeFileTree = useWorkspaceStore(s => s.fileTree);
-  const fileTree = nodesProp ?? storeFileTree;
+  const rawFileTree = nodesProp ?? storeFileTree;
+  // Team-knowledge conflicts. `bySyncKey` is empty in the overwhelmingly common
+  // case, which is what keeps the per-row lookup below free.
+  const conflictsBySyncKey = useTeamConflictsStore(s => s.bySyncKey);
+  const knowledgeDir = useTeamConflictsStore(s => s.knowledgeDir);
   const expandedPaths = useWorkspaceStore(s => s.expandedPaths);
   const loadingPaths = useWorkspaceStore(s => s.loadingPaths);
   const selectedFile = useWorkspaceStore(s => s.selectedFile);
@@ -201,6 +248,14 @@ export function FileTree({
   const expandDirectory = useWorkspaceStore(s => s.expandDirectory);
   const collapseDirectory = useWorkspaceStore(s => s.collapseDirectory);
   const setFocusedPath = useWorkspaceStore(s => s.setFocusedPath);
+  const fileTree = useMemo(
+    () => pruneConflictSidecars(rawFileTree, { knowledgeDir, workspacePath }),
+    [rawFileTree, knowledgeDir, workspacePath],
+  );
+  const conflictKeys = useMemo(
+    () => Object.keys(conflictsBySyncKey),
+    [conflictsBySyncKey],
+  );
   const pushUndo = useWorkspaceStore(s => s.pushUndo);
   const refreshFileTree = useWorkspaceStore(s => s.refreshFileTree);
   const revealFile = useWorkspaceStore(s => s.revealFile);
@@ -1151,6 +1206,21 @@ export function FileTree({
     teamSyncing: node.name === TEAM_REPO_DIR && node.type === "directory" && level === 0 ? teamSyncing : undefined,
     teamLastSyncAt: node.name === TEAM_REPO_DIR && node.type === "directory" && level === 0 ? teamLastSyncAt : undefined,
     syncStatus: (() => {
+      // Team knowledge: a conflict is the one per-file state the daemon keeps a
+      // durable record of, and it has to show on every surface the document
+      // appears on — the Knowledge column and the workspace `team-knowledge`
+      // link are two spellings of the same file.
+      if (conflictKeys.length > 0) {
+        const syncKey = teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath });
+        if (syncKey) {
+          if (node.type === 'directory') {
+            const prefix = `${syncKey}/`;
+            if (conflictKeys.some((k) => k.startsWith(prefix))) return 'conflict';
+          } else if (conflictsBySyncKey[syncKey]?.length) {
+            return 'conflict';
+          }
+        }
+      }
       if (!node.path.includes(`/${TEAM_REPO_DIR}/`)) return null;
       if (node.type === 'directory') {
         return syncDirtyDirectories.get(node.path) ?? null;

@@ -17,6 +17,7 @@ import {
   MessageSquarePlus,
   AppWindow,
   History,
+  AlertTriangle,
 } from "lucide-react";
 
 import { cn } from '@/lib/utils';
@@ -25,6 +26,7 @@ import { useTabsStore } from '@/stores/tabs';
 import { useCurrentTeamStore } from '@/stores/current-team';
 import { useVersionHistoryStore } from '@/stores/version-history';
 import { encodeVersionHistoryTarget } from '@/lib/tabs/teamshare-target';
+import { openKnowledgeConflict } from '@/lib/tabs/open-conflict';
 import { getFileIcon } from '@/lib/file-icons';
 import { formatDateTime, formatRelativeTime } from '@/lib/date-format';
 import type { FileNode } from "@/stores/workspace";
@@ -312,6 +314,9 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   const FileIcon = fileIconInfo?.icon || File;
   const fileIconColor = fileIconInfo?.color || "text-muted-foreground";
   const isKnowledgeDir = isDirectory && node.name === 'team-knowledge' && !node.path.includes('/.trash/');
+  // A team document both sides changed. The row is red either way; this is what
+  // decides whether it also offers the way in to resolving it.
+  const needsConflictDecision = syncStatus === 'conflict' && !isDirectory;
 
   if (isRenaming) {
     return (
@@ -399,6 +404,29 @@ export const FileTreeItem = React.memo(function FileTreeItem({
         {displayName}
       </span>
 
+      {needsConflictDecision && (
+        // The row is already red; this is the part that says a HUMAN has to do
+        // something, and is the only entry point into the decision view.
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => {
+            e.stopPropagation();
+            openKnowledgeConflict(node.path, t('knowledgeConflict.tabLabel', 'Conflict'));
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.stopPropagation();
+            openKnowledgeConflict(node.path, t('knowledgeConflict.tabLabel', 'Conflict'));
+          }}
+          className="ml-auto flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-red-500 hover:bg-red-500/10"
+          title={t('knowledgeConflict.rowHint', 'Both sides changed this document — pick which version to keep')}
+        >
+          <AlertTriangle className="h-3 w-3" />
+          {t('knowledgeConflict.needsDecision', 'Decide')}
+        </span>
+      )}
+
       {isTeamCluTeam && !teamSyncing && teamLastSyncAt && (
         <span
           className="ml-auto pl-2 text-[10px] text-muted-foreground/70 font-normal shrink-0"
@@ -482,6 +510,14 @@ export const FileTreeItem = React.memo(function FileTreeItem({
           {t("fileExplorer.duplicate", "Duplicate")}
           <ContextMenuShortcut>⌘D</ContextMenuShortcut>
         </ContextMenuItem>
+        {needsConflictDecision && (
+          <ContextMenuItem
+            onSelect={guardedMenuAction(() => openKnowledgeConflict(node.path, t('knowledgeConflict.tabLabel', 'Conflict')))}
+          >
+            <AlertTriangle className="h-4 w-4" />
+            {t('knowledgeConflict.resolveAction', 'Resolve conflict')}
+          </ContextMenuItem>
+        )}
         {!isDirectory && (
           <ContextMenuItem
             onSelect={guardedMenuAction(() => openVersionHistory(node.path, t("versionHistory.title", "Version history")))}

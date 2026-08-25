@@ -5,6 +5,8 @@
 //! `last_server_seq` is only advanced **after** the full cursor drain.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use futures::StreamExt;
@@ -19,6 +21,7 @@ use super::{
     path_validator::{validate, validate_no_symlink_escape, ALLOWED_PREFIXES},
     scanner::{scan_workspace, ScannedFile},
     state::LocalSyncState,
+    ProgressSink, SyncPhase,
 };
 
 /// Chunk size for batch FC calls — must not exceed the FC server cap
@@ -45,11 +48,37 @@ pub struct TickResult {
 }
 
 /// Run a full sync tick: PULL then PUSH (spec §4.3).
+///
+/// Reports nothing. [`tick_with_progress`] is the same tick with a progress
+/// sink attached — kept as a separate entry point so every existing caller
+/// (tests, CLI, timer) stays a one-liner.
 pub async fn tick(
     content_root: &str,
     team_id: &str,
     team_secret: &str,
     fc: &FcClient,
+) -> Result<TickResult, SyncError> {
+    tick_with_progress(
+        content_root,
+        team_id,
+        team_secret,
+        fc,
+        &ProgressSink::none(),
+    )
+    .await
+}
+
+/// [`tick`], reporting how far it has got as it goes.
+///
+/// The totals are known before the work starts — the manifest walk produces the
+/// pull list, the scan produces the push list — so every phase after `Checking`
+/// reports a real denominator rather than a spinner.
+pub async fn tick_with_progress(
+    content_root: &str,
+    team_id: &str,
+    team_secret: &str,
+    fc: &FcClient,
+    progress: &ProgressSink,
 ) -> Result<TickResult, SyncError> {
     let key = crate::team_shared_env::derive_key(team_secret)
         .map_err(|e| SyncError::Crypto(e.to_string()))?;
@@ -74,6 +103,7 @@ pub async fn tick(
     let mut all_items: Vec<ManifestItem> = Vec::new();
 
     let since_seq = state.last_server_seq;
+    progress.report(SyncPhase::Checking, 0, 0);
     loop {
         // Retry transient failures (429 rate-limit / 503) in-call: a single
         // throttled manifest page must not fail the whole tick and surface as
@@ -178,7 +208,8 @@ pub async fn tick(
 
     // Batched download (with per-file fallback on a pre-batch FC).
     let expected_pulls = pull_items.len();
-    let pulled = pull_phase(content_root, &key, fc, &mut state, pull_items).await;
+    progress.report(SyncPhase::Pulling, 0, expected_pulls as u32);
+    let pulled = pull_phase(content_root, &key, fc, &mut state, pull_items, progress).await;
     let pull_failures = expected_pulls.saturating_sub(pulled as usize);
 
     let advanced = next_high_water(state.last_server_seq, snapshot_seq, pull_failures);
@@ -235,12 +266,23 @@ pub async fn tick(
 
     // Batched PUSH (upload) — collect → prepare-batch → concurrent blob PUT →
     // complete-batch → per-item apply. Falls back to per-file on a pre-batch FC.
-    let push_stats = push_phase(content_root, team_id, &key, fc, &mut state, all_dirty).await;
+    progress.report(SyncPhase::Pushing, 0, all_dirty.len() as u32);
+    let push_stats = push_phase(
+        content_root,
+        team_id,
+        &key,
+        fc,
+        &mut state,
+        all_dirty,
+        progress,
+    )
+    .await;
 
     // Propagate local deletions: a previously-synced file that is absent from the
     // current scan was deleted locally → emit a server-side tombstone so other
     // nodes pull the deletion. Each tombstone is a parentVersion CAS.
     let dels = locally_deleted_paths(&state, &scan);
+    progress.report(SyncPhase::Deleting, 0, dels.len() as u32);
     let del_stats = delete_phase(content_root, team_id, fc, &mut state, dels).await;
 
     let pushed = push_stats.pushed + del_stats.pushed;
@@ -288,6 +330,26 @@ pub async fn tick(
 }
 
 // ── Batch phase plumbing ───────────────────────────────────────────────────────
+
+/// Reports one unit of transfer progress when it goes out of scope.
+///
+/// A transfer future can leave through `?` at four different awaits; a guard is
+/// the only way to count all of them without a report at every exit. The bar
+/// tracks work ATTEMPTED, so a partial pull settles at 10/10 rather than
+/// stopping at 8/10 and looking hung.
+struct ReportOnDrop<'a> {
+    progress: &'a ProgressSink,
+    phase: SyncPhase,
+    counter: Arc<AtomicU32>,
+    total: u32,
+}
+
+impl Drop for ReportOnDrop<'_> {
+    fn drop(&mut self) {
+        let done = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
+        self.progress.report(self.phase, done, self.total);
+    }
+}
 
 /// A manifest item that needs its blob downloaded (decided in the PULL pre-loop).
 struct PullItem {
@@ -439,6 +501,7 @@ async fn pull_phase(
     fc: &FcClient,
     state: &mut LocalSyncState,
     items: Vec<PullItem>,
+    progress: &ProgressSink,
 ) -> u32 {
     if items.is_empty() {
         return 0;
@@ -446,6 +509,11 @@ async fn pull_phase(
     let team_id = state.team_id.clone();
     let key_copy = *key;
     let mut pulled = 0u32;
+    let total = items.len() as u32;
+    // Counts every file the transfer loop finishes, including the ones that
+    // fail: the bar tracks work done, not work that succeeded, or it stalls at
+    // 8/10 forever on a partial pull.
+    let transferred = Arc::new(AtomicU32::new(0));
 
     for chunk in items.chunks(MAX_BATCH) {
         let hashes: Vec<String> = chunk.iter().map(|i| i.cipher_hash.clone()).collect();
@@ -468,6 +536,11 @@ async fn pull_phase(
                         Ok(_) => pulled += 1,
                         Err(e) => tracing::warn!("[oss_sync] pull {}: {e}", it.path),
                     }
+                    progress.report(
+                        SyncPhase::Pulling,
+                        transferred.fetch_add(1, Ordering::Relaxed) + 1,
+                        total,
+                    );
                 }
                 continue;
             }
@@ -495,42 +568,53 @@ async fn pull_phase(
             }
         }
 
-        let writes: Vec<Result<WriteResult, SyncError>> =
-            futures::stream::iter(targets.into_iter().map(
-                |(path, cipher_hash, version, url)| async move {
-                    let blob = fc.get_blob(&url, &cipher_hash).await?;
-                    let plaintext = decrypt_blob(&blob, &key_copy).map_err(SyncError::Crypto)?;
-                    let abs = Path::new(content_root).join(&path);
-                    if let Some(parent) = abs.parent() {
-                        tokio::fs::create_dir_all(parent)
+        let writes: Vec<Result<WriteResult, SyncError>> = futures::stream::iter(
+            targets
+                .into_iter()
+                .map(|(path, cipher_hash, version, url)| {
+                    let transferred = transferred.clone();
+                    async move {
+                        let _guard = ReportOnDrop {
+                            progress,
+                            phase: SyncPhase::Pulling,
+                            counter: transferred,
+                            total,
+                        };
+                        let blob = fc.get_blob(&url, &cipher_hash).await?;
+                        let plaintext =
+                            decrypt_blob(&blob, &key_copy).map_err(SyncError::Crypto)?;
+                        let abs = Path::new(content_root).join(&path);
+                        if let Some(parent) = abs.parent() {
+                            tokio::fs::create_dir_all(parent)
+                                .await
+                                .map_err(|e| SyncError::Io(e.to_string()))?;
+                        }
+                        tokio::fs::write(&abs, &plaintext)
                             .await
                             .map_err(|e| SyncError::Io(e.to_string()))?;
+                        let meta = std::fs::metadata(&abs).map_err(SyncError::from)?;
+                        let mtime = meta
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        let size = meta.len();
+                        let plain_hash = sha256_hex(&plaintext);
+                        Ok(WriteResult {
+                            path,
+                            version,
+                            cipher_hash,
+                            plain_hash,
+                            mtime,
+                            size,
+                        })
                     }
-                    tokio::fs::write(&abs, &plaintext)
-                        .await
-                        .map_err(|e| SyncError::Io(e.to_string()))?;
-                    let meta = std::fs::metadata(&abs).map_err(SyncError::from)?;
-                    let mtime = meta
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    let size = meta.len();
-                    let plain_hash = sha256_hex(&plaintext);
-                    Ok(WriteResult {
-                        path,
-                        version,
-                        cipher_hash,
-                        plain_hash,
-                        mtime,
-                        size,
-                    })
-                },
-            ))
-            .buffer_unordered(BLOB_CONCURRENCY)
-            .collect()
-            .await;
+                }),
+        )
+        .buffer_unordered(BLOB_CONCURRENCY)
+        .collect()
+        .await;
 
         // Apply upserts sequentially (needs &mut state).
         for w in writes {
@@ -563,11 +647,17 @@ async fn push_phase(
     fc: &FcClient,
     state: &mut LocalSyncState,
     paths: Vec<String>,
+    progress: &ProgressSink,
 ) -> PhaseStats {
     let mut stats = PhaseStats::default();
     if paths.is_empty() {
         return stats;
     }
+    let total = paths.len() as u32;
+    // The blob PUT is where a push spends its time, so that is what the bar
+    // follows. Items whose blob is already in OSS never PUT and are counted as
+    // they are queued for completion instead.
+    let uploaded = Arc::new(AtomicU32::new(0));
 
     for chunk in paths.chunks(MAX_BATCH) {
         // Stage 0: encrypt + hash. Unreadable files are skipped (stay dirty).
@@ -601,6 +691,11 @@ async fn push_phase(
             Err(SyncError::BatchUnsupported) => {
                 for p in chunk {
                     apply_push_per_file(content_root, p, team_id, key, fc, state, &mut stats).await;
+                    progress.report(
+                        SyncPhase::Pushing,
+                        uploaded.fetch_add(1, Ordering::Relaxed) + 1,
+                        total,
+                    );
                 }
                 continue;
             }
@@ -632,8 +727,14 @@ async fn push_phase(
                             Some(url) => {
                                 let blob = pu.blob.clone();
                                 let sess = pr.upload_session_id;
+                                let uploaded = uploaded.clone();
                                 put_futs.push(async move {
                                     let r = fc.put_blob(&url, blob).await;
+                                    progress.report(
+                                        SyncPhase::Pushing,
+                                        uploaded.fetch_add(1, Ordering::Relaxed) + 1,
+                                        total,
+                                    );
                                     (idx, sess, r)
                                 });
                             }
@@ -647,6 +748,11 @@ async fn push_phase(
                             idx,
                             session_id: pr.upload_session_id,
                         });
+                        progress.report(
+                            SyncPhase::Pushing,
+                            uploaded.fetch_add(1, Ordering::Relaxed) + 1,
+                            total,
+                        );
                     }
                 }
                 BatchItemOutcome::Conflict { .. } => { /* prepare does not CAS */ }
@@ -1206,6 +1312,35 @@ fn locally_deleted_paths(state: &LocalSyncState, scan: &[ScannedFile]) -> Vec<(S
 mod tests {
     use super::*;
     use crate::sync::oss::state::FileState;
+
+    /// A transfer that fails leaves through `?` part-way down the future. The
+    /// guard is what still counts it — without that a pull where two of ten
+    /// files 404 would sit at 8/10 and read as hung rather than finished.
+    #[test]
+    fn a_failed_transfer_still_advances_the_bar() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = {
+            let seen = seen.clone();
+            ProgressSink::new(move |p| seen.lock().unwrap().push(p))
+        };
+        let counter = Arc::new(AtomicU32::new(0));
+
+        for _ in 0..3 {
+            let _guard = ReportOnDrop {
+                progress: &sink,
+                phase: SyncPhase::Pulling,
+                counter: counter.clone(),
+                total: 3,
+            };
+            // The body is irrelevant — success or `?`, the drop is what reports.
+        }
+
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[2].done, 3);
+        assert_eq!(seen[2].total, 3);
+        assert_eq!(seen[2].phase, SyncPhase::Pulling);
+    }
     use std::collections::HashMap;
 
     fn empty_state() -> LocalSyncState {
