@@ -72,11 +72,17 @@ export interface FileNode {
 
 // Right panel tab type.
 //
-// `files` (the RAG knowledge browser) and `teamShared` are gone. The knowledge
-// browser went with the RAG module; `teamShared` rendered the team repo dir,
-// which holds nothing now that knowledge syncs to `shared/knowledge`, and it
-// had already lost its header entry to the left-nav Knowledge column.
-export type RightPanelTab = "diff" | "shortcuts" | "actors";
+// `files` is the workspace file tree (rendered by the `FileBrowser` component,
+// which still lives in components/workspace/). It was dropped from the right
+// panel by #1054 (which removed the separate RAG `KnowledgeBrowser` that also
+// lived under this tab id), but the `FileBrowser` itself was retained — it is
+// also rendered in the left team-share column. Restoring the `files` tab here
+// re-opens the right-panel entry to the same `FileBrowser`, with no RAG
+// dependency. `teamShared` is intentionally NOT restored: that tab pointed at
+// the team repo dir, which is empty now that knowledge syncs to
+// `shared/knowledge`, and its header entry already moved to the left-nav
+// Knowledge column.
+export type RightPanelTab = "diff" | "shortcuts" | "files" | "actors";
 
 // Undo operation types for file operations
 interface UndoOperation {

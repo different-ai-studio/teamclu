@@ -431,6 +431,7 @@
   "navigation": {
     "changes": "Changes",
     "shortcuts": "Shortcuts",
+    "files": "Files",
     "hideTabs": "Hide files",
     "restoreTabs": "Show files",
     "collapsePanel": "Collapse panel",

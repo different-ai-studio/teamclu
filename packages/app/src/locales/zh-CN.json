@@ -431,6 +431,7 @@
   "navigation": {
     "changes": "变更",
     "shortcuts": "快捷方式",
+    "files": "文件",
     "hideTabs": "隐藏文件",
     "restoreTabs": "显示文件",
     "collapsePanel": "收起面板",
