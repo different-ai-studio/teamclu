@@ -7,44 +7,8 @@ use std::path::Path;
 
 use tracing::{debug, info, warn};
 
-use crate::backend::Backend;
 use crate::config::global_team_store::{self, TEAM_LINK_NAME};
 use crate::config::workspace_link::{self, LinkStatus, TEAM_KNOWLEDGE_LINK_NAME};
-
-/// Result of consulting the cloud share-mode endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TeamShareGate {
-    /// `share_mode` is set (`oss`).
-    Enabled,
-    /// Team-share is off (`mode` null / missing).
-    Disabled,
-    /// Cloud lookup failed — do not tear down existing links on a background sweep.
-    Unknown,
-}
-
-pub async fn team_share_gate(backend: &dyn Backend, team_id: &str) -> TeamShareGate {
-    match backend.team_share_config(team_id).await {
-        Ok(cfg) => {
-            if cfg
-                .mode
-                .as_deref()
-                .filter(|m| !m.trim().is_empty())
-                .is_some()
-            {
-                TeamShareGate::Enabled
-            } else {
-                TeamShareGate::Disabled
-            }
-        }
-        Err(e) => {
-            warn!(
-                team_id,
-                "team_share_config failed, leaving links unchanged: {e}"
-            );
-            TeamShareGate::Unknown
-        }
-    }
-}
 
 /// Whether a workspace path is an app checkout
 /// (`<amuxd home>/teams/<teamId>/apps/<appId>`).
@@ -160,29 +124,26 @@ pub fn prune_scaffold_team_home(team_id: &str) {
     }
 }
 
-/// Background sweep policy: link when enabled; tear down only when share-mode is
-/// confirmed off; leave paths alone on transient cloud errors (`Unknown`).
-pub fn materialize_or_teardown(gate: TeamShareGate, team_id: &str, ws_path: &str) -> LinkStatus {
+/// Background sweep policy: materialize the team's dir and this workspace's
+/// link. Never tears down.
+///
+/// It used to consult the cloud `share_mode` first and REMOVE the links when it
+/// came back unset. That switch has no producer left in the product — nothing
+/// ships a call to `POST /v1/teams/:id/share-mode` — so every team created since
+/// reads as "off", and this swept away the very links it exists to create. The
+/// real precondition for syncing is the team secret, and it is checked where the
+/// sync actually runs (`sync::dispatch::run_once`).
+///
+/// Teardown still happens, but only when a client asks for it explicitly:
+/// `POST /v1/team/unlink` → [`remove_workspace_team_link`] +
+/// [`prune_scaffold_team_home`].
+pub fn materialize_team_link(team_id: &str, ws_path: &str) -> LinkStatus {
     if is_app_workspace(ws_path) {
         // Never link an app checkout, and clear one left by an older build.
         remove_workspace_team_symlink(ws_path);
         return LinkStatus::Fallback;
     }
-    match gate {
-        TeamShareGate::Enabled => ensure_team_link(team_id, ws_path),
-        TeamShareGate::Disabled => {
-            if let Err(e) = remove_workspace_team_link(ws_path) {
-                debug!(
-                    team_id,
-                    workspace = %ws_path,
-                    "team unlink (workspace entry) skipped: {e}"
-                );
-            }
-            prune_scaffold_team_home(team_id);
-            LinkStatus::Fallback
-        }
-        TeamShareGate::Unknown => LinkStatus::Fallback,
-    }
+    ensure_team_link(team_id, ws_path)
 }
 
 /// Idempotently materialize a team's global shared dir and a workspace's
@@ -235,26 +196,6 @@ mod tests {
     }
 
     #[test]
-    fn materialize_or_teardown_disabled_does_not_create_global_dir() {
-        let _lock = global_team_store::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let home = tempfile::tempdir().unwrap();
-        // SAFETY: serialized by TEST_HOME_LOCK.
-        unsafe { std::env::set_var("HOME", home.path()) };
-
-        let team_id = "team-teardown-test";
-        let ws = tempfile::tempdir().unwrap();
-        materialize_or_teardown(
-            TeamShareGate::Disabled,
-            team_id,
-            ws.path().to_str().unwrap(),
-        );
-
-        assert!(!global_team_store::global_team_dir(team_id).exists());
-    }
-
-    #[test]
     fn path_is_under_matches_only_paths_inside_the_root() {
         let root = tempfile::tempdir().unwrap();
         let inside = root.path().join("app-1");
@@ -301,7 +242,7 @@ mod tests {
         assert_eq!(ensure_team_link("team-1", app_ws_str), LinkStatus::Fallback);
         assert!(!app_ws.join(TEAM_LINK_NAME).exists());
         assert_eq!(
-            materialize_or_teardown(TeamShareGate::Enabled, "team-1", app_ws_str),
+            materialize_team_link("team-1", app_ws_str),
             LinkStatus::Fallback
         );
         assert!(!app_ws.join(TEAM_LINK_NAME).exists());

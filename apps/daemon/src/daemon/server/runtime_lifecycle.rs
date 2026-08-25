@@ -539,8 +539,7 @@ impl DaemonServer {
         let workspace_team_id = self.resolve_workspace_team_id(&ws_id).await;
 
         if let Some(ref team_id) = workspace_team_id {
-            let gate = crate::team_link::team_share_gate(self.backend.as_ref(), team_id).await;
-            crate::team_link::materialize_or_teardown(gate, team_id, &resolved_worktree);
+            crate::team_link::materialize_team_link(team_id, &resolved_worktree);
         }
 
         // Refresh-watch suppression remains inside execution-context assembly,

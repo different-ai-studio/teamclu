@@ -1017,12 +1017,6 @@ mod tests {
         ));
         {
             let mut state = backend.state();
-            state.team_share_configs.insert(
-                team_id.to_string(),
-                crate::backend::ShareModeConfig {
-                    mode: Some("oss".to_string()),
-                },
-            );
             state.team_skills.insert(
                 team_id.to_string(),
                 vec![crate::backend::TeamSkillRow {
@@ -1088,18 +1082,6 @@ mod tests {
             .await
             .unwrap();
         let token = exchanged["token"].as_str().unwrap();
-
-        let share: serde_json::Value = client
-            .get(format!("{base}/v1/team/share-mode"))
-            .bearer_auth(token)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(share["teamId"], team_id);
-        assert_eq!(share["mode"], "oss");
 
         let skills: serde_json::Value = client
             .get(format!("{base}/v1/team/skills"))

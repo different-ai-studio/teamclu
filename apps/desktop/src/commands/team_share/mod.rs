@@ -14,6 +14,4 @@
 pub mod enable;
 
 #[allow(unused_imports)]
-pub use enable::{
-    get_share_status_impl, set_team_secret_impl, team_share_get_status, team_share_set_team_secret,
-};
+pub use enable::{set_team_secret_impl, team_share_set_team_secret};

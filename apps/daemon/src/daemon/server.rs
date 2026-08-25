@@ -857,9 +857,8 @@ impl DaemonServer {
         if workspace_paths.is_empty() {
             return;
         }
-        let gate = crate::team_link::team_share_gate(self.backend.as_ref(), &team_id).await;
         for ws_path in &workspace_paths {
-            crate::team_link::materialize_or_teardown(gate, &team_id, ws_path);
+            crate::team_link::materialize_team_link(&team_id, ws_path);
         }
     }
 
@@ -3369,13 +3368,6 @@ pub(crate) mod tests {
         ));
         {
             let mut st = mock.state();
-            st.team_share_configs.insert(
-                team_id.to_string(),
-                crate::backend::ShareModeConfig {
-                    mode: Some("oss".to_string()),
-                    ..Default::default()
-                },
-            );
             st.workspaces_by_id.insert(
                 "ws-exists".to_string(),
                 crate::backend::WorkspaceRow {

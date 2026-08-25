@@ -1,79 +1,27 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import { isTauri } from '@/lib/utils'
-import { getFreshAccessToken } from '@/lib/auth/session-store'
-import { getEffectiveServerConfigSync } from '@/lib/server-config'
-
-// ---------------------------------------------------------------------------
-// Types — mirror FC GET /v1/teams/:id/share-mode response (camelCase JSON)
-// ---------------------------------------------------------------------------
-
-export type ShareMode = 'oss' | null
-
-export type LockedShareMode = Exclude<ShareMode, null>
-
-export function isShareModeLocked(
-  mode: ShareMode | undefined | null,
-): mode is LockedShareMode {
-  return mode === 'oss'
-}
-
-/** Match the daemon: an unrecognized/unset FC mode means "not enabled". */
-export function normalizeShareStatus(raw: Partial<ShareStatus>): ShareStatus {
-  const mode = (raw?.mode ?? null) as ShareMode
-  if (!isShareModeLocked(mode)) {
-    return {
-      mode: null,
-      enabledAt: null,
-      linkStatus: raw?.linkStatus,
-      globalPath: raw?.globalPath ?? null,
-    }
-  }
-  return {
-    mode,
-    enabledAt: raw?.enabledAt ?? null,
-    linkStatus: raw?.linkStatus,
-    globalPath: raw?.globalPath ?? null,
-  }
-}
-
-// What the workspace `teamclu-team` entry currently is, as reported by the
-// daemon-aware `team_share_get_status` command.
-export type LinkStatus = 'symlink' | 'real_dir' | 'missing'
-
-export interface ShareStatus {
-  mode: ShareMode
-  enabledAt?: string | null
-  // Per-workspace link to the daemon's single global copy, and where that
-  // global copy lives on disk (~/.amuxd/teams/<team_id>/teamclu-team).
-  // Absent when the status was read without a workspace — there is no single
-  // workspace whose link it could describe.
-  linkStatus?: LinkStatus
-  globalPath?: string | null
-}
-
-// Result of an enable_* command (matches Rust `EnableShareResult`).
-export interface EnableShareResult {
-  teamId: string
-  shareMode: string
-  cloneWarning?: string | null
-}
 
 // ---------------------------------------------------------------------------
 // Store
+//
+// What used to live here — `ShareMode`, `ShareStatus`, `normalizeShareStatus`,
+// `isShareModeLocked` and the `refresh()` that read
+// `GET /v1/teams/:id/share-mode` — is gone.
+//
+// That flag was a switch with no producer: nothing in the product ships a call
+// to `POST /v1/teams/:id/share-mode`, so every team created since reads as
+// "off". Everything that branched on it therefore did nothing, silently, for
+// every one of those teams: the cloud-sync button returned before doing any
+// work, the sync-status poll never ran, and the daemon's link sweep actively
+// removed the team links it exists to create.
+//
+// Whether a team can sync is decided where the sync runs, by the thing that
+// actually decides it: the team secret (`sync::dispatch::run_once`). That is
+// what these two calls manage.
 // ---------------------------------------------------------------------------
 
 export interface TeamShareState {
-  status: ShareStatus
-  loading: boolean
-  lastError: string | null
-
-  /**
-   * Read the team's share mode. `workspacePath` is optional and only decorates
-   * the result with that workspace's `linkStatus` — the mode is the team's, and
-   * comes from the Cloud API.
-   */
-  refresh(teamId: string, workspacePath?: string | null): Promise<ShareStatus>
   /**
    * Save the team secret and deliver it to the daemon. Resolves to a warning
    * string when the save succeeded but the daemon did not take delivery — the
@@ -89,69 +37,7 @@ export interface TeamShareState {
   getSecret(teamId: string, workspacePath: string): Promise<string | null>
 }
 
-const EMPTY_STATUS: ShareStatus = {
-  mode: null,
-  enabledAt: null,
-}
-
-function getCloudApiUrlForNativeCommand(): string {
-  const cloudApiUrl = getEffectiveServerConfigSync().cloudApiUrl
-  if (!cloudApiUrl) throw new Error('Cloud API URL is not configured')
-  return cloudApiUrl
-}
-
-/** Coalesce concurrent refresh calls for the same team + workspace. */
-let shareRefreshInflight: Promise<ShareStatus> | null = null
-let shareRefreshInflightKey: string | null = null
-
-export const useTeamShareStore = create<TeamShareState>((set) => ({
-  status: EMPTY_STATUS,
-  loading: false,
-  lastError: null,
-
-  async refresh(teamId, workspacePath) {
-    if (!isTauri()) return { ...EMPTY_STATUS }
-
-    const key = `${teamId}\0${workspacePath ?? ''}`
-    if (shareRefreshInflight && shareRefreshInflightKey === key) {
-      return shareRefreshInflight
-    }
-
-    shareRefreshInflightKey = key
-    shareRefreshInflight = (async () => {
-      // Keep the previous status visible while loading — clearing to EMPTY here
-      // made TeamSection flip between surfaces and spam daemon APIs.
-      set({ loading: true, lastError: null })
-      try {
-        const accessToken = await getFreshAccessToken()
-        const cloudApiUrl = getCloudApiUrlForNativeCommand()
-        const raw = await invoke<ShareStatus>('team_share_get_status', {
-          teamId,
-          workspacePath: workspacePath ?? null,
-          accessToken,
-          cloudApiUrl,
-        })
-        const next = normalizeShareStatus({
-          mode: (raw?.mode ?? null) as ShareMode,
-          enabledAt: raw?.enabledAt ?? null,
-          linkStatus: raw?.linkStatus,
-          globalPath: raw?.globalPath ?? null,
-        })
-        set({ status: next })
-        return next
-      } catch (e) {
-        set({ lastError: String(e), status: { ...EMPTY_STATUS } })
-        return { ...EMPTY_STATUS }
-      } finally {
-        set({ loading: false })
-        shareRefreshInflight = null
-        shareRefreshInflightKey = null
-      }
-    })()
-
-    return shareRefreshInflight
-  },
-
+export const useTeamShareStore = create<TeamShareState>(() => ({
   async setSecret(teamId, secretHex, workspacePath) {
     const warning = await invoke<string | null>('team_share_set_team_secret', {
       teamId,
@@ -175,5 +61,4 @@ export const useTeamShareStore = create<TeamShareState>((set) => ({
     })
     return secret ?? null
   },
-
 }))

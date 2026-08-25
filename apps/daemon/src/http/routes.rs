@@ -223,7 +223,6 @@ pub fn build(state: HttpState) -> Router {
         // Daemon-owned team sync: desktop triggers sync + reads status over loopback.
         .route("/v1/team/sync", post(team_sync::sync_now))
         .route("/v1/team/sync/status", get(team_sync::sync_status))
-        .route("/v1/team/share-mode", get(team_sync::get_share_mode))
         .route("/v1/team/skills", get(team_sync::list_team_skills))
         .route(
             "/v1/team/skills/reconcile",

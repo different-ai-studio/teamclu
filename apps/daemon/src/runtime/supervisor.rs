@@ -741,7 +741,7 @@ pub fn ensure_instruction_plugin(workspace_path: &Path) -> Result<(), WorkspaceC
 /// The fallback only ever re-points at a directory that already exists: it is
 /// gated on the team's synced `knowledge/` dir being there, so it cannot
 /// resurrect a link for a team whose share was torn down (which would fight
-/// `team_link::materialize_or_teardown`), and it skips app checkouts for the
+/// `team_link::materialize_team_link`), and it skips app checkouts for the
 /// same reason `ensure_team_link` does.
 fn ensure_workspace_knowledge_link(workspace_path: &Path) {
     use crate::config::workspace_link::{
@@ -2483,7 +2483,7 @@ mod tests {
 
     /// The fallback re-points at a directory that exists; it never materializes
     /// one. A team whose share was torn down has no `shared/knowledge`, and
-    /// re-creating a link into it would fight `materialize_or_teardown`.
+    /// re-creating a link into it would fight the explicit unlink path.
     #[test]
     fn prepare_workspace_leaves_team_knowledge_alone_when_the_team_dir_is_gone() {
         let home = tempfile::tempdir().unwrap();

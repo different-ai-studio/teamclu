@@ -2,7 +2,6 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { useTeamShareStore } from '@/stores/team-share'
 import { useOssSyncStore } from '@/stores/oss-sync'
 import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
 import { isTauri } from '@/lib/utils'
@@ -20,15 +19,18 @@ import { isTauri } from '@/lib/utils'
 export function useTeamCloudSync() {
   const { t } = useTranslation()
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
-  const shareMode = useTeamShareStore((s) => s.status.mode)
   const syncing = useOssSyncStore((s) => s.syncing)
   const ossSyncNow = useOssSyncStore((s) => s.syncNow)
 
-  // No workspace requirement: the daemon syncs the team's own tree under its
-  // amuxd home, so "no folder open" is not a reason to hide the button. A
-  // workspace, when there is one, is passed along only so the daemon can repair
-  // its team links on the way through.
-  const available = isTauri() && shareMode === 'oss'
+  // Neither a workspace nor a share-mode flag. The daemon syncs the team's own
+  // tree under its amuxd home, and whether that tree can sync is decided by the
+  // team secret, where the sync runs — not by a cloud switch nothing sets.
+  //
+  // Gating on `shareMode === 'oss'` is what made this button do nothing at all:
+  // `syncNow` returned before doing any work, with no toast and no error, on
+  // every team whose flag was never set (which is every team created since the
+  // enable call was removed from the product).
+  const available = isTauri()
 
   const syncNow = React.useCallback(async () => {
     if (!available || syncing) return
