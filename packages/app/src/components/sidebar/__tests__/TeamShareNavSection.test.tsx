@@ -50,6 +50,7 @@ function CountsLoaderHarness() {
 describe('useTeamShareCountsLoader', () => {
   it('loads counts after the current team becomes available', async () => {
     teamState.id = null
+    workspaceState.path = '/workspace'
     loadCounts.mockReset()
 
     const view = render(<CountsLoaderHarness />)
@@ -59,6 +60,36 @@ describe('useTeamShareCountsLoader', () => {
     view.rerender(<CountsLoaderHarness />)
 
     await waitFor(() => expect(loadCounts).toHaveBeenCalledTimes(1))
+  })
+
+  /**
+   * Team-share content is the team's — the skill/MCP registries and the team's
+   * own knowledge directory. Gating this on a workspace showed 0 for all four
+   * sections on a client with no folder open, which reads as "the team has
+   * nothing shared" rather than "not loaded yet".
+   */
+  it('loads counts with no workspace open', async () => {
+    teamState.id = 'team-1'
+    workspaceState.path = null
+    loadCounts.mockReset()
+
+    render(<CountsLoaderHarness />)
+
+    await waitFor(() => expect(loadCounts).toHaveBeenCalledTimes(1))
+  })
+
+  it('reloads when a workspace opens, which adds this machine\'s local rows', async () => {
+    teamState.id = 'team-1'
+    workspaceState.path = null
+    loadCounts.mockReset()
+
+    const view = render(<CountsLoaderHarness />)
+    await waitFor(() => expect(loadCounts).toHaveBeenCalledTimes(1))
+
+    workspaceState.path = '/workspace'
+    view.rerender(<CountsLoaderHarness />)
+
+    await waitFor(() => expect(loadCounts).toHaveBeenCalledTimes(2))
   })
 })
 

@@ -159,9 +159,17 @@ pub(crate) fn global_team_dir_display(team_id: &str) -> Option<String> {
     )
 }
 
+/// Share mode for a team, plus local decoration.
+///
+/// `workspace_path` is optional. The mode itself is the TEAM's and comes from
+/// FC; the only thing a workspace contributes is `linkStatus`, which describes
+/// one workspace's `teamclu-team` entry. Requiring one meant the app never
+/// learned whether share was on until a folder was opened — and every consumer
+/// of that status (the shared-files tab, the sync button, the nav counts) stayed
+/// dark on a client with no folder.
 pub async fn get_share_status_impl(
     team_id: String,
-    workspace_path: String,
+    workspace_path: Option<String>,
     access_token: String,
     cloud_api_url: String,
 ) -> Result<serde_json::Value, String> {
@@ -172,10 +180,13 @@ pub async fn get_share_status_impl(
     // so the settings UI can show where synced content lives and whether this
     // workspace is linked. camelCase to match the existing payload shape.
     if let Some(obj) = value.as_object_mut() {
-        obj.insert(
-            "linkStatus".to_string(),
-            json!(detect_link_status(&workspace_path)),
-        );
+        if let Some(ws) = workspace_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            obj.insert("linkStatus".to_string(), json!(detect_link_status(ws)));
+        }
         if let Some(p) = global_team_dir_display(&team_id) {
             obj.insert("globalPath".to_string(), json!(p));
         }
@@ -186,7 +197,7 @@ pub async fn get_share_status_impl(
 #[tauri::command]
 pub async fn team_share_get_status(
     team_id: String,
-    workspace_path: String,
+    workspace_path: Option<String>,
     access_token: String,
     cloud_api_url: String,
 ) -> Result<serde_json::Value, String> {
