@@ -204,7 +204,7 @@ impl SessionWriter for StoreWriter {
             self.team_id,
             session_id,
             uuid::Uuid::new_v4(),
-            upload.filename
+            super::safe_object_name(&upload.filename)
         );
         let stored = self
             .store

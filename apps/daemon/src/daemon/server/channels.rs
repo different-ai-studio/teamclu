@@ -605,7 +605,7 @@ impl DaemonServer {
             mgr.team_id(),
             session_id,
             uuid::Uuid::new_v4(),
-            filename
+            crate::channels::core::safe_object_name(&filename)
         );
         let stored = mgr
             .store()
@@ -721,7 +721,7 @@ impl DaemonServer {
             mgr.team_id(),
             session_id,
             uuid::Uuid::new_v4(),
-            filename
+            crate::channels::core::safe_object_name(&filename)
         );
         let uploaded = store
             .upload_attachment(&bucket_path, bytes, &mime)

@@ -701,3 +701,31 @@ async fn an_unknown_command_says_so_instead_of_starting_a_turn() {
     assert_eq!(d.delivered.lock().unwrap()[0].0, "unknown: /nonsense");
     assert!(f.turn_log.lock().unwrap().is_empty());
 }
+
+#[cfg(test)]
+mod object_key_tests {
+    use crate::channels::core::safe_object_name;
+
+    #[test]
+    fn a_non_ascii_name_survives_as_a_usable_key() {
+        // The store rejects non-ASCII keys outright: `诗一首.md` came back
+        // `validation_failed: Invalid key`, so the chat got the file and the
+        // session copy had no download.
+        assert_eq!(safe_object_name("诗一首.md"), "file.md");
+        assert_eq!(safe_object_name("报告 final.pdf"), "final.pdf");
+    }
+
+    #[test]
+    fn an_ascii_name_is_left_alone() {
+        assert_eq!(safe_object_name("report-v2.pdf"), "report-v2.pdf");
+        assert_eq!(safe_object_name("a_b.c-d.txt"), "a_b.c-d.txt");
+    }
+
+    #[test]
+    fn a_name_with_nothing_usable_still_yields_a_key() {
+        // Never empty: an empty segment would make the key end in `-`.
+        assert!(!safe_object_name("中文").is_empty());
+        assert!(!safe_object_name("...").is_empty());
+        assert_eq!(safe_object_name("中文"), "file");
+    }
+}
