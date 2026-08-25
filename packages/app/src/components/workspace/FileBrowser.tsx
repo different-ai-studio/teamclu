@@ -64,6 +64,7 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
   const fileTree = useWorkspaceStore(s => s.fileTree)
   const externalTrees = useWorkspaceStore(s => s.externalTrees)
   const openExternalRoot = useWorkspaceStore(s => s.openExternalRoot)
+  const refreshExternalRoot = useWorkspaceStore(s => s.refreshExternalRoot)
   const refreshFileTree = useWorkspaceStore(s => s.refreshFileTree)
   const collapseAll = useWorkspaceStore(s => s.collapseAll)
   const undo = useWorkspaceStore(s => s.undo)
@@ -164,6 +165,15 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
     }
   }, [rootPaths, rootPath, fileTree, isExternalRoot, externalTrees, openExternalRoot])
 
+  // Re-list an already-registered external root on mount. The store owns both
+  // the tree and its watch, so both outlive this component — anything that
+  // landed while the column was closed is not in the rendered tree yet.
+  React.useEffect(() => {
+    if (!isExternalRoot || !rootPath) return
+    if (useWorkspaceStore.getState().externalTrees[rootPath] === undefined) return
+    void useWorkspaceStore.getState().refreshExternalRoot(rootPath)
+  }, [isExternalRoot, rootPath])
+
   // Auto-refresh file tree when panel opens (default variant) or when mounted (panel variant)
   React.useEffect(() => {
     // An external root does not read from the workspace tree, so refreshing it
@@ -181,7 +191,24 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
   }, [variant, isPanelOpen, workspacePath, fileTree.length, refreshFileTree, isExternalRoot])
 
   // Listen for file-change events from Tauri file watcher
-  useFileChangeListener(() => refreshFileTree(), 300, !!workspacePath)
+  useFileChangeListener(() => refreshFileTree(), 300, !!workspacePath && !isExternalRoot)
+
+  // An external root is watched in its own right (see `openExternalRoot`) and is
+  // not part of the workspace tree, so it re-lists itself — and only for events
+  // that landed inside it, which is also what keeps the debounce from being
+  // starved by unrelated workspace writes.
+  useFileChangeListener(
+    () => {
+      if (rootPath) void refreshExternalRoot(rootPath)
+    },
+    300,
+    isExternalRoot,
+    (event) => {
+      if (!rootPath) return false
+      const changed = event.payload.path
+      return changed === rootPath || changed.startsWith(`${rootPath}/`)
+    },
+  )
 
   // Ctrl/Cmd+Z undo handler
   React.useEffect(() => {

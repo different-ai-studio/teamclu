@@ -162,6 +162,8 @@ interface WorkspaceState {
   loadDirectory: (path: string) => Promise<FileNode[]>;
   expandDirectory: (path: string) => Promise<void>;
   openExternalRoot: (rootPath: string) => Promise<void>;
+  refreshExternalRoot: (rootPath: string) => Promise<void>;
+  closeExternalRoot: (rootPath: string) => Promise<void>;
   collapseDirectory: (path: string) => void;
   collapseAll: () => void;
   refreshFileTree: () => Promise<void>;
@@ -703,7 +705,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   /**
-   * Register a root outside the workspace and list it.
+   * Register a root outside the workspace, list it, and watch it.
+   *
+   * The watch is what makes a teammate's synced note appear without a manual
+   * refresh: the daemon writes into its own directory, and a recursive watch on
+   * the workspace never saw those writes — `notify` does not follow the
+   * `team-knowledge` symlink, so the real directory was watched by nobody.
    *
    * Idempotent, and re-listing is the point: a create or delete inside the
    * knowledge tree refreshes it by calling this again.
@@ -711,8 +718,72 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   openExternalRoot: async (rootPath: string) => {
     if (!(rootPath in get().externalTrees)) {
       set({ externalTrees: { ...get().externalTrees, [rootPath]: [] } });
+      // Awaited, and before the listing: a watch started afterwards would miss
+      // anything written while the first listing was in flight.
+      await startWatching(rootPath);
     }
     await get().expandDirectory(rootPath);
+  },
+
+  /**
+   * Re-list an external root and every expanded directory under it.
+   *
+   * `refreshFileTree`'s counterpart for a tree that is not the workspace's.
+   * Expansions that no longer exist on disk are dropped; the workspace's own
+   * expansions are never touched.
+   */
+  refreshExternalRoot: async (rootPath: string) => {
+    const { loadDirectory } = get();
+    if (!(rootPath in get().externalTrees)) return;
+
+    const expandedPaths = get().expandedPaths;
+    const stillValid = new Set<string>();
+    const refreshExpanded = async (tree: FileNode[]): Promise<FileNode[]> =>
+      Promise.all(
+        tree.map(async (node) => {
+          if (node.type === "directory" && expandedPaths.has(node.path)) {
+            const children = await loadDirectory(node.path);
+            stillValid.add(node.path);
+            return { ...node, children: await refreshExpanded(children) };
+          }
+          return node;
+        }),
+      );
+
+    const refreshed = await refreshExpanded(await loadDirectory(rootPath));
+
+    const nextExpanded = new Set<string>();
+    for (const path of get().expandedPaths) {
+      const underRoot = path === rootPath || path.startsWith(`${rootPath}/`);
+      // The root is the tree rather than a node in it, so it stays expanded.
+      if (!underRoot || path === rootPath || stillValid.has(path)) {
+        nextExpanded.add(path);
+      }
+    }
+
+    set({
+      externalTrees: { ...get().externalTrees, [rootPath]: refreshed },
+      expandedPaths: nextExpanded,
+    });
+  },
+
+  /**
+   * Forget an external root and stop watching it. Used when the root itself
+   * changes — switching teams repoints the knowledge dir at another directory,
+   * and the old one must stop reporting.
+   */
+  closeExternalRoot: async (rootPath: string) => {
+    const externalTrees = { ...get().externalTrees };
+    if (!(rootPath in externalTrees)) return;
+    delete externalTrees[rootPath];
+
+    const nextExpanded = new Set<string>();
+    for (const path of get().expandedPaths) {
+      if (path !== rootPath && !path.startsWith(`${rootPath}/`)) nextExpanded.add(path);
+    }
+
+    set({ externalTrees, expandedPaths: nextExpanded });
+    await stopWatching(rootPath);
   },
 
   // Collapse a directory node

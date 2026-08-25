@@ -109,6 +109,69 @@ describe("workspace external roots", () => {
   });
 
   /**
+   * The daemon writes a teammate's synced note straight into its own directory.
+   * A recursive watch on the workspace never saw those writes — `notify` does
+   * not follow the `team-knowledge` symlink — so the real directory has to be
+   * watched in its own right.
+   */
+  it("watches the external root, and does not re-subscribe when it is re-listed", async () => {
+    await useWorkspaceStore.getState().openExternalRoot(KNOWLEDGE);
+    expect(mockInvoke).toHaveBeenCalledWith("watch_directory", { path: KNOWLEDGE });
+
+    mockInvoke.mockClear();
+    await useWorkspaceStore.getState().openExternalRoot(KNOWLEDGE);
+    expect(mockInvoke).not.toHaveBeenCalledWith("watch_directory", { path: KNOWLEDGE });
+  });
+
+  it("re-lists on refresh and drops expansions that vanished from disk", async () => {
+    await useWorkspaceStore.getState().openExternalRoot(KNOWLEDGE);
+    await useWorkspaceStore.getState().expandDirectory(`${KNOWLEDGE}/guides`);
+    useWorkspaceStore.setState({
+      workspacePath: "/workspace",
+      expandedPaths: new Set([...useWorkspaceStore.getState().expandedPaths, "/workspace/src"]),
+    });
+
+    // A teammate deleted `guides/` on their machine and sync applied it here.
+    mockInvoke.mockImplementation(async (cmd: string, args: any) => {
+      if (cmd === "read_workspace_directory") {
+        return args.path === KNOWLEDGE ? [file(KNOWLEDGE, "top.md")] : [];
+      }
+      return null;
+    });
+    await useWorkspaceStore.getState().refreshExternalRoot(KNOWLEDGE);
+
+    expect(useWorkspaceStore.getState().externalTrees[KNOWLEDGE].map((n) => n.name)).toEqual([
+      "top.md",
+    ]);
+    const expanded = useWorkspaceStore.getState().expandedPaths;
+    expect(expanded.has(`${KNOWLEDGE}/guides`)).toBe(false);
+    expect(expanded.has(KNOWLEDGE)).toBe(true);
+    // The workspace's own expansions are none of this refresh's business.
+    expect(expanded.has("/workspace/src")).toBe(true);
+  });
+
+  /**
+   * Switching teams repoints knowledge at another directory. The old one must
+   * stop being rendered and stop reporting, or the previous team's writes keep
+   * waking the column.
+   */
+  it("forgets the tree, its expansions and the watch when the root is closed", async () => {
+    await useWorkspaceStore.getState().openExternalRoot(KNOWLEDGE);
+    await useWorkspaceStore.getState().expandDirectory(`${KNOWLEDGE}/guides`);
+    useWorkspaceStore.setState({
+      expandedPaths: new Set([...useWorkspaceStore.getState().expandedPaths, "/workspace/src"]),
+    });
+
+    await useWorkspaceStore.getState().closeExternalRoot(KNOWLEDGE);
+
+    expect(mockInvoke).toHaveBeenCalledWith("unwatch_directory", { path: KNOWLEDGE });
+    expect(useWorkspaceStore.getState().externalTrees[KNOWLEDGE]).toBeUndefined();
+    const expanded = [...useWorkspaceStore.getState().expandedPaths];
+    expect(expanded.some((p) => p.startsWith(KNOWLEDGE))).toBe(false);
+    expect(expanded).toContain("/workspace/src");
+  });
+
+  /**
    * `refreshFileTree` rebuilds the WORKSPACE tree; the external root is not in
    * its listing at all. Dropping its expansions there would collapse the
    * Knowledge tree every time a workspace file changed.

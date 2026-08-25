@@ -1698,6 +1698,14 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         // link into it". Note there is no workspace gate left: knowledge is
         // per-team, not per-workspace.
         const root = await resolveTeamKnowledgeDir()
+        const previous = get().knowledgeRoot
+        if (previous && previous !== root) {
+          // Switching teams repoints knowledge at a different directory. The old
+          // one has to stop being rendered and, more importantly, stop being
+          // watched — otherwise the previous team's writes keep waking this
+          // column.
+          await useWorkspaceStore.getState().closeExternalRoot(previous)
+        }
         const items = root ? await listTeamKnowledge(root) : []
         set({ knowledgeRoot: root, knowledge: { items, loading: false, loaded: true, error: null } })
       } else if (section === 'mcp') {

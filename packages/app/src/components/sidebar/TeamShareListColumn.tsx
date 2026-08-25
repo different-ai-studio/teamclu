@@ -34,6 +34,7 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useFileChangeListener } from '@/hooks/useFileChangeListener'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend/provider'
 import {
@@ -321,6 +322,19 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     }
     if (syncAvailable) await syncNow()
   }, [section, loadSection, syncAvailable, syncNow])
+
+  // A write inside the knowledge dir — a teammate's note arriving over sync, an
+  // agent editing a document — also changes the count in this header and in the
+  // nav rail. The tree refreshes itself (FileBrowser watches the same root);
+  // this is the other half.
+  useFileChangeListener(
+    () => {
+      void loadSection('knowledge', { force: true })
+    },
+    500,
+    section === 'knowledge' && !!knowledgeRoot,
+    (event) => !!knowledgeRoot && event.payload.path.startsWith(`${knowledgeRoot}/`),
+  )
 
   // Reload after any successful cloud sync, ours or another surface's.
   React.useEffect(() => {
