@@ -1,4 +1,3 @@
-use crate::i18n;
 use crate::wechat_config::{
     WeChatConfig, WeChatGatewayStatus, WeChatGatewayStatusResponse, WeChatQrLoginResponse,
     WeChatQrStatusResponse,
@@ -353,7 +352,6 @@ pub struct WeChatGateway {
     shutdown_tx: Arc<RwLock<Option<oneshot::Sender<()>>>>,
     status: Arc<RwLock<WeChatGatewayStatusResponse>>,
     is_running: Arc<RwLock<bool>>,
-    pending_questions: Arc<super::PendingQuestionStore>,
     /// Cache of from_user_id -> context_token for replies
     context_tokens: Arc<RwLock<HashMap<String, String>>>,
     /// Set once the daemon wires the core pipeline; the inline path is skipped.
@@ -526,7 +524,6 @@ impl WeChatGateway {
             shutdown_tx: Arc::new(RwLock::new(None)),
             status: Arc::new(RwLock::new(WeChatGatewayStatusResponse::default())),
             is_running: Arc::new(RwLock::new(false)),
-            pending_questions: Arc::new(super::PendingQuestionStore::new()),
             context_tokens: Arc::new(RwLock::new(HashMap::new())),
             inbound_sink: Arc::new(RwLock::new(None)),
         }
@@ -787,31 +784,21 @@ impl WeChatGateway {
                             let preview: String = text.chars().take(50).collect();
                             println!("[WeChat] Message from {}: {}...", sender_id, preview);
 
-                            // The core pipeline, when the daemon has wired it.
-                            if let Some(sink) = self.inbound_sink.read().await.clone() {
-                                let account = self.config.read().await.account_id.clone();
-                                sink.accept(normalize_message(
-                                    &account,
-                                    &sender_id,
-                                    &text,
-                                    msg.client_id.as_deref(),
-                                ))
-                                .await;
+                            // Everything a session needs happens in the core.
+                            let Some(sink) = self.inbound_sink.read().await.clone() else {
+                                eprintln!(
+                                    "[WeChat] no core pipeline wired; dropping message from {sender_id}"
+                                );
                                 continue;
-                            }
-
-                            // Forward to amuxd agent session
-                            let gateway = self.clone();
-                            let text_clone = text.clone();
-                            let sender_clone = sender_id.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = gateway
-                                    .handle_incoming_message(&sender_clone, &text_clone)
-                                    .await
-                                {
-                                    eprintln!("[WeChat] Failed to handle message: {}", e);
-                                }
-                            });
+                            };
+                            let account = self.config.read().await.account_id.clone();
+                            sink.accept(normalize_message(
+                                &account,
+                                &sender_id,
+                                &text,
+                                msg.client_id.as_deref(),
+                            ))
+                            .await;
                         }
                     }
                 }
@@ -836,156 +823,5 @@ impl WeChatGateway {
 
         *self.is_running.write().await = false;
         println!("[WeChat] Poll loop ended");
-    }
-
-    async fn handle_incoming_message(&self, sender_id: &str, text: &str) -> Result<(), String> {
-        let locale = i18n::locale();
-        let trimmed = text.trim();
-
-        // Forward /answer to pending question (must run before generic slash handler)
-        if let Some(answer_text) = super::PendingQuestionStore::parse_answer_command(trimmed) {
-            if let Some(qid) = self.pending_questions.try_answer(answer_text).await {
-                println!(
-                    "[WeChat] Question {} answered via /answer: {}",
-                    qid, answer_text
-                );
-                let _ = self
-                    .send_to_user(
-                        sender_id,
-                        &i18n::t(i18n::MsgKey::AnswerSubmitted(answer_text), locale),
-                    )
-                    .await;
-            } else {
-                let _ = self
-                    .send_to_user(
-                        sender_id,
-                        &i18n::t(i18n::MsgKey::NoPendingQuestions, locale),
-                    )
-                    .await;
-            }
-            return Ok(());
-        }
-
-        // Handle slash commands. /help and /sessions are answered without
-        // resolving a session; /stop, /reset, /model fall through to the
-        // session-resolve path below (they need a resolved acp_session_id).
-        let slash = crate::commands::parse_slash(trimmed);
-        if let Some((cmd_name, cmd_arg)) = &slash {
-            if !crate::commands::needs_session(cmd_name) {
-                if let Ok(Some(reply_text)) = crate::commands::run_slash(
-                    cmd_name,
-                    cmd_arg.as_deref(),
-                    self.agent.as_ref(),
-                    self.store.as_ref(),
-                    &String::new(),
-                    locale,
-                )
-                .await
-                {
-                    let _ = self.send_to_user(sender_id, &reply_text).await;
-                    return Ok(());
-                }
-            }
-        }
-
-        // WeChat-iLink is DM-only — no group concept on personal WeChat, so no @-mention filter.
-        // Read account-level ilink identifier from config for binding/urn construction.
-        let ilink_account = self.config.read().await.account_id.clone();
-        let sender_display_name = if sender_id.is_empty() {
-            "WeChat user".to_string()
-        } else {
-            sender_id.to_string()
-        };
-
-        let binding = crate::binding::wechat_dm(&ilink_account, sender_id);
-        let urn = crate::binding::urn_wechat_user(&ilink_account, sender_id);
-
-        let external_actor_id = self
-            .store
-            .ensure_external_actor(&self.team_id, "wechat", &urn, &sender_display_name)
-            .await
-            .map_err(|e| format!("ensure_external_actor: {e}"))?;
-
-        let session_title = format!("WeChat DM: {}", sender_display_name);
-
-        let outcome = self
-            .store
-            .ensure_session(
-                &self.team_id,
-                &binding,
-                &session_title,
-                &self.primary_agent_actor_id,
-                &self.agent_owner_actor_ids,
-                std::slice::from_ref(&external_actor_id),
-            )
-            .await
-            .map_err(|e| format!("ensure_session: {e}"))?;
-
-        if let Err(e) = self
-            .store
-            .add_participant(&outcome.session_id, &external_actor_id)
-            .await
-        {
-            eprintln!("[WeChat] add_participant failed: {}", e);
-        }
-
-        // Slash-command dispatch — /stop /reset /model — against the resolved session.
-        if let Some((cmd_name, cmd_arg)) = &slash {
-            let reply_text = crate::commands::run_slash(
-                cmd_name,
-                cmd_arg.as_deref(),
-                self.agent.as_ref(),
-                self.store.as_ref(),
-                &outcome.acp_session_id,
-                locale,
-            )
-            .await
-            .unwrap_or(None)
-            .unwrap_or_else(|| crate::commands::unknown_command_reply(cmd_name, locale));
-            let _ = self.send_to_user(sender_id, &reply_text).await;
-            return Ok(());
-        }
-
-        if let Err(e) = self
-            .store
-            .record_message(&outcome.session_id, &external_actor_id, text, None)
-            .await
-        {
-            eprintln!("[WeChat] record_message (user) failed: {}", e);
-        }
-
-        // Drive a single agent turn through amuxd.
-        let reply = self
-            .agent
-            .send_prompt(
-                &outcome.acp_session_id,
-                &sender_display_name,
-                text,
-                crate::driver::ChannelCaps::MINIMAL.turn_timeout(),
-            )
-            .await
-            .map_err(|e| format!("agent.send_prompt: {e}"))?;
-
-        if let Err(e) = self
-            .store
-            .record_agent_reply(
-                &outcome.session_id,
-                &self.primary_agent_actor_id,
-                &reply.reply_text,
-                None,
-            )
-            .await
-        {
-            eprintln!("[WeChat] record_agent_reply failed: {}", e);
-        }
-
-        let reply_text = if reply.reply_text.trim().is_empty() {
-            i18n::t(i18n::MsgKey::ModelEmptyResponse, locale)
-        } else {
-            reply.reply_text.clone()
-        };
-        let _ = self.send_to_user(sender_id, &reply_text).await;
-
-        Ok(())
     }
 }
