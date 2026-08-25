@@ -32,7 +32,6 @@ export const SETTINGS_SECTION_COMPONENTS: Record<SettingsSection, React.Componen
   skills: lazySection(() => import('./RolesSkillsSection'), 'RolesSkillsSection'),
   roles: lazySection(() => import('./RolesSection'), 'RolesSection'),
   rolesSkills: lazySection(() => import('./RolesSkillsSection'), 'RolesSkillsSection'),
-  knowledge: lazySection(() => import('./KnowledgeSection'), 'KnowledgeSection'),
   deps: lazySection(() => import('./DependenciesSection'), 'DependenciesSection'),
   tokenUsage: lazySection(() => import('./TokenUsageSection'), 'TokenUsageSection'),
   privacy: lazySection(() => import('./PrivacySection'), 'PrivacySection'),

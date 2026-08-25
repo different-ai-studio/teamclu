@@ -13,6 +13,7 @@ pub mod storage_namespace;
 pub mod team_crypto;
 pub mod team_provider;
 pub mod team_provider_sync;
+pub mod version;
 
 /// Ratchet keeping home-directory names spelled in `storage_namespace` only.
 /// Test-only: it scans the repo and has no runtime surface.
@@ -25,7 +26,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 pub use active_session::{
-    read_active_session_id, write_active_session_id, ACTIVE_SESSION_ID_FILE, TEAMCLU_SESSION_ID_ENV,
+    clear_active_session_id_if_matches, read_active_session_id, write_active_session_id,
+    ACTIVE_SESSION_ID_FILE, TEAMCLU_SESSION_ID_ENV,
 };
 pub use env_activation::{
     analyze_env_activation, find_unresolved_config_placeholders, EnvActivationAnalysis,

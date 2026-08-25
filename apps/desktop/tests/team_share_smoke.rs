@@ -1,24 +1,19 @@
 #![allow(clippy::await_holding_lock)]
-//! Smoke test for `team_share::create_team` (Task 5).
+//! Smoke test for the team encryption key (`team_share::set_team_secret_impl`).
 //!
-//! Verifies that the slim create command:
-//!   1. POSTs `{ name }` to `/v1/teams` against the configured FC endpoint.
-//!   2. Returns `{ team_id, team_slug }`.
-//!   3. Does NOT write any OSS-mode fields (`oss_team_id`, `team_mode`,
-//!      `oss_team_slug`, `ai_gateway_endpoint`, `litellm_key`) into the
-//!      workspace `teamclu.json`.
+//! It used to cover `create_team` and `join_existing` too. Both were deleted as
+//! unreachable — the frontend creates teams through the Cloud API provider, and
+//! the join command's `JoinTeamFlow` component was never built — so those cases
+//! went with them rather than keeping dead code alive from the test side.
 //!
-//! Secret persistence is intentionally NOT asserted here — `team_secret_store`
-//! talks to the OS keychain / a host-wide env blob, which is not safely
-//! isolatable inside a `cargo test` run. Task 6 (which actually generates
-//! and stores secrets) will exercise that path under its own harness.
+//! Secret persistence beyond validation is intentionally NOT asserted here:
+//! `team_secret_store` talks to the OS keychain / a host-wide env blob, which
+//! is not safely isolatable inside a `cargo test` run.
 
 use serde_json::json;
 use teamclu_lib::commands::team_secret_store;
 use teamclu_lib::commands::team_share;
 use tempfile::TempDir;
-use wiremock::matchers::{body_partial_json, header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Redirect $HOME to a tempdir so the `local_secret_store` backing the
 /// `team_secret_store` writes inside isolation. Note: env vars are
@@ -64,76 +59,6 @@ fn seed_workspace(tmp: &TempDir, fc_endpoint: &str) -> String {
     workspace.to_string_lossy().into_owned()
 }
 
-fn read_cfg(workspace_path: &str) -> serde_json::Value {
-    let p = std::path::Path::new(workspace_path)
-        .join(".teamclu")
-        .join("teamclu.json");
-    let s = std::fs::read_to_string(p).expect("read teamclu.json");
-    serde_json::from_str(&s).expect("parse teamclu.json")
-}
-
-#[tokio::test]
-async fn create_team_slim_only_calls_v1_teams_and_returns_id_slug() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/teams"))
-        .and(header("authorization", "Bearer test-jwt"))
-        .and(body_partial_json(json!({ "name": "alpha" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "t1",
-            "name": "alpha",
-            "slug": "alpha",
-            "aiGatewayEndpoint": null,
-            "litellmKey": null,
-        })))
-        .mount(&server)
-        .await;
-
-    let tmp = TempDir::new().expect("tempdir");
-    let workspace = seed_workspace(&tmp, &server.uri());
-
-    let result = team_share::create_team(
-        "alpha".to_string(),
-        workspace.clone(),
-        "test-jwt".to_string(),
-        server.uri(),
-    )
-    .await
-    .expect("create_team should succeed");
-
-    assert_eq!(result.team_id, "t1");
-    assert_eq!(result.team_slug, "alpha");
-
-    // The slim command must NOT have written any onboarding/share fields
-    // into the workspace config. Only the pre-seeded keys should remain.
-    let cfg = read_cfg(&workspace);
-    let obj = cfg.as_object().expect("config is object");
-    for forbidden in [
-        "team_mode",
-        "oss_team_id",
-        "oss_team_slug",
-        "ai_gateway_endpoint",
-        "litellm_key",
-        "share_mode",
-    ] {
-        assert!(
-            !obj.contains_key(forbidden),
-            "team_share::create_team must not write `{forbidden}` (Task 5 is slim)",
-        );
-    }
-    // Pre-seeded keys preserved.
-    assert_eq!(
-        obj.get("supabase_jwt").and_then(|v| v.as_str()),
-        Some("test-jwt")
-    );
-    assert_eq!(
-        obj.get("fc_endpoint").and_then(|v| v.as_str()),
-        Some(server.uri().as_str())
-    );
-}
-
-// ─── Task 6 tests ─────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn set_team_secret_validates_and_stores() {
     let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
@@ -164,100 +89,6 @@ async fn set_team_secret_validates_and_stores() {
     let loaded = team_secret_store::load_team_secret(&workspace, "team-sst")
         .expect("secret should be readable");
     assert_eq!(loaded, mixed_case.to_ascii_lowercase());
-}
-
-// ─── Task 12 tests ────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn join_existing_writes_config_when_share_enabled() {
-    let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/teams/t1/workspace-config"))
-        .and(header("authorization", "Bearer test-jwt"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "shareMode": "oss",
-            "gitRemoteUrl": null,
-            "gitAuthKind": null,
-            "syncMode": null,
-            "litellmTeamId": "ll-1",
-        })))
-        .mount(&server)
-        .await;
-
-    let tmp = TempDir::new().expect("tempdir");
-    isolate_home(&tmp);
-    let workspace = seed_workspace(&tmp, &server.uri());
-
-    let result = team_share::join::team_share_join_existing_impl(
-        "t1".to_string(),
-        workspace.clone(),
-        "test-jwt".to_string(),
-        server.uri(),
-    )
-    .await
-    .expect("join should succeed");
-    assert!(result.initialized);
-    assert_eq!(result.share_mode.as_deref(), Some("oss"));
-
-    // teamclu-team is created+linked by the daemon, not by join_existing.
-    let team_repo_dir = std::path::Path::new(&workspace).join("teamclu-team");
-    assert!(
-        !team_repo_dir.exists()
-            || team_repo_dir
-                .symlink_metadata()
-                .unwrap()
-                .file_type()
-                .is_symlink(),
-        "join must not create a real teamclu-team dir (daemon owns it)"
-    );
-
-    // NOTE: team fields (oss_team_id / share_mode / litellm_team_id) are no
-    // longer persisted to teamclu.json — single source of truth is the
-    // current-team store (commits ad563711 / b1baec40). The returned
-    // initialized / share_mode are asserted above.
-}
-
-#[tokio::test]
-async fn join_existing_noop_when_share_not_opened() {
-    let _guard = HOME_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/teams/t2/workspace-config"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "shareMode": null,
-            "gitRemoteUrl": null,
-            "gitAuthKind": null,
-            "syncMode": null,
-            "litellmTeamId": null,
-        })))
-        .mount(&server)
-        .await;
-
-    let tmp = TempDir::new().expect("tempdir");
-    isolate_home(&tmp);
-    let workspace = seed_workspace(&tmp, &server.uri());
-
-    let result = team_share::join::team_share_join_existing_impl(
-        "t2".to_string(),
-        workspace.clone(),
-        "test-jwt".to_string(),
-        server.uri(),
-    )
-    .await
-    .expect("join should succeed");
-    assert!(!result.initialized);
-    assert!(result.share_mode.is_none());
-
-    // No teamclu-team dir.
-    let team_repo_dir = std::path::Path::new(&workspace).join("teamclu-team");
-    assert!(!team_repo_dir.exists(), "teamclu-team dir should NOT exist");
-
-    // No share_mode/oss_team_id written.
-    let cfg = read_cfg(&workspace);
-    let obj = cfg.as_object().expect("config is object");
-    assert!(!obj.contains_key("share_mode"));
-    assert!(!obj.contains_key("oss_team_id"));
 }
 
 #[tokio::test]

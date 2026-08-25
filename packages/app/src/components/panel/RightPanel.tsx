@@ -2,26 +2,22 @@ import { SessionDiffPanel } from '@/components/chat/SessionDiffPanel'
 import { SessionList } from '@/components/chat/SessionList'
 import { SessionActorPanel } from '@/components/chat/SessionActorSheet'
 import { ShortcutsPanel } from './ShortcutsPanel'
-import { KnowledgeBrowser } from '@/components/knowledge/KnowledgeBrowser'
-import { TeamSharedFilesBrowser } from '@/components/workspace/TeamSharedFilesBrowser'
 import { ActorsView } from '@/components/panel/ActorsView'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useSessionStore } from '@/stores/session'
 import { useSessionListStore } from '@/stores/session-list-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import type { FileDiff } from '@/stores/session-types'
-import type { ComponentProps } from 'react'
 
 interface RightPanelProps {
   diff?: FileDiff[]
   // Override the active tab from store
-  defaultTab?: 'diff' | 'session' | 'shortcuts' | 'files' | 'teamShared' | 'actors'
+  defaultTab?: 'diff' | 'session' | 'shortcuts' | 'actors'
   // Compact mode for file mode layout
   compact?: boolean
-  knowledgeBrowserProps?: ComponentProps<typeof KnowledgeBrowser>
 }
 
-export function RightPanel({ diff, defaultTab, compact, knowledgeBrowserProps }: RightPanelProps) {
+export function RightPanel({ diff, defaultTab, compact }: RightPanelProps) {
   const storeActiveTab = useWorkspaceStore(s => s.activeTab)
   const sessionDiff = useSessionStore(s => s.sessionDiff)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
@@ -33,17 +29,11 @@ export function RightPanel({ diff, defaultTab, compact, knowledgeBrowserProps }:
   const activeTab = defaultTab || storeActiveTab
   const diffData = diff ?? sessionDiff
 
-  // `files` and `teamShared` render a self-contained FileBrowser that owns its
-  // own scroll area and keeps a fixed toolbar. Those panes must NOT sit inside
-  // an outer `overflow-auto` scroller — otherwise the toolbar header scrolls
-  // away with the tree. Give them a bounded flex column so the inner scroll
-  // area (and thus the pinned toolbar) works.
-  const selfScrolling = activeTab === 'files' || activeTab === 'teamShared'
   const noPadding = activeTab === 'session' || activeTab === 'actors'
 
   return (
     <div
-      className={`h-full min-h-0 ${selfScrolling ? 'overflow-hidden flex flex-col' : 'overflow-auto'} ${noPadding ? '' : (compact ? 'p-1' : 'p-2')}`}
+      className={`h-full min-h-0 overflow-auto ${noPadding ? '' : (compact ? 'p-1' : 'p-2')}`}
     >
       {activeTab === 'shortcuts' && (
         <ShortcutsPanel />
@@ -53,12 +43,6 @@ export function RightPanel({ diff, defaultTab, compact, knowledgeBrowserProps }:
       )}
       {activeTab === 'session' && (
         <SessionList compact={compact} />
-      )}
-      {activeTab === 'files' && (
-        <KnowledgeBrowser {...knowledgeBrowserProps} />
-      )}
-      {activeTab === 'teamShared' && (
-        <TeamSharedFilesBrowser />
       )}
       {activeTab === 'actors' && (
         activeSessionId

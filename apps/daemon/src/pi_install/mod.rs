@@ -56,10 +56,8 @@ pub fn resolve_binary(configured: Option<&str>) -> String {
 fn pi_version_of(bin: &str) -> Option<String> {
     // PATH augmented: pi installs as an npm shim whose shebang is
     // `#!/usr/bin/env node`, so finding the file is not enough to run it.
-    let out = std::process::Command::new(bin)
-        .no_window()
+    let out = command_with_runtime_path(bin)
         .arg("--version")
-        .env("PATH", crate::runtime::well_known_bin::augmented_path())
         .output()
         .ok()?;
     if !out.status.success() {
@@ -110,10 +108,8 @@ pub struct PiStatus {
 const MIN_NODE_VERSION: &str = "22.19.0";
 
 fn node_version() -> Option<String> {
-    let out = std::process::Command::new("node")
-        .no_window()
+    let out = command_with_runtime_path("node")
         .arg("--version")
-        .env("PATH", crate::runtime::well_known_bin::augmented_path())
         .output()
         .ok()?;
     if !out.status.success() {
@@ -176,10 +172,50 @@ pub(super) fn progress(event: &str, message: &str) {
     );
 }
 
+/// A progress line that also names the source this install settled on.
+///
+/// `route` is one of [`crate::route_probe::route`]. The message stays the
+/// human-readable detail (measured speeds, which URL); `route` is the part the
+/// wizard can translate and keep on screen after the line itself scrolls away.
+pub(super) fn progress_route(event: &str, message: &str, route: &str) {
+    println!(
+        "{}",
+        serde_json::json!({ "event": event, "message": message, "route": route })
+    );
+}
+
 const PI_NPM_PKG: &str = "@earendil-works/pi-coding-agent";
 const PI_MIRROR_BASE: &str = "https://teamclaw.ucar.cc/pi";
 const OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
+
+/// Alibaba's public npm mirror — a full sync of the official registry, and the
+/// route that actually works from mainland China. Verified to carry both
+/// packages we pin, at the pinned versions.
+///
+/// Only ever applied to our own `npm`/`bun` invocation (via the environment),
+/// never written to the user's npmrc.
+const CN_NPM_REGISTRY: &str = "https://registry.npmmirror.com";
+
 pub(super) const NETWORK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Sample size for a registry route. The pi tarball is ~5 MB, so 512 KiB is a
+/// tenth of it: past the initial burst, cheap enough to throw away.
+const REGISTRY_PROBE_BYTES: u64 = 512 * 1024;
+
+/// Below this the sample says more about handshake jitter than the route.
+const REGISTRY_MIN_SAMPLE: u64 = 64 * 1024;
+
+const REGISTRY_PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// The floor for a route to count as usable when it is the only one left.
+/// npm pulls the tarball plus a dependency tree, so this is a "the install
+/// finishes in seconds, not minutes" line rather than a precise one.
+const REGISTRY_USABLE_BYTES_PER_SEC: f64 = 1024.0 * 1024.0;
+
+/// How much faster the mirror has to be before it overrides a *working*
+/// official route. Without this hysteresis, a healthy route that happened to
+/// dip during the probe would send a user outside China to a Chinese registry.
+const MIRROR_ADVANTAGE: f64 = 1.5;
 
 /// `latest.json` served next to an OSS-mirrored npm bundle.
 #[derive(Debug, Deserialize)]
@@ -193,8 +229,15 @@ fn npm_package_spec(min_version: &str) -> String {
     format!("{PI_NPM_PKG}@{min_version}")
 }
 
+/// `Command` for a CLI we shell out to, with every platform repair applied:
+/// the enriched PATH, the Windows shim name (`npm` is `npm.cmd` — see
+/// `well_known_bin::spawn_name`), and no console window (#1045).
+///
+/// Routing the version probes through here is why they no longer call
+/// `.no_window()` themselves: one helper, one place to get it right.
 pub(super) fn command_with_runtime_path(command: &str) -> std::process::Command {
-    let mut process = std::process::Command::new(command);
+    let mut process =
+        std::process::Command::new(crate::runtime::well_known_bin::spawn_name(command));
     process.no_window();
     process.env("PATH", crate::runtime::well_known_bin::augmented_path());
     process
@@ -208,37 +251,180 @@ pub(super) fn has_command(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The official npm registry is the preferred source. A short probe lets users
-/// on a slow or blocked route fall back to our OSS bundle before npm spends
-/// minutes retrying its own registry requests.
-pub(super) fn official_registry_available(package: &str, version: &str) -> bool {
-    let url = format!("{OFFICIAL_REGISTRY}/{}/{version}", registry_path(package));
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .ok()
-        .and_then(|runtime| {
-            runtime.block_on(async {
-                reqwest::Client::builder()
-                    .timeout(NETWORK_PROBE_TIMEOUT)
-                    .build()
-                    .ok()?
-                    .get(url)
-                    .send()
-                    .await
-                    .ok()?
-                    .error_for_status()
-                    .ok()?;
-                Some(())
-            })
-        })
-        .is_some()
+/// Where the npm packages should come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RegistrySource {
+    /// Whatever npm (or bun) is already configured with. No override.
+    NpmDefault,
+    /// Override our own invocation with this registry.
+    Mirror(&'static str),
+    /// No registry is usable from here; install from the OSS tarball bundle.
+    OssBundle,
 }
 
-/// npm's registry path for a package name: the scope separator is the only
-/// character that has to be encoded (`@scope/name` → `@scope%2Fname`).
-fn registry_path(package: &str) -> String {
-    package.replace('/', "%2F")
+/// npm's tarball URL convention: `<registry>/<pkg>/-/<name>-<version>.tgz`,
+/// where the scope is dropped from the file name.
+fn tarball_url(registry: &str, package: &str, version: &str) -> String {
+    let file = package.rsplit('/').next().unwrap_or(package);
+    format!(
+        "{}/{package}/-/{file}-{version}.tgz",
+        registry.trim_end_matches('/')
+    )
+}
+
+fn registry_probe() -> crate::route_probe::Probe {
+    crate::route_probe::Probe {
+        bytes: REGISTRY_PROBE_BYTES,
+        min_sample: REGISTRY_MIN_SAMPLE,
+        connect_timeout: NETWORK_PROBE_TIMEOUT,
+        transfer_deadline: REGISTRY_PROBE_DEADLINE,
+        min_bytes_per_sec: REGISTRY_USABLE_BYTES_PER_SEC,
+    }
+}
+
+/// What `npm config get registry` reports, or None when npm cannot answer
+/// (not installed, or a bun-only machine).
+fn npm_configured_registry() -> Option<String> {
+    let out = command_with_runtime_path("npm")
+        .args(["config", "get", "registry"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!value.is_empty() && value != "undefined").then_some(value)
+}
+
+fn is_official_registry(url: &str) -> bool {
+    url.trim_end_matches('/') == OFFICIAL_REGISTRY
+}
+
+/// Is the mirror worth overriding the official registry for?
+///
+/// Pure, so the hysteresis is testable without a network. `official: None`
+/// means that route failed outright, in which case anything that answers wins.
+fn mirror_wins(
+    official: Option<&crate::route_probe::RouteSample>,
+    mirror: &crate::route_probe::RouteSample,
+    probe: &crate::route_probe::Probe,
+) -> bool {
+    if mirror.bytes < probe.min_sample {
+        return false;
+    }
+    match official {
+        // Nothing else answered, so the bar is absolute: a mirror that is
+        // itself crawling loses to the OSS bundle on our own CDN.
+        None => mirror.meets(probe),
+        Some(official) => mirror.bytes_per_sec() >= official.bytes_per_sec() * MIRROR_ADVANTAGE,
+    }
+}
+
+/// Pick the registry to install from, by measuring both routes.
+///
+/// The old check asked only whether registry.npmjs.org answered, and answered
+/// it with a metadata GET — so a mainland install passed the preflight and
+/// then spent minutes pulling tarballs at a trickle. Timing a few hundred KB
+/// of the real tarball is the question that was meant.
+fn resolve_registry_source(package: &str, version: &str) -> RegistrySource {
+    // A user who configured their own registry has already answered this
+    // question, quite possibly with a mirror of their own. Overriding that
+    // would be worse than anything we could pick for them.
+    if let Some(configured) = npm_configured_registry() {
+        if !is_official_registry(&configured) {
+            progress_route(
+                "source",
+                &format!("npm is configured with {configured}; installing through it"),
+                crate::route_probe::route::CUSTOM,
+            );
+            return RegistrySource::NpmDefault;
+        }
+    }
+
+    // Said before the measuring starts, not after it. Each sample gets a 5s
+    // connect budget and a 4s transfer deadline, so this decision is up to nine
+    // seconds of pure network work — and it used to announce itself only once it
+    // was over, leaving the wizard frozen on the previous line for the whole
+    // window. On the networks where the answer actually matters, that is exactly
+    // the window that runs long.
+    progress("probe", "checking which download route is fastest");
+
+    // Both routes are measured every time. Skipping the mirror whenever the
+    // official registry cleared some bar was the tempting shortcut, and it is
+    // exactly how a user on a 1.2 MB/s route keeps an install that the mirror
+    // would have served six times faster. One 512 KiB sample is cheaper than
+    // being wrong about that.
+    //
+    // Concurrently, though: back to back they were two full budgets — up to
+    // ~18s before npm was even invoked — and the case where both run long is
+    // the same slow network the probe exists to detect. A panicking probe
+    // counts as "no answer" rather than taking the install down with it.
+    let probe = registry_probe();
+    let (official, mirror) = std::thread::scope(|scope| {
+        let official =
+            scope.spawn(|| probe.measure(&tarball_url(OFFICIAL_REGISTRY, package, version)));
+        let mirror = scope.spawn(|| probe.measure(&tarball_url(CN_NPM_REGISTRY, package, version)));
+        (official.join().ok().flatten(), mirror.join().ok().flatten())
+    });
+    match (&official, &mirror) {
+        (_, Some(mirror_sample)) if mirror_wins(official.as_ref(), mirror_sample, &probe) => {
+            progress_route(
+                "source",
+                &format!(
+                    "{CN_NPM_REGISTRY} measured at {:.1} MB/s against {} for the official registry; \
+                     installing through the mirror",
+                    mirror_sample.mib_per_sec(),
+                    official
+                        .map(|s| format!("{:.1} MB/s", s.mib_per_sec()))
+                        .unwrap_or_else(|| "no answer".to_string())
+                ),
+                crate::route_probe::route::PUBLIC_MIRROR,
+            );
+            RegistrySource::Mirror(CN_NPM_REGISTRY)
+        }
+        (Some(sample), _) => {
+            progress_route(
+                "source",
+                &format!(
+                    "npm registry measured at {:.1} MB/s and the mirror is no better; \
+                     installing from upstream",
+                    sample.mib_per_sec()
+                ),
+                crate::route_probe::route::OFFICIAL,
+            );
+            RegistrySource::NpmDefault
+        }
+        (None, _) => {
+            progress_route(
+                "source",
+                "no npm registry is reachable; falling back to the OSS bundle",
+                crate::route_probe::route::SELF_HOSTED,
+            );
+            RegistrySource::OssBundle
+        }
+    }
+}
+
+/// The registry decision, made once per process.
+///
+/// Route speed is a property of the network, not of the package, so pi and the
+/// MCP SDK share one measurement instead of probing twice. Resolved lazily:
+/// an install that early-returns "already satisfied" must not pay for a probe.
+pub(super) fn registry_source() -> RegistrySource {
+    static SOURCE: std::sync::OnceLock<RegistrySource> = std::sync::OnceLock::new();
+    *SOURCE.get_or_init(|| resolve_registry_source(PI_NPM_PKG, &required_version()))
+}
+
+/// Apply a chosen registry to a child process.
+///
+/// Through the environment rather than a flag: npm and bun spell the flag
+/// differently, but both read their config from the environment, and neither
+/// user's npmrc is touched.
+pub(super) fn apply_registry(command: &mut std::process::Command, source: RegistrySource) {
+    if let RegistrySource::Mirror(url) = source {
+        command.env("NPM_CONFIG_REGISTRY", url);
+        command.env("BUN_CONFIG_REGISTRY", url);
+    }
 }
 
 pub(super) fn mirror_manifest(base: &str) -> Option<MirrorManifest> {
@@ -264,16 +450,102 @@ pub(super) fn mirror_manifest(base: &str) -> Option<MirrorManifest> {
         })
 }
 
+/// Streams byte-count progress lines while the body arrives, so a slow OSS
+/// route shows movement instead of a frozen "installing…".
 pub(super) fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
-    let url = url.to_owned();
-    let bytes = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(async {
-            let response = reqwest::get(url).await?.error_for_status()?;
-            Ok::<_, anyhow::Error>(response.bytes().await?)
-        })?;
-    Ok(bytes.to_vec())
+    crate::download_progress::download(url)
+}
+
+/// How much of a command's output to keep for its failure message. The lines
+/// themselves are streamed as they arrive; this is only what gets quoted back
+/// if the command exits non-zero.
+const OUTPUT_TAIL_LINES: usize = 20;
+
+/// Read one pipe to EOF on its own thread, emitting each line as it arrives and
+/// keeping the tail for the caller's error message.
+fn pump_output<R: std::io::Read + Send + 'static>(
+    reader: R,
+    tail: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> std::thread::JoinHandle<()> {
+    use std::io::BufRead;
+    std::thread::spawn(move || {
+        // `lines()` would be the obvious call and is the wrong one: it yields
+        // `Err(InvalidData)` for any line that is not valid UTF-8, and one such
+        // line would end this thread, drop the pipe, and take the rest of the
+        // install narration with it. npm on a non-English Windows console emits
+        // its output in the OEM codepage (GBK on zh-CN), so that is not a
+        // hypothetical — it is the platform this streaming exists for. Read raw
+        // and transcode lossily, which is what the `.output()` path this
+        // replaced did for free.
+        let mut reader = std::io::BufReader::new(reader);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let line = String::from_utf8_lossy(&buf).trim_end().to_string();
+            if line.is_empty() {
+                continue;
+            }
+            progress("output", &line);
+            let mut tail = tail.lock().unwrap_or_else(|e| e.into_inner());
+            if tail.len() == OUTPUT_TAIL_LINES {
+                tail.remove(0);
+            }
+            tail.push(line);
+        }
+    })
+}
+
+/// Run `command`, streaming both pipes as `output` progress lines instead of
+/// holding them until the process exits.
+///
+/// npm spends minutes on a slow route and writes its status to *stderr*.
+/// `.output()` buffered every byte of that until exit, so the wizard's install
+/// row had nothing to show for the whole wait — the "stuck on installing…"
+/// report. Returns the exit status and the tail of the combined output, which
+/// is what callers quote when it fails.
+pub(super) fn run_streaming(
+    cmd: &str,
+    command: &mut std::process::Command,
+) -> anyhow::Result<(std::process::ExitStatus, String)> {
+    use std::process::Stdio;
+    use std::sync::{Arc, Mutex};
+
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to run {cmd}: {e}"))?;
+
+    let tail = Arc::new(Mutex::new(Vec::new()));
+    let pumps: Vec<_> = [
+        child
+            .stdout
+            .take()
+            .map(|r| pump_output(r, Arc::clone(&tail))),
+        child
+            .stderr
+            .take()
+            .map(|r| pump_output(r, Arc::clone(&tail))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let status = child
+        .wait()
+        .map_err(|e| anyhow::anyhow!("{cmd} did not exit cleanly: {e}"))?;
+    // Join after wait(): a pipe can still hold buffered lines when the child
+    // exits, and dropping them would empty the failure message.
+    for pump in pumps {
+        let _ = pump.join();
+    }
+
+    let tail = tail.lock().unwrap_or_else(|e| e.into_inner()).join("\n");
+    Ok((status, tail))
 }
 
 pub(super) fn sha256_hex(bytes: &[u8]) -> String {
@@ -370,23 +642,20 @@ fn ensure_pi(force: bool) -> anyhow::Result<()> {
     }
 
     if !has_command("npm") && !has_command("bun") {
-        anyhow::bail!("neither npm nor bun found; install Node.js or Bun first");
+        // Node was already proved present above, so reaching here with a Node
+        // install means npm is missing from *this process's* PATH rather than
+        // from the machine — say which one to check.
+        anyhow::bail!(
+            "neither npm nor bun found on PATH (node {} is installed); \
+             install Node.js or Bun first, or add npm's directory to PATH",
+            node.as_deref().unwrap_or("?")
+        );
     }
 
     let pkg = npm_package_spec(&want);
-    let official_available = official_registry_available(PI_NPM_PKG, &want);
+    let source = registry_source();
     let (cmd, args, _bundle): (&str, Vec<String>, Option<tempfile::NamedTempFile>) =
-        if official_available {
-            progress(
-                "source",
-                "official npm registry is reachable; installing Pi from upstream",
-            );
-            if has_command("npm") {
-                ("npm", vec!["install".into(), "-g".into(), pkg], None)
-            } else {
-                ("bun", vec!["add".into(), "-g".into(), pkg], None)
-            }
-        } else {
+        if source == RegistrySource::OssBundle {
             // Node distributions include npm. Only npm can reliably consume our
             // bundled tarball in offline mode, so do not silently send a blocked
             // network to Bun when the fallback has been selected.
@@ -409,24 +678,18 @@ fn ensure_pi(force: bool) -> anyhow::Result<()> {
                 ],
                 Some(bundle),
             )
+        } else if has_command("npm") {
+            ("npm", vec!["install".into(), "-g".into(), pkg], None)
+        } else {
+            ("bun", vec!["add".into(), "-g".into(), pkg], None)
         };
 
     progress("install", &format!("running {cmd} {}", args.join(" ")));
-    let output = command_with_runtime_path(cmd)
-        .args(args.iter().map(String::as_str))
-        .output()
-        .map_err(|e| anyhow::anyhow!("failed to run {cmd}: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !stdout.is_empty() {
-        progress("output", &stdout);
-    }
-    if !output.status.success() {
-        anyhow::bail!(
-            "pi install failed ({}): {}",
-            output.status,
-            if stderr.is_empty() { stdout } else { stderr }
-        );
+    let mut command = command_with_runtime_path(cmd);
+    apply_registry(&mut command, source);
+    let (status, tail) = run_streaming(cmd, command.args(args.iter().map(String::as_str)))?;
+    if !status.success() {
+        anyhow::bail!("pi install failed ({status}): {tail}");
     }
     progress("ok", &format!("pi installed/upgraded (require >= {want})"));
     Ok(())
@@ -456,12 +719,96 @@ mod tests {
     }
 
     #[test]
-    fn registry_path_encodes_only_the_scope_separator() {
+    fn tarball_url_follows_npms_convention() {
+        // The scope stays in the path and is dropped from the file name.
         assert_eq!(
-            registry_path("@modelcontextprotocol/sdk"),
-            "@modelcontextprotocol%2Fsdk"
+            tarball_url(OFFICIAL_REGISTRY, "@earendil-works/pi-coding-agent", "0.84.2"),
+            "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.2.tgz"
         );
-        assert_eq!(registry_path("typescript"), "typescript");
+        assert_eq!(
+            tarball_url(CN_NPM_REGISTRY, "@modelcontextprotocol/sdk", "1.30.0"),
+            "https://registry.npmmirror.com/@modelcontextprotocol/sdk/-/sdk-1.30.0.tgz"
+        );
+        // Unscoped, and a registry given with a trailing slash.
+        assert_eq!(
+            tarball_url("https://registry.npmjs.org/", "typescript", "5.9.2"),
+            "https://registry.npmjs.org/typescript/-/typescript-5.9.2.tgz"
+        );
+    }
+
+    #[test]
+    fn a_configured_registry_is_recognised_with_or_without_a_slash() {
+        assert!(is_official_registry("https://registry.npmjs.org"));
+        assert!(is_official_registry("https://registry.npmjs.org/"));
+        // A user who set their own mirror must be left alone.
+        assert!(!is_official_registry("https://registry.npmmirror.com/"));
+        assert!(!is_official_registry("https://npm.internal.corp/"));
+    }
+
+    fn sample(bytes: u64, millis: u64) -> crate::route_probe::RouteSample {
+        crate::route_probe::RouteSample {
+            bytes,
+            elapsed: std::time::Duration::from_millis(millis),
+        }
+    }
+
+    #[test]
+    fn the_mirror_needs_a_real_margin_to_take_over() {
+        // 1 MB/s official. A mirror has to beat it by MIRROR_ADVANTAGE before
+        // we override the user's default registry, so a healthy route that
+        // dipped during the probe does not ship someone to a CN mirror.
+        let probe = registry_probe();
+        let official = sample(1024 * 1024, 1_000);
+        assert!(!mirror_wins(
+            Some(&official),
+            &sample(1024 * 1024, 800),
+            &probe
+        ));
+        assert!(mirror_wins(
+            Some(&official),
+            &sample(1024 * 1024, 600),
+            &probe
+        ));
+    }
+
+    #[test]
+    fn a_slow_official_registry_is_overridden_even_though_it_works() {
+        // The case the "official cleared the bar, stop looking" shortcut got
+        // wrong: 1.2 MB/s is usable, and 8 MB/s is six times better.
+        let probe = registry_probe();
+        let official = sample(REGISTRY_PROBE_BYTES, 416); // ~1.2 MB/s
+        assert!(official.meets(&probe));
+        let mirror = sample(REGISTRY_PROBE_BYTES, 62); // ~8 MB/s
+        assert!(mirror_wins(Some(&official), &mirror, &probe));
+    }
+
+    #[test]
+    fn an_unreachable_official_registry_yields_only_to_a_usable_mirror() {
+        let probe = registry_probe();
+        assert!(mirror_wins(
+            None,
+            &sample(REGISTRY_PROBE_BYTES, 100),
+            &probe
+        ));
+        // A mirror that is itself crawling loses to the OSS bundle.
+        assert!(!mirror_wins(
+            None,
+            &sample(REGISTRY_PROBE_BYTES, 4_000),
+            &probe
+        ));
+        // ...as does a transfer that died on the handshake.
+        assert!(!mirror_wins(None, &sample(1024, 1), &probe));
+    }
+
+    #[test]
+    fn the_oss_bundle_stays_the_last_resort() {
+        // Guards the arm order in resolve_registry_source: the bundle is only
+        // for "no registry answered at all".
+        assert_ne!(RegistrySource::OssBundle, RegistrySource::NpmDefault);
+        assert_eq!(
+            RegistrySource::Mirror(CN_NPM_REGISTRY),
+            RegistrySource::Mirror("https://registry.npmmirror.com")
+        );
     }
 
     #[test]

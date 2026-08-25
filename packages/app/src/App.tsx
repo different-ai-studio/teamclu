@@ -18,7 +18,6 @@ import { appDisplayName } from "@/lib/build-config";
 import { buildSessionDeeplink } from "@/lib/session-deeplink";
 import { markStartup } from "@/lib/startup-perf";
 import {
-  BookOpen,
   FolderGit,
   ChevronLeft,
   X,
@@ -1137,14 +1136,6 @@ function AppContent() {
                   label={t("chat.actorSheet.title", "Actors")}
                   isActive={isPanelOpen && activeTab === "actors"}
                   onClick={() => isPanelOpen && activeTab === "actors" ? closePanel() : openPanel("actors")}
-                />
-              )}
-              {capabilities.workspace && (
-                <HeaderPanelTab
-                  icon={BookOpen}
-                  label={t("navigation.files", "files")}
-                  isActive={isPanelOpen && activeTab === "files"}
-                  onClick={() => isPanelOpen && activeTab === "files" ? closePanel() : openPanel("files")}
                 />
               )}
               {/* The team shared files tab moved to the Knowledge entry in the

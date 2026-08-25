@@ -57,8 +57,8 @@ vi.mock('../shared', () => ({
   SettingCard: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   SectionHeader: ({ title }: { title: string }) => <h2>{title}</h2>,
 }))
-vi.mock('../SkillsMarketplace', () => ({
-  SkillsMarketplace: () => {
+vi.mock('../ClawHubMarketplace', () => ({
+  ClawHubMarketplace: () => {
     const [ready, setReady] = React.useState(false)
 
     React.useEffect(() => {
@@ -285,13 +285,15 @@ describe('SkillsSection', () => {
     expect(screen.queryByText('Installed Example')).toBeNull()
     expect(container.querySelector('#installed-panel')).toBeNull()
 
-    const sourceControl = screen.getByRole('combobox')
     const searchInput = screen.getByPlaceholderText('Search marketplace skills...')
     const refreshButton = screen.getByRole('button', { name: 'Refresh' })
 
     expect(screen.getByRole('tab', { name: 'Installed' })).toBeTruthy()
     expect(screen.getByRole('tab', { name: 'Marketplace' })).toBeTruthy()
-    expect(sourceControl.closest('[aria-busy="true"]')).toBeNull()
+    // The source picker used to be asserted here too. It offered ClawHub and
+    // skills.sh; with skills.sh retired it was a one-option control, so it is
+    // gone — the chrome that remains still has to stay interactive.
+    expect(screen.queryByRole('combobox')).toBeNull()
     expect(searchInput.closest('[aria-busy="true"]')).toBeNull()
     expect(refreshButton.closest('[aria-busy="true"]')).toBeNull()
 

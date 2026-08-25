@@ -49,31 +49,9 @@ pub fn resolve_binary(configured: Option<&str>) -> String {
     resolve_binary_with(configured, opencode_default_bin())
 }
 
-/// Parse a dotted version ("1.15.13" / "v1.15.13" / "1.15.13-beta") into (major, minor, patch).
-pub fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
-    s.split_whitespace().find_map(parse_semver_token)
-}
-
-fn parse_semver_token(token: &str) -> Option<(u64, u64, u64)> {
-    let token = token.trim().trim_start_matches('v');
-    let core = token
-        .split(|c: char| c == '-' || c == '+' || c == ',' || c == ')' || c == '(')
-        .next()
-        .unwrap_or("");
-    let mut it = core.split('.');
-    let major = it.next()?.parse().ok()?;
-    let minor = it.next().unwrap_or("0").parse().ok()?;
-    let patch = it.next().unwrap_or("0").parse().ok()?;
-    Some((major, minor, patch))
-}
-
-/// True if `have` >= `want` by semver. Unparseable `have` -> false (treat as needs-install).
-pub fn version_ge(have: &str, want: &str) -> bool {
-    match (parse_semver(have), parse_semver(want)) {
-        (Some(h), Some(w)) => h >= w,
-        _ => false,
-    }
-}
+/// Re-exported so the daemon and the desktop compare versions the same way.
+/// The implementation lives in `teamclu_runtime_env::version`.
+pub use teamclu_runtime_env::version::{parse_semver, version_ge};
 
 /// `<bin> --version`, returning the first token that looks like a version.
 fn opencode_version_of(bin: &str) -> Option<String> {
@@ -104,6 +82,19 @@ fn progress(event: &str, message: &str) {
     println!(
         "{}",
         serde_json::json!({ "event": event, "message": message })
+    );
+}
+
+/// A progress line that also names the source this install is pulling from.
+///
+/// `route` is one of [`crate::route_probe::route`]. Emitted at the download
+/// itself rather than at the decision above it, so the mirror-failed fallback
+/// inside [`direct_install`] corrects the answer instead of leaving the wizard
+/// claiming a source we stopped using.
+fn progress_route(event: &str, message: &str, route: &str) {
+    println!(
+        "{}",
+        serde_json::json!({ "event": event, "message": message, "route": route })
     );
 }
 
@@ -140,6 +131,28 @@ const MIRROR_BASE: &str = "https://teamclaw.ucar.cc/opencode";
 /// would look like a frozen install.
 const MANIFEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How much of the real asset to pull when measuring the upstream route.
+///
+/// 2 MiB rather than a few hundred KB: the first half-megabyte arrives in an
+/// initial burst (server-side buffer plus a grown receive window) and measured
+/// 10 MB/s on a route whose sustained rate was 3 MB/s. Sampling past the burst
+/// is what makes the number mean anything. Still only ~3% of the ~60 MB asset.
+const PROBE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Hard stop for the sample transfer, measured from the first byte. A route
+/// that cannot deliver `PROBE_BYTES` inside this window is already far below
+/// the bar, so there is nothing to learn by waiting longer.
+const PROBE_TRANSFER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// A sample below this says more about handshake jitter than about the route.
+const MIN_PROBE_SAMPLE: u64 = 64 * 1024;
+
+/// Throughput at or above which upstream is worth using. The asset is ~60 MB,
+/// so this is the "upstream finishes in about a minute" line. Below it the OSS
+/// mirror is very likely faster, and being wrong there costs one mirror
+/// download rather than the ten-minute crawl this replaces.
+const MIN_UPSTREAM_BYTES_PER_SEC: f64 = 1024.0 * 1024.0;
+
 /// Official opencode CLI release asset for an (os, arch) pair, using
 /// `std::env::consts` names. Returns None for unsupported targets.
 fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
@@ -165,31 +178,28 @@ fn download_url(asset: &str) -> String {
     format!("{base}/{asset}")
 }
 
-/// Prefer the official release when its CDN is reachable from this network.
-/// A short preflight is enough to avoid sending mainland clients into npm-style
-/// retry loops; download failures still fall back to the OSS mirror below.
-fn official_asset_available(asset: &str) -> bool {
-    let url = download_url(asset);
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .ok()
-        .and_then(|runtime| {
-            runtime.block_on(async {
-                reqwest::Client::builder()
-                    .timeout(MANIFEST_TIMEOUT)
-                    .build()
-                    .ok()?
-                    .head(url)
-                    .send()
-                    .await
-                    .ok()?
-                    .error_for_status()
-                    .ok()?;
-                Some(())
-            })
-        })
-        .is_some()
+/// How the upstream route is sampled, and the bar it has to clear.
+///
+/// The asset is ~60 MB, so `min_bytes_per_sec` is the "upstream finishes in
+/// about a minute" line. Below it the OSS mirror is very likely faster, and
+/// being wrong there costs one mirror download rather than the ten-minute
+/// crawl this replaces.
+fn upstream_probe() -> crate::route_probe::Probe {
+    crate::route_probe::Probe {
+        bytes: PROBE_BYTES,
+        min_sample: MIN_PROBE_SAMPLE,
+        connect_timeout: MANIFEST_TIMEOUT,
+        transfer_deadline: PROBE_TRANSFER_DEADLINE,
+        min_bytes_per_sec: MIN_UPSTREAM_BYTES_PER_SEC,
+    }
+}
+
+/// Measure what the official CDN actually delivers on this network.
+///
+/// This replaces a HEAD reachability check — see `crate::route_probe` for why
+/// reachability was the wrong question.
+fn measure_upstream_route(asset: &str) -> Option<crate::route_probe::RouteSample> {
+    upstream_probe().measure(&download_url(asset))
 }
 
 /// Download URL for `asset` at `version` on the mirror.
@@ -250,17 +260,12 @@ pub fn mirror_latest_version() -> Option<String> {
     }
 }
 
-/// Blocking download of `url` into memory. Builds its own current-thread tokio
-/// runtime so it is safe to call from the synchronous CLI path.
+/// Blocking download of `url` into memory, streaming byte-count progress lines
+/// as the body arrives (see `crate::download_progress`). Builds its own
+/// current-thread tokio runtime so it is safe to call from the synchronous CLI
+/// path.
 fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
-    let bytes = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(async {
-            let resp = reqwest::get(url).await?.error_for_status()?;
-            Ok::<_, anyhow::Error>(resp.bytes().await?)
-        })?;
-    Ok(bytes.to_vec())
+    crate::download_progress::download(url)
 }
 
 /// Extract the opencode binary from a downloaded `.zip` or `.tar.gz` asset and
@@ -349,7 +354,11 @@ fn direct_install(mirror_version: Option<&str>) -> anyhow::Result<()> {
 
     if let Some(version) = mirror_version {
         let url = mirror_asset_url(version, asset);
-        progress("download", &format!("downloading {url}"));
+        progress_route(
+            "download",
+            &format!("downloading {url}"),
+            crate::route_probe::route::SELF_HOSTED,
+        );
         match download_bytes(&url) {
             Ok(bytes) => {
                 progress("unpack", &format!("unpacking {asset}"));
@@ -366,7 +375,11 @@ fn direct_install(mirror_version: Option<&str>) -> anyhow::Result<()> {
     }
 
     let url = download_url(asset);
-    progress("download", &format!("downloading {url}"));
+    progress_route(
+        "download",
+        &format!("downloading {url}"),
+        crate::route_probe::route::OFFICIAL,
+    );
     let bytes = download_bytes(&url)?;
     progress("unpack", &format!("unpacking {asset}"));
     unpack_opencode(asset, &bytes, &dest)
@@ -402,7 +415,8 @@ fn install_command_path() -> String {
 /// the settings "Update" path and always re-fetches.
 ///
 /// Source selection, in order:
-///   * The official GitHub release when its CDN is reachable from this network.
+///   * The official GitHub release when a ranged sample of the real asset
+///     clears `MIN_UPSTREAM_BYTES_PER_SEC` on this network.
 ///   * The versioned OSS mirror when the official route is slow or blocked.
 ///   * macOS/Linux's official opencode.ai installer as a last fallback.
 pub fn run_install(force: bool) -> anyhow::Result<()> {
@@ -419,23 +433,38 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
         progress("upgrade", "updating opencode to the latest release");
     }
 
-    let official_available = current_asset()
-        .map(official_asset_available)
-        .unwrap_or(false);
-    if official_available {
-        progress(
+    // Announced before the sample runs. Measuring the route costs a 5s connect
+    // budget plus a 4s transfer deadline, and saying so only afterwards left the
+    // wizard sitting on the previous line for all of it.
+    progress("probe", "checking which download route is fastest");
+    let upstream = current_asset().and_then(measure_upstream_route);
+    match upstream {
+        Some(sample) if sample.meets(&upstream_probe()) => {
+            progress(
+                "source",
+                &format!(
+                    "official OpenCode release measured at {:.1} MB/s; downloading from upstream",
+                    sample.mib_per_sec()
+                ),
+            );
+            direct_install(None)?;
+            report_installed();
+            return Ok(());
+        }
+        Some(sample) => progress(
             "source",
-            "official OpenCode release is reachable; downloading from upstream",
-        );
-        direct_install(None)?;
-        report_installed();
-        return Ok(());
+            &format!(
+                "official OpenCode release measured at {:.1} MB/s, below the {:.1} MB/s bar; \
+                 trying the OSS mirror",
+                sample.mib_per_sec(),
+                MIN_UPSTREAM_BYTES_PER_SEC / (1024.0 * 1024.0)
+            ),
+        ),
+        None => progress(
+            "source",
+            "official OpenCode release is unreachable; trying the OSS mirror",
+        ),
     }
-
-    progress(
-        "source",
-        "official OpenCode release is unavailable; trying the OSS mirror",
-    );
     // Resolved once and threaded through: the manifest is a network round-trip.
     let mirror_version = mirror_latest_version();
     if let Some(v) = &mirror_version {
@@ -451,6 +480,11 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
 
     #[cfg(not(windows))]
     {
+        progress_route(
+            "install",
+            "running the official opencode installer",
+            crate::route_probe::route::OFFICIAL,
+        );
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg("curl -fsSL https://opencode.ai/install | bash")
@@ -684,6 +718,33 @@ mod tests {
             Some(v) => std::env::set_var("PATH", v),
             None => std::env::remove_var("PATH"),
         }
+    }
+
+    fn sample(bytes: u64, millis: u64) -> crate::route_probe::RouteSample {
+        crate::route_probe::RouteSample {
+            bytes,
+            elapsed: std::time::Duration::from_millis(millis),
+        }
+    }
+
+    #[test]
+    fn a_slow_upstream_route_loses_to_the_mirror() {
+        // The regression this whole change is about: GitHub answers, then
+        // trickles. 2 MiB in 4s is ~512 KB/s — a ~2 minute download for the
+        // 60 MB asset, and real CN routes are far worse than that.
+        assert!(!sample(PROBE_BYTES, 4_000).meets(&upstream_probe()));
+    }
+
+    #[test]
+    fn a_fast_upstream_route_is_kept() {
+        // ~10 MB/s: upstream is fine here, don't send the user to the mirror.
+        assert!(sample(PROBE_BYTES, 200).meets(&upstream_probe()));
+    }
+
+    #[test]
+    fn the_upstream_bar_is_one_mib_per_second() {
+        assert!(sample(1024 * 1024, 1_000).meets(&upstream_probe()));
+        assert!(!sample(1024 * 1024, 1_100).meets(&upstream_probe()));
     }
 
     #[test]

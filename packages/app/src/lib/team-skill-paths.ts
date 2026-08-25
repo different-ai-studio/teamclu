@@ -84,6 +84,24 @@ export async function resolveTeamDir(_workspacePath: string): Promise<string | n
   return (await exists(globalDir)) ? globalDir : null
 }
 
+async function globalTeamKnowledgeDir(teamId: string): Promise<string> {
+  return `${await amuxdRoot()}/teams/${teamId}/shared/knowledge`
+}
+
+/** Active team global knowledge dir (~/.amuxd[-<brand>]/teams/<id>/shared/knowledge). */
+export async function globalTeamKnowledgeShareDir(): Promise<string | null> {
+  const teamId = await readOnboardedTeamId()
+  if (!teamId) return null
+  return globalTeamKnowledgeDir(teamId)
+}
+
+/** Where to read this workspace team knowledge: the global shared/knowledge dir. */
+export async function resolveTeamKnowledgeDir(): Promise<string | null> {
+  const globalDir = await globalTeamKnowledgeShareDir()
+  if (!globalDir) return null
+  return (await exists(globalDir)) ? globalDir : null
+}
+
 function trimTrailingPathSeparators(path: string): string {
   return path.replace(/[/\\]+$/, '')
 }
@@ -127,14 +145,6 @@ async function readSkillPathsFromConfig(
   }
 }
 
-/**
- * All directories that should contribute `source: 'team'` skills for a workspace.
- *
- * Sources (deduped):
- * - `teamclu.json` → `skills.paths`
- * - `opencode.json` → `skills.paths` (legacy / OpenCode-aligned config)
- * - `<workspace>/teamclu-team/skills` when the team share link exists on disk
- */
 async function remapTeamSkillPath(
   workspacePath: string,
   path: string,
@@ -152,31 +162,33 @@ async function remapTeamSkillPath(
   return (await exists(remapped)) ? remapped : null
 }
 
+/**
+ * All directories that should contribute `source: 'team'` skills for a workspace.
+ *
+ * One source: `opencode.json` → `skills.paths`. It is the only config anything
+ * writes — the desktop's `ensure_agents_skills_paths` registers
+ * `~/.agents/skills` there — and the daemon reads exactly the same file
+ * (`config::roles_skills::collect_team_skill_paths`).
+ *
+ * Two former sources are gone. `teamclu.json` never had a writer for
+ * `skills.paths`. `<workspace>/teamclu-team/skills` lost its writer when
+ * `skills/` moved to the registry and joined the OSS sync's RETIRED_PREFIXES;
+ * the leftovers on disk kept reaching agents, which is exactly the "quietly
+ * running a version the team retired" case the registry exists to end.
+ */
 export async function collectTeamSkillPaths(workspacePath: string): Promise<string[]> {
   const dirs = new Set<string>()
   const teamId = await readOnboardedTeamId()
 
-  for (const path of await readSkillPathsFromConfig(workspacePath, 'teamclu.json')) {
-    const resolved = await remapTeamSkillPath(workspacePath, path, teamId)
-    if (resolved) dirs.add(resolved)
-  }
   for (const path of await readSkillPathsFromConfig(workspacePath, 'opencode.json')) {
     const resolved = await remapTeamSkillPath(workspacePath, path, teamId)
     if (resolved) dirs.add(resolved)
   }
 
-  const teamDir = await resolveTeamDir(workspacePath)
-  if (teamDir) {
-    const defaultTeamSkillsDir = joinPath(teamDir, 'skills')
-    if (await exists(defaultTeamSkillsDir)) {
-      dirs.add(defaultTeamSkillsDir)
-    }
-  }
-
   return Array.from(dirs)
 }
 
-/** Paths from `teamclu.json` only — used by tests that assert config parsing. */
+/** Raw `skills.paths` entries, unresolved — used by tests that assert parsing. */
 export async function readConfigSkillPaths(workspacePath: string): Promise<string[]> {
-  return readSkillPathsFromConfig(workspacePath, 'teamclu.json')
+  return readSkillPathsFromConfig(workspacePath, 'opencode.json')
 }

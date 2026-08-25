@@ -4,10 +4,6 @@
 //   POST /send-wecom        — send a proactive WeCom message
 //   POST /cron-run          — manually trigger a cron job
 //   POST /team-sync-all     — trigger team sync
-//   POST /knowledge-search  — semantic search in knowledge base
-//   POST /knowledge-add     — save a memory entry
-//   POST /knowledge-list    — list memory entries
-//   POST /knowledge-delete  — delete a memory entry
 //   POST /env-var-set       — create or update an env var (`scope`: personal | team)
 //   POST /env-var-delete    — delete an env var (`scope`: personal | team)
 //   POST /mcp-get           — fetch merged workspace MCP map (daemon)
@@ -93,14 +89,6 @@ pub async fn start_introspect_api(app: AppHandle) -> anyhow::Result<()> {
                 ("POST", "/send-wecom") => handle_send_wecom(&app_clone, body_bytes).await,
                 ("POST", "/cron-run") => handle_cron_run(&app_clone, body_bytes).await,
                 ("POST", "/team-sync-all") => handle_team_sync_all(&app_clone, body_bytes).await,
-                ("POST", "/knowledge-search") => {
-                    handle_knowledge_search(&app_clone, body_bytes).await
-                }
-                ("POST", "/knowledge-add") => handle_knowledge_add(&app_clone, body_bytes).await,
-                ("POST", "/knowledge-list") => handle_knowledge_list(&app_clone, body_bytes).await,
-                ("POST", "/knowledge-delete") => {
-                    handle_knowledge_delete(&app_clone, body_bytes).await
-                }
                 ("POST", "/env-var-set") => handle_env_var_set(&app_clone, body_bytes).await,
                 ("POST", "/env-var-delete") => handle_env_var_delete(&app_clone, body_bytes).await,
                 ("POST", "/session-export") => handle_session_export(&app_clone, body_bytes).await,
@@ -305,137 +293,6 @@ fn detect_media_type(filename: &str) -> &'static str {
         "mp4" | "mov" | "avi" | "mkv" | "wmv" => "video",
         _ => "file",
     }
-}
-
-// ─── Knowledge Handlers ──────────────────────────────────────────────────────
-
-async fn handle_knowledge_search(app: &AppHandle, body: &[u8]) -> Result<String, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?;
-
-    let query = v
-        .get("query")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing field: query")?
-        .to_string();
-    let top_k = v.get("top_k").and_then(|v| v.as_u64()).map(|n| n as usize);
-
-    let workspace_path = {
-        let registry = app.state::<super::window::WindowRegistry>();
-        registry
-            .current_workspace
-            .lock()
-            .ok()
-            .and_then(|cw| cw.clone())
-            .ok_or_else(|| "No workspace path set. Please select a workspace first.".to_string())?
-    };
-
-    let rag_state = app.state::<super::knowledge::RagState>();
-    let result =
-        super::knowledge::rag_search(workspace_path, query, top_k, None, None, rag_state).await?;
-
-    serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
-}
-
-async fn handle_knowledge_add(app: &AppHandle, body: &[u8]) -> Result<String, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?;
-
-    let content = v
-        .get("content")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing field: content")?;
-    let title = v
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Untitled");
-    let filename = v.get("filename").and_then(|v| v.as_str());
-
-    let workspace_path = {
-        let registry = app.state::<super::window::WindowRegistry>();
-        registry
-            .current_workspace
-            .lock()
-            .ok()
-            .and_then(|cw| cw.clone())
-            .ok_or_else(|| "No workspace path set. Please select a workspace first.".to_string())?
-    };
-
-    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let safe_filename = filename
-        .map(|f| {
-            if f.ends_with(".md") {
-                f.to_string()
-            } else {
-                format!("{}.md", f)
-            }
-        })
-        .unwrap_or_else(|| {
-            let slug = title
-                .chars()
-                .map(|c| if c.is_alphanumeric() { c } else { '-' })
-                .collect::<String>()
-                .to_lowercase();
-            let slug = slug.trim_matches('-').to_string();
-            let ts = chrono::Utc::now().timestamp();
-            format!("{slug}-{ts}.md")
-        });
-
-    let file_content = format!(
-        "---\ntitle: \"{title}\"\ncreated: \"{now}\"\nupdated: \"{now}\"\n---\n\n{content}\n"
-    );
-
-    let rag_state = app.state::<super::knowledge::RagState>();
-    super::knowledge::rag_save_memory(
-        workspace_path,
-        safe_filename.clone(),
-        file_content,
-        rag_state,
-    )
-    .await?;
-
-    Ok(format!(r#"{{"ok":true,"filename":"{}"}}"#, safe_filename))
-}
-
-async fn handle_knowledge_list(app: &AppHandle, _body: &[u8]) -> Result<String, String> {
-    let workspace_path = {
-        let registry = app.state::<super::window::WindowRegistry>();
-        registry
-            .current_workspace
-            .lock()
-            .ok()
-            .and_then(|cw| cw.clone())
-            .ok_or_else(|| "No workspace path set. Please select a workspace first.".to_string())?
-    };
-
-    let memories = super::knowledge::rag_list_memories(workspace_path).await?;
-    serde_json::to_string(&memories).map_err(|e| format!("Serialization error: {e}"))
-}
-
-async fn handle_knowledge_delete(app: &AppHandle, body: &[u8]) -> Result<String, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?;
-
-    let filename = v
-        .get("filename")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing field: filename")?
-        .to_string();
-
-    let workspace_path = {
-        let registry = app.state::<super::window::WindowRegistry>();
-        registry
-            .current_workspace
-            .lock()
-            .ok()
-            .and_then(|cw| cw.clone())
-            .ok_or_else(|| "No workspace path set. Please select a workspace first.".to_string())?
-    };
-
-    let rag_state = app.state::<super::knowledge::RagState>();
-    super::knowledge::rag_delete_memory(workspace_path, filename.clone(), rag_state).await?;
-
-    Ok(format!(r#"{{"ok":true,"filename":"{}"}}"#, filename))
 }
 
 // ─── Env Var Handlers ────────────────────────────────────────────────────────

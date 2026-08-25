@@ -525,6 +525,7 @@ mod tests {
             team_share: crate::config::TeamShareConfig::default(),
             log: None,
             locale: None,
+            app_scheme: None,
         }
     }
 

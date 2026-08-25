@@ -1,4 +1,5 @@
-// Thin RPC client over `amuxd.sock`. The desktop app no longer runs the
+// Thin RPC client over amuxd's control channel (a Unix socket, or a named pipe
+// on Windows — see `commands::amuxd_control`). The desktop app no longer runs the
 // channel gateways itself — amuxd owns those instances and persists their
 // config in `daemon.toml`. The three commands here just forward to amuxd.
 //
@@ -14,13 +15,12 @@ pub use teamclu_gateway::*;
 
 pub mod qr;
 
-use std::io::{Read, Write};
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+
+use crate::commands::amuxd_control;
 
 /// Slim per-app state. The legacy `*Gateway` slots were removed (amuxd owns
 /// those now); only the cross-component session map remains, used by the
@@ -48,14 +48,6 @@ pub struct ChannelStatus {
     pub last_error: Option<String>,
 }
 
-fn amuxd_unavailable() -> String {
-    "amuxd daemon is not available on Windows".to_string()
-}
-
-pub(crate) fn sock_path() -> PathBuf {
-    crate::commands::amuxd_run_dir().join("amuxd.sock")
-}
-
 /// The active team's `team.toml`, resolved through daemon.toml's
 /// `active_team` pointer. `None` when the daemon has no team yet.
 fn team_config_path() -> Option<PathBuf> {
@@ -64,29 +56,14 @@ fn team_config_path() -> Option<PathBuf> {
 }
 
 /// List the six known channel platforms with their `enabled` / `connected`
-/// state as reported by amuxd over `amuxd.sock`. Errors out clearly when the
+/// state as reported by amuxd over its control channel. Errors out clearly when the
 /// daemon is not running so the UI can surface an "amuxd unreachable" state.
 #[tauri::command]
 pub async fn list_channels() -> Result<Vec<ChannelStatus>, String> {
-    #[cfg(windows)]
-    return Err(amuxd_unavailable());
-    #[cfg(unix)]
-    {
-        let mut s =
-            UnixStream::connect(sock_path()).map_err(|e| format!("amuxd not reachable: {e}"))?;
-        s.write_all(b"channel-status\n")
-            .map_err(|e| format!("write failed: {e}"))?;
-        s.shutdown(std::net::Shutdown::Write)
-            .map_err(|e| format!("shutdown write half failed: {e}"))?;
-        let mut buf = String::new();
-        s.read_to_string(&mut buf)
-            .map_err(|e| format!("read failed: {e}"))?;
-        serde_json::from_str(buf.trim())
-            .map_err(|e| format!("bad response from amuxd: {e} (body={buf:?})"))
-    }
+    amuxd_control::request_json_async("channel-status\n").await
 }
 
-/// Per-bot WeCom connection status as reported by amuxd over `amuxd.sock`.
+/// Per-bot WeCom connection status as reported by amuxd over its control channel.
 /// The daemon emits camelCase keys (`botId`, `connected`, `error`), which we
 /// re-expose unchanged to the frontend (matching the TS `WeComBotStatus`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,26 +76,11 @@ pub struct WeComBotStatus {
 }
 
 /// List per-bot WeCom connection status. Mirrors `list_channels`' socket
-/// plumbing: writes `wecom-bots-status` to `amuxd.sock`, reads the single
+/// plumbing: writes `wecom-bots-status` to the control channel, reads the single
 /// JSON-array line, and deserializes it into `Vec<WeComBotStatus>`.
 #[tauri::command]
 pub async fn list_wecom_bots_status() -> Result<Vec<WeComBotStatus>, String> {
-    #[cfg(windows)]
-    return Err(amuxd_unavailable());
-    #[cfg(unix)]
-    {
-        let mut s =
-            UnixStream::connect(sock_path()).map_err(|e| format!("amuxd not reachable: {e}"))?;
-        s.write_all(b"wecom-bots-status\n")
-            .map_err(|e| format!("write failed: {e}"))?;
-        s.shutdown(std::net::Shutdown::Write)
-            .map_err(|e| format!("shutdown write half failed: {e}"))?;
-        let mut buf = String::new();
-        s.read_to_string(&mut buf)
-            .map_err(|e| format!("read failed: {e}"))?;
-        serde_json::from_str(buf.trim())
-            .map_err(|e| format!("bad response from amuxd: {e} (body={buf:?})"))
-    }
+    amuxd_control::request_json_async("wecom-bots-status\n").await
 }
 
 /// Every conversation the configured WeCom bots can be addressed in.
@@ -131,22 +93,7 @@ pub async fn list_wecom_bots_status() -> Result<Vec<WeComBotStatus>, String> {
 /// empty dropdown.
 #[tauri::command]
 pub async fn list_wecom_chats() -> Result<serde_json::Value, String> {
-    #[cfg(windows)]
-    return Err(amuxd_unavailable());
-    #[cfg(unix)]
-    {
-        let mut s =
-            UnixStream::connect(sock_path()).map_err(|e| format!("amuxd not reachable: {e}"))?;
-        s.write_all(b"wecom-chat-list\n")
-            .map_err(|e| format!("write failed: {e}"))?;
-        s.shutdown(std::net::Shutdown::Write)
-            .map_err(|e| format!("shutdown write half failed: {e}"))?;
-        let mut buf = String::new();
-        s.read_to_string(&mut buf)
-            .map_err(|e| format!("read failed: {e}"))?;
-        serde_json::from_str(buf.trim())
-            .map_err(|e| format!("bad response from amuxd: {e} (body={buf:?})"))
-    }
+    amuxd_control::request_json_async("wecom-chat-list\n").await
 }
 
 /// Which credential fields already hold a value, as dotted paths
@@ -157,28 +104,13 @@ pub async fn list_wecom_chats() -> Result<serde_json::Value, String> {
 /// like, so the form needs to be told the difference. Values never travel.
 #[tauri::command]
 pub async fn list_channel_secret_keys() -> Result<Vec<String>, String> {
-    #[cfg(windows)]
-    return Err(amuxd_unavailable());
-    #[cfg(unix)]
-    {
-        #[derive(serde::Deserialize)]
-        struct Resp {
-            #[serde(default)]
-            keys: Vec<String>,
-        }
-        let mut s =
-            UnixStream::connect(sock_path()).map_err(|e| format!("amuxd not reachable: {e}"))?;
-        s.write_all(b"channel-secret-keys\n")
-            .map_err(|e| format!("write failed: {e}"))?;
-        s.shutdown(std::net::Shutdown::Write)
-            .map_err(|e| format!("shutdown write half failed: {e}"))?;
-        let mut buf = String::new();
-        s.read_to_string(&mut buf)
-            .map_err(|e| format!("read failed: {e}"))?;
-        let parsed: Resp = serde_json::from_str(buf.trim())
-            .map_err(|e| format!("bad response from amuxd: {e} (body={buf:?})"))?;
-        Ok(parsed.keys)
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        #[serde(default)]
+        keys: Vec<String>,
     }
+    let parsed: Resp = amuxd_control::request_json_async("channel-secret-keys\n").await?;
+    Ok(parsed.keys)
 }
 
 /// Load a persisted channel config from the active team's `team.toml`, so the
@@ -227,20 +159,10 @@ pub fn load_channel_config(platform: String) -> Result<Option<serde_json::Value>
 /// auto-reloads the channel manager so the change takes effect immediately.
 #[tauri::command]
 pub async fn save_channel_config(platform: String, config_json: String) -> Result<(), String> {
-    #[cfg(windows)]
-    return Err(amuxd_unavailable());
-    #[cfg(unix)]
-    {
-        let mut s =
-            UnixStream::connect(sock_path()).map_err(|e| format!("amuxd not reachable: {e}"))?;
-        // Single-line JSON keeps the framing simple — the daemon reads exactly
-        // three newline-terminated tokens off the sock.
-        let single_line = config_json.replace('\n', " ");
-        let payload = format!("channel-save\n{platform}\n{single_line}\n");
-        s.write_all(payload.as_bytes())
-            .map_err(|e| format!("write failed: {e}"))?;
-        Ok(())
-    }
+    // Single-line JSON keeps the framing simple — the daemon reads exactly
+    // three newline-terminated tokens off the control channel.
+    let single_line = config_json.replace('\n', " ");
+    amuxd_control::send(&format!("channel-save\n{platform}\n{single_line}\n")).await
 }
 
 /// Read `channels.model` — the model every gateway session starts on when the
@@ -276,34 +198,19 @@ pub fn load_gateway_model() -> Result<Option<String>, String> {
 /// channel manager reloads and the next spawn actually uses it.
 #[tauri::command]
 pub async fn save_gateway_model(model: String) -> Result<(), String> {
-    #[cfg(windows)]
-    return Err(amuxd_unavailable());
-    #[cfg(unix)]
-    {
-        let mut s =
-            UnixStream::connect(sock_path()).map_err(|e| format!("amuxd not reachable: {e}"))?;
-        // Two newline-terminated tokens, matching the sock's line framing.
-        let payload = format!("gateway-model\n{}\n", model.trim().replace('\n', " "));
-        s.write_all(payload.as_bytes())
-            .map_err(|e| format!("write failed: {e}"))?;
-        Ok(())
-    }
+    // Two newline-terminated tokens, matching the control channel's line framing.
+    amuxd_control::send(&format!(
+        "gateway-model\n{}\n",
+        model.trim().replace('\n', " ")
+    ))
+    .await
 }
 
 /// Tell amuxd to re-read `daemon.toml` and restart all channels. Cheap;
 /// useful when the daemon-managed config file was edited out-of-band.
 #[tauri::command]
 pub async fn reload_channels() -> Result<(), String> {
-    #[cfg(windows)]
-    return Err(amuxd_unavailable());
-    #[cfg(unix)]
-    {
-        let mut s =
-            UnixStream::connect(sock_path()).map_err(|e| format!("amuxd not reachable: {e}"))?;
-        s.write_all(b"channel-reload\n")
-            .map_err(|e| format!("write failed: {e}"))?;
-        Ok(())
-    }
+    amuxd_control::send("channel-reload\n").await
 }
 
 /// Probe SeaTalk App ID / App Secret against the Open Platform token API.
@@ -435,16 +342,10 @@ pub fn save_system_prompt(
 /// catches up.
 #[tauri::command]
 pub async fn set_config_locale(locale: String) -> Result<(), String> {
-    #[cfg(windows)]
-    return Err(amuxd_unavailable());
-    #[cfg(unix)]
-    {
-        let mut s =
-            UnixStream::connect(sock_path()).map_err(|e| format!("amuxd not reachable: {e}"))?;
-        // Two newline-terminated tokens, matching the sock's line framing.
-        let payload = format!("gateway-locale\n{}\n", locale.trim().replace('\n', " "));
-        s.write_all(payload.as_bytes())
-            .map_err(|e| format!("write failed: {e}"))?;
-        Ok(())
-    }
+    // Two newline-terminated tokens, matching the control channel's line framing.
+    amuxd_control::send(&format!(
+        "gateway-locale\n{}\n",
+        locale.trim().replace('\n', " ")
+    ))
+    .await
 }

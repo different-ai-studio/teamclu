@@ -13,7 +13,6 @@ import {
   Coins,
   Shield,
   SlidersHorizontal,
-  BookOpen,
   Bookmark,
   ChevronDown,
   Loader2,
@@ -69,7 +68,6 @@ const localAgentSections: Section[] = [
   { id: 'prompt', label: 'Prompt', labelKey: 'settings.nav.prompt', icon: MessageSquareText },
   { id: 'roles', label: 'Roles', labelKey: 'settings.nav.roles', icon: UserRound },
   { id: 'rolesSkills', label: 'Role Skills', labelKey: 'settings.nav.rolesSkills', icon: Sparkles },
-  { id: 'knowledge', label: 'Knowledge Base', labelKey: 'settings.nav.knowledge', icon: BookOpen },
   { id: 'deps', label: 'Dependencies', labelKey: 'settings.nav.deps', icon: Package },
 ]
 

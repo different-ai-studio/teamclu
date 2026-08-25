@@ -16,12 +16,9 @@ use tokio::time::timeout;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// MCP configs commonly say "npx"/"npm"; those are .cmd shims on Windows.
+/// One rule for the whole daemon lives in `well_known_bin::spawn_name`.
 fn platform_program(program: &str) -> String {
-    if cfg!(windows) && matches!(program, "npx" | "npm") {
-        format!("{program}.cmd")
-    } else {
-        program.to_string()
-    }
+    crate::runtime::well_known_bin::spawn_name(program)
 }
 
 fn shell_escape(value: &str) -> String {

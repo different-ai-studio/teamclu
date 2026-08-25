@@ -18,6 +18,21 @@ describe('RoleStep', () => {
     expect(screen.getByText('直接开始用')).toBeInTheDocument()
   })
 
+  // The recommended path leads: a first-timer reads it before the one that asks
+  // them to choose a runtime.
+  it('puts the guided card first', () => {
+    render(<RoleStep onDone={() => {}} />)
+    const order = screen.getAllByText(/^(直接开始用|我自己来)$/).map((el) => el.textContent)
+    expect(order).toEqual(['直接开始用', '我自己来'])
+  })
+
+  // The heading is brand-free on purpose: every brand ships this screen, and the
+  // display name added nothing the window title does not already say.
+  it('does not name the app in the heading', () => {
+    render(<RoleStep onDone={() => {}} />)
+    expect(screen.getByText('想怎么配置？')).toBeInTheDocument()
+  })
+
   // The titles alone read as two equally valid moods. Saying who each one is for
   // is the whole point of the screen — a first-timer must not have to guess.
   it('says who each path is for', () => {

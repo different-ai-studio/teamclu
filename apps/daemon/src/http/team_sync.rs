@@ -549,7 +549,7 @@ pub async fn list_conflicts(
     Query(q): Query<StatusQuery>,
 ) -> Result<Json<Vec<ConflictEntry>>, HttpError> {
     require_scope(&principal, "workspace:read")?;
-    let root = crate::config::global_team_store::global_team_dir(&q.team_id);
+    let root = crate::config::global_team_store::sync_content_root(&q.team_id);
     let out = crate::sync::oss::scanner::scan_conflict_files(&root.to_string_lossy())
         .into_iter()
         .map(|path| ConflictEntry {
@@ -700,7 +700,7 @@ pub struct RestoreRequest {
 /// `POST /v1/team/versions/restore` — restore a file to a specific version by
 /// downloading + decrypting its blob into the GLOBAL content root, then updating
 /// the per-team sync state. Ported from desktop `oss_sync_restore_version`,
-/// writing to `<global_team_dir>/<path>` instead of the in-workspace team dir.
+/// writing to `<sync_content_root>/<path>` instead of the in-workspace team dir.
 pub async fn restore_version(
     principal: Principal,
     State(state): State<HttpState>,
@@ -732,11 +732,11 @@ pub async fn restore_version(
 
     // Write into the GLOBAL content root, not a workspace path.
     let abs_path =
-        crate::config::global_team_store::global_team_dir(&body.team_id).join(&body.path);
+        crate::config::global_team_store::sync_content_root(&body.team_id).join(&body.path);
     // Defense-in-depth: ensure the resolved path does not escape the team dir
     // via an existing symlink before writing.
     crate::sync::oss::path_validator::validate_no_symlink_escape(
-        &crate::config::global_team_store::global_team_dir(&body.team_id),
+        &crate::config::global_team_store::sync_content_root(&body.team_id),
         &abs_path,
     )
     .map_err(|e| HttpError::validation(format!("path escapes team dir: {e}")))?;

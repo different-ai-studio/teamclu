@@ -1,10 +1,24 @@
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::process::Command;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as AsyncCommand;
 
 use crate::process_util::CommandNoWindow;
+
+/// What `agents.local_agent` defaults to when it has never been set, and what
+/// the frontend reports when the daemon cannot be reached. Mirrors the daemon's
+/// own default (`LOCAL_AGENT_CANDIDATES[0]`).
+const DEFAULT_LOCAL_AGENT: &str = "opencode";
+
+/// Which runtime this machine runs, falling back to the daemon's own default.
+fn active_runtime(local_agent: Option<&str>) -> &str {
+    local_agent
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .unwrap_or(DEFAULT_LOCAL_AGENT)
+}
 
 /// Installation commands for each platform
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,31 +53,47 @@ pub struct DepInstallProgress {
     pub error: Option<String>,
 }
 
+/// A tool's own install directory, searched before the well-known ones.
+///
+/// Both installers hardcode a home-relative path that is on nobody's PATH.
+fn own_dirs(name: &str) -> Vec<PathBuf> {
+    // Through the crate, not `dirs::home_dir()` directly: the desktop and the
+    // crate pin different `dirs` majors, and resolving home twice through two
+    // of them is the split-brain this lookup was moved to a crate to avoid.
+    let Some(home) = teamclu_binpath::home_dir() else {
+        return Vec::new();
+    };
+    match name {
+        "opencode" => vec![home.join(".opencode").join("bin")],
+        "pi" => vec![home.join(".pi").join("bin")],
+        _ => Vec::new(),
+    }
+}
+
 /// Resolve the program to probe for a dependency's `--version` check.
 ///
-/// For most tools this is just the dependency name looked up on PATH. opencode
-/// is the exception: its official installer hardcodes `~/.opencode/bin`, which is
-/// NOT on the PATH a GUI app inherits when launched from Finder — so a bare
-/// `Command::new("opencode")` probe fails even though the binary is installed and
-/// amuxd (which resolves it by absolute path) runs it fine. Mirror amuxd's
-/// resolution order here: `~/.opencode/bin/opencode` (absolute) -> PATH fallback.
-/// See apps/daemon/src/opencode_install/mod.rs `resolve_binary`.
+/// This used to be `name.to_string()` for everything but opencode, and that is
+/// the whole of #1049's "Node is installed but Settings says it isn't": a bare
+/// `Command::new("node")` sees only the PATH this process inherited, and on
+/// Windows nothing repairs that PATH (`fix_path_env` returns early there), so a
+/// Node installed after the app — or by nvm-windows / fnm / scoop, which never
+/// touch the machine PATH — is invisible. amuxd answered correctly on the very
+/// same machine because it had already learned this and probes well-known
+/// directories; the two just never shared the lookup.
+///
+/// Now they do: `teamclu_binpath` is that shared lookup. `spawn_name` is the
+/// fallback rather than the bare name because Rust appends only `.exe` and
+/// never consults PATHEXT, so `Command::new("npm")` cannot start `npm.cmd`.
 fn probe_program(name: &str) -> String {
-    if name != "opencode" {
-        return name.to_string();
-    }
-    let bin = if cfg!(windows) {
-        "opencode.exe"
-    } else {
-        "opencode"
-    };
-    if let Some(home) = dirs::home_dir() {
-        let p = home.join(".opencode").join("bin").join(bin);
-        if p.exists() {
-            return p.to_string_lossy().to_string();
-        }
-    }
-    "opencode".to_string()
+    probe_program_in(name, &teamclu_binpath::search_dirs())
+}
+
+/// [`probe_program`] against an explicit directory list, so tests do not depend
+/// on what the machine running them happens to have installed.
+fn probe_program_in(name: &str, dirs: &[PathBuf]) -> String {
+    teamclu_binpath::find_with(name, &own_dirs(name), dirs)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| teamclu_binpath::spawn_name(name))
 }
 
 /// Check a single dependency by running `cmd --version` (or a variant).
@@ -77,8 +107,12 @@ fn check_single_dependency(
     affected_features: Vec<String>,
     priority: u8,
 ) -> DependencyInfo {
+    // Finding the file is not always enough to run it: an npm-installed shim
+    // starts with `#!/usr/bin/env node`, which needs node itself on the PATH of
+    // the child. Same augmentation amuxd spawns its tools with.
     let output = Command::new(probe_program(name))
         .no_window()
+        .env("PATH", teamclu_binpath::augmented_path())
         .args(version_args)
         .output();
 
@@ -200,6 +234,13 @@ fn get_install_commands_map(name: &str) -> Option<PlatformInstallCommands> {
             windows: "amuxd install-opencode".to_string(),
             linux: "amuxd install-opencode".to_string(),
         }),
+        // Same deal as opencode: display-only, with the real work done by the
+        // bundled sidecar in `install_dependency`.
+        "pi" => Some(PlatformInstallCommands {
+            macos: "amuxd install-pi".to_string(),
+            windows: "amuxd install-pi".to_string(),
+            linux: "amuxd install-pi".to_string(),
+        }),
         _ => None,
     }
 }
@@ -212,10 +253,15 @@ fn requires_brew(name: &str) -> bool {
     matches!(name, "gh" | "node" | "python3")
 }
 
-/// Installed vs newest-available opencode, for the Dependencies UI.
+/// Installed vs available version of one dependency, for the Dependencies UI.
+///
+/// Shared by opencode and pi even though "available" means different things:
+/// opencode's comes off the mirror manifest (a moving target, network), pi's is
+/// the minimum `pi.lock.json` pins (fixed, offline). The UI only needs "is
+/// there something to update to", which both answer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OpencodeVersions {
+pub struct DependencyVersions {
     pub installed: Option<String>,
     pub latest: Option<String>,
     /// `None` when `latest` is unknown (mirror unreachable) — the UI must then
@@ -227,7 +273,9 @@ pub struct OpencodeVersions {
 /// network (the mirror manifest), so this is a separate command from
 /// `check_dependencies`, which must stay fast and offline.
 #[tauri::command]
-pub async fn opencode_versions<R: Runtime>(app: AppHandle<R>) -> Result<OpencodeVersions, String> {
+pub async fn opencode_versions<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<DependencyVersions, String> {
     use tauri_plugin_shell::process::CommandEvent;
     use tauri_plugin_shell::ShellExt;
 
@@ -247,10 +295,55 @@ pub async fn opencode_versions<R: Runtime>(app: AppHandle<R>) -> Result<Opencode
     serde_json::from_str(buf.trim()).map_err(|e| format!("parse amuxd opencode-versions: {e}"))
 }
 
+/// Installed vs required pi, for the same Update affordance opencode has.
+///
+/// Reads `amuxd doctor` rather than adding a sidecar subcommand: doctor already
+/// reports pi's installed version alongside the version `pi.lock.json` requires,
+/// and unlike opencode there is no mirror to ask — the target is pinned, so this
+/// answer is offline and cheap.
+#[tauri::command]
+pub async fn pi_versions<R: Runtime>(app: AppHandle<R>) -> Result<DependencyVersions, String> {
+    // `None`, not `Some("pi")`: `read_doctor` discards the argument (doctor
+    // reports every runtime in one pass), so naming one only made the call look
+    // targeted. The key below is what selects pi.
+    let doctor = crate::commands::setup::read_doctor(&app, None)
+        .await
+        .ok_or_else(|| "amuxd doctor did not answer".to_string())?;
+    let pi = &doctor["pi"];
+    let installed = pi["version"].as_str().map(str::to_string);
+    let latest = pi["requiredVersion"]
+        .as_str()
+        .map(str::to_string)
+        .filter(|v| !v.is_empty());
+
+    // `satisfied` is not the answer here: it folds in Node and the MCP SDK, so
+    // a pi that is new enough but missing its SDK would read as "out of date"
+    // and the Update button would promise something it cannot fix.
+    let up_to_date = match (installed.as_deref(), latest.as_deref()) {
+        (Some(have), Some(want)) => Some(teamclu_runtime_env::version::version_ge(have, want)),
+        _ => None,
+    };
+
+    Ok(DependencyVersions {
+        installed,
+        latest,
+        up_to_date,
+    })
+}
+
 /// Check all external dependencies and return their status.
 /// Results are sorted by priority (lower first) for install ordering.
+///
+/// `local_agent` is the runtime this machine is configured to run
+/// (`agents.local_agent`, as the daemon reports it). It decides which of the
+/// two agent runtimes is *required*: before this, opencode was required
+/// unconditionally, so every machine set up to run pi was told it was missing
+/// something it does not need — a red "Required" row with nothing wrong.
+/// `None` keeps the old conservative answer, which is also what the frontend
+/// falls back to when the daemon cannot be asked.
 #[tauri::command]
-pub fn check_dependencies() -> Vec<DependencyInfo> {
+pub fn check_dependencies(local_agent: Option<String>) -> Vec<DependencyInfo> {
+    let active_runtime = active_runtime(local_agent.as_deref());
     let mut deps = Vec::new();
 
     // Homebrew — macOS only, required, priority 0
@@ -306,14 +399,27 @@ pub fn check_dependencies() -> Vec<DependencyInfo> {
         1,
     ));
 
-    // opencode — required, priority 1 (the local agent runtime).
-    // Install/update is handled specially via `amuxd install-opencode`.
+    // opencode — priority 1. Required only when it is the runtime this machine
+    // actually runs. Install/update goes through `amuxd install-opencode`.
     deps.push(check_single_dependency(
         "opencode",
         &["--version"],
-        true,
-        "Agent runtime - required to run the local AI agent",
+        active_runtime == "opencode",
+        "Agent runtime for the local AI agent",
         get_install_commands_map("opencode").unwrap(),
+        vec!["Local Agent".to_string()],
+        1,
+    ));
+
+    // pi — the other runtime this app can install. Same rule as opencode: the
+    // one this machine runs is the one that is required. Both are always listed
+    // so either can be installed, upgraded or repaired from here.
+    deps.push(check_single_dependency(
+        "pi",
+        &["--version"],
+        active_runtime == "pi",
+        "Agent runtime for the local AI agent",
+        get_install_commands_map("pi").unwrap(),
         vec!["Local Agent".to_string()],
         1,
     ));
@@ -336,10 +442,23 @@ pub async fn install_dependency<R: Runtime>(
     if name == "opencode" {
         return Ok(install_opencode_via_amuxd(&app, false).await);
     }
+    // pi likewise — `amuxd install-pi` is idempotent, so the same call installs
+    // it or lifts it to the version `pi.lock.json` pins.
+    if name == "pi" {
+        return Ok(install_pi_via_amuxd(&app).await);
+    }
 
     // On macOS, if the dependency requires brew and brew is not installed, install brew first
     if requires_brew(&name) {
-        let brew_check = Command::new("brew").no_window().arg("--version").output();
+        // Through the same resolver as every other probe: a Dock-launched app
+        // can hold a PATH without /opt/homebrew/bin in it, and a bare
+        // `Command::new("brew")` there reports "Homebrew is missing" on a
+        // machine that has it — then fails the install it was guarding.
+        let brew_check = Command::new(probe_program("brew"))
+            .no_window()
+            .env("PATH", teamclu_binpath::augmented_path())
+            .arg("--version")
+            .output();
         let brew_installed = matches!(brew_check, Ok(o) if o.status.success());
         if !brew_installed {
             let brew_result = run_install(&app, "brew").await;
@@ -356,9 +475,12 @@ pub async fn install_dependency<R: Runtime>(
     Ok(success)
 }
 
-/// Update an already-installed dependency to the latest release.
-/// Only opencode supports this: `amuxd install-opencode --force` re-fetches the
-/// latest opencode (amuxd pins no version — the version is the user's choice).
+/// Update an already-installed dependency.
+///
+/// opencode takes `amuxd install-opencode --force`, because amuxd pins no
+/// version and "update" means "fetch whatever upstream ships now". pi is the
+/// opposite: `pi.lock.json` names the version, and plain `amuxd install-pi`
+/// already lifts an older install to it, so no force flag exists or is wanted.
 ///
 /// On success the desktop-managed amuxd is restarted, because the running
 /// `opencode serve` still holds the old binary and would otherwise keep serving
@@ -377,30 +499,52 @@ pub async fn update_dependency<R: Runtime>(
     if name == "opencode" {
         let ok = install_opencode_via_amuxd(&app, true).await;
         if ok {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) =
-                    crate::commands::amuxd_supervisor::AmuxdSupervisor::restart(&app).await
-                {
-                    // The download succeeded but the old opencode is still
-                    // serving, so the update is not actually in effect yet.
-                    let _ = app.emit(
-                        "dep-install-progress",
-                        DepInstallProgress {
-                            name: "opencode".to_string(),
-                            status: "failed".to_string(),
-                            output_line: None,
-                            error: Some(format!(
-                                "opencode was updated, but restarting amuxd failed: {e}. Restart the app to use the new version."
-                            )),
-                        },
-                    );
-                }
-            });
+            restart_amuxd_after_update(&app, "opencode");
+        }
+        return Ok(ok);
+    }
+    if name == "pi" {
+        let ok = install_pi_via_amuxd(&app).await;
+        if ok {
+            // pi needs the bounce too. "pi is spawned per session, so the next
+            // spawn picks up the new binary" was wrong: the daemon pools a pi
+            // *host* child per isolation key and only respawns when its
+            // fingerprint (binary path + mode + env) changes. An in-place
+            // upgrade keeps the path, so every live host keeps running the old
+            // build while this page reports the new version off disk.
+            restart_amuxd_after_update(&app, "pi");
         }
         return Ok(ok);
     }
     Err(format!("No update path available for '{}'", name))
+}
+
+/// Bounce the desktop-managed amuxd so an updated runtime is the one actually
+/// running. Neither runtime notices a binary replaced underneath it: opencode
+/// is held open by a long-lived `serve`, pi by a pooled host child.
+///
+/// Detached on purpose: awaiting it would keep the frontend's
+/// `updateDependency` promise pending for the whole daemon bounce, leaving the
+/// Dependencies panel on "Updating…" long after the download finished. The
+/// download result is what the command reports; a restart failure is emitted on
+/// the same progress channel.
+fn restart_amuxd_after_update<R: Runtime>(app: &AppHandle<R>, name: &'static str) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = crate::commands::amuxd_supervisor::AmuxdSupervisor::restart(&app).await {
+            let _ = app.emit(
+                "dep-install-progress",
+                DepInstallProgress {
+                    name: name.to_string(),
+                    status: "failed".to_string(),
+                    output_line: None,
+                    error: Some(format!(
+                        "{name} was updated, but restarting amuxd failed: {e}. Restart the app to use the new version."
+                    )),
+                },
+            );
+        }
+    });
 }
 
 /// Install-or-update opencode via the bundled `amuxd install-opencode`, bridging
@@ -432,6 +576,31 @@ async fn install_opencode_via_amuxd<R: Runtime>(app: &AppHandle<R>, force: bool)
     )
     .await;
     result.is_ok()
+}
+
+/// Install-or-upgrade pi via the bundled `amuxd install-pi`, bridging its
+/// progress onto `dep-install-progress` the same way opencode does.
+async fn install_pi_via_amuxd<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let emit_app = app.clone();
+    crate::commands::setup::run_amuxd_install_pi(app, move |status, line, error| {
+        // amuxd emits "running"; the deps UI expects "installing".
+        let status = if status == "running" {
+            "installing"
+        } else {
+            status
+        };
+        let _ = emit_app.emit(
+            "dep-install-progress",
+            DepInstallProgress {
+                name: "pi".to_string(),
+                status: status.to_string(),
+                output_line: line,
+                error,
+            },
+        );
+    })
+    .await
+    .is_ok()
 }
 
 /// Execute the actual install command and stream output via events.
@@ -590,28 +759,107 @@ async fn run_install<R: Runtime>(app: &AppHandle<R>, name: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn touch(dir: &std::path::Path, file: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(file);
+        std::fs::write(&path, "").unwrap();
+        path
+    }
+
+    /// #1049: a Node that is installed but not on this process's PATH read as
+    /// "not installed" in Settings while onboarding — which asks amuxd, and
+    /// amuxd probes well-known directories — said it was fine.
     #[test]
-    fn probe_program_passes_through_non_opencode() {
-        assert_eq!(probe_program("gh"), "gh");
-        assert_eq!(probe_program("node"), "node");
+    fn a_tool_outside_path_is_still_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let node = touch(&dir, if cfg!(windows) { "node.exe" } else { "node" });
+        assert_eq!(probe_program_in("node", &[dir]), node.to_string_lossy());
     }
 
     #[test]
-    fn probe_program_resolves_opencode_absolute_when_present() {
-        // opencode's official installer targets ~/.opencode/bin; when that binary
-        // exists the probe must use its absolute path, not the bare PATH name a
-        // Finder-launched GUI can't resolve.
-        let bin = if cfg!(windows) {
-            "opencode.exe"
-        } else {
-            "opencode"
-        };
-        let expected = dirs::home_dir().map(|h| h.join(".opencode").join("bin").join(bin));
-        let got = probe_program("opencode");
-        match expected {
-            Some(p) if p.exists() => assert_eq!(got, p.to_string_lossy()),
-            // No installed binary in this environment: falls back to PATH lookup.
-            _ => assert_eq!(got, "opencode"),
+    fn a_tool_found_nowhere_falls_back_to_the_bare_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(probe_program_in("gh", &[tmp.path().to_path_buf()]), "gh");
+    }
+
+    /// Rust appends `.exe` and never consults PATHEXT, and npm ships no
+    /// `npm.exe` — only `npm.cmd`. The bare name can never start it.
+    #[test]
+    fn npm_falls_back_to_its_windows_shim_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let got = probe_program_in("npm", &[tmp.path().to_path_buf()]);
+        assert_eq!(got, if cfg!(windows) { "npm.cmd" } else { "npm" });
+    }
+
+    /// The runtimes' own installers hardcode a home-relative directory that is
+    /// on nobody's PATH, so it has to be searched before the shared list.
+    #[test]
+    fn a_runtimes_own_directory_beats_the_well_known_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let well_known = tmp.path().join("well-known");
+        touch(&well_known, if cfg!(windows) { "pi.exe" } else { "pi" });
+
+        let got = probe_program_in("pi", std::slice::from_ref(&well_known));
+        let own = teamclu_binpath::home_dir()
+            .map(|h| h.join(".pi").join("bin"))
+            .and_then(|dir| teamclu_binpath::find_with("pi", &[dir], &[]));
+        match own {
+            // A real pi install on this machine outranks the fixture.
+            Some(p) => assert_eq!(got, p.to_string_lossy()),
+            None => assert_eq!(
+                got,
+                well_known
+                    .join(if cfg!(windows) { "pi.exe" } else { "pi" })
+                    .to_string_lossy()
+            ),
+        }
+    }
+
+    /// The required-flag decision alone. Going through `check_dependencies`
+    /// would probe six real programs per case — 18 subprocess spawns for three
+    /// assertions about pure logic, and a hang on any machine with a wedged
+    /// `--version`.
+    fn required_names(local_agent: Option<&str>) -> Vec<&'static str> {
+        let active = active_runtime(local_agent);
+        ["opencode", "pi"]
+            .into_iter()
+            .filter(|name| *name == active)
+            .collect()
+    }
+
+    /// A machine set up to run pi was told opencode was "Required" and missing.
+    /// Which runtime is required is the machine's runtime choice, not a constant.
+    #[test]
+    fn only_the_configured_runtime_is_required() {
+        assert_eq!(required_names(Some("opencode")), vec!["opencode"]);
+        assert_eq!(required_names(Some("pi")), vec!["pi"]);
+    }
+
+    /// The daemon may be down or never asked; fall back to the same default it
+    /// uses rather than requiring both runtimes or neither.
+    #[test]
+    fn an_unknown_runtime_falls_back_to_the_daemons_default() {
+        assert_eq!(required_names(None), vec![DEFAULT_LOCAL_AGENT]);
+    }
+
+    /// cursor and claude-code are the user's own tools — this page cannot
+    /// install either, so neither opencode nor pi is required for them.
+    #[test]
+    fn a_runtime_this_page_cannot_install_requires_neither() {
+        assert!(required_names(Some("cursor")).is_empty());
+        assert!(required_names(Some("claude-code")).is_empty());
+    }
+
+    /// Both runtimes must be offerable from the Dependencies page — pi was
+    /// missing entirely, so a pi machine had no way to see or repair it.
+    #[test]
+    fn both_agent_runtimes_have_an_install_path() {
+        for runtime in ["opencode", "pi"] {
+            assert!(
+                get_install_commands_map(runtime).is_some(),
+                "{runtime} needs install commands for the UI to render"
+            );
         }
     }
 }

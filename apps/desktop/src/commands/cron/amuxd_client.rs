@@ -1,16 +1,19 @@
-//! Async UnixSocket client for amuxd's `prompt-await` command. Used by
-//! the cron scheduler to drive one ACP turn per cron run.
+//! Async client for amuxd's `prompt-await` command. Used by the cron scheduler
+//! to drive one ACP turn per cron run.
+//!
+//! Connects through `commands::amuxd_control`, which speaks a Unix socket or a
+//! Windows named pipe as the platform requires — these three commands used to
+//! return "amuxd is not available on Windows" instead, which meant cron could
+//! not run a job there at all (#1049). Async rather than blocking on purpose:
+//! `prompt-await` waits out an entire agent turn.
 //!
 //! Spec: docs/superpowers/specs/2026-05-17-cron-to-amuxd-design.md §1, §2.
 
 use serde::Serialize;
 use std::path::Path;
-#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-#[cfg(unix)]
-use tokio::net::UnixStream;
 
-const AMUXD_UNSUPPORTED: &str = "amuxd is not available on Windows";
+use crate::commands::amuxd_control;
 
 #[derive(Serialize)]
 pub struct PromptAwaitRequest<'a> {
@@ -61,39 +64,18 @@ pub struct PromptAwaitResponse {
     pub agent_error: Option<String>,
 }
 
-/// Convenience entry point: connect to amuxd's default sock path (resolved
-/// via `crate::commands::gateway::sock_path()`), run a `prompt-await`
-/// round-trip.
+/// Convenience entry point: connect to amuxd's control endpoint and run a
+/// `prompt-await` round-trip.
 pub async fn prompt_await(req: PromptAwaitRequest<'_>) -> Result<PromptAwaitResponse, String> {
-    #[cfg(windows)]
-    {
-        let _ = req;
-        return Err(AMUXD_UNSUPPORTED.into());
-    }
-    #[cfg(unix)]
-    {
-        let path = crate::commands::gateway::sock_path();
-        prompt_await_at(&path, req).await
-    }
+    prompt_await_at(&amuxd_control::endpoint(), req).await
 }
 
-/// Test-friendly variant: takes the sock path explicitly.
-#[cfg(windows)]
-pub async fn prompt_await_at(
-    _sock_path: &Path,
-    _req: PromptAwaitRequest<'_>,
-) -> Result<PromptAwaitResponse, String> {
-    Err(AMUXD_UNSUPPORTED.into())
-}
-
-#[cfg(unix)]
+/// Test-friendly variant: takes the endpoint explicitly.
 pub async fn prompt_await_at(
     sock_path: &Path,
     req: PromptAwaitRequest<'_>,
 ) -> Result<PromptAwaitResponse, String> {
-    let mut stream = UnixStream::connect(sock_path)
-        .await
-        .map_err(|e| format!("amuxd unreachable at {}: {e}", sock_path.display()))?;
+    let mut stream = amuxd_control::connect_at(sock_path).await?;
 
     let line = serde_json::to_string(&req).map_err(|e| format!("encode request: {e}"))?;
     stream
@@ -184,28 +166,9 @@ pub async fn prepare_cron_session(
     session_key: &str,
     job_name: Option<&str>,
 ) -> Result<String, String> {
-    #[cfg(windows)]
-    {
-        let _ = (session_key, job_name);
-        return Err(AMUXD_UNSUPPORTED.into());
-    }
-    #[cfg(unix)]
-    {
-        let path = crate::commands::gateway::sock_path();
-        prepare_cron_session_at(&path, session_key, job_name).await
-    }
+    prepare_cron_session_at(&amuxd_control::endpoint(), session_key, job_name).await
 }
 
-#[cfg(windows)]
-pub async fn prepare_cron_session_at(
-    _sock_path: &Path,
-    _session_key: &str,
-    _job_name: Option<&str>,
-) -> Result<String, String> {
-    Err(AMUXD_UNSUPPORTED.into())
-}
-
-#[cfg(unix)]
 pub async fn prepare_cron_session_at(
     sock_path: &Path,
     session_key: &str,
@@ -219,9 +182,7 @@ pub async fn prepare_cron_session_at(
         req["job_name"] = serde_json::Value::String(name.to_string());
     }
 
-    let mut stream = UnixStream::connect(sock_path)
-        .await
-        .map_err(|e| format!("amuxd unreachable at {}: {e}", sock_path.display()))?;
+    let mut stream = amuxd_control::connect_at(sock_path).await?;
     let line = serde_json::to_string(&req).map_err(|e| format!("encode request: {e}"))?;
     stream
         .write_all(line.as_bytes())
@@ -281,29 +242,9 @@ pub async fn prepare_cron_session_at(
 /// Send a proactive message through amuxd's running channel gateway.
 /// `target` must use the daemon dispatch shape: `user:<id>` or `chat:<id>`.
 pub async fn channel_send(channel: &str, target: &str, message: &str) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let _ = (channel, target, message);
-        return Err(AMUXD_UNSUPPORTED.into());
-    }
-    #[cfg(unix)]
-    {
-        let path = crate::commands::gateway::sock_path();
-        channel_send_at(&path, channel, target, message).await
-    }
+    channel_send_at(&amuxd_control::endpoint(), channel, target, message).await
 }
 
-#[cfg(windows)]
-pub async fn channel_send_at(
-    _sock_path: &Path,
-    _channel: &str,
-    _target: &str,
-    _message: &str,
-) -> Result<(), String> {
-    Err(AMUXD_UNSUPPORTED.into())
-}
-
-#[cfg(unix)]
 pub async fn channel_send_at(
     sock_path: &Path,
     channel: &str,
@@ -323,11 +264,8 @@ pub async fn channel_send_at(
     amuxd_json_roundtrip(sock_path, &payload).await
 }
 
-#[cfg(unix)]
 async fn amuxd_json_roundtrip(sock_path: &Path, payload: &serde_json::Value) -> Result<(), String> {
-    let mut stream = UnixStream::connect(sock_path)
-        .await
-        .map_err(|e| format!("amuxd unreachable at {}: {e}", sock_path.display()))?;
+    let mut stream = amuxd_control::connect_at(sock_path).await?;
 
     let line = serde_json::to_string(payload).map_err(|e| format!("encode request: {e}"))?;
     stream

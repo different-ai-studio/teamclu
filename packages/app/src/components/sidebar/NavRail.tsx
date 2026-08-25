@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Inbox, Lightbulb, Keyboard, AppWindow } from 'lucide-react'
+import { Inbox, Lightbulb, Keyboard, AppWindow, ChevronDown } from 'lucide-react'
 import { useUIStore } from '@/stores/ui'
 import { useSessionListStore } from '@/stores/session-list-store'
 
@@ -17,10 +17,13 @@ function refreshSessionListThrottled(): void {
 import { useCronStore } from '@/stores/cron'
 import { createQuickSession, describeQuickSessionFailure } from '@/lib/create-quick-session'
 import { useQuickChatReadiness } from '@/hooks/use-quick-chat-readiness'
-import { ActorsSection } from '@/components/sidebar/ActorsSection'
 import { ContactsNavEntry } from '@/components/sidebar/ContactsNavEntry'
-import { TeamShareNavSection } from '@/components/sidebar/TeamShareNavSection'
+import {
+  TeamShareNavSection,
+  useTeamShareCountsLoader,
+} from '@/components/sidebar/TeamShareNavSection'
 import { NewChatSplitButton } from '@/components/sidebar/NewChatSplitButton'
+import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 import { useFeatures } from '@/lib/remote-features'
 import { isScheduledSession } from '@/lib/session-origin'
 import { cn } from '@/lib/utils'
@@ -54,7 +57,8 @@ function TopEntry({ label, icon: Icon, active, badge, onClick }: TopEntryProps) 
         <span
           className={cn(
             // Same hit box for active/inactive so counts share a right edge.
-            'inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full px-[5px] text-[10.5px] font-semibold tabular-nums',
+            NAV_ROW_TRAILING_SLOT,
+            'text-[10.5px] font-semibold tabular-nums',
             active
               ? 'bg-coral text-coral-foreground shadow-[0_2px_6px_rgba(232,90,74,0.28)]'
               : 'text-muted-foreground',
@@ -73,6 +77,9 @@ export function NavRail() {
   const embedMode = useUIStore((s) => s.embedMode)
   const filter = useUIStore((s) => s.sidebarFilter)
   const setFilter = useUIStore((s) => s.setSidebarFilter)
+  const moreExpanded = useUIStore((s) => s.moreNavExpanded)
+  const toggleMore = useUIStore((s) => s.toggleMoreNav)
+  const setMoreExpanded = useUIStore((s) => s.setMoreNavExpanded)
   const listRows = useSessionListStore((s) => s.rows)
   const cronSessionIds = useCronStore((s) => s.cronSessionIds)
   const showCronSessions = useCronStore((s) => s.showCronSessions)
@@ -80,10 +87,27 @@ export function NavRail() {
   const quickChatState = useQuickChatReadiness()
   const [creating, setCreating] = React.useState(false)
 
+  // Counts feed rows in both groups, so the fetch lives here rather than in
+  // either TeamShareNavSection instance.
+  useTeamShareCountsLoader()
+
   const sessionsCount = React.useMemo(
     () => listRows.filter((r) => !isScheduledSession(r, cronSessionIds)).length,
     [listRows, cronSessionIds],
   )
+
+  // Something else can select one of the folded destinations (default-tab
+  // setting, deep link, a link from the chat pane) — unfold the group so the
+  // active row is never hidden behind a collapsed rule.
+  const moreFilterActive =
+    filter.kind === 'ideas' ||
+    filter.kind === 'apps' ||
+    filter.kind === 'shortcuts' ||
+    (filter.kind === 'teamShare' && (filter.section === 'mcp' || filter.section === 'env'))
+
+  React.useEffect(() => {
+    if (moreFilterActive) setMoreExpanded(true)
+  }, [moreFilterActive, setMoreExpanded])
 
   const handleQuickNewChat = React.useCallback(() => {
     if (quickChatState.kind !== 'ready' || creating) return
@@ -137,6 +161,7 @@ export function NavRail() {
         onPrimaryClick={handleQuickNewChat}
       />
 
+      {/* Everyday destinations. Everything else folds into 更多 below. */}
       <div className="flex flex-col gap-0.5">
         <TopEntry
           label={t('sidebar.sessions', 'Sessions')}
@@ -150,35 +175,70 @@ export function NavRail() {
           }}
         />
         <ContactsNavEntry />
-        {!embedMode ? (
-          <TopEntry
-            label={t('sidebar.ideas', 'Ideas')}
-            icon={Lightbulb}
-            active={filter.kind === 'ideas'}
-            onClick={() => setFilter({ kind: 'ideas' })}
-          />
-        ) : null}
-        {features.apps && (
-          <TopEntry
-            label={t('sidebar.apps', '演示及 APP')}
-            icon={AppWindow}
-            active={filter.kind === 'apps'}
-            onClick={() => setFilter({ kind: 'apps' })}
-          />
-        )}
-        {!embedMode ? (
-          <TopEntry
-            label={t('common.shortcuts', 'Shortcuts')}
-            icon={Keyboard}
-            active={filter.kind === 'shortcuts'}
-            onClick={() => setFilter({ kind: 'shortcuts' })}
-          />
-        ) : null}
+        <TeamShareNavSection sections={['skills', 'knowledge']} />
       </div>
 
-      <TeamShareNavSection />
-
-      <ActorsSection />
+      <div className="flex flex-col">
+        {/*
+          A rule with the label floated in it, rather than another left-aligned
+          header: the line is what separates the everyday rows from the folded
+          ones, and the chevron rotating in place is the only motion needed to
+          say which way it goes.
+        */}
+        <button
+          type="button"
+          onClick={toggleMore}
+          aria-expanded={moreExpanded}
+          className="group flex w-full items-center gap-2.5 py-2"
+        >
+          <span
+            aria-hidden
+            className="h-px flex-1 bg-border-soft transition-colors duration-150 group-hover:bg-border"
+          />
+          <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-faint transition-colors duration-150 group-hover:text-ink-2">
+            {t('sidebar.more', 'More')}
+            <ChevronDown
+              className={cn(
+                'h-3 w-3 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]',
+                moreExpanded && 'rotate-180',
+              )}
+            />
+          </span>
+          <span
+            aria-hidden
+            className="h-px flex-1 bg-border-soft transition-colors duration-150 group-hover:bg-border"
+          />
+        </button>
+        {moreExpanded && (
+          <div className="flex flex-col gap-0.5">
+            {!embedMode ? (
+              <TopEntry
+                label={t('sidebar.ideas', 'Ideas')}
+                icon={Lightbulb}
+                active={filter.kind === 'ideas'}
+                onClick={() => setFilter({ kind: 'ideas' })}
+              />
+            ) : null}
+            {features.apps && (
+              <TopEntry
+                label={t('sidebar.apps', '演示及 APP')}
+                icon={AppWindow}
+                active={filter.kind === 'apps'}
+                onClick={() => setFilter({ kind: 'apps' })}
+              />
+            )}
+            {!embedMode ? (
+              <TopEntry
+                label={t('common.shortcuts', 'Shortcuts')}
+                icon={Keyboard}
+                active={filter.kind === 'shortcuts'}
+                onClick={() => setFilter({ kind: 'shortcuts' })}
+              />
+            ) : null}
+            <TeamShareNavSection sections={['mcp', 'env']} />
+          </div>
+        )}
+      </div>
     </div>
   )
 }

@@ -70,8 +70,13 @@ export interface FileNode {
   children?: FileNode[];
 }
 
-// Right panel tab type
-export type RightPanelTab = "diff" | "shortcuts" | "files" | "teamShared" | "actors";
+// Right panel tab type.
+//
+// `files` (the RAG knowledge browser) and `teamShared` are gone. The knowledge
+// browser went with the RAG module; `teamShared` rendered the team repo dir,
+// which holds nothing now that knowledge syncs to `shared/knowledge`, and it
+// had already lost its header entry to the left-nav Knowledge column.
+export type RightPanelTab = "diff" | "shortcuts" | "actors";
 
 // Undo operation types for file operations
 interface UndoOperation {
@@ -479,16 +484,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       // Start watching the new workspace for file changes
       await startWatching(expandedPath);
 
-      // Load contacts from knowledge/contacts.md
-      try {
-        const { useContactsStore } = await import("./contacts");
-        const loadContacts = useContactsStore.getState().loadContacts;
-        await loadContacts(expandedPath);
-      } catch (error) {
-        // Contacts loading is optional, don't fail workspace loading
-        console.warn("[Workspace] Failed to load contacts:", error);
-      }
-
       set({ isLoadingWorkspace: false });
     } catch (error) {
       console.error("Failed to load workspace:", error);
@@ -501,14 +496,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const currentPath = get().workspacePath;
     if (currentPath) {
       await stopWatching(currentPath);
-    }
-
-    // Clear contacts
-    try {
-      const { useContactsStore } = await import("./contacts");
-      useContactsStore.getState().clearContacts();
-    } catch {
-      // Ignore if contacts store not available
     }
 
     // Remove persisted workspace path (frontend localStorage + Rust last-workspace.json)

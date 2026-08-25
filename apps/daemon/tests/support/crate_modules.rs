@@ -13,6 +13,10 @@ mod cursor_install;
 // crate root only has the modules it declares here.
 #[path = "../../src/device_id.rs"]
 mod device_id;
+// Streaming download helper shared by `opencode_install` and `pi_install`;
+// an integration-test crate root only has the modules it declares here.
+#[path = "../../src/download_progress.rs"]
+mod download_progress;
 #[path = "../../src/error.rs"]
 mod error;
 #[path = "../../src/http/mod.rs"]
@@ -27,10 +31,20 @@ mod opencode_install;
 mod opencode_settings;
 #[path = "../../src/pi_install/mod.rs"]
 mod pi_install;
+// Spawning helper introduced by #1045. Only the bin crate root declared it, so
+// every src module that reached for `crate::process_util::CommandNoWindow`
+// failed to resolve here — the same E0433/E0432 shape the note below covers.
+#[path = "../../src/process_util.rs"]
+mod process_util;
 #[path = "../../src/proto.rs"]
 mod proto;
 #[path = "../../src/provider_config.rs"]
 mod provider_config;
+// Same rule as `process_util` above: `opencode_install` and `pi_install` both
+// reach for `crate::route_probe`, and an integration-test crate root only has
+// what it declares here.
+#[path = "../../src/route_probe.rs"]
+mod route_probe;
 #[path = "../../src/runtime/mod.rs"]
 mod runtime;
 #[path = "../../src/sync/mod.rs"]

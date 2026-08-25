@@ -316,25 +316,9 @@ describe('App', () => {
     expect(screen.getByText('settings')).toBeInTheDocument()
   })
 
-  it('opens files in the right panel (not the left dock) in default layout', () => {
-    workspaceStoreState.workspacePath = '/workspace'
-    workspaceStoreState.isPanelOpen = true
-    workspaceStoreState.activeTab = 'files'
-
-    render(<App />)
-
-    // Files no longer triggers the left dock — the "Back to sidebar"
-    // chrome only appears for shortcuts.
-    expect(screen.queryByTitle('Back to sidebar')).toBeNull()
-  })
-
-  it('shows a header files icon in default layout', () => {
-    workspaceStoreState.workspacePath = '/workspace'
-
-    const { container } = render(<App />)
-
-    expect(container.querySelector('.lucide-book-open')).toBeTruthy()
-  })
+  // The `files` right-panel tab and its BookOpen header entry went with the RAG
+  // knowledge browser; team knowledge is reached from the left-nav Knowledge
+  // column instead. The two tests that covered them were removed with it.
 
   it('does not show the DEV badge even when devUnlocked is true', () => {
     teamModeState.devUnlocked = true

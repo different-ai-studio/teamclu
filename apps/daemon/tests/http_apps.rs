@@ -20,6 +20,10 @@ mod cursor_install;
 // Same reason: `http::server` names `crate::device_id` for /v1/info.
 #[path = "../src/device_id.rs"]
 mod device_id;
+// Streaming download helper shared by `opencode_install` and `pi_install`;
+// an integration-test crate root only has the modules it declares here.
+#[path = "../src/download_progress.rs"]
+mod download_progress;
 #[path = "../src/error.rs"]
 mod error;
 #[path = "../src/http/mod.rs"]
@@ -34,10 +38,14 @@ mod opencode_install;
 mod opencode_settings;
 #[path = "../src/pi_install/mod.rs"]
 mod pi_install;
+#[path = "../src/process_util.rs"]
+mod process_util;
 #[path = "../src/proto.rs"]
 mod proto;
 #[path = "../src/provider_config.rs"]
 mod provider_config;
+#[path = "../src/route_probe.rs"]
+mod route_probe;
 #[path = "../src/runtime/mod.rs"]
 mod runtime;
 #[path = "../src/sync/mod.rs"]

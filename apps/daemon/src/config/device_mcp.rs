@@ -100,6 +100,40 @@ fn write_raw(
     })
 }
 
+/// This deployment's app URL scheme, for workspace-scoped MCP tools that emit
+/// deeplinks (e.g. `get_session_deeplink`). Precedence:
+///   1. `TEAMCLU_APP_SCHEME` env — set by the desktop when it spawns the
+///      managed amuxd (baked from `build.config.json`'s `app.scheme`); always
+///      correct for a desktop-managed daemon.
+///   2. `DaemonConfig.app_scheme` — captured from the onboarding invite; the
+///      standalone path (cron / self-hosted daemon not launched by the app).
+///   3. `None` — the introspect tool falls back to its built-in `teamclu`.
+///
+/// Without this, a branded build (scheme `acme`) still emits `teamclu://`
+/// deeplinks from MCP, which the OS routes to the wrong handler (or none).
+fn resolve_app_scheme() -> Option<String> {
+    if let Ok(raw) = std::env::var("TEAMCLU_APP_SCHEME") {
+        let s = raw.trim();
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    super::DaemonConfig::load(&super::DaemonConfig::default_path())
+        .ok()
+        .and_then(|c| c.app_scheme)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Whether a resolved scheme is safe to inject as `TEAMCLU_APP_SCHEME` — a URL
+/// scheme must start with a lowercase letter then `[a-z0-9+.-]` (same rule as
+/// the frontend branding script and the introspect tool's own validator).
+fn is_valid_scheme(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-'))
+}
+
 /// `teamclu-introspect`, the bundled sidecar.
 ///
 /// It was the last of the inherent servers still written per workspace, and the
@@ -112,22 +146,60 @@ fn write_raw(
 /// written when a runtime first prepares a workspace, so a workspace nothing
 /// had run in yet simply had no introspect — which is why it was missing from
 /// the MCP panel on a machine that has the sidecar installed.
+///
+/// `environment.TEAMCLU_APP_SCHEME` is injected when a brand scheme resolves,
+/// so `get_session_deeplink` emits deeplinks with THIS build's scheme rather
+/// than the hardcoded `teamclu://`.
 fn introspect_mcp_config() -> Option<serde_json::Value> {
     let binary = crate::runtime::supervisor::resolve_introspect_binary()?;
     let sock = super::DaemonConfig::sock_path();
-    Some(serde_json::json!({
-        "type": "local",
-        "enabled": true,
-        "command": [
-            binary,
-            "--api-port",
-            crate::runtime::supervisor::INTROSPECT_API_PORT.to_string(),
-            // `send_channel_message`'s token branch is routed by the daemon, not
-            // by the desktop app on `--api-port`: only the daemon can resolve a
-            // reply token, and an unattended run has no app to ask.
-            format!("--sock={}", sock.to_string_lossy())
-        ]
-    }))
+    let scheme = resolve_app_scheme()
+        .filter(|s| is_valid_scheme(s));
+    let entry = match scheme {
+        Some(s) => serde_json::json!({
+            "type": "local",
+            "enabled": true,
+            "command": [
+                binary,
+                "--api-port",
+                crate::runtime::supervisor::INTROSPECT_API_PORT.to_string(),
+                // `send_channel_message`'s token branch is routed by the daemon, not
+                // by the desktop app on `--api-port`: only the daemon can resolve a
+                // reply token, and an unattended run has no app to ask.
+                format!("--sock={}", sock.to_string_lossy())
+            ],
+            "environment": { "TEAMCLU_APP_SCHEME": s }
+        }),
+        None => serde_json::json!({
+            "type": "local",
+            "enabled": true,
+            "command": [
+                binary,
+                "--api-port",
+                crate::runtime::supervisor::INTROSPECT_API_PORT.to_string(),
+                format!("--sock={}", sock.to_string_lossy())
+            ]
+        }),
+    };
+    Some(entry)
+}
+
+/// Whether the existing `teamclu-introspect` entry must be rewritten for the
+/// scheme, on top of the dead-binary check. The env is only enforced when a
+/// scheme actually resolved; without one we leave a hand-written entry alone
+/// rather than thrash it on every call. A stale-or-missing
+/// `environment.TEAMCLU_APP_SCHEME` is what self-heals already-onboarded
+/// daemons (whose device file predates this field) onto the brand scheme.
+fn introspect_scheme_stale(existing: &serde_json::Value, scheme: Option<&str>) -> bool {
+    let Some(s) = scheme else {
+        return false;
+    };
+    let current = existing
+        .get("environment")
+        .and_then(|e| e.get("TEAMCLU_APP_SCHEME"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    current != s
 }
 
 fn autoui_environment() -> serde_json::Value {
@@ -168,10 +240,20 @@ pub fn ensure_device_mcp() -> Result<bool, WorkspaceControlError> {
         }
     }
 
+    // Resolve the brand scheme once for this pass. An invalid value is dropped
+    // (the introspect tool's own validator will then reject/default it) so we
+    // never write a bogus scheme into the device file.
+    let app_scheme = resolve_app_scheme().filter(|s| is_valid_scheme(s));
+
     // Refreshed on a dead path only: a reinstall moves the sidecar, but a user
-    // who disabled introspect should not find it back on after one.
+    // who disabled introspect should not find it back on after one. Also
+    // refresh when the resolved scheme env is missing/stale — that self-heals a
+    // device file written before the scheme was injected, without a re-onboard.
     let introspect_stale = match mcp_obj.get("teamclu-introspect") {
-        Some(existing) => crate::runtime::supervisor::introspect_command_stale(existing),
+        Some(existing) => {
+            crate::runtime::supervisor::introspect_command_stale(existing)
+                || introspect_scheme_stale(existing, app_scheme.as_deref())
+        }
         None => true,
     };
     if introspect_stale {
@@ -399,5 +481,49 @@ mod tests {
             assert!(ensure_device_mcp().unwrap());
             assert!(load_device_mcp().contains_key("chrome-control"));
         })
+    }
+
+    #[test]
+    fn is_valid_scheme_accepts_brand_schemes_and_rejects_garbage() {
+        assert!(is_valid_scheme("teamclu"));
+        assert!(is_valid_scheme("acme"));
+        assert!(is_valid_scheme("teamclu-dev"));
+        assert!(is_valid_scheme("a.b+c-d"));
+        // A scheme must start with a lowercase letter.
+        assert!(!is_valid_scheme("Teamclu"));
+        assert!(!is_valid_scheme("1acme"));
+        assert!(!is_valid_scheme(""));
+        // No spaces, no slashes — these would misroute a deeplink.
+        assert!(!is_valid_scheme("ac me"));
+        assert!(!is_valid_scheme("acme://"));
+    }
+
+    #[test]
+    fn introspect_scheme_stale_self_heals_a_pre_scheme_entry() {
+        // A device file written before this fix has no `environment` block —
+        // once a scheme resolves, the entry must be rewritten so the brand
+        // scheme is injected. Without this, branded builds keep emitting
+        // teamclu:// even after the daemon learned the real scheme.
+        let pre_fix = serde_json::json!({
+            "type": "local",
+            "enabled": true,
+            "command": ["/bin/teamclu-introspect", "--api-port", "13144", "--sock=/tmp/x"]
+        });
+        assert!(introspect_scheme_stale(&pre_fix, Some("acme")));
+
+        // After the refresh carries the right env, it is no longer stale.
+        let healed = serde_json::json!({
+            "type": "local",
+            "enabled": true,
+            "command": ["/bin/teamclu-introspect", "--api-port", "13144", "--sock=/tmp/x"],
+            "environment": { "TEAMCLU_APP_SCHEME": "acme" }
+        });
+        assert!(!introspect_scheme_stale(&healed, Some("acme")));
+        // A different scheme is still stale (re-brand must take effect).
+        assert!(introspect_scheme_stale(&healed, Some("teamclu")));
+
+        // No scheme resolved → never claim stale on env grounds. We must not
+        // thrash an entry whose scheme we cannot determine.
+        assert!(!introspect_scheme_stale(&pre_fix, None));
     }
 }

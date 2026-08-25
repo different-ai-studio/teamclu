@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::io::Cursor;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::sync::OnceLock;
@@ -470,7 +470,7 @@ fn extract_updater_archive(bytes: &[u8], dest: &Path) -> Result<(), String> {
 
 /// Install the update by extracting the tar.gz and replacing the .app bundle (macOS).
 #[cfg(target_os = "macos")]
-fn install_update(bytes: &[u8]) -> Result<(), String> {
+fn install_update(bytes: &[u8], _signature: &str) -> Result<(), String> {
     if cfg!(debug_assertions) {
         return Err("Auto-update installation is disabled in development builds".to_string());
     }
@@ -569,10 +569,149 @@ mod install_tests {
     }
 }
 
-// Stub for non-macOS platforms
-#[cfg(not(target_os = "macos"))]
-fn install_update(_bytes: &[u8]) -> Result<(), String> {
-    Err("Auto-update installation is only supported on macOS currently".to_string())
+/// Where the downloaded Windows installer waits between "install" and "restart".
+///
+/// macOS replaces the bundle in place while the app runs, so its install step
+/// really installs. An NSIS installer cannot patch an install that is still
+/// running, so on Windows "install" can only mean *stage*: write the verified
+/// installer out and leave it for [`relaunch_and_exit`] to run on the way out.
+/// The app's two-step UI — install, then "Restart to apply" — already has the
+/// shape that needs, so the split costs the user nothing.
+///
+/// The consequence worth knowing: on Windows, quitting instead of restarting
+/// drops the update on the floor and the next launch offers it again. On macOS
+/// the bytes are already on disk by then.
+#[cfg(target_os = "windows")]
+static STAGED_INSTALLER: std::sync::Mutex<Option<StagedInstaller>> = std::sync::Mutex::new(None);
+
+/// A staged installer and the signature it was accepted under.
+///
+/// The signature is kept because staging and launching are separated by however
+/// long the user takes to click Restart, and what is launched runs elevated.
+#[cfg(target_os = "windows")]
+#[derive(Clone)]
+struct StagedInstaller {
+    path: PathBuf,
+    signature: String,
+}
+
+/// A fresh, randomly-named staging directory per download.
+///
+/// The first version used one fixed path, reasoning that overwriting it could
+/// not grow without bound. That is true and beside the point: a predictable,
+/// user-writable path holding something we later hand to `ShellExecuteW` — which
+/// raises a UAC prompt naming *our* installer — is a swap window for any code
+/// already running as the user. Randomizing removes the prediction, and
+/// `create_new` refuses a directory (or junction) somebody pre-created.
+/// tauri-plugin-updater randomizes for the same reason.
+///
+/// Old staging directories are swept on the way in, so nothing accumulates.
+#[cfg(target_os = "windows")]
+fn new_staging_dir() -> Result<PathBuf, String> {
+    const PREFIX: &str = "teamclu-update-";
+    let temp = std::env::temp_dir();
+
+    // Best-effort sweep of previous runs. A directory still in use by another
+    // instance fails to remove and is left alone, which is the safe outcome.
+    if let Ok(entries) = std::fs::read_dir(&temp) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(PREFIX) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+
+    let dir = temp.join(format!("{PREFIX}{}", nanoid::nanoid!(16)));
+    std::fs::create_dir(&dir).map_err(|e| format!("Cannot create {}: {}", dir.display(), e))?;
+    Ok(dir)
+}
+
+/// Write the verified installer where [`run_windows_installer`] can find it.
+///
+/// Deliberately not a `NamedTempFile`: the file has to outlive this process —
+/// the installer runs while the app is exiting, and a temp handle dropped at
+/// exit would delete the .exe out from under it.
+#[cfg(target_os = "windows")]
+fn stage_windows_installer(bytes: &[u8]) -> Result<PathBuf, String> {
+    // The signature already proved these bytes are ours; this only catches a
+    // manifest pointing at the wrong *kind* of artifact (a .msi, a zip), which
+    // would otherwise fail much later as an unhelpful shell error.
+    if !bytes.starts_with(b"MZ") {
+        return Err("Downloaded update is not a Windows installer executable".to_string());
+    }
+    let path = new_staging_dir()?.join("update-setup.exe");
+    std::fs::write(&path, bytes).map_err(|e| format!("Cannot write {}: {}", path.display(), e))?;
+    Ok(path)
+}
+
+/// Stage the update. See [`STAGED_INSTALLER`] for why this does not install.
+#[cfg(target_os = "windows")]
+fn install_update(bytes: &[u8], signature: &str) -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        return Err("Auto-update installation is disabled in development builds".to_string());
+    }
+
+    let path = stage_windows_installer(bytes)?;
+    log::info!("[updater] staged installer at {}", path.display());
+    *STAGED_INSTALLER.lock().unwrap_or_else(|e| e.into_inner()) = Some(StagedInstaller {
+        path,
+        signature: signature.to_string(),
+    });
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn install_update(_bytes: &[u8], _signature: &str) -> Result<(), String> {
+    Err("Auto-update installation is not supported on this platform yet".to_string())
+}
+
+/// Hand the staged NSIS installer to the shell so it can replace this install.
+///
+/// `ShellExecuteW`, not `Command::spawn`: a per-machine install lives under
+/// Program Files and its installer asks for elevation in its manifest.
+/// `CreateProcess` — what `Command` uses — refuses that outright with
+/// ERROR_ELEVATION_REQUIRED instead of showing the UAC prompt. The shell's
+/// "open" verb is what raises it. This is the same call tauri-plugin-updater
+/// makes, and the flags are its `Passive` mode:
+///
+/// - `/P` — progress window, nothing to click
+/// - `/R` — relaunch the app once the install finishes
+/// - `/UPDATE` — tells the Tauri NSIS template this replaces an existing
+///   install (it closes the running app itself) rather than being a first run
+#[cfg(target_os = "windows")]
+fn run_windows_installer(path: &Path) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+    fn wide(value: &OsStr) -> Vec<u16> {
+        value.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let verb = wide(OsStr::new("open"));
+    let file = wide(path.as_os_str());
+    let parameters = wide(OsStr::new("/P /R /UPDATE"));
+
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            parameters.as_ptr(),
+            std::ptr::null(),
+            SW_SHOW,
+        )
+    };
+    // ShellExecuteW returns a fake HINSTANCE; anything <= 32 is an error code,
+    // and 1223 (ERROR_CANCELLED) specifically means the user declined UAC.
+    let code = result as isize;
+    if code <= 32 {
+        return Err(format!(
+            "Failed to launch the update installer (ShellExecute returned {code})"
+        ));
+    }
+    Ok(())
 }
 
 /// Maximum number of download retry attempts
@@ -808,7 +947,7 @@ pub async fn download_and_install_update<R: Runtime>(
     verify_signature(&bytes, &signature, pubkey)?;
 
     // 3. Install (extract tar.gz and replace .app bundle)
-    install_update(&bytes)?;
+    install_update(&bytes, &signature)?;
 
     Ok(())
 }
@@ -860,7 +999,81 @@ fn relaunch_and_exit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows applies the update here rather than in `install_update`: the NSIS
+/// installer replaces a *stopped* install, so it can only run as the app leaves.
+///
+/// With nothing staged this is a plain restart — the same thing every other
+/// non-macOS platform does.
+#[cfg(target_os = "windows")]
+fn relaunch_and_exit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    // `try_state` lives on the `Manager` trait. Imported inside the function so
+    // the other platforms do not carry an unused import — and missing it is why
+    // this file first failed to compile for Windows: nothing on a macOS dev
+    // machine or in PR CI built this block until the `desktop-windows` job
+    // landed in this same branch.
+    use tauri::Manager;
+
+    // Read, don't take: a launch that fails (a declined UAC prompt) must leave
+    // the staged installer where it is. Taking it up front turned the second
+    // click of "Restart Now" into a plain restart that silently skipped the
+    // update the user had already downloaded.
+    let staged: Option<StagedInstaller> = STAGED_INSTALLER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let Some(staged) = staged else {
+        app.request_restart();
+        return Ok(());
+    };
+    let path = staged.path.clone();
+
+    // Re-verify the bytes on disk, not the bytes we downloaded. Everything
+    // between staging and here is somebody else's opportunity: this file is
+    // about to be launched through `ShellExecuteW`, which raises a UAC prompt
+    // in our name, so "we verified it earlier" is not the same claim as "this
+    // is what we verified".
+    let on_disk = std::fs::read(&path).map_err(|e| {
+        format!(
+            "The staged installer {} could not be read ({e}); download the update again",
+            path.display()
+        )
+    })?;
+    verify_signature(&on_disk, &staged.signature, get_updater_pubkey()).map_err(|e| {
+        // Do not launch, and do not keep it around to be launched later.
+        let _ = std::fs::remove_dir_all(path.parent().unwrap_or(&path));
+        *STAGED_INSTALLER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        format!(
+            "The staged installer no longer matches its signature ({e}); download the update again"
+        )
+    })?;
+
+    // Launch before stopping amuxd, not after: ShellExecuteW reports failure
+    // synchronously (a declined UAC prompt, most likely), and on that path the
+    // app has to stay usable — killing its daemon first would leave it running
+    // against nothing.
+    run_windows_installer(&path)?;
+    log::info!("[updater] launched {}", path.display());
+    *STAGED_INSTALLER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+
+    // Then stop amuxd, before the installer gets as far as copying files.
+    // Windows will not overwrite a running binary, and `amuxd.exe` sits in the
+    // very directory being replaced — the NSIS template closes the app it knows
+    // about, not our sidecar. `RunEvent::Exit` would do this too, but only
+    // after the installer is already under way; the supervisor's shutdown is
+    // once-only, so doing it here just moves it earlier.
+    if let Some(supervisor) = app.try_state::<crate::commands::amuxd_supervisor::AmuxdSupervisor>()
+    {
+        supervisor.shutdown_blocking();
+    }
+
+    // `/R` brings the app back once the install finishes, so this exit is the
+    // end of our part. Exit through Tauri rather than `process::exit` so the
+    // terminal registry and the rest of `RunEvent::Exit` still run.
+    app.exit(0);
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn relaunch_and_exit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     app.request_restart();
     Ok(())

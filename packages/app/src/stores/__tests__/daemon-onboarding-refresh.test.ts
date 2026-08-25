@@ -132,11 +132,6 @@ vi.mock('@tauri-apps/api/core', () => ({
       if (h.installServiceShouldThrow) throw new Error('managed amuxd start boom')
       return undefined
     }
-    // Compat alias still exists in desktop; keep ignored if accidentally called.
-    if (cmd === 'daemon_install_service') {
-      if (h.installServiceShouldThrow) throw new Error('install-service boom')
-      return undefined
-    }
     if (cmd === 'register_daemon_workspace') {
       h.registerArgs = (args ?? null) as { workspacePath?: string } | null
       return { workspace_id: 'ws1', path: (args as { workspacePath?: string })?.workspacePath ?? '', display_name: 't1' }

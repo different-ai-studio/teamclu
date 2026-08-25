@@ -21,8 +21,8 @@
 use std::path::PathBuf;
 
 use super::{
-    command_with_runtime_path, has_command, mirrored_bundle, official_registry_available, progress,
-    required_mcp_sdk_version,
+    apply_registry, command_with_runtime_path, has_command, mirrored_bundle, progress,
+    registry_source, required_mcp_sdk_version, run_streaming, RegistrySource,
 };
 use crate::opencode_install::version_ge;
 
@@ -138,16 +138,15 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("cannot write the pi extension package.json: {e}"))?;
     let prefix = dir.to_string_lossy().to_string();
 
-    let (spec, offline, _bundle) = if official_registry_available(NPM_PKG, &want) {
-        progress(
-            "source",
-            "official npm registry is reachable; installing the MCP SDK from upstream",
-        );
-        (format!("{NPM_PKG}@{want}"), false, None)
-    } else {
+    // Same registry decision pi itself was installed through: route speed is a
+    // property of the network, so it is measured once per process.
+    let source = registry_source();
+    let (spec, offline, _bundle) = if source == RegistrySource::OssBundle {
         let bundle = mirrored_bundle("MCP SDK", MIRROR_BASE, &want)?;
         let path = bundle.path().to_string_lossy().to_string();
         (path, true, Some(bundle))
+    } else {
+        (format!("{NPM_PKG}@{want}"), false, None)
     };
 
     let mut args: Vec<String> = vec![
@@ -168,18 +167,11 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
     args.push(spec);
 
     progress("install", &format!("running npm {}", args.join(" ")));
-    let output = command_with_runtime_path("npm")
-        .args(args.iter().map(String::as_str))
-        .output()
-        .map_err(|e| anyhow::anyhow!("failed to run npm: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
-        anyhow::bail!(
-            "MCP SDK install failed ({}): {}",
-            output.status,
-            if stderr.is_empty() { stdout } else { stderr }
-        );
+    let mut command = command_with_runtime_path("npm");
+    apply_registry(&mut command, source);
+    let (status, tail) = run_streaming("npm", command.args(args.iter().map(String::as_str)))?;
+    if !status.success() {
+        anyhow::bail!("MCP SDK install failed ({status}): {tail}");
     }
     // An `--offline` install of a bundled tarball can succeed while resolving
     // to a different version than the manifest asked for; check the tree, not

@@ -401,8 +401,7 @@ async function waitForDaemonCloudAuthOk(timeoutMs = 30_000): Promise<boolean> {
 async function ensureHealthy(): Promise<boolean> {
   let probe = await probeDaemonHttp()
   if (probe.ok) return true
-  // Desktop-managed amuxd: restart the sidecar held by the desktop process
-  // (compat command `daemon_install_service` now maps to the same restart).
+  // Desktop-managed amuxd: restart the sidecar held by the desktop process.
   const { invoke } = await import('@tauri-apps/api/core')
   // Both spawn attempts are best-effort — polling below is what decides the
   // outcome — so this step is never the one blamed for a failure.

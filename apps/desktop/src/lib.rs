@@ -280,9 +280,6 @@ pub fn run() {
     let _guard = rt.enter();
     tauri::async_runtime::set(rt.handle().clone());
 
-    // RAG state for Tauri commands (MCP bridge uses standalone rag-mcp-server; see binaries README)
-    let rag_state = commands::knowledge::RagState::default();
-
     // The Cloud API URL comes solely from the frontend build config now; remove
     // any deprecated on-disk server config so a stale persisted cloudApiUrl can
     // never shadow it. Best-effort, non-fatal.
@@ -339,7 +336,6 @@ pub fn run() {
         .manage(commands::filewatcher::FileWatcherState::default())
         .manage(commands::gateway::GatewayState::default())
         .manage(commands::cron::CronState::default())
-        .manage(rag_state)
         .manage(local_cache::commands::LocalCacheState::default())
         .manage(commands::amuxd_supervisor::AmuxdSupervisor::new())
 
@@ -357,7 +353,6 @@ pub fn run() {
         .manage::<crate::mqtt::MqttBus>(std::sync::Arc::new(crate::mqtt::MqttBusInner::new()))
         .manage(std::sync::Arc::new(crate::terminal::Registry::new()))
         .invoke_handler(tauri::generate_handler![
-            commands::greet,
             commands::os_full_name,
             commands::get_device_hostname,
             commands::daemon_http::daemon_rpc,
@@ -374,17 +369,6 @@ pub fn run() {
             commands::open_with_default_app,
             commands::open_in_terminal,
             commands::system_appearance::get_system_accent_color,
-            commands::knowledge::convert_to_markdown,
-            commands::knowledge::batch_convert_to_markdown,
-            commands::knowledge::rag_index,
-            commands::knowledge::rag_get_index_status,
-            commands::knowledge::rag_search,
-            commands::knowledge::rag_list_documents,
-            commands::knowledge::rag_delete_document,
-            commands::knowledge::rag_get_config,
-            commands::knowledge::rag_save_config,
-            commands::knowledge::rag_start_watcher,
-            commands::knowledge::rag_stop_watcher,
             commands::window::create_workspace_window,
             commands::window::open_local_agent_panel_window,
             commands::window::register_window_workspace,
@@ -431,11 +415,7 @@ pub fn run() {
             commands::cron::cron_run_job,
             commands::cron::cron_get_runs,
             commands::cron::cron_refresh_delivery,
-            commands::daemon_installer::install_local_daemon,
-            commands::daemon_installer::daemon_status,
-            commands::daemon_installer::uninstall_local_daemon,
             commands::daemon_onboarding::daemon_init,
-            commands::daemon_onboarding::daemon_install_service,
             commands::daemon_onboarding::daemon_clear,
             commands::amuxd_supervisor::daemon_ensure_running,
             commands::amuxd_supervisor::daemon_restart_managed,
@@ -467,15 +447,7 @@ pub fn run() {
             commands::team_skills::team_skill_retire_personal,
             commands::team_skills::team_skill_fork,
             commands::agents_skills::ensure_agents_skills_paths,
-            commands::skillssh::fetch_skillssh_leaderboard,
-            commands::skillssh::search_skillssh_skills,
-            commands::skillssh::fetch_skillssh_content,
             commands::skillssh::import_skill_from_zip,
-            commands::skillssh::npx_skills_add,
-            commands::skillssh::npx_skills_remove,
-            commands::skillssh::npx_skills_update,
-            commands::skillssh::npx_skills_check,
-            commands::skillssh::npx_skills_list,
             commands::updater::check_update,
             commands::updater::download_and_install_update,
             commands::updater::restart_app,
@@ -486,14 +458,13 @@ pub fn run() {
             commands::terminal::terminal_subscribe,
             commands::terminal::terminal_write,
             commands::team::workspace_read_team_meta,
-            commands::team::workspace_delete_team_repo,
-            commands::team_sync_proxy::team_sync_repo,
             commands::team_sync_proxy::team_file_versions,
             commands::team_sync_proxy::team_file_content,
             commands::team_sync_proxy::team_changed_files,
             commands::team_sync_proxy::team_restore_file_version,
             commands::deps::check_dependencies,
             commands::deps::opencode_versions,
+            commands::deps::pi_versions,
             commands::deps::install_dependency,
             commands::deps::update_dependency,
             commands::env_vars::env_var_get,
@@ -576,11 +547,9 @@ pub fn run() {
             commands::window_chrome::set_window_close_preference,
             commands::tray_menu::update_tray_menu_labels,
             commands::app_menu::update_app_menu_labels,
-            commands::team_share::team_share_create,
             commands::team_share::enable::team_share_set_team_secret,
             commands::team_share::enable::team_share_get_team_secret,
             commands::team_share::enable::team_share_get_status,
-            commands::team_share::join::team_share_join_existing,
             commands::team_litellm::team_litellm_setup,
             commands::team_sync_proxy::oss_sync_now,
             commands::team_sync_proxy::oss_sync_status,
@@ -589,8 +558,6 @@ pub fn run() {
             commands::team_sync_proxy::oss_sync_get_version_content,
             commands::team_sync_proxy::oss_sync_restore_version,
             commands::team_sync_proxy::oss_sync_resolve_conflict,
-            commands::team_sync_proxy::oss_sync_set_team_sync_mode,
-            commands::team_sync_proxy::oss_sync_get_team_sync_mode,
         ])
         .setup(|app| {
             let setup_t0 = std::time::Instant::now();
@@ -601,15 +568,6 @@ pub fn run() {
             // Register aptabase here (inside setup) so the Tokio runtime is available
             // for its internal `tokio::spawn` polling loop.
             app.handle().plugin(tauri_plugin_aptabase::Builder::new("A-US-9094113207").build())?;
-
-            // The RAG surface agents actually use is served by the introspect
-            // API below (`/knowledge-search`, `/knowledge-add`,
-            // `/knowledge-list` on 13144). A second HTTP server on 13143
-            // exposed the same store under `/api/rag/*` for an "MCP bridge"
-            // that no longer exists — nothing in the repo, the sidecar
-            // binaries, or any MCP config ever called it. All it still did was
-            // fail to bind on relaunch and report it (Sentry TEAMCLU-2, the
-            // loudest Rust issue we had), so it is gone.
 
             // Start introspect MCP internal API server
             {
