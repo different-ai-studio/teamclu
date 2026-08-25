@@ -880,7 +880,81 @@ does not exist yet — the console token bypasses it. The signing is pinned
 against Alibaba's documented worked example, which remains the strongest check
 available without a key.
 
-## 14. Audio path — written, unverified
+## 14. Audio path — RUN ON HARDWARE 2026-08-25
+
+**The uplink works end to end on the real device.** Superseded everything this
+section used to speculate about; kept below for the reasoning, corrected here.
+
+```
+device:  capture task done: captured=142 published=142 dropped=0
+amuxd:   voice transcript final: 测试测试测试。
+```
+
+Microphone → ES8311 → I2S 16 kHz → Opus → MQTT → EMQX → amuxd → Alibaba NLS →
+text. Every hop is real hardware and a real vendor.
+
+### The big question, answered
+
+**`esp_codec_dev_open` DOES reprogram the I2S channel clock.** This section
+called it "the single largest unverified assumption in the audio path". The
+serial says otherwise:
+
+```
+I2S_IF: STD: RX, sample_rate_hz: 16000, mclk_multiple: 256, clk_src: 6
+Adev_Codec: Open codec device OK
+[HAL-Audio] codec reopened at 16000 Hz
+```
+
+and it restores to 44100 Hz cleanly at turn end. Capture really is at 16 kHz.
+
+### Three firmware defects the hardware found, each hiding the next
+
+1. **Logging was silently broken.** 15 calls used `mclog::info(kTag, "...")`,
+   whose first parameter is the FORMAT STRING — `kTag` was printed as the
+   message and the real text discarded. Every diagnostic in the capture path
+   came out as the bare word `main`. Nothing below was visible until this was
+   fixed. `tagInfo`/`tagWarn`/`tagError` take a tag; the bare ones do not.
+
+2. **`reopen()` closed the codec out from under three other tasks.** It held
+   `_mutex`, but the play task copies its buffer under that lock and then
+   writes for the length of the audio holding nothing; capture and the spectrum
+   reader touch the device on their own tasks. Now every `esp_codec_dev_*` call
+   takes `_codec_mutex` — per call, not per buffer, so a reopen waits one
+   512-sample chunk rather than a whole utterance.
+
+3. **The capture task's stack was a third of what `opus_encode` needs.** 8192
+   bytes overflowed into the adjacent TCB. The symptom was **not** a
+   stack-overflow report but a crash inside the SCHEDULER —
+   `prvSelectHighestPriorityTaskSMP` reading `0xa5a5a5a5` out of a corrupted
+   ready list — because canary checking only runs at a context switch, long
+   after the damage. Now 32768, and the task logs its own high-water mark: at
+   24576 it reported 1248 bytes left, so ~23 KB is actually used. That number
+   is a measurement, not a guess.
+
+### Still open on the device
+
+- **The portal never reboots after saving.** `Save()` writes the credentials
+  and returns; nothing restarts the device or leaves AP mode, so a user who
+  submits the form correctly sees no change and has no idea what to do next.
+- **`No AP found` does not log the SSID it is looking for**, so a typo in the
+  portal is indistinguishable from an absent access point.
+- **Rescan backoff grows to 160 s+**, which makes recovery from a transient AP
+  outage (a phone hotspot sleeping) take minutes. Rebooting resets it.
+- **The device receives its own ctl echo** (`ctl unknown type, ignored`) — the
+  same defect fixed on the daemon side with a `from` tag.
+- USB-Serial/JTAG **re-enumerates on every reset**, so a `cat` on the tty
+  started before a reboot silently reads a dead node. Reopen in a loop.
+
+### Still open on the daemon
+
+- **A cancelled turn holds its TTS connection for up to `idle_timeout`.**
+  `cancel()` sets a flag, but `run_turn` is blocked in
+  `timeout(120s, live.recv())` and only notices when that fires. Observed: a
+  turn rejected at 05:02:02 exited at 05:04:02.
+- **`voice mic frame before turn_start; dropped` is logged per frame** — ~100
+  lines for one 2-second press. Should be counted, not narrated.
+
+## 14.1 Audio path — the original reasoning (superseded by §14)
 
 Everything in `main/audio/` and the codec changes in `hal_audio.cpp` were
 written while the device was unavailable. It compiles and is wired end to end;
