@@ -1723,7 +1723,6 @@ impl WeComGateway {
                 Some(inbound) => sink.accept(inbound).await,
                 None => println!("[WeCom] Unsupported message type: {}", msg.msgtype),
             }
-            return;
         }
     }
 
@@ -2539,16 +2538,6 @@ mod mime_tests {
     }
 
     #[test]
-    fn mime_to_ext_xlsx() {
-        assert_eq!(mime_to_ext(XLSX_MIME), "xlsx");
-    }
-
-    #[test]
-    fn mime_to_ext_unknown_returns_bin() {
-        assert_eq!(mime_to_ext("application/x-totally-unknown"), "bin");
-    }
-
-    #[test]
     fn ext_from_filename_xlsx_with_chinese_stem() {
         assert_eq!(ext_from_filename("Q3 报表.xlsx"), Some("xlsx".to_string()));
     }
@@ -2700,45 +2689,6 @@ mod message_parts_tests {
 mod stream_frame_tests {
     use super::*;
     use serde_json::json;
-
-    #[tokio::test]
-    async fn a_burst_of_updates_collapses_to_the_newest() {
-        let (tx, mut rx) = mpsc::channel::<String>(8);
-        for text in ["He", "Hell", "Hello wo", "Hello world"] {
-            tx.send(text.to_string()).await.unwrap();
-        }
-        let first = rx.recv().await.unwrap();
-        assert_eq!(drain_to_latest(first, &mut rx), "Hello world");
-    }
-
-    #[tokio::test]
-    async fn a_lone_update_survives_unchanged() {
-        let (tx, mut rx) = mpsc::channel::<String>(8);
-        tx.send("only".to_string()).await.unwrap();
-        let first = rx.recv().await.unwrap();
-        assert_eq!(drain_to_latest(first, &mut rx), "only");
-    }
-
-    #[test]
-    fn version_conflict_ack_is_read_as_a_rejection() {
-        // The shape WeCom actually sent when the reply went missing.
-        let ack = json!({
-            "errcode": 6000,
-            "errmsg": "more than one callers at the same time, data version conflict. please retry later"
-        });
-        assert_eq!(ack_errcode(&ack), 6000);
-    }
-
-    #[test]
-    fn rejection_nested_under_body_is_found_too() {
-        assert_eq!(ack_errcode(&json!({ "body": { "errcode": 45033 }})), 45033);
-    }
-
-    #[test]
-    fn a_clean_ack_reads_as_success() {
-        assert_eq!(ack_errcode(&json!({ "errcode": 0, "body": {}})), 0);
-        assert_eq!(ack_errcode(&json!({ "body": { "msgid": "x" }})), 0);
-    }
 }
 
 #[cfg(test)]

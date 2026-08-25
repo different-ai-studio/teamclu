@@ -9,9 +9,8 @@
 
 use std::path::Path;
 
+use crate::storage_namespace::WORKSPACE_CONFIG_FILE as CONFIG_FILE_NAME;
 use crate::WORKSPACE_META_DIR as TEAMCLU_DIR;
-
-const CONFIG_FILE_NAME: &str = "teamclu.json";
 
 fn ensure_teamclu_dir(workspace_path: &str) -> Result<(), String> {
     let dir = format!("{workspace_path}/{TEAMCLU_DIR}");
@@ -91,7 +90,7 @@ fn upsert_marked_block(existing: &str, prompt: &str) -> String {
     out
 }
 
-/// Upsert the TeamClu-managed block in `.teamclu/instructions/CLAUDE.md`.
+/// Upsert the TeamClu-managed block in `<workspace>/.teamclu/instructions/CLAUDE.md`.
 pub fn sync_teamclu_claude_md(workspace_path: &str, prompt: &str) -> Result<(), String> {
     ensure_teamclu_dir(workspace_path)?;
     let path = claude_md_path(workspace_path);
@@ -113,7 +112,7 @@ pub fn sync_teamclu_claude_md(workspace_path: &str, prompt: &str) -> Result<(), 
     std::fs::write(&path, next).map_err(|e| format!("Failed to write CLAUDE.md: {e}"))
 }
 
-/// Whether the managed system-prompt block exists in `.teamclu/instructions/CLAUDE.md`.
+/// Whether the managed system-prompt block exists in `<workspace>/.teamclu/instructions/CLAUDE.md`.
 pub fn claude_md_block_present(workspace_path: &str) -> bool {
     let path = claude_md_path(workspace_path);
     let Ok(content) = std::fs::read_to_string(&path) else {
