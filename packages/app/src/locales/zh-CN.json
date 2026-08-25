@@ -2701,6 +2701,7 @@
     "metadata": "技能元数据"
   },
   "knowledgeSync": {
+    "pending": "↑{{out}} ↓{{in}} · 点击同步",
     "syncedAt": "已同步 · {{time}}",
     "never": "尚未同步",
     "lastSyncTooltip": "上次同步：{{time}}",
@@ -2711,6 +2712,12 @@
     "conflicts": "{{count}} 个冲突待决策",
     "failedFiles": "{{count}} 个文件同步不了 · 持续重试",
     "failed": "同步失败"
+  },
+  "syncBadge": {
+    "localNew": "本机新增 —— 云端还没有",
+    "localModified": "本机已改 —— 还没推上去",
+    "remoteAhead": "云端有更新的版本等着拉",
+    "both": "两边都改过 —— 下次同步会冲突"
   },
   "knowledgeConflict": {
     "title": "冲突",

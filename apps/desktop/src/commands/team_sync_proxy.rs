@@ -18,6 +18,7 @@
 //!   - `POST /v1/team/secrets`           `{ teamId, ossTeamSecret? }`   scope `workspace:write`
 //!   - `POST /v1/team/link`              `{ path }`                    scope `workspace:write`
 //!   - `GET  /v1/team/conflicts?teamId`                               scope `workspace:read`
+//!   - `GET  /v1/team/remote-pending?teamId`                          scope `workspace:read`
 //!   - `POST /v1/team/conflicts/resolve` `{ teamId, path, sidecar?, choice }` scope `workspace:write`
 //!   - `GET  /v1/team/versions?teamId&path[&cursor]`                  scope `workspace:read`
 //!   - `POST /v1/team/versions/restore`  `{ teamId, path, contentHash }` scope `workspace:write`
@@ -690,6 +691,25 @@ pub async fn team_changed_files(team_id: String) -> Result<serde_json::Value, St
     daemon_request::<(), _>(
         reqwest::Method::GET,
         "/v1/team/changed",
+        &query,
+        &["workspace:read"],
+        None,
+    )
+    .await
+}
+
+/// `GET /v1/team/remote-pending` — what the cloud has that this device has not
+/// applied yet.
+///
+/// One FC round-trip per call and nothing cached on the daemon side, so callers
+/// ask on an event (panel shown, window focused, manual refresh), never on a
+/// timer.
+#[tauri::command]
+pub async fn team_remote_pending(team_id: String) -> Result<serde_json::Value, String> {
+    let query = format!("?teamId={}", urlencode(&team_id));
+    daemon_request::<(), _>(
+        reqwest::Method::GET,
+        "/v1/team/remote-pending",
         &query,
         &["workspace:read"],
         None,

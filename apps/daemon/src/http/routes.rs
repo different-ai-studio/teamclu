@@ -260,6 +260,7 @@ pub fn build(state: HttpState) -> Router {
         )
         .route("/v1/team/file", get(team_sync::get_file))
         .route("/v1/team/changed", get(team_sync::list_changed))
+        .route("/v1/team/remote-pending", get(team_sync::remote_pending))
         .layer(body_limit_layer(body_cap))
         .layer(middleware::from_fn_with_state(
             state.clone(),

@@ -65,6 +65,7 @@ import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
 import { SkillScanPaths } from './SkillScanPaths'
 import { KnowledgeSyncFooter } from '@/components/teamshare/KnowledgeSyncFooter'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
+import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
 
 const SECTION_META: Record<
   TeamShareSection,
@@ -313,6 +314,9 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
 
   const { available: syncAvailable, syncing, syncNow } = useTeamCloudSync()
   const loadConflicts = useTeamConflictsStore((s) => s.load)
+  const loadLocalChanges = useTeamSyncStatusStore((s) => s.loadLocal)
+  const refreshSyncStatus = useTeamSyncStatusStore((s) => s.refresh)
+  const clearRemotePending = useTeamSyncStatusStore((s) => s.clearRemote)
 
   // One button, two phases: re-read the local catalog first for instant
   // feedback, then run the cloud sync (when team share is enabled). The
@@ -322,13 +326,15 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     setRefreshing(true)
     try {
       await loadSection(section, { force: true, withTools: section === 'mcp' })
-      if (section === 'knowledge') await loadConflicts()
+      if (section === 'knowledge') {
+        await Promise.all([loadConflicts(), refreshSyncStatus({ force: true })])
+      }
       setTreeRefreshKey((k) => k + 1)
     } finally {
       setRefreshing(false)
     }
     if (syncAvailable) await syncNow()
-  }, [section, loadSection, loadConflicts, syncAvailable, syncNow])
+  }, [section, loadSection, loadConflicts, refreshSyncStatus, syncAvailable, syncNow])
 
   // Opening the column is the other moment the list has to be current: a
   // conflict may have been created by the daemon's own timer while this session
@@ -336,7 +342,10 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   React.useEffect(() => {
     if (section !== 'knowledge') return
     void loadConflicts()
-  }, [section, loadConflicts])
+    // Throttled inside the store: becoming visible twice in a minute is one
+    // round-trip, not two.
+    void refreshSyncStatus()
+  }, [section, loadConflicts, refreshSyncStatus])
 
   // A write inside the knowledge dir — a teammate's note arriving over sync, an
   // agent editing a document — also changes the count in this header and in the
@@ -349,6 +358,9 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       // decides whether a row is red. Reading them here is a local directory
       // scan through the daemon — no network, so it can follow every write.
       void loadConflicts()
+      // Same for "what have I got that the cloud hasn't": a disk scan. The
+      // cloud side is NOT re-probed here — a keystroke must not cost a request.
+      void loadLocalChanges()
     },
     500,
     section === 'knowledge' && !!knowledgeRoot,
@@ -362,13 +374,17 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       // A sync is exactly when a conflict is created, so this is the moment the
       // badge has to appear rather than at the next fs event.
       void loadConflicts()
+      // The sync just applied everything the cloud was holding, so the pending
+      // list is empty by construction — cheaper and more accurate than asking.
+      clearRemotePending()
+      void loadLocalChanges()
       // A sync can replace files inside an open package, so the trees have to
       // re-read rather than keep showing what was there before it ran.
       setTreeRefreshKey((k) => k + 1)
     }
     window.addEventListener(TEAM_SYNCED_EVENT, onSynced)
     return () => window.removeEventListener(TEAM_SYNCED_EVENT, onSynced)
-  }, [section, loadSection, loadConflicts])
+  }, [section, loadSection, loadConflicts, clearRemotePending, loadLocalChanges])
 
   const loading =
     section === 'skills'

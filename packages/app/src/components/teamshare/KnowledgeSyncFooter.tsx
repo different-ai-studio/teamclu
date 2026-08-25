@@ -1,10 +1,11 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, Check, Loader2, RefreshCw } from 'lucide-react'
+import { AlertTriangle, ArrowUpDown, Check, Loader2, RefreshCw } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useOssSyncStore } from '@/stores/oss-sync'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
+import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
 import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { openKnowledgeConflict } from '@/lib/tabs/open-conflict'
 import { formatRelativeTime, formatDateTime } from '@/lib/date-format'
@@ -38,11 +39,29 @@ export function KnowledgeSyncFooter() {
   const refresh = useOssSyncStore((s) => s.refresh)
   const conflicts = useTeamConflictsStore((s) => s.entries)
   const absPathFor = useTeamConflictsStore((s) => s.absPathFor)
+  const localBySyncKey = useTeamSyncStatusStore((s) => s.localBySyncKey)
+  const remoteBySyncKey = useTeamSyncStatusStore((s) => s.remoteBySyncKey)
+  const refreshSyncStatus = useTeamSyncStatusStore((s) => s.refresh)
+  const loadConflicts = useTeamConflictsStore((s) => s.load)
   const { available, syncNow } = useTeamCloudSync()
 
   React.useEffect(() => {
     void refresh()
   }, [refresh])
+
+  // The daemon syncs on its own timer whether this window is focused or not, so
+  // coming back to it is the moment this bar is most likely to be lying — it
+  // has no other way to hear about a background tick. Throttled in the store,
+  // and free apart from one status read.
+  React.useEffect(() => {
+    const onFocus = () => {
+      void refresh()
+      void loadConflicts()
+      void refreshSyncStatus()
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [refresh, loadConflicts, refreshSyncStatus])
 
   // Progress only exists inside a running tick, and the daemon is the only one
   // who knows it — hence a poll, and only while something is running.
@@ -91,6 +110,9 @@ export function KnowledgeSyncFooter() {
   // both beat the running sync's own chatter.
   const conflicted = conflicts.length > 0
   const broken = !syncing && (failed > 0 || !!lastError)
+  const outgoing = Object.keys(localBySyncKey).length
+  const incoming = Object.keys(remoteBySyncKey).length
+  const pending = outgoing + incoming > 0
 
   const onClick = conflicted ? openFirstConflict : () => void syncNow()
   // Conflicts are on this disk and can always be decided; running a sync needs
@@ -150,13 +172,25 @@ export function KnowledgeSyncFooter() {
           </>
         ) : (
           <>
-            <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            {pending ? (
+              <ArrowUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            ) : (
+              <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            )}
             <span className="min-w-0 flex-1 truncate text-muted-foreground">
-              {lastSyncAt
-                ? t('knowledgeSync.syncedAt', 'Synced · {{time}}', {
-                    time: formatRelativeTime(lastSyncAt),
+              {pending
+                ? // What is waiting, in the direction it is waiting to go. This
+                  // is the line that tells the user their edit has not left the
+                  // machine yet — the one thing the bar could not say before.
+                  t('knowledgeSync.pending', '↑{{out}} ↓{{in}} · click to sync', {
+                    out: outgoing,
+                    in: incoming,
                   })
-                : t('knowledgeSync.never', 'Not synced yet')}
+                : lastSyncAt
+                  ? t('knowledgeSync.syncedAt', 'Synced · {{time}}', {
+                      time: formatRelativeTime(lastSyncAt),
+                    })
+                  : t('knowledgeSync.never', 'Not synced yet')}
             </span>
           </>
         )}

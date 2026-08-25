@@ -2701,6 +2701,7 @@
     "metadata": "Skill Metadata"
   },
   "knowledgeSync": {
+    "pending": "↑{{out}} ↓{{in}} · click to sync",
     "syncedAt": "Synced · {{time}}",
     "never": "Not synced yet",
     "lastSyncTooltip": "Last sync: {{time}}",
@@ -2711,6 +2712,12 @@
     "conflicts": "{{count}} conflicts need a decision",
     "failedFiles": "{{count}} files cannot sync · retrying",
     "failed": "Sync failed"
+  },
+  "syncBadge": {
+    "localNew": "New here — not in the cloud yet",
+    "localModified": "Edited here — not pushed yet",
+    "remoteAhead": "A newer version is waiting in the cloud",
+    "both": "Changed on both sides — the next sync will conflict"
   },
   "knowledgeConflict": {
     "title": "Conflict",

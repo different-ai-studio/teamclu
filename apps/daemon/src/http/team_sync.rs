@@ -793,6 +793,125 @@ async fn fc_client_from_store(
     ))
 }
 
+/// An `FcClient` for calls that only read metadata.
+///
+/// Separate from [`fc_client_from_store`] because that one insists on the team
+/// content secret, which a manifest read has no use for: nothing is decrypted
+/// here. Requiring it would make "what is waiting for me in the cloud"
+/// unanswerable on exactly the devices that most need to ask.
+async fn fc_client_metadata_only(
+    state: &HttpState,
+    fc_endpoint: Option<String>,
+) -> Result<crate::sync::oss::fc_client::FcClient, HttpError> {
+    let jwt = state
+        .sync_dispatcher
+        .oss_jwt()
+        .await
+        .map_err(|e| HttpError::internal(e.to_string()))?;
+    let base = fc_endpoint
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| state.sync_dispatcher.fc_endpoint().ok())
+        .ok_or_else(|| {
+            HttpError::internal(
+                "FC endpoint not configured: no cloud backend URL available".to_string(),
+            )
+        })?;
+    Ok(crate::sync::oss::fc_client::FcClient::new(base, jwt))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemotePendingQuery {
+    pub team_id: String,
+    #[serde(default)]
+    pub fc_endpoint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemotePendingItem {
+    pub path: String,
+    pub version: i32,
+    pub deleted: bool,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemotePendingResponse {
+    pub items: Vec<RemotePendingItem>,
+    /// Where the server's log stood when this was read.
+    pub snapshot_seq: i64,
+    /// The local cursor it was measured against.
+    pub since_seq: i64,
+}
+
+/// `GET /v1/team/remote-pending?teamId=&fcEndpoint=` — what the cloud has that
+/// this device has not applied yet.
+///
+/// A READ-ONLY probe: it walks the manifest exactly as a tick would, then throws
+/// the answer away — no blob is fetched, nothing is written, and the sync cursor
+/// does not move. It costs one FC round-trip per call, which is why the client
+/// asks on a schedule (panel opened, window focused, manual refresh) rather than
+/// on a timer.
+pub async fn remote_pending(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Query(q): Query<RemotePendingQuery>,
+) -> Result<Json<RemotePendingResponse>, HttpError> {
+    require_scope(&principal, "workspace:read")?;
+    let local = crate::sync::oss::state::LocalSyncState::load_at(&q.team_id)
+        .map_err(|e| HttpError::internal(format!("load sync state: {e}")))?;
+    let since_seq = local.last_server_seq;
+    let fc = fc_client_metadata_only(&state, q.fc_endpoint).await?;
+
+    let mut cursor: Option<String> = None;
+    let mut snapshot_seq: Option<i64> = None;
+    let mut items: Vec<RemotePendingItem> = Vec::new();
+    loop {
+        let page = fc
+            .manifest(&q.team_id, since_seq, cursor.clone(), snapshot_seq)
+            .await
+            .map_err(|e| HttpError::internal(e.to_string()))?;
+        snapshot_seq.get_or_insert(page.snapshot_seq);
+        for item in page.items {
+            if crate::sync::oss::path_validator::is_retired(&item.path)
+                || crate::sync::oss::path_validator::validate(&item.path).is_err()
+            {
+                continue;
+            }
+            // Our own push comes back in the manifest with a fresh change_seq
+            // until the next tick moves the cursor. Reporting that as "the
+            // cloud is ahead of you" would light up every file the user just
+            // saved. Same test the pull uses to decide it has work to do.
+            let already_applied = local
+                .files
+                .get(&item.path)
+                .is_some_and(|f| item.version <= f.synced_version);
+            if already_applied {
+                continue;
+            }
+            items.push(RemotePendingItem {
+                path: item.path,
+                version: item.version,
+                deleted: item.deleted,
+                updated_at: item.updated_at,
+            });
+        }
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+    items.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok(Json(RemotePendingResponse {
+        items,
+        snapshot_seq: snapshot_seq.unwrap_or(since_seq),
+        since_seq,
+    }))
+}
+
 /// `GET /v1/team/versions?teamId=&path=&cursor=&fcEndpoint=` — one page of a
 /// file's version history. Ported from desktop `oss_sync_list_versions`.
 pub async fn list_versions(
@@ -994,24 +1113,60 @@ pub async fn list_changed(
     Query(q): Query<ChangedQuery>,
 ) -> Result<Json<ChangedResponse>, HttpError> {
     require_scope(&principal, "workspace:read")?;
-    let files = crate::sync::oss::state::LocalSyncState::load_at(&q.team_id)
-        .map(|st| {
-            st.files
-                .into_iter()
-                .filter(|(_, f)| f.dirty)
-                .map(|(path, f)| ChangedFile {
-                    path,
-                    status: if f.deleted_local {
-                        "deleted"
-                    } else {
-                        "modified"
-                    }
-                    .to_string(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(Json(ChangedResponse { files }))
+    let root = crate::config::global_team_store::sync_content_root(&q.team_id);
+    let state = crate::sync::oss::state::LocalSyncState::load_at(&q.team_id)
+        .map_err(|e| HttpError::internal(format!("load sync state: {e}")))?;
+    Ok(Json(ChangedResponse {
+        files: local_changes(&root.to_string_lossy(), &state),
+    }))
+}
+
+/// What is on this disk that the cloud does not have yet.
+///
+/// Scans the tree rather than reading the `dirty` flags out of sync state, and
+/// that is the whole point: those flags are refreshed at the START of a tick and
+/// cleared again by the push at the end of it, so between ticks they describe a
+/// tree that no longer exists. Reading them made this endpoint answer "nothing
+/// changed" for a file the user had just typed into — and a file created since
+/// the last tick has no state entry at all, so it was invisible either way.
+///
+/// The scan is the same cheap one the engine runs: mtime+size decides, and only
+/// a file that fails that check gets re-hashed.
+fn local_changes(
+    content_root: &str,
+    state: &crate::sync::oss::state::LocalSyncState,
+) -> Vec<ChangedFile> {
+    let scan = crate::sync::oss::scanner::scan_workspace(content_root, state);
+    let mut out: Vec<ChangedFile> = Vec::new();
+
+    for file in &scan {
+        let status = match state.files.get(&file.rel_path) {
+            // Never synced from here: new, whatever the cheap check thinks.
+            None => "new",
+            Some(_) if file.dirty => "modified",
+            Some(_) => continue,
+        };
+        out.push(ChangedFile {
+            path: file.rel_path.clone(),
+            status: status.to_string(),
+        });
+    }
+
+    // Synced once, gone from the tree now: a deletion this device still owes
+    // the team. Mirrors `engine::locally_deleted_paths`.
+    let present: std::collections::HashSet<&str> =
+        scan.iter().map(|s| s.rel_path.as_str()).collect();
+    for (path, f) in &state.files {
+        if !f.deleted_local && f.synced_version > 0 && !present.contains(path.as_str()) {
+            out.push(ChangedFile {
+                path: path.clone(),
+                status: "deleted".to_string(),
+            });
+        }
+    }
+
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
 }
 
 /// Resolve the team_id for a workspace from the daemon's onboarded team
@@ -1104,6 +1259,93 @@ mod tests {
                 .cloned()
                 .unwrap()
         }
+    }
+
+    // ── local change detection ───────────────────────────────────────────────
+
+    /// The badges in the file tree are drawn from this, so "nothing changed"
+    /// has to mean it.
+    #[test]
+    fn local_changes_sees_what_the_tree_sees() {
+        let fx = ConflictFixture::new();
+        fx.write("knowledge/synced.md", "unchanged");
+        fx.write("knowledge/edited.md", "edited since the last sync");
+        fx.write("knowledge/brand-new.md", "never synced from here");
+        // Two files were synced once; one of them has since been edited, and a
+        // third was deleted off the disk.
+        let mut st = crate::sync::oss::state::LocalSyncState::load_at(&fx.team_id).unwrap();
+        let synced_body = "unchanged".as_bytes();
+        st.upsert(
+            "knowledge/synced.md",
+            1,
+            "c1".into(),
+            crate::sync::oss::crypto::sha256_hex(synced_body),
+            crate::sync::oss::crypto::sha256_hex(synced_body),
+            0,
+            synced_body.len() as u64,
+        );
+        st.upsert(
+            "knowledge/edited.md",
+            1,
+            "c2".into(),
+            crate::sync::oss::crypto::sha256_hex(b"the old text"),
+            crate::sync::oss::crypto::sha256_hex(b"the old text"),
+            0,
+            12,
+        );
+        st.upsert(
+            "knowledge/deleted.md",
+            1,
+            "c3".into(),
+            "p3".into(),
+            "p3".into(),
+            0,
+            5,
+        );
+        st.save_at(&fx.team_id).unwrap();
+        let st = crate::sync::oss::state::LocalSyncState::load_at(&fx.team_id).unwrap();
+
+        let changes = local_changes(&fx.root.to_string_lossy(), &st);
+        let by_path: std::collections::HashMap<&str, &str> = changes
+            .iter()
+            .map(|c| (c.path.as_str(), c.status.as_str()))
+            .collect();
+
+        assert_eq!(by_path.get("knowledge/brand-new.md"), Some(&"new"));
+        assert_eq!(by_path.get("knowledge/edited.md"), Some(&"modified"));
+        assert_eq!(by_path.get("knowledge/deleted.md"), Some(&"deleted"));
+        assert_eq!(
+            by_path.get("knowledge/synced.md"),
+            None,
+            "a file that matches what was synced is not a change"
+        );
+    }
+
+    /// The old implementation read the `dirty` flags out of sync state, which
+    /// the push clears at the end of every tick — so between ticks it reported
+    /// a clean tree no matter what the user had typed.
+    #[test]
+    fn local_changes_does_not_trust_the_stale_dirty_flag() {
+        let fx = ConflictFixture::new();
+        fx.write("knowledge/note.md", "what the user just typed");
+        let mut st = crate::sync::oss::state::LocalSyncState::load_at(&fx.team_id).unwrap();
+        st.upsert(
+            "knowledge/note.md",
+            1,
+            "c".into(),
+            crate::sync::oss::crypto::sha256_hex(b"what was synced"),
+            crate::sync::oss::crypto::sha256_hex(b"what was synced"),
+            0,
+            15,
+        );
+        // Exactly the state a finished push leaves behind.
+        assert!(!st.files["knowledge/note.md"].dirty);
+        st.save_at(&fx.team_id).unwrap();
+        let st = crate::sync::oss::state::LocalSyncState::load_at(&fx.team_id).unwrap();
+
+        let changes = local_changes(&fx.root.to_string_lossy(), &st);
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0].status, "modified");
     }
 
     #[test]

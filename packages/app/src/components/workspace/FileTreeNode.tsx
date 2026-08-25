@@ -26,6 +26,7 @@ import { useTabsStore } from '@/stores/tabs';
 import { useCurrentTeamStore } from '@/stores/current-team';
 import { useVersionHistoryStore } from '@/stores/version-history';
 import { encodeVersionHistoryTarget } from '@/lib/tabs/teamshare-target';
+import type { SyncBadge } from '@/lib/team-sync-badges';
 import { openKnowledgeConflict } from '@/lib/tabs/open-conflict';
 import { getFileIcon } from '@/lib/file-icons';
 import { formatDateTime, formatRelativeTime } from '@/lib/date-format';
@@ -58,12 +59,31 @@ export function openVersionHistory(path: string, label: string) {
   });
 }
 
-function getSyncStatusTextColor(status: 'synced' | 'modified' | 'new' | 'conflict'): string {
+function getSyncStatusTextColor(status: SyncBadge): string {
   switch (status) {
-    case 'synced': return ''
-    case 'modified': return 'text-yellow-500'
-    case 'new': return 'text-green-500'
+    case 'local-new': return 'text-green-500'
+    case 'local-modified': return 'text-yellow-500'
+    case 'remote-ahead': return 'text-blue-500'
+    // Both sides touched it: the next sync WILL conflict. Loud enough to act on
+    // before that happens, quieter than the conflict that already did.
+    case 'both': return 'text-orange-500'
     case 'conflict': return 'text-red-500'
+  }
+}
+
+/** Hover text: a colour on its own does not say what to do about it. */
+function syncStatusHint(status: SyncBadge, t: (k: string, d: string) => string): string {
+  switch (status) {
+    case 'local-new':
+      return t('syncBadge.localNew', 'New here — not in the cloud yet')
+    case 'local-modified':
+      return t('syncBadge.localModified', 'Edited here — not pushed yet')
+    case 'remote-ahead':
+      return t('syncBadge.remoteAhead', 'A newer version is waiting in the cloud')
+    case 'both':
+      return t('syncBadge.both', 'Changed on both sides — the next sync will conflict')
+    case 'conflict':
+      return t('knowledgeConflict.rowHint', 'Both sides changed this document — pick which version to keep')
   }
 }
 
@@ -182,8 +202,11 @@ export interface FileTreeItemProps {
   teamSyncing?: boolean;
   /** ISO timestamp of last successful team repo sync (for relative-time label) */
   teamLastSyncAt?: string | null;
-  /** Sync status for team files */
-  syncStatus?: 'synced' | 'modified' | 'new' | 'conflict' | null;
+  /**
+   * What this document's sync state is, for team knowledge. `null` for
+   * everything else — a workspace file has no cloud counterpart to differ from.
+   */
+  syncStatus?: SyncBadge | null;
   compactName?: string;
   compactedPaths?: string[];
   onCollapseCompacted: (paths: string[]) => void;
@@ -362,6 +385,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
         isCutTarget && "opacity-50",
       )}
       style={{ paddingLeft: `${level * 12 + 8}px` }}
+      title={syncStatus ? syncStatusHint(syncStatus, t) : undefined}
     >
       {isDirectory ? (
         <span className="w-4 h-4 flex items-center justify-center shrink-0">
