@@ -549,7 +549,6 @@ pub fn run() {
             commands::app_menu::update_app_menu_labels,
             commands::team_share::enable::team_share_set_team_secret,
             commands::team_share::enable::team_share_get_team_secret,
-            commands::team_litellm::team_litellm_setup,
             commands::team_sync_proxy::oss_sync_now,
             commands::team_sync_proxy::oss_sync_status,
             commands::team_sync_proxy::team_env_runtime_status,
