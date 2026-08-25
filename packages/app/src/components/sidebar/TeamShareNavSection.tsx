@@ -28,6 +28,18 @@ const ALL_SECTIONS: TeamShareSection[] = ['skills', 'mcp', 'env', 'knowledge']
  * Loads every section's count once. Split out of the rows because the nav now
  * renders team-share entries in two places (default group + 高级 group) and the
  * counts must still be fetched exactly once per team/workspace.
+ *
+ * Not gated on a workspace. Team-share content is the team's: skills and MCP
+ * come from the registry (plus the selected Agent over RPC), knowledge from the
+ * team's own directory under the amuxd home. The old `!workspacePath` guard
+ * meant a client with no folder open showed 0 for all four, and the sections
+ * behind them looked empty rather than unloaded.
+ *
+ * `workspacePath` stays in the deps: opening a folder adds this machine's local
+ * rows (personal skills / MCP), so the counts have to be read again.
+ *
+ * `loadCounts` uses `allSettled`, so a section that does still need a workspace
+ * — Env, whose catalog read throws without one — cannot take the others down.
  */
 export function useTeamShareCountsLoader(): void {
   const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
@@ -35,7 +47,7 @@ export function useTeamShareCountsLoader(): void {
   const loadCounts = useTeamShareBrowserStore((s) => s.loadCounts)
 
   React.useEffect(() => {
-    if (!currentTeamId || !workspacePath) return
+    if (!currentTeamId) return
     void loadCounts()
   }, [currentTeamId, workspacePath, loadCounts])
 }
