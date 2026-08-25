@@ -1128,10 +1128,14 @@ fn move_to_trash(target: &std::path::Path, slug: &str) -> Result<String, String>
 /// Retire the personal original a skill was shared from.
 ///
 /// Sharing copies the directory into the pack root and leaves the original
-/// where it was, so the slug now exists twice — and the pack root ranks below
-/// nearly every other skills root, meaning the copy the user goes on editing is
-/// the original while publish, dirty detection, and diff all read the pack. One
-/// name, one file is the only version of this that stays comprehensible.
+/// where it was, so the slug now exists twice and the two copies compete. The
+/// pack root (`~/.agents/skills`) is rank 2 — ahead of every root but the
+/// workspace's `.claude/skills` (daemon `skill_dir_specs`, desktop loader
+/// `priorityOrder`) — so unless the original sat in that one root, the pack is
+/// what agents load and what publish, dirty detection and diff all read.
+/// Whichever copy loses, its author goes on editing a file nothing reads, and
+/// nothing tells them so. One name, one file is the only version of this that
+/// stays comprehensible.
 ///
 /// Refuses rather than guesses in three cases: a source that resolves to the
 /// pack itself (nothing to retire, and removing it would delete what was just
