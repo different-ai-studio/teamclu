@@ -113,7 +113,7 @@ impl OpusToPcm {
                 // Once per stream is enough; a corrupt uplink would otherwise
                 // fill the log at 50 lines a second.
                 if *dropped == 1 {
-                    warn!(target: "voice", error = %e, "opus decode failed; dropping frame(s)");
+                    warn!(error = %e, "opus decode failed; dropping frame(s)");
                 }
                 None
             }
@@ -149,7 +149,7 @@ impl SttProvider for AliyunNlsProvider {
 
         tokio::spawn(async move {
             if let Err(e) = run_session(creds, intent, frames_rx, transcripts_tx.clone()).await {
-                warn!(target: "voice", error = %e, "NLS recognition session failed");
+                warn!(error = %e, "NLS recognition session failed");
                 // Close the utterance rather than leaving the router waiting
                 // for a final that will never come.
                 let _ = transcripts_tx.send(Transcript::final_(String::new())).await;
@@ -292,7 +292,7 @@ async fn run_session(
     }
 
     if decoder.dropped() > 0 {
-        warn!(target: "voice", dropped = decoder.dropped(),
+        warn!(dropped = decoder.dropped(),
               "NLS recognition: some frames failed to decode");
     }
     // One final per utterance, not one per sentence: several finals would be

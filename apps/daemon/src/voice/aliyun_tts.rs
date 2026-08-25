@@ -118,7 +118,7 @@ impl TtsProvider for AliyunTtsProvider {
                 if let Err(e) = synth_one(&creds, &cfg, &text, &mut resampler, &audio_tx).await {
                     // One failed sentence must not silence the rest of the
                     // reply.
-                    warn!(target: "voice", error = %e, "NLS synthesis failed for a sentence");
+                    warn!(error = %e, "NLS synthesis failed for a sentence");
                 }
             }
 

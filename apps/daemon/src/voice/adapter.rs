@@ -243,6 +243,13 @@ impl VoiceRouter {
     }
 
     async fn handle_ctl(&self, team_id: String, actor_id: String, ctl: VoiceCtl) {
+        // Our own downlink coming back: the daemon publishes `session`,
+        // `thinking`, `spk_start`, `spk_end`, `note_saved` and `error` onto the
+        // same topic it subscribes to. Acting on an echoed `error` would close
+        // the very stream the error was reporting on.
+        if ctl.is_own_echo() {
+            return;
+        }
         let key = DeviceKey {
             team_id: team_id.clone(),
             actor_id: actor_id.clone(),
@@ -471,6 +478,69 @@ mod tests {
                 self.seen.lock().push(text.to_string());
             }
         }
+    }
+
+    #[tokio::test]
+    async fn the_routers_own_ctl_echo_is_ignored() {
+        // `voice/ctl` carries both directions on one topic and the daemon
+        // subscribes to it, so every ctl it publishes comes straight back.
+        // `error` is the dangerous one: both sides send it, so type alone
+        // cannot disambiguate, and acting on an echoed one closes the very
+        // stream the error was reporting on.
+        let (router, frames, caps) = make_router();
+        let (tx, rx) = mpsc::unbounded_channel();
+        router.spawn(rx);
+
+        tx.send(VoiceEvent::Ctl {
+            team_id: "t".into(),
+            actor_id: "a".into(),
+            ctl: VoiceCtl {
+                kind: "turn_start".into(),
+                intent: Some("chat".into()),
+                session: None,
+                seq: 1,
+                code: None,
+                message: None,
+                from: None,
+            },
+        })
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // An echoed error must NOT close the open turn.
+        tx.send(VoiceEvent::Ctl {
+            team_id: "t".into(),
+            actor_id: "a".into(),
+            ctl: VoiceCtl {
+                kind: "error".into(),
+                intent: None,
+                session: None,
+                seq: 2,
+                code: Some("tts_unavailable".into()),
+                message: Some("...".into()),
+                from: Some(crate::voice::ctl::FROM_DAEMON.to_string()),
+            },
+        })
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // The turn is still open, so a mic frame still lands.
+        tx.send(VoiceEvent::Mic {
+            team_id: "t".into(),
+            actor_id: "a".into(),
+            payload: bytes::Bytes::from_static(&[1, 2, 3]),
+        })
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        drop(tx);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert_eq!(
+            frames.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "an echoed error closed the stream"
+        );
+        let _ = caps;
     }
 
     #[tokio::test]

@@ -112,12 +112,12 @@ impl NoteSink {
         let payload = match serde_json::to_vec(&body) {
             Ok(p) => p,
             Err(e) => {
-                warn!(target: "voice", error = %e, "note ctl serialise failed");
+                warn!(error = %e, "note ctl serialise failed");
                 return;
             }
         };
         if let Err(e) = publisher.publish(topic, payload, true).await {
-            warn!(target: "voice", error = %e, "note ctl publish failed");
+            warn!(error = %e, "note ctl publish failed");
         }
     }
 }
@@ -150,7 +150,7 @@ impl TranscriptSink for NoteSink {
             self.send_ctl(
                 &key,
                 serde_json::json!({
-                    "type": "error", "code": "empty_note",
+                    "from": super::ctl::FROM_DAEMON, "type": "error", "code": "empty_note",
                     "message": "nothing was heard",
                 }),
             )
@@ -174,7 +174,7 @@ impl TranscriptSink for NoteSink {
                 self.send_ctl(
                     &key,
                     serde_json::json!({
-                        "type": "note_saved",
+                        "from": super::ctl::FROM_DAEMON, "type": "note_saved",
                         "time": note.hhmm(),
                         "text": note.text,
                     }),
@@ -182,12 +182,12 @@ impl TranscriptSink for NoteSink {
                 .await;
             }
             Err(e) => {
-                warn!(target: "voice", team_id, actor_id, error = %e,
+                warn!(team_id, actor_id, error = %e,
                       "voice: note could not be stored");
                 self.send_ctl(
                     &key,
                     serde_json::json!({
-                        "type": "error", "code": "note_failed", "message": e,
+                        "from": super::ctl::FROM_DAEMON, "type": "error", "code": "note_failed", "message": e,
                     }),
                 )
                 .await;

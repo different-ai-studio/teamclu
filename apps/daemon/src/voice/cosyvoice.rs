@@ -254,7 +254,7 @@ impl TtsProvider for CosyVoiceProvider {
                 {
                     // One failed sentence should not silence the rest of the
                     // reply; log and keep going.
-                    tracing::warn!(target: "voice", error = %e, "cosyvoice piece failed");
+                    tracing::warn!(error = %e, "cosyvoice piece failed");
                 }
             }
 

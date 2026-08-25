@@ -184,7 +184,7 @@ impl SpkEncoder {
             }
             Ok(_) => None,
             Err(e) => {
-                warn!(target: "voice", error = %e, "opus encode failed; frame dropped");
+                warn!(error = %e, "opus encode failed; frame dropped");
                 None
             }
         }
@@ -246,12 +246,12 @@ async fn publish_ctl(
     let payload = match serde_json::to_vec(&body) {
         Ok(p) => p,
         Err(e) => {
-            warn!(target: "voice", error = %e, "voice ctl serialise failed");
+            warn!(error = %e, "voice ctl serialise failed");
             return;
         }
     };
     if let Err(e) = publisher.publish(topic, payload, true).await {
-        warn!(target: "voice", error = %e, kind = ?body.get("type"), "voice ctl publish failed");
+        warn!(error = %e, kind = ?body.get("type"), "voice ctl publish failed");
     }
 }
 
@@ -266,7 +266,7 @@ impl ReplySpeaker for SpeechSynthesizer {
         let live = match self.runtime.subscribe(session_id, None).await {
             Ok(handle) => handle.live,
             Err(e) => {
-                warn!(target: "voice", team_id = %key.team_id, session_id = %session_id,
+                warn!(team_id = %key.team_id, session_id = %session_id,
                       error = ?e, "voice: cannot subscribe to session; reply will not be spoken");
                 self.fail(&key, "no_agent", "session subscribe failed")
                     .await;
@@ -276,12 +276,12 @@ impl ReplySpeaker for SpeechSynthesizer {
 
         self.send_ctl(
             &key,
-            serde_json::json!({ "type": "session", "session": session_id.to_string() }),
+            serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "session", "session": session_id.to_string() }),
         )
         .await;
         // Puts the face on the Think screen. Its own timeout is now running,
         // so everything below is on a clock the user can see.
-        self.send_ctl(&key, serde_json::json!({ "type": "thinking" }))
+        self.send_ctl(&key, serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "thinking" }))
             .await;
 
         let cancel = Arc::new(AtomicBool::new(false));
@@ -313,7 +313,7 @@ impl ReplySpeaker for SpeechSynthesizer {
         self.cancel(key).await;
         self.send_ctl(
             key,
-            serde_json::json!({ "type": "error", "code": code, "message": message }),
+            serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "error", "code": code, "message": message }),
         )
         .await;
     }
@@ -333,12 +333,12 @@ async fn run_turn(
     let TtsStream { text_tx, audio_rx } = match tts.speak().await {
         Ok(s) => s,
         Err(e) => {
-            warn!(target: "voice", error = %e, "voice: TTS unavailable");
+            warn!(error = %e, "voice: TTS unavailable");
             publish_ctl(
                 &publisher,
                 &key,
                 serde_json::json!({
-                    "type": "error", "code": "tts_unavailable",
+                    "from": super::ctl::FROM_DAEMON, "type": "error", "code": "tts_unavailable",
                     "message": e.to_string(), "seq": seq_base,
                 }),
             )
@@ -378,6 +378,11 @@ async fn run_turn(
     });
 
     let mut chunker = SentenceChunker::default();
+    // Why the event loop ended. Logged with the completion line: "frames=0"
+    // alone cannot distinguish "the agent said nothing" from "we stopped
+    // listening", and those have opposite fixes.
+    let mut exit_reason = "unknown";
+    let mut events_seen: u64 = 0;
     let mut spoke_any = false;
     let mut completed_text: Option<String> = None;
     let mut errored: Option<String> = None;
@@ -388,20 +393,25 @@ async fn run_turn(
         }
         let ev = match tokio::time::timeout(cfg.idle_timeout, live.recv()).await {
             Err(_) => {
-                warn!(target: "voice", team_id = %key.team_id,
+                warn!(team_id = %key.team_id,
                       "voice: agent went quiet; ending the spoken turn");
+                exit_reason = "idle_timeout";
                 break;
             }
             Ok(Ok(ev)) => ev,
             Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
                 // Dropped deltas mean a gap in the spoken reply, not a reason
                 // to abandon it.
-                warn!(target: "voice", skipped = n, "voice: session event lag; reply will have a gap");
+                warn!(skipped = n, "voice: session event lag; reply will have a gap");
                 continue;
             }
-            Ok(Err(broadcast::error::RecvError::Closed)) => break,
+            Ok(Err(broadcast::error::RecvError::Closed)) => {
+                exit_reason = "event_channel_closed";
+                break;
+            }
         };
 
+        events_seen += 1;
         match ev.kind {
             EventKind::TokenDelta => {
                 let Some(text) = ev.data.get("text").and_then(|v| v.as_str()) else {
@@ -422,6 +432,7 @@ async fn run_turn(
                 }
             }
             EventKind::SessionError => {
+                exit_reason = "session_error";
                 errored = Some(
                     ev.data
                         .get("message")
@@ -431,7 +442,14 @@ async fn run_turn(
                 );
                 break;
             }
-            EventKind::TurnFinished | EventKind::SessionClosed => break,
+            EventKind::TurnFinished => {
+                exit_reason = "turn_finished";
+                break;
+            }
+            EventKind::SessionClosed => {
+                exit_reason = "session_closed";
+                break;
+            }
             _ => {}
         }
     }
@@ -468,7 +486,7 @@ async fn run_turn(
             &publisher,
             &key,
             serde_json::json!({
-                "type": "error", "code": "upstream", "message": message,
+                "from": super::ctl::FROM_DAEMON, "type": "error", "code": "upstream", "message": message,
                 "seq": seq_base + 62,
             }),
         )
@@ -479,7 +497,7 @@ async fn run_turn(
         // Barge-in: the device already stopped playback locally, and telling
         // it the turn finished normally would move the face to idle as if the
         // reply had been heard.
-        info!(target: "voice", team_id = %key.team_id, frames, "voice: spoken reply cancelled");
+        info!(team_id = %key.team_id, frames, "voice: spoken reply cancelled");
         return;
     }
 
@@ -488,11 +506,11 @@ async fn run_turn(
     publish_ctl(
         &publisher,
         &key,
-        serde_json::json!({ "type": "spk_end", "seq": seq_base + 63 }),
+        serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "spk_end", "seq": seq_base + 63 }),
     )
     .await;
-    info!(target: "voice", team_id = %key.team_id, actor_id = %key.actor_id, frames,
-          "voice: spoken reply complete");
+    info!(team_id = %key.team_id, actor_id = %key.actor_id, frames,
+          exit_reason, events_seen, "voice: spoken reply complete");
 }
 
 /// Encodes and publishes audio, announcing `spk_start` before the first frame.
@@ -509,7 +527,7 @@ async fn pump_audio(
     let mut enc = match SpkEncoder::new(cfg.bitrate) {
         Ok(e) => e,
         Err(e) => {
-            warn!(target: "voice", error = %e, "voice: no Opus encoder; reply cannot be spoken");
+            warn!(error = %e, "voice: no Opus encoder; reply cannot be spoken");
             return 0;
         }
     };
@@ -532,7 +550,7 @@ async fn pump_audio(
                 publish_ctl(
                     &publisher,
                     &key,
-                    serde_json::json!({ "type": "spk_start", "seq": seq }),
+                    serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "spk_start", "seq": seq }),
                 )
                 .await;
                 started = Some(Instant::now());
@@ -560,7 +578,7 @@ async fn pump_audio(
                 publish_ctl(
                     &publisher,
                     &key,
-                    serde_json::json!({ "type": "spk_start", "seq": seq }),
+                    serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "spk_start", "seq": seq }),
                 )
                 .await;
                 started = Some(Instant::now());

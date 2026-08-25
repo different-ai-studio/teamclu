@@ -40,6 +40,15 @@ pub struct VoiceCtl {
     /// Device-local sequence number for QoS-1 dedup. Defaults to 0.
     #[serde(default)]
     pub seq: u64,
+    /// Who sent this. `Some("amuxd")` on everything the daemon publishes.
+    ///
+    /// `voice/ctl` carries BOTH directions on one topic (plan §7), and the
+    /// daemon subscribes to it — so the broker hands the daemon back every ctl
+    /// it just published. Type alone cannot disambiguate: `error` is sent by
+    /// both sides, and acting on an echoed one makes the router close a stream
+    /// in response to its own message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
     /// On `error`: short machine code.
     #[serde(default)]
     pub code: Option<String>,
@@ -48,7 +57,15 @@ pub struct VoiceCtl {
     pub message: Option<String>,
 }
 
+/// Value of [`VoiceCtl::from`] on everything the daemon publishes.
+pub const FROM_DAEMON: &str = "amuxd";
+
 impl VoiceCtl {
+    /// True when this is the daemon's own message coming back off the broker.
+    pub fn is_own_echo(&self) -> bool {
+        self.from.as_deref() == Some(FROM_DAEMON)
+    }
+
     pub fn is_turn_start(&self) -> bool {
         self.kind == "turn_start"
     }

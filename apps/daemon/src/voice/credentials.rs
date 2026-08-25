@@ -155,11 +155,11 @@ impl CredentialSource for CloudApiCredentials {
             if !c.needs_refresh(Utc::now()) {
                 return Ok(c.clone());
             }
-            info!(target: "voice", "voice credentials near expiry; renewing");
+            info!("voice credentials near expiry; renewing");
         }
         match self.fetch().await {
             Ok(fresh) => {
-                info!(target: "voice", expires_at = %fresh.expires_at, "voice credentials minted");
+                info!(expires_at = %fresh.expires_at, "voice credentials minted");
                 *cached = Some(fresh.clone());
                 Ok(fresh)
             }
@@ -168,7 +168,7 @@ impl CredentialSource for CloudApiCredentials {
                 // renewal window is 10 minutes wide precisely so a transient
                 // Cloud API blip does not take voice down with it.
                 if let Some(c) = cached.as_ref().filter(|c| c.expires_at > Utc::now()) {
-                    warn!(target: "voice", error = %e,
+                    warn!(error = %e,
                           "voice credential renewal failed; using the one still in hand");
                     return Ok(c.clone());
                 }
