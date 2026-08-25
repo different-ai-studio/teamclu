@@ -1335,7 +1335,13 @@
       "notifImportant": "Important only",
       "notifMute": "Mute",
       "acpStreamDebug": "ACP stream debug",
-      "acpStreamDebugDesc": "Show live ACP event stream above the chat thread"
+      "acpStreamDebugDesc": "Show live ACP event stream above the chat thread",
+      "headerIcons": "Conversation header icons",
+      "headerIconsDesc": "Control which action icons appear in the conversation's top-right. Hidden by default; enable here as needed.",
+      "showTerminalToggle": "Terminal toggle",
+      "showTerminalToggleDesc": "Show the terminal panel toggle in the conversation's top-right. The Ctrl+` shortcut always works regardless of this setting.",
+      "showChangesTab": "File changes",
+      "showChangesTabDesc": "Show this session's file-changes entry in the conversation's top-right. Only appears when there is an active session."
     },
     "llm": {
       "cursorTitle": "Cursor models",
