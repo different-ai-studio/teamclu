@@ -133,6 +133,18 @@ mod execution_context_tests {
 
     #[tokio::test]
     async fn configured_team_fallback_keeps_workspace_context_revisions_equal() {
+        // The two `assemble` calls below are compared field by field, and one of
+        // those fields — `OPENCODE_CONFIG` — is derived from the amuxd home.
+        // Every test that *moves* `HOME` / `AMUXD_HOME` already serializes on
+        // `TEST_HOME_LOCK`, but a reader that does not join them can still have
+        // one moved out from under it between its two reads, and then the two
+        // maps differ by a path rooted in two different tempdirs. That is what
+        // made this fail in CI while passing alone. The guard both joins that
+        // lock and pins a home of its own, so the comparison no longer depends
+        // on whatever the ambient environment happens to be.
+        let amuxd_home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(amuxd_home.path());
+
         let workspace = tempfile::tempdir().unwrap();
         let backend = Arc::new(MockBackend::default());
         backend.state().workspaces_by_id.insert(
