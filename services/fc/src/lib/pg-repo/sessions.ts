@@ -913,16 +913,26 @@ export function makeSessionsRepo(db: DbLike, ctx: SessionsCtx = {}, deps: Sessio
       const row: any = { sessionId, actorId: input.actorId };
       if (input.role !== undefined) row.role = input.role;
 
-      const [r] = await (db.insert(sessionParticipants) as any)
+      // DO NOTHING, matching supabase-repo: re-joining must not rewrite an
+      // existing row. See the note there — under RLS the UPDATE arm is refused
+      // outright, and it also demoted owners to "member".
+      await (db.insert(sessionParticipants) as any)
         .values(row)
-        .onConflictDoUpdate({
+        .onConflictDoNothing({
           target: [sessionParticipants.sessionId, sessionParticipants.actorId],
-          set: {
-            role: input.role ?? null,
-            updatedAt: new Date(),
-          },
-        })
-        .returning();
+        });
+
+      // Read back rather than RETURNING: DO NOTHING returns no row when the
+      // participant was already there, which is the common case.
+      const [r] = await (db.select() as any)
+        .from(sessionParticipants)
+        .where(
+          and(
+            eq(sessionParticipants.sessionId, sessionId),
+            eq(sessionParticipants.actorId, input.actorId),
+          ),
+        )
+        .limit(1);
 
       return {
         sessionId: r.sessionId,
