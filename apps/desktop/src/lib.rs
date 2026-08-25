@@ -557,7 +557,6 @@ pub fn run() {
             commands::team_sync_proxy::oss_sync_status,
             commands::team_sync_proxy::team_env_runtime_status,
             commands::team_sync_proxy::oss_sync_list_versions,
-            commands::team_sync_proxy::oss_sync_get_version_content,
             commands::team_sync_proxy::oss_sync_restore_version,
             commands::team_sync_proxy::oss_sync_resolve_conflict,
         ])

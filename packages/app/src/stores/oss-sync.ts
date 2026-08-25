@@ -88,13 +88,6 @@ export interface OssSyncState {
     path: string,
     cursor?: string | null,
   ): Promise<VersionPage>
-  /**
-   * Fetch a version's plaintext. The daemon does NOT yet support this — the
-   * command returns an Err, which we surface as a rejected promise with a clear
-   * message. Callers (history providers) already degrade to a "preview
-   * unavailable" state on rejection rather than crashing.
-   */
-  getVersionContent(workspacePath: string | null, contentHash: string): Promise<string>
   restoreVersion(
     workspacePath: string | null,
     path: string,
@@ -227,20 +220,6 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
       teamId: activeTeamId(),
       path,
       cursor: cursor ?? null,
-    })
-  },
-
-  async getVersionContent(
-    workspacePath: string | null,
-    contentHash: string,
-  ): Promise<string> {
-    // The daemon does not yet support version content fetch; the command
-    // returns an Err. Let it reject so the history UI shows "preview
-    // unavailable" instead of attempting to render undefined content.
-    return invoke<string>('oss_sync_get_version_content', {
-      workspacePath,
-      teamId: activeTeamId(),
-      contentHash,
     })
   },
 

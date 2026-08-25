@@ -199,25 +199,6 @@ describe('useOssSyncStore', () => {
     })
   })
 
-  // ── getVersionContent ─────────────────────────────────────────────────────
-
-  describe('getVersionContent', () => {
-    it('calls oss_sync_get_version_content and returns the plaintext', async () => {
-      mockInvoke.mockResolvedValueOnce('# hello\nplain text body')
-
-      const result = await useOssSyncStore
-        .getState()
-        .getVersionContent('/workspace/path', 'abc123')
-
-      expect(mockInvoke).toHaveBeenCalledWith('oss_sync_get_version_content', {
-        workspacePath: '/workspace/path',
-        teamId: 'team-active',
-        contentHash: 'abc123',
-      })
-      expect(result).toBe('# hello\nplain text body')
-    })
-  })
-
   // ── restoreVersion ───────────────────────────────────────────────────────
 
   describe('restoreVersion', () => {

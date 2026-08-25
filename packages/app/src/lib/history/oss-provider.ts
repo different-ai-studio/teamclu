@@ -1,4 +1,6 @@
 import { useOssSyncStore } from '@/stores/oss-sync'
+import { useCurrentTeamStore } from '@/stores/current-team'
+import { useVersionHistoryStore } from '@/stores/version-history'
 import type { HistoryProvider, HistoryPage } from './types'
 
 /**
@@ -38,8 +40,19 @@ export class OssHistoryProvider implements HistoryProvider {
     return { entries, nextCursor: nextCursor ?? null }
   }
 
-  getContent(ref: string): Promise<string | null> {
-    if (ref === '') return Promise.resolve('')
-    return useOssSyncStore.getState().getVersionContent(this.workspacePath, ref)
+  /**
+   * The content of one historical version.
+   *
+   * Goes through `team_file_content` — the daemon call that actually resolves a
+   * blob — rather than the `oss_sync_get_version_content` proxy this used to
+   * call, which never had an implementation and returned an error for every
+   * ref. That made the editor's history preview permanently broken for exactly
+   * the files that have history: team knowledge documents.
+   */
+  async getContent(ref: string): Promise<string | null> {
+    if (ref === '') return ''
+    const teamId = useCurrentTeamStore.getState().team?.id
+    if (!teamId) return null
+    return useVersionHistoryStore.getState().fetchVersionContent(teamId, this.path, ref)
   }
 }

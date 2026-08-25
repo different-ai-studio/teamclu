@@ -544,22 +544,6 @@ pub async fn oss_sync_list_versions(
     daemon_team_versions(&team_id, &path, cursor.as_deref()).await
 }
 
-/// `oss_sync_get_version_content(workspacePath, teamId, contentHash)`.
-///
-/// NOT YET PROXYABLE: the daemon exposes `GET /v1/team/versions` (a paginated
-/// list of version metadata) and `POST /v1/team/versions/restore`, but no
-/// content-by-hash fetch. Rather than fabricate content, return an explicit
-/// error placeholder until the daemon grows a content endpoint.
-#[tauri::command]
-pub async fn oss_sync_get_version_content(
-    workspace_path: String,
-    team_id: String,
-    content_hash: String,
-) -> Result<String, String> {
-    let _ = (&workspace_path, &team_id, &content_hash);
-    Err("version content fetch is not supported via the daemon yet".to_string())
-}
-
 /// `oss_sync_restore_version(workspacePath, teamId, path, contentHash)`.
 #[tauri::command]
 pub async fn oss_sync_restore_version(
