@@ -9,6 +9,7 @@ pub mod app_seed;
 pub mod app_templates;
 pub mod dispatch;
 pub mod oss;
+pub mod scheduler;
 pub mod secret_store;
 pub mod timer;
 pub mod versions;

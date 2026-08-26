@@ -2,10 +2,22 @@
 //! per-team mutex, and caches the last status for the HTTP status endpoint.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, Notify};
 
+use crate::sync::scheduler::{SyncScheduler, SystemClock, Trigger};
 use crate::sync::secret_store::SecretStore;
+
+/// Per-team coalescing state + wake handle for the background fire driver.
+///
+/// The 300s timer and manual force sync bypass this path entirely.
+struct TeamSchedulerSlot {
+    logic: std::sync::Mutex<SyncScheduler>,
+    wake: Notify,
+    driver_started: AtomicBool,
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +75,9 @@ pub struct SyncDispatcher {
     /// this struct uses: the engine reports from inside its transfer loops, in
     /// sync code, and this lock is only ever held for one map write.
     progress: Arc<std::sync::Mutex<HashMap<String, crate::sync::oss::SyncProgress>>>,
+    /// One coalescing scheduler per team. Fed by fs-watch / MQTT hint (Tasks 3
+    /// & 8); fires call [`Self::sync_team`] with `force: false`.
+    team_schedulers: Arc<Mutex<HashMap<String, Arc<TeamSchedulerSlot>>>>,
 }
 
 impl SyncDispatcher {
@@ -73,7 +88,100 @@ impl SyncDispatcher {
             locks: Arc::new(Mutex::new(HashMap::new())),
             status: Arc::new(Mutex::new(HashMap::new())),
             progress: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            team_schedulers: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Feed a Local / Remote trigger into the per-team coalescing scheduler.
+    ///
+    /// Does not run sync inline: the team driver wakes at the scheduled fire
+    /// time and calls [`Self::sync_team`]. The 300s timer and `POST /v1/team/sync`
+    /// (force) must not call this.
+    pub async fn trigger_sync(&self, team_id: &str, trigger: Trigger) {
+        let team_id = team_id.trim();
+        if team_id.is_empty() {
+            return;
+        }
+        let slot = self.scheduler_slot(team_id).await;
+        {
+            let mut logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+            logic.trigger(&SystemClock, trigger);
+        }
+        self.ensure_scheduler_driver(team_id, slot.clone());
+        slot.wake.notify_one();
+    }
+
+    async fn scheduler_slot(&self, team_id: &str) -> Arc<TeamSchedulerSlot> {
+        let mut map = self.team_schedulers.lock().await;
+        map.entry(team_id.to_string())
+            .or_insert_with(|| {
+                Arc::new(TeamSchedulerSlot {
+                    logic: std::sync::Mutex::new(SyncScheduler::new()),
+                    wake: Notify::new(),
+                    driver_started: AtomicBool::new(false),
+                })
+            })
+            .clone()
+    }
+
+    fn ensure_scheduler_driver(&self, team_id: &str, slot: Arc<TeamSchedulerSlot>) {
+        if slot.driver_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let dispatcher = self.clone();
+        let team_id = team_id.to_string();
+        tokio::spawn(async move {
+            loop {
+                let wait = {
+                    let logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+                    match logic.next_fire_at() {
+                        Some(at) => Some(at.saturating_duration_since(Instant::now())),
+                        None => None,
+                    }
+                };
+                match wait {
+                    None => {
+                        slot.wake.notified().await;
+                        continue;
+                    }
+                    Some(Duration::ZERO) => {}
+                    Some(d) => {
+                        tokio::select! {
+                            _ = slot.wake.notified() => continue,
+                            _ = tokio::time::sleep(d) => {}
+                        }
+                    }
+                }
+
+                let should_run = {
+                    let mut logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+                    logic.try_begin_tick(&SystemClock)
+                };
+                if !should_run {
+                    continue;
+                }
+
+                let st = dispatcher
+                    .sync_team(
+                        &team_id,
+                        SyncOptions {
+                            force: false,
+                            allow_bulk_add: false,
+                        },
+                    )
+                    .await;
+                if let Some(err) = &st.last_error {
+                    tracing::warn!(team_id, "scheduler sync error: {err}");
+                }
+
+                {
+                    let mut logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+                    logic.end_tick(&SystemClock);
+                }
+                // Re-check immediately: mid-tick triggers may already be due on floor.
+                slot.wake.notify_one();
+            }
+        });
     }
 
     pub fn secrets(&self) -> &SecretStore {
@@ -441,5 +549,23 @@ mod tests {
     fn fc_endpoint_errors_without_backend() {
         let d = SyncDispatcher::new(crate::sync::secret_store::SecretStore::new(), None);
         assert!(d.fc_endpoint().is_err());
+    }
+
+    /// Tasks 3/8 will call this; until then the smoke test pins the wiring:
+    /// one slot per team, driver armed, pure scheduler holding a next fire.
+    #[tokio::test]
+    async fn trigger_sync_arms_per_team_scheduler() {
+        let d = SyncDispatcher::new(crate::sync::secret_store::SecretStore::new(), None);
+        d.trigger_sync("team-a", Trigger::Local).await;
+        d.trigger_sync("team-a", Trigger::Remote { seq: 9 }).await;
+
+        let map = d.team_schedulers.lock().await;
+        assert_eq!(map.len(), 1);
+        let slot = map.get("team-a").expect("slot");
+        assert!(slot.driver_started.load(Ordering::SeqCst));
+        let logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(logic.next_fire_at().is_some());
+        assert_eq!(logic.pending_remote_seq(), Some(9));
+        assert!(!logic.in_tick());
     }
 }
