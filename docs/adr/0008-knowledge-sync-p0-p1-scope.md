@@ -36,18 +36,17 @@ Knowledge 同步是**团队 Markdown vault 的云副本**，不是通用网盘�
 
 ## 安全叙事（与实现对齐）
 
-现行引擎对 knowledge **明文上传**：`apps/daemon/src/sync/oss/engine.rs:552-575`
+现行引擎对 knowledge **明文上传**：`apps/daemon/src/sync/oss/engine.rs`
 `prepare_upload` 里 `cipher_hash == plain_hash`，字节原样上去。`crypto.rs` 只剩两个
 用途：读切换前写入的 AES-GCM 旧 blob，和本地 `state/secrets.enc`。团队 secret 已不是
-同步的前置条件（`dispatch.rs:198-205`：fetched, not required）。
+同步的前置条件（`dispatch.rs` `run_once`：fetched, not required）。
 
 对内对外统一表述为：**服务端与对象存储可读的团队共享盘**；TLS 保护传输，不是端
 到端加密。因此：
 
-1. 修正残留的「加密 / E2E」表述。本 PR：`obsidian-compatible-knowledge.md` §2.1
-   「加密只发生在上传」一行、根 `CLAUDE.md`「无 secret → 没东西加解密 → skipped」
-   一段。实现 PR：前端 `cloudVersion.unreadable` 文案里「或用本设备没有的团队密钥
-   加密」半句、`engine.rs` 里 `Stage 0: encrypt + hash` 的日志标签。
+1. 残留的「加密 / E2E」表述已清掉：`obsidian-compatible-knowledge.md` §2.1、
+   根 `CLAUDE.md`、前端 `cloudVersion.unreadable`、daemon `Stage 0` /
+   `[oss_sync] prepare` 日志标签（见 `fix(sync): drop leftover knowledge-encryption wording`）。
 2. MQTT sync hint **仍然禁止**携带路径、文件名、内容、内容哈希——路径本身敏感，
    broker 内可见。这是元数据最小化，不是假 E2E 洁癖。
 3. 真 E2E（含密钥分发）单独立项，不与本路线图绑定。
