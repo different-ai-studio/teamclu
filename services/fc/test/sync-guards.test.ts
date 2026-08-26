@@ -110,20 +110,19 @@ test('sync-guards: an unknown byte sum is not over quota', () => {
   assert.equal(isOverByteQuota(null), false);
 });
 
-test('sync-guards: the byte sum is cached so a batch pays for it once', async () => {
+// Unlike file count, byte sums must not TTL-cache across prepare-batch calls:
+// complete updates live sizes, and the next chunk must see the fresh total.
+test('sync-guards: each liveByteSum call re-fetches (no cross-batch TTL cache)', async () => {
   resetQuotaCache();
+  const sums = [10, 90];
   let calls = 0;
-  const summer = async () => {
-    calls += 1;
-    return 42;
-  };
-  for (let i = 0; i < 200; i++) {
-    assert.equal(await liveByteSum('team-bytes', summer), 42);
-  }
-  assert.equal(calls, 1);
+  const summer = async () => sums[calls++];
+  assert.equal(await liveByteSum('team-bytes', summer), 10);
+  assert.equal(await liveByteSum('team-bytes', summer), 90);
+  assert.equal(calls, 2);
 });
 
-test('sync-guards: a failing byte sum returns null and is not cached', async () => {
+test('sync-guards: a failing byte sum returns null (null→allow on failure only)', async () => {
   resetQuotaCache();
   let calls = 0;
   const summer = async () => {

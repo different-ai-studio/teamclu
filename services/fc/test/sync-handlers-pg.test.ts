@@ -1090,4 +1090,57 @@ describe("sync upload prepare byte quota", () => {
     assert.equal(res.statusCode, 200);
     assert.ok(JSON.parse(res.body).uploadSessionId);
   });
+
+  // Daemon prepare→complete→next-chunk: the second batch must see the updated
+  // live sum, not a stale TTL from the first prepare-batch.
+  test("prepare-batch: sequential calls use a fresh sumLiveBytes each time", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    const liveSums = [0, 80];
+    let sumCalls = 0;
+    const deps = {
+      db,
+      repo,
+      storage,
+      sumLiveBytes: async () => liveSums[sumCalls++] ?? 80,
+      countLiveFiles: async () => 0,
+    };
+
+    // max=100. First batch with live=0, size=40 → under ceiling.
+    const first = await handleSyncUploadPrepareBatch(
+      makeCaller(team.id, actor.id),
+      {
+        items: [
+          { path: "knowledge/c0.md", parentVersion: 0, contentHash: h32("c0"), size: 40 },
+        ],
+      },
+      deps,
+    );
+    assert.equal(first.statusCode, 200);
+    assert.equal(JSON.parse(first.body).results[0].ok, true);
+
+    // Second batch with live=80 (as after complete), size=40 → 80+40=120 over.
+    // A 10s TTL cache of the first sum (0) would wrongly accept this.
+    const second = await handleSyncUploadPrepareBatch(
+      makeCaller(team.id, actor.id),
+      {
+        items: [
+          { path: "knowledge/c1.md", parentVersion: 0, contentHash: h32("c1"), size: 40 },
+        ],
+      },
+      deps,
+    );
+    assert.equal(second.statusCode, 200);
+    const { results } = JSON.parse(second.body);
+    assert.equal(results[0].ok, false);
+    assert.equal(results[0].status, 422);
+    assert.equal(results[0].code, "QuotaExceeded");
+    assert.equal(results[0].kind, "bytes");
+    assert.equal(sumCalls, 2, "each prepare-batch must re-fetch the live sum");
+  });
 });

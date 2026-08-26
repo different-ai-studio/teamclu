@@ -81,13 +81,10 @@ export function maxFilesPerTeam(): number {
 // security boundary, so a team briefly running over it is not a failure.
 const COUNT_TTL_MS = 10_000;
 const countCache = new Map<string, { at: number; count: number }>();
-const BYTE_TTL_MS = 10_000;
-const byteCache = new Map<string, { at: number; sum: number }>();
 
-/** Drop cached counts / sums. Tests only — production entries expire on their own. */
+/** Drop cached counts. Tests only — production entries expire on their own. */
 export function resetQuotaCache(): void {
   countCache.clear();
-  byteCache.clear();
 }
 
 /**
@@ -131,21 +128,21 @@ export function maxBytesPerTeam(): number {
 }
 
 /**
- * Sum of live file sizes for this team, cached for {@link BYTE_TTL_MS}.
+ * Sum of live file sizes for this team.
+ *
+ * Not TTL-cached across calls: prepare→complete updates live sizes, and the
+ * next prepare-batch must see the post-complete sum. Within a batch, the
+ * handler fetches once and keeps a running total across items.
  *
  * Returns `null` when the sum cannot be established — callers treat that as
- * "allow", same policy as {@link liveFileCount}.
+ * "allow", same policy as {@link liveFileCount}. That policy is about fetch
+ * failure, not about remembering a stale success.
  */
 export async function liveByteSum(
   teamId: string,
   sumBytes: (teamId: string) => Promise<number | null>,
 ): Promise<number | null> {
-  const hit = byteCache.get(teamId);
-  if (hit && Date.now() - hit.at < BYTE_TTL_MS) return hit.sum;
-  const sum = await sumBytes(teamId).catch(() => null);
-  if (sum === null) return null;
-  byteCache.set(teamId, { at: Date.now(), sum });
-  return sum;
+  return sumBytes(teamId).catch(() => null);
 }
 
 /**
