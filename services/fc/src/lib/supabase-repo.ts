@@ -934,6 +934,32 @@ export function createSupabaseBusinessRepository(options) {
     //
     // Nothing is persisted: an NLS token is derived state with its own expiry,
     // so storing it would create a second copy to invalidate for no gain.
+    // Registers a single-use ESP32 pairing code (plan §8.1). The cleartext code
+    // is never stored — only sha256(code) hex via the service-role client.
+    async createDevicePairingCode({ code, teamId, actorId, ttlSeconds }) {
+      const createdBy = await requireCallerTeamMemberActor(teamId);
+      // Confirm the target actor belongs to this team so a member cannot bind
+      // a device to someone else's actor id in another team.
+      const { data: actor, error: actorErr } = await supabase
+        .schema("amux")
+        .from("actors")
+        .select("id, team_id")
+        .eq("id", actorId)
+        .maybeSingle();
+      if (actorErr) throw actorErr;
+      if (!actor || actor.team_id !== teamId) {
+        throw new ApiError(404, "actor_not_found", "actor not found in this team");
+      }
+      const { createDevicePairingCode } = await import("./device-pairing.js");
+      return createDevicePairingCode({
+        code,
+        teamId,
+        actorId,
+        ttlSeconds,
+        createdBy,
+      });
+    },
+
     async mintVoiceCredentials(teamId) {
       // Membership first, before any upstream call. A non-member must not be
       // able to spend this deployment's NLS quota, or learn whether voice is

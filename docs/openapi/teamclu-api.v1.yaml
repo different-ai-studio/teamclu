@@ -30,6 +30,8 @@ tags:
     description: Runtime configuration delivered to authenticated clients (MQTT broker, feature flags).
   - name: Apps
     description: Per-app repo provisioning and the deploy pipeline (FC function + Postgres schema).
+  - name: Devices
+    description: ESP32 voice-terminal pairing codes, redemption, and MQTT JWT mint.
 paths:
   /v1/auth/refresh:
     post:
@@ -2756,6 +2758,151 @@ paths:
         "404":
           $ref: "#/components/responses/Error"
         "502":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/devices/pairing-codes:
+    post:
+      operationId: createDevicePairingCode
+      summary: Register a single-use ESP32 pairing code
+      description: |
+        amuxd (or desktop) mints a short-lived, single-use pairing code and
+        registers it here. Only `sha256(code)` is stored. The user types the
+        cleartext code into the device captive portal alongside Wi-Fi
+        credentials; the device later redeems it via `/v1/devices/redeem`.
+
+        Requires team membership. The `actorId` must belong to `teamId`.
+      tags: [Devices]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, teamId, actorId]
+              properties:
+                code:
+                  type: string
+                  minLength: 4
+                  maxLength: 64
+                teamId:
+                  type: string
+                  format: uuid
+                actorId:
+                  type: string
+                  format: uuid
+                ttlSeconds:
+                  type: integer
+                  minimum: 60
+                  maximum: 3600
+                  default: 600
+      responses:
+        "200":
+          description: Pairing code registered (echoes the cleartext code once).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevicePairingCodeResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/devices/redeem:
+    post:
+      operationId: redeemDevicePairingCode
+      summary: Redeem a pairing code for a long-lived device secret
+      description: |
+        Unauthenticated. The device posts the pairing code after joining Wi-Fi.
+        On success the code is burned and a `deviceSecret` is returned **once**.
+        Rate-limited per client IP.
+      security: []
+      tags: [Devices]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, deviceId]
+              properties:
+                code:
+                  type: string
+                deviceId:
+                  type: string
+                  description: Stable device id (lowercase hex, 4–32 chars).
+                  pattern: '^[0-9a-f]{4,32}$'
+                model:
+                  type: string
+                fw:
+                  type: string
+      responses:
+        "200":
+          description: Device secret (show once) and binding.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceRedeemResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /v1/devices/token:
+    post:
+      operationId: mintDeviceMqttToken
+      summary: Exchange a device secret for a short-lived MQTT JWT
+      description: |
+        Unauthenticated (the device secret is the credential). Returns a JWT
+        signed with `DEVICE_MQTT_JWT_SECRET` for EMQX's second authenticator.
+        Claims include `team`/`actor` (firmware topic namespace), `team_id`/
+        `actor_id` aliases, optional `broker`, and `exp`. Rate-limited per IP.
+      security: []
+      tags: [Devices]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceSecret]
+              properties:
+                deviceSecret:
+                  type: string
+                deviceId:
+                  type: string
+                  description: Optional; when set, must match the secret's device.
+      responses:
+        "200":
+          description: Short-lived MQTT access token.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceTokenResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "429":
           $ref: "#/components/responses/Error"
         "503":
           $ref: "#/components/responses/Error"
@@ -6255,6 +6402,55 @@ components:
             Synthesis voice id, e.g. `zhixiaobai` / `xiaoyun` / `siqi`. These are
             classic NLS voice names; CosyVoice/DashScope names are a different
             product and the gateway rejects them.
+    DevicePairingCodeResponse:
+      type: object
+      required: [code, teamId, actorId, ttlSeconds, expiresAt]
+      properties:
+        code:
+          type: string
+        teamId:
+          type: string
+          format: uuid
+        actorId:
+          type: string
+          format: uuid
+        ttlSeconds:
+          type: integer
+        expiresAt:
+          type: string
+          format: date-time
+    DeviceRedeemResponse:
+      type: object
+      required: [deviceSecret, teamId, actorId]
+      properties:
+        deviceSecret:
+          type: string
+          description: Returned once at redemption; store in NVS, never log.
+        teamId:
+          type: string
+          format: uuid
+        actorId:
+          type: string
+          format: uuid
+    DeviceTokenResponse:
+      type: object
+      required: [accessToken, expiresAt, teamId, actorId]
+      properties:
+        accessToken:
+          type: string
+          description: MQTT password (JWT). Refresh before expiresAt.
+        expiresAt:
+          type: string
+          format: date-time
+        broker:
+          type: string
+          description: Optional broker URI from MQTT_BROKER_URL.
+        teamId:
+          type: string
+          format: uuid
+        actorId:
+          type: string
+          format: uuid
     LiteLlmMemberKeyResponse:
       type: object
       required: [key, aiGatewayEndpoint]

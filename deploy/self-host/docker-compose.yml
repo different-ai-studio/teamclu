@@ -242,6 +242,10 @@ services:
       # external login provider, and this one authorizes Agent capability
       # management. Unset means agent management is off (FC answers 503).
       AGENT_MANAGEMENT_GRANT_SECRET: "${AGENT_MANAGEMENT_GRANT_SECRET:-}"
+      # Dedicated HMAC for ESP32 MQTT JWTs (plan §8.1). Shared only with EMQX's
+      # second authenticator — never reuse SUPABASE_JWT_SECRET or the trusted-
+      # external login key. Unset → POST /v1/devices/token answers 503.
+      DEVICE_MQTT_JWT_SECRET: "${DEVICE_MQTT_JWT_SECRET:-}"
       SUPABASE_SERVICE_ROLE_KEY: "${FC_SUPABASE_SERVICE_ROLE_KEY:-${SERVICE_ROLE_KEY}}"
       # Private Supabase Storage buckets holding client-encrypted blobs: team
       # file-sync bodies and skill packages. This map is an allowlist, so a var

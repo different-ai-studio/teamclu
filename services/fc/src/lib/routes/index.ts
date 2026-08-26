@@ -24,6 +24,7 @@ import { registerMarketplace } from "./marketplace.js";
 import { registerTeamMcp } from "./team-mcp.js";
 import { registerTeamEnvSecrets } from "./team-env-secrets.js";
 import { registerTeamVoice } from "./team-voice.js";
+import { registerDevices } from "./devices.js";
 
 export function registerAllRoutes(router) {
   registerAuth(router);
@@ -51,6 +52,9 @@ export function registerAllRoutes(router) {
   // Same ordering reason again: owns /v1/teams/:teamId/voice/* and must be
   // registered before workspaces' broader team match can shadow it.
   registerTeamVoice(router);
+  // Device pairing is not under /v1/teams/:id, but register before workspaces
+  // anyway so a future /v1/devices/:id team-scoped path cannot be shadowed.
+  registerDevices(router);
   registerWorkspaces(router);
   registerSystem(router);
   registerActors(router);

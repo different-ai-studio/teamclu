@@ -20,6 +20,7 @@ import { makeMarketplaceRepo } from "./marketplace.js";
 import { makeTeamMcpRepo } from "./team-mcp.js";
 import { makeTeamEnvSecretsRepo } from "./team-env-secrets.js";
 import { makeTeamVoiceRepo } from "./team-voice.js";
+import { makeDevicesRepo } from "./devices.js";
 import { createNlsToken, resolveVoiceProfile } from "../aliyun-nls.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -78,6 +79,7 @@ export function createPgBusinessRepository({ db, accessToken, userId, callerActo
     resolveVoiceProfile: () => resolveVoiceProfile(),
     createNlsToken: (profile) => createNlsToken(profile),
   });
+  const devicesRepo = makeDevicesRepo(db, ctx);
   return {
     ...teamsRepo,
     ...ideasRepo,
@@ -98,6 +100,7 @@ export function createPgBusinessRepository({ db, accessToken, userId, callerActo
     ...teamMcpRepo,
     ...teamEnvSecretsRepo,
     ...teamVoiceRepo,
+    ...devicesRepo,
     ...makeAttachmentsRepo(),
     listTeams: (args: { limit?: number } = {}) => teamsRepo.listTeams(args, teamsCtx),
     listAllMyTeams: () => teamsRepo.listAllMyTeams(teamsCtx),
