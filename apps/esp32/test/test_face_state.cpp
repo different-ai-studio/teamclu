@@ -187,6 +187,40 @@ void test_note_saved_marker_cancels_the_timeout()
     CHECK(s.screen() == Screen::Idle);
 }
 
+void test_a_hold_on_the_error_screen_starts_talking_without_a_second_press()
+{
+    // The three-press bug: dismissing an error used to swallow the press, so a
+    // user whose session had expired had to press once to clear the screen and
+    // again to speak. A hold means "I want to talk"; it should be honoured on
+    // the first try.
+    FaceState s;
+    s.setLink(Link::Online);
+    s.onError(ErrorKind::NoAgent);
+    CHECK(s.screen() == Screen::Error);
+
+    s.onButtonDown(Button::A, 1000);
+    s.tick(1000 + FaceState::HoldThresholdMs);
+
+    CHECK(s.screen() == Screen::Listen);
+}
+
+void test_a_tap_on_the_error_screen_only_dismisses()
+{
+    // The other half: a short press is not an utterance, so it must clear the
+    // error and leave the device idle rather than opening a turn nobody spoke
+    // into.
+    FaceState s;
+    s.setLink(Link::Online);
+    s.onError(ErrorKind::NoAgent);
+
+    s.onButtonDown(Button::A, 1000);
+    s.onButtonUp(Button::A, 1000 + FaceState::HoldThresholdMs / 2);
+    s.tick(1000 + FaceState::HoldThresholdMs);
+
+    CHECK(s.screen() != Screen::Error);
+    CHECK(s.screen() != Screen::Listen);
+}
+
 void test_late_note_saved_replaces_the_error()
 {
     std::printf("note_saved after the timeout still shows saved\n");
@@ -473,6 +507,8 @@ int main()
     test_note_hold_flow();
     test_silent_note_with_agent_expected_reports_no_agent();
     test_note_saved_marker_cancels_the_timeout();
+    test_a_hold_on_the_error_screen_starts_talking_without_a_second_press();
+    test_a_tap_on_the_error_screen_only_dismisses();
     test_late_note_saved_replaces_the_error();
     test_note_saved_without_text_adds_no_blank_row();
     test_note_without_a_backend_still_demos_offline();

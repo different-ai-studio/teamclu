@@ -1273,12 +1273,29 @@ impl RuntimeAdapter for RuntimeManagerAdapter {
         let dispatch = manager
             .send_prompt(&runtime_id, &params.text, attachment_urls)
             .await;
+        // Asked on the failure path only, so there is no TOCTOU window and no
+        // cost in the common case: did the runtime disappear, or did the
+        // dispatch fail for some other reason?
+        let agent_gone = dispatch.is_err() && manager.get_handle(&runtime_id).is_none();
         drop(manager);
         if let Err(e) = dispatch {
-            let mut sessions = self.sessions.write();
-            if let Some(session) = sessions.get_mut(&session_id) {
-                session.active_turn_id = None;
-                session.buffered_output.clear();
+            {
+                let mut sessions = self.sessions.write();
+                if let Some(session) = sessions.get_mut(&session_id) {
+                    session.active_turn_id = None;
+                    session.buffered_output.clear();
+                    // This map and the manager's had drifted apart: we believed
+                    // in a session whose runtime had been evicted for idling.
+                    // Saying so is what lets a caller recover — otherwise the
+                    // condition arrives as an opaque Internal and the only
+                    // available response is to give up on the turn.
+                    if agent_gone {
+                        session.snapshot.state = SessionState::Closed;
+                    }
+                }
+            }
+            if agent_gone {
+                return Err(HttpError::session_not_found(&session_id.to_string()));
             }
             return Err(HttpError::internal(format!("dispatch prompt: {e}")));
         }

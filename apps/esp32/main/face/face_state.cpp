@@ -86,11 +86,18 @@ void FaceState::onButtonDown(Button b, std::uint32_t nowMs)
 {
     // Any press dismisses an error and returns to a known state. An error
     // screen the user cannot leave is worse than the error.
+    //
+    // The press is NOT consumed. It used to be, and the cost showed up on
+    // hardware: a session expiring server-side put the device on the error
+    // screen, so the next press only cleared it and a *third* press was needed
+    // to say anything. Three presses for one sentence.
+    //
+    // Falling through is safe because a press is not yet an utterance —
+    // `HoldThresholdMs` decides that. A tap still just dismisses; a hold
+    // dismisses and starts talking, which is what someone holding the button
+    // on an error screen means.
     if (_screen == Screen::Error && _error != ErrorKind::None) {
         clearError();
-        if (b != Button::Pwr) {
-            return;  // consume this press as the dismissal
-        }
     }
 
     if (b == Button::Pwr) {

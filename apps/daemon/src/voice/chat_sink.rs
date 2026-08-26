@@ -172,6 +172,15 @@ impl ChatSink {
     }
 }
 
+/// Whether the runtime no longer has the session we were holding.
+///
+/// Two spellings, because two layers can lose it: the adapter's own map
+/// (`SessionNotFound`) and the manager's agent map, which the adapter reports
+/// as the same code once it notices the drift.
+fn is_session_gone(e: &crate::http::errors::HttpError) -> bool {
+    matches!(e.code, crate::http::errors::ErrorCode::SessionNotFound)
+}
+
 #[async_trait]
 impl TranscriptSink for ChatSink {
     async fn on_final(
@@ -218,23 +227,67 @@ impl TranscriptSink for ChatSink {
             mentions: Vec::new(),
             metadata: Some(serde_json::json!({ "source": "stopwatch" })),
         };
-        match self.runtime.send_prompt(session, params).await {
+        match self.runtime.send_prompt(session, params.clone()).await {
             Ok(ack) => {
                 info!(team_id, actor_id, session_id = %session, turn_id = %ack.turn_id,
                       chars = text.chars().count(), "voice: chat prompt accepted");
             }
+            // The session was evicted for idling while we still held its id —
+            // the device is quiet for half an hour and the runtime reclaims it.
+            // Recreating on the NEXT turn was the old behaviour and it cost the
+            // user this one: they spoke, nothing happened, and pressing again
+            // was the only cure. Recreate here instead, so the sentence they
+            // already said is the one that gets answered.
+            Err(e) if is_session_gone(&e) => {
+                info!(team_id, actor_id, session_id = %session,
+                      "voice: session had been reclaimed; opening a new one and retrying this turn");
+                self.forget(&key).await;
+                let Some(fresh) = self.session_for(&key, None).await else {
+                    if let Some(speaker) = &self.speaker {
+                        speaker
+                            .fail(&key, "no_agent", "could not open a session")
+                            .await;
+                    }
+                    return;
+                };
+                // The speaker is watching the dead session. Point it at the new
+                // one before prompting, for the same reason `begin` runs before
+                // the first `send_prompt`: a subscription opened afterwards
+                // misses the opening tokens.
+                if let Some(speaker) = &self.speaker {
+                    speaker.begin(key.clone(), fresh).await;
+                }
+                match self.runtime.send_prompt(fresh, params).await {
+                    Ok(ack) => {
+                        info!(team_id, actor_id, session_id = %fresh, turn_id = %ack.turn_id,
+                              "voice: chat prompt accepted after reopening");
+                    }
+                    // One retry, not a loop: if a session opened seconds ago
+                    // also refuses, the fault is not staleness.
+                    Err(e) => {
+                        warn!(team_id, actor_id, session_id = %fresh, error = ?e,
+                              "voice: prompt rejected by a freshly opened session");
+                        if let Some(speaker) = &self.speaker {
+                            speaker
+                                .fail(&key, "no_agent", "prompt rejected by the runtime")
+                                .await;
+                        }
+                        self.forget(&key).await;
+                    }
+                }
+            }
             Err(e) => {
+                // Everything else, busy included. Do NOT forget the session:
+                // busy means it is alive and mid-turn, and dropping it would
+                // send the next sentence to a brand-new session with none of
+                // the conversation in it.
                 warn!(team_id, actor_id, session_id = %session, error = ?e,
-                      "voice: chat prompt rejected; dropping the session so the next turn retries");
-                // The speaker is already watching a session that will never
-                // answer. Tear it down and show the error, or the device sits
-                // on Think until its own deadline expires.
+                      "voice: chat prompt rejected; keeping the session");
                 if let Some(speaker) = &self.speaker {
                     speaker
                         .fail(&key, "no_agent", "prompt rejected by the runtime")
                         .await;
                 }
-                self.forget(&key).await;
             }
         }
     }
@@ -259,7 +312,11 @@ mod tests {
         /// When set, `get_session` fails — i.e. the device named a session the
         /// runtime does not have.
         known_session: Option<Uuid>,
+        /// How `send_prompt` fails, if at all. Two shapes, because the real
+        /// adapter distinguishes them and the sink now acts on the difference.
         fail_prompt: bool,
+        /// `SessionBusy` instead of `SessionNotFound`: alive and mid-turn.
+        fail_prompt_busy: bool,
         /// Shared call log, so tests can assert the *order* of runtime and
         /// speaker calls against each other and not just their counts.
         journal: Arc<Mutex<Vec<&'static str>>>,
@@ -275,6 +332,7 @@ mod tests {
                 session_id: Uuid::new_v4(),
                 known_session: None,
                 fail_prompt: false,
+                fail_prompt_busy: false,
                 journal: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -358,8 +416,17 @@ mod tests {
 
         async fn send_prompt(&self, id: Uuid, p: PromptParams) -> Result<PromptAck, HttpError> {
             self.journal.lock().await.push("prompt");
+            if self.fail_prompt_busy {
+                return Err(HttpError::new(
+                    crate::http::errors::ErrorCode::SessionBusy,
+                    "session is already processing a prompt",
+                ));
+            }
             if self.fail_prompt {
-                return Err(HttpError::not_found("session gone"));
+                // `session_not_found`, not a generic `not_found`: this is the
+                // exact code the adapter returns once it notices its map and
+                // the manager's have drifted, and the sink branches on it.
+                return Err(HttpError::session_not_found(&id.to_string()));
             }
             self.prompts.lock().await.push((id, p.text));
             Ok(PromptAck {
@@ -495,7 +562,14 @@ mod tests {
         let (sink, speaker) = sink_with_speaker(rt.clone());
         sink.on_final("t1", "a1", Intent::Chat, None, "问题").await;
 
-        assert_eq!(*rt.journal.lock().await, vec!["begin", "prompt", "fail"]);
+        // The reopen is visible here, and so is the ordering that matters:
+        // `begin` precedes the retry's `prompt`, for the same reason it
+        // precedes the first one — a subscription opened after the prompt
+        // misses the reply's opening tokens.
+        assert_eq!(
+            *rt.journal.lock().await,
+            vec!["begin", "prompt", "begin", "prompt", "fail"]
+        );
         assert_eq!(*speaker.errors.lock().await, vec!["no_agent"]);
     }
 
@@ -601,17 +675,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_rejected_prompt_drops_the_session_so_the_next_turn_retries() {
+    async fn a_reclaimed_session_is_reopened_within_the_same_turn() {
+        // The observed failure: a device quiet for half an hour comes back, the
+        // runtime has reclaimed the session, and the sentence the user just
+        // said is thrown away. Pressing again worked, which is how it read as
+        // "you have to ask twice".
+        //
+        // The recovery has to happen inside this turn, on the words already
+        // spoken — a retry the user has to perform is not a retry.
         let mut fake = FakeRuntime::new();
         fake.fail_prompt = true;
         let rt = Arc::new(fake);
         let sink = ChatSink::new(rt.clone(), Uuid::new_v4(), None);
 
-        sink.on_final("t1", "a1", Intent::Chat, None, "one").await;
-        sink.on_final("t1", "a1", Intent::Chat, None, "two").await;
+        sink.on_final("t1", "a1", Intent::Chat, None, "今天几号")
+            .await;
 
-        // Two sessions created: the first was discarded when the prompt was
-        // refused, so a restarted runtime does not wedge the device forever.
-        assert_eq!(rt.created.load(Ordering::SeqCst), 2);
+        // Two sessions and two prompts from ONE utterance: the stale one, then
+        // the reopened one.
+        assert_eq!(rt.created.load(Ordering::SeqCst), 2, "reopened once");
+        let journal = rt.journal.lock().await.clone();
+        assert_eq!(
+            journal.iter().filter(|e| **e == "prompt").count(),
+            2,
+            "the same sentence is asked again, not dropped: {journal:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reopening_is_tried_once_and_not_in_a_loop() {
+        // The fake refuses every session, including the fresh one. If staleness
+        // were not the real cause, retrying on each failure would spin.
+        let mut fake = FakeRuntime::new();
+        fake.fail_prompt = true;
+        let rt = Arc::new(fake);
+        let (sink, speaker) = sink_with_speaker(rt.clone());
+
+        sink.on_final("t1", "a1", Intent::Chat, None, "问题").await;
+
+        assert_eq!(rt.created.load(Ordering::SeqCst), 2, "one reopen, not more");
+        assert_eq!(*speaker.errors.lock().await, vec!["no_agent"]);
+    }
+
+    #[tokio::test]
+    async fn a_busy_session_is_kept_rather_than_thrown_away() {
+        // Busy means alive and mid-turn. Dropping it — which is what every
+        // rejection used to do — sends the next sentence to a brand-new session
+        // with none of the conversation in it, so the user loses the thread as
+        // a side effect of speaking too soon.
+        let mut fake = FakeRuntime::new();
+        fake.fail_prompt_busy = true;
+        let rt = Arc::new(fake);
+        let sink = ChatSink::new(rt.clone(), Uuid::new_v4(), None);
+
+        sink.on_final("t1", "a1", Intent::Chat, None, "一").await;
+        sink.on_final("t1", "a1", Intent::Chat, None, "二").await;
+
+        assert_eq!(
+            rt.created.load(Ordering::SeqCst),
+            1,
+            "the session survives being busy"
+        );
     }
 }
