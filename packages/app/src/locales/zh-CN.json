@@ -323,7 +323,29 @@
     "panelTitle": "本地 Agent"
   },
   "menu": {
-    "settings": "设置…"
+    "settings": "设置…",
+    "file": "文件(&F)",
+    "edit": "编辑(&E)",
+    "view": "视图(&V)",
+    "window": "窗口(&W)",
+    "help": "帮助(&H)",
+    "undo": "撤销",
+    "redo": "重做",
+    "cut": "剪切",
+    "copy": "复制",
+    "paste": "粘贴",
+    "selectAll": "全选",
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "zoom": "缩放",
+    "fullscreen": "切换全屏",
+    "close": "关闭",
+    "closeWindow": "关闭窗口",
+    "about": "关于",
+    "hide": "隐藏",
+    "hideOthers": "隐藏其他",
+    "services": "服务",
+    "quit": "退出"
   },
   "tray": {
     "showMain": "打开主窗口",

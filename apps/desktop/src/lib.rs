@@ -612,9 +612,13 @@ pub fn run() {
             }
 
             // --- App menu bar (Settings… ⌘,, brand-correct About/Hide/Quit) ---
-            match commands::app_menu::install_app_menu(app.handle()) {
-                Ok(settings_item) => {
-                    app.manage(commands::app_menu::AppMenuState::new(settings_item));
+            // Cold-start from the OS locale; the frontend pushes the UI's own
+            // language through `update_app_menu_labels` as soon as it boots.
+            match commands::app_menu::install_app_menu(
+                app.handle(),
+                &commands::app_menu::MenuLabels::for_os_locale(),
+            ) {
+                Ok(()) => {
                     app.on_menu_event(|app, event| {
                         if event.id().as_ref() == commands::app_menu::APP_SETTINGS_ID {
                             commands::app_menu::open_app_settings(app);

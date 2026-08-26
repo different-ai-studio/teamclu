@@ -46,6 +46,23 @@ pub mod workspace_files;
 #[cfg(target_os = "windows")]
 use crate::process_util::CommandNoWindow;
 
+/// True when the OS is set to a Chinese locale.
+///
+/// Cold-start only: the language the user picked in Settings lives in the
+/// webview's localStorage, which Rust cannot read before the frontend boots,
+/// so the native menu bar and tray start from the OS and get corrected the
+/// moment `syncTrayMenuLabels` runs.
+///
+/// `sys_locale` asks the OS itself. The previous `LC_ALL` / `LANG` probe was a
+/// Unix convention that Windows does not follow — neither variable is normally
+/// set there, so a Chinese Windows always cold-started in English.
+pub fn prefers_zh_locale() -> bool {
+    sys_locale::get_locale()
+        .unwrap_or_default()
+        .to_lowercase()
+        .starts_with("zh")
+}
+
 /// The short application name, injected at compile time via `build.rs`.
 pub const APP_SHORT_NAME: &str = env!("APP_SHORT_NAME");
 /// Deep-link scheme for this build (`app.scheme`, default `teamclu`).

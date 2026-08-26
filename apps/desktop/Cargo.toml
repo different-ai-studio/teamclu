@@ -46,6 +46,9 @@ tauri-plugin-window-state = "2"
 # clipboard-manager plugin is text/image only, so it cannot carry file paths.
 tauri-plugin-clipboard = "2.1"
 tauri-plugin-aptabase = "1.0"
+# OS UI language for the cold-start menu bar / tray labels. Windows does not
+# set LANG or LC_ALL, so an env probe can never see a Chinese Windows.
+sys-locale = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 prost = "0.13"
