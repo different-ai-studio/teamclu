@@ -135,7 +135,110 @@ IncomingCtl::Kind kindFromType(const std::string& type)
     if (type == "spk_end")    return IncomingCtl::Kind::SpkEnd;
     if (type == "session")    return IncomingCtl::Kind::Session;
     if (type == "note_saved") return IncomingCtl::Kind::NoteSaved;
+    if (type == "menu")       return IncomingCtl::Kind::Menu;
     return IncomingCtl::Kind::Unknown;
+}
+
+// Extract a flat JSON string-array field `"key":["a","b"]`. Returns empty on
+// absence / malformation. Enough for menu options (amuxd-controlled, short).
+std::vector<std::string> extractStringArray(const char* json, std::size_t len, const char* key)
+{
+    char needle[24];
+    const std::size_t keyLen = std::strlen(key);
+    if (keyLen == 0 || keyLen + 3 > sizeof(needle)) {
+        return {};
+    }
+    needle[0] = '"';
+    std::memcpy(needle + 1, key, keyLen);
+    needle[1 + keyLen] = '"';
+    needle[2 + keyLen] = '\0';
+    const std::size_t needleLen = 2 + keyLen;
+
+    if (len < needleLen) {
+        return {};
+    }
+    std::size_t i = 0;
+    bool found = false;
+    for (; i + needleLen <= len; ++i) {
+        if (std::memcmp(json + i, needle, needleLen) != 0) {
+            continue;
+        }
+        std::size_t j = i;
+        while (j > 0) {
+            const char p = json[j - 1];
+            if (p == ' ' || p == '\t' || p == '\n' || p == '\r') {
+                --j;
+                continue;
+            }
+            break;
+        }
+        if (j == 0 || json[j - 1] == '{' || json[j - 1] == ',') {
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return {};
+    }
+    i += needleLen;
+    auto skipWs = [&] {
+        while (i < len) {
+            char c = json[i];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                ++i;
+            } else {
+                break;
+            }
+        }
+    };
+    skipWs();
+    if (i >= len || json[i] != ':') {
+        return {};
+    }
+    ++i;
+    skipWs();
+    if (i >= len || json[i] != '[') {
+        return {};
+    }
+    ++i;
+
+    std::vector<std::string> out;
+    while (i < len) {
+        skipWs();
+        if (i < len && json[i] == ']') {
+            break;
+        }
+        if (i >= len || json[i] != '"') {
+            break;
+        }
+        ++i;
+        std::string item;
+        for (; i < len; ++i) {
+            char c = json[i];
+            if (c == '"') {
+                ++i;
+                break;
+            }
+            if (c == '\\' && i + 1 < len) {
+                ++i;
+                switch (json[i]) {
+                    case '"':  item.push_back('"');  break;
+                    case '\\': item.push_back('\\'); break;
+                    case 'n':  item.push_back('\n'); break;
+                    case 't':  item.push_back('\t'); break;
+                    default:   item.push_back(json[i]); break;
+                }
+                continue;
+            }
+            item.push_back(c);
+        }
+        out.push_back(std::move(item));
+        skipWs();
+        if (i < len && json[i] == ',') {
+            ++i;
+        }
+    }
+    return out;
 }
 
 }  // namespace
@@ -159,6 +262,11 @@ IncomingCtl parseIncomingCtl(const char* json, std::size_t len)
         case IncomingCtl::Kind::NoteSaved:
             out.time = extractString(json, len, "time");
             out.text = extractString(json, len, "text");
+            break;
+        case IncomingCtl::Kind::Menu:
+            out.questionId = extractString(json, len, "question_id");
+            out.prompt = extractString(json, len, "prompt");
+            out.options = extractStringArray(json, len, "options");
             break;
         case IncomingCtl::Kind::Thinking:
         case IncomingCtl::Kind::SpkStart:

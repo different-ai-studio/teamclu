@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace net {
 
@@ -37,6 +38,7 @@ struct IncomingCtl {
         SpkEnd,      // amuxd: TTS audio finished (turn done, no barge-in)
         Session,     // amuxd: session id assigned for this turn
         NoteSaved,   // amuxd: a note turn was persisted — carries the text back
+        Menu,        // amuxd: InteractiveQuestion → on-device option list
         Unknown,     // forward-compat: a type this firmware doesn't know yet
     };
 
@@ -49,6 +51,10 @@ struct IncomingCtl {
     // Opus frames, and only amuxd knows what the transcript came out as.
     std::string time;     // NoteSaved: "HH:MM" for the notes list
     std::string text;     // NoteSaved: the stored transcript
+    // Menu: InteractiveQuestion from the agent (design §4.4).
+    std::string questionId;
+    std::string prompt;
+    std::vector<std::string> options;
 };
 
 // Parse one incoming `voice/ctl` JSON document. Malformed input returns

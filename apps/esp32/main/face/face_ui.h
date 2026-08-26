@@ -44,6 +44,7 @@ private:
     void buildSaving(const FaceState& st);
     void buildSaved(const FaceState& st);
     void buildNotes(const FaceState& st);
+    void buildMenu(const FaceState& st);
     void buildWifi(const FaceState& st);
     void buildSleep(const FaceState& st);
     void buildError(const FaceState& st);
@@ -64,6 +65,8 @@ private:
     Mode _builtMode = Mode::Chat;
     ErrorKind _builtError = ErrorKind::None;
     std::size_t _builtNoteCount = 0;
+    std::size_t _builtMenuIndex = 0;
+    std::size_t _builtMenuCount = 0;
 
     std::string _clock = "--:--";
     std::uint32_t _quipAt = 0;

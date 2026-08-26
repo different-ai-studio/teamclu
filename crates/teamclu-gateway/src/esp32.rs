@@ -23,7 +23,7 @@ use async_trait::async_trait;
 
 use crate::driver::{
     ChannelCaps, ChannelDriver, ChannelId, Conversation, DeliveryId, DriverError, ExternalSender,
-    OutboundMessage, Threading, TurnEnd,
+    InteractiveQuestion, OutboundMessage, Threading, TurnEnd,
 };
 
 /// How the daemon speaks and publishes ctl to one device.
@@ -64,10 +64,22 @@ struct Playback {
     chunker: SentenceChunker,
 }
 
+/// Options published with a `menu` ctl, keyed by `question_id` so a later
+/// `menu_reply` can resolve `index` → option text (design §4.4).
+#[derive(Debug, Clone)]
+pub struct PendingMenu {
+    pub target: Esp32Target,
+    pub options: Vec<String>,
+}
+
 pub struct Esp32Driver {
     pub downlink: Arc<dyn Esp32Downlink>,
     pub team_id: String,
     playback: Mutex<HashMap<String, Playback>>,
+    /// Last MQTT address per conversation actor — mid-turn `question` events
+    /// have a binding but no fresh `reply_context`.
+    last_targets: Mutex<HashMap<String, Esp32Target>>,
+    pending_menus: Mutex<HashMap<String, PendingMenu>>,
 }
 
 impl Esp32Driver {
@@ -76,7 +88,66 @@ impl Esp32Driver {
             downlink,
             team_id: team_id.into(),
             playback: Mutex::new(HashMap::new()),
+            last_targets: Mutex::new(HashMap::new()),
+            pending_menus: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Remember where to address MQTT for this actor (from inbound `reply_context`).
+    pub fn remember_target(&self, target: Esp32Target) {
+        self.last_targets
+            .lock()
+            .unwrap()
+            .insert(target.actor_id.clone(), target);
+    }
+
+    /// Look up the last device for an actor (pairing product = conversation id).
+    pub fn last_target_for_actor(&self, actor_id: &str) -> Option<Esp32Target> {
+        self.last_targets.lock().unwrap().get(actor_id).cloned()
+    }
+
+    /// Resolve a `menu_reply` index against the options we published.
+    /// Removes the pending entry (one shot).
+    pub fn take_menu_option(&self, question_id: &str, index: usize) -> Option<(Esp32Target, String)> {
+        let mut map = self.pending_menus.lock().unwrap();
+        let pending = map.remove(question_id)?;
+        let text = pending.options.get(index)?.clone();
+        Some((pending.target, text))
+    }
+
+    /// Speak the prompt only and publish a `menu` ctl (design §4.4).
+    ///
+    /// Used by [`ChannelDriver::deliver`] when `OutboundMessage.question` is
+    /// set, and by the mid-turn question hook when opencode asks live.
+    pub async fn present_question(
+        &self,
+        target: &Esp32Target,
+        question: &InteractiveQuestion,
+    ) -> Result<(), DriverError> {
+        self.remember_target(target.clone());
+        self.pending_menus.lock().unwrap().insert(
+            question.question_id.clone(),
+            PendingMenu {
+                target: target.clone(),
+                options: question.options.clone(),
+            },
+        );
+
+        let ctl = serde_json::json!({
+            "type": "menu",
+            "question_id": question.question_id,
+            "prompt": question.prompt,
+            "options": question.options,
+            "from": "amuxd",
+        });
+        self.downlink
+            .publish_ctl(target, &ctl.to_string())
+            .await?;
+
+        if !question.prompt.is_empty() {
+            self.downlink.speak(target, &question.prompt).await?;
+        }
+        Ok(())
     }
 
     /// Feed `full_text[cursor..]` into the chunker; return ready pieces and
@@ -229,18 +300,33 @@ impl ChannelDriver for Esp32Driver {
         msg: &OutboundMessage,
     ) -> Result<DeliveryId, DriverError> {
         // Device id is not on Conversation — inbound must carry
-        // `team/actor/device` so we can address MQTT. Phase 3 will also
-        // read `msg.question` for a ctl menu; for now speak the text
-        // (which usually includes the prompt when a question is present).
+        // `team/actor/device` so we can address MQTT.
         let Some(ctx) = reply_context else {
             return Err(DriverError::Payload(
                 "esp32 deliver requires reply_context team/actor/device".into(),
             ));
         };
         let target = parse_reply_context(ctx)?;
+        self.remember_target(target.clone());
         // Unique per deliver so concurrent turns on the same device do not
         // share a cursor (device_id alone collided under streaming).
         let id = DeliveryId(uuid::Uuid::new_v4().to_string());
+
+        // Interactive question: speak prompt only + on-device menu (design §4.4).
+        // Streaming answer text may follow later via `update` after the user
+        // replies; for this turn deliver is primarily menu + prompt speak.
+        if let Some(ref question) = msg.question {
+            self.present_question(&target, question).await?;
+            self.playback.lock().unwrap().insert(
+                id.0.clone(),
+                Playback {
+                    target,
+                    cursor: 0,
+                    chunker: SentenceChunker::default(),
+                },
+            );
+            return Ok(id);
+        }
 
         if msg.text.is_empty() {
             // Streaming placeholder: Core will `update` as the reply grows.
@@ -306,6 +392,7 @@ mod tests {
         speaks: Mutex<Vec<(String, String)>>,
         deltas: Mutex<Vec<(String, String)>>,
         ends: Mutex<Vec<(String, TurnEnd)>>,
+        ctls: Mutex<Vec<(String, String)>>,
     }
 
     #[async_trait]
@@ -334,7 +421,11 @@ mod tests {
             Ok(())
         }
 
-        async fn publish_ctl(&self, _device: &Esp32Target, _json: &str) -> Result<(), DriverError> {
+        async fn publish_ctl(&self, device: &Esp32Target, json: &str) -> Result<(), DriverError> {
+            self.ctls
+                .lock()
+                .unwrap()
+                .push((device.device_id.clone(), json.to_string()));
             Ok(())
         }
     }
@@ -411,16 +502,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deliver_with_question_speaks_prompt_and_publishes_menu() {
+        let downlink = Arc::new(FakeDownlink::default());
+        let d = driver(Arc::clone(&downlink));
+        let msg = OutboundMessage {
+            text: "ignored when question present — would have listed options".into(),
+            question: Some(InteractiveQuestion {
+                question_id: "q1".into(),
+                prompt: "pick one".into(),
+                options: vec!["A".into(), "B".into(), "C".into()],
+            }),
+            ..Default::default()
+        };
+
+        let id = d
+            .deliver(&conversation(), Some("team-1/actor-1/dev-99"), &msg)
+            .await
+            .expect("deliver");
+
+        assert!(!id.0.is_empty());
+        assert_eq!(
+            downlink.speaks.lock().unwrap().clone(),
+            vec![("dev-99".into(), "pick one".into())],
+            "speak prompt only, not the options list"
+        );
+        let ctls = downlink.ctls.lock().unwrap().clone();
+        assert_eq!(ctls.len(), 1);
+        assert_eq!(ctls[0].0, "dev-99");
+        let body: serde_json::Value = serde_json::from_str(&ctls[0].1).expect("ctl json");
+        assert_eq!(body["type"], "menu");
+        assert_eq!(body["question_id"], "q1");
+        assert_eq!(body["prompt"], "pick one");
+        assert_eq!(body["options"], serde_json::json!(["A", "B", "C"]));
+        assert_eq!(body["from"], "amuxd");
+
+        let (target, text) = d.take_menu_option("q1", 1).expect("pending menu");
+        assert_eq!(target.device_id, "dev-99");
+        assert_eq!(text, "B");
+        assert!(d.take_menu_option("q1", 0).is_none(), "one-shot");
+    }
+
+    #[tokio::test]
     async fn deliver_nonempty_is_oneshot_speak() {
         let downlink = Arc::new(FakeDownlink::default());
         let d = driver(Arc::clone(&downlink));
         let msg = OutboundMessage {
             text: "hello from the agent".into(),
-            question: Some(InteractiveQuestion {
-                question_id: "q1".into(),
-                prompt: "pick one".into(),
-                options: vec!["A".into(), "B".into()],
-            }),
             ..Default::default()
         };
 
@@ -434,6 +561,7 @@ mod tests {
             vec![("dev-99".into(), "hello from the agent".into())]
         );
         assert!(downlink.deltas.lock().unwrap().is_empty());
+        assert!(downlink.ctls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

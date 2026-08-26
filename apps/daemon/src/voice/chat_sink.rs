@@ -130,20 +130,12 @@ impl ChatSink {
                 "source": "stopwatch",
                 "actor_id": key.actor_id,
             })),
-            // A device has no approval surface: a permission card raised here
-            // is shown to nobody, and the runtime's watchdog reads "waiting on
-            // the user" as healthy rather than stalled, so the turn parks
-            // forever and the device sits on Think until its own deadline.
-            // Observed exactly that — the agent answered a spoken question
-            // with two `bash` calls and the turn never moved again.
-            //
-            // Same reasoning as gateway and cron sessions (see
-            // `PermissionPolicy`), and the same trade: a spoken sentence can
-            // now run any tool the agent chooses, with no confirmation. That
-            // is a real widening of what a paired device can do, and it is why
-            // the field is `serde(skip)` — the daemon decides this, never a
-            // request.
-            permission: Some(crate::runtime::PermissionPolicy::Full),
+            // Device has an on-device menu for `question` (Phase 3). Use the
+            // default Ask policy so the tool is not auto-cancelled — the
+            // former Full hack parked every clarification as "cancelled".
+            // Tool-permission cards still have no surface; that is a known
+            // trade until permission requests also get a device UX.
+            permission: None,
         };
         match self
             .runtime
@@ -642,25 +634,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_device_turn_runs_with_full_access() {
-        // The device has no screen to approve on. Under the default `Ask` the
-        // agent's first tool call raises a card nobody sees, the runtime
-        // watchdog counts "waiting on the user" as healthy, and the turn parks
-        // forever — observed on hardware as a spoken question answered by two
-        // `bash` calls and then silence.
-        //
-        // This is a security-relevant default, not an incidental one: it lets
-        // a spoken sentence run any tool the agent picks. It is asserted so it
-        // cannot be widened or narrowed by accident.
+    async fn a_device_turn_uses_default_ask_permission() {
+        // Phase 3: Full auto-cancelled every `question` tool call. With an
+        // on-device menu the session must stay on Ask so clarifications reach
+        // the device. `None` → runtime default Ask.
         let rt = Arc::new(FakeRuntime::new());
         let sink = ChatSink::new(rt.clone(), Uuid::new_v4(), None);
         sink.on_final("t1", "a1", Intent::Chat, None, "看看磁盘还剩多少")
             .await;
 
-        assert_eq!(
-            *rt.created_permission.lock().await,
-            Some(crate::runtime::PermissionPolicy::Full)
-        );
+        assert_eq!(*rt.created_permission.lock().await, None);
     }
 
     #[tokio::test]

@@ -145,6 +145,7 @@ impl DaemonServer {
             m
         };
 
+        let esp32_questions = Arc::new(AsyncMutex::new(None));
         let agent_handle: Arc<dyn AgentHandle> = Arc::new(AmuxdAgentHandle {
             manager: self.agents.clone(),
             spawn_env: crate::channels::GatewaySpawnEnv {
@@ -165,6 +166,7 @@ impl DaemonServer {
             workspace_override: Arc::new(AsyncMutex::new(HashMap::new())),
             bot_configs: Arc::new(AsyncMutex::new(bot_configs)),
             daemon_config_path: crate::config::DaemonConfig::default_path(),
+            esp32_questions: esp32_questions.clone(),
         });
         // Everything this store writes gets announced on `session/{id}/live`.
         // Without it a gateway conversation exists only in the cloud table, and
@@ -183,13 +185,14 @@ impl DaemonServer {
             live,
         });
 
-        let mgr = ChannelManager::new(
+        let mgr = ChannelManager::with_esp32_questions(
             cfg,
             agent_handle,
             store,
             team_id,
             primary_agent_actor_id,
             agent_owner_actor_ids,
+            esp32_questions,
         );
         match mgr.start_enabled().await {
             Ok(()) => info!("channel manager: start_enabled() completed"),

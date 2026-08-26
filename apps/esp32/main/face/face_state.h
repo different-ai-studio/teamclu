@@ -28,6 +28,7 @@ enum class Screen {
     Saving,   // white eyes + red dots, note is being committed
     Saved,    // smile + block, note landed
     Notes,    // today's notes as a list. The one screen that shows text.
+    Menu,     // InteractiveQuestion options (design §4.4)
     Wifi,     // pairing code + captive-AP hint
     Sleep,    // two dashes
     Error,    // 错 — see ErrorKind
@@ -85,6 +86,8 @@ struct Hooks {
     std::function<void()> onExitSleep;
     std::function<void()> onPowerOff;
     std::function<void()> onOpenNotes;          // chance to refresh the list
+    // Confirmed a menu option. Args: question_id, selected index.
+    std::function<void(const std::string& questionId, std::size_t index)> onMenuSelect;
 };
 
 class FaceState {
@@ -129,6 +132,11 @@ public:
     void onError(ErrorKind kind);
     void clearError();
 
+    // InteractiveQuestion menu (design §4.4). Crown/scroll via short B;
+    // KeyA confirms the highlighted option.
+    void onMenu(std::string questionId, std::string prompt, std::vector<std::string> options);
+    void clearMenu();
+
     /* -------------------------------- State -------------------------------- */
     Screen screen() const { return _screen; }
     Mode mode() const { return _mode; }
@@ -140,6 +148,11 @@ public:
     // Most recent first, capped — matches the canvas's notes.slice(-3).reverse().
     std::vector<Note> recentNotes(std::size_t max = 3) const;
     void addNote(std::string time, std::string text);
+
+    const std::string& menuQuestionId() const { return _menuQuestionId; }
+    const std::string& menuPrompt() const { return _menuPrompt; }
+    const std::vector<std::string>& menuOptions() const { return _menuOptions; }
+    std::size_t menuIndex() const { return _menuIndex; }
 
     // Device identifier shown on the Wifi screen: the last two bytes of the
     // factory MAC, which is also the SoftAP SSID suffix, so the user can tell
@@ -208,6 +221,11 @@ private:
     bool _batteryCharging = false;
     Link _link = Link::Booting;
     bool _agentExpected = false;
+
+    std::string _menuQuestionId;
+    std::string _menuPrompt;
+    std::vector<std::string> _menuOptions;
+    std::size_t _menuIndex = 0;
 };
 
 }  // namespace face

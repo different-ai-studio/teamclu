@@ -139,6 +139,22 @@ bool sendError(const char* code, const char* message)
     return publish(buf);
 }
 
+bool sendMenuReply(const char* questionId, std::size_t index)
+{
+    if (bootId() == 0) {
+        initBootId();
+    }
+    char esc_qid[96];
+    appendEscaped(esc_qid, sizeof(esc_qid), questionId == nullptr ? "" : questionId);
+
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  R"({"type":"menu_reply","question_id":"%s","index":%zu,"seq":%llu,"boot_id":"%08lx"})",
+                  esc_qid, index, static_cast<unsigned long long>(++g_seq),
+                  static_cast<unsigned long>(bootId()));
+    return publish(buf);
+}
+
 void ctlPushIncoming(IncomingCtl ev)
 {
     std::lock_guard<std::mutex> lock(g_inbox.mutex);

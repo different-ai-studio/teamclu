@@ -37,6 +37,7 @@ const char* screenName(Screen s)
         case Screen::Saving: return "saving";
         case Screen::Saved:  return "saved";
         case Screen::Notes:  return "notes";
+        case Screen::Menu:   return "menu";
         case Screen::Wifi:   return "wifi";
         case Screen::Sleep:  return "sleep";
         case Screen::Error:  return "error";
@@ -122,7 +123,8 @@ void FaceState::onButtonDown(Button b, std::uint32_t nowMs)
     }
 
     // One utterance at a time: ignore a second PTT while one is already held.
-    if (_heldA || _heldB) {
+    // Menu is an exception: short presses navigate / confirm without hold.
+    if (_screen != Screen::Menu && (_heldA || _heldB)) {
         return;
     }
 
@@ -177,16 +179,19 @@ void FaceState::onButtonUp(Button b, std::uint32_t nowMs)
 
 void FaceState::tick(std::uint32_t nowMs)
 {
-    // Promote a press into a hold once it outlasts the threshold. This is what
-    // separates "短按" from "按住说话" and it has to happen on the clock, not
-    // on release, so the screen flips to Listen while the finger is still down.
-    if (_downA && !_heldA && (nowMs - _downAtA) >= HoldThresholdMs) {
-        _heldA = true;
-        beginHold(Mode::Chat);
-    }
-    if (_downB && !_heldB && (nowMs - _downAtB) >= HoldThresholdMs) {
-        _heldB = true;
-        beginHold(Mode::Note);
+    // On the menu screen, never promote presses to holds — short-press only.
+    if (_screen != Screen::Menu) {
+        // Promote a press into a hold once it outlasts the threshold. This is what
+        // separates "短按" from "按住说话" and it has to happen on the clock, not
+        // on release, so the screen flips to Listen while the finger is still down.
+        if (_downA && !_heldA && (nowMs - _downAtA) >= HoldThresholdMs) {
+            _heldA = true;
+            beginHold(Mode::Chat);
+        }
+        if (_downB && !_heldB && (nowMs - _downAtB) >= HoldThresholdMs) {
+            _heldB = true;
+            beginHold(Mode::Note);
+        }
     }
 
     if (_downPwr && (nowMs - _downAtPwr) >= PwrLongPressMs) {
@@ -263,6 +268,21 @@ void FaceState::commitHold(Mode m, std::uint32_t nowMs)
 
 void FaceState::shortPress(Mode m)
 {
+    // Menu: A confirms; B scrolls (no crown hardware yet — KeyB stands in).
+    if (_screen == Screen::Menu) {
+        if (m == Mode::Chat) {
+            if (!_menuOptions.empty() && !_menuQuestionId.empty()) {
+                fire(_hooks.onMenuSelect, _menuQuestionId, _menuIndex);
+            }
+            clearMenu();
+            enterIdle();
+        } else if (!_menuOptions.empty()) {
+            _menuIndex = (_menuIndex + 1) % _menuOptions.size();
+            fire(_hooks.vibrate, BumpGrabMs, BumpStrength);
+        }
+        return;
+    }
+
     if (m == Mode::Chat) {
         // "短按打断朗读" — only meaningful while it is speaking.
         if (_screen == Screen::Reply) {
@@ -300,7 +320,30 @@ void FaceState::onAgentSpeaking()
 
 void FaceState::onAgentDone()
 {
+    // Don't clobber an open menu — the user still needs to pick.
+    if (_screen == Screen::Menu) {
+        return;
+    }
     enterIdle();
+}
+
+void FaceState::onMenu(std::string questionId, std::string prompt, std::vector<std::string> options)
+{
+    clearDeadline();
+    _menuQuestionId = std::move(questionId);
+    _menuPrompt = std::move(prompt);
+    _menuOptions = std::move(options);
+    _menuIndex = 0;
+    _screen = Screen::Menu;
+    fire(_hooks.vibrate, BumpReplyMs, BumpStrength);
+}
+
+void FaceState::clearMenu()
+{
+    _menuQuestionId.clear();
+    _menuPrompt.clear();
+    _menuOptions.clear();
+    _menuIndex = 0;
 }
 
 void FaceState::onNoteSaved(std::uint32_t nowMs, std::string time, std::string text)

@@ -70,6 +70,7 @@ bool keepAwake(face::Screen s)
         case face::Screen::Think:
         case face::Screen::Reply:
         case face::Screen::Saving:
+        case face::Screen::Menu:
         case face::Screen::Wifi:
             return true;
         default:
@@ -129,6 +130,11 @@ face::Hooks makeHooks()
     };
 
     h.onOpenNotes = []() { mclog::tagInfo(kTag, "open notes"); };
+
+    h.onMenuSelect = [](const std::string& questionId, std::size_t index) {
+        mclog::tagInfo(kTag, "menu select q={} idx={}", questionId, index);
+        net::sendMenuReply(questionId.c_str(), index);
+    };
 
     return h;
 }
@@ -303,6 +309,12 @@ extern "C" void app_main(void)
                     // stored — see face_state::commitHold.
                     mclog::tagInfo(kTag, "ctl note_saved: {} {}", ctl.time, ctl.text);
                     state.onNoteSaved(now, ctl.time, ctl.text);
+                    break;
+                case net::IncomingCtl::Kind::Menu:
+                    mclog::tagInfo(kTag, "ctl menu: {} ({} opts)",
+                                   ctl.questionId, ctl.options.size());
+                    state.onMenu(std::move(ctl.questionId), std::move(ctl.prompt),
+                                 std::move(ctl.options));
                     break;
                 case net::IncomingCtl::Kind::Unknown:
                     // Forward-compat: a future amuxd ctl type. Log + ignore

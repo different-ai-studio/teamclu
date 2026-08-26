@@ -4,6 +4,7 @@
 #include "face_ui.h"
 
 #include <array>
+#include <cstdio>
 
 #include "palette.h"
 
@@ -225,7 +226,10 @@ void FaceUi::render(const FaceState& st, std::uint32_t nowMs)
     const bool structural = !_built || st.screen() != _builtScreen || st.mode() != _builtMode ||
                             st.error() != _builtError ||
                             ((st.screen() == Screen::Notes || st.screen() == Screen::Saved) &&
-                             st.noteCount() != _builtNoteCount);
+                             st.noteCount() != _builtNoteCount) ||
+                            (st.screen() == Screen::Menu &&
+                             (st.menuIndex() != _builtMenuIndex ||
+                              st.menuOptions().size() != _builtMenuCount));
     if (structural) {
         rebuild(st);
     }
@@ -246,6 +250,7 @@ void FaceUi::rebuild(const FaceState& st)
         case Screen::Saving: buildSaving(st); break;
         case Screen::Saved:  buildSaved(st);  break;
         case Screen::Notes:  buildNotes(st);  break;
+        case Screen::Menu:   buildMenu(st);   break;
         case Screen::Wifi:   buildWifi(st);   break;
         case Screen::Sleep:  buildSleep(st);  break;
         case Screen::Error:  buildError(st);  break;
@@ -256,6 +261,8 @@ void FaceUi::rebuild(const FaceState& st)
     _builtMode = st.mode();
     _builtError = st.error();
     _builtNoteCount = st.noteCount();
+    _builtMenuIndex = st.menuIndex();
+    _builtMenuCount = st.menuOptions().size();
 }
 
 void FaceUi::refreshDynamic(const FaceState& st, std::uint32_t nowMs)
@@ -442,6 +449,30 @@ void FaceUi::buildNotes(const FaceState& st)
         lv_obj_set_flex_grow(txt, 1);
         lv_label_set_long_mode(txt, LV_LABEL_LONG_WRAP);
     }
+}
+
+void FaceUi::buildMenu(const FaceState& st)
+{
+    // Minimal selectable list: prompt + options; highlight the current index.
+    // KeyB scrolls, KeyA confirms (see FaceState::shortPress).
+    lv_obj_t* col = mkColumn(_root, 12);
+    lv_obj_set_style_pad_hor(col, 40, 0);
+
+    const char* prompt =
+        st.menuPrompt().empty() ? "选一个" : st.menuPrompt().c_str();
+    lv_obj_t* p = mkLabel(col, prompt, FACE_CJK_18, ColorMuted);
+    lv_obj_set_width(p, ScreenW - 80);
+    lv_label_set_long_mode(p, LV_LABEL_LONG_WRAP);
+
+    const auto& opts = st.menuOptions();
+    const std::size_t sel = st.menuIndex();
+    for (std::size_t i = 0; i < opts.size(); ++i) {
+        const bool on = (i == sel);
+        char line[96];
+        std::snprintf(line, sizeof(line), "%s %s", on ? ">" : " ", opts[i].c_str());
+        mkLabel(col, line, FACE_CJK_22, on ? ColorFg : ColorDim);
+    }
+    mkLabel(col, "B 切换 · A 确认", FACE_CJK_18, ColorDim);
 }
 
 void FaceUi::buildWifi(const FaceState& st)

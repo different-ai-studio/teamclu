@@ -983,29 +983,41 @@ impl DaemonServer {
             .is_some_and(|c| c.enabled && c.use_core);
 
         let mut sinks: Vec<Arc<dyn TranscriptSink>> = Vec::new();
+        let mut menu_bridge: Option<Arc<crate::voice::Esp32MenuBridge>> = None;
 
         if use_core {
             match (self.channel_mgr.as_ref(), synth.clone()) {
                 (Some(mgr), Some(synth)) => {
                     let esp32 = esp32_cfg.expect("use_core implies esp32 cfg");
                     let downlink = crate::voice::esp32_downlink(synth.clone());
-                    let driver: Arc<dyn teamclu_gateway::driver::ChannelDriver> =
-                        Arc::new(teamclu_gateway::esp32::Esp32Driver::new(
-                            downlink,
-                            mgr.team_id().to_string(),
-                        ));
-                    let inbound = Arc::new(mgr.build_esp32_inbound_sink(
-                        driver,
+                    let driver = Arc::new(teamclu_gateway::esp32::Esp32Driver::new(
+                        downlink,
+                        mgr.team_id().to_string(),
+                    ));
+                    let driver_trait: Arc<dyn teamclu_gateway::driver::ChannelDriver> =
+                        driver.clone();
+                    let inbound_concrete = Arc::new(mgr.build_esp32_inbound_sink(
+                        driver_trait,
                         synth.clone() as Arc<dyn ReplySpeaker>,
                     ));
+                    let inbound: Arc<dyn teamclu_gateway::driver::InboundSink> =
+                        inbound_concrete.clone();
+                    let bridge = Arc::new(crate::voice::Esp32MenuBridge::new(
+                        Arc::clone(&driver),
+                        Arc::clone(&inbound),
+                        esp32.clone(),
+                    ));
+                    *mgr.esp32_questions.lock().await =
+                        Some(bridge.clone() as Arc<dyn crate::voice::Esp32QuestionPresenter>);
                     sinks.push(Arc::new(crate::voice::Esp32CoreForkSink::new(
                         inbound,
                         synth as Arc<dyn ReplySpeaker>,
                         esp32,
                     )));
+                    menu_bridge = Some(bridge);
                     info!(
                         team_id = %mgr.team_id(),
-                        "voice: chat finals fork to Esp32InboundSink (use_core)"
+                        "voice: chat finals fork to Esp32InboundSink (use_core); menu bridge installed"
                     );
                 }
                 (None, _) => {
@@ -1094,6 +1106,11 @@ impl DaemonServer {
             // Lets a new turn or a barge-in silence a reply that is still
             // playing — the reason `spk` paces frames at all.
             router = router.with_speaker(sp);
+        }
+        if let Some(bridge) = menu_bridge {
+            router = router.with_menu_replies(
+                bridge as Arc<dyn crate::voice::MenuReplyHandler>,
+            );
         }
         router.spawn(rx);
         info!(

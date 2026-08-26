@@ -34,6 +34,7 @@ bool sendTurnStart(face::Mode mode);
 bool sendTurnEnd();
 bool sendBargeIn();
 bool sendError(const char* code, const char* message);
+bool sendMenuReply(const char* questionId, std::size_t index);
 
 // Monotonic per-boot counter stamped on every message, for QoS-1 dedup on the
 // amuxd side. It resets across a reboot: amuxd keys as

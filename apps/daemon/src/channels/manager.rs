@@ -46,6 +46,10 @@ pub struct ChannelManager {
     /// amuxd-managed case this defaults to the amux config dir.
     workspace_path: String,
     running: Mutex<RunningChannels>,
+    /// Shared with [`AmuxdAgentHandle`]: voice wiring installs the menu bridge
+    /// when `use_core` is on so mid-turn questions reach the device.
+    pub esp32_questions:
+        Arc<tokio::sync::Mutex<Option<Arc<dyn crate::voice::Esp32QuestionPresenter>>>>,
 }
 
 impl ChannelManager {
@@ -56,6 +60,28 @@ impl ChannelManager {
         team_id: String,
         primary_agent_actor_id: String,
         agent_owner_actor_ids: Vec<String>,
+    ) -> Self {
+        Self::with_esp32_questions(
+            cfg,
+            acp,
+            store,
+            team_id,
+            primary_agent_actor_id,
+            agent_owner_actor_ids,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        )
+    }
+
+    pub fn with_esp32_questions(
+        cfg: DaemonConfig,
+        acp: Arc<dyn AgentHandle>,
+        store: Arc<dyn ChannelStore>,
+        team_id: String,
+        primary_agent_actor_id: String,
+        agent_owner_actor_ids: Vec<String>,
+        esp32_questions: Arc<
+            tokio::sync::Mutex<Option<Arc<dyn crate::voice::Esp32QuestionPresenter>>>,
+        >,
     ) -> Self {
         // The team's own worktree, not the daemon home. Passing the home here
         // made every workspace-meta write land inside it — that is where the
@@ -72,6 +98,7 @@ impl ChannelManager {
             agent_owner_actor_ids,
             workspace_path,
             running: Mutex::new(RunningChannels::default()),
+            esp32_questions,
         }
     }
 

@@ -101,6 +101,24 @@ pub trait TranscriptSink: Send + Sync {
     }
 }
 
+/// Handles a device `menu_reply` ctl (design §4.4 / plan Task 3.1).
+///
+/// The router parses the ctl; the handler looks up pending menu options
+/// (stored when the menu was published) and either answers a pending
+/// question or accepts the selection as an inbound message.
+#[async_trait]
+pub trait MenuReplyHandler: Send + Sync {
+    async fn on_menu_reply(
+        &self,
+        team_id: &str,
+        actor_id: &str,
+        question_id: &str,
+        index: usize,
+        seq: u64,
+        boot_id: Option<&str>,
+    );
+}
+
 /// Delivers each final transcript to several sinks.
 ///
 /// The router holds one sink, but the device has two intents and each has its
@@ -201,6 +219,8 @@ pub struct VoiceRouter {
     /// Stops in-flight TTS when the user interrupts. `None` before the TTS
     /// downlink is wired, in which case barge-in only closes the uplink.
     speaker: Option<Arc<dyn super::spk::ReplySpeaker>>,
+    /// Interactive menu replies from the device (Phase 3).
+    menu_replies: Option<Arc<dyn MenuReplyHandler>>,
 }
 
 impl VoiceRouter {
@@ -210,6 +230,7 @@ impl VoiceRouter {
             sink,
             active: parking_lot::Mutex::new(HashMap::new()),
             speaker: None,
+            menu_replies: None,
         }
     }
 
@@ -217,6 +238,12 @@ impl VoiceRouter {
     /// barge-in can silence a reply that is still playing.
     pub fn with_speaker(mut self, speaker: Arc<dyn super::spk::ReplySpeaker>) -> Self {
         self.speaker = Some(speaker);
+        self
+    }
+
+    /// Wire `menu_reply` ctl → pending-option lookup + inbound accept.
+    pub fn with_menu_replies(mut self, handler: Arc<dyn MenuReplyHandler>) -> Self {
+        self.menu_replies = Some(handler);
         self
     }
 
@@ -402,6 +429,43 @@ impl VoiceRouter {
                 );
                 self.close_stream(&key);
             }
+            "menu_reply" => {
+                let question_id = ctl.question_id.as_deref().unwrap_or("");
+                let index = ctl.index.unwrap_or(usize::MAX);
+                if question_id.is_empty() || index == usize::MAX {
+                    warn!(
+                        team_id = %key.team_id,
+                        actor_id = %key.actor_id,
+                        "menu_reply missing question_id or index; dropped"
+                    );
+                    return;
+                }
+                info!(
+                    team_id = %key.team_id,
+                    actor_id = %key.actor_id,
+                    question_id,
+                    index,
+                    "voice menu_reply"
+                );
+                if let Some(handler) = &self.menu_replies {
+                    handler
+                        .on_menu_reply(
+                            &team_id,
+                            &actor_id,
+                            question_id,
+                            index,
+                            ctl.seq,
+                            ctl.boot_id.as_deref(),
+                        )
+                        .await;
+                } else {
+                    warn!(
+                        team_id = %key.team_id,
+                        actor_id = %key.actor_id,
+                        "menu_reply received but no MenuReplyHandler wired"
+                    );
+                }
+            }
             other => warn!(kind = %other, "unknown voice ctl type; ignored"),
         }
     }
@@ -562,6 +626,8 @@ mod tests {
                 code: None,
                 message: None,
                 from: None,
+                question_id: None,
+                index: None,
             },
         })
         .unwrap();
@@ -580,6 +646,8 @@ mod tests {
                 code: Some("tts_unavailable".into()),
                 message: Some("...".into()),
                 from: Some(crate::voice::ctl::FROM_DAEMON.to_string()),
+                question_id: None,
+                index: None,
             },
         })
         .unwrap();

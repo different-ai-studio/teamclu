@@ -161,6 +161,11 @@ pub struct AmuxdAgentHandle {
     /// `daemon.toml`, so a bot's new default workspace survives a restart
     /// instead of living only in the map above.
     pub daemon_config_path: std::path::PathBuf,
+    /// Optional StopWatch question presenter (Phase 3). Filled when
+    /// `[channels.esp32] use_core` wires the voice router; mid-turn
+    /// `question_asked` events for `esp32://` bindings publish an on-device
+    /// menu instead of waiting forever with nobody watching.
+    pub esp32_questions: Arc<Mutex<Option<Arc<dyn crate::voice::Esp32QuestionPresenter>>>>,
 }
 
 /// Returned by `resolve_or_spawn`. `spawned` is true iff this call was
@@ -567,9 +572,15 @@ impl AmuxdAgentHandle {
                 .or_else(|| self.gateway_model.clone())
         };
         let (workspace_dir, agent_type) = self.resolve_spawn_target(session, &binding).await?;
-        let context = self
+        let mut context = self
             .assemble_execution_context(workspace_dir.as_deref())
             .await?;
+        // ESP32 has an on-device menu for InteractiveQuestion (Phase 3). Other
+        // gateway channels stay on Full (auto-reject questions).
+        if binding.starts_with("esp32://") {
+            context.spawn_env.permission =
+                Some(crate::runtime::PermissionPolicy::Ask);
+        }
         let real = {
             let mut mgr = self.manager.lock().await;
             mgr.create_gateway_session_with_model(
@@ -773,6 +784,78 @@ fn absorb_emitted(
 }
 
 impl AmuxdAgentHandle {
+    /// Publish an on-device menu for an ESP32 session's `question_asked` event,
+    /// and wire a oneshot so `menu_reply` can answer the runtime question
+    /// without starting a new Core turn.
+    async fn forward_esp32_question(&self, binding: &str, body: &serde_json::Value) {
+        let Some(presenter) = self.esp32_questions.lock().await.clone() else {
+            return;
+        };
+        let question_id = body
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if question_id.is_empty() {
+            return;
+        }
+        let questions = teamclu_gateway::parse_question_event(&serde_json::json!({
+            "properties": {
+                "questions": body.get("questions").cloned().unwrap_or(serde_json::json!([]))
+            }
+        }));
+        // Device menu is single-select — take the first question.
+        let Some(first) = questions.first() else {
+            return;
+        };
+        let options: Vec<String> = first.options.iter().map(|o| o.label.clone()).collect();
+        let interactive = teamclu_gateway::driver::InteractiveQuestion {
+            question_id: question_id.clone(),
+            prompt: first.question.clone(),
+            options: options.clone(),
+        };
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        presenter.register_answer_tx(question_id.clone(), tx);
+        let mgr = Arc::clone(&self.manager);
+        let real_sid = {
+            let map = self.logical_to_acp.lock().await;
+            map.values()
+                .find(|r| r.binding == binding)
+                .map(|r| r.real_acp_sid.clone())
+        };
+        let qid = question_id.clone();
+        tokio::spawn(async move {
+            let Ok(answer) = rx.await else {
+                return;
+            };
+            // `answers` is `[[label], …]` per question (opencode question_reply).
+            let answers_json = serde_json::json!([[answer]]).to_string();
+            let Some(runtime_id) = real_sid else {
+                tracing::warn!(
+                    question_id = %qid,
+                    "esp32 menu answer: no real ACP session for binding"
+                );
+                return;
+            };
+            let mut mgr = mgr.lock().await;
+            if let Err(e) = mgr
+                .answer_question_for_topic(&runtime_id, &qid, &answers_json, false)
+                .await
+            {
+                tracing::warn!(
+                    question_id = %qid,
+                    error = %e,
+                    "esp32 menu answer failed"
+                );
+            } else {
+                tracing::info!(question_id = %qid, "esp32 menu answered opencode question");
+            }
+        });
+
+        presenter.present(binding, interactive).await;
+    }
+
     /// Drive one ACP turn to completion and return the agent's full reply.
     ///
     /// Shared by `send_prompt` and `send_prompt_streamed`; `on_update` is
@@ -944,6 +1027,20 @@ impl AmuxdAgentHandle {
                     err.details.clone()
                 };
                 break Err(AgentError::Send(format!("agent turn failed: {details}")));
+            }
+
+            // ESP32 InteractiveQuestion → on-device menu (design §4.4).
+            if outcome.binding.starts_with("esp32://") {
+                if let Some(crate::proto::amux::acp_event::Event::Raw(raw)) = &event.event.event {
+                    if raw.method == "question_asked" {
+                        if let Ok(body) =
+                            serde_json::from_slice::<serde_json::Value>(&raw.json_payload)
+                        {
+                            self.forward_esp32_question(&outcome.binding, &body)
+                                .await;
+                        }
+                    }
+                }
             }
 
             // Mirror the aggregator's unflushed reply buffer so streamed
@@ -1610,6 +1707,7 @@ pub(crate) mod tests {
             workspace_override: Arc::new(Mutex::new(HashMap::new())),
             bot_configs: Arc::new(Mutex::new(HashMap::new())),
             daemon_config_path: std::path::PathBuf::from("/nonexistent/daemon.toml"),
+            esp32_questions: Arc::new(Mutex::new(None)),
         }
     }
 

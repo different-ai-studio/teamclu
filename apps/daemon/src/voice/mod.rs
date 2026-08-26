@@ -62,6 +62,7 @@ pub mod credentials;
 pub mod ctl;
 pub mod esp32_downlink;
 pub mod esp32_fork;
+pub mod esp32_menu;
 pub mod esp32_sink;
 pub mod funasr;
 pub mod mqtt_publisher;
@@ -73,7 +74,8 @@ pub mod stt;
 pub mod tts;
 
 pub use adapter::{
-    DeviceKey, FanOutSink, LogTranscriptSink, TranscriptSink, VoiceEvent, VoiceRouter,
+    DeviceKey, FanOutSink, LogTranscriptSink, MenuReplyHandler, TranscriptSink, VoiceEvent,
+    VoiceRouter,
 };
 pub use chat_sink::ChatSink;
 pub use aliyun_stt::AliyunNlsProvider;
@@ -83,6 +85,7 @@ pub use credentials::{CloudApiCredentials, CredentialSource, StaticCredentials, 
 pub use ctl::VoiceCtl;
 pub use esp32_downlink::{esp32_downlink, Esp32VoiceDownlink};
 pub use esp32_fork::{build_esp32_inbound_message, resolve_esp32_device, Esp32CoreForkSink};
+pub use esp32_menu::{Esp32MenuBridge, Esp32QuestionPresenter};
 pub use esp32_sink::{Esp32InboundSink, InboundTurnRunner, TurnFail, TurnOutcome};
 pub use mqtt_publisher::TransportVoicePublisher;
 pub use note_sink::{BackendNoteStore, Note, NoteSink, NoteStore};

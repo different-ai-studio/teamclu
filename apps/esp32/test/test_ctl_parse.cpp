@@ -43,6 +43,8 @@ void test_known_kinds()
     CHECK(parse(R"({"type":"session","session":"s-1"})").kind == IncomingCtl::Kind::Session);
     CHECK(parse(R"({"type":"note_saved","time":"09:12","text":"x"})").kind ==
           IncomingCtl::Kind::NoteSaved);
+    CHECK(parse(R"({"type":"menu","question_id":"q1","prompt":"pick","options":["A","B"]})").kind ==
+          IncomingCtl::Kind::Menu);
 }
 
 void test_note_saved_carries_time_and_text()
@@ -181,6 +183,20 @@ void test_whitespace_and_ordering()
     CHECK(a.code == "x");
 }
 
+void test_menu_fields()
+{
+    std::printf("menu carries question_id, prompt, and options\n");
+    const auto m =
+        parse(R"({"type":"menu","question_id":"q-9","prompt":"继续?","options":["是","否","稍后"],"from":"amuxd"})");
+    CHECK(m.kind == IncomingCtl::Kind::Menu);
+    CHECK(m.questionId == "q-9");
+    CHECK(m.prompt == "继续?");
+    CHECK(m.options.size() == 3);
+    CHECK(m.options[0] == "是");
+    CHECK(m.options[1] == "否");
+    CHECK(m.options[2] == "稍后");
+}
+
 }  // namespace
 
 int main()
@@ -198,6 +214,7 @@ int main()
     test_not_nul_terminated();
     test_embedded_nul_is_bounded();
     test_whitespace_and_ordering();
+    test_menu_fields();
 
     if (g_failures == 0) {
         std::printf("\nall ctl_parse tests passed\n");

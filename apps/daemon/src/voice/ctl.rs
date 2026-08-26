@@ -26,7 +26,7 @@ pub enum Intent {
 
 /// A parsed `voice/ctl` JSON message. Field `type` is exposed as `kind`
 /// because `type` is a reserved word.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct VoiceCtl {
     #[serde(rename = "type")]
     pub kind: String,
@@ -60,6 +60,12 @@ pub struct VoiceCtl {
     /// On `error`: human-readable detail.
     #[serde(default)]
     pub message: Option<String>,
+    /// On `menu_reply`: the question this answers (design §4.4).
+    #[serde(default)]
+    pub question_id: Option<String>,
+    /// On `menu_reply`: 0-based index into the options we published.
+    #[serde(default)]
+    pub index: Option<usize>,
 }
 
 /// Value of [`VoiceCtl::from`] on everything the daemon publishes.
@@ -73,6 +79,10 @@ impl VoiceCtl {
 
     pub fn is_turn_start(&self) -> bool {
         self.kind == "turn_start"
+    }
+
+    pub fn is_menu_reply(&self) -> bool {
+        self.kind == "menu_reply"
     }
 
     /// Resolved intent, defaulting to `Chat` if absent or unparseable.
@@ -149,5 +159,18 @@ mod tests {
     fn boot_id_optional_for_old_firmware() {
         let v = VoiceCtl::parse(br#"{"type":"turn_start","intent":"chat","seq":1}"#).unwrap();
         assert!(v.boot_id.is_none());
+    }
+
+    #[test]
+    fn parses_menu_reply() {
+        let v = VoiceCtl::parse(
+            br#"{"type":"menu_reply","question_id":"q1","index":2,"seq":9,"boot_id":"abcd"}"#,
+        )
+        .expect("parse");
+        assert!(v.is_menu_reply());
+        assert_eq!(v.question_id.as_deref(), Some("q1"));
+        assert_eq!(v.index, Some(2));
+        assert_eq!(v.seq, 9);
+        assert_eq!(v.boot_id.as_deref(), Some("abcd"));
     }
 }
