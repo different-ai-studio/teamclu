@@ -106,7 +106,7 @@ resources:
         # Dedicated HMAC for ESP32 MQTT JWTs (plan §8.1). Keep in step with the
         # compose environment map — absent here means FC on this target cannot
         # mint device tokens even when self-host can.
-        DEVICE_MQTT_JWT_SECRET: ${env('DEVICE_MQTT_JWT_SECRET', '')}
+        EMQX_JWT_SECRET: ${env('EMQX_JWT_SECRET', '')}
         CRON_TRIGGER_SECRET: ${env('CRON_TRIGGER_SECRET', '')}
         # Raw-TCP address for clients whose MQTT stack can't do WebSocket (iOS
         # CocoaMQTT, Expo). Keep in step with the compose `environment:` map —

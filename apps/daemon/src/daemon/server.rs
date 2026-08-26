@@ -973,18 +973,42 @@ impl DaemonServer {
                     None
                 }
             };
-        let speaker: Option<Arc<dyn ReplySpeaker>> = synth
-            .clone()
-            .map(|s| s as Arc<dyn ReplySpeaker>);
+        let speaker: Option<Arc<dyn ReplySpeaker>> =
+            synth.clone().map(|s| s as Arc<dyn ReplySpeaker>);
 
         let esp32_cfg = self.config.channels.esp32.clone();
-        let use_core = esp32_cfg.as_ref().is_some_and(|c| c.enabled);
+        // Absent means default, not disabled.
+        //
+        // `[channels.esp32]` is a device roster — who is paired, what they are
+        // called. Whether a spoken sentence reaches an agent is not a property
+        // of that list, and gating on it meant a daemon with working STT/TTS
+        // but no roster dropped every chat final into `NoteSink`, which returns
+        // immediately for anything that is not a note. Silently: all three
+        // diagnostics lived inside the branch that was being skipped.
+        //
+        // An explicit `enabled = false` is still honoured — that is somebody
+        // choosing — but it says so, because the consequence is that talking to
+        // the device does nothing.
+        let esp32 = match &esp32_cfg {
+            Some(c) if !c.enabled => {
+                warn!(
+                    "voice: [channels.esp32] enabled = false;                      spoken questions will not be answered"
+                );
+                None
+            }
+            Some(c) => Some(c.clone()),
+            None => Some(crate::config::Esp32Channel::default()),
+        };
 
         let mut sinks: Vec<Arc<dyn TranscriptSink>> = Vec::new();
         let mut menu_bridge: Option<Arc<crate::voice::Esp32MenuBridge>> = None;
+        // Reported at the end. "Configured" is not the same as "installed" —
+        // the path also needs a ChannelManager and a synthesiser — and the
+        // difference is exactly what a silent drop looks like from outside.
+        let mut chat_path_installed = false;
 
-        if use_core {
-            match (self.channel_mgr.as_ref(), synth.clone(), esp32_cfg.clone()) {
+        {
+            match (self.channel_mgr.as_ref(), synth.clone(), esp32) {
                 (Some(mgr), Some(synth), Some(esp32)) => {
                     let downlink = crate::voice::esp32_downlink(synth.clone());
                     let driver = Arc::new(teamclu_gateway::esp32::Esp32Driver::new(
@@ -1012,6 +1036,7 @@ impl DaemonServer {
                         esp32,
                     )));
                     menu_bridge = Some(bridge);
+                    chat_path_installed = true;
                     info!(
                         team_id = %mgr.team_id(),
                         "voice: chat finals fork to Esp32InboundSink; menu bridge installed"
@@ -1029,7 +1054,8 @@ impl DaemonServer {
                          chat finals core fork disabled"
                     );
                 }
-                (_, _, None) => unreachable!("use_core implies esp32 cfg"),
+                // Explicitly disabled above; already warned.
+                (_, _, None) => {}
             }
         }
 
@@ -1070,15 +1096,13 @@ impl DaemonServer {
             router = router.with_speaker(sp);
         }
         if let Some(bridge) = menu_bridge {
-            router = router.with_menu_replies(
-                bridge as Arc<dyn crate::voice::MenuReplyHandler>,
-            );
+            router = router.with_menu_replies(bridge as Arc<dyn crate::voice::MenuReplyHandler>);
         }
         router.spawn(rx);
         info!(
             team_id = %self.config.team_id.as_deref().unwrap_or("<none>"),
             actor_id = %self.config.actor.id,
-            esp32_core_path = use_core,
+            chat_path_installed,
             "voice: router started"
         );
     }
@@ -1477,10 +1501,9 @@ impl DaemonServer {
         // Everything degrades rather than aborting startup — a daemon that
         // cannot do speech must still be a daemon. MQTT has not started yet,
         // so no voice events are dropped by spawning here.
-        if let (Some(rx), Some(runtime)) = (
-            self.voice_router_rx.take(),
-            pending_voice_runtime.take(),
-        ) {
+        if let (Some(rx), Some(runtime)) =
+            (self.voice_router_rx.take(), pending_voice_runtime.take())
+        {
             self.spawn_voice_router(rx, runtime).await;
         }
 

@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use teamclu_gateway::agent::AgentHandle;
 use teamclu_gateway::driver::{ChannelDriver, InboundMessage, InboundSink};
 use tokio::sync::Mutex;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::adapter::DeviceKey;
 use super::spk::ReplySpeaker;
@@ -103,12 +103,32 @@ struct InFlight {
     /// no reply.
     ///
     /// So the task runs to completion and its *output* is discarded instead.
-    /// What actually stops the work is `AgentHandle::cancel`, which ends the
-    /// agent turn at the runtime; this flag only stops a superseded answer
-    /// reaching a device that has already moved on.
     superseded: Arc<AtomicBool>,
+    /// Resolves when `process` returns — its sender is dropped there.
+    ///
+    /// The flag alone is not enough, and believing it was is what the first
+    /// attempt got wrong: it is read after `turns.run` returns, by which point
+    /// the superseded `Core::handle` has already driven `driver.deliver` /
+    /// `driver.update`, and those publish audio and `spk_end` to the device.
+    /// Suppressing the bookkeeping afterwards suppresses nothing anyone heard.
+    ///
+    /// The driver cannot tell the two turns apart either — `OutboundMessage`
+    /// carries no turn identity — so the answer is to make sure there are never
+    /// two at once. `AgentHandle::cancel` has already ended the agent turn, so
+    /// this wait is short; it is bounded, so a runtime that ignores
+    /// cancellation degrades to the old overlap rather than wedging the device.
+    ///
+    /// Created before the spawn, so registration still happens under one lock
+    /// acquisition and the stale-entry race stays fixed.
+    done: tokio::sync::oneshot::Receiver<()>,
     external_message_id: String,
 }
+
+/// How long a superseded turn gets to unwind before the replacement starts.
+///
+/// Generous next to what cancellation should cost, short next to what a person
+/// waits after pressing a button.
+const SUPERSEDE_DRAIN: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// [`InboundSink`] for ESP32: interrupt replaces queue.
 pub struct Esp32InboundSink {
@@ -216,13 +236,22 @@ impl Esp32InboundSink {
                 }
             }
             flight.superseded.store(true, Ordering::SeqCst);
-            debug!(
-                team_id = %key.team_id,
-                actor_id = %key.actor_id,
-                interrupted = %flight.external_message_id,
-                acp_session_id = acp_session_id.as_deref().unwrap_or("-"),
-                "esp32: superseded in-flight turn for barge-in"
-            );
+            match tokio::time::timeout(SUPERSEDE_DRAIN, flight.done).await {
+                Ok(_) => debug!(
+                    team_id = %key.team_id,
+                    actor_id = %key.actor_id,
+                    interrupted = %flight.external_message_id,
+                    "esp32: superseded turn unwound before the replacement started"
+                ),
+                Err(_) => warn!(
+                    team_id = %key.team_id,
+                    actor_id = %key.actor_id,
+                    interrupted = %flight.external_message_id,
+                    acp_session_id = acp_session_id.as_deref().unwrap_or("-"),
+                    "esp32: superseded turn did not unwind in time; \
+                     its remaining audio may overlap the new turn"
+                ),
+            }
         }
     }
 
@@ -332,10 +361,12 @@ impl InboundSink for Esp32InboundSink {
         // outcomes (Duplicate, Empty, Command, a cached reply) hit that
         // reliably.
         let superseded = Arc::new(AtomicBool::new(false));
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
         {
             let mut g = self.active.lock().await;
             g.entry(key.clone()).or_default().in_flight = Some(InFlight {
                 superseded: superseded.clone(),
+                done: done_rx,
                 external_message_id,
             });
         }
@@ -351,6 +382,9 @@ impl InboundSink for Esp32InboundSink {
                 superseded,
             )
             .await;
+            // Dropped, not sent: the waiter only needs "it is over", and a drop
+            // reports that even if `process` panics.
+            drop(done_tx);
         });
     }
 }

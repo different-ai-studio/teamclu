@@ -2868,7 +2868,7 @@ paths:
       summary: Exchange a device secret for a short-lived MQTT JWT
       description: |
         Unauthenticated (the device secret is the credential). Returns a JWT
-        signed with `DEVICE_MQTT_JWT_SECRET` for EMQX's second authenticator.
+        signed with `EMQX_JWT_SECRET` (base64-decoded) — the key the broker's single existing JWT authenticator already trusts.
         Claims include `team`/`actor` (firmware topic namespace), `team_id`/
         `actor_id` aliases, optional `broker`, and `exp`. Rate-limited per IP.
       security: []

@@ -122,24 +122,24 @@ test("sha256Hex is stable and hex-64", () => {
   assert.match(sha256Hex("abc"), /^[0-9a-f]{64}$/);
 });
 
-test("mintDeviceMqttJwt fails closed without DEVICE_MQTT_JWT_SECRET", async () => {
-  const prev = process.env.DEVICE_MQTT_JWT_SECRET;
-  delete process.env.DEVICE_MQTT_JWT_SECRET;
+test("mintDeviceMqttJwt fails closed without EMQX_JWT_SECRET", async () => {
+  const prev = process.env.EMQX_JWT_SECRET;
+  delete process.env.EMQX_JWT_SECRET;
   try {
     await assert.rejects(
       mintDeviceMqttJwt({ teamId: TEAM, actorId: ACTOR, deviceId: "c19518" }),
-      /DEVICE_MQTT_JWT_SECRET/,
+      /EMQX_JWT_SECRET/,
     );
   } finally {
-    if (prev === undefined) delete process.env.DEVICE_MQTT_JWT_SECRET;
-    else process.env.DEVICE_MQTT_JWT_SECRET = prev;
+    if (prev === undefined) delete process.env.EMQX_JWT_SECRET;
+    else process.env.EMQX_JWT_SECRET = prev;
   }
 });
 
 test("mintDeviceMqttJwt signs team/actor/broker claims", async () => {
-  const prev = process.env.DEVICE_MQTT_JWT_SECRET;
+  const prev = process.env.EMQX_JWT_SECRET;
   const prevBroker = process.env.MQTT_BROKER_URL;
-  process.env.DEVICE_MQTT_JWT_SECRET = SECRET;
+  process.env.EMQX_JWT_SECRET = SECRET;
   process.env.MQTT_BROKER_URL = "wss://mqtt.example/mqtt";
   try {
     const out = await mintDeviceMqttJwt({
@@ -151,7 +151,9 @@ test("mintDeviceMqttJwt signs team/actor/broker claims", async () => {
     assert.equal(out.broker, "wss://mqtt.example/mqtt");
     const { payload } = await jwtVerify(
       out.accessToken,
-      new TextEncoder().encode(SECRET),
+      // Same derivation as `signingKey()`: the broker's authenticator sets
+      // `secret_base64_encoded = true`, so the key is the decoded bytes.
+      Buffer.from(SECRET, "base64"),
       { issuer: "teamclu-fc", audience: "teamclu-device-mqtt" },
     );
     assert.equal(payload.team, TEAM);
@@ -160,16 +162,16 @@ test("mintDeviceMqttJwt signs team/actor/broker claims", async () => {
     assert.equal(payload.device_id, "c19518");
     assert.equal(payload.broker, "wss://mqtt.example/mqtt");
   } finally {
-    if (prev === undefined) delete process.env.DEVICE_MQTT_JWT_SECRET;
-    else process.env.DEVICE_MQTT_JWT_SECRET = prev;
+    if (prev === undefined) delete process.env.EMQX_JWT_SECRET;
+    else process.env.EMQX_JWT_SECRET = prev;
     if (prevBroker === undefined) delete process.env.MQTT_BROKER_URL;
     else process.env.MQTT_BROKER_URL = prevBroker;
   }
 });
 
 test("create → redeem → token round trip; second redeem is 409", async () => {
-  const prev = process.env.DEVICE_MQTT_JWT_SECRET;
-  process.env.DEVICE_MQTT_JWT_SECRET = SECRET;
+  const prev = process.env.EMQX_JWT_SECRET;
+  process.env.EMQX_JWT_SECRET = SECRET;
   const fake = makeFakeAdmin();
   const deps = { createServiceRoleClient: async () => fake.client };
 
@@ -211,8 +213,8 @@ test("create → redeem → token round trip; second redeem is 409", async () =>
     (e: any) => e.statusCode === 401,
   );
 
-  if (prev === undefined) delete process.env.DEVICE_MQTT_JWT_SECRET;
-  else process.env.DEVICE_MQTT_JWT_SECRET = prev;
+  if (prev === undefined) delete process.env.EMQX_JWT_SECRET;
+  else process.env.EMQX_JWT_SECRET = prev;
 });
 
 test("expired pairing code is rejected", async () => {

@@ -1,9 +1,18 @@
 /**
  * Short-lived MQTT JWTs for paired ESP32 voice terminals.
  *
- * Signed with a dedicated `DEVICE_MQTT_JWT_SECRET` — shared only between FC
- * (mint) and EMQX (second authenticator). Deliberately not the Supabase or
- * trusted-external secrets: see plan §8.1 and agent-management-grant.ts.
+ * Signed with `EMQX_JWT_SECRET`, base64-decoded — the key the broker's ONE
+ * existing JWT authenticator already trusts.
+ *
+ * A dedicated `DEVICE_MQTT_JWT_SECRET` was tried and cannot work: EMQX here has
+ * exactly one authenticator (`deploy/self-host/emqx/emqx.conf`), and adding a
+ * second was ruled out. Every device token signed with a different key comes
+ * back as CONNACK rc=5 and the device is permanently offline — a failure with
+ * no diagnostic on the device beyond "connect refused".
+ *
+ * The base64 decode is not incidental either: that authenticator sets
+ * `secret_base64_encoded = true`, so it decodes its configured copy before
+ * verifying. Signing over the raw UTF-8 bytes fails against the same key.
  *
  * Claim names `team` / `actor` match what firmware already decodes for topic
  * construction; `team_id` / `actor_id` are aliases for EMQX ACL templates.
@@ -24,15 +33,16 @@ export type DeviceMqttJwtClaims = {
 };
 
 function signingKey(): Uint8Array {
-  const secret = process.env.DEVICE_MQTT_JWT_SECRET?.trim();
+  const secret = process.env.EMQX_JWT_SECRET?.trim();
   if (!secret || secret.length < 32) {
     throw new ApiError(
       503,
       "device_mqtt_unavailable",
-      "DEVICE_MQTT_JWT_SECRET is not configured",
+      "EMQX_JWT_SECRET is not configured",
     );
   }
-  return new TextEncoder().encode(secret);
+  // Matches `secret_base64_encoded = true` on the broker's authenticator.
+  return Buffer.from(secret, "base64");
 }
 
 function brokerUrl(): string | undefined {

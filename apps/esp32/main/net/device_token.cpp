@@ -106,14 +106,35 @@ bool base64UrlDecode(const std::string& in, std::string& out)
     return true;
 }
 
+// Accumulates the response body as it arrives.
+//
+// `esp_http_client_perform` drains the whole body itself — it loops
+// `esp_http_client_get_data` until `content_length` is reached and then clears
+// the buffer — so reading with `esp_http_client_read` afterwards always returns
+// 0 and the body is gone. That is how redeem and token-mint could log
+// "failed status=200": a successful request whose payload was never seen.
+// The event handler is the supported way to keep it.
+esp_err_t collectBody(esp_http_client_event_t* evt)
+{
+    if (evt->event_id == HTTP_EVENT_ON_DATA && evt->user_data != nullptr && evt->data_len > 0) {
+        auto* out = static_cast<std::string*>(evt->user_data);
+        out->append(static_cast<const char*>(evt->data), static_cast<std::size_t>(evt->data_len));
+    }
+    return ESP_OK;
+}
+
 std::string httpPostJson(const std::string& url, const std::string& body, int& statusOut)
 {
+    std::string out;
+
     esp_http_client_config_t cfg = {};
     cfg.url = url.c_str();
     cfg.timeout_ms = 10000;
     cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.skip_cert_common_name_check = false;
+    cfg.event_handler = collectBody;
+    cfg.user_data = &out;
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (client == nullptr) {
@@ -130,16 +151,7 @@ std::string httpPostJson(const std::string& url, const std::string& body, int& s
         return {};
     }
 
-    const int status = esp_http_client_get_status_code(client);
-    statusOut = status;
-
-    std::string out;
-    char buf[512];
-    while (true) {
-        const int n = esp_http_client_read(client, buf, sizeof(buf));
-        if (n <= 0) break;
-        out.append(buf, static_cast<std::size_t>(n));
-    }
+    statusOut = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
     return out;
 }
