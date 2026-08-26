@@ -1,7 +1,7 @@
 //! Speech downlink — the agent's reply becomes audio on `voice/spk` (M3-5).
 //!
-//! This closes the loop. [`super::chat_sink`] gets a spoken question to the
-//! agent; this gets the answer back to the speaker.
+//! This closes the loop. The ESP32 core chat path gets a spoken question to
+//! the agent; this gets the answer back to the speaker.
 //!
 //! ## The device contract, which already exists
 //!
@@ -108,8 +108,8 @@ pub trait VoicePublisher: Send + Sync {
 }
 
 /// Starts and stops spoken replies for a device. Implemented by
-/// [`SpeechSynthesizer`]; a trait so [`super::chat_sink`] does not depend on
-/// the TTS stack to be testable.
+/// [`SpeechSynthesizer`]; a trait so voice routing does not depend on the TTS
+/// stack to be testable.
 #[async_trait]
 pub trait ReplySpeaker: Send + Sync {
     /// Start watching `session_id` and speak whatever the agent replies.
@@ -126,8 +126,8 @@ pub trait ReplySpeaker: Send + Sync {
     ///
     /// The Core path does not call [`Self::begin`] (no HTTP session watch);
     /// the voice listener publishes `thinking` itself before
-    /// `Esp32InboundSink::accept`. Default is a no-op so ChatSink test fakes
-    /// stay unchanged.
+    /// `Esp32InboundSink::accept`. Default is a no-op so lightweight test
+    /// fakes stay unchanged.
     async fn thinking(&self, _key: &DeviceKey) {}
 
     /// End the turn with nothing to say, returning the device to idle.
@@ -263,7 +263,7 @@ struct StreamingFeed {
 struct ActiveSpeech {
     cancel: Arc<AtomicBool>,
     /// `Some` when opened via [`SpeechSynthesizer::speak_delta`]; `None` for
-    /// one-shot `speak_text` / ChatSink `begin` (those own their own text_tx).
+    /// one-shot `speak_text` / sink `begin` (those own their own text_tx).
     stream: Option<StreamingFeed>,
 }
 

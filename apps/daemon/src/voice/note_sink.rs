@@ -1,7 +1,7 @@
 //! Note sink — a final `note` transcript becomes a stored message (M3-4).
 //!
-//! The second of the device's two gestures. Where [`super::chat_sink`] asks the
-//! agent a question and [`super::spk`] speaks the answer back, a note is
+//! The second of the device's two gestures. Where the ESP32 core chat path asks
+//! the agent and [`super::spk`] speaks the answer back, a note is
 //! fire-and-forget capture: it is written down, nothing replies, and no audio
 //! is ever synthesised.
 //!
@@ -32,8 +32,8 @@
 //! ## The session hint is not trusted
 //!
 //! `turn_start` may name a session, and this sink ignores it, for the reason
-//! [`super::chat_sink`] gives: a device that remembered an id across a reflash —
-//! or invented one — must not be able to write into somebody else's session.
+//! the chat path gives: a device that remembered an id across a reflash — or
+//! invented one — must not be able to write into somebody else's session.
 //! The store is constructed with the session a note belongs in.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -133,7 +133,7 @@ impl TranscriptSink for NoteSink {
         text: &str,
     ) {
         if intent != Intent::Note {
-            return; // chat belongs to ChatSink
+            return; // chat belongs to the ESP32 Core fork sink
         }
         let key = DeviceKey {
             team_id: team_id.to_string(),
@@ -344,7 +344,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_transcript_is_left_to_the_chat_sink() {
+    async fn a_chat_transcript_is_ignored_by_note_sink() {
         // Both sinks see every final; each must ignore the other's intent or a
         // chat turn would be silently filed as a note.
         let store = Arc::new(RecordingStore::default());

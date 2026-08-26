@@ -843,6 +843,44 @@ paired_at = "2026-08-26T10:00:00Z"
     }
 
     #[test]
+    fn esp32_channel_use_core_defaults_true_when_missing_but_parses_explicit_false() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = BrandEnvGuard::set_amuxd_home(home.path());
+        std::fs::write(
+            home.path().join("daemon.toml"),
+            "active_team = \"team-1\"\n",
+        )
+        .unwrap();
+
+        save_value(
+            "team-1",
+            doc(
+                r#"
+[channels.esp32]
+enabled = true
+"#,
+            ),
+        )
+        .unwrap();
+        let loaded = load_typed("team-1").unwrap();
+        assert!(loaded.channels.esp32.unwrap().use_core);
+
+        save_value(
+            "team-1",
+            doc(
+                r#"
+[channels.esp32]
+enabled = true
+use_core = false
+"#,
+            ),
+        )
+        .unwrap();
+        let loaded = load_typed("team-1").unwrap();
+        assert!(!loaded.channels.esp32.unwrap().use_core);
+    }
+
+    #[test]
     fn hydrate_fills_daemon_config_and_persist_round_trips() {
         let home = tempfile::tempdir().unwrap();
         let _guard = BrandEnvGuard::set_amuxd_home(home.path());

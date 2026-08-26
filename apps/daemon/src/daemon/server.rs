@@ -912,7 +912,7 @@ impl DaemonServer {
             spk::{ReplySpeaker, SpeechSynthesizer, SpkConfig, VoicePublisher},
             stt::{SttBackend, SttConfig},
             tts::{TtsBackend, TtsConfig},
-            BackendNoteStore, ChatSink, NoteSink, TransportVoicePublisher,
+            BackendNoteStore, NoteSink, TransportVoicePublisher,
         };
 
         // Environment wins over the file: an operator who exports a variable
@@ -978,17 +978,14 @@ impl DaemonServer {
             .map(|s| s as Arc<dyn ReplySpeaker>);
 
         let esp32_cfg = self.config.channels.esp32.clone();
-        let use_core = esp32_cfg
-            .as_ref()
-            .is_some_and(|c| c.enabled && c.use_core);
+        let use_core = esp32_cfg.as_ref().is_some_and(|c| c.enabled);
 
         let mut sinks: Vec<Arc<dyn TranscriptSink>> = Vec::new();
         let mut menu_bridge: Option<Arc<crate::voice::Esp32MenuBridge>> = None;
 
         if use_core {
-            match (self.channel_mgr.as_ref(), synth.clone()) {
-                (Some(mgr), Some(synth)) => {
-                    let esp32 = esp32_cfg.expect("use_core implies esp32 cfg");
+            match (self.channel_mgr.as_ref(), synth.clone(), esp32_cfg.clone()) {
+                (Some(mgr), Some(synth), Some(esp32)) => {
                     let downlink = crate::voice::esp32_downlink(synth.clone());
                     let driver = Arc::new(teamclu_gateway::esp32::Esp32Driver::new(
                         downlink,
@@ -1017,65 +1014,30 @@ impl DaemonServer {
                     menu_bridge = Some(bridge);
                     info!(
                         team_id = %mgr.team_id(),
-                        "voice: chat finals fork to Esp32InboundSink (use_core); menu bridge installed"
+                        "voice: chat finals fork to Esp32InboundSink; menu bridge installed"
                     );
                 }
-                (None, _) => {
+                (None, _, _) => {
                     warn!(
-                        "voice: use_core set but ChannelManager unavailable; \
-                         falling back to ChatSink"
+                        "voice: ESP32 channel enabled but ChannelManager unavailable; \
+                         chat finals core fork disabled"
                     );
-                    let mut chat = ChatSink::new(
-                        runtime.clone(),
-                        uuid::Uuid::new_v5(
-                            &uuid::Uuid::NAMESPACE_URL,
-                            format!("teamclu-voice:{}", self.config.actor.id).as_bytes(),
-                        ),
-                        Some(self.config.agents.local_agent.clone()),
-                    );
-                    if let Some(sp) = &speaker {
-                        chat = chat.with_speaker(sp.clone());
-                    }
-                    sinks.push(Arc::new(chat));
                 }
-                (_, None) => {
+                (_, None, _) => {
                     warn!(
-                        "voice: use_core set but TTS/speaker unavailable; \
-                         falling back to ChatSink (no spoken replies)"
+                        "voice: ESP32 channel enabled but TTS/speaker unavailable; \
+                         chat finals core fork disabled"
                     );
-                    sinks.push(Arc::new(ChatSink::new(
-                        runtime.clone(),
-                        uuid::Uuid::new_v5(
-                            &uuid::Uuid::NAMESPACE_URL,
-                            format!("teamclu-voice:{}", self.config.actor.id).as_bytes(),
-                        ),
-                        Some(self.config.agents.local_agent.clone()),
-                    )));
                 }
+                (_, _, None) => unreachable!("use_core implies esp32 cfg"),
             }
-        } else {
-            let mut chat = ChatSink::new(
-                runtime,
-                // Sessions are scoped to the token that created them. The device
-                // has no HTTP token, so the daemon's own actor id owns them —
-                // stable across restarts, which a random uuid would not be.
-                uuid::Uuid::new_v5(
-                    &uuid::Uuid::NAMESPACE_URL,
-                    format!("teamclu-voice:{}", self.config.actor.id).as_bytes(),
-                ),
-                Some(self.config.agents.local_agent.clone()),
-            );
-            if let Some(sp) = &speaker {
-                chat = chat.with_speaker(sp.clone());
-            }
-            sinks.push(Arc::new(chat));
         }
 
         // Notes need a session to be written into, and the daemon has no
         // per-device notes session to resolve yet (M2-2). Until then the
         // session is named explicitly or notes are not stored at all — better
         // than inventing a destination for the user's captures.
-        // Intent::Note always stays on NoteSink (design §7.3), both flags.
+        // Intent::Note always stays on NoteSink.
         let notes_session = std::env::var("TEAMCLU_VOICE_NOTES_SESSION")
             .ok()
             .or_else(|| {
@@ -1116,7 +1078,7 @@ impl DaemonServer {
         info!(
             team_id = %self.config.team_id.as_deref().unwrap_or("<none>"),
             actor_id = %self.config.actor.id,
-            use_core,
+            esp32_core_path = use_core,
             "voice: router started"
         );
     }
@@ -1510,8 +1472,8 @@ impl DaemonServer {
 
         // ── Voice router ────────────────────────────────────────────────────
         //
-        // After channels: ChatSink needs the RuntimeAdapter from HTTP setup,
-        // and the Core fork needs ChannelManager adapters when use_core.
+        // After channels: the ESP32 Core fork needs RuntimeAdapter + ChannelManager
+        // adapters from the HTTP/channel setup path.
         // Everything degrades rather than aborting startup — a daemon that
         // cannot do speech must still be a daemon. MQTT has not started yet,
         // so no voice events are dropped by spawning here.

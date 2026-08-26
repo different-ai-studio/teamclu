@@ -215,7 +215,7 @@ mod tests {
         }
     }
 
-    /// Captures chat finals the way ChatSink would (regression when !use_core).
+    /// Captures chat finals from FanOut for routing assertions.
     struct CaptureChat {
         finals: Mutex<Vec<String>>,
     }
@@ -321,8 +321,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn use_core_false_path_chat_sink_still_receives_final() {
-        // Regression: when FanOut holds ChatSink (not Core fork), finals still land.
+    async fn fanout_delivers_chat_finals_to_configured_sink() {
         let chat = Arc::new(CaptureChat {
             finals: Mutex::new(Vec::new()),
         });

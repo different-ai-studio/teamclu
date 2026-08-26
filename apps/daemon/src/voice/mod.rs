@@ -20,17 +20,18 @@
 //! ## Current state
 //!
 //! The whole chain now exists in code — [`adapter`] routes turns, [`funasr`]
-//! transcribes, [`chat_sink`] prompts the agent, and [`spk`] speaks the reply
-//! back through [`cosyvoice`] → [`resample`] → Opus. **None of it has run.**
+//! transcribes, the ESP32 core fork forwards chat finals into CoreSink, and
+//! [`spk`] speaks the reply back through [`cosyvoice`] → [`resample`] → Opus.
+//! **None of it has run.**
 //! Two things stand between here and a working device:
 //!
 //! 1. **Nothing subscribes to `voice/mic` / `voice/ctl`.** `parse_incoming`
 //!    understands both, but no subscription is ever issued, because the
 //!    device's `(team, actor)` comes from M2-2 pairing. Until that lands, the
 //!    router is reachable only from tests.
-//! 2. **The daemon still builds the router with `LogTranscriptSink`** (see
-//!    `daemon::server`), not [`ChatSink`] + [`SpeechSynthesizer`]. The runtime
-//!    adapter those need is constructed later in startup than the router is.
+//! 2. **The daemon still builds the router with `LogTranscriptSink` in some
+//!    degraded cases** (see `daemon::server`) when speech dependencies are
+//!    unavailable.
 //!
 //! Neither is a gap in this module; both are wiring in `daemon::server`. The
 //! backends also need deploying — there is no `funasr-wss-server` and no
@@ -56,7 +57,6 @@
 pub mod adapter;
 pub mod aliyun_stt;
 pub mod aliyun_tts;
-pub mod chat_sink;
 pub mod cosyvoice;
 pub mod credentials;
 pub mod ctl;
@@ -78,7 +78,6 @@ pub use adapter::{
     DeviceKey, FanOutSink, LogTranscriptSink, MenuReplyHandler, TranscriptSink, VoiceEvent,
     VoiceRouter,
 };
-pub use chat_sink::ChatSink;
 pub use aliyun_stt::AliyunNlsProvider;
 pub use aliyun_tts::{AliyunTtsConfig, AliyunTtsProvider};
 pub use cosyvoice::{CosyVoiceConfig, CosyVoiceProvider};

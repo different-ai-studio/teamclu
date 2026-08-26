@@ -122,7 +122,7 @@ pub trait MenuReplyHandler: Send + Sync {
 /// Delivers each final transcript to several sinks.
 ///
 /// The router holds one sink, but the device has two intents and each has its
-/// own consumer: `chat` goes to [`super::chat_sink::ChatSink`], `note` to
+/// own consumer: `chat` goes to the ESP32 Core fork sink, `note` to
 /// [`super::note_sink::NoteSink`]. Rather than teach the router to branch on
 /// intent, both sinks receive every final and each ignores the intent that is
 /// not theirs — so adding a third intent later means adding a sink, not
@@ -580,8 +580,8 @@ mod tests {
         }
     }
 
-    /// Records only the intents it was asked to accept, the way `ChatSink` and
-    /// `NoteSink` each ignore the other's.
+    /// Records only the intents it was asked to accept, the way chat/note
+    /// sinks each ignore the other's.
     struct IntentSink {
         accepts: Intent,
         seen: Arc<parking_lot::Mutex<Vec<String>>>,

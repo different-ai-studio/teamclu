@@ -661,12 +661,17 @@ fn default_seatalk_group_policy() -> String {
 pub struct Esp32Channel {
     #[serde(default)]
     pub enabled: bool,
-    /// When true, final chat transcripts go to CoreSink instead of ChatSink.
-    /// Default false until Phase 1 acceptance.
-    #[serde(default)]
+    /// Phase-5 cutover: chat transcripts always use the Core ESP32 path.
+    /// Keep this field for one-release config compatibility; explicit `false`
+    /// no longer toggles runtime behavior.
+    #[serde(default = "default_esp32_use_core")]
     pub use_core: bool,
     #[serde(default)]
     pub devices: Vec<Esp32DeviceEntry>,
+}
+
+fn default_esp32_use_core() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
