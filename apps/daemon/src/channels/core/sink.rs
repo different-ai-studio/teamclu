@@ -14,7 +14,19 @@ use teamclu_gateway::driver::{
 use teamclu_gateway::i18n::{self, MsgKey};
 use teamclu_gateway::session_queue::{EnqueueResult, QueuedMessage, RejectReason, SessionQueue};
 
-use super::{Core, Outcome};
+use super::{Core, CoreError, Outcome};
+
+/// Map [`CoreError`] → ESP32 `error` ctl (`code`, screen copy). Design §5.5;
+/// wire codes match `apps/esp32/main/main.cpp` face mapping.
+pub fn core_error_to_device_ctl(err: &CoreError) -> (&'static str, &'static str) {
+    match err {
+        CoreError::Route(_) | CoreError::Identity(_) | CoreError::Write(_) => {
+            ("no_broker", "连不上服务器")
+        }
+        CoreError::Turn(_) => ("no_agent", "电脑没醒着"),
+        CoreError::Render(_) => ("upstream", "它那边出错了"),
+    }
+}
 
 /// One channel's inbound edge: its driver plus the shared pipeline.
 pub struct CoreSink {
@@ -163,7 +175,7 @@ impl crate::voice::InboundTurnRunner for CoreTurnRunner {
         &self,
         driver: &dyn ChannelDriver,
         msg: InboundMessage,
-    ) -> Result<crate::voice::TurnOutcome, String> {
+    ) -> Result<crate::voice::TurnOutcome, crate::voice::TurnFail> {
         match self.core.handle(driver, msg).await {
             Ok(Outcome::Handled {
                 session_id,
@@ -177,7 +189,10 @@ impl crate::voice::InboundTurnRunner for CoreTurnRunner {
                 session_id: None,
                 acp_session_id: None,
             }),
-            Err(e) => Err(e.to_string()),
+            Err(e) => {
+                let (code, message) = core_error_to_device_ctl(&e);
+                Err(crate::voice::TurnFail::new(code, message))
+            }
         }
     }
 }
@@ -197,6 +212,7 @@ pub fn core_pipeline_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channels::core::CoreError;
 
     #[test]
     fn slash_commands_skip_the_queue() {
@@ -232,5 +248,30 @@ mod tests {
             assert_eq!(core_pipeline_enabled(), expected, "for {value:?}");
         }
         std::env::remove_var("TEAMCLU_GATEWAY_CORE");
+    }
+
+    #[test]
+    fn core_error_maps_to_esp32_error_ctl_faces() {
+        // Design §5.5 + firmware IncomingCtl codes (snake_case).
+        assert_eq!(
+            core_error_to_device_ctl(&CoreError::Route("x".into())),
+            ("no_broker", "连不上服务器")
+        );
+        assert_eq!(
+            core_error_to_device_ctl(&CoreError::Identity("x".into())),
+            ("no_broker", "连不上服务器")
+        );
+        assert_eq!(
+            core_error_to_device_ctl(&CoreError::Write("x".into())),
+            ("no_broker", "连不上服务器")
+        );
+        assert_eq!(
+            core_error_to_device_ctl(&CoreError::Turn("agent down".into())),
+            ("no_agent", "电脑没醒着")
+        );
+        assert_eq!(
+            core_error_to_device_ctl(&CoreError::Render("tts".into())),
+            ("upstream", "它那边出错了")
+        );
     }
 }

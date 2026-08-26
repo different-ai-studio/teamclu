@@ -81,7 +81,7 @@ pub use cosyvoice::{CosyVoiceConfig, CosyVoiceProvider};
 pub use credentials::{CloudApiCredentials, CredentialSource, StaticCredentials, VoiceCredentials};
 pub use ctl::VoiceCtl;
 pub use esp32_downlink::{esp32_downlink, Esp32VoiceDownlink};
-pub use esp32_sink::{Esp32InboundSink, InboundTurnRunner, TurnOutcome};
+pub use esp32_sink::{Esp32InboundSink, InboundTurnRunner, TurnFail, TurnOutcome};
 pub use mqtt_publisher::TransportVoicePublisher;
 pub use note_sink::{BackendNoteStore, Note, NoteSink, NoteStore};
 pub use spk::{ReplySpeaker, SpeechSynthesizer, SpkConfig, VoicePublisher};

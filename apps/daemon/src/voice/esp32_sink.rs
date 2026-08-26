@@ -26,8 +26,8 @@
 //! module stays free of `crate::channels` — integration test crates include
 //! `voice` without the channel pipeline.
 //!
-//! Mapping core errors → device `error` ctl is Task 1.5; failures are log-only
-//! here.
+//! On turn failure, [`ReplySpeaker::fail`] publishes an `error` ctl (design
+//! §5.5). Never silent.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,6 +51,24 @@ pub struct TurnOutcome {
     pub acp_session_id: Option<String>,
 }
 
+/// Device-facing failure from a turn. Wire `code` must match ESP32 face
+/// mapping in `apps/esp32/main/main.cpp` (`no_broker` / `no_agent` / else →
+/// Upstream).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnFail {
+    pub code: String,
+    pub message: String,
+}
+
+impl TurnFail {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
 /// Runs one inbound message through the session pipeline.
 ///
 /// Production wires this to `Core::handle`. Tests supply a fake that blocks or
@@ -61,7 +79,7 @@ pub trait InboundTurnRunner: Send + Sync {
         &self,
         driver: &dyn ChannelDriver,
         msg: InboundMessage,
-    ) -> Result<TurnOutcome, String>;
+    ) -> Result<TurnOutcome, TurnFail>;
 }
 
 /// One device's remembered session + optional in-flight accept.
@@ -179,6 +197,7 @@ impl Esp32InboundSink {
     async fn process(
         turns: Arc<dyn InboundTurnRunner>,
         driver: Arc<dyn ChannelDriver>,
+        speaker: Arc<dyn ReplySpeaker>,
         active: Arc<Mutex<HashMap<DeviceKey, DeviceState>>>,
         key: DeviceKey,
         msg: InboundMessage,
@@ -209,14 +228,15 @@ impl Esp32InboundSink {
                     "esp32: message not a handled turn"
                 );
             }
-            Err(e) => {
-                // Task 1.5 maps errors → error ctl; keep log-only here.
+            Err(fail) => {
                 error!(
                     channel,
                     external_id = %external_id,
-                    error = %e,
-                    "esp32: message failed"
+                    code = %fail.code,
+                    message = %fail.message,
+                    "esp32: message failed — publishing error ctl"
                 );
+                speaker.fail(&key, &fail.code, &fail.message).await;
             }
         }
 
@@ -244,12 +264,13 @@ impl InboundSink for Esp32InboundSink {
 
         let turns = self.turns.clone();
         let driver = self.driver.clone();
+        let speaker = self.speaker.clone();
         let active = self.active.clone();
         let key_for_task = key.clone();
         let external_message_id = msg.external_message_id.clone();
 
         let handle = tokio::spawn(async move {
-            Self::process(turns, driver, active, key_for_task, msg).await;
+            Self::process(turns, driver, speaker, active, key_for_task, msg).await;
         });
 
         let mut g = self.active.lock().await;
@@ -292,7 +313,7 @@ mod tests {
             &self,
             _driver: &dyn ChannelDriver,
             _msg: InboundMessage,
-        ) -> Result<TurnOutcome, String> {
+        ) -> Result<TurnOutcome, TurnFail> {
             self.runs.fetch_add(1, Ordering::SeqCst);
             self.release.notified().await;
             self.finished.fetch_add(1, Ordering::SeqCst);
@@ -314,11 +335,27 @@ mod tests {
             &self,
             _driver: &dyn ChannelDriver,
             _msg: InboundMessage,
-        ) -> Result<TurnOutcome, String> {
+        ) -> Result<TurnOutcome, TurnFail> {
             Ok(TurnOutcome {
                 session_id: Some(self.session_id.clone()),
                 acp_session_id: Some(self.acp_session_id.clone()),
             })
+        }
+    }
+
+    /// Always returns a fixed [`TurnFail`] (CoreError mapping tests).
+    struct FailingTurns {
+        fail: TurnFail,
+    }
+
+    #[async_trait]
+    impl InboundTurnRunner for FailingTurns {
+        async fn run(
+            &self,
+            _driver: &dyn ChannelDriver,
+            _msg: InboundMessage,
+        ) -> Result<TurnOutcome, TurnFail> {
+            Err(self.fail.clone())
         }
     }
 
@@ -494,6 +531,16 @@ mod tests {
 
     struct RecordingSpeaker {
         cancels: Mutex<usize>,
+        fails: Mutex<Vec<(String, String)>>,
+    }
+
+    impl RecordingSpeaker {
+        fn new() -> Self {
+            Self {
+                cancels: Mutex::new(0),
+                fails: Mutex::new(Vec::new()),
+            }
+        }
     }
 
     #[async_trait]
@@ -502,7 +549,12 @@ mod tests {
         async fn cancel(&self, _key: &DeviceKey) {
             *self.cancels.lock().await += 1;
         }
-        async fn fail(&self, _key: &DeviceKey, _code: &str, _message: &str) {}
+        async fn fail(&self, _key: &DeviceKey, code: &str, message: &str) {
+            self.fails
+                .lock()
+                .await
+                .push((code.to_string(), message.to_string()));
+        }
     }
 
     fn msg(id: &str, text: &str) -> InboundMessage {
@@ -570,9 +622,7 @@ mod tests {
 
         let recording = Arc::new(RecordingDriver::default());
         let agent = Arc::new(RecordingAgent::new());
-        let speaker = Arc::new(RecordingSpeaker {
-            cancels: Mutex::new(0),
-        });
+        let speaker = Arc::new(RecordingSpeaker::new());
 
         let sink = sink_with(
             blocking.clone() as Arc<dyn InboundTurnRunner>,
@@ -622,9 +672,7 @@ mod tests {
     #[tokio::test]
     async fn accept_cancels_speak_even_when_no_in_flight_turn() {
         let agent = Arc::new(RecordingAgent::new());
-        let speaker = Arc::new(RecordingSpeaker {
-            cancels: Mutex::new(0),
-        });
+        let speaker = Arc::new(RecordingSpeaker::new());
         let recording = Arc::new(RecordingDriver::default());
         let release = Arc::new(Notify::new());
         let blocking = Arc::new(BlockingTurns {
@@ -674,9 +722,7 @@ mod tests {
         });
         let recording = Arc::new(RecordingDriver::default());
         let agent = Arc::new(RecordingAgent::new());
-        let speaker = Arc::new(RecordingSpeaker {
-            cancels: Mutex::new(0),
-        });
+        let speaker = Arc::new(RecordingSpeaker::new());
 
         let sink = sink_with(
             blocking.clone() as Arc<dyn InboundTurnRunner>,
@@ -707,9 +753,7 @@ mod tests {
         let acp = "acp-from-handled".to_string();
         let recording = Arc::new(RecordingDriver::default());
         let agent = Arc::new(RecordingAgent::new());
-        let speaker = Arc::new(RecordingSpeaker {
-            cancels: Mutex::new(0),
-        });
+        let speaker = Arc::new(RecordingSpeaker::new());
 
         let sink = sink_with(
             Arc::new(InstantTurns {
@@ -739,5 +783,60 @@ mod tests {
         })
         .await
         .expect("handled turn must store sticky acp_session_id");
+    }
+
+    async fn wait_fails(speaker: &RecordingSpeaker, n: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while speaker.fails.lock().await.len() < n {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {n} fail(s)"));
+    }
+
+    #[tokio::test]
+    async fn turn_err_publishes_no_agent_error_ctl() {
+        // Design §5.5: CoreError::Turn → NoAgent face (`no_agent` wire code).
+        let speaker = Arc::new(RecordingSpeaker::new());
+        let sink = sink_with(
+            Arc::new(FailingTurns {
+                fail: TurnFail::new("no_agent", "电脑没醒着"),
+            }) as Arc<dyn InboundTurnRunner>,
+            Arc::new(RecordingAgent::new()),
+            speaker.clone(),
+            Arc::new(RecordingDriver::default()),
+        );
+
+        sink.accept(msg("fail-turn", "hello")).await;
+        wait_fails(&speaker, 1).await;
+
+        assert_eq!(
+            speaker.fails.lock().await.as_slice(),
+            &[("no_agent".into(), "电脑没醒着".into())],
+            "Turn failure must not be silent — device needs NoAgent face"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_err_publishes_no_broker_error_ctl() {
+        // Design §5.5: Route / Identity / Write → NoBroker (`no_broker`).
+        let speaker = Arc::new(RecordingSpeaker::new());
+        let sink = sink_with(
+            Arc::new(FailingTurns {
+                fail: TurnFail::new("no_broker", "连不上服务器"),
+            }) as Arc<dyn InboundTurnRunner>,
+            Arc::new(RecordingAgent::new()),
+            speaker.clone(),
+            Arc::new(RecordingDriver::default()),
+        );
+
+        sink.accept(msg("fail-route", "hello")).await;
+        wait_fails(&speaker, 1).await;
+
+        assert_eq!(
+            speaker.fails.lock().await.as_slice(),
+            &[("no_broker".into(), "连不上服务器".into())],
+        );
     }
 }
