@@ -80,7 +80,7 @@ ChannelCaps {
     interactive:    true,   // 屏幕能画菜单,表冠能选 —— 第 1 节那笔学费
     threading:      Threading::Inline,
     max_chars:      0,      // 不切分:朗读没有"消息长度"这个概念,见 4.4
-    turn_timeout_secs: 60,  // 设备本地 8s 就放弃了,见 §6.2
+    turn_timeout_secs: 60,  // 设备本地 8s 就放弃了,见 §7.2
 }
 ```
 
@@ -134,7 +134,136 @@ update(id, text, Some(end)) → 播完剩余,收尾静音,发 spk_end ctl
 **prompt 仍然朗读**,选项只上屏 —— 语音说"你是想 A、B 还是 C"是自然的,逐条念
 选项不是。
 
-## 5. 配对:ESP32 作为 channel 配置
+## 5. 入站:谁把话送进内核
+
+初稿只写了"最终转写进",没写**谁在进** —— 这是最大的缺口,因为
+**`ChannelDriver` 是只出不进的**:
+
+```rust
+trait ChannelDriver { id, caps, binding, sender_urn, session_title, deliver, update }
+```
+
+入站是另一条路,由 gateway crate 定义、daemon 实现:
+
+```rust
+pub trait InboundSink { async fn accept(&self, msg: InboundMessage); }
+```
+
+`CoreSink`(`channels/core/sink.rs`)实现它,并且挂着一个 `SessionQueue`。
+所以收编后的形状是:
+
+```
+voice/mic ─→ Esp32Listener ─→ STT ─→ InboundMessage ─→ CoreSink::accept
+                  │                                          │
+             (订阅、Opus 解码、                          SessionQueue
+              流式转写、intent 分流)                          │
+                                                       Core::handle
+```
+
+`Esp32Listener` 就是今天 `VoiceRouter` 的位置,职责收窄:**只负责把音频变成一条
+消息**,不再做会话路由、不再管权限、不再直接调 runtime。它住在 daemon 侧
+(需要 MQTT 与 STT 凭证,两者都是 daemon 的东西),驱动住在 gateway crate。
+
+### 5.1 `InboundMessage` 逐字段
+
+| 字段 | 取值 | 说明 |
+|---|---|---|
+| `conversation` | `{ channel: "esp32", bot_id: None, kind: Direct, id: actor_id }` | 一台设备一个会话 |
+| `sender` | `{ external_id: device_id, display_name: 设备名, email: None }` | |
+| `external_message_id` | 见 §5.2 | 去重键 |
+| `text` | STT 最终转写 | |
+| `attachments` | 空 | 设备不传文件 |
+| `addressed_to_bot` | **恒 `true`** | 按下按钮就是在跟它说话,没有"@" 这个概念,和邮件同理 |
+| `quoted_text` | `None` | |
+| `reply_context` | `None` | 回复走 `voice/spk`,与入站请求无关 |
+
+### 5.2 去重键:不能用 ctl 的 `seq`
+
+去重是收编的头号收益,但键必须选对。**设备的 `seq` 不行** ——
+`net/voice_ctl.h` 写得很清楚:
+
+> Monotonic per-boot counter … **It resets across a reboot**: amuxd must not
+> assume the sequence is globally unique.
+
+重启后 seq 从 1 重来,会和上一次开机的消息撞。键定为:
+
+```
+esp32:{device_id}:{boot_id}:{seq}
+```
+
+`boot_id` 由设备开机时随机生成一次(4 字节十六进制足够),放进 `turn_start` ctl。
+这是**固件要改的一处** —— 记在这里,免得迁移时才发现。
+
+### 5.3 排队语义:设备不排队,第二次按键就是打断
+
+`SessionQueue` 的默认行为是:turn 进行中来了新消息就**排队**,并且
+`CoreSink` 会**向会话发一条通知**("排在第 N 位"、"队列满了"、"超时了")。
+对聊天窗口这是对的;对语音设备,这些通知会被**朗读出来**,而用户只是想重新问一次。
+
+**决定:ESP32 不排队。** 队列深度 1,turn 进行中的第二次按键**取消当前 turn**
+并开始新的一轮 —— 这与 §7.1 的打断是同一个动作,只是触发方式不同(说话打断 vs
+按键打断)。理由:PTT 设备只有一个用户,一个用户不会想排自己的队;他按第二次,
+意思就是"不是这个,重来"。
+
+代价:队列的三条通知文案(`MsgKey::QueueFull` / `QueueTimeout` /
+`GatewayShuttingDown`)在这个渠道上永远不会触发。这是有意的,不是漏了。
+
+### 5.4 中间态与错误:内核不管,驱动管
+
+内核只给 `deliver` / `update`(纯文本)。而设备靠 ctl 切脸,今天有六种:
+`error` / `thinking` / `spk_start` / `spk_end` / `session` / `note_saved`。
+这些**不来自内核**,归属如下:
+
+| ctl | 谁发 | 时机 |
+|---|---|---|
+| `thinking` | `Esp32Listener` | `accept()` 之后立刻发,不等内核 |
+| `session` | 驱动 | 首次 `deliver` 时带上 `SessionRouter` 解析出的 id |
+| `spk_start` / `spk_end` | 驱动 | TTS 流开始 / `TurnEnd` 到达 |
+| `error` | 驱动 | `Core::handle` 返回 `Err`,按 §5.5 映射 |
+| `note_saved` | `NoteSink` | 不经内核(§7.3) |
+
+`thinking` 由 listener 而不是驱动发,是因为它必须**先于**内核的任何步骤 ——
+用户松手就该看到 Thinking 脸,不该等云端写入和会话解析。
+
+### 5.5 错误映射
+
+`CoreError` 五个变体 → 设备 `ErrorKind` 四类:
+
+| `CoreError` | 设备 | 屏幕文案 |
+|---|---|---|
+| `Route` / `Identity` / `Write` | `NoBroker` | 连不上服务器 |
+| `Turn` | `NoAgent` | 电脑没醒着 |
+| `Render` | `Upstream` | 它那边出错了 |
+
+`Render` 归 `Upstream` 是因为在这个渠道里 render 就是 TTS,失败的是厂商那边。
+
+### 5.6 部分转写留在 listener 内
+
+流式 STT 的中间结果永远到不了内核(内核只接完整文本)。如果以后要在设备上边说
+边上屏,那是 `Esp32Listener` 直接发 ctl 的事,与内核无关 —— 这个能力不会因为收编
+而失去,但也不会因为收编而获得。
+
+### 5.7 测试
+
+内核已经有 `FakeDriver` + `channels/core/tests.rs`,驱动侧照做。listener 侧需要
+一个不碰真硬件的注入点:今天 `VoiceRouter` 已经能接假的 `SttProvider` /
+`TtsProvider`,那套沿用即可。
+
+**验收测试至少要覆盖**:重复的 `external_message_id` 只跑一轮;turn 进行中的第二
+次 `turn_start` 取消前一轮而不是排队;`Core::handle` 返回 `Err` 时设备收到对应
+`error` ctl 而不是静默。
+
+### 5.8 回滚
+
+第 1 步(§8)把入站整条换掉,不是加法。保留 `VoiceRouter` 的旧路径一个版本,由
+`[channels.esp32] use_core = true|false` 选择,默认 `false` 直到第 3 步验收通过。
+两条路共用同一个 `Esp32Listener` 前半段(订阅 + STT),分叉点在"转写出来之后":
+旧路径进 `ChatSink`,新路径进 `CoreSink::accept`。
+
+分叉点选在这里,是因为它是两条路唯一真正不同的地方 —— 前面的音频处理没有理由
+写两份。
+
+## 6. 配对:ESP32 作为 channel 配置
 
 今天设备靠**手工粘贴一个 JWT** 进配网页(`main/net/device_token.h` 里写明了这是
 临时方案)。收编后配对落到 channel 配置里,和其它渠道一致:
@@ -156,9 +285,9 @@ token     = "..."             # 密钥叶名 → 自动进 secrets.enc
 配对流程本身(设备自报 → 桌面确认 → 下发 token)是独立的一块,本文只定义配置
 形状,不定义那个握手。
 
-## 6. 三个塞不进去的,以及怎么办
+## 7. 三个塞不进去的,以及怎么办
 
-### 6.1 打断(barge-in)
+### 7.1 打断(barge-in)
 
 驱动模型里没有"取消进行中的 turn"。设备的 `barge_in` ctl 需要两件事:
 停掉本地 TTS 流(驱动内部,不关内核),以及取消 runtime 的 turn(需要一条路)。
@@ -167,7 +296,7 @@ token     = "..."             # 密钥叶名 → 自动进 secrets.enc
 句柄,和它持有 TTS 客户端一样 —— 打断是传输层对传输层的动作,内核不必知道。
 代价是驱动多一个依赖;好处是内核不长出语音细节。
 
-### 6.2 延迟预算 —— 已量,不成立
+### 7.2 延迟预算 —— 已量,不成立
 
 初稿把这条列为开工前的阻塞项。量完之后它不是。
 
@@ -194,30 +323,37 @@ turn_end ─── 658ms ──→ ctl session ─── 2633ms ──→ 首帧
 留一条给将来:如果哪天首帧压到了几百毫秒,30 ms 才开始有讨论价值。到那时该谈的
 也不是"跳过写入",而是给 caps 加一个延迟敏感维度 —— 但今天没有依据这么做。
 
-### 6.3 笔记模式
+### 7.3 笔记模式
 
 `intent=note` 不是一次 turn,是一次存储。它**不该进 `Core::handle`**。驱动在入站
 分流时就分开:`Chat` 走内核,`Note` 直接走 `NoteSink`(今天的实现原样保留)。
 
 这不是妥协,是分类正确:内核处理的是"消息变成一轮对话",笔记不是对话。
 
-## 7. 迁移顺序
+## 8. 迁移顺序
 
-1. **驱动骨架 + 上行**:`Esp32Driver` 实现 `binding` / `sender_urn` /
-   `session_title` / `deliver`,最终转写走 `Core::handle`。此时下行仍是一次性
-   `deliver`(不流式),验证会话、身份、去重、命令全部到位。
-   **验收**:`/help` 在设备上有回应;daemon 重启后上下文不丢。
+0. **固件先行**:`turn_start` 带上 `boot_id`(§5.2)。这是整个迁移里唯一的固件
+   改动,而且必须**先于**服务端 —— 去重键少了它就会在设备重启后撞。一行 JSON
+   字段,但要重刷才生效,所以排在最前面。
+1. **入站 + 驱动骨架**:`Esp32Listener`(由 `VoiceRouter` 收窄而来)构造
+   `InboundMessage` 送进 `CoreSink::accept`;`Esp32Driver` 实现 `binding` /
+   `sender_urn` / `session_title` / `deliver`。此时下行仍是一次性 `deliver`
+   (不流式),验证会话、身份、去重、命令全部到位。
+   由 `use_core` 开关控制,默认关(§5.8)。
+   **验收**:`/help` 在设备上有回应;daemon 重启后上下文不丢;同一条
+   `external_message_id` 重放只跑一轮。
 2. **下行流式**:打开 `streaming_edit`,`SentenceChunker` 搬进驱动。
    **验收**:首句播放时刻不晚于今天。
 3. **菜单**:`InteractiveQuestion` → `menu` ctl,设备端渲染 + 回选。
    **验收**:撤掉语音会话的 full access,agent 的 `question` 能正常收到答案。
 4. **配对入配置**:`[channels.esp32]`,退掉手工粘 token。
+5. **拆旧路**:`use_core` 默认改为开,一个版本后删掉开关与 `ChatSink`(§10)。
 
 每步可独立上线。第 3 步完成时,第 1.1 节那笔学费才算真正还上。
 
-## 8. 风险与未决问题
+## 9. 风险与未决问题
 
-1. ~~**延迟**~~ —— 已于 2026-08-26 量清,不成立,见 §6.2。记在这里是因为它曾经是
+1. ~~**延迟**~~ —— 已于 2026-08-26 量清,不成立,见 §7.2。记在这里是因为它曾经是
    本文的阻塞项:`write_inbound` 约 30 ms,占首帧 3291 ms 的 0.9%。**开工不再被
    这一条挡住。**
 2. **设备本地 8s 超时**(`AgentTimeoutMs`)与 caps 的 `turn_timeout_secs` 是两个
@@ -232,7 +368,7 @@ turn_end ─── 658ms ──→ ctl session ─── 2633ms ──→ 首帧
    设备 3 分钟进 lightsleep 掉线、"三次点击"链条(会话过期 → 错误屏 → 按键被
    消费)。**建议这几项先清掉。**
 
-## 9. 迁移完成后可以删除
+## 10. 迁移完成后可以删除
 
 - `apps/daemon/src/voice/chat_sink.rs` 整个(含那张内存 `HashMap` 和 `forget()`)
 - `voice/adapter.rs` 里的会话路由与 `FanOutSink` 分流(改由驱动分流)
