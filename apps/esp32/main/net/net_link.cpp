@@ -159,12 +159,17 @@ void poll()
         s_reported = now;
     }
 
-    if (!g_want_mqtt.load() || g_mqtt_started.load()) {
+    if (!g_want_mqtt.load()) {
         return;
     }
-    g_mqtt_started.store(true);
 
-    {
+    const auto nowSec = static_cast<std::int64_t>(std::time(nullptr));
+    if (g_next_refresh_attempt != 0 && nowSec < g_next_refresh_attempt) {
+        return;
+    }
+
+    // Capture SSID/IP once when we first notice association.
+    if (!g_mqtt_started.load() && g_ip.empty()) {
         auto& w = WifiManager::GetInstance();
         std::lock_guard<std::mutex> lock(g_mutex);
         g_ssid = w.GetSsid();
@@ -172,45 +177,46 @@ void poll()
         mclog::tagInfo(kTag, "connected ssid={} ip={}", g_ssid, g_ip);
     }
 
-    DeviceIdentity id;
-    const auto nowSec = static_cast<std::int64_t>(std::time(nullptr));
-    if (g_next_refresh_attempt == 0 || nowSec >= g_next_refresh_attempt) {
-        // Redeem is idempotent when already paired; it only does work once.
+    // First bind (or retry after failed redeem/token): redeem + mint + MQTT.
+    if (!g_mqtt_started.load()) {
+        DeviceIdentity id;
         (void)redeemPairingCodeIfNeeded(g_device_id);
         if (!loadDeviceIdentity(id) || tokenExpiringSoon(id, 300)) {
-            if (refreshDeviceToken(g_device_id, id)) {
-                mclog::tagInfo(kTag, "device mqtt token refreshed");
-            }
+            (void)refreshDeviceToken(g_device_id, id);
         }
+
+        if (id.valid()) {
+            mclog::tagInfo(kTag, "bound to team={} actor={}", id.teamId, id.actorId);
+            initBootId();
+            mqttStart(id);
+            g_mqtt_started.store(true);
+            g_next_refresh_attempt = nowSec + 30;
+        } else {
+            mclog::tagWarn(kTag, "online but unbound: pairing code/device secret missing");
+            g_next_refresh_attempt = nowSec + 15;
+        }
+        return;
+    }
+
+    // Steady-state: rotate JWT before expiry (or after broker rejection).
+    DeviceIdentity id;
+    const bool loaded = loadDeviceIdentity(id);
+    const bool mustRefresh =
+        !loaded || tokenExpiringSoon(id, 300) || mqttState() == MqttState::Rejected;
+    if (!mustRefresh) {
         g_next_refresh_attempt = nowSec + 30;
-    } else {
-        (void)loadDeviceIdentity(id);
+        return;
     }
 
-    if (id.valid()) {
-        mclog::tagInfo(kTag, "bound to team={} actor={}", id.teamId, id.actorId);
-        initBootId();
-        mqttStart(id);
+    DeviceIdentity fresh;
+    if (refreshDeviceToken(g_device_id, fresh) && fresh.valid()) {
+        mqttStop();
+        mqttStart(fresh);
+        g_next_refresh_attempt = nowSec + 30;
+        mclog::tagInfo(kTag, "rotated mqtt token and reconnected");
     } else {
-        mclog::tagWarn(kTag, "online but unbound: pairing code/device secret missing");
-        g_mqtt_started.store(false);
-    }
-
-    // Steady-state refresh: rotate token a few minutes before expiry, and retry
-    // quickly after broker rejection.
-    if (g_mqtt_started.load()) {
-        const bool mustRefresh = tokenExpiringSoon(id, 300) || mqttState() == MqttState::Rejected;
-        if (mustRefresh && nowSec >= g_next_refresh_attempt) {
-            DeviceIdentity fresh;
-            if (refreshDeviceToken(g_device_id, fresh) && fresh.valid()) {
-                mqttStop();
-                mqttStart(fresh);
-                g_next_refresh_attempt = nowSec + 30;
-                mclog::tagInfo(kTag, "rotated mqtt token and reconnected");
-            } else {
-                g_next_refresh_attempt = nowSec + 15;
-            }
-        }
+        g_next_refresh_attempt = nowSec + 15;
+        mclog::tagWarn(kTag, "mqtt token refresh failed; will retry");
     }
 }
 

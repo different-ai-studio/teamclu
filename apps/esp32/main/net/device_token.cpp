@@ -168,6 +168,9 @@ bool parseIdentityFromToken(const std::string& token, DeviceIdentity& out)
 
     const cJSON* team = cJSON_GetObjectItemCaseSensitive(json, "team");
     const cJSON* actor = cJSON_GetObjectItemCaseSensitive(json, "actor");
+    // Accept snake_case aliases from the Cloud API JWT as well.
+    if (!cJSON_IsString(team)) team = cJSON_GetObjectItemCaseSensitive(json, "team_id");
+    if (!cJSON_IsString(actor)) actor = cJSON_GetObjectItemCaseSensitive(json, "actor_id");
     const cJSON* exp = cJSON_GetObjectItemCaseSensitive(json, "exp");
     const cJSON* broker = cJSON_GetObjectItemCaseSensitive(json, "broker");
 
