@@ -5,6 +5,7 @@
 
 #include "device_token.h"
 #include "mqtt_link.h"
+#include "voice_ctl.h"
 
 #include <mooncake_log.h>
 #include <ssid_manager.h>
@@ -171,6 +172,7 @@ void poll()
     DeviceIdentity id;
     if (loadDeviceIdentity(id)) {
         mclog::tagInfo(kTag, "bound to team={} actor={}", id.teamId, id.actorId);
+        initBootId();
         mqttStart(id);
     } else {
         mclog::tagWarn(kTag, "online but unbound: no device token stored");

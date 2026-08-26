@@ -6,7 +6,8 @@
  * The wire format is defined by amuxd in apps/daemon/src/voice/ctl.rs; this
  * builds the four messages its router acts on (adapter.rs):
  *
- *   turn_start  → opens an STT stream. Carries the intent.
+ *   turn_start  → opens an STT stream. Carries the intent and boot_id
+ *                 (per-boot random id for amuxd dedup — seq alone resets).
  *   turn_end    → end of utterance; the provider drains a final transcript.
  *   barge_in    → close the stream, expect no final.
  *   error       → same, plus a machine code for the log.
@@ -35,9 +36,14 @@ bool sendBargeIn();
 bool sendError(const char* code, const char* message);
 
 // Monotonic per-boot counter stamped on every message, for QoS-1 dedup on the
-// amuxd side. It resets across a reboot: amuxd must not assume the sequence is
-// globally unique, only that it increases within one connection.
+// amuxd side. It resets across a reboot: amuxd keys as
+// esp32:{device}:{boot_id}:{seq} so the pair stays unique across reboots.
 std::uint64_t ctlSeq();
+
+// Per-boot random id (never 0). Call once when MQTT/net starts; stamped only
+// on turn_start (not turn_end / barge_in / error).
+void initBootId();
+std::uint32_t bootId();
 
 // ---- Incoming (amuxd → device) ----
 //

@@ -3,6 +3,7 @@
  */
 #include "voice_ctl.h"
 
+#include <esp_random.h>
 #include <mooncake_log.h>
 
 #include <atomic>
@@ -19,6 +20,7 @@ namespace {
 constexpr const char* kTag = "ctl";
 
 std::atomic<std::uint64_t> g_seq{0};
+std::atomic<std::uint32_t> g_boot_id{0};
 
 // Escapes the few characters that would otherwise break the JSON. Device error
 // messages are our own strings today, but they are the one field that could
@@ -75,12 +77,35 @@ std::uint64_t ctlSeq()
     return g_seq.load();
 }
 
+void initBootId()
+{
+    if (g_boot_id.load() != 0) {
+        return;
+    }
+    std::uint32_t id = 0;
+    do {
+        esp_fill_random(&id, sizeof(id));
+    } while (id == 0);
+    g_boot_id.store(id);
+    mclog::tagInfo(kTag, "boot_id={:08x}", id);
+}
+
+std::uint32_t bootId()
+{
+    return g_boot_id.load();
+}
+
 bool sendTurnStart(face::Mode mode)
 {
-    char buf[128];
-    std::snprintf(buf, sizeof(buf), R"({"type":"turn_start","intent":"%s","seq":%llu})",
+    if (bootId() == 0) {
+        initBootId();
+    }
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+                  R"({"type":"turn_start","intent":"%s","seq":%llu,"boot_id":"%08lx"})",
                   mode == face::Mode::Chat ? "chat" : "note",
-                  static_cast<unsigned long long>(++g_seq));
+                  static_cast<unsigned long long>(++g_seq),
+                  static_cast<unsigned long>(bootId()));
     return publish(buf);
 }
 
