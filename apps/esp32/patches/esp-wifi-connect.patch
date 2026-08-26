@@ -466,8 +466,8 @@ index 637c6f5..711a884 100644
                      <input type="password" id="password" name="password">
                  </p>
 +                <p>
-+                    <label for="device_token">设备令牌 / Device token</label>
-+                    <textarea id="device_token" name="device_token" rows="3"
++                    <label for="pairing_code">配对码 / Pairing code</label>
++                    <textarea id="pairing_code" name="pairing_code" rows="3"
 +                              autocapitalize="off" autocomplete="off" spellcheck="false"
 +                              autocorrect="off"></textarea>
 +                    <span class="hint">留空则只配网，稍后再绑定 · Leave empty to set up Wi-Fi only</span>
@@ -538,7 +538,7 @@ index 637c6f5..711a884 100644
                  ssid: ssid.value,
 -                password: document.getElementById('password').value
 +                password: document.getElementById('password').value,
-+                device_token: document.getElementById('device_token').value.trim()
++                pairing_code: document.getElementById('pairing_code').value.trim()
              };
  
              try {
@@ -612,11 +612,11 @@ index 591ffaf..35900a7 100644
 +            // TeamClu: an optional pairing code travels with the Wi-Fi
 +            // credentials so provisioning is a single trip. Upstream knows
 +            // nothing about it; we only stash it for the application to redeem.
-+            cJSON *token_item = cJSON_GetObjectItemCaseSensitive(json, "device_token");
-+            std::string token_str = "";
-+            if (cJSON_IsString(token_item) && token_item->valuestring != NULL &&
-+                strlen(token_item->valuestring) < 1024) {
-+                token_str = token_item->valuestring;
++            cJSON *pairing_item = cJSON_GetObjectItemCaseSensitive(json, "pairing_code");
++            std::string pairing_str = "";
++            if (cJSON_IsString(pairing_item) && pairing_item->valuestring != NULL &&
++                strlen(pairing_item->valuestring) < 1024) {
++                pairing_str = pairing_item->valuestring;
 +            }
 +
              std::string ssid_str = ssid_item->valuestring;
@@ -629,10 +629,10 @@ index 591ffaf..35900a7 100644
 +
 +            // TeamClu: persist only after the association succeeded, so a code
 +            // is never stored against credentials that turned out to be wrong.
-+            if (!token_str.empty()) {
++            if (!pairing_str.empty()) {
 +                nvs_handle_t teamclu_nvs;
 +                if (nvs_open("teamclu", NVS_READWRITE, &teamclu_nvs) == ESP_OK) {
-+                    nvs_set_str(teamclu_nvs, "dev_token", token_str.c_str());
++                    nvs_set_str(teamclu_nvs, "pair_code", pairing_str.c_str());
 +                    nvs_commit(teamclu_nvs);
 +                    nvs_close(teamclu_nvs);
 +                }

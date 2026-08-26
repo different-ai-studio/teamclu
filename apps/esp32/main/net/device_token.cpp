@@ -6,9 +6,13 @@
 #include <mbedtls/base64.h>
 #include <mooncake_log.h>
 #include <nvs.h>
+#include <esp_crt_bundle.h>
+#include <esp_http_client.h>
 
 #include <cJSON.h>
 
+#include <cstring>
+#include <ctime>
 #include <vector>
 
 namespace net {
@@ -16,7 +20,12 @@ namespace {
 
 constexpr const char* kTag = "token";
 constexpr const char* kNvsNamespace = "teamclu";
-constexpr const char* kNvsTokenKey = "dev_token";  // written by the portal patch
+constexpr const char* kNvsPairingCodeKey = "pair_code";   // portal writes this
+constexpr const char* kNvsDeviceSecretKey = "dev_secret"; // set by redeem
+constexpr const char* kNvsTokenKey = "dev_jwt";           // set by /devices/token
+constexpr const char* kApiBase = "https://api.teamclu-dev.ucar.cc";
+constexpr const char* kDeviceModel = "m5stack-stopwatch";
+constexpr const char* kFirmwareVersion = "0.1.0";
 
 std::string nvsGetString(const char* key, std::size_t maxLen)
 {
@@ -36,6 +45,28 @@ std::string nvsGetString(const char* key, std::size_t maxLen)
     }
     nvs_close(nvs);
     return out;
+}
+
+bool nvsSetString(const char* key, const std::string& value)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(kNvsNamespace, NVS_READWRITE, &nvs) != ESP_OK) {
+        return false;
+    }
+    const bool ok = nvs_set_str(nvs, key, value.c_str()) == ESP_OK && nvs_commit(nvs) == ESP_OK;
+    nvs_close(nvs);
+    return ok;
+}
+
+void nvsErase(const char* key)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(kNvsNamespace, NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    nvs_erase_key(nvs, key);
+    nvs_commit(nvs);
+    nvs_close(nvs);
 }
 
 // JWT payloads are base64url without padding; mbedtls wants standard base64
@@ -75,18 +106,47 @@ bool base64UrlDecode(const std::string& in, std::string& out)
     return true;
 }
 
-}  // namespace
-
-bool loadDeviceIdentity(DeviceIdentity& out)
+std::string httpPostJson(const std::string& url, const std::string& body, int& statusOut)
 {
-    out = DeviceIdentity{};
+    esp_http_client_config_t cfg = {};
+    cfg.url = url.c_str();
+    cfg.timeout_ms = 10000;
+    cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.skip_cert_common_name_check = false;
 
-    const std::string token = nvsGetString(kNvsTokenKey, 1024);
-    if (token.empty()) {
-        return false;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == nullptr) {
+        statusOut = 0;
+        return {};
+    }
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, body.c_str(), static_cast<int>(body.size()));
+
+    if (esp_http_client_perform(client) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        statusOut = 0;
+        return {};
     }
 
-    // header.payload.signature — we only want the payload.
+    const int status = esp_http_client_get_status_code(client);
+    statusOut = status;
+
+    std::string out;
+    char buf[512];
+    while (true) {
+        const int n = esp_http_client_read(client, buf, sizeof(buf));
+        if (n <= 0) break;
+        out.append(buf, static_cast<std::size_t>(n));
+    }
+    esp_http_client_cleanup(client);
+    return out;
+}
+
+bool parseIdentityFromToken(const std::string& token, DeviceIdentity& out)
+{
+    out = DeviceIdentity{};
     const auto first = token.find('.');
     const auto second = token.find('.', first == std::string::npos ? 0 : first + 1);
     if (first == std::string::npos || second == std::string::npos) {
@@ -111,46 +171,114 @@ bool loadDeviceIdentity(DeviceIdentity& out)
     const cJSON* exp = cJSON_GetObjectItemCaseSensitive(json, "exp");
     const cJSON* broker = cJSON_GetObjectItemCaseSensitive(json, "broker");
 
-    if (cJSON_IsString(team) && team->valuestring != nullptr) {
-        out.teamId = team->valuestring;
-    }
-    if (cJSON_IsString(actor) && actor->valuestring != nullptr) {
-        out.actorId = actor->valuestring;
-    }
-    if (cJSON_IsString(broker) && broker->valuestring != nullptr) {
-        out.broker = broker->valuestring;
-    }
-    if (cJSON_IsNumber(exp)) {
-        out.expiresAt = static_cast<std::int64_t>(exp->valuedouble);
-    }
+    if (cJSON_IsString(team) && team->valuestring != nullptr) out.teamId = team->valuestring;
+    if (cJSON_IsString(actor) && actor->valuestring != nullptr) out.actorId = actor->valuestring;
+    if (cJSON_IsString(broker) && broker->valuestring != nullptr) out.broker = broker->valuestring;
+    if (cJSON_IsNumber(exp)) out.expiresAt = static_cast<std::int64_t>(exp->valuedouble);
     cJSON_Delete(json);
 
     out.token = token;
-
     if (!out.valid()) {
-        // A token EMQX would accept but that carries no team/actor is useless to
-        // us: we would connect and then have no topics to speak on. Say so
-        // clearly rather than failing later at publish time.
         mclog::tagError(kTag, "token lacks team/actor claims; cannot build topics");
         return false;
     }
-
-    mclog::tagInfo(kTag, "identity team={} actor={} broker={} exp={}", out.teamId,
-                   out.actorId, out.broker.empty() ? "<none>" : out.broker,
-                   static_cast<long long>(out.expiresAt));
     return true;
+}
+
+}  // namespace
+
+bool loadDeviceIdentity(DeviceIdentity& out)
+{
+    const std::string token = nvsGetString(kNvsTokenKey, 1024);
+    if (token.empty()) {
+        return false;
+    }
+    const bool ok = parseIdentityFromToken(token, out);
+    if (ok) {
+        mclog::tagInfo(kTag, "identity team={} actor={} broker={} exp={}", out.teamId,
+                       out.actorId, out.broker.empty() ? "<none>" : out.broker,
+                       static_cast<long long>(out.expiresAt));
+    }
+    return ok;
+}
+
+bool hasDeviceSecret()
+{
+    return !nvsGetString(kNvsDeviceSecretKey, 256).empty();
+}
+
+bool redeemPairingCodeIfNeeded(const std::string& deviceId)
+{
+    if (hasDeviceSecret()) return true;
+    const std::string pairingCode = nvsGetString(kNvsPairingCodeKey, 128);
+    if (pairingCode.empty()) return false;
+
+    const std::string body =
+        "{\"code\":\"" + pairingCode + "\",\"deviceId\":\"" + deviceId +
+        "\",\"model\":\"" + kDeviceModel + "\",\"fw\":\"" + kFirmwareVersion + "\"}";
+    int status = 0;
+    const std::string resp = httpPostJson(std::string(kApiBase) + "/v1/devices/redeem", body, status);
+    if (status < 200 || status >= 300 || resp.empty()) {
+        mclog::tagWarn(kTag, "redeem failed status={}", status);
+        return false;
+    }
+    cJSON* json = cJSON_Parse(resp.c_str());
+    if (json == nullptr) return false;
+    const cJSON* secret = cJSON_GetObjectItemCaseSensitive(json, "deviceSecret");
+    const bool ok = cJSON_IsString(secret) && secret->valuestring != nullptr &&
+                    std::strlen(secret->valuestring) >= 32 &&
+                    nvsSetString(kNvsDeviceSecretKey, secret->valuestring);
+    cJSON_Delete(json);
+    if (!ok) return false;
+
+    nvsErase(kNvsPairingCodeKey);
+    mclog::tagInfo(kTag, "pairing code redeemed and device secret stored");
+    return true;
+}
+
+bool refreshDeviceToken(const std::string& deviceId, DeviceIdentity& out)
+{
+    const std::string secret = nvsGetString(kNvsDeviceSecretKey, 256);
+    if (secret.empty()) return false;
+
+    const std::string body =
+        "{\"deviceSecret\":\"" + secret + "\",\"deviceId\":\"" + deviceId + "\"}";
+    int status = 0;
+    const std::string resp = httpPostJson(std::string(kApiBase) + "/v1/devices/token", body, status);
+    if (status < 200 || status >= 300 || resp.empty()) {
+        mclog::tagWarn(kTag, "token mint failed status={}", status);
+        return false;
+    }
+    cJSON* json = cJSON_Parse(resp.c_str());
+    if (json == nullptr) return false;
+    const cJSON* token = cJSON_GetObjectItemCaseSensitive(json, "accessToken");
+    const bool ok = cJSON_IsString(token) && token->valuestring != nullptr &&
+                    nvsSetString(kNvsTokenKey, token->valuestring);
+    cJSON_Delete(json);
+    if (!ok) return false;
+
+    return loadDeviceIdentity(out);
+}
+
+bool tokenExpiringSoon(const DeviceIdentity& id, std::int64_t refreshWindowSeconds)
+{
+    if (id.expiresAt <= 0) return true;
+    const std::int64_t now = static_cast<std::int64_t>(std::time(nullptr));
+    return id.expiresAt <= (now + refreshWindowSeconds);
 }
 
 void clearDeviceToken()
 {
-    nvs_handle_t nvs;
-    if (nvs_open(kNvsNamespace, NVS_READWRITE, &nvs) != ESP_OK) {
-        return;
-    }
-    nvs_erase_key(nvs, kNvsTokenKey);
-    nvs_commit(nvs);
-    nvs_close(nvs);
+    nvsErase(kNvsTokenKey);
     mclog::tagInfo(kTag, "device token cleared");
+}
+
+void clearDeviceCredentials()
+{
+    nvsErase(kNvsPairingCodeKey);
+    nvsErase(kNvsDeviceSecretKey);
+    nvsErase(kNvsTokenKey);
+    mclog::tagInfo(kTag, "device pairing credentials cleared");
 }
 
 }  // namespace net

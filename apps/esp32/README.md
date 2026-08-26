@@ -16,7 +16,7 @@ IMU, RX8130CE RTC, M5IOE1 I/O expander, M5PM1 PMIC, vibration motor, 450 mAh.
 - Two-button gesture model: hold-to-talk vs short-press, per button
 - Haptics on PTT-grab, first-reply, note-saved, error
 - RTC-driven clock and battery on the idle screen
-- Wi-Fi provisioning (captive portal, device token typed in), MQTT over WSS,
+- Wi-Fi provisioning (captive portal, pairing code typed in), MQTT over WSS,
   retained state + LWT
 - The `voice/ctl` uplink: `turn_start` / `turn_end` round-trips 1:1 with the
   broker, monotonic `seq`

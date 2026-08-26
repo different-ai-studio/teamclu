@@ -44,6 +44,15 @@ std::string deviceCodeFromMac()
     return std::string(buf);
 }
 
+std::string deviceIdFromMac()
+{
+    const auto mac = GetHAL().getFactoryMac();
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3],
+                  mac[4], mac[5]);
+    return std::string(buf);
+}
+
 std::string clockNow()
 {
     const auto t = GetHAL().getTimeHms();
@@ -201,7 +210,7 @@ extern "C" void app_main(void)
 
     // Radio last: everything above must be able to render before the network
     // has any opinion, so a provisioning screen has a face to appear on.
-    net::start(state.deviceCode());
+    net::start(state.deviceCode(), deviceIdFromMac());
 
     // Route amuxd→device `voice/ctl` into the face's agent-driven input.
     // The callback fires on the MQTT task; it only parses + pushes to the

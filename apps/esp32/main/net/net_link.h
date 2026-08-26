@@ -26,10 +26,11 @@ namespace net {
 
 // Called from the Wi-Fi event task, not the main loop. The implementation only
 // stores into an atomic, so the main loop can poll it safely.
-void start(const std::string& deviceCode);
+void start(const std::string& deviceCode, const std::string& deviceId);
 
-// Wipe stored Wi-Fi networks and the device token, forcing provisioning on the
-// next start(). There is otherwise NO way back: a device holding credentials
+// Wipe stored Wi-Fi networks and pairing/device credentials, forcing
+// provisioning on the next start(). There is otherwise NO way back: a device
+// holding credentials
 // for a network it cannot see retries that network forever and never reopens
 // the portal, which makes one mistyped setup unrecoverable without a reflash.
 void forgetProvisioning();
@@ -58,8 +59,7 @@ std::string apSsid();
 // provisioning entirely on this boot.
 bool hasSavedCredentials();
 
-// True once a usable device token is stored, i.e. the device knows which
-// team/actor it speaks for. See device_token.h.
+// True once a device secret is stored (paired).
 bool isBound();
 
 }  // namespace net

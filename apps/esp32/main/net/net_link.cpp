@@ -13,6 +13,7 @@
 #include <wifi_manager.h>
 
 #include <atomic>
+#include <ctime>
 #include <mutex>
 
 namespace net {
@@ -32,6 +33,8 @@ std::mutex g_mutex;
 std::string g_ip;
 std::string g_ssid;
 std::string g_ap_ssid;
+std::string g_device_id;
+std::int64_t g_next_refresh_attempt = 0;
 
 // Called from the Wi-Fi event task. Deliberately silent: formatting a log line
 // here costs several hundred bytes of stack on a task that has little to spare,
@@ -50,19 +53,19 @@ bool hasSavedCredentials()
 
 bool isBound()
 {
-    DeviceIdentity id;
-    return loadDeviceIdentity(id);
+    return hasDeviceSecret();
 }
 
 void forgetProvisioning()
 {
     SsidManager::GetInstance().Clear();
-    clearDeviceToken();
+    clearDeviceCredentials();
     mclog::tagWarn(kTag, "provisioning wiped; will start config AP");
 }
 
-void start(const std::string& deviceCode)
+void start(const std::string& deviceCode, const std::string& deviceId)
 {
+    g_device_id = deviceId;
     auto& wifi = WifiManager::GetInstance();
 
     WifiManagerConfig cfg;
@@ -170,12 +173,44 @@ void poll()
     }
 
     DeviceIdentity id;
-    if (loadDeviceIdentity(id)) {
+    const auto nowSec = static_cast<std::int64_t>(std::time(nullptr));
+    if (g_next_refresh_attempt == 0 || nowSec >= g_next_refresh_attempt) {
+        // Redeem is idempotent when already paired; it only does work once.
+        (void)redeemPairingCodeIfNeeded(g_device_id);
+        if (!loadDeviceIdentity(id) || tokenExpiringSoon(id, 300)) {
+            if (refreshDeviceToken(g_device_id, id)) {
+                mclog::tagInfo(kTag, "device mqtt token refreshed");
+            }
+        }
+        g_next_refresh_attempt = nowSec + 30;
+    } else {
+        (void)loadDeviceIdentity(id);
+    }
+
+    if (id.valid()) {
         mclog::tagInfo(kTag, "bound to team={} actor={}", id.teamId, id.actorId);
         initBootId();
         mqttStart(id);
     } else {
-        mclog::tagWarn(kTag, "online but unbound: no device token stored");
+        mclog::tagWarn(kTag, "online but unbound: pairing code/device secret missing");
+        g_mqtt_started.store(false);
+    }
+
+    // Steady-state refresh: rotate token a few minutes before expiry, and retry
+    // quickly after broker rejection.
+    if (g_mqtt_started.load()) {
+        const bool mustRefresh = tokenExpiringSoon(id, 300) || mqttState() == MqttState::Rejected;
+        if (mustRefresh && nowSec >= g_next_refresh_attempt) {
+            DeviceIdentity fresh;
+            if (refreshDeviceToken(g_device_id, fresh) && fresh.valid()) {
+                mqttStop();
+                mqttStart(fresh);
+                g_next_refresh_attempt = nowSec + 30;
+                mclog::tagInfo(kTag, "rotated mqtt token and reconnected");
+            } else {
+                g_next_refresh_attempt = nowSec + 15;
+            }
+        }
     }
 }
 
