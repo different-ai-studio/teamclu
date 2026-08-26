@@ -82,6 +82,7 @@
     "skillDeleteTeamTitle": "从团队移除",
     "skillDeleteTeamConfirm": "将「{{name}}」从团队 registry 移除？所有成员都会看不到它，下次同步时会从各自机器上卸载，版本历史一并删除，且无法撤销。",
     "skillDeleteTeamAction": "移除",
+    "skillDeleteTeamTypePrompt": "输入 {{name}} 确认",
     "skillDeleteTeamDone": "已从团队移除",
     "skillDeleteTeamFailed": "移除失败：{{msg}}",
     "skillRetiredToast": "「{{slug}}」已被团队移除，已从本机卸载。",

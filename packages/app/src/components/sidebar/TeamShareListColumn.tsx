@@ -20,8 +20,19 @@ import {
   Store,
   Bot,
   ChevronDown,
+  Trash2,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -99,6 +110,99 @@ interface RowProps {
   expanded?: boolean
   onToggleExpand?: () => void
   onClick: () => void
+}
+
+/**
+ * Removing a skill from the team registry, confirmed by typing its name.
+ *
+ * Type-to-confirm rather than a plain Yes/No because of who is exposed: the
+ * click is one person's, the consequence is every member's machine, and there
+ * is no undo — the version history goes with the row. A dialog that a reflex
+ * can dismiss is the wrong weight for that, and the name has to be read off the
+ * row to be typed, which is exactly the "am I on the row I think I am" check
+ * that a misfire fails.
+ */
+export function DeleteTeamSkillDialog({
+  slug,
+  open,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  slug: string
+  open: boolean
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const { t } = useTranslation()
+  const [typed, setTyped] = React.useState('')
+
+  // Cleared per skill, not per open: reopening on a different row must not
+  // arrive pre-confirmed with the previous row's name still in the box.
+  React.useEffect(() => {
+    setTyped('')
+  }, [slug, open])
+
+  const matches = typed.trim() === slug
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && !busy) onCancel()
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t('teamShare.skillDeleteTeamTitle', '从团队移除')}</DialogTitle>
+          <DialogDescription>
+            {t(
+              'teamShare.skillDeleteTeamConfirm',
+              '将「{{name}}」从团队 registry 移除？所有成员都会看不到它，下次同步时会从各自机器上卸载，版本历史一并删除，且无法撤销。',
+              { name: slug },
+            )}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-2">
+          <label htmlFor="delete-team-skill-confirm" className="text-[12px] text-muted-foreground">
+            {t('teamShare.skillDeleteTeamTypePrompt', '输入 {{name}} 确认', { name: slug })}
+          </label>
+          <Input
+            id="delete-team-skill-confirm"
+            value={typed}
+            autoFocus
+            autoComplete="off"
+            spellCheck={false}
+            disabled={busy}
+            onChange={(e) => setTyped(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && matches && !busy) onConfirm()
+            }}
+            placeholder={slug}
+          />
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" disabled={busy} onClick={onCancel}>
+            {t('common.cancel', 'Cancel')}
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={busy || !matches}
+            onClick={onConfirm}
+          >
+            {busy ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Trash2 className="mr-2 h-4 w-4" />
+            )}
+            {t('teamShare.skillDeleteTeamAction', '移除')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function ItemRow({
@@ -213,6 +317,12 @@ type SkillRow = {
    * for something that only exists in the cloud until it is installed.
    */
   packDir?: string
+  /**
+   * Present on team-registry rows only, and the reason the row can offer a
+   * delete at all. `id` is not a substitute: a personal skill whose name the
+   * registry also uses carries `personal:<slug>`.
+   */
+  deletableSlug?: string
 }
 
 export function TeamShareListColumn({ section }: { section: TeamShareSection }) {
@@ -231,8 +341,31 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const reconcileSkills = useTeamShareBrowserStore((s) => s.reconcileSkills)
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
   const setCreating = useTeamShareBrowserStore((s) => s.setCreating)
+  const deleteTeamSkill = useTeamShareBrowserStore((s) => s.deleteTeamSkill)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
+
+  // The skill a delete has been started on, and whether that delete is running.
+  const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null)
+  const [deleting, setDeleting] = React.useState(false)
+
+  const runDeleteTeamSkill = React.useCallback(async () => {
+    if (!deleteTarget || deleting) return
+    setDeleting(true)
+    try {
+      await deleteTeamSkill(deleteTarget)
+      setDeleteTarget(null)
+      toast.success(t('teamShare.skillDeleteTeamDone', '已从团队移除'))
+    } catch (e) {
+      toast.error(
+        t('teamShare.skillDeleteTeamFailed', '移除失败：{{msg}}', {
+          msg: e instanceof Error ? e.message : String(e),
+        }),
+      )
+    } finally {
+      setDeleting(false)
+    }
+  }, [deleteTarget, deleting, deleteTeamSkill, t])
 
   // Which skill packages are showing their files, and which one is being added
   // to. View state, not persisted: it says nothing about the skill itself.
@@ -458,6 +591,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             </span>
           ),
           dimmed: s.status === 'deprecated',
+          deletableSlug: s.kind === 'personal' ? undefined : s.slug,
           // Three states, and only one of them is asking for anything.
           //
           // Behind on version is a transitional state that resolves itself
@@ -932,7 +1066,36 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                         title={row.title}
                         meta={row.meta}
                         badge={row.badge}
-                        trailing={row.trailing}
+                        trailing={
+                          row.deletableSlug ? (
+                            <span className="flex items-center gap-1">
+                              {row.trailing}
+                              {/*
+                                A span, for the reason the chevron above is one:
+                                the row is itself a button and nesting another
+                                is invalid. Hidden until the row is hovered so a
+                                destructive action is not sitting under the
+                                cursor of everyone scrolling the list, and
+                                stopPropagation so reaching for it does not also
+                                select the row underneath.
+                              */}
+                              <span
+                                role="button"
+                                aria-label={t('teamShare.skillDeleteTeam', '从团队移除')}
+                                title={t('teamShare.skillDeleteTeam', '从团队移除')}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setDeleteTarget(row.deletableSlug!)
+                                }}
+                                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-faint opacity-0 transition-opacity hover:bg-muted hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </span>
+                            </span>
+                          ) : (
+                            row.trailing
+                          )
+                        }
                         dimmed={row.dimmed}
                         expandable={Boolean(row.packDir)}
                         expanded={isExpanded}
@@ -1133,6 +1296,16 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         any other section. Same slot as the skills column's scan paths.
       */}
       {section === 'knowledge' && <KnowledgeSyncFooter />}
+
+      {deleteTarget && (
+        <DeleteTeamSkillDialog
+          slug={deleteTarget}
+          open
+          busy={deleting}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => void runDeleteTeamSkill()}
+        />
+      )}
     </div>
   )
 }

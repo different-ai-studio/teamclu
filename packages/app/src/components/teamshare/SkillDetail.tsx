@@ -52,12 +52,7 @@ import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
 
-/**
- * `delete` removes a personal skill from this disk; `delete-team` removes a
- * skill from the team registry, for everybody. Two different blast radii, so
- * they get two different confirmations.
- */
-type SkillConfirmAction = 'delete' | 'delete-team' | 'uninstall'
+type SkillConfirmAction = 'delete' | 'uninstall'
 
 const CodeEditor = lazy(() => import('@/components/editors/CodeEditor'))
 const DiffRenderer = lazy(() =>
@@ -863,7 +858,6 @@ export function SkillDetail({ slug }: { slug: string }) {
   const installSkill = useTeamShareBrowserStore((s) => s.installSkill)
   const uninstallSkill = useTeamShareBrowserStore((s) => s.uninstallSkill)
   const deletePersonalSkill = useTeamShareBrowserStore((s) => s.deletePersonalSkill)
-  const deleteTeamSkill = useTeamShareBrowserStore((s) => s.deleteTeamSkill)
   const publishSkillVersion = useTeamShareBrowserStore((s) => s.publishSkillVersion)
   const discardLocalSkill = useTeamShareBrowserStore((s) => s.discardLocalSkill)
   const restoreDiscardedSkill = useTeamShareBrowserStore((s) => s.restoreDiscardedSkill)
@@ -1041,24 +1035,6 @@ export function SkillDetail({ slug }: { slug: string }) {
       setBusy(false)
     }
   }, [item, busy, deletePersonalSkill, t])
-
-  const runDeleteTeam = React.useCallback(async () => {
-    if (!item || busy) return
-    setBusy(true)
-    setConfirmAction(null)
-    try {
-      await deleteTeamSkill(item.slug)
-      toast.success(t('teamShare.skillDeleteTeamDone', 'Removed from the team'))
-    } catch (e) {
-      toast.error(
-        t('teamShare.skillDeleteTeamFailed', 'Remove failed: {{msg}}', {
-          msg: e instanceof Error ? e.message : String(e),
-        }),
-      )
-    } finally {
-      setBusy(false)
-    }
-  }, [item, busy, deleteTeamSkill, t])
 
   const runShare = React.useCallback(
     async (input: {
@@ -1433,26 +1409,6 @@ export function SkillDetail({ slug }: { slug: string }) {
           </>
         )}
 
-        {/*
-          Deleting from the registry, next to install/uninstall because that is
-          where the user is looking — but visually quieter than either, and
-          behind its own confirmation: this one lands on every member's machine,
-          not just this one. Ungated on purpose for now; any member may delete,
-          as they may publish and revert.
-        */}
-        {isRegistry && (
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setConfirmAction('delete-team')}
-            disabled={busy}
-            className="h-8 gap-1.5 text-[13px] text-muted-foreground hover:text-destructive"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {t('teamShare.skillDeleteTeam', 'Remove from team')}
-          </Button>
-        )}
-
         {isPersonal && (
           <>
             {!isBuiltin ? (
@@ -1751,9 +1707,7 @@ export function SkillDetail({ slug }: { slug: string }) {
             <DialogTitle>
               {confirmAction === 'delete'
                 ? t('teamShare.skillDeleteTitle', 'Delete Skill')
-                : confirmAction === 'delete-team'
-                  ? t('teamShare.skillDeleteTeamTitle', 'Remove from team')
-                  : t('teamShare.skillUninstallTitle', 'Uninstall Skill')}
+                : t('teamShare.skillUninstallTitle', 'Uninstall Skill')}
             </DialogTitle>
             <DialogDescription>
               {confirmAction === 'delete'
@@ -1762,17 +1716,11 @@ export function SkillDetail({ slug }: { slug: string }) {
                     'Are you sure you want to delete "{{name}}"? This permanently removes the skill from disk and cannot be undone.',
                     { name: item.name },
                   )
-                : confirmAction === 'delete-team'
-                  ? t(
-                      'teamShare.skillDeleteTeamConfirm',
-                      'Remove "{{name}}" from the team registry? It disappears for every member, and uninstalls itself from their machines on the next sync. Its version history goes with it — this cannot be undone.',
-                      { name: item.name },
-                    )
-                  : t(
-                      'teamShare.skillUninstallConfirm',
-                      'Uninstall "{{name}}"? You can install it again from Team Available later.',
-                      { name: item.name },
-                    )}
+                : t(
+                    'teamShare.skillUninstallConfirm',
+                    'Uninstall "{{name}}"? You can install it again from Team Available later.',
+                    { name: item.name },
+                  )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -1789,11 +1737,7 @@ export function SkillDetail({ slug }: { slug: string }) {
               variant="destructive"
               disabled={busy}
               onClick={() =>
-                void (confirmAction === 'delete'
-                  ? runDelete()
-                  : confirmAction === 'delete-team'
-                    ? runDeleteTeam()
-                    : runUninstall())
+                void (confirmAction === 'delete' ? runDelete() : runUninstall())
               }
             >
               {busy ? (
@@ -1803,9 +1747,7 @@ export function SkillDetail({ slug }: { slug: string }) {
               )}
               {confirmAction === 'delete'
                 ? t('teamShare.skillDelete', 'Delete')
-                : confirmAction === 'delete-team'
-                  ? t('teamShare.skillDeleteTeamAction', 'Remove')
-                  : t('teamShare.skillUninstall', 'Uninstall')}
+                : t('teamShare.skillUninstall', 'Uninstall')}
             </Button>
           </DialogFooter>
         </DialogContent>
