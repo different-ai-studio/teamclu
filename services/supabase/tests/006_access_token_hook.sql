@@ -2,7 +2,7 @@ begin;
 
 select plan(28);
 
--- Rule catalog for a member yields exactly 9 allow rules with the expected topic shapes.
+-- Rule catalog for a member yields exactly 10 allow rules with the expected topic shapes.
 select is(
   (select count(*)::int
      from amux.amux_acl_rules_for(
@@ -10,8 +10,8 @@ select is(
        '22222222-2222-2222-2222-222222222222'::uuid,
        'member'
      )),
-  9,
-  'member rule set has exactly 9 rules'
+  10,
+  'member rule set has exactly 10 rules'
 );
 
 select bag_eq(
@@ -27,6 +27,7 @@ select bag_eq(
       ('sub','amux/11111111-1111-1111-1111-111111111111/+/runtime/+/events'),
       ('sub','amux/11111111-1111-1111-1111-111111111111/+/rpc/res'),
       ('sub','amux/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/rpc/req'),
+      ('sub','amux/11111111-1111-1111-1111-111111111111/sync/+'),
       ('pub','amux/11111111-1111-1111-1111-111111111111/+/rpc/req'),
       ('pub','amux/11111111-1111-1111-1111-111111111111/+/runtime/+/commands')
   $$,
@@ -43,7 +44,7 @@ select is(
   'unknown actor_type yields zero rules'
 );
 
--- Rule catalog for an agent yields exactly 13 allow rules.
+-- Rule catalog for an agent yields exactly 14 allow rules.
 select is(
   (select count(*)::int
      from amux.amux_acl_rules_for(
@@ -51,8 +52,8 @@ select is(
        '44444444-4444-4444-4444-444444444444'::uuid,
        'agent'
      )),
-  13,
-  'agent rule set has exactly 13 rules'
+  14,
+  'agent rule set has exactly 14 rules'
 );
 
 select bag_eq(
@@ -73,7 +74,8 @@ select bag_eq(
       ('sub','amux/33333333-3333-3333-3333-333333333333/44444444-4444-4444-4444-444444444444/rpc/req'),
       ('sub','amux/33333333-3333-3333-3333-333333333333/44444444-4444-4444-4444-444444444444/notify'),
       ('sub','amux/33333333-3333-3333-3333-333333333333/session/+/live'),
-      ('sub','amux/33333333-3333-3333-3333-333333333333/user/44444444-4444-4444-4444-444444444444/notify')
+      ('sub','amux/33333333-3333-3333-3333-333333333333/user/44444444-4444-4444-4444-444444444444/notify'),
+      ('sub','amux/33333333-3333-3333-3333-333333333333/sync/+')
   $$,
   'agent rule topics match exactly'
 );
@@ -105,7 +107,7 @@ select is(
   'hook with null user_id returns event unchanged'
 );
 
--- Single-team member: memberships has 1 row, acl has 9 allow + 1 deny rules.
+-- Single-team member: memberships has 1 row, acl has 10 allow + 1 deny rules.
 do $$
 declare
   v_team  uuid := gen_random_uuid();
@@ -141,8 +143,8 @@ begin
   );
   perform is(
     jsonb_array_length(v_claims->'acl'),
-    10,
-    'single-team member: acl has 9 allow + 1 deny = 10 rules'
+    11,
+    'single-team member: acl has 10 allow + 1 deny = 11 rules'
   );
   perform is(
     jsonb_array_length(v_claims->'app_metadata'->'memberships'),
@@ -207,7 +209,7 @@ begin
 end;
 $$;
 
--- Multi-team member: 2 memberships, 2*9+1 = 19 acl rules.
+-- Multi-team member: 2 memberships, 2*10+1 = 21 acl rules.
 do $$
 declare
   v_user   uuid := gen_random_uuid();
@@ -247,8 +249,8 @@ begin
   );
   perform is(
     jsonb_array_length(v_claims->'acl'),
-    19,
-    'multi-team member: 18 allow + 1 deny = 19 rules'
+    21,
+    'multi-team member: 20 allow + 1 deny = 21 rules'
   );
   perform is(
     v_claims->'acl'->-1,
@@ -259,7 +261,7 @@ end;
 $$;
 
 -- Mixed actor types on one user: member in team A, agent in team B.
--- Expected: memberships has 2 entries, acl has 9 + 13 + 1 = 23 rules.
+-- Expected: memberships has 2 entries, acl has 10 + 14 + 1 = 25 rules.
 do $$
 declare
   v_user   uuid := gen_random_uuid();
@@ -299,8 +301,8 @@ begin
   );
   perform is(
     jsonb_array_length(v_claims->'acl'),
-    23,
-    'mixed: 9 (member) + 13 (agent) + 1 (deny) = 23 rules'
+    25,
+    'mixed: 10 (member) + 14 (agent) + 1 (deny) = 25 rules'
   );
 end;
 $$;
