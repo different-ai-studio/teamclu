@@ -313,6 +313,14 @@ export function isAgentActiveStatus(status: AgentStatus | number | undefined): b
   return status === AgentStatus.ACTIVE;
 }
 
+/** True only for the canonical turn-open signal — not mid-turn follow-ups. */
+export function isTurnOpeningStatusChange(
+  oldStatus: AgentStatus | number | undefined,
+  newStatus: AgentStatus | number | undefined,
+): boolean {
+  return oldStatus === AgentStatus.IDLE && newStatus === AgentStatus.ACTIVE;
+}
+
 /** True when the flushed AGENT_REPLY already carries this tool id in parts_json. */
 function flushedMessageHasTool(
   sessionId: string,

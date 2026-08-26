@@ -58,7 +58,7 @@ import { acquireRuntimeStateStore, useRuntimeStateStore } from "@/stores/runtime
 import { findStaleLiveStreams, STALE_STREAM_SWEEP_MS } from "@/lib/stale-stream-recovery";
 import { acquireActorPresenceStore } from "@/stores/actor-presence-store";
 import { MessageKind, type Message as TeamcluMessage } from "@/lib/proto/teamclu_pb";
-import { agentStreamKey, isAgentActiveStatus, isTerminalAgentStatus, isToolOnlyTurnAnchor, mergePendingAgentReplies, normalizeToolResultEvent, normalizeToolUseEvent, registerDiscardPendingStreamReply, rememberLiveEventId, shouldPatchFlushedToolEvent, streamEntryHasVisibleContent } from "@/lib/live-agent-stream";
+import { agentStreamKey, isTerminalAgentStatus, isToolOnlyTurnAnchor, isTurnOpeningStatusChange, mergePendingAgentReplies, normalizeToolResultEvent, normalizeToolUseEvent, registerDiscardPendingStreamReply, rememberLiveEventId, shouldPatchFlushedToolEvent, streamEntryHasVisibleContent } from "@/lib/live-agent-stream";
 import { mapAcpPlanEntries, syncPlanFromTodoTool, syncPlanFromTodoToolResult } from "@/lib/sync-plan-from-todowrite";
 import { reportSkillUsage } from "@/lib/telemetry/skill-usage";
 import { upsertMessagesBatch, softDeleteMessage, type MessageRow } from "@/lib/local-cache";
@@ -1254,7 +1254,7 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
                 oldStatus: sc.oldStatus,
                 newStatus: sc.newStatus,
               });
-              if (isAgentActiveStatus(sc.newStatus)) {
+              if (isTurnOpeningStatusChange(sc.oldStatus, sc.newStatus)) {
                 const streamKey = agentStreamKey(sid, actorId);
                 followUpActiveRef.current[streamKey] = true;
                 const flushed = flushTurnAgentReply(
