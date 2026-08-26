@@ -602,8 +602,19 @@ void Hal::audio_init()
 
     ioe_speaker_enable(true);
 
-    // Load volume from settings
-    setSpeakerVolume(getSpeakerVolume(true), false);
+    // Full output, deliberately ignoring the stored setting.
+    //
+    // Nothing in this firmware writes `spk_vol` — no screen, no gesture, no
+    // command — so the 70 sitting in NVS is a leftover from something else,
+    // not a choice anyone made. Honouring it cost real loudness on a device
+    // whose whole job is to be heard across a desk: with NLS synthesising at
+    // half scale as well, replies arrived at roughly a quarter of what the
+    // hardware can do.
+    //
+    // Not persisted: writing on every boot would overwrite whatever a real
+    // volume control sets, the moment one exists. When it does, this line is
+    // what it replaces.
+    setSpeakerVolume(kDefaultSpeakerVolume, false);
 }
 
 void Hal::setSpeakerVolume(int volume, bool saveToSettings)

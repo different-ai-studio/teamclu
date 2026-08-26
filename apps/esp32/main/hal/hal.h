@@ -190,6 +190,9 @@ public:
     TouchPoint getTouchPoint();
 
     /* ---------------------------------- Audio --------------------------------- */
+    // Boot volume. Full scale until a volume control exists — see the comment
+    // at the call site in `_audio_init`.
+    static constexpr int kDefaultSpeakerVolume = 100;
     void setSpeakerVolume(int volume, bool saveToSettings = false);
     int getSpeakerVolume(bool loadFromSettings = false);
     int getAudioSampleRate();
@@ -284,7 +287,7 @@ private:
     ButtonConfig _btn_config;
     AudioSpectrumFrame _audio_spectrum;
     int _bl_brightness = 80;
-    int _spk_volume    = 80;
+    int _spk_volume    = 100;
 
     void i2c_init();
     void i2c_detect();

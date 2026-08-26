@@ -4,8 +4,10 @@
 #include "voice_audio.h"
 
 #include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
+#include <esp_heap_caps.h>
 #include <hal/hal.h>
 #include <mooncake_log.h>
 #include <opus.h>
@@ -225,7 +227,16 @@ bool init()
         return false;
     }
 
-    g_spk_queue = xQueueCreate(kSpkQueueDepth, sizeof(SpkPacket));
+    // PSRAM: 64 slots is ~16 kB, and internal RAM is the scarce pool — only
+    // ~294 kB of it exists, task stacks can live nowhere else, and spending a
+    // twentieth of it on a buffer no interrupt ever touches is what pushed
+    // `xTaskCreate` for the capture task into failing outright ("capture task
+    // create failed", and then a turn that recorded nothing). Falls back to
+    // internal RAM so a build without PSRAM still works.
+    g_spk_queue = xQueueCreateWithCaps(kSpkQueueDepth, sizeof(SpkPacket), MALLOC_CAP_SPIRAM);
+    if (g_spk_queue == nullptr) {
+        g_spk_queue = xQueueCreate(kSpkQueueDepth, sizeof(SpkPacket));
+    }
     if (g_spk_queue == nullptr) {
         mclog::tagError(kTag, "spk queue create failed");
         opus_encoder_destroy(g_enc);
@@ -279,7 +290,8 @@ void startCapture(face::Mode mode)
     // varies with content and complexity, and the failure mode is not a clean
     // crash but silent corruption of another task.
     if (xTaskCreate(captureTask, "voice_cap", 32768, nullptr, 5, &g_capture_task) != pdPASS) {
-        mclog::tagError(kTag, "capture task create failed");
+        mclog::tagError(kTag, "capture task create failed; largest free internal block {} bytes",
+                        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         g_capturing.store(false);
         GetHAL().setAudioSampleRate(kIdleSampleRate);
         return;
@@ -323,11 +335,17 @@ void beginPlayback()
     g_playing.store(true);
     GetHAL().setAudioSampleRate(kVoiceSampleRate);
 
-    // 32 KB, matching the capture task and for the same reason: `opus_decode`
-    // builds large arrays on the stack, and the previous arrangement died on
-    // esp-mqtt's ~6 kB. Measured headroom is logged on the first frame — if
-    // that number gets small, raise this rather than waiting for the overflow.
-    if (xTaskCreate(playbackTask, "voice_spk", 32768, nullptr, 5, &g_playback_task) != pdPASS) {
+    // 16 KB, from the measurement rather than by copying the capture task: at
+    // 32768 this reported 25140 bytes of headroom, i.e. ~7.6 kB used, so three
+    // quarters of it was idle — and idle internal RAM is not free here. Two
+    // 32 kB stacks plus the frame queue left too little contiguous space for
+    // the capture task to start at all. 16384 keeps ~8.7 kB of margin, the
+    // same proportion the capture task runs with.
+    //
+    // Headroom is logged on the first frame. If that number shrinks, raise
+    // this; do not wait for the overflow, which on the MQTT task took the
+    // whole device down.
+    if (xTaskCreate(playbackTask, "voice_spk", 16384, nullptr, 5, &g_playback_task) != pdPASS) {
         mclog::tagError(kTag, "playback task create failed");
         g_playing.store(false);
         if (!g_capturing.load()) {
