@@ -172,15 +172,31 @@ function resolveRepo(deps: SyncHandlerDeps): OssSyncRepo {
   return makeOssSyncRepo(db);
 }
 
+/** Resolved once per process: `undefined` = not tried yet, `null` = unavailable. */
+let cachedSyncMqtt: SyncMqttPublisher | null | undefined;
+
 function resolveMqtt(deps: SyncHandlerDeps): SyncMqttPublisher | null {
   if (deps.mqtt !== undefined) return deps.mqtt;
+  if (cachedSyncMqtt !== undefined) return cachedSyncMqtt;
   try {
     const bundle = resolveBackendKind() === 'postgres' ? pgPushDeps() : pushDeps();
-    return bundle.mqtt ?? null;
+    cachedSyncMqtt = bundle.mqtt ?? null;
   } catch (e: any) {
-    console.warn('[sync] mqtt resolve failed:', e?.message ?? e);
-    return null;
+    // Memoize the failure too. The push bundle also builds a service-role
+    // Supabase client and an APNS client, neither of which sync needs; on a
+    // deployment that has no SUPABASE_SERVICE_ROLE_KEY it throws on EVERY
+    // complete/delete, so this used to repeat that construction and log a line
+    // per request, forever, without ever converging. Hints are best-effort —
+    // the 300s timer is the fallback — so one warning is the right volume.
+    console.warn('[sync] mqtt unavailable, knowledge hints disabled:', e?.message ?? e);
+    cachedSyncMqtt = null;
   }
+  return cachedSyncMqtt;
+}
+
+/** Test seam: forget the memoized publisher. */
+export function resetSyncMqttCacheForTests(): void {
+  cachedSyncMqtt = undefined;
 }
 
 function originNodeIdFromBody(body: Record<string, unknown> | undefined): string | null {
@@ -1196,7 +1212,7 @@ export async function handleSyncUploadPrepareBatch(
   body: Record<string, unknown> | undefined,
   deps: SyncHandlerDeps = {},
 ) {
-  // One live sum per batch; running total so later items see earlier sizes.
+  // One live sum per batch; running total so later items see earlier ones.
   // Sum failure → null → allow (same policy as single prepare).
   const sum = await liveByteSum(caller.teamId, (id) => sumLiveBytes(id, deps));
   let running = sum ?? 0;
@@ -1204,21 +1220,45 @@ export async function handleSyncUploadPrepareBatch(
   let crossed = false;
 
   return runSyncBatch(body?.items, async (item) => {
-    if (sumKnown) {
-      const size = typeof item.size === 'number' ? item.size : NaN;
-      if (Number.isFinite(size) && size >= 0) {
-        if (crossed || isOverByteQuota(running + size)) {
-          crossed = true;
-          return json(422, {
-            error: `team is at its byte limit (${running} + ${size} of ${maxBytesPerTeam()}); remove files or raise SYNC_MAX_BYTES_PER_TEAM`,
-            code: 'QuotaExceeded',
-            kind: 'bytes',
-          });
-        }
-        running += size;
-      }
+    // Only a NEW path adds bytes to the team. `parentVersion === 0` is the
+    // client saying "no row for this path yet"; anything higher is an edit
+    // whose old bytes are ALREADY inside `sum`, so charging its full size
+    // counted the file twice — 200 edits totalling 600 MB looked like 600 MB of
+    // growth and pushed a team at 1.5 GiB over a 2 GiB quota that completing
+    // them would have left untouched. A quota that fires on writes a team is
+    // nowhere near its limit is worse than one that lets a batch overshoot.
+    //
+    // The trade is a bounded under-count: an edit that GROWS a file is charged
+    // nothing until the next call re-reads the live sum, so the overshoot can
+    // never exceed one batch (≤200 items). That is the right direction for a
+    // guard whose job is stopping pathological bulk adds.
+    const size = typeof item.size === 'number' ? item.size : NaN;
+    const parentVersion =
+      typeof item.parentVersion === 'number' ? item.parentVersion : NaN;
+    const charge =
+      sumKnown && parentVersion === 0 && Number.isFinite(size) && size >= 0 ? size : 0;
+
+    if (crossed || (charge > 0 && isOverByteQuota(running + charge))) {
+      crossed = true;
+      return json(422, {
+        error: `team is at its byte limit (${running} + ${charge} of ${maxBytesPerTeam()}); remove files or raise SYNC_MAX_BYTES_PER_TEAM`,
+        code: 'QuotaExceeded',
+        kind: 'bytes',
+      });
     }
-    return handleSyncUploadPrepare(caller, item, { ...deps, skipByteQuota: true });
+
+    const result = await handleSyncUploadPrepare(caller, item, {
+      ...deps,
+      skipByteQuota: true,
+    });
+
+    // Charge only what actually got an upload slot. A rejected item
+    // (IgnoredPath, bad CAS, validation) never becomes bytes, and burning
+    // budget for it refused every later valid note in the same batch.
+    if (charge > 0 && result.statusCode >= 200 && result.statusCode < 300) {
+      running += charge;
+    }
+    return result;
   });
 }
 

@@ -1027,6 +1027,91 @@ describe("sync upload prepare byte quota", () => {
     assert.equal(body.kind, "bytes");
   });
 
+  // An edit's old bytes are ALREADY inside the live sum, so charging its full
+  // size counted the file twice: a team at 50 of 100 editing three 30-byte
+  // notes looked like +90 and got refused at item 1, even though completing all
+  // three leaves the total exactly where it started. A quota that fires on
+  // writes a team is nowhere near its limit is worse than one that overshoots.
+  test("prepare-batch: edits do not consume quota (their bytes are already summed)", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    const res = await handleSyncUploadPrepareBatch(
+      makeCaller(team.id, actor.id),
+      {
+        items: [
+          { path: "knowledge/e0.md", parentVersion: 3, contentHash: h32("a"), size: 30 },
+          { path: "knowledge/e1.md", parentVersion: 7, contentHash: h32("b"), size: 30 },
+          { path: "knowledge/e2.md", parentVersion: 1, contentHash: h32("c"), size: 30 },
+        ],
+      },
+      {
+        db,
+        repo,
+        storage,
+        sumLiveBytes: async () => 50,
+        countLiveFiles: async () => 0,
+      },
+    );
+
+    assert.equal(res.statusCode, 200);
+    const { results } = JSON.parse(res.body);
+    assert.deepEqual(
+      results.map((r: any) => r.ok),
+      [true, true, true],
+      "edits must not be charged against the byte quota",
+    );
+  });
+
+  // A rejected item never becomes bytes. Charging it burned budget that then
+  // refused every later valid note in the same batch.
+  test("prepare-batch: a rejected item does not consume quota", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    // max=100, live sum=50. The first item is refused as an ignored path, so
+    // only the second one's 40 bytes count: 50 + 40 = 90, under the ceiling.
+    const res = await handleSyncUploadPrepareBatch(
+      makeCaller(team.id, actor.id),
+      {
+        items: [
+          {
+            path: "knowledge/node_modules/pkg/index.js",
+            parentVersion: 0,
+            contentHash: h32("d"),
+            size: 40,
+          },
+          { path: "knowledge/real.md", parentVersion: 0, contentHash: h32("e"), size: 40 },
+        ],
+      },
+      {
+        db,
+        repo,
+        storage,
+        sumLiveBytes: async () => 50,
+        countLiveFiles: async () => 0,
+      },
+    );
+
+    assert.equal(res.statusCode, 200);
+    const { results } = JSON.parse(res.body);
+    assert.equal(results[0].ok, false);
+    assert.equal(results[0].code, "IgnoredPath");
+    assert.equal(
+      results[1].ok,
+      true,
+      "the refused item must not have spent the quota the valid one needed",
+    );
+  });
+
   test("prepare-batch: item that crosses and every item after it are rejected", async () => {
     resetQuotaCache();
     const { db } = await makeTestDb();
