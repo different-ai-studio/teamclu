@@ -323,7 +323,29 @@
     "panelTitle": "Local Agent"
   },
   "menu": {
-    "settings": "Settings…"
+    "settings": "Settings…",
+    "file": "&File",
+    "edit": "&Edit",
+    "view": "&View",
+    "window": "&Window",
+    "help": "&Help",
+    "undo": "Undo",
+    "redo": "Redo",
+    "cut": "Cu&t",
+    "copy": "&Copy",
+    "paste": "&Paste",
+    "selectAll": "Select &All",
+    "minimize": "&Minimize",
+    "maximize": "Ma&ximize",
+    "zoom": "Zoom",
+    "fullscreen": "Toggle Full Screen",
+    "close": "&Close",
+    "closeWindow": "C&lose Window",
+    "about": "About",
+    "hide": "Hide",
+    "hideOthers": "Hide Others",
+    "services": "Services",
+    "quit": "Quit"
   },
   "tray": {
     "showMain": "Open main window",

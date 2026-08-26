@@ -9843,6 +9843,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sys-locale",
  "tar",
  "tauri",
  "tauri-build",

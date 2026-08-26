@@ -27,14 +27,10 @@ impl TrayMenuState {
 /// Labels for the three tray items: show main / agent settings / quit.
 pub type TrayLabels = (&'static str, &'static str, &'static str);
 
-/// Pick cold-start tray labels from OS locale (frontend will re-sync once UI
-/// i18n is ready). Prefer zh when LANG / LC_ALL looks Chinese; otherwise EN.
+/// Pick cold-start tray labels from the OS locale (the frontend re-syncs once
+/// UI i18n is ready).
 pub fn initial_tray_labels() -> TrayLabels {
-    let hint = std::env::var("LC_ALL")
-        .or_else(|_| std::env::var("LANG"))
-        .unwrap_or_default()
-        .to_lowercase();
-    if hint.starts_with("zh") || hint.contains(".zh") || hint.contains("_zh") {
+    if super::prefers_zh_locale() {
         tray_labels_zh()
     } else {
         tray_labels_en()
