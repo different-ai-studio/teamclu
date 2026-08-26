@@ -13,3 +13,4 @@ pub mod scheduler;
 pub mod secret_store;
 pub mod timer;
 pub mod versions;
+pub mod watch;

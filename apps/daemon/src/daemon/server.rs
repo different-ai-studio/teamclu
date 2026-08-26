@@ -1217,6 +1217,10 @@ impl DaemonServer {
             self.sync_dispatcher.clone(),
             self.backend.team_id().to_string(),
         );
+        crate::sync::watch::spawn(
+            self.sync_dispatcher.clone(),
+            self.backend.team_id().to_string(),
+        );
 
         // Populate the refresh watchers from the cloud workspace list on a
         // background task (moved off the pre-bind path above). The watcher poll

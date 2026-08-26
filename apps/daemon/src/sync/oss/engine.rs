@@ -720,6 +720,7 @@ async fn pull_phase(
                 .into_iter()
                 .map(|(path, cipher_hash, version, url)| {
                     let transferred = transferred.clone();
+                    let team_id = team_id.clone();
                     async move {
                         let _guard = ReportOnDrop {
                             progress,
@@ -747,6 +748,8 @@ async fn pull_phase(
                         tokio::fs::write(&abs, &plaintext)
                             .await
                             .map_err(|e| fail(SyncError::Io(e.to_string())))?;
+                        // Suppress fs-watch Local triggers for this path for 3s.
+                        crate::sync::watch::record_pull_write(&team_id, &path);
                         let meta = std::fs::metadata(&abs)
                             .map_err(|e| fail(SyncError::Io(e.to_string())))?;
                         let mtime = meta
@@ -1274,6 +1277,8 @@ pub async fn download_and_write(
     tokio::fs::write(&abs_path, &plaintext)
         .await
         .map_err(|e| SyncError::Io(e.to_string()))?;
+    // Suppress fs-watch Local triggers for this path for 3s (path-set, not blanket).
+    crate::sync::watch::record_pull_write(&team_id, rel_path);
 
     let meta = std::fs::metadata(&abs_path).map_err(SyncError::from)?;
     let mtime = meta
