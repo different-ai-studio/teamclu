@@ -4,8 +4,11 @@ import assert from 'node:assert/strict';
 import {
   isRejectedSyncPath,
   isOverFileQuota,
+  isOverByteQuota,
   liveFileCount,
+  liveByteSum,
   maxFilesPerTeam,
+  maxBytesPerTeam,
   resetQuotaCache,
 } from '../src/lib/sync-guards.js';
 
@@ -80,5 +83,53 @@ test('sync-guards: a failing count returns null and is not cached', async () => 
   };
   assert.equal(await liveFileCount('team-b', counter), null);
   assert.equal(await liveFileCount('team-b', counter), null);
+  assert.equal(calls, 2, 'a failure must not be remembered as an answer');
+});
+
+// Byte quota — resource ceiling on live file sizes (not disk protection: historical
+// version blobs stay until GC). Default 2 GiB; projected total is sum + size.
+test('sync-guards: byte quota default is 2 GiB', () => {
+  const prev = process.env.SYNC_MAX_BYTES_PER_TEAM;
+  delete process.env.SYNC_MAX_BYTES_PER_TEAM;
+  try {
+    assert.equal(maxBytesPerTeam(), 2 * 1024 ** 3);
+  } finally {
+    if (prev === undefined) delete process.env.SYNC_MAX_BYTES_PER_TEAM;
+    else process.env.SYNC_MAX_BYTES_PER_TEAM = prev;
+  }
+});
+
+test('sync-guards: projected byte total crosses only past the ceiling', () => {
+  const max = maxBytesPerTeam();
+  assert.equal(isOverByteQuota(max - 1), false);
+  assert.equal(isOverByteQuota(max), false);
+  assert.equal(isOverByteQuota(max + 1), true);
+});
+
+test('sync-guards: an unknown byte sum is not over quota', () => {
+  assert.equal(isOverByteQuota(null), false);
+});
+
+// Unlike file count, byte sums must not TTL-cache across prepare-batch calls:
+// complete updates live sizes, and the next chunk must see the fresh total.
+test('sync-guards: each liveByteSum call re-fetches (no cross-batch TTL cache)', async () => {
+  resetQuotaCache();
+  const sums = [10, 90];
+  let calls = 0;
+  const summer = async () => sums[calls++];
+  assert.equal(await liveByteSum('team-bytes', summer), 10);
+  assert.equal(await liveByteSum('team-bytes', summer), 90);
+  assert.equal(calls, 2);
+});
+
+test('sync-guards: a failing byte sum returns null (null→allow on failure only)', async () => {
+  resetQuotaCache();
+  let calls = 0;
+  const summer = async () => {
+    calls += 1;
+    throw new Error('db down');
+  };
+  assert.equal(await liveByteSum('team-bytes-fail', summer), null);
+  assert.equal(await liveByteSum('team-bytes-fail', summer), null);
   assert.equal(calls, 2, 'a failure must not be remembered as an answer');
 });

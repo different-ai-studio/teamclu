@@ -115,3 +115,42 @@ export async function liveFileCount(
 export function isOverFileQuota(count: number | null): boolean {
   return count !== null && count >= maxFilesPerTeam();
 }
+
+/**
+ * Largest total live-file byte size one team may hold.
+ *
+ * Counts current pointers in `amuxc_files` only — not historical version blobs
+ * on disk. Raising the env var does not reclaim space; that is a GC ops concern.
+ */
+export function maxBytesPerTeam(): number {
+  const raw = Number(process.env.SYNC_MAX_BYTES_PER_TEAM);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2 * 1024 ** 3;
+}
+
+/**
+ * Sum of live file sizes for this team.
+ *
+ * Not TTL-cached across calls: prepare→complete updates live sizes, and the
+ * next prepare-batch must see the post-complete sum. Within a batch, the
+ * handler fetches once and keeps a running total across items.
+ *
+ * Returns `null` when the sum cannot be established — callers treat that as
+ * "allow", same policy as {@link liveFileCount}. That policy is about fetch
+ * failure, not about remembering a stale success.
+ */
+export async function liveByteSum(
+  teamId: string,
+  sumBytes: (teamId: string) => Promise<number | null>,
+): Promise<number | null> {
+  return sumBytes(teamId).catch(() => null);
+}
+
+/**
+ * Whether a projected byte total (live sum + incoming size) exceeds the ceiling.
+ *
+ * Exactly at the ceiling is still allowed; one byte past is not. `null` → not
+ * over: see {@link liveByteSum}.
+ */
+export function isOverByteQuota(projectedTotal: number | null): boolean {
+  return projectedTotal !== null && projectedTotal > maxBytesPerTeam();
+}

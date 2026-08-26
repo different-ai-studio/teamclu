@@ -1,6 +1,11 @@
 # knowledge 目录兼容 Obsidian + 同步忽略规则
 
-> 状态：**设计，未实现**。本文描述目标态。
+> 状态：**部分已落地**（ignore、护栏、服务端拒绝与文件数配额、Obsidian 打开入口、
+> 附件目录预置、刀 3 `.md` 后缀）。未落地且纳入 ADR-0008 的：刀 7（`.conflicts/`）、
+> 刀 4（fs 监听 + per-team 调度器），**刀 7 必须在刀 4 之前或同批**对外。MQTT 推送
+> 见 `knowledge-sync-push-notify.md`。范围锁：
+> [`docs/adr/0008-knowledge-sync-p0-p1-scope.md`](../adr/0008-knowledge-sync-p0-p1-scope.md)；
+> 实施：[`docs/plans/2026-08-26-knowledge-sync-p0-p1.md`](../plans/2026-08-26-knowledge-sync-p0-p1.md)。
 >
 > 相关：`docs/architecture/team-mcp-and-env-cloud.md`（同步为什么只剩
 > `knowledge/`）、`docs/architecture/amuxd-home-layout-v2.md`（家目录布局）。
@@ -17,7 +22,7 @@
 **非目标**（本轮不做，见 §8）
 
 - Obsidian 移动端。那需要插件方案（vault 可在任意位置 + 我们的同步协议用 TS
-  重写 + 团队 E2E 密钥交给第三方 app），代价与收益不成比例。
+  重写 + 把团队同步密钥交给第三方 app），代价与收益不成比例。
 - 把 `knowledge/` 软链进用户已有的个人 vault。Obsidian 官方不支持 vault 内部的
   软链，其 watcher 可能收不到软链子树的外部写入，队友同步来的新笔记要重启才可
   见。可以作为文档里的逃生通道，不作为支持的形态。
@@ -34,7 +39,7 @@
 | 同步前缀只剩 `knowledge/` | `apps/daemon/src/sync/oss/path_validator.rs:8`、`services/fc/src/lib/sync-path.ts:11` |
 | 内容根是 `~/.amuxd[-<brand>]/teams/<id>/shared/`，vault 候选是其下的 `knowledge/` | `apps/daemon/src/config/global_team_store.rs` |
 | 也可从 `<workspace>/team-knowledge` 软链进入 | `apps/daemon/src/config/workspace_link.rs:200` |
-| **磁盘上是明文**，加密只发生在上传 | `apps/daemon/src/sync/oss/crypto.rs`，扫描器算的是 `local_plain_hash` |
+| **磁盘上是明文，上传也是明文**（`cipher_hash == plain_hash`）；`crypto.rs` 只剩读切换前的旧 blob 与本地 `secrets.enc` 两个用途；团队 secret 不再是同步前置条件 | `apps/daemon/src/sync/oss/engine.rs` `prepare_upload`、`dispatch.rs` `run_once`，见 ADR-0008 |
 | 扫描器全量 walk，**只跳过 `*.conflict.*`**，点开头的目录照收 | `apps/daemon/src/sync/oss/scanner.rs:33` |
 | 任意文件类型都同步（字节走 blob） | `apps/daemon/src/sync/oss/engine.rs` |
 | 触发：app 内手动 + 300 秒定时器 | `apps/daemon/src/sync/timer.rs:21` |
@@ -72,10 +77,10 @@
 
 | # | 缺口 | 后果 |
 |---|---|---|
-| 1 | 新建笔记默认名是 `untitled`，无 `.md` 后缀（`packages/app/src/components/workspace/FileTree.tsx:1121`） | Obsidian 打不开、默认不显示。真实团队的同步状态里已经有 `knowledge/untitled` |
+| 1 | ~~新建笔记默认名是 `untitled`，无 `.md` 后缀~~ **已修**（`3d6e8fd3`，`knowledge-file-names.ts` `withDefaultExtension`，根与树内两处入口） | 历史遗留的 `knowledge/untitled` 仍在，不自动改名（见 §5.1） |
 | 2 | 没有忽略机制，点开头目录照收 | `.obsidian/`、`.trash/`、`.DS_Store` 全同步；`node_modules/` 一旦被放进来就是灾难 |
 | 3 | 冲突副本是 `.md`，就躺在原文件旁边（`apps/daemon/src/sync/oss/conflict.rs:38`，形如 `foo.conflict.1748332800.abc123de.md`） | 在 Obsidian 里是正经笔记：出现在文件树、关系图、搜索、链接补全 |
-| 4 | 外部改动最多 5 分钟才发出去 | 在 Obsidian 里改完关掉，队友要等一个定时器周期 |
+| 4 | 外部改动最多 5 分钟才发出去；队友那头还要再等自己的定时器，端到端最坏约 10 分钟 | 在 Obsidian 里改完关掉，队友要等两个定时器周期 |
 | 5 | 编辑器不渲染 `![[附件]]` 嵌入，附件目录无约定 | 两边对附件放哪没有共识 |
 
 ## 3. 决策：vault 就是 knowledge 目录
@@ -397,44 +402,93 @@ env 变量在 `docker-compose.yml`、`s.yaml`、`.env.example` **三处**都声�
 
 限流本身维持现状：配额是按 team 而不是按 IP 的，不会有 NAT 后互相饿死的问题。
 
-**未做：字节配额。** PostgREST 的聚合支持取决于版本，做 `sum(size)` 需要一次迁移加
-一个 rpc。单文件 25 MiB 的闸门（§4.4）已经挡住了最坏的单个文件，文件数配额挡住了数
-量，两者之外的空隙（一万个 20MB 文件）留待有数据支撑阈值时再补。
+**字节配额：ADR-0008 P1，未落地。** `sum(size)` 需要一次迁移加一个 rpc（pg 后端走
+drizzle）。定下来的形状：`SYNC_MAX_BYTES_PER_TEAM` 默认 **2 GiB**——self-host MinIO
+在根盘、余量个位数 GB，8 GiB 比整盘余量还大等于没保护；按 live 逻辑字节算；错误
+沿用 422 `QuotaExceeded` 加 `kind: 'bytes'`；**batch 内一次 sum + 逐 item 运行累加**，
+不能照抄文件数的 10 秒缓存——一个 200 条的 batch 在缓存过期前全部放行，最坏超出
+200 × 25 MiB = 5 GiB，比配额本身还大。
+
+**累加只对新增路径（`parentVersion === 0`）计费，且只在该 item 成功之后计。** 编辑
+的旧字节本来就在 sum 里，再按全量 size 计一遍就是把文件数了两次，会让一个远未触顶的
+团队吃 422——这正是本节开头那条「配额不会误挡」不能破的地方。代价是一个有界的少算
+（编辑变大的部分等下次重读 sum 才算得上，超收上限一个 batch），方向是对的。
+
+sum 走 `amuxc_team_live_bytes` / drizzle `sumLiveBytes`，并有一条
+`(team_id) INCLUDE (size) WHERE deleted = false` 的偏索引兜着——`amuxc_files` 原有
+三条索引都不带 `deleted`/`size`，不加索引的话这个聚合会在写路径上把全团队 live 行
+都捞一遍（上限 5 万行），一次 tick 最多 10 次。
+
+**配额 ≠ 磁盘保护。** 物理占用还含历史版本 blob，回收靠 FC cron 的
+`amux.oss_sync_gc_orphan_blobs()`，而 cron 是 compose 的独立 profile，self-host 没开。
+启用 GC 单开 ops ticket（注意记忆里 FC cron 曾因 drizzle 裸表名 vs `amux` schema 的
+search_path 问题全挂），ticket 关闭前对外不说「磁盘安全」。
+
+**不做 prepare 限速。** prepare 已按 200 一批、合法 tick 只 1 次调用，剩余动机只有
+Postgres 行插入风暴；而 429 在 daemon 侧是 tick 内指数退避 5 次（~24s 持锁）后
+deferred 并报红到 UI，代价大于收益。
 
 ## 5. 其余四个缺口
 
 ### 5.1 `.md` 后缀（缺口 1）
 
-- 新建文件默认名改为 `untitled.md`。
-- knowledge 树下新建 / 重命名时，若用户没写扩展名则补 `.md`；若写了别的扩展名，
-  尊重用户（附件、图片是合法内容）。
-- 已存在的无后缀文件：不自动改名（会打断队友的链接），但在文件树上给一个提示。
+- ~~新建文件默认名改为 `untitled.md`。~~ **已完成**（`3d6e8fd3`）：占位名是
+  `untitled.md`；knowledge 树下新建时若用户没写扩展名则补 `.md`
+  （`packages/app/src/lib/knowledge-file-names.ts` `withDefaultExtension`，点开头的
+  文件与已有扩展名的不碰）；若写了别的扩展名，尊重用户（附件、图片是合法内容）。
+  规则只挂在 knowledge 的两处入口，skills 树刻意不用。
+- **未做，且不进 ADR-0008**（单开 issue）：重命名时补 `.md`；已存在的无后缀文件不
+  自动改名（会打断队友的链接），但在文件树上给一个提示。
 
-§3.3 预置的 `showUnsupportedFiles: true` 让这些文件在 Obsidian 里至少**可见**，
-但它们仍然打不开、也不是笔记 —— 那只是止血，这一刀还是要做。
+§3.3 预置的 `showUnsupportedFiles: true` 让历史遗留的无后缀文件在 Obsidian 里至少
+**可见**，但它们仍然打不开、也不是笔记。
 
 ### 5.2 冲突副本（缺口 3）
 
-两个选项：
+**已决策：A**（ADR-0008 P0 #1）。
 
-- **A（倾向）**：保持文件名格式不变，但落到 `.conflicts/` 这个点目录下的镜像路
-  径。Obsidian 默认忽略点目录，副本对它完全隐形；我们自己的冲突 UI 改成从这个
-  目录读。需要同步改 `original_from_conflict` / `conflict_timestamp` 的路径推导
-  （`conflict.rs:70-110`）。
-- B：维持现状，文档里告诉用户在 Obsidian 的 Excluded files 里加 `*.conflict.*`。
-  成本为零，但 Obsidian 的排除只降权、不隐藏，关系图里还是看得见。
+- **A**：保持文件名格式不变，但落到 `.conflicts/` 这个点目录下的镜像路径
+  （`knowledge/a/foo.md` → `knowledge/.conflicts/a/foo.conflict.<ts>.<hash>.md`）。
+  Obsidian 默认忽略点目录，副本对它完全隐形；我们自己的冲突 UI 改成从这个目录读。
+  需要同步改 `original_from_conflict` / `conflict_timestamp` 的路径推导
+  （`conflict.rs:56-110`）。
+- ~~B：维持现状，文档里告诉用户在 Obsidian 的 Excluded files 里加 `*.conflict.*`。~~
+  Obsidian 的排除只降权、不隐藏，关系图里还是看得见。
+
+三条实现约束：
+
+1. **`.conflicts/` 在扫描器与 pull 侧硬排除，不走 ignore 规则。** §4.1 后层覆盖前层，
+   放进内置清单的话团队 `.amuxignore` 一条 `!.conflicts/` 就能把副本推上云。它和
+   「`.amuxignore` 自身永不被忽略」是同一个级别的硬规则。pull 侧遇到该前缀
+   `continue`，不 `return Err`（§4.5 的教训）。
+2. **旧 sidecar move-on-scan。** 现在的 sidecar 是扫描器硬跳过、从未上传过的，所以
+   搬进 `.conflicts/` 是纯本地 rename：无 tombstone、无广播、无 §4.6 那类迁移风险。
+3. **前端判定改掉。** `team-conflicts.ts` 的 `isConflictSidecarName` 用
+   `.includes('.conflict.')`，与 daemon `has_conflict_infix` 的数字时间戳判定不一致：
+   `merge.conflict.md` 被树隐藏却照常同步、也不在冲突列表里。改成剪 `.conflicts/`
+   目录，删掉 infix 判定。
 
 ### 5.3 即时同步（缺口 4）
 
-给 knowledge 根挂一个带 debounce 的文件监听，事件落地后触发一次 sync tick。
+给 knowledge 根挂文件监听，事件进 per-team 同步调度器，到点触发一次 sync tick。
+形状已由 ADR-0008 P0 #2 定死：
 
 - 桌面端已有现成的 `watch_directory`（`apps/desktop/src/commands/filewatcher.rs:46`，
-  基于 `notify-debouncer-mini`），但它只在 app 开着时有效。
-- daemon 侧已有 `notify` 依赖与 `refresh_watch.rs` 的模式，headless 场景应该走
-  这条。
-- debounce 建议 2 秒；Obsidian 保存频繁，太短会把一次编辑打成多次 tick。
-- 监听必须复用同一套 ignore 规则，否则一个 `node_modules/` 的写入风暴会把 tick
-  触发到爆。
+  基于 `notify-debouncer-mini`），但它只在 app 开着时有效，而且它是 app 刷新树用的，
+  不是同步用的。daemon 侧走 `notify`，headless 也生效。
+- **独立模块 `sync/watch.rs`**，不复用 `runtime/refresh_watch.rs` 的 classifier——
+  那是 runtime refresh 的输入，塞一个 Knowledge kind 进去会把两个消费者搅在一起。
+  抄它的模式：监听父目录以扛住原子保存、丢 `Access` 事件、2 秒 reconcile 处理晚出现
+  的根目录（加入团队、重新 onboard）。
+- **不是 debounce，是 coalescing window + 地板**（`knowledge-sync-push-notify.md`
+  §7.2 的同一个陷阱）：固定 2 秒窗口不重置，地板本地 5 秒、远端 hint 15 秒，从上次
+  tick **结束**起算。Obsidian 自动保存约 2 秒一次，只有 debounce 的话一个人连续打字
+  = 每 2 秒一个完整 tick。定时器与手动 Sync Now 不走调度器。
+- 监听必须复用同一套 ignore 规则**过滤事件**；它管不了 `notify` 的递归注册，Linux
+  上一个 `node_modules/` 仍会吃 inotify watch 数。所以 watcher 创建失败或运行报错
+  → `warn!` 一次、退回定时器，不重试。
+- **pull 自写压制按路径集合**：pull 阶段记录写过的路径，这些路径 3 秒内的事件丢弃。
+  不做时间窗全量压制——pull 期间用户的真实编辑会被吞到下一个定时器。
 
 ### 5.4 附件（缺口 5）
 
@@ -450,11 +504,11 @@ env 变量在 `docker-compose.yml`、`s.yaml`、`.env.example` **三处**都声�
 |---|---|---|
 | 1 | ~~ignore 机制：三层规则来源 + 内置清单 + **tombstone 排除**（§4.6）~~ **已完成** | 无 |
 | 2 | ~~兜底护栏：单文件大小 + 单 tick 文件数上限，含 UI 呈现~~ **已完成** | 刀 1 |
-| 3 | `.md` 后缀默认值与补全 | 无 |
-| 4 | 文件监听触发即时同步 | 刀 1（必须复用 ignore） |
+| 3 | ~~`.md` 后缀默认值与补全~~ **已完成**（`3d6e8fd3`；重命名补全与树上提示单开 issue） | 无 |
+| 4 | 文件监听 + per-team 调度器触发即时同步（§5.3） | 刀 1（必须复用 ignore）；**刀 7 之后或同批** |
 | 5 | ~~「在 Obsidian 中打开」入口~~ **已完成** + 用户文档 | 刀 3 |
-| 6 | ~~服务端写入口拒绝 + 每 team 配额~~ **已完成**（清单**不**共用，见 §4.7） | 刀 1 |
-| 7 | 冲突副本迁 `.conflicts/` | 独立 |
+| 6 | ~~服务端写入口拒绝 + 每 team 文件数配额~~ **已完成**（清单**不**共用，见 §4.7）；字节配额是 ADR-0008 P1 | 刀 1 |
+| 7 | 冲突副本迁 `.conflicts/`（§5.2 A，硬排除 + move-on-scan + 前端判定） | 独立；ADR-0008 里排第一 |
 | 8 | ~~附件目录约定~~ **已完成**（§3.3 预置 `attachmentFolderPath`）+ 编辑器渲染 `![[...]]` | 独立 |
 
 刀 1 与刀 2 是「防止服务器被冲垮」的实质内容，优先级最高。刀 1 里的 §4.6 是**上
@@ -465,7 +519,14 @@ env 变量在 `docker-compose.yml`、`s.yaml`、`.env.example` **三处**都声�
 
 1. 在 `knowledge/` 里 `git clone` 一个带 `node_modules/` 的仓库，等一个 tick：
    同步状态显示被忽略/被闸门拦截，`amuxc_files` 表没有新增行，MinIO 没有新对象。
-2. 用 Obsidian 打开 vault，改一篇笔记 → 2 秒内 tick 发出 → 另一台设备收到。
+2. 用 Obsidian 打开 vault，改一篇笔记 → 2 秒窗口到点 tick 发出 → 另一台设备收到
+   （端到端 ≤10 秒要等 MQTT 那条链路也上线；只有刀 4 时对方仍靠自己的定时器）。
+2b. 在 Obsidian 里连续打字 10 分钟 → 本机 tick ≤ `600 / 5`，期间每次 tick 都有
+   内容发出（coalesce 不是 debounce）。
+2c. `knowledge/` 下放一个 `node_modules/`（被 ignore）→ daemon 不崩，其余笔记照常
+   同步；Linux 上 inotify 超限时日志一条 warn，退回定时器。
+2d. 冲突副本只出现在 `.conflicts/`，Obsidian 文件树与关系图里看不见；
+   `merge.conflict.md` 在 app 的树里可见、照常同步。
 3. Obsidian 产生的 `.obsidian/workspace.json` 在任何设备上都不产生同步流量。
 4. 在 app 里新建笔记 → Obsidian 里立刻可见可编辑（`.md` 后缀生效）。
 4b. 一台从没打开过这个目录的机器：Obsidian 没在运行时点按钮 → 直接进 vault，无需
@@ -476,8 +537,11 @@ env 变量在 `docker-compose.yml`、`s.yaml`、`.env.example` **三处**都声�
 
 ## 8. 未决问题
 
-- 每 team 配额的具体阈值（文件数 / 总字节）。需要先看现有团队的分布。
-- 冲突副本走 §5.2 的 A 还是 B。
-- 附件目录叫 `attachments/` 还是别的；是否需要在 onboarding 时替用户写一次
-  Obsidian 配置（等于承认我们在写 `.obsidian/`，与 §3.2 的立场有张力）。
-- ~~被忽略的文件在 app 的文件树里如何呈现~~ **已定**，见 §5.5。
+- ~~每 team 配额的具体阈值（文件数 / 总字节）。~~ **已定**：文件数 5 万（已落地），
+  字节 2 GiB（ADR-0008 P1，见 §4.7）；GC ticket 关闭后再看真实分布调整。
+- ~~冲突副本走 §5.2 的 A 还是 B。~~ **已定：A**，见 §5.2。
+- ~~附件目录叫 `attachments/` 还是别的；是否需要在 onboarding 时替用户写一次
+  Obsidian 配置。~~ **已定**：§3.3 首次注册时 seed `.obsidian/app.json`，本地创建、
+  不上传，与 §3.2 不矛盾。
+- ~~被忽略的文件在 app 的文件树里如何呈现~~ **已定并落地**（`3d6e8fd3`：被忽略的
+  文件在树上灰显）。

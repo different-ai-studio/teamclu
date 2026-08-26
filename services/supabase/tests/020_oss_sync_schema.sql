@@ -152,9 +152,15 @@ select col_default_is('amux', 'amuxc_files', 'current_version', '0',
 
 -- Unique (team_id, path) — not partial. Tombstone + revive must update the
 -- existing row, never insert a second one.
+--
+-- `idx_amuxc_files_team_live_size` is the partial covering index behind the
+-- per-team byte quota: `sum(size) where deleted = false` runs on the sync WRITE
+-- path (once per prepare, once per prepare-batch, deliberately uncached), and
+-- none of the other four indexes carries `deleted` or `size`.
 select indexes_are('amux', 'amuxc_files',
   array['amuxc_files_pkey', 'uniq_amuxc_path',
-        'idx_amuxc_files_team_updated', 'idx_amuxc_files_team_seq'],
+        'idx_amuxc_files_team_updated', 'idx_amuxc_files_team_seq',
+        'idx_amuxc_files_team_live_size'],
   'amuxc_files has expected indexes');
 
 -- Same path can be inserted only once even when first row is deleted=true.

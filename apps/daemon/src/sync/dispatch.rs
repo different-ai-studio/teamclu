@@ -2,10 +2,104 @@
 //! per-team mutex, and caches the last status for the HTTP status endpoint.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, Notify};
 
+use crate::sync::oss::state::LocalSyncState;
+use crate::sync::scheduler::{SyncScheduler, SystemClock, Trigger};
 use crate::sync::secret_store::SecretStore;
+
+/// Decoded MQTT knowledge sync hint (`amux/<team>/sync/knowledge`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyncHintPayload {
+    pub v: i64,
+    pub change_seq: i64,
+    pub origin_node_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncHintDecision {
+    /// Schedule a Remote trigger with this seq.
+    Accept { seq: i64 },
+    /// Our own upload echoed back — drop.
+    DropEcho,
+    /// Already covered by local high-water — drop.
+    DropStale,
+    /// Unknown wire version — drop (caller warns once).
+    DropUnknownVersion,
+}
+
+/// Parse the JSON body published by FC. Missing/invalid fields → `None`.
+pub fn parse_sync_hint_payload(bytes: &[u8]) -> Option<SyncHintPayload> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let v = value.get("v")?.as_i64()?;
+    let change_seq = value.get("changeSeq")?.as_i64()?;
+    if change_seq <= 0 {
+        return None;
+    }
+    let origin_node_id = value
+        .get("originNodeId")
+        .and_then(|n| n.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(SyncHintPayload {
+        v,
+        change_seq,
+        origin_node_id,
+    })
+}
+
+/// Echo / high-water / version filters before the per-team scheduler.
+pub fn evaluate_sync_hint(
+    hint: &SyncHintPayload,
+    high_water: i64,
+    self_node_id: &str,
+) -> SyncHintDecision {
+    if hint.v != 1 {
+        return SyncHintDecision::DropUnknownVersion;
+    }
+    if hint
+        .origin_node_id
+        .as_deref()
+        .is_some_and(|id| id == self_node_id)
+    {
+        return SyncHintDecision::DropEcho;
+    }
+    if hint.change_seq <= high_water {
+        return SyncHintDecision::DropStale;
+    }
+    SyncHintDecision::Accept {
+        seq: hint.change_seq,
+    }
+}
+
+fn warn_unknown_hint_version_once(v: i64) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(v, "dropping knowledge sync hint with unknown version");
+    }
+}
+
+/// A hint whose topic names a team this daemon is not onboarded to. Never
+/// expected; warn once rather than per message so a misconfigured broker cannot
+/// flood the log.
+fn warn_foreign_hint_team_once() {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!("dropping knowledge sync hint addressed to another team");
+    }
+}
+
+/// Per-team coalescing state + wake handle for the background fire driver.
+///
+/// The 300s timer and manual force sync bypass this path entirely.
+struct TeamSchedulerSlot {
+    logic: std::sync::Mutex<SyncScheduler>,
+    wake: Notify,
+    driver_started: AtomicBool,
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +157,9 @@ pub struct SyncDispatcher {
     /// this struct uses: the engine reports from inside its transfer loops, in
     /// sync code, and this lock is only ever held for one map write.
     progress: Arc<std::sync::Mutex<HashMap<String, crate::sync::oss::SyncProgress>>>,
+    /// One coalescing scheduler per team. Fed by fs-watch / MQTT hint (Tasks 3
+    /// & 8); fires call [`Self::sync_team`] with `force: false`.
+    team_schedulers: Arc<Mutex<HashMap<String, Arc<TeamSchedulerSlot>>>>,
 }
 
 impl SyncDispatcher {
@@ -73,7 +170,150 @@ impl SyncDispatcher {
             locks: Arc::new(Mutex::new(HashMap::new())),
             status: Arc::new(Mutex::new(HashMap::new())),
             progress: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            team_schedulers: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Feed a Local / Remote trigger into the per-team coalescing scheduler.
+    ///
+    /// Does not run sync inline: the team driver wakes at the scheduled fire
+    /// time and calls [`Self::sync_team`]. The 300s timer and `POST /v1/team/sync`
+    /// (force) must not call this.
+    pub async fn trigger_sync(&self, team_id: &str, trigger: Trigger) {
+        let team_id = team_id.trim();
+        if team_id.is_empty() {
+            return;
+        }
+        let slot = self.scheduler_slot(team_id).await;
+        {
+            let mut logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+            logic.trigger(&SystemClock, trigger);
+        }
+        self.ensure_scheduler_driver(team_id, slot.clone());
+        slot.wake.notify_one();
+    }
+
+    /// Apply MQTT sync-hint filters, then [`Self::trigger_sync`] with
+    /// [`Trigger::Remote`] when the hint is actionable.
+    ///
+    /// Manual checklist (do not automate): A→B ≤10s; ≤10 hints for 2000 files;
+    /// no re-tick on own echo once nodeId set; EMQX down → 300s timer still
+    /// works / no rebuild loop beyond backoff; pre-migration token → one warn,
+    /// worker not rebuilt; payload has no paths; rate / coalesce / pull
+    /// self-write checks from the plan.
+    ///
+    /// `own_team_id` is the team this daemon is onboarded to. The hint's team
+    /// comes from a topic segment, and a topic segment is not a capability: a
+    /// misrouted or hostile publish carrying `..` would otherwise resolve
+    /// `sync_content_root("..")` to the amuxd home itself, and every distinct
+    /// value would permanently allocate a scheduler slot plus a driver task that
+    /// never exits. A correct broker cannot deliver one — the subscribe filter
+    /// pins the team — so this is defence in depth, and cheap.
+    pub async fn handle_sync_hint(
+        &self,
+        own_team_id: &str,
+        team_id: &str,
+        resource: &str,
+        payload: &[u8],
+    ) {
+        if team_id.trim().is_empty() || team_id != own_team_id.trim() {
+            warn_foreign_hint_team_once();
+            return;
+        }
+        // `subscriber::parse_frame` already drops every other resource; this is
+        // the public entry point's own contract, not a duplicate of that filter.
+        if resource != "knowledge" {
+            return;
+        }
+        let Some(hint) = parse_sync_hint_payload(payload) else {
+            return;
+        };
+        let high_water = LocalSyncState::load_at(team_id)
+            .map(|s| s.last_server_seq)
+            .unwrap_or(0);
+        let self_id = crate::device_id::daemon_device_id();
+        match evaluate_sync_hint(&hint, high_water, &self_id) {
+            SyncHintDecision::Accept { seq } => {
+                self.trigger_sync(team_id, Trigger::Remote { seq }).await;
+            }
+            SyncHintDecision::DropEcho | SyncHintDecision::DropStale => {}
+            SyncHintDecision::DropUnknownVersion => {
+                warn_unknown_hint_version_once(hint.v);
+            }
+        }
+    }
+
+    async fn scheduler_slot(&self, team_id: &str) -> Arc<TeamSchedulerSlot> {
+        let mut map = self.team_schedulers.lock().await;
+        map.entry(team_id.to_string())
+            .or_insert_with(|| {
+                Arc::new(TeamSchedulerSlot {
+                    logic: std::sync::Mutex::new(SyncScheduler::new()),
+                    wake: Notify::new(),
+                    driver_started: AtomicBool::new(false),
+                })
+            })
+            .clone()
+    }
+
+    fn ensure_scheduler_driver(&self, team_id: &str, slot: Arc<TeamSchedulerSlot>) {
+        if slot.driver_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let dispatcher = self.clone();
+        let team_id = team_id.to_string();
+        tokio::spawn(async move {
+            loop {
+                let wait = {
+                    let logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+                    match logic.next_fire_at() {
+                        Some(at) => Some(at.saturating_duration_since(Instant::now())),
+                        None => None,
+                    }
+                };
+                match wait {
+                    None => {
+                        slot.wake.notified().await;
+                        continue;
+                    }
+                    Some(Duration::ZERO) => {}
+                    Some(d) => {
+                        tokio::select! {
+                            _ = slot.wake.notified() => continue,
+                            _ = tokio::time::sleep(d) => {}
+                        }
+                    }
+                }
+
+                let should_run = {
+                    let mut logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+                    logic.try_begin_tick(&SystemClock)
+                };
+                if !should_run {
+                    continue;
+                }
+
+                let st = dispatcher
+                    .sync_team(
+                        &team_id,
+                        SyncOptions {
+                            force: false,
+                            allow_bulk_add: false,
+                        },
+                    )
+                    .await;
+                if let Some(err) = &st.last_error {
+                    tracing::warn!(team_id, "scheduler sync error: {err}");
+                }
+
+                {
+                    let mut logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+                    logic.end_tick(&SystemClock);
+                }
+                // Re-check immediately: mid-tick triggers may already be due on floor.
+                slot.wake.notify_one();
+            }
+        });
     }
 
     pub fn secrets(&self) -> &SecretStore {
@@ -337,9 +577,9 @@ mod tests {
             .unwrap();
 
         let store = SecretStore::with_base(tmp.path().to_path_buf());
-        // A team secret is the precondition for syncing at all; without one the
-        // tick skips instead of erroring, and this test needs a real error to
-        // cache. With the secret in place it gets one from the missing backend.
+        // Secret is optional (plaintext knowledge); this test still plants one
+        // so the tick proceeds far enough to hit the missing-backend error that
+        // we then assert stays cached when auto_sync flips off.
         store
             .save(
                 "t",
@@ -386,10 +626,9 @@ mod tests {
         }
     }
 
-    /// A team that never set up sharing has nothing to sync. That used to be
-    /// decided by the cloud `share_mode` flag — which nothing sets any more — so
-    /// the honest precondition is the team secret: without it there is nothing
-    /// to encrypt or decrypt with, and a red banner would be noise.
+    /// Knowledge uploads are plaintext now, so a missing team secret must not
+    /// skip the tick. Skipping here used to leave a device permanently idle
+    /// with no banner — the same trap `share_mode` had when nothing set it.
     #[tokio::test]
     async fn a_team_without_a_secret_still_syncs() {
         let _lock = crate::config::global_team_store::TEST_HOME_LOCK
@@ -441,5 +680,151 @@ mod tests {
     fn fc_endpoint_errors_without_backend() {
         let d = SyncDispatcher::new(crate::sync::secret_store::SecretStore::new(), None);
         assert!(d.fc_endpoint().is_err());
+    }
+
+    /// Tasks 3/8 will call this; until then the smoke test pins the wiring:
+    /// one slot per team, driver armed, pure scheduler holding a next fire.
+    #[tokio::test]
+    async fn trigger_sync_arms_per_team_scheduler() {
+        let d = SyncDispatcher::new(crate::sync::secret_store::SecretStore::new(), None);
+        d.trigger_sync("team-a", Trigger::Local).await;
+        d.trigger_sync("team-a", Trigger::Remote { seq: 9 }).await;
+
+        let map = d.team_schedulers.lock().await;
+        assert_eq!(map.len(), 1);
+        let slot = map.get("team-a").expect("slot");
+        assert!(slot.driver_started.load(Ordering::SeqCst));
+        let logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(logic.next_fire_at().is_some());
+        assert_eq!(logic.pending_remote_seq(), Some(9));
+        assert!(!logic.in_tick());
+    }
+
+    #[test]
+    fn sync_hint_drops_own_echo() {
+        let hint = SyncHintPayload {
+            v: 1,
+            change_seq: 99,
+            origin_node_id: Some("node-self".into()),
+        };
+        assert_eq!(
+            evaluate_sync_hint(&hint, 0, "node-self"),
+            SyncHintDecision::DropEcho
+        );
+    }
+
+    #[test]
+    fn sync_hint_drops_stale_or_equal_seq() {
+        let hint = SyncHintPayload {
+            v: 1,
+            change_seq: 10,
+            origin_node_id: Some("peer".into()),
+        };
+        assert_eq!(
+            evaluate_sync_hint(&hint, 10, "self"),
+            SyncHintDecision::DropStale
+        );
+        assert_eq!(
+            evaluate_sync_hint(&hint, 11, "self"),
+            SyncHintDecision::DropStale
+        );
+    }
+
+    #[test]
+    fn sync_hint_drops_unknown_version() {
+        let hint = SyncHintPayload {
+            v: 2,
+            change_seq: 99,
+            origin_node_id: None,
+        };
+        assert_eq!(
+            evaluate_sync_hint(&hint, 0, "self"),
+            SyncHintDecision::DropUnknownVersion
+        );
+    }
+
+    #[test]
+    fn sync_hint_accepts_newer_peer_change() {
+        let hint = SyncHintPayload {
+            v: 1,
+            change_seq: 42,
+            origin_node_id: Some("peer".into()),
+        };
+        assert_eq!(
+            evaluate_sync_hint(&hint, 10, "self"),
+            SyncHintDecision::Accept { seq: 42 }
+        );
+    }
+
+    #[test]
+    fn parse_sync_hint_payload_reads_fc_shape() {
+        let raw = br#"{"v":1,"changeSeq":7,"originNodeId":"mac-1","at":"2026-08-26T07:12:00Z"}"#;
+        let hint = parse_sync_hint_payload(raw).expect("parse");
+        assert_eq!(hint.v, 1);
+        assert_eq!(hint.change_seq, 7);
+        assert_eq!(hint.origin_node_id.as_deref(), Some("mac-1"));
+    }
+
+    #[test]
+    fn parse_sync_hint_payload_rejects_non_positive_seq() {
+        assert!(parse_sync_hint_payload(br#"{"v":1,"changeSeq":0}"#).is_none());
+        assert!(parse_sync_hint_payload(br#"{"v":1}"#).is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_sync_hint_triggers_remote_when_accepted() {
+        let _lock = crate::config::global_team_store::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let orig = std::env::var("AMUXD_HOME").ok();
+        std::env::set_var("AMUXD_HOME", tmp.path());
+
+        let d = SyncDispatcher::new(crate::sync::secret_store::SecretStore::new(), None);
+        let payload = br#"{"v":1,"changeSeq":55,"originNodeId":"other-node"}"#;
+        d.handle_sync_hint("team-hint", "team-hint", "knowledge", payload)
+            .await;
+
+        let map = d.team_schedulers.lock().await;
+        let slot = map.get("team-hint").expect("scheduler armed");
+        let logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(logic.pending_remote_seq(), Some(55));
+
+        if let Some(v) = orig {
+            std::env::set_var("AMUXD_HOME", v);
+        } else {
+            std::env::remove_var("AMUXD_HOME");
+        }
+    }
+
+    /// A hint whose topic names another team (or a traversal segment) must not
+    /// allocate a scheduler slot — each one would also spawn a driver task that
+    /// never exits, and `..` resolves the content root to the amuxd home.
+    #[tokio::test]
+    async fn handle_sync_hint_rejects_foreign_team() {
+        let _lock = crate::config::global_team_store::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let orig = std::env::var("AMUXD_HOME").ok();
+        std::env::set_var("AMUXD_HOME", tmp.path());
+
+        let d = SyncDispatcher::new(crate::sync::secret_store::SecretStore::new(), None);
+        let payload = br#"{"v":1,"changeSeq":55,"originNodeId":"other-node"}"#;
+        for foreign in ["..", "someone-elses-team", ""] {
+            d.handle_sync_hint("my-team", foreign, "knowledge", payload)
+                .await;
+        }
+
+        assert!(
+            d.team_schedulers.lock().await.is_empty(),
+            "a hint for another team must not arm a scheduler"
+        );
+
+        if let Some(v) = orig {
+            std::env::set_var("AMUXD_HOME", v);
+        } else {
+            std::env::remove_var("AMUXD_HOME");
+        }
     }
 }

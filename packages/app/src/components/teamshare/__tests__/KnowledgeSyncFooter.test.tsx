@@ -170,7 +170,9 @@ describe('KnowledgeSyncFooter', () => {
   })
 
   it('leads with conflicts, and the list goes to the decision instead of syncing', async () => {
-    conflictState.entries = [{ path: 'knowledge/note.md', sidecar: 'knowledge/note.conflict.1.a.md' }]
+    conflictState.entries = [
+      { path: 'knowledge/note.md', sidecar: 'knowledge/.conflicts/note.conflict.1.a.md' },
+    ]
     render(<KnowledgeSyncFooter />)
 
     expect(screen.getByText('1 conflicts need a decision')).toBeTruthy()
@@ -216,7 +218,9 @@ describe('KnowledgeSyncFooter', () => {
     unmount()
 
     // A conflict is local, so it is decidable either way.
-    conflictState.entries = [{ path: 'knowledge/note.md', sidecar: 'knowledge/note.conflict.1.a.md' }]
+    conflictState.entries = [
+      { path: 'knowledge/note.md', sidecar: 'knowledge/.conflicts/note.conflict.1.a.md' },
+    ]
     render(<KnowledgeSyncFooter />)
     fireEvent.click(screen.getByTestId('knowledge-sync-footer'))
     fireEvent.click(await screen.findByText('note.md'))

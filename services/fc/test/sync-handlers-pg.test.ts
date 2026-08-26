@@ -33,6 +33,7 @@ import {
   handleSyncDeleteBatch,
   MAX_SYNC_BATCH,
 } from "../src/lib/sync-handlers.js";
+import { resetQuotaCache } from "../src/lib/sync-guards.js";
 
 // ---------------------------------------------------------------------------
 // Force BACKEND_KIND=postgres
@@ -736,5 +737,495 @@ describe("sync batch endpoints postgres path", () => {
     const empty = await handleSyncDownloadBatch(caller, { items: [] }, { db, repo });
     assert.equal(empty.statusCode, 200);
     assert.deepEqual(JSON.parse(empty.body).results, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Knowledge sync MQTT hints — one publish per successful complete/delete call.
+// ---------------------------------------------------------------------------
+
+describe("sync knowledge MQTT hints", () => {
+  function makeMqttRecorder() {
+    const published: Array<{ topic: string; payload: string; options?: Record<string, unknown> }> = [];
+    return {
+      published,
+      mqtt: {
+        publish: async (topic: string, payload: string, options?: Record<string, unknown>) => {
+          published.push({ topic, payload, options });
+        },
+      },
+    };
+  }
+
+  test("complete-batch of N → exactly one publish with max changeSeq, no path", async () => {
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const caller = makeCaller(team.id, actor.id);
+
+    const hA = h32("1");
+    const hB = h32("2");
+    const hC = h32("3");
+    const storeState: MockStorageState = {
+      objects: new Map([
+        [ossKeyFor(team.id, hA), 10],
+        [ossKeyFor(team.id, hB), 20],
+        [ossKeyFor(team.id, hC), 30],
+      ]),
+    };
+    const storage = makeMockStorage(storeState);
+    const { mqtt, published } = makeMqttRecorder();
+    const fixedNow = new Date("2026-08-26T07:12:00.000Z");
+    const deps = { db, repo, storage, mqtt, now: () => fixedNow };
+
+    const prep = async (path: string, hash: string, size: number) =>
+      JSON.parse(
+        (await handleSyncUploadPrepare(
+          caller,
+          { path, parentVersion: 0, contentHash: hash, size },
+          { db, repo, storage },
+        )).body,
+      ).uploadSessionId;
+
+    const sessA = await prep("knowledge/hint-a.md", hA, 10);
+    const sessB = await prep("knowledge/hint-b.md", hB, 20);
+    const sessC = await prep("knowledge/hint-c.md", hC, 30);
+
+    const res = await handleSyncUploadCompleteBatch(
+      caller,
+      {
+        nodeId: "mac-9f3c",
+        items: [
+          { uploadSessionId: sessA },
+          { uploadSessionId: sessB },
+          { uploadSessionId: sessC },
+        ],
+      },
+      deps,
+    );
+
+    assert.equal(res.statusCode, 200);
+    const { results } = JSON.parse(res.body);
+    assert.equal(results.length, 3);
+    assert.ok(results.every((r: any) => r.ok));
+    const maxSeq = Math.max(...results.map((r: any) => r.changeSeq));
+
+    assert.equal(published.length, 1, "exactly one MQTT publish for the batch");
+    assert.equal(published[0].topic, `amux/${team.id}/sync/knowledge`);
+    assert.equal(published[0].options?.retain, false);
+    assert.equal(published[0].options?.qos, 1);
+
+    const hint = JSON.parse(published[0].payload);
+    assert.equal(hint.v, 1);
+    assert.equal(hint.changeSeq, maxSeq);
+    assert.equal(hint.originNodeId, "mac-9f3c");
+    assert.equal(hint.at, "2026-08-26T07:12:00.000Z");
+    assert.equal("path" in hint, false, "hint must not carry path");
+  });
+
+  test("publish failure does not change the HTTP 200 result", async () => {
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const caller = makeCaller(team.id, actor.id);
+
+    const hash = h32("f");
+    const size = 7;
+    const storeState: MockStorageState = {
+      objects: new Map([[ossKeyFor(team.id, hash), size]]),
+    };
+    const storage = makeMockStorage(storeState);
+    const mqtt = {
+      publish: async () => {
+        throw new Error("broker unreachable");
+      },
+    };
+
+    const prep = await handleSyncUploadPrepare(
+      caller,
+      { path: "knowledge/fail-hint.md", parentVersion: 0, contentHash: hash, size },
+      { db, repo, storage },
+    );
+    const sess = JSON.parse(prep.body).uploadSessionId;
+
+    const res = await handleSyncUploadCompleteBatch(
+      caller,
+      { items: [{ uploadSessionId: sess }] },
+      { db, repo, storage, mqtt },
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(JSON.parse(res.body).results[0].ok, true);
+  });
+
+  test("mqtt: null (no MQTT_BROKER_URL) still returns 200", async () => {
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const caller = makeCaller(team.id, actor.id);
+
+    const hash = h32("n");
+    const size = 5;
+    const storeState: MockStorageState = {
+      objects: new Map([[ossKeyFor(team.id, hash), size]]),
+    };
+    const storage = makeMockStorage(storeState);
+
+    const prep = await handleSyncUploadPrepare(
+      caller,
+      { path: "knowledge/no-mqtt.md", parentVersion: 0, contentHash: hash, size },
+      { db, repo, storage },
+    );
+    const sess = JSON.parse(prep.body).uploadSessionId;
+
+    const res = await handleSyncUploadCompleteBatch(
+      caller,
+      { items: [{ uploadSessionId: sess }] },
+      { db, repo, storage, mqtt: null },
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(JSON.parse(res.body).results[0].ok, true);
+  });
+
+  test("single complete publishes one hint (legacy path)", async () => {
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const caller = makeCaller(team.id, actor.id);
+
+    const hash = h32("s");
+    const size = 4;
+    const storeState: MockStorageState = {
+      objects: new Map([[ossKeyFor(team.id, hash), size]]),
+    };
+    const storage = makeMockStorage(storeState);
+    const { mqtt, published } = makeMqttRecorder();
+
+    const prep = await handleSyncUploadPrepare(
+      caller,
+      { path: "knowledge/single.md", parentVersion: 0, contentHash: hash, size },
+      { db, repo, storage },
+    );
+    const res = await handleSyncUploadComplete(
+      caller,
+      { uploadSessionId: JSON.parse(prep.body).uploadSessionId, nodeId: "node-legacy" },
+      { db, repo, storage, mqtt },
+    );
+
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(published.length, 1);
+    const hint = JSON.parse(published[0].payload);
+    assert.equal(hint.changeSeq, body.changeSeq);
+    assert.equal(hint.originNodeId, "node-legacy");
+  });
+
+  test("delete-batch publishes once with max successful changeSeq", async () => {
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const caller = makeCaller(team.id, actor.id);
+
+    const hA = h32("d");
+    const hB = h32("e");
+    const storeState: MockStorageState = {
+      objects: new Map([
+        [ossKeyFor(team.id, hA), 8],
+        [ossKeyFor(team.id, hB), 9],
+      ]),
+    };
+    const storage = makeMockStorage(storeState);
+    const { mqtt, published } = makeMqttRecorder();
+    const deps = { db, repo, storage };
+
+    for (const [path, hash, size] of [
+      ["knowledge/del-a.md", hA, 8],
+      ["knowledge/del-b.md", hB, 9],
+    ] as const) {
+      const pr = await handleSyncUploadPrepare(
+        caller,
+        { path, parentVersion: 0, contentHash: hash, size },
+        deps,
+      );
+      await handleSyncUploadComplete(
+        caller,
+        { uploadSessionId: JSON.parse(pr.body).uploadSessionId },
+        { ...deps, mqtt: null },
+      );
+    }
+
+    published.length = 0;
+    const res = await handleSyncDeleteBatch(
+      caller,
+      {
+        nodeId: "del-node",
+        items: [
+          { path: "knowledge/del-a.md", parentVersion: 1 },
+          { path: "knowledge/del-b.md", parentVersion: 1 },
+        ],
+      },
+      { db, repo, mqtt },
+    );
+
+    assert.equal(res.statusCode, 200);
+    const { results } = JSON.parse(res.body);
+    assert.ok(results.every((r: any) => r.ok));
+    const maxSeq = Math.max(...results.map((r: any) => r.changeSeq));
+    assert.equal(published.length, 1);
+    const hint = JSON.parse(published[0].payload);
+    assert.equal(hint.changeSeq, maxSeq);
+    assert.equal(hint.originNodeId, "del-node");
+    assert.equal(published[0].topic, `amux/${team.id}/sync/knowledge`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-team byte quota (Phase F) — live sum of amuxc_files.size, not disk.
+// ---------------------------------------------------------------------------
+
+describe("sync upload prepare byte quota", () => {
+  const prevMax = process.env.SYNC_MAX_BYTES_PER_TEAM;
+
+  before(() => {
+    process.env.SYNC_MAX_BYTES_PER_TEAM = "100";
+  });
+
+  after(() => {
+    if (prevMax === undefined) delete process.env.SYNC_MAX_BYTES_PER_TEAM;
+    else process.env.SYNC_MAX_BYTES_PER_TEAM = prevMax;
+  });
+
+  test("single prepare: sum + size over ceiling → 422 QuotaExceeded kind bytes", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    const res = await handleSyncUploadPrepare(
+      makeCaller(team.id, actor.id),
+      { path: "knowledge/big.md", parentVersion: 0, contentHash: h32("q"), size: 40 },
+      {
+        db,
+        repo,
+        storage,
+        sumLiveBytes: async () => 80,
+        countLiveFiles: async () => 0,
+      },
+    );
+
+    assert.equal(res.statusCode, 422);
+    const body = JSON.parse(res.body);
+    assert.equal(body.code, "QuotaExceeded");
+    assert.equal(body.kind, "bytes");
+  });
+
+  // An edit's old bytes are ALREADY inside the live sum, so charging its full
+  // size counted the file twice: a team at 50 of 100 editing three 30-byte
+  // notes looked like +90 and got refused at item 1, even though completing all
+  // three leaves the total exactly where it started. A quota that fires on
+  // writes a team is nowhere near its limit is worse than one that overshoots.
+  test("prepare-batch: edits do not consume quota (their bytes are already summed)", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    const res = await handleSyncUploadPrepareBatch(
+      makeCaller(team.id, actor.id),
+      {
+        items: [
+          { path: "knowledge/e0.md", parentVersion: 3, contentHash: h32("a"), size: 30 },
+          { path: "knowledge/e1.md", parentVersion: 7, contentHash: h32("b"), size: 30 },
+          { path: "knowledge/e2.md", parentVersion: 1, contentHash: h32("c"), size: 30 },
+        ],
+      },
+      {
+        db,
+        repo,
+        storage,
+        sumLiveBytes: async () => 50,
+        countLiveFiles: async () => 0,
+      },
+    );
+
+    assert.equal(res.statusCode, 200);
+    const { results } = JSON.parse(res.body);
+    assert.deepEqual(
+      results.map((r: any) => r.ok),
+      [true, true, true],
+      "edits must not be charged against the byte quota",
+    );
+  });
+
+  // A rejected item never becomes bytes. Charging it burned budget that then
+  // refused every later valid note in the same batch.
+  test("prepare-batch: a rejected item does not consume quota", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    // max=100, live sum=50. The first item is refused as an ignored path, so
+    // only the second one's 40 bytes count: 50 + 40 = 90, under the ceiling.
+    const res = await handleSyncUploadPrepareBatch(
+      makeCaller(team.id, actor.id),
+      {
+        items: [
+          {
+            path: "knowledge/node_modules/pkg/index.js",
+            parentVersion: 0,
+            contentHash: h32("d"),
+            size: 40,
+          },
+          { path: "knowledge/real.md", parentVersion: 0, contentHash: h32("e"), size: 40 },
+        ],
+      },
+      {
+        db,
+        repo,
+        storage,
+        sumLiveBytes: async () => 50,
+        countLiveFiles: async () => 0,
+      },
+    );
+
+    assert.equal(res.statusCode, 200);
+    const { results } = JSON.parse(res.body);
+    assert.equal(results[0].ok, false);
+    assert.equal(results[0].code, "IgnoredPath");
+    assert.equal(
+      results[1].ok,
+      true,
+      "the refused item must not have spent the quota the valid one needed",
+    );
+  });
+
+  test("prepare-batch: item that crosses and every item after it are rejected", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    // max=100, live sum=50 → sizes 30, 30, 30 cross at index 1 (50+30+30=110).
+    const res = await handleSyncUploadPrepareBatch(
+      makeCaller(team.id, actor.id),
+      {
+        items: [
+          { path: "knowledge/b0.md", parentVersion: 0, contentHash: h32("0"), size: 30 },
+          { path: "knowledge/b1.md", parentVersion: 0, contentHash: h32("1"), size: 30 },
+          { path: "knowledge/b2.md", parentVersion: 0, contentHash: h32("2"), size: 30 },
+        ],
+      },
+      {
+        db,
+        repo,
+        storage,
+        sumLiveBytes: async () => 50,
+        countLiveFiles: async () => 0,
+      },
+    );
+
+    assert.equal(res.statusCode, 200);
+    const { results } = JSON.parse(res.body);
+    assert.equal(results.length, 3);
+    assert.equal(results[0].ok, true, "item 0 stays under the ceiling");
+    assert.equal(results[1].ok, false);
+    assert.equal(results[1].status, 422);
+    assert.equal(results[1].code, "QuotaExceeded");
+    assert.equal(results[1].kind, "bytes");
+    assert.equal(results[2].ok, false);
+    assert.equal(results[2].status, 422);
+    assert.equal(results[2].kind, "bytes");
+  });
+
+  test("single prepare: sum failure → allow (null policy)", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    const res = await handleSyncUploadPrepare(
+      makeCaller(team.id, actor.id),
+      { path: "knowledge/ok.md", parentVersion: 0, contentHash: h32("ok"), size: 90 },
+      {
+        db,
+        repo,
+        storage,
+        sumLiveBytes: async () => null,
+        countLiveFiles: async () => 0,
+      },
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.ok(JSON.parse(res.body).uploadSessionId);
+  });
+
+  // Daemon prepare→complete→next-chunk: the second batch must see the updated
+  // live sum, not a stale TTL from the first prepare-batch.
+  test("prepare-batch: sequential calls use a fresh sumLiveBytes each time", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    const liveSums = [0, 80];
+    let sumCalls = 0;
+    const deps = {
+      db,
+      repo,
+      storage,
+      sumLiveBytes: async () => liveSums[sumCalls++] ?? 80,
+      countLiveFiles: async () => 0,
+    };
+
+    // max=100. First batch with live=0, size=40 → under ceiling.
+    const first = await handleSyncUploadPrepareBatch(
+      makeCaller(team.id, actor.id),
+      {
+        items: [
+          { path: "knowledge/c0.md", parentVersion: 0, contentHash: h32("c0"), size: 40 },
+        ],
+      },
+      deps,
+    );
+    assert.equal(first.statusCode, 200);
+    assert.equal(JSON.parse(first.body).results[0].ok, true);
+
+    // Second batch with live=80 (as after complete), size=40 → 80+40=120 over.
+    // A 10s TTL cache of the first sum (0) would wrongly accept this.
+    const second = await handleSyncUploadPrepareBatch(
+      makeCaller(team.id, actor.id),
+      {
+        items: [
+          { path: "knowledge/c1.md", parentVersion: 0, contentHash: h32("c1"), size: 40 },
+        ],
+      },
+      deps,
+    );
+    assert.equal(second.statusCode, 200);
+    const { results } = JSON.parse(second.body);
+    assert.equal(results[0].ok, false);
+    assert.equal(results[0].status, 422);
+    assert.equal(results[0].code, "QuotaExceeded");
+    assert.equal(results[0].kind, "bytes");
+    assert.equal(sumCalls, 2, "each prepare-batch must re-fetch the live sum");
   });
 });

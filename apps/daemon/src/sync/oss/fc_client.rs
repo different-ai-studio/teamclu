@@ -262,11 +262,15 @@ impl FcClient {
         &self,
         team_id: &str,
         upload_session_id: &str,
+        node_id: Option<&str>,
     ) -> Result<CompleteResult, SyncError> {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "teamId": team_id,
             "uploadSessionId": upload_session_id,
         });
+        if let Some(nid) = node_id {
+            body["nodeId"] = Value::String(nid.to_string());
+        }
         self.post("/v1/sync/upload/complete", &body).await
     }
 
@@ -366,16 +370,24 @@ impl FcClient {
     }
 
     /// POST /sync/upload/complete-batch
+    ///
+    /// `node_id` is sent as a **top-level** body field. FC's knowledge-sync hint
+    /// reads `originNodeId` from `body.nodeId` (not from per-item fields), so
+    /// omitting it leaves peers unable to filter own-push echoes.
     pub async fn upload_complete_batch(
         &self,
         team_id: &str,
         session_ids: &[String],
+        node_id: Option<&str>,
     ) -> Result<Vec<BatchItemOutcome<CompleteResult>>, SyncError> {
         let items: Vec<Value> = session_ids
             .iter()
             .map(|s| serde_json::json!({ "uploadSessionId": s }))
             .collect();
-        let body = serde_json::json!({ "teamId": team_id, "items": items });
+        let mut body = serde_json::json!({ "teamId": team_id, "items": items });
+        if let Some(nid) = node_id {
+            body["nodeId"] = Value::String(nid.to_string());
+        }
         let results = self
             .post_batch_raw("/v1/sync/upload/complete-batch", &body, session_ids.len())
             .await?;
@@ -400,12 +412,20 @@ impl FcClient {
     }
 
     /// POST /sync/delete-batch
+    ///
+    /// Per-item `node_id` stamps `created_by_node_id` on the tombstone; the
+    /// optional top-level `node_id` is what FC copies into the MQTT hint's
+    /// `originNodeId` (same contract as complete-batch).
     pub async fn delete_batch(
         &self,
         team_id: &str,
         items: &[DeleteBatchItem],
+        node_id: Option<&str>,
     ) -> Result<Vec<BatchItemOutcome<DeleteResult>>, SyncError> {
-        let body = serde_json::json!({ "teamId": team_id, "items": items });
+        let mut body = serde_json::json!({ "teamId": team_id, "items": items });
+        if let Some(nid) = node_id {
+            body["nodeId"] = Value::String(nid.to_string());
+        }
         let results = self
             .post_batch_raw("/v1/sync/delete-batch", &body, items.len())
             .await?;
@@ -774,5 +794,82 @@ mod tests {
             }
             other => panic!("expected Ok, got {other:?}"),
         }
+    }
+
+    /// FC publishes `originNodeId` from the **top-level** `body.nodeId` on
+    /// complete-batch / delete-batch — not from per-item fields. These tests
+    /// lock that request shape so MQTT echo filtering can work.
+    #[tokio::test]
+    async fn complete_batch_sends_top_level_node_id() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/sync/upload/complete-batch"))
+            .and(body_partial_json(json!({
+                "teamId": "t1",
+                "nodeId": "mac-9f3c",
+                "items": [{ "uploadSessionId": "sess-1" }],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": [{
+                    "ok": true,
+                    "version": 1,
+                    "contentHash": "abc",
+                    "changeSeq": 10,
+                }],
+            })))
+            .expect(1)
+            .mount(&srv)
+            .await;
+
+        let fc = FcClient::new(srv.uri(), "jwt".into());
+        let out = fc
+            .upload_complete_batch("t1", &["sess-1".into()], Some("mac-9f3c"))
+            .await
+            .expect("complete-batch");
+        assert!(matches!(out.as_slice(), [BatchItemOutcome::Ok(_)]));
+    }
+
+    #[tokio::test]
+    async fn delete_batch_sends_top_level_node_id() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/sync/delete-batch"))
+            .and(body_partial_json(json!({
+                "teamId": "t1",
+                "nodeId": "del-node",
+                "items": [{
+                    "path": "knowledge/a.md",
+                    "parentVersion": 1,
+                    "nodeId": "del-node",
+                }],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": [{
+                    "ok": true,
+                    "version": 2,
+                    "changeSeq": 11,
+                }],
+            })))
+            .expect(1)
+            .mount(&srv)
+            .await;
+
+        let fc = FcClient::new(srv.uri(), "jwt".into());
+        let items = [DeleteBatchItem {
+            path: "knowledge/a.md".into(),
+            parent_version: 1,
+            node_id: Some("del-node".into()),
+        }];
+        let out = fc
+            .delete_batch("t1", &items, Some("del-node"))
+            .await
+            .expect("delete-batch");
+        assert!(matches!(out.as_slice(), [BatchItemOutcome::Ok(_)]));
     }
 }

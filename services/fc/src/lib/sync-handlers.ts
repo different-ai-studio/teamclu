@@ -11,7 +11,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createServiceRoleClient } from './supabase.js';
 import { validateSyncPath } from './sync-path.js';
-import { isOverFileQuota, isRejectedSyncPath, liveFileCount, maxFilesPerTeam } from './sync-guards.js';
+import { isOverByteQuota, isOverFileQuota, isRejectedSyncPath, liveByteSum, liveFileCount, maxBytesPerTeam, maxFilesPerTeam } from './sync-guards.js';
 import { resolveBackendKind } from './backend-kind.js';
 import { getTeamBlobStorage, type BlobStorage } from './team-blob-storage.js';
 import { makeOssSyncRepo, type OssSyncRepo } from './pg-repo/oss-sync.js';
@@ -20,12 +20,26 @@ import { getDb, type Db } from '../db/client.js';
 import { ApiError } from './http-utils.js';
 import { teamWorkspaceConfig, amuxcUploadSessions } from '../db/schema/index.js';
 import { eq } from 'drizzle-orm';
+import { syncTopic } from './mqtt-topics.js';
+import { pgPushDeps, pushDeps } from './push-deps.js';
 
 const DOWNLOAD_TTL_SEC = 900;
+
+/** Best-effort MQTT publish budget for sync hints — never blocks the HTTP 200. */
+const SYNC_HINT_PUBLISH_TIMEOUT_MS = 500;
 
 // ---------------------------------------------------------------------------
 // Injectable deps — production callers omit these; tests inject stubs.
 // ---------------------------------------------------------------------------
+
+/** Minimal publisher surface (matches createMqttPublisher / push-deps). */
+export interface SyncMqttPublisher {
+  publish(
+    topic: string,
+    payload: string,
+    options?: { qos?: number; retain?: boolean },
+  ): Promise<void>;
+}
 
 export interface SyncHandlerDeps {
   db?: Db;
@@ -33,6 +47,25 @@ export interface SyncHandlerDeps {
   storage?: BlobStorage;
   /** Override the live-file count. Tests only — production reads the table. */
   countLiveFiles?: (teamId: string) => Promise<number | null>;
+  /** Override the live-file byte sum. Tests only — production reads the table. */
+  sumLiveBytes?: (teamId: string) => Promise<number | null>;
+  /**
+   * MQTT publisher for knowledge sync hints. `undefined` → resolve from
+   * push-deps (null when MQTT_BROKER_URL is unset). Explicit `null` skips.
+   */
+  mqtt?: SyncMqttPublisher | null;
+  /** Clock override for hint `at` (tests). */
+  now?: () => Date;
+  /**
+   * When true, skip the per-call hint — batch wrappers publish once after
+   * all items finish.
+   */
+  suppressSyncHint?: boolean;
+  /**
+   * When true, skip the byte-quota check inside single prepare — batch
+   * already applied a running total across items.
+   */
+  skipByteQuota?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +120,36 @@ async function countLiveFiles(
   return typeof count === 'number' ? count : null;
 }
 
+/**
+ * Sum of live (non-deleted) file sizes for a team, or `null` when unknown.
+ *
+ * Postgres: drizzle `sum(size)`. Supabase: RPC `amux.amuxc_team_live_bytes`.
+ */
+async function sumLiveBytes(
+  teamId: string,
+  deps: SyncHandlerDeps = {},
+): Promise<number | null> {
+  if (deps.sumLiveBytes) return deps.sumLiveBytes(teamId);
+  if (resolveBackendKind() === 'postgres') {
+    try {
+      return await resolveRepo(deps).sumLiveBytes(teamId);
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const supabase = createServiceRoleClient();
+    const { data, error } = await supabase
+      .schema('amux')
+      .rpc('amuxc_team_live_bytes', { p_team_id: teamId });
+    if (error) return null;
+    const n = typeof data === 'number' ? data : Number(data);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 async function blobRequiresUpload(
   storage: BlobStorage,
   ossKey: string,
@@ -107,6 +170,143 @@ function resolveRepo(deps: SyncHandlerDeps): OssSyncRepo {
   if (deps.repo) return deps.repo;
   const db = deps.db ?? getDb();
   return makeOssSyncRepo(db);
+}
+
+/** Resolved once per process: `undefined` = not tried yet, `null` = unavailable. */
+let cachedSyncMqtt: SyncMqttPublisher | null | undefined;
+
+function resolveMqtt(deps: SyncHandlerDeps): SyncMqttPublisher | null {
+  if (deps.mqtt !== undefined) return deps.mqtt;
+  if (cachedSyncMqtt !== undefined) return cachedSyncMqtt;
+  try {
+    const bundle = resolveBackendKind() === 'postgres' ? pgPushDeps() : pushDeps();
+    cachedSyncMqtt = bundle.mqtt ?? null;
+  } catch (e: any) {
+    // Memoize the failure too. The push bundle also builds a service-role
+    // Supabase client and an APNS client, neither of which sync needs; on a
+    // deployment that has no SUPABASE_SERVICE_ROLE_KEY it throws on EVERY
+    // complete/delete, so this used to repeat that construction and log a line
+    // per request, forever, without ever converging. Hints are best-effort —
+    // the 300s timer is the fallback — so one warning is the right volume.
+    console.warn('[sync] mqtt unavailable, knowledge hints disabled:', e?.message ?? e);
+    cachedSyncMqtt = null;
+  }
+  return cachedSyncMqtt;
+}
+
+/** Test seam: forget the memoized publisher. */
+export function resetSyncMqttCacheForTests(): void {
+  cachedSyncMqtt = undefined;
+}
+
+function originNodeIdFromBody(body: Record<string, unknown> | undefined): string | null {
+  const raw = body?.nodeId;
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
+
+/**
+ * Best-effort knowledge sync hint: one MQTT message with the highest changeSeq
+ * among successful items. Never throws; 500ms timeout; missing broker is a no-op.
+ */
+async function publishKnowledgeSyncHint(opts: {
+  teamId: string;
+  changeSeq: number;
+  originNodeId: string | null;
+  deps: SyncHandlerDeps;
+}): Promise<void> {
+  const { teamId, changeSeq, originNodeId, deps } = opts;
+  if (deps.suppressSyncHint) return;
+  if (!Number.isFinite(changeSeq) || changeSeq <= 0) return;
+
+  const mqtt = resolveMqtt(deps);
+  if (!mqtt) return;
+
+  const now = deps.now ?? (() => new Date());
+  const topic = syncTopic(teamId, 'knowledge');
+  const payload = JSON.stringify({
+    v: 1,
+    changeSeq,
+    originNodeId,
+    at: now().toISOString(),
+  });
+
+  try {
+    await Promise.race([
+      mqtt.publish(topic, payload, { qos: 1, retain: false }),
+      new Promise<never>((_, reject) => {
+        setTimeout(
+          () => reject(new Error(`mqtt publish timeout after ${SYNC_HINT_PUBLISH_TIMEOUT_MS}ms`)),
+          SYNC_HINT_PUBLISH_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } catch (e: any) {
+    console.warn('[sync] knowledge hint publish failed:', e?.message ?? e);
+  }
+}
+
+/** Max changeSeq among successful batch results; null if none succeeded. */
+function maxSuccessfulChangeSeq(envelope: SyncEnvelope): number | null {
+  if (envelope.statusCode < 200 || envelope.statusCode >= 300) return null;
+  let parsed: { results?: unknown };
+  try {
+    parsed = envelope.body ? JSON.parse(envelope.body) : {};
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed.results)) return null;
+  let max: number | null = null;
+  for (const item of parsed.results) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as Record<string, unknown>;
+    if (row.ok !== true) continue;
+    const seq = row.changeSeq;
+    if (typeof seq === 'number' && Number.isFinite(seq)) {
+      max = max === null ? seq : Math.max(max, seq);
+    }
+  }
+  return max;
+}
+
+async function publishHintAfterBatch(
+  caller: { teamId: string },
+  body: Record<string, unknown> | undefined,
+  envelope: SyncEnvelope,
+  deps: SyncHandlerDeps,
+): Promise<void> {
+  const changeSeq = maxSuccessfulChangeSeq(envelope);
+  if (changeSeq === null) return;
+  await publishKnowledgeSyncHint({
+    teamId: caller.teamId,
+    changeSeq,
+    originNodeId: originNodeIdFromBody(body),
+    deps: { ...deps, suppressSyncHint: false },
+  });
+}
+
+async function publishHintAfterSingle(
+  caller: { teamId: string },
+  body: Record<string, unknown> | undefined,
+  envelope: SyncEnvelope,
+  deps: SyncHandlerDeps,
+): Promise<SyncEnvelope> {
+  if (deps.suppressSyncHint) return envelope;
+  if (envelope.statusCode < 200 || envelope.statusCode >= 300) return envelope;
+  let changeSeq: number | undefined;
+  try {
+    const parsed = envelope.body ? JSON.parse(envelope.body) : {};
+    if (typeof parsed.changeSeq === 'number') changeSeq = parsed.changeSeq;
+  } catch {
+    return envelope;
+  }
+  if (changeSeq === undefined) return envelope;
+  await publishKnowledgeSyncHint({
+    teamId: caller.teamId,
+    changeSeq,
+    originNodeId: originNodeIdFromBody(body),
+    deps,
+  });
+  return envelope;
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +567,19 @@ export async function handleSyncUploadPrepare(
     });
   }
 
+  // Byte ceiling on live pointers only (not historical blobs). Batch prepare
+  // applies a running total itself and sets skipByteQuota.
+  if (!deps.skipByteQuota) {
+    const sum = await liveByteSum(teamId, (id) => sumLiveBytes(id, deps));
+    if (isOverByteQuota(sum === null ? null : sum + size)) {
+      return json(422, {
+        error: `team is at its byte limit (${sum} + ${size} of ${maxBytesPerTeam()}); remove files or raise SYNC_MAX_BYTES_PER_TEAM`,
+        code: 'QuotaExceeded',
+        kind: 'bytes',
+      });
+    }
+  }
+
   const ossKey = ossKeyForHash(teamId, contentHash);
   const storage = resolveStorage(deps);
 
@@ -515,11 +728,16 @@ export async function handleSyncUploadComplete(
 
     try {
       const result = await repo.completeUpload(uploadSessionId as string, actorId);
-      return json(200, {
-        version:     result.version,
-        contentHash: result.contentHash,
-        changeSeq:   result.changeSeq,
-      });
+      return publishHintAfterSingle(
+        caller,
+        body,
+        json(200, {
+          version:     result.version,
+          contentHash: result.contentHash,
+          changeSeq:   result.changeSeq,
+        }),
+        deps,
+      );
     } catch (e: any) {
       if (e instanceof ApiError) {
         if (e.statusCode === 409) return json(409, { reason: 'cas-mismatch', remoteVersion: undefined, remoteHash: undefined });
@@ -601,11 +819,16 @@ export async function handleSyncUploadComplete(
   }
 
   const result = (rpcResult as any[])[0];
-  return json(200, {
-    version:     result.version,
-    contentHash: result.content_hash,
-    changeSeq:   result.change_seq,
-  });
+  return publishHintAfterSingle(
+    caller,
+    body,
+    json(200, {
+      version:     result.version,
+      contentHash: result.content_hash,
+      changeSeq:   result.change_seq,
+    }),
+    deps,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -701,7 +924,12 @@ export async function handleSyncDelete(
         actorId,
         nodeId: (nodeId as string | undefined) ?? null,
       });
-      return json(200, { version: result.version, changeSeq: result.changeSeq });
+      return publishHintAfterSingle(
+        caller,
+        body,
+        json(200, { version: result.version, changeSeq: result.changeSeq }),
+        deps,
+      );
     } catch (e: any) {
       if (e instanceof ApiError) {
         if (e.statusCode === 409) return json(409, { reason: 'cas-mismatch', remoteVersion: undefined, remoteHash: undefined });
@@ -746,10 +974,15 @@ export async function handleSyncDelete(
   }
 
   const result = (rpcResult as any[])[0];
-  return json(200, {
-    version:   result.version,
-    changeSeq: result.change_seq,
-  });
+  return publishHintAfterSingle(
+    caller,
+    body,
+    json(200, {
+      version:   result.version,
+      changeSeq: result.change_seq,
+    }),
+    deps,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -979,7 +1212,54 @@ export async function handleSyncUploadPrepareBatch(
   body: Record<string, unknown> | undefined,
   deps: SyncHandlerDeps = {},
 ) {
-  return runSyncBatch(body?.items, (item) => handleSyncUploadPrepare(caller, item, deps));
+  // One live sum per batch; running total so later items see earlier ones.
+  // Sum failure → null → allow (same policy as single prepare).
+  const sum = await liveByteSum(caller.teamId, (id) => sumLiveBytes(id, deps));
+  let running = sum ?? 0;
+  const sumKnown = sum !== null;
+  let crossed = false;
+
+  return runSyncBatch(body?.items, async (item) => {
+    // Only a NEW path adds bytes to the team. `parentVersion === 0` is the
+    // client saying "no row for this path yet"; anything higher is an edit
+    // whose old bytes are ALREADY inside `sum`, so charging its full size
+    // counted the file twice — 200 edits totalling 600 MB looked like 600 MB of
+    // growth and pushed a team at 1.5 GiB over a 2 GiB quota that completing
+    // them would have left untouched. A quota that fires on writes a team is
+    // nowhere near its limit is worse than one that lets a batch overshoot.
+    //
+    // The trade is a bounded under-count: an edit that GROWS a file is charged
+    // nothing until the next call re-reads the live sum, so the overshoot can
+    // never exceed one batch (≤200 items). That is the right direction for a
+    // guard whose job is stopping pathological bulk adds.
+    const size = typeof item.size === 'number' ? item.size : NaN;
+    const parentVersion =
+      typeof item.parentVersion === 'number' ? item.parentVersion : NaN;
+    const charge =
+      sumKnown && parentVersion === 0 && Number.isFinite(size) && size >= 0 ? size : 0;
+
+    if (crossed || (charge > 0 && isOverByteQuota(running + charge))) {
+      crossed = true;
+      return json(422, {
+        error: `team is at its byte limit (${running} + ${charge} of ${maxBytesPerTeam()}); remove files or raise SYNC_MAX_BYTES_PER_TEAM`,
+        code: 'QuotaExceeded',
+        kind: 'bytes',
+      });
+    }
+
+    const result = await handleSyncUploadPrepare(caller, item, {
+      ...deps,
+      skipByteQuota: true,
+    });
+
+    // Charge only what actually got an upload slot. A rejected item
+    // (IgnoredPath, bad CAS, validation) never becomes bytes, and burning
+    // budget for it refused every later valid note in the same batch.
+    if (charge > 0 && result.statusCode >= 200 && result.statusCode < 300) {
+      running += charge;
+    }
+    return result;
+  });
 }
 
 /** POST /sync/upload/complete-batch — N CAS completes; per-item ok/conflict/error. */
@@ -988,7 +1268,11 @@ export async function handleSyncUploadCompleteBatch(
   body: Record<string, unknown> | undefined,
   deps: SyncHandlerDeps = {},
 ) {
-  return runSyncBatch(body?.items, (item) => handleSyncUploadComplete(caller, item, deps));
+  const envelope = await runSyncBatch(body?.items, (item) =>
+    handleSyncUploadComplete(caller, item, { ...deps, suppressSyncHint: true }),
+  );
+  await publishHintAfterBatch(caller, body, envelope, deps);
+  return envelope;
 }
 
 /** POST /sync/download-batch — N presigned GET URLs in one round-trip. */
@@ -1006,5 +1290,9 @@ export async function handleSyncDeleteBatch(
   body: Record<string, unknown> | undefined,
   deps: SyncHandlerDeps = {},
 ) {
-  return runSyncBatch(body?.items, (item) => handleSyncDelete(caller, item, deps));
+  const envelope = await runSyncBatch(body?.items, (item) =>
+    handleSyncDelete(caller, item, { ...deps, suppressSyncHint: true }),
+  );
+  await publishHintAfterBatch(caller, body, envelope, deps);
+  return envelope;
 }

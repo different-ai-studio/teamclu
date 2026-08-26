@@ -59,7 +59,7 @@ vi.mock('@/lib/team-skill-paths', () => ({
 }))
 
 const DOC = `${KNOWLEDGE_DIR}/note.md`
-const SIDECAR = 'knowledge/note.conflict.1000.aabbccdd.md'
+const SIDECAR = 'knowledge/.conflicts/note.conflict.1000.aabbccdd.md'
 
 const conflict = { path: 'knowledge/note.md', sidecar: SIDECAR, conflictedAt: 1000, kind: 'oss' }
 
@@ -101,7 +101,9 @@ describe('KnowledgeConflictResolver', () => {
 
     await waitFor(() => expect(screen.getByText(/my draft/)).toBeTruthy())
     expect(screen.getByText(/cloud text/)).toBeTruthy()
-    expect(readTextFile).toHaveBeenCalledWith(`${KNOWLEDGE_DIR}/note.conflict.1000.aabbccdd.md`)
+    expect(readTextFile).toHaveBeenCalledWith(
+      `${KNOWLEDGE_DIR}/.conflicts/note.conflict.1000.aabbccdd.md`,
+    )
     expect(readTextFile).toHaveBeenCalledWith(DOC)
   })
 

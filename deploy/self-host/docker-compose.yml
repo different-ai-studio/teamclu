@@ -298,6 +298,9 @@ services:
       # team may hold. Unset uses the built-in 50000. Raise it for a team that
       # legitimately grows into it — see services/fc/src/lib/sync-guards.ts.
       SYNC_MAX_FILES_PER_TEAM: "${SYNC_MAX_FILES_PER_TEAM:-}"
+      # Same backstop for total live-file bytes (amuxc_files.size sum). Unset
+      # uses 2 GiB. Not disk protection — historical version blobs are separate.
+      SYNC_MAX_BYTES_PER_TEAM: "${SYNC_MAX_BYTES_PER_TEAM:-}"
       # MinIO addresses buckets by path; virtual-host style would need per-bucket
       # DNS. Alibaba OSS works either way, so this stays blank there.
       S3_FORCE_PATH_STYLE: "${S3_FORCE_PATH_STYLE:-}"

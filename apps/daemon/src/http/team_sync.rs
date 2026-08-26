@@ -611,9 +611,9 @@ pub struct ResolveResponse {
 ///   version, so there is nothing to write, only the losing copy to clear.
 ///
 /// Both branches delete the sidecar. It is local-only (the scanner never
-/// uploads `*.conflict.*`), so leaving it behind would just accumulate junk in
-/// the user's knowledge tree — which is exactly what happened before this
-/// endpoint did any disk work at all.
+/// uploads anything under `.conflicts/`), so leaving it behind would just
+/// accumulate junk — which is exactly what happened before this endpoint did
+/// any disk work at all.
 pub async fn resolve_conflict(
     principal: Principal,
     State(_state): State<HttpState>,
@@ -740,9 +740,32 @@ fn apply_conflict_decision(
         }
     }
 
+    // The sidecar is gone; the mirrored directories it lived in are not. Without
+    // this, `knowledge/.conflicts/a/b/c/` survives every resolution and a vault
+    // that has seen many conflicts keeps a full shadow tree that
+    // `scan_conflict_files` walks on every poll.
+    prune_empty_conflict_dirs(&root, &sidecar);
+
     st.save_at(team_id)
         .map_err(|e| DecisionError::Failed(format!("save sync state: {e}")))?;
     Ok(Some(sidecar))
+}
+
+/// Remove the now-empty directories a resolved sidecar leaves behind.
+///
+/// `remove_dir` only succeeds on an empty directory, so this can never take one
+/// that still holds another conflict — or, for a legacy sidecar that sat beside
+/// its note, the note's own directory. Stops at the sync prefix root, so
+/// `knowledge/` itself always stays.
+fn prune_empty_conflict_dirs(root: &std::path::Path, sidecar_rel: &str) {
+    let mut parts: Vec<&str> = sidecar_rel.split('/').filter(|s| !s.is_empty()).collect();
+    parts.pop(); // the filename
+    while parts.len() > 1 {
+        if std::fs::remove_dir(root.join(parts.join("/"))).is_err() {
+            return;
+        }
+        parts.pop();
+    }
 }
 
 /// Whether a sync path belongs to a prefix the product still carries.
@@ -1615,24 +1638,27 @@ mod tests {
     fn keep_local_restores_the_users_bytes_and_queues_them_for_push() {
         let fx = ConflictFixture::new();
         fx.write("knowledge/note.md", "remote wins");
-        fx.write("knowledge/note.conflict.1000.aabbccdd.md", "my draft");
+        fx.write(
+            "knowledge/.conflicts/note.conflict.1000.aabbccdd.md",
+            "my draft",
+        );
         fx.seed_state("knowledge/note.md", "hash-of-remote");
 
         let acted = apply_conflict_decision(
             &fx.team_id,
             "knowledge/note.md",
-            Some("knowledge/note.conflict.1000.aabbccdd.md"),
+            Some("knowledge/.conflicts/note.conflict.1000.aabbccdd.md"),
             crate::sync::oss::ConflictChoice::KeepLocal,
         )
         .unwrap();
 
         assert_eq!(
             acted.as_deref(),
-            Some("knowledge/note.conflict.1000.aabbccdd.md")
+            Some("knowledge/.conflicts/note.conflict.1000.aabbccdd.md")
         );
         // The document now holds what the user wrote, not what the remote sent.
         assert_eq!(fx.read("knowledge/note.md"), "my draft");
-        assert!(!fx.exists("knowledge/note.conflict.1000.aabbccdd.md"));
+        assert!(!fx.exists("knowledge/.conflicts/note.conflict.1000.aabbccdd.md"));
         let entry = fx.state_for("knowledge/note.md");
         assert!(entry.dirty, "the restored copy has to be pushed");
         assert!(!entry.deleted_local);
@@ -1645,19 +1671,22 @@ mod tests {
     fn keep_remote_clears_the_losing_copy_and_leaves_the_document_alone() {
         let fx = ConflictFixture::new();
         fx.write("knowledge/note.md", "remote wins");
-        fx.write("knowledge/note.conflict.1000.aabbccdd.md", "my draft");
+        fx.write(
+            "knowledge/.conflicts/note.conflict.1000.aabbccdd.md",
+            "my draft",
+        );
         fx.seed_state("knowledge/note.md", "hash-of-remote");
 
         apply_conflict_decision(
             &fx.team_id,
             "knowledge/note.md",
-            Some("knowledge/note.conflict.1000.aabbccdd.md"),
+            Some("knowledge/.conflicts/note.conflict.1000.aabbccdd.md"),
             crate::sync::oss::ConflictChoice::KeepRemote,
         )
         .unwrap();
 
         assert_eq!(fx.read("knowledge/note.md"), "remote wins");
-        assert!(!fx.exists("knowledge/note.conflict.1000.aabbccdd.md"));
+        assert!(!fx.exists("knowledge/.conflicts/note.conflict.1000.aabbccdd.md"));
         let entry = fx.state_for("knowledge/note.md");
         assert!(!entry.dirty);
         assert_eq!(entry.local_plain_hash, entry.synced_plain_hash);
@@ -1667,14 +1696,17 @@ mod tests {
     fn resolving_the_same_conflict_twice_is_idempotent() {
         let fx = ConflictFixture::new();
         fx.write("knowledge/note.md", "remote wins");
-        fx.write("knowledge/note.conflict.1000.aabbccdd.md", "my draft");
+        fx.write(
+            "knowledge/.conflicts/note.conflict.1000.aabbccdd.md",
+            "my draft",
+        );
 
         for _ in 0..2 {
             // A double click, or two windows racing, must not 500 the second one.
             apply_conflict_decision(
                 &fx.team_id,
                 "knowledge/note.md",
-                Some("knowledge/note.conflict.1000.aabbccdd.md"),
+                Some("knowledge/.conflicts/note.conflict.1000.aabbccdd.md"),
                 crate::sync::oss::ConflictChoice::KeepRemote,
             )
             .unwrap();
@@ -1700,7 +1732,7 @@ mod tests {
         let acted = apply_conflict_decision(
             &fx.team_id,
             "knowledge/note.md",
-            Some("knowledge/note.conflict.1000.aabbccdd.md"),
+            Some("knowledge/.conflicts/note.conflict.1000.aabbccdd.md"),
             crate::sync::oss::ConflictChoice::KeepLocal,
         )
         .unwrap();
@@ -1716,8 +1748,14 @@ mod tests {
     fn the_newest_sidecar_is_taken_when_the_caller_names_none() {
         let fx = ConflictFixture::new();
         fx.write("knowledge/note.md", "remote wins");
-        fx.write("knowledge/note.conflict.1000.aaaaaaaa.md", "older draft");
-        fx.write("knowledge/note.conflict.2000.bbbbbbbb.md", "newer draft");
+        fx.write(
+            "knowledge/.conflicts/note.conflict.1000.aaaaaaaa.md",
+            "older draft",
+        );
+        fx.write(
+            "knowledge/.conflicts/note.conflict.2000.bbbbbbbb.md",
+            "newer draft",
+        );
 
         let acted = apply_conflict_decision(
             &fx.team_id,
@@ -1729,11 +1767,11 @@ mod tests {
 
         assert_eq!(
             acted.as_deref(),
-            Some("knowledge/note.conflict.2000.bbbbbbbb.md")
+            Some("knowledge/.conflicts/note.conflict.2000.bbbbbbbb.md")
         );
         assert_eq!(fx.read("knowledge/note.md"), "newer draft");
         // The older one survives as its own pending decision.
-        assert!(fx.exists("knowledge/note.conflict.1000.aaaaaaaa.md"));
+        assert!(fx.exists("knowledge/.conflicts/note.conflict.1000.aaaaaaaa.md"));
     }
 
     #[test]
@@ -1741,20 +1779,23 @@ mod tests {
         let fx = ConflictFixture::new();
         fx.write("knowledge/note.md", "remote wins");
         fx.write("knowledge/secret.md", "someone else's document");
-        fx.write("knowledge/secret.conflict.1000.aabbccdd.md", "draft");
+        fx.write(
+            "knowledge/.conflicts/secret.conflict.1000.aabbccdd.md",
+            "draft",
+        );
 
         // This endpoint deletes (and overwrites) what it is handed, so a
         // mismatched pair is the one thing it must never carry out.
         let err = apply_conflict_decision(
             &fx.team_id,
             "knowledge/note.md",
-            Some("knowledge/secret.conflict.1000.aabbccdd.md"),
+            Some("knowledge/.conflicts/secret.conflict.1000.aabbccdd.md"),
             crate::sync::oss::ConflictChoice::KeepLocal,
         )
         .unwrap_err();
         assert!(matches!(err, DecisionError::Invalid(_)), "{err:?}");
         assert_eq!(fx.read("knowledge/secret.md"), "someone else's document");
-        assert!(fx.exists("knowledge/secret.conflict.1000.aabbccdd.md"));
+        assert!(fx.exists("knowledge/.conflicts/secret.conflict.1000.aabbccdd.md"));
     }
 
     #[test]
@@ -1765,7 +1806,7 @@ mod tests {
         let fx = ConflictFixture::new();
         fx.write("knowledge/merge.conflict.md", "a note about merging");
         fx.write(
-            "knowledge/real.conflict.1000.aabbccdd.md",
+            "knowledge/.conflicts/real.conflict.1000.aabbccdd.md",
             "the losing copy",
         );
 
@@ -1773,6 +1814,10 @@ mod tests {
 
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].path, "knowledge/real.md");
+        assert_eq!(
+            entries[0].sidecar,
+            "knowledge/.conflicts/real.conflict.1000.aabbccdd.md"
+        );
     }
 
     #[test]
@@ -1832,8 +1877,14 @@ mod tests {
     fn conflict_entries_name_the_document_not_the_sidecar() {
         let fx = ConflictFixture::new();
         fx.write("knowledge/note.md", "remote wins");
-        fx.write("knowledge/note.conflict.1000.aaaaaaaa.md", "older");
-        fx.write("knowledge/note.conflict.2000.bbbbbbbb.md", "newer");
+        fx.write(
+            "knowledge/.conflicts/note.conflict.1000.aaaaaaaa.md",
+            "older",
+        );
+        fx.write(
+            "knowledge/.conflicts/note.conflict.2000.bbbbbbbb.md",
+            "newer",
+        );
         fx.write("knowledge/plain.md", "no conflict here");
 
         let entries = conflict_entries(&fx.root);
@@ -1845,7 +1896,7 @@ mod tests {
         assert_eq!(entries[1].conflicted_at, Some(1000));
         assert_eq!(
             entries[0].sidecar,
-            "knowledge/note.conflict.2000.bbbbbbbb.md"
+            "knowledge/.conflicts/note.conflict.2000.bbbbbbbb.md"
         );
     }
 

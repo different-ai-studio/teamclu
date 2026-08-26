@@ -70,6 +70,16 @@ impl Topics {
     pub fn user_notify(&self, actor_id: &str) -> String {
         format!("amux/{}/user/{}/notify", self.team_id, actor_id)
     }
+
+    /// Team-scoped sync hint topic for a resource (resource segment last).
+    pub fn sync(&self, resource: &str) -> String {
+        sync_topic(&self.team_id, resource)
+    }
+
+    /// Wildcard covering every sync resource: `amux/<team>/sync/+`.
+    pub fn sync_wildcard(&self) -> String {
+        sync_wildcard(&self.team_id)
+    }
 }
 
 pub fn session_live(team_id: &str, session_id: &str) -> String {
@@ -80,6 +90,19 @@ pub fn actor_state(team_id: &str, actor_id: &str) -> String {
     format!("amux/{team_id}/{actor_id}/state")
 }
 
+/// Sync hint topic: `amux/<team_id>/sync/<resource>`.
+///
+/// Resource is the last segment so a single ACL `amux/%s/sync/+` covers every
+/// future resource without migration. Mirrored in FC (`mqtt-topics.ts`).
+pub fn sync_topic(team_id: &str, resource: &str) -> String {
+    format!("amux/{team_id}/sync/{resource}")
+}
+
+/// Subscribe filter for all sync resources under a team.
+pub fn sync_wildcard(team_id: &str) -> String {
+    format!("amux/{team_id}/sync/+")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +111,9 @@ mod tests {
     fn shared_topic_functions_match_wire_paths() {
         assert_eq!(session_live("t1", "s1"), "amux/t1/session/s1/live");
         assert_eq!(actor_state("t1", "d1"), "amux/t1/d1/state");
+        // Resource segment last so ACL `amux/%s/sync/+` covers future resources.
+        assert_eq!(sync_topic("TEAM", "knowledge"), "amux/TEAM/sync/knowledge");
+        assert_eq!(sync_wildcard("TEAM"), "amux/TEAM/sync/+");
     }
 
     #[test]
@@ -115,5 +141,7 @@ mod tests {
             t.user_notify("actor-xyz"),
             "amux/team1/user/actor-xyz/notify"
         );
+        assert_eq!(t.sync("knowledge"), "amux/team1/sync/knowledge");
+        assert_eq!(t.sync_wildcard(), "amux/team1/sync/+");
     }
 }

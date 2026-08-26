@@ -5,10 +5,10 @@
 //! stable `MqttPublisher` proxy, so a reconnect cannot leave a
 //! `SessionManager` or `LivePublisher` holding a dead client generation.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex, OnceLock,
 };
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -45,6 +45,44 @@ const RECOVERY_SIGNAL_TIMEOUT: Duration = Duration::from_secs(2);
 const WAKE_GAP_THRESHOLD: Duration = Duration::from_secs(120);
 const INBOUND_RETRY_MAX: Duration = Duration::from_secs(30);
 const DURABLE_STORE_FAILURE_PREFIX: &str = "durable_store:";
+
+/// Tracked MQTT subscription restored after every CONNACK.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrackedSubscription {
+    qos: QoS,
+    /// When true, SUBACK Failure / restore queue errors warn once and never
+    /// force a worker rebuild (ACL migration lag for `sync/+`).
+    optional: bool,
+}
+
+/// Decision after a SUBACK Failure (or restore `try_subscribe` queue reject).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubackFailureAction {
+    /// Required topic — schedule `forced_rebuild` during auto-restore.
+    ForceRebuild,
+    /// Optional topic — warn once, keep the worker.
+    Tolerate,
+}
+
+fn suback_failure_action(optional: bool) -> SubackFailureAction {
+    if optional {
+        SubackFailureAction::Tolerate
+    } else {
+        SubackFailureAction::ForceRebuild
+    }
+}
+
+fn warn_optional_subscribe_rejected(topic: &str) {
+    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let set = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = set.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.insert(topic.to_string()) {
+        warn!(
+            topic,
+            "optional MQTT subscription rejected by broker; will retry on next reconnect"
+        );
+    }
+}
 
 /// The one snapshot published to `/v1/info`. Keeping the fields together
 /// prevents the UI from observing `connected=true` with a stale recovery phase.
@@ -276,6 +314,9 @@ pub enum MqttCommand {
     Subscribe {
         topic: String,
         delivery: DeliveryGuarantee,
+        /// Best-effort: broker rejection does not rebuild the worker or
+        /// escalate `PublisherError::Unavailable` to the caller.
+        optional: bool,
         reply: oneshot::Sender<Result<(), PublisherError>>,
     },
     Unsubscribe {
@@ -355,16 +396,15 @@ impl MessagePublisher for MqttPublisher {
         topic: &str,
         delivery: DeliveryGuarantee,
     ) -> Result<(), PublisherError> {
-        let (reply, rx) = oneshot::channel();
-        self.send(
-            MqttCommand::Subscribe {
-                topic: topic.to_string(),
-                delivery,
-                reply,
-            },
-            rx,
-        )
-        .await
+        self.subscribe_inner(topic, delivery, false).await
+    }
+
+    async fn subscribe_optional(
+        &self,
+        topic: &str,
+        delivery: DeliveryGuarantee,
+    ) -> Result<(), PublisherError> {
+        self.subscribe_inner(topic, delivery, true).await
     }
 
     async fn unsubscribe(&self, topic: &str) -> Result<(), PublisherError> {
@@ -372,6 +412,27 @@ impl MessagePublisher for MqttPublisher {
         self.send(
             MqttCommand::Unsubscribe {
                 topic: topic.to_string(),
+                reply,
+            },
+            rx,
+        )
+        .await
+    }
+}
+
+impl MqttPublisher {
+    async fn subscribe_inner(
+        &self,
+        topic: &str,
+        delivery: DeliveryGuarantee,
+        optional: bool,
+    ) -> Result<(), PublisherError> {
+        let (reply, rx) = oneshot::channel();
+        self.send(
+            MqttCommand::Subscribe {
+                topic: topic.to_string(),
+                delivery,
+                optional,
                 reply,
             },
             rx,
@@ -801,7 +862,7 @@ async fn run_supervisor(
         connected.clone(),
         heartbeat.clone(),
     ));
-    let mut subscriptions = BTreeMap::<String, QoS>::new();
+    let mut subscriptions = BTreeMap::<String, TrackedSubscription>::new();
     let mut pending_commands = VecDeque::<MqttCommand>::new();
     let mut pending_dispositions = VecDeque::<(u64, MqttInboundDisposition)>::new();
     let mut generation = 0_u64;
@@ -979,8 +1040,19 @@ async fn run_supervisor(
                     fail_command(command, "MQTT worker command queue is full");
                 } else {
                     match &command {
-                        MqttCommand::Subscribe { topic, delivery, .. } => {
-                            subscriptions.insert(topic.clone(), delivery.clone().into());
+                        MqttCommand::Subscribe {
+                            topic,
+                            delivery,
+                            optional,
+                            ..
+                        } => {
+                            subscriptions.insert(
+                                topic.clone(),
+                                TrackedSubscription {
+                                    qos: delivery.clone().into(),
+                                    optional: *optional,
+                                },
+                            );
                         }
                         MqttCommand::Unsubscribe { topic, .. } => {
                             subscriptions.remove(topic);
@@ -1373,7 +1445,7 @@ fn spawn_worker(
     backend: Arc<dyn Backend>,
     generation_seed: u64,
     worker_generation: u64,
-    initial_subscriptions: BTreeMap<String, QoS>,
+    initial_subscriptions: BTreeMap<String, TrackedSubscription>,
     events_tx: mpsc::Sender<WorkerEvent>,
     inbound_tx: mpsc::Sender<MqttInbound>,
     connected: Arc<AtomicBool>,
@@ -1456,7 +1528,7 @@ struct MqttWorker {
     heartbeat: Arc<MqttHeartbeat>,
     generation_seed: u64,
     worker_generation: u64,
-    initial_subscriptions: BTreeMap<String, QoS>,
+    initial_subscriptions: BTreeMap<String, TrackedSubscription>,
 }
 
 impl MqttWorker {
@@ -1621,13 +1693,26 @@ impl MqttWorker {
                                 auto_restore_subscriptions = !subscriptions.is_empty();
                                 subscriptions_ready_announced = !auto_restore_subscriptions;
                                 if auto_restore_subscriptions {
-                                    for (topic, qos) in &subscriptions {
-                                        if let Err(error) = active.client.try_subscribe(topic.clone(), *qos) {
+                                    for (topic, tracked) in &subscriptions {
+                                        if let Err(error) =
+                                            active.client.try_subscribe(topic.clone(), tracked.qos)
+                                        {
                                             warn!(%error, topic, generation, "failed to queue MQTT subscription restore");
-                                            forced_rebuild = Some("subscription restore queue rejected".to_string());
+                                            match suback_failure_action(tracked.optional) {
+                                                SubackFailureAction::Tolerate => {
+                                                    warn_optional_subscribe_rejected(topic);
+                                                }
+                                                SubackFailureAction::ForceRebuild => {
+                                                    forced_rebuild = Some(
+                                                        "subscription restore queue rejected"
+                                                            .to_string(),
+                                                    );
+                                                }
+                                            }
                                         } else {
                                             subscribe_waiting_for_write.push_back(PendingSubscribe {
                                                 topic: topic.clone(),
+                                                optional: tracked.optional,
                                                 reply: None,
                                             });
                                         }
@@ -1641,7 +1726,16 @@ impl MqttWorker {
                                     generation,
                                     worker_generation: self.worker_generation,
                                 })).await;
-                                if !auto_restore_subscriptions {
+                                // Announce when nothing is left to wait for. The
+                                // SUBACK handler is the other announce site, and
+                                // it only runs if something was actually queued:
+                                // when every restore was rejected at the queue
+                                // AND every one of them was optional (tolerated,
+                                // no forced rebuild), no SUBACK ever arrives and
+                                // the worker would sit un-announced forever.
+                                if !auto_restore_subscriptions
+                                    || subscribe_waiting_for_write.is_empty()
+                                {
                                     self.announce_subscriptions_ready(
                                         generation,
                                         &mut subscriptions_ready_announced,
@@ -1717,29 +1811,47 @@ impl MqttWorker {
                             Ok(Event::Incoming(Packet::SubAck(ack))) => {
                                 self.heartbeat.end_poll();
                                 if let Some(request) = subscribe_inflight.remove(&ack.pkid) {
-                                    let success = !ack.return_codes.iter().any(|code| matches!(code, rumqttc::SubscribeReasonCode::Failure));
-                                    let result = if success {
+                                    let success = !ack.return_codes.iter().any(|code| {
+                                        matches!(code, rumqttc::SubscribeReasonCode::Failure)
+                                    });
+                                    let tolerate_failure = !success
+                                        && matches!(
+                                            suback_failure_action(request.optional),
+                                            SubackFailureAction::Tolerate
+                                        );
+                                    if tolerate_failure {
+                                        warn_optional_subscribe_rejected(&request.topic);
+                                    }
+                                    // Optional reject: Ok to caller so mqtt_resubscribe
+                                    // does not escalate into a generation rebuild.
+                                    let result = if success || request.optional {
                                         Ok(())
                                     } else {
-                                        Err(PublisherError::Unavailable(format!("MQTT broker rejected subscription for {}", request.topic)))
+                                        Err(PublisherError::Unavailable(format!(
+                                            "MQTT broker rejected subscription for {}",
+                                            request.topic
+                                        )))
                                     };
                                     if let Some(reply) = request.reply {
                                         let _ = reply.send(result);
                                     }
-                                    if success
-                                        && auto_restore_subscriptions
+                                    let restore_drained = auto_restore_subscriptions
                                         && subscribe_waiting_for_write.is_empty()
-                                        && subscribe_inflight.is_empty()
+                                        && subscribe_inflight.is_empty();
+                                    if !success
+                                        && auto_restore_subscriptions
+                                        && !request.optional
                                     {
-                                        self.announce_subscriptions_ready(
-                                            generation,
-                                            &mut subscriptions_ready_announced,
-                                        ).await;
-                                    } else if !success && auto_restore_subscriptions {
                                         forced_rebuild = Some(format!(
                                             "broker rejected restored subscription {}",
                                             request.topic
                                         ));
+                                    } else if (success || tolerate_failure) && restore_drained {
+                                        self.announce_subscriptions_ready(
+                                            generation,
+                                            &mut subscriptions_ready_announced,
+                                        )
+                                        .await;
                                     }
                                 } else {
                                     debug!(pkid = ack.pkid, "received MQTT SUBACK without a tracked request");
@@ -1950,7 +2062,7 @@ impl MqttWorker {
         command: Option<MqttCommand>,
         connected: bool,
         mqtt_client: Option<rumqttc::AsyncClient>,
-        subscriptions: &mut BTreeMap<String, QoS>,
+        subscriptions: &mut BTreeMap<String, TrackedSubscription>,
         pending: &mut VecDeque<PendingPublish>,
         store: &mut DurableMqttStore,
         subscribe_waiting_for_write: &mut VecDeque<PendingSubscribe>,
@@ -1963,10 +2075,14 @@ impl MqttWorker {
             MqttCommand::Subscribe {
                 topic,
                 delivery,
+                optional,
                 reply,
             } => {
                 let qos: QoS = delivery.clone().into();
-                subscriptions.insert(topic.clone(), qos);
+                subscriptions.insert(
+                    topic.clone(),
+                    TrackedSubscription { qos, optional },
+                );
                 let result = if connected {
                     let result = mqtt_client
                         .expect("connected MQTT command must have a client")
@@ -1975,11 +2091,18 @@ impl MqttWorker {
                     if result.is_ok() {
                         subscribe_waiting_for_write.push_back(PendingSubscribe {
                             topic,
+                            optional,
                             reply: Some(reply),
                         });
                         return true;
                     }
-                    result
+                    // Queue reject for optional: do not escalate Unavailable.
+                    if optional {
+                        warn_optional_subscribe_rejected(&topic);
+                        Ok(())
+                    } else {
+                        result
+                    }
                 } else {
                     Ok(())
                 };
@@ -2295,6 +2418,7 @@ struct PendingPublish {
 
 struct PendingSubscribe {
     topic: String,
+    optional: bool,
     reply: Option<oneshot::Sender<Result<(), PublisherError>>>,
 }
 
@@ -2675,6 +2799,80 @@ mod tests {
     fn stale_worker_exit_events_are_rejected_by_generation() {
         assert!(!worker_exit_matches_generation(2, 1));
         assert!(worker_exit_matches_generation(2, 2));
+    }
+
+    #[test]
+    fn optional_suback_failure_does_not_force_rebuild() {
+        assert_eq!(
+            suback_failure_action(true),
+            SubackFailureAction::Tolerate
+        );
+        assert_eq!(
+            suback_failure_action(false),
+            SubackFailureAction::ForceRebuild
+        );
+    }
+
+    /// Optional reject must not schedule a rebuild; required still does.
+    /// Mirrors the CONNACK restore / live-subscribe decision used above.
+    #[test]
+    fn rejected_optional_subscribe_skips_forced_rebuild_while_required_still_rebuilds() {
+        fn forced_rebuild_reason(
+            optional: bool,
+            auto_restore: bool,
+            topic: &str,
+        ) -> Option<String> {
+            if !auto_restore {
+                return None;
+            }
+            match suback_failure_action(optional) {
+                SubackFailureAction::Tolerate => None,
+                SubackFailureAction::ForceRebuild => {
+                    Some(format!("broker rejected restored subscription {topic}"))
+                }
+            }
+        }
+
+        assert_eq!(
+            forced_rebuild_reason(true, true, "amux/t/sync/+"),
+            None,
+            "optional sync/+ deny must not rebuild the worker (#1073 auth-reject context)"
+        );
+        assert_eq!(
+            forced_rebuild_reason(false, true, "amux/t/actor/rpc/req"),
+            Some("broker rejected restored subscription amux/t/actor/rpc/req".into())
+        );
+        assert_eq!(
+            forced_rebuild_reason(false, false, "amux/t/actor/rpc/req"),
+            None,
+            "live (non-restore) path escalates via reply Err, not forced_rebuild"
+        );
+    }
+
+    #[tokio::test]
+    async fn stable_publisher_optional_subscribe_sets_optional_flag() {
+        let (publisher, mut commands) = MqttPublisher::channel();
+        let task = tokio::spawn(async move {
+            publisher
+                .subscribe_optional("amux/team/sync/+", DeliveryGuarantee::AtLeastOnce)
+                .await
+        });
+
+        let command = commands.recv().await.expect("subscribe command");
+        match command {
+            MqttCommand::Subscribe {
+                topic,
+                optional,
+                reply,
+                ..
+            } => {
+                assert_eq!(topic, "amux/team/sync/+");
+                assert!(optional);
+                reply.send(Ok(())).expect("reply");
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert!(task.await.expect("task").is_ok());
     }
 
     #[tokio::test]
