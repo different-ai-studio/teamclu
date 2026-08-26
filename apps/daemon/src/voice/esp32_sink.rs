@@ -30,13 +30,13 @@
 //! §5.5). Never silent.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use teamclu_gateway::agent::AgentHandle;
 use teamclu_gateway::driver::{ChannelDriver, InboundMessage, InboundSink};
 use tokio::sync::Mutex;
-use tokio::task::AbortHandle;
 use tracing::{debug, error, info};
 
 use super::adapter::DeviceKey;
@@ -91,7 +91,22 @@ struct DeviceState {
 }
 
 struct InFlight {
-    abort: AbortHandle,
+    /// Set when a newer press supersedes this turn.
+    ///
+    /// Not an `AbortHandle`. Aborting the task kills it wherever it happens to
+    /// be inside `Core::handle`, and that function is written on the assumption
+    /// that it always reaches one of its own exits: it calls
+    /// `turn_attachments::open` and relies on a matching `close`, whose own doc
+    /// says leaving the entry behind makes "the next `send` on that session
+    /// attach to a reply that will never be delivered, and the file would
+    /// vanish". An abort also skips `write_reply`, leaving an inbound row with
+    /// no reply.
+    ///
+    /// So the task runs to completion and its *output* is discarded instead.
+    /// What actually stops the work is `AgentHandle::cancel`, which ends the
+    /// agent turn at the runtime; this flag only stops a superseded answer
+    /// reaching a device that has already moved on.
+    superseded: Arc<AtomicBool>,
     external_message_id: String,
 }
 
@@ -176,7 +191,8 @@ impl Esp32InboundSink {
     }
 
     /// Stop TTS always; if a turn is in flight, also cancel the ACP agent and
-    /// abort the spawned `Core::handle` task.
+    /// mark its result superseded (see [`InFlight::superseded`] for why this is
+    /// not an abort).
     async fn interrupt(&self, key: &DeviceKey) {
         let (prev, acp_session_id) = {
             let mut active = self.active.lock().await;
@@ -199,13 +215,13 @@ impl Esp32InboundSink {
                     );
                 }
             }
-            flight.abort.abort();
+            flight.superseded.store(true, Ordering::SeqCst);
             debug!(
                 team_id = %key.team_id,
                 actor_id = %key.actor_id,
                 interrupted = %flight.external_message_id,
                 acp_session_id = acp_session_id.as_deref().unwrap_or("-"),
-                "esp32: cancelled in-flight turn for barge-in"
+                "esp32: superseded in-flight turn for barge-in"
             );
         }
     }
@@ -217,10 +233,26 @@ impl Esp32InboundSink {
         active: Arc<Mutex<HashMap<DeviceKey, DeviceState>>>,
         key: DeviceKey,
         msg: InboundMessage,
+        superseded: Arc<AtomicBool>,
     ) {
         let channel = msg.conversation.channel;
         let external_id = msg.external_message_id.clone();
-        match turns.run(driver.as_ref(), msg).await {
+        let outcome = turns.run(driver.as_ref(), msg).await;
+
+        // Checked after the turn, not before publishing each thing: the point
+        // is that `Core::handle` was allowed to finish and close its own
+        // windows. What must not happen is this answer reaching a device that
+        // has already asked something else.
+        if superseded.load(Ordering::SeqCst) {
+            debug!(
+                channel,
+                external_id = %external_id,
+                "esp32: turn superseded by a newer press; discarding its reply"
+            );
+            return;
+        }
+
+        match outcome {
             Ok(TurnOutcome {
                 session_id,
                 acp_session_id: Some(acp),
@@ -238,11 +270,19 @@ impl Esp32InboundSink {
                 acp_session_id: None,
                 ..
             }) => {
+                // Duplicate / NotAddressed / Empty / Command all land here.
+                // Logging alone used to be enough because nothing had touched
+                // the face; it is not enough now. The fork publishes `thinking`
+                // before `accept`, and the firmware's `onAgentThinking` clears
+                // its own `AgentTimeoutMs` deadline — so a turn that ends here
+                // silently pins the device on Think with no timeout and no way
+                // out but another press.
                 debug!(
                     channel,
                     external_id = %external_id,
-                    "esp32: message not a handled turn"
+                    "esp32: message not a handled turn; returning the device to idle"
                 );
+                speaker.done(&key).await;
             }
             Err(fail) => {
                 error!(
@@ -285,14 +325,32 @@ impl InboundSink for Esp32InboundSink {
         let key_for_task = key.clone();
         let external_message_id = msg.external_message_id.clone();
 
-        let handle = tokio::spawn(async move {
-            Self::process(turns, driver, speaker, active, key_for_task, msg).await;
-        });
+        // Registered BEFORE spawning, under one lock acquisition. Recording it
+        // afterwards let a turn that finished first clear an entry that did not
+        // exist yet, so `accept` then stored an `InFlight` for a task already
+        // gone — and the next press cancelled an idle ACP session. Fast
+        // outcomes (Duplicate, Empty, Command, a cached reply) hit that
+        // reliably.
+        let superseded = Arc::new(AtomicBool::new(false));
+        {
+            let mut g = self.active.lock().await;
+            g.entry(key.clone()).or_default().in_flight = Some(InFlight {
+                superseded: superseded.clone(),
+                external_message_id,
+            });
+        }
 
-        let mut g = self.active.lock().await;
-        g.entry(key).or_default().in_flight = Some(InFlight {
-            abort: handle.abort_handle(),
-            external_message_id,
+        tokio::spawn(async move {
+            Self::process(
+                turns,
+                driver,
+                speaker,
+                active,
+                key_for_task,
+                msg,
+                superseded,
+            )
+            .await;
         });
     }
 }
@@ -545,9 +603,27 @@ mod tests {
         }
     }
 
+    /// Always returns a non-`Handled` outcome — the Core's four quiet exits.
+    struct QuietTurns;
+
+    #[async_trait]
+    impl InboundTurnRunner for QuietTurns {
+        async fn run(
+            &self,
+            _driver: &dyn ChannelDriver,
+            _msg: InboundMessage,
+        ) -> Result<TurnOutcome, TurnFail> {
+            Ok(TurnOutcome {
+                session_id: None,
+                acp_session_id: None,
+            })
+        }
+    }
+
     struct RecordingSpeaker {
         cancels: Mutex<usize>,
         fails: Mutex<Vec<(String, String)>>,
+        dones: Mutex<usize>,
     }
 
     impl RecordingSpeaker {
@@ -555,6 +631,7 @@ mod tests {
             Self {
                 cancels: Mutex::new(0),
                 fails: Mutex::new(Vec::new()),
+                dones: Mutex::new(0),
             }
         }
     }
@@ -570,6 +647,9 @@ mod tests {
                 .lock()
                 .await
                 .push((code.to_string(), message.to_string()));
+        }
+        async fn done(&self, _key: &DeviceKey) {
+            *self.dones.lock().await += 1;
         }
     }
 
@@ -613,6 +693,40 @@ mod tests {
             agent as Arc<dyn AgentHandle>,
             speaker as Arc<dyn ReplySpeaker>,
         )
+    }
+
+    #[tokio::test]
+    async fn a_quiet_core_outcome_still_returns_the_device_to_idle() {
+        // Duplicate / NotAddressed / Empty / Command produce no reply. That was
+        // logged and nothing else — but the fork publishes `thinking` first,
+        // and the firmware's `onAgentThinking` clears its own AgentTimeoutMs
+        // deadline, so Think has no timeout left. Saying nothing here pins the
+        // device on Think until somebody presses the button again.
+        let speaker = Arc::new(RecordingSpeaker::new());
+        let sink = sink_with(
+            Arc::new(QuietTurns),
+            Arc::new(RecordingAgent::new()),
+            speaker.clone(),
+            Arc::new(RecordingDriver::default()),
+        );
+
+        sink.accept(msg("esp32:dev:boot:1", "在吗")).await;
+        for _ in 0..200 {
+            if *speaker.dones.lock().await > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            *speaker.dones.lock().await,
+            1,
+            "a turn with nothing to say must still end the turn on the device"
+        );
+        assert!(
+            speaker.fails.lock().await.is_empty(),
+            "nothing went wrong — the device must not be shown an error"
+        );
     }
 
     #[tokio::test]
@@ -780,8 +894,7 @@ mod tests {
                     team_id: "team-1".into(),
                     actor_id: "actor-1".into(),
                 };
-                if g.get(&key).and_then(|s| s.acp_session_id.as_deref()) == Some(acp.as_str())
-                {
+                if g.get(&key).and_then(|s| s.acp_session_id.as_deref()) == Some(acp.as_str()) {
                     break;
                 }
                 drop(g);

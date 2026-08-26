@@ -129,6 +129,19 @@ pub trait ReplySpeaker: Send + Sync {
     /// `Esp32InboundSink::accept`. Default is a no-op so ChatSink test fakes
     /// stay unchanged.
     async fn thinking(&self, _key: &DeviceKey) {}
+
+    /// End the turn with nothing to say, returning the device to idle.
+    ///
+    /// Needed because [`Self::thinking`] takes the device's own safety net
+    /// away: `onAgentThinking` calls `clearDeadline`, so once Think is showing,
+    /// `AgentTimeoutMs` will never fire. Any path that shows Think and then
+    /// produces neither speech nor an error leaves the device there forever,
+    /// and the only way out is another press — the very thing the three-press
+    /// bug was about.
+    ///
+    /// The Core has four ordinary outcomes that say nothing (`Duplicate`,
+    /// `NotAddressed`, `Empty`, `Command`), so this is not a rare path.
+    async fn done(&self, _key: &DeviceKey) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -409,8 +422,7 @@ impl SpeechSynthesizer {
             );
         }
         let topic = super::voice_ctl_topic(&key.team_id, &key.actor_id);
-        let payload =
-            serde_json::to_vec(&body).map_err(|e| format!("ctl serialise: {e}"))?;
+        let payload = serde_json::to_vec(&body).map_err(|e| format!("ctl serialise: {e}"))?;
         self.publisher.publish(topic, payload, true).await
     }
 }
@@ -495,6 +507,16 @@ impl ReplySpeaker for SpeechSynthesizer {
         self.send_ctl(
             key,
             serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "error", "code": code, "message": message }),
+        )
+        .await;
+    }
+
+    async fn done(&self, key: &DeviceKey) {
+        // Same ctl the empty-text path in `speak_text` uses, for the same
+        // reason: `spk_end` is what the firmware turns into `onAgentDone`.
+        self.send_ctl(
+            key,
+            serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "spk_end" }),
         )
         .await;
     }

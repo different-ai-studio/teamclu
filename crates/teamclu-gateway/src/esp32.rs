@@ -78,7 +78,20 @@ impl ChannelDriver for Esp32Driver {
             threading: Threading::Inline,
             // Voice has no message-length notion — `0` means do not split.
             max_chars: 0,
-            turn_timeout_secs: 60,
+            // 180, the same floor every other channel gets (`ChannelCaps::MINIMAL`).
+            //
+            // The design doc asked for 60 on the reasoning that the device gives
+            // up after 8 s anyway. That reasoning was wrong twice over: this
+            // value is not a queue property here — the ESP32 sink bypasses
+            // `SessionQueue` — it is wired straight into `AgentTurns::turn_timeout`,
+            // so it caps the *agent*. And the device's 8 s deadline is cancelled
+            // the moment `thinking` arrives (`onAgentThinking` → `clearDeadline`),
+            // so there is nothing short about what the device will tolerate.
+            //
+            // At 60 s any question a coding agent works on for a minute came back
+            // as `CoreError::Turn` → "电脑没醒着", with the agent alive and still
+            // working.
+            turn_timeout_secs: 180,
         }
     }
 
@@ -194,7 +207,7 @@ mod tests {
         assert!(!caps.media_upload);
         assert_eq!(caps.threading, Threading::Inline);
         assert_eq!(caps.max_chars, 0);
-        assert_eq!(caps.turn_timeout_secs, 60);
+        assert_eq!(caps.turn_timeout_secs, 180);
     }
 
     #[tokio::test]

@@ -82,12 +82,20 @@ ChannelCaps {
     interactive:    true,   // 屏幕能画菜单,表冠能选 —— 第 1 节那笔学费
     threading:      Threading::Inline,
     max_chars:      0,      // 不切分:朗读没有"消息长度"这个概念,见 4.4
-    turn_timeout_secs: 60,  // 设备本地 8s 就放弃了,见 §7.2
+    turn_timeout_secs: 180, // 见下:60 是初稿写错的
 }
 ```
 
 `max_chars: 0` 需要内核支持"不切分"的含义,今天是硬上限。要么给 0 赋予这个语义,
 要么设一个大到不会触发的值 —— 前者更诚实,是个小改动。
+
+**`turn_timeout_secs` 初稿写的是 60,是错的,已改为 180。** 两处错:一是这个字段
+在 ESP32 这条路上**不是排队属性**(sink 绕开了 `SessionQueue`),它被
+`ChannelManager::build_core` 直接接进 `AgentTurns::turn_timeout`,**封的是 agent
+回合**;二是"设备本地 8 秒就放弃"这个理由不成立 —— `thinking` 一到,固件
+`onAgentThinking` 就 `clearDeadline()`,设备根本不会在 8 秒后放弃。60 秒的实际
+后果是:任何让 agent 想了一分钟的问题都变成 `CoreError::Turn` → "电脑没醒着",
+而 agent 还活着。180 是其它所有渠道的基准(`ChannelCaps::MINIMAL`)。
 
 ### 4.2 绑定与身份
 
