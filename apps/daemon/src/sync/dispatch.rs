@@ -548,9 +548,9 @@ mod tests {
             .unwrap();
 
         let store = SecretStore::with_base(tmp.path().to_path_buf());
-        // A team secret is the precondition for syncing at all; without one the
-        // tick skips instead of erroring, and this test needs a real error to
-        // cache. With the secret in place it gets one from the missing backend.
+        // Secret is optional (plaintext knowledge); this test still plants one
+        // so the tick proceeds far enough to hit the missing-backend error that
+        // we then assert stays cached when auto_sync flips off.
         store
             .save(
                 "t",
@@ -597,10 +597,9 @@ mod tests {
         }
     }
 
-    /// A team that never set up sharing has nothing to sync. That used to be
-    /// decided by the cloud `share_mode` flag — which nothing sets any more — so
-    /// the honest precondition is the team secret: without it there is nothing
-    /// to encrypt or decrypt with, and a red banner would be noise.
+    /// Knowledge uploads are plaintext now, so a missing team secret must not
+    /// skip the tick. Skipping here used to leave a device permanently idle
+    /// with no banner — the same trap `share_mode` had when nothing set it.
     #[tokio::test]
     async fn a_team_without_a_secret_still_syncs() {
         let _lock = crate::config::global_team_store::TEST_HOME_LOCK
