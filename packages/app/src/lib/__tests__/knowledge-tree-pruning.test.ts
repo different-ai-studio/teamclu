@@ -67,4 +67,24 @@ describe('pruneKnowledgeNoise', () => {
     const tree = [file(`${KNOWLEDGE}/.obsidian`)]
     expect(pruneKnowledgeNoise(tree, opts).map((n) => n.name)).toEqual(['.obsidian'])
   })
+
+  // The daemon's `is_under_conflicts_dir` only hard-skips `<prefix>/.conflicts`,
+  // so a folder a user happens to name `.conflicts` deeper in the tree is their
+  // own: it syncs and is shared with the team. Matching by bare directory name
+  // hid files that really do sync — the `merge.conflict.md` bug inverted.
+  it('keeps a user directory named .conflicts below the knowledge root', () => {
+    const tree = [
+      dir(`${KNOWLEDGE}/.conflicts`, [
+        file(`${KNOWLEDGE}/.conflicts/note.conflict.1748332800.abc123de.md`),
+      ]),
+      dir(`${KNOWLEDGE}/projects`, [
+        dir(`${KNOWLEDGE}/projects/.conflicts`, [
+          file(`${KNOWLEDGE}/projects/.conflicts/notes.md`),
+        ]),
+      ]),
+    ]
+    const out = pruneKnowledgeNoise(tree, opts)
+    expect(out.map((n) => n.name)).toEqual(['projects'])
+    expect(out[0].children!.map((n) => n.name)).toEqual(['.conflicts'])
+  })
 })

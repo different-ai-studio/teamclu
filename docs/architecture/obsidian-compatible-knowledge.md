@@ -409,6 +409,16 @@ drizzle）。定下来的形状：`SYNC_MAX_BYTES_PER_TEAM` 默认 **2 GiB**—�
 不能照抄文件数的 10 秒缓存——一个 200 条的 batch 在缓存过期前全部放行，最坏超出
 200 × 25 MiB = 5 GiB，比配额本身还大。
 
+**累加只对新增路径（`parentVersion === 0`）计费，且只在该 item 成功之后计。** 编辑
+的旧字节本来就在 sum 里，再按全量 size 计一遍就是把文件数了两次，会让一个远未触顶的
+团队吃 422——这正是本节开头那条「配额不会误挡」不能破的地方。代价是一个有界的少算
+（编辑变大的部分等下次重读 sum 才算得上，超收上限一个 batch），方向是对的。
+
+sum 走 `amuxc_team_live_bytes` / drizzle `sumLiveBytes`，并有一条
+`(team_id) INCLUDE (size) WHERE deleted = false` 的偏索引兜着——`amuxc_files` 原有
+三条索引都不带 `deleted`/`size`，不加索引的话这个聚合会在写路径上把全团队 live 行
+都捞一遍（上限 5 万行），一次 tick 最多 10 次。
+
 **配额 ≠ 磁盘保护。** 物理占用还含历史版本 blob，回收靠 FC cron 的
 `amux.oss_sync_gc_orphan_blobs()`，而 cron 是 compose 的独立 profile，self-host 没开。
 启用 GC 单开 ops ticket（注意记忆里 FC cron 曾因 drizzle 裸表名 vs `amux` schema 的

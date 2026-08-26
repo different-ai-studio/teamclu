@@ -372,9 +372,18 @@ token rotation guarantees one within 1h. No dedicated timer.
   `SYNC_MAX_BYTES_PER_TEAM`, default `2 * 1024 ** 3`), `liveByteSum(teamId, sumBytes)`
   with the same "cannot establish → `null` → allow" policy as the file count
 - Modify: `services/fc/src/lib/sync-handlers.ts` — `handleSyncUploadPrepareBatch`
-  fetches the live sum **once per batch call** and keeps a running total of item
-  `size` across the batch; the item that crosses the line and every item after it
-  get 422 `{ code: 'QuotaExceeded', kind: 'bytes' }`. Single prepare: `sum + size`.
+  fetches the live sum **once per batch call** and keeps a running total across
+  the batch; the item that crosses the line and every item after it get 422
+  `{ code: 'QuotaExceeded', kind: 'bytes' }`. Single prepare: `sum + size`.
+  **Charge only new paths (`parentVersion === 0`), and only after the item
+  succeeded.** An edit's old bytes are already inside the sum, so charging its
+  full size double-counts the file and refuses writes a team is nowhere near its
+  limit; a rejected item never becomes bytes at all. The bounded under-count
+  (growth on an edit goes uncharged until the next call re-reads the sum) is the
+  right direction for this guard — see ADR-0008 P1 #1.
+- Migration: partial covering index for the sum —
+  `(team_id) INCLUDE (size) WHERE deleted = false`. Without it the aggregate
+  heap-fetches every live row on the write path, up to 10× per tick per device.
 - Repository: `sum(size)` over live files on both backends — pg-repo via drizzle,
   Supabase via a new RPC `amux.amuxc_team_live_bytes(team_id)` (migration)
 - Env: declare in `deploy/self-host/docker-compose.yml` (fc `environment:`, indent 6),

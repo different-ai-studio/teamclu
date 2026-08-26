@@ -106,6 +106,16 @@ Knowledge 同步是**团队 Markdown vault 的云副本**，不是通用网盘�
    的 10s 缓存（一个 200 条 batch 最坏超出 200 × 25 MiB = 5 GiB，比配额还大）；
    不做跨请求 in-flight 计数。写入 compose / `s.yaml` / `.env.example` 三处
    （`deploy-env-parity.test.ts` 守着，且要求源码里真的读了它）。
+
+   **运行累加只对新增路径计费，且只在该 item 成功之后计。** 这条是本 ADR 第一版漏
+   写、代码照做之后被 review 抓出来的：一次编辑的旧字节**本来就在 sum 里**，再按全量
+   size 计一遍等于把同一个文件数了两次——一个 50/100 的团队改三篇 30 字节的笔记就会
+   在第 2 条上撞 422，而这三条全部写完总量根本没变；被拒的 item（`IgnoredPath`、CAS
+   失败）更是从来不会变成字节，却把额度花掉、连累同一 batch 里后面所有合法笔记。
+   判据用请求体里现成的 `parentVersion`：`0` = 新路径，计费；`> 0` = 编辑，计 0。
+   代价是一个**有界的少算**——编辑让文件变大的那部分要等下一次调用重读 sum 才算得上，
+   所以超收上限就是一个 batch（≤200 条）。对一道专防病态批量新增的闸门，这是正确的
+   方向：**配额可以让一个 batch 冲过头，但绝不能误挡**（§4.7「配额不会误挡」）。
    **配额 ≠ 磁盘保护**：物理占用还含历史版本 blob，依赖 `oss_sync_gc_orphan_blobs`
    的 FC cron，而 cron 是 compose 独立 profile，self-host 未开。GC 启用单开 ops
    ticket，不进本路线图；ticket 关闭前对外不说「磁盘安全」。

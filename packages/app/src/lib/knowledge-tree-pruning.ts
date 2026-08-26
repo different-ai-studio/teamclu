@@ -7,13 +7,25 @@ import { teamSyncKeyForPath } from '@/lib/team-skill-paths'
  * `.obsidian` is Obsidian's own per-vault config. We create it ourselves when
  * first registering the knowledge dir as a vault, so it is present on every
  * machine — and it is never synced, so listing it would put a folder nobody
- * asked for at the top of the team's documents.
- *
- * `.conflicts` holds the sync engine's local-only conflict copies (mirrored
- * under the note's relative path). Obsidian ignores dot-directories; we hide
- * the same folder so the tree badge on the document is the only signal.
+ * asked for at the top of the team's documents. Matched by NAME at any depth,
+ * which is what the daemon does too: `.obsidian/` in its builtin ignore list is
+ * a gitignore pattern without a leading slash, so it matches at every level.
  */
-const KNOWLEDGE_TOOLING_DIRS = new Set(['.obsidian', '.conflicts'])
+const KNOWLEDGE_TOOLING_DIRS = new Set(['.obsidian'])
+
+/**
+ * The sync engine's local-only conflict copies, mirrored under the note's
+ * relative path. Obsidian ignores dot-directories; we hide the same folder so
+ * the tree badge on the document is the only signal.
+ *
+ * Matched by SYNC KEY, not by name: the daemon's `is_under_conflicts_dir` only
+ * hard-skips `<prefix>/.conflicts`, so a folder a user happens to call
+ * `.conflicts` deeper in the tree (`knowledge/projects/.conflicts/`) is theirs —
+ * it syncs and is shared with the team. Hiding it by name would make files that
+ * really do sync invisible: the same daemon/UI disagreement that once hid
+ * `merge.conflict.md`, just inverted.
+ */
+const CONFLICTS_SYNC_KEY = 'knowledge/.conflicts'
 
 export interface KnowledgeScopeOpts {
   knowledgeDir?: string | null
@@ -41,9 +53,9 @@ export function pruneKnowledgeNoise(
   let changed = false
   const out: FileNode[] = []
   for (const node of nodes) {
-    const inKnowledge = teamSyncKeyForPath(node.path, opts) !== null
-    if (inKnowledge) {
-      if (node.type === 'directory' && KNOWLEDGE_TOOLING_DIRS.has(node.name)) {
+    const syncKey = teamSyncKeyForPath(node.path, opts)
+    if (syncKey !== null && node.type === 'directory') {
+      if (KNOWLEDGE_TOOLING_DIRS.has(node.name) || syncKey === CONFLICTS_SYNC_KEY) {
         changed = true
         continue
       }
