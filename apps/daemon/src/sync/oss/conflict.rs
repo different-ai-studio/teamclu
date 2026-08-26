@@ -1,30 +1,49 @@
-//! Conflict sidecar file management (spec §4.4).
+//! Conflict sidecar file management (spec §4.4 / ADR-0008 §5.2 A).
 //!
-//! Name format: `<dir>/<stem>.conflict.<unix_ts>.<short_cipher_hash[0..8]>.<ext>`
-//! (or no ext if original had none).
+//! Layout:
+//! ```text
+//! knowledge/a/foo.md
+//! knowledge/.conflicts/a/foo.conflict.<unix_ts>.<short_hash[0..8]>[.<ext>]
+//! ```
 //!
-//! Scanner skips all `*.conflict.*` files so they are never uploaded.
+//! The filename format is unchanged; only the directory is. Obsidian ignores
+//! dot-directories by default, so parking copies under `.conflicts/` keeps the
+//! vault tree and graph clean. Scanner skips the whole directory (hard rule,
+//! not via IgnoreRules) so a team `.amuxignore` `!.conflicts/` cannot re-include
+//! them; they are never uploaded.
 //!
 //! [`original_from_conflict`] and [`conflict_timestamp`] are the read side:
 //! `GET /v1/team/conflicts` turns a sidecar back into "which document conflicted,
-//! and when", which is what the resolution UI decides against.
+//! and when", which is what the resolution UI decides against. Legacy sidecars
+//! that still sit beside a note (pre-migration) reverse the same way — the
+//! scanner relocates them on sight.
 
-use std::path::Path;
+use super::path_validator::ALLOWED_PREFIXES;
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Write a conflict sidecar file containing `data` alongside the original `abs_path`.
-/// Returns the path of the conflict file written.
+/// Directory name under each sync prefix that holds conflict copies.
+pub const CONFLICTS_DIR: &str = ".conflicts";
+
+/// Write a conflict sidecar file containing `data` for the original `abs_path`.
+/// Returns the path of the conflict file written (under `.conflicts/`).
 pub async fn write_conflict_sidecar(
     abs_path: &Path,
     data: &[u8],
     cipher_hash: &str,
-) -> Result<std::path::PathBuf, String> {
+) -> Result<PathBuf, String> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
     let conflict_path = conflict_filename(abs_path, ts, cipher_hash);
+
+    if let Some(parent) = conflict_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("conflict: mkdir {}: {e}", parent.display()))?;
+    }
 
     tokio::fs::write(&conflict_path, data)
         .await
@@ -33,10 +52,11 @@ pub async fn write_conflict_sidecar(
     Ok(conflict_path)
 }
 
-/// Construct the conflict filename for a given original path, timestamp and cipher_hash.
-/// This is public so the scanner test can exercise it.
-pub fn conflict_filename(original: &Path, unix_ts: u64, cipher_hash: &str) -> std::path::PathBuf {
-    let dir = original.parent().unwrap_or_else(|| Path::new("."));
+/// Construct the conflict path for a given original path, timestamp and cipher_hash.
+///
+/// The sidecar lands under `<prefix>/.conflicts/<mirrored relative dirs>/`, not
+/// beside the original. Public so scanner tests can exercise the mapping.
+pub fn conflict_filename(original: &Path, unix_ts: u64, cipher_hash: &str) -> PathBuf {
     let filename = original
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -64,13 +84,125 @@ pub fn conflict_filename(original: &Path, unix_ts: u64, cipher_hash: &str) -> st
         }
     };
 
-    dir.join(conflict_name)
+    conflict_parent_dir(original).join(conflict_name)
+}
+
+/// Directory that should hold the sidecar for `original` — the original's
+/// parent with `.conflicts` inserted after the sync-prefix segment.
+///
+/// `…/knowledge/a/foo.md` → `…/knowledge/.conflicts/a`
+/// `…/knowledge/foo.md`   → `…/knowledge/.conflicts`
+fn conflict_parent_dir(original: &Path) -> PathBuf {
+    let parent = original.parent().unwrap_or_else(|| Path::new("."));
+    insert_conflicts_component(parent)
+}
+
+/// Insert `.conflicts` after the first sync-prefix path component.
+fn insert_conflicts_component(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    let mut inserted = false;
+    for comp in path.components() {
+        out.push(comp);
+        if inserted {
+            continue;
+        }
+        if let Component::Normal(name) = comp {
+            if is_sync_prefix_name(name) {
+                out.push(CONFLICTS_DIR);
+                inserted = true;
+            }
+        }
+    }
+    if inserted {
+        out
+    } else {
+        // Not under a known prefix — keep beside the file rather than invent a
+        // root-level `.conflicts/` that nothing else knows about.
+        path.to_path_buf()
+    }
+}
+
+fn is_sync_prefix_name(name: &std::ffi::OsStr) -> bool {
+    ALLOWED_PREFIXES
+        .iter()
+        .any(|p| name == p.trim_end_matches('/'))
+}
+
+/// Whether a relative sync path sits under `<prefix>/.conflicts/` (the dir
+/// itself or anything beneath it). Hard-skip target for scanner + pull.
+pub fn is_under_conflicts_dir(rel_path: &str) -> bool {
+    for prefix in ALLOWED_PREFIXES {
+        let p = prefix.trim_end_matches('/');
+        let marker = format!("{p}/{CONFLICTS_DIR}");
+        if rel_path == marker || rel_path.starts_with(&format!("{marker}/")) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Relocate a legacy sidecar (`knowledge/a/foo.conflict…` beside the note) into
+/// the mirrored `.conflicts/` path. No-op when already there or not a sidecar.
+///
+/// Sidecars were never uploaded, so this is a local rename with no tombstone.
+/// Returns the destination relative path when the file is (or becomes) a
+/// sidecar under `.conflicts/`.
+pub fn migrate_legacy_conflict_sidecar(root: &Path, rel: &str) -> Option<String> {
+    if !crate::sync::oss::scanner::is_conflict_file(rel) {
+        return None;
+    }
+    if is_under_conflicts_dir(rel) {
+        return Some(rel.to_string());
+    }
+
+    let new_rel = legacy_rel_to_conflicts_rel(rel)?;
+    let src = root.join(rel);
+    let dst = root.join(&new_rel);
+    if !src.is_file() {
+        return None;
+    }
+    if let Some(parent) = dst.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if dst.exists() {
+        // Destination already holds a copy — drop the legacy leftover.
+        let _ = std::fs::remove_file(&src);
+    } else if std::fs::rename(&src, &dst).is_err() {
+        return None;
+    }
+    Some(new_rel)
+}
+
+/// `knowledge/a/foo.conflict.ts.hash.md` → `knowledge/.conflicts/a/foo.conflict.ts.hash.md`
+fn legacy_rel_to_conflicts_rel(rel: &str) -> Option<String> {
+    let (dir, filename) = match rel.rsplit_once('/') {
+        Some((d, f)) => (d, f),
+        None => return None,
+    };
+    let mut parts: Vec<&str> = dir.split('/').collect();
+    let mut i = 0;
+    let mut inserted = false;
+    while i < parts.len() {
+        if !inserted && ALLOWED_PREFIXES.iter().any(|p| parts[i] == p.trim_end_matches('/')) {
+            parts.insert(i + 1, CONFLICTS_DIR);
+            inserted = true;
+            break;
+        }
+        i += 1;
+    }
+    if !inserted {
+        return None;
+    }
+    Some(format!("{}/{filename}", parts.join("/")))
 }
 
 /// Reconstruct the original file's relative path from a conflict sidecar's
 /// relative path. Inverse of [`conflict_filename`].
 ///
-/// `<dir>/<stem>.conflict.<ts>.<hash>[.<ext>]` → `<dir>/<stem>[.<ext>]`
+/// `knowledge/.conflicts/a/<stem>.conflict.<ts>.<hash>[.<ext>]` → `knowledge/a/<stem>[.<ext>]`
+///
+/// Also accepts the pre-migration layout (sidecar beside the note) so resolve
+/// and move-on-scan keep working until the rename lands.
 ///
 /// Returns `None` if `rel_path` is not a conflict sidecar.
 pub fn original_from_conflict(rel_path: &str) -> Option<String> {
@@ -90,10 +222,34 @@ pub fn original_from_conflict(rel_path: &str) -> Option<String> {
         _ => return None,
     };
 
+    let dir = dir.map(strip_conflicts_segment);
     Some(match dir {
-        Some(d) => format!("{d}/{original_name}"),
-        None => original_name,
+        Some(d) if !d.is_empty() => format!("{d}/{original_name}"),
+        _ => original_name,
     })
+}
+
+/// Drop the `.conflicts` segment that sits under a sync prefix.
+///
+/// `knowledge/.conflicts/a` → `knowledge/a`
+/// `knowledge/.conflicts`   → `knowledge`
+/// `knowledge/a` (legacy)   → `knowledge/a`
+fn strip_conflicts_segment(dir: &str) -> String {
+    let parts: Vec<&str> = dir.split('/').filter(|s| !s.is_empty()).collect();
+    let mut out: Vec<&str> = Vec::with_capacity(parts.len());
+    let mut i = 0;
+    while i < parts.len() {
+        out.push(parts[i]);
+        let is_prefix = ALLOWED_PREFIXES
+            .iter()
+            .any(|p| parts[i] == p.trim_end_matches('/'));
+        if is_prefix && i + 1 < parts.len() && parts[i + 1] == CONFLICTS_DIR {
+            i += 2; // skip the `.conflicts` we just looked past
+            continue;
+        }
+        i += 1;
+    }
+    out.join("/")
 }
 
 /// The unix timestamp a sidecar records in its name, or `None` when the name is
@@ -114,37 +270,68 @@ mod tests {
 
     #[test]
     fn test_conflict_name_with_extension() {
-        let path = Path::new("/ws/skills/foo.md");
+        let path = Path::new("/ws/knowledge/foo.md");
         let name = conflict_filename(path, 1748332800, "abc123defxxx");
         let filename = name.file_name().unwrap().to_str().unwrap();
         assert_eq!(filename, "foo.conflict.1748332800.abc123de.md");
-        assert_eq!(name.parent().unwrap(), Path::new("/ws/skills"));
+        assert_eq!(
+            name.parent().unwrap(),
+            Path::new("/ws/knowledge/.conflicts")
+        );
+    }
+
+    #[test]
+    fn test_conflict_name_nested_dir() {
+        let path = Path::new("/ws/knowledge/a/b/foo.md");
+        let name = conflict_filename(path, 1748332800, "abc123defxxx");
+        assert_eq!(
+            name,
+            Path::new("/ws/knowledge/.conflicts/a/b/foo.conflict.1748332800.abc123de.md")
+        );
     }
 
     #[test]
     fn test_conflict_name_no_extension() {
-        let path = Path::new("/ws/skills/Makefile");
+        let path = Path::new("/ws/knowledge/Makefile");
         let name = conflict_filename(path, 9999, "deadbeefabcd");
         let filename = name.file_name().unwrap().to_str().unwrap();
         assert_eq!(filename, "Makefile.conflict.9999.deadbeef");
+        assert_eq!(
+            name.parent().unwrap(),
+            Path::new("/ws/knowledge/.conflicts")
+        );
+    }
+
+    #[test]
+    fn test_conflict_name_cjk() {
+        let path = Path::new("/ws/knowledge/笔记/你好.md");
+        let name = conflict_filename(path, 100, "aabbccdd1234");
+        assert_eq!(
+            name,
+            Path::new("/ws/knowledge/.conflicts/笔记/你好.conflict.100.aabbccdd.md")
+        );
     }
 
     #[test]
     fn test_conflict_name_dotfile() {
         // e.g. ".gitignore" — stem is "", ext is "gitignore"
         // rfind('.') at 0 → stem="", ext="gitignore"
-        let path = Path::new("/ws/skills/.gitignore");
+        let path = Path::new("/ws/knowledge/.gitignore");
         let name = conflict_filename(path, 100, "aabbccdd1234");
         let filename = name.file_name().unwrap().to_str().unwrap();
         // stem="" ext="gitignore" → ".conflict.100.aabbccdd.gitignore"
         assert!(filename.contains(".conflict."));
         assert!(filename.ends_with(".gitignore"));
+        assert_eq!(
+            name.parent().unwrap(),
+            Path::new("/ws/knowledge/.conflicts")
+        );
     }
 
     #[test]
     fn test_conflict_name_short_hash() {
         // If hash is shorter than 8 chars, take all of it
-        let path = Path::new("/ws/skills/x.md");
+        let path = Path::new("/ws/knowledge/x.md");
         let name = conflict_filename(path, 1, "ab");
         let filename = name.file_name().unwrap().to_str().unwrap();
         assert!(filename.contains(".conflict.1.ab.md"));
@@ -152,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_same_ts_produces_deterministic_name() {
-        let path = Path::new("/ws/skills/doc.txt");
+        let path = Path::new("/ws/knowledge/doc.txt");
         let name1 = conflict_filename(path, 1234567890, "hash1111aaaa");
         let name2 = conflict_filename(path, 1234567890, "hash1111aaaa");
         assert_eq!(name1, name2);
@@ -160,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_different_hashes_produce_different_names() {
-        let path = Path::new("/ws/skills/doc.txt");
+        let path = Path::new("/ws/knowledge/doc.txt");
         let name1 = conflict_filename(path, 1000, "aaaa1111bbbb");
         let name2 = conflict_filename(path, 1000, "xxxx9999yyyy");
         assert_ne!(name1, name2);
@@ -168,30 +355,49 @@ mod tests {
 
     #[test]
     fn test_original_from_conflict_roundtrip() {
-        // With extension
+        // New layout under `.conflicts/`
         assert_eq!(
-            original_from_conflict("knowledge/foo.conflict.1748332800.abc123de.md").as_deref(),
+            original_from_conflict("knowledge/.conflicts/foo.conflict.1748332800.abc123de.md")
+                .as_deref(),
             Some("knowledge/foo.md")
+        );
+        assert_eq!(
+            original_from_conflict("knowledge/.conflicts/a/b/foo.conflict.1.aabbccdd.md")
+                .as_deref(),
+            Some("knowledge/a/b/foo.md")
         );
         // No extension
         assert_eq!(
-            original_from_conflict("knowledge/Makefile.conflict.9999.deadbeef").as_deref(),
+            original_from_conflict("knowledge/.conflicts/Makefile.conflict.9999.deadbeef")
+                .as_deref(),
             Some("knowledge/Makefile")
         );
         // Multi-dot original (only the last segment is the recorded ext)
         assert_eq!(
-            original_from_conflict("k/foo.tar.conflict.1.aabbccdd.gz").as_deref(),
-            Some("k/foo.tar.gz")
+            original_from_conflict("knowledge/.conflicts/k/foo.tar.conflict.1.aabbccdd.gz")
+                .as_deref(),
+            Some("knowledge/k/foo.tar.gz")
         );
         // Dotfile
         assert_eq!(
-            original_from_conflict("knowledge/.conflict.100.aabbccdd.gitignore").as_deref(),
+            original_from_conflict("knowledge/.conflicts/.conflict.100.aabbccdd.gitignore")
+                .as_deref(),
             Some("knowledge/.gitignore")
         );
-        // Root-level (no dir)
+        // CJK
         assert_eq!(
-            original_from_conflict("foo.conflict.1.abcd1234.md").as_deref(),
-            Some("foo.md")
+            original_from_conflict("knowledge/.conflicts/笔记/你好.conflict.100.aabbccdd.md")
+                .as_deref(),
+            Some("knowledge/笔记/你好.md")
+        );
+        // Legacy layout (beside the note) still reverses — resolve + migrate
+        assert_eq!(
+            original_from_conflict("knowledge/foo.conflict.1748332800.abc123de.md").as_deref(),
+            Some("knowledge/foo.md")
+        );
+        assert_eq!(
+            original_from_conflict("knowledge/a/foo.conflict.1.aabbccdd.md").as_deref(),
+            Some("knowledge/a/foo.md")
         );
         // Not a conflict file
         assert_eq!(original_from_conflict("knowledge/foo.md"), None);
@@ -199,8 +405,13 @@ mod tests {
 
     #[test]
     fn test_filename_conflict_roundtrip_via_helpers() {
-        // conflict_filename → original_from_conflict should recover the original.
-        for original in ["knowledge/foo.md", "k/Makefile", "a/b/note.txt"] {
+        // conflict_filename → strip workspace → original_from_conflict
+        for original in [
+            "knowledge/foo.md",
+            "knowledge/Makefile",
+            "knowledge/a/b/note.txt",
+            "knowledge/笔记/你好.md",
+        ] {
             let conflict = conflict_filename(
                 Path::new(&format!("/ws/{original}")),
                 1748332800,
@@ -211,6 +422,10 @@ mod tests {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
+            assert!(
+                conflict_rel.contains("/.conflicts/"),
+                "expected .conflicts/ in {conflict_rel}"
+            );
             assert_eq!(
                 original_from_conflict(&conflict_rel).as_deref(),
                 Some(original),
@@ -222,24 +437,73 @@ mod tests {
     #[test]
     fn test_conflict_timestamp() {
         assert_eq!(
+            conflict_timestamp("knowledge/.conflicts/foo.conflict.1748332800.abc123de.md"),
+            Some(1748332800)
+        );
+        // Legacy path still parses
+        assert_eq!(
             conflict_timestamp("knowledge/foo.conflict.1748332800.abc123de.md"),
             Some(1748332800)
         );
         // No extension
         assert_eq!(
-            conflict_timestamp("knowledge/Makefile.conflict.9999.deadbeef"),
+            conflict_timestamp("knowledge/.conflicts/Makefile.conflict.9999.deadbeef"),
             Some(9999)
         );
         // Not a sidecar
         assert_eq!(conflict_timestamp("knowledge/foo.md"), None);
         // Sidecar-shaped but the timestamp slot is not a number
-        assert_eq!(conflict_timestamp("knowledge/foo.conflict.x.abc.md"), None);
+        assert_eq!(
+            conflict_timestamp("knowledge/.conflicts/foo.conflict.x.abc.md"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_is_under_conflicts_dir() {
+        assert!(is_under_conflicts_dir("knowledge/.conflicts"));
+        assert!(is_under_conflicts_dir(
+            "knowledge/.conflicts/a/foo.conflict.1.aabbccdd.md"
+        ));
+        assert!(!is_under_conflicts_dir("knowledge/foo.md"));
+        assert!(!is_under_conflicts_dir("knowledge/a/.conflicts-not"));
+        assert!(!is_under_conflicts_dir(
+            "knowledge/foo.conflict.1.aabbccdd.md"
+        ));
+    }
+
+    #[test]
+    fn test_migrate_legacy_conflict_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let knowledge = root.join("knowledge/a");
+        std::fs::create_dir_all(&knowledge).unwrap();
+        let legacy = knowledge.join("foo.conflict.1000.aabbccdd.md");
+        std::fs::write(&legacy, b"local copy").unwrap();
+
+        let new_rel =
+            migrate_legacy_conflict_sidecar(root, "knowledge/a/foo.conflict.1000.aabbccdd.md")
+                .unwrap();
+        assert_eq!(
+            new_rel,
+            "knowledge/.conflicts/a/foo.conflict.1000.aabbccdd.md"
+        );
+        assert!(!legacy.exists());
+        assert_eq!(
+            std::fs::read(root.join(&new_rel)).unwrap(),
+            b"local copy"
+        );
+        // Idempotent when already under .conflicts/
+        assert_eq!(
+            migrate_legacy_conflict_sidecar(root, &new_rel).as_deref(),
+            Some(new_rel.as_str())
+        );
     }
 
     #[tokio::test]
     async fn test_write_conflict_sidecar() {
         let dir = tempfile::tempdir().unwrap();
-        let original = dir.path().join("knowledge").join("test.md");
+        let original = dir.path().join("knowledge").join("a").join("test.md");
         std::fs::create_dir_all(original.parent().unwrap()).unwrap();
         std::fs::write(&original, b"original").unwrap();
 
@@ -253,5 +517,10 @@ mod tests {
         let name = sidecar.file_name().unwrap().to_str().unwrap();
         assert!(name.contains(".conflict."));
         assert!(name.ends_with(".md"));
+        // Lands under knowledge/.conflicts/a/, not beside the note
+        assert_eq!(
+            sidecar.parent().unwrap(),
+            dir.path().join("knowledge/.conflicts/a")
+        );
     }
 }

@@ -17,8 +17,8 @@ vi.mock('@/stores/oss-sync', () => ({
 
 const { useTeamConflictsStore } = await import('../team-conflicts')
 
-const SIDECAR = 'knowledge/note.conflict.1000.aabbccdd.md'
-const OLDER = 'knowledge/note.conflict.900.eeeeeeee.md'
+const SIDECAR = 'knowledge/.conflicts/note.conflict.1000.aabbccdd.md'
+const OLDER = 'knowledge/.conflicts/note.conflict.900.eeeeeeee.md'
 
 function entry(sidecar: string, conflictedAt: number) {
   return { path: 'knowledge/note.md', sidecar, conflictedAt, kind: 'oss-sidecar' }
@@ -49,7 +49,7 @@ describe('team-conflicts store', () => {
     await useTeamConflictsStore.getState().load()
 
     expect(useTeamConflictsStore.getState().absPathFor(SIDECAR)).toBe(
-      '/home/u/.amuxd/teams/team-1/shared/knowledge/note.conflict.1000.aabbccdd.md',
+      '/home/u/.amuxd/teams/team-1/shared/knowledge/.conflicts/note.conflict.1000.aabbccdd.md',
     )
     // Anything outside the knowledge prefix is not ours to place.
     expect(useTeamConflictsStore.getState().absPathFor('skills/x.md')).toBeNull()

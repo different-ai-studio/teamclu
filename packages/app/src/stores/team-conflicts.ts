@@ -9,9 +9,10 @@ import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
  * One conflict waiting for a human decision.
  *
  * A conflict happens when a document changed on both sides: the sync engine
- * parks the local bytes in a sidecar and lets the remote version overwrite the
- * document. So `path` is the document the user recognises (already holding the
- * REMOTE text), and `sidecar` is where their own text went.
+ * parks the local bytes in a sidecar under `.conflicts/` and lets the remote
+ * version overwrite the document. So `path` is the document the user recognises
+ * (already holding the REMOTE text), and `sidecar` is where their own text went
+ * (e.g. `knowledge/.conflicts/a/foo.conflict.<ts>.<hash>.md`).
  */
 export interface TeamConflict {
   /** Sync key of the document, e.g. `knowledge/onboarding.md`. */
@@ -48,17 +49,6 @@ interface TeamConflictsState {
 }
 
 const KNOWLEDGE_PREFIX = 'knowledge/'
-
-/**
- * Whether a filename is a conflict sidecar (`<stem>.conflict.<ts>.<hash>[.<ext>]`).
- *
- * Must agree with the daemon's `has_conflict_infix` — that is what decides which
- * files the sync engine refuses to upload, and the same files are the ones the
- * knowledge tree hides in favour of a badge on the document itself.
- */
-export function isConflictSidecarName(name: string): boolean {
-  return name.includes('.conflict.')
-}
 
 function groupBySyncKey(entries: TeamConflict[]): Record<string, TeamConflict[]> {
   const out: Record<string, TeamConflict[]> = {}

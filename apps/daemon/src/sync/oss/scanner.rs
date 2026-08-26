@@ -4,14 +4,19 @@
 //! - Walk the workspace looking for files under allowed prefixes.
 //! - Prune ignored entries ([`IgnoreRules`]) without descending into them —
 //!   never walking `node_modules/` is most of why this stays cheap.
-//! - Skip conflict sidecar files (`*.conflict.*`).
+//! - Hard-skip the `.conflicts/` directory (not via IgnoreRules — a team
+//!   `!.conflicts/` must not re-include it) and relocate any legacy sidecar
+//!   still sitting beside a note into that directory (move-on-scan).
 //! - Cheap dirty check: if mtime+size match state, assume clean.
 //! - If mtime/size differ, recompute sha256(plaintext) and compare against
 //!   `local_plain_hash` in state to detect real changes.
 //! - Returns the list of relative paths that are dirty (or new).
 
 use super::{
-    crypto::sha256_hex, ignore_rules::IgnoreRules, path_validator::ALLOWED_PREFIXES,
+    conflict::{self, CONFLICTS_DIR},
+    crypto::sha256_hex,
+    ignore_rules::IgnoreRules,
+    path_validator::ALLOWED_PREFIXES,
     state::LocalSyncState,
 };
 use std::path::Path;
@@ -60,7 +65,16 @@ pub fn scan_workspace_with(
             // Prune at the directory, so an ignored tree costs one stat instead
             // of a full walk. This is also what makes the rules affordable at
             // all: `node_modules/` is the case they exist for.
-            .filter_entry(|e| !is_ignored_entry(root, e, rules))
+            //
+            // `.conflicts/` is pruned here as a HARD rule (checked before
+            // IgnoreRules) so a team `.amuxignore` `!.conflicts/` cannot put
+            // conflict copies back on the sync path.
+            .filter_entry(|e| {
+                if is_conflicts_dir_entry(root, e) {
+                    return false;
+                }
+                !is_ignored_entry(root, e, rules)
+            })
             .filter_map(|e| e.ok())
         {
             if !entry.file_type().is_file() {
@@ -72,8 +86,16 @@ pub fn scan_workspace_with(
                 Err(_) => continue,
             };
 
-            // Skip conflict sidecar files
+            // Defense in depth — should already be pruned by filter_entry.
+            if conflict::is_under_conflicts_dir(&rel) {
+                continue;
+            }
+
+            // Legacy sidecar beside a note: relocate under `.conflicts/` and
+            // keep scanning. Sidecars were never uploaded, so this is a local
+            // rename with no tombstone side effect.
             if is_conflict_file(&rel) {
+                let _ = conflict::migrate_legacy_conflict_sidecar(root, &rel);
                 continue;
             }
 
@@ -130,21 +152,26 @@ pub fn scan_workspace_with(
     results
 }
 
-/// Walk the workspace under allowed prefixes and return the relative paths of
-/// all conflict sidecar files (`*.conflict.*`) currently on disk.
+/// Walk each prefix's `.conflicts/` directory and return the relative paths of
+/// all conflict sidecar files currently on disk.
 ///
-/// Used by `oss_sync_status` to surface conflicted files in the file tree;
-/// `scan_workspace_with` deliberately skips these, so they need a separate pass.
+/// Relocates any legacy sidecars still sitting beside notes first (move-on-scan),
+/// so the conflicts UI sees a consistent layout even before the next full sync
+/// tick. Used by `GET /v1/team/conflicts`; `scan_workspace_with` deliberately
+/// skips these, so they need a separate pass.
 pub fn scan_conflict_files(workspace_path: &str) -> Vec<String> {
     let root = Path::new(workspace_path);
-    let mut results = Vec::new();
+    migrate_legacy_sidecars_under(root);
 
+    let mut results = Vec::new();
     for prefix in ALLOWED_PREFIXES {
-        let prefix_dir = root.join(prefix.trim_end_matches('/'));
-        if !prefix_dir.exists() {
+        let conflicts_dir = root
+            .join(prefix.trim_end_matches('/'))
+            .join(CONFLICTS_DIR);
+        if !conflicts_dir.exists() {
             continue;
         }
-        for entry in WalkDir::new(&prefix_dir)
+        for entry in WalkDir::new(&conflicts_dir)
             .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -163,6 +190,34 @@ pub fn scan_conflict_files(workspace_path: &str) -> Vec<String> {
     }
 
     results
+}
+
+/// Relocate every legacy sidecar under allowed prefixes into `.conflicts/`.
+/// Does not descend into `.conflicts/` itself.
+fn migrate_legacy_sidecars_under(root: &Path) {
+    for prefix in ALLOWED_PREFIXES {
+        let prefix_dir = root.join(prefix.trim_end_matches('/'));
+        if !prefix_dir.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(&prefix_dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| !is_conflicts_dir_entry(root, e))
+            .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let Ok(rel) = entry.path().strip_prefix(root) else {
+                continue;
+            };
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if is_conflict_file(&rel) {
+                let _ = conflict::migrate_legacy_conflict_sidecar(root, &rel);
+            }
+        }
+    }
 }
 
 /// Entries the rules exclude, as the shallowest paths that explain the
@@ -227,6 +282,18 @@ fn is_ignored_entry(root: &Path, entry: &walkdir::DirEntry, rules: &IgnoreRules)
         return false;
     }
     rules.is_ignored(&rel, entry.file_type().is_dir())
+}
+
+/// Whether this walk entry is the `.conflicts/` directory (or under it).
+///
+/// Checked independently of [`IgnoreRules`] so a negation rule cannot re-open
+/// the tree. Used by `filter_entry` to prune before descending.
+fn is_conflicts_dir_entry(root: &Path, entry: &walkdir::DirEntry) -> bool {
+    let Ok(rel) = entry.path().strip_prefix(root) else {
+        return false;
+    };
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    conflict::is_under_conflicts_dir(&rel)
 }
 
 /// Returns true if the relative path is a conflict sidecar.
@@ -309,39 +376,110 @@ mod tests {
     fn test_scan_skips_conflict_files() {
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path().to_str().unwrap();
-        let skills_dir = dir.path().join("knowledge");
-        std::fs::create_dir_all(&skills_dir).unwrap();
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(knowledge.join(".conflicts/a")).unwrap();
         std::fs::write(
-            skills_dir.join("foo.conflict.1234567890.abc12345.md"),
+            knowledge.join(".conflicts/a/foo.conflict.1234567890.abc12345.md"),
             b"conflict",
         )
         .unwrap();
-        std::fs::write(skills_dir.join("real.md"), b"real").unwrap();
+        // Legacy sidecar beside the note — relocated then skipped
+        std::fs::write(
+            knowledge.join("legacy.conflict.1234567890.abc12345.md"),
+            b"legacy",
+        )
+        .unwrap();
+        std::fs::write(knowledge.join("real.md"), b"real").unwrap();
 
         let state = LocalSyncState::load(ws, "team-test").unwrap();
         let files = scan_workspace_with(ws, &state, &IgnoreRules::load(dir.path()));
 
         assert!(files.iter().any(|f| f.rel_path == "knowledge/real.md"));
-        assert!(!files.iter().any(|f| f.rel_path.contains(".conflict.")));
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.rel_path.contains(".conflict.") || f.rel_path.contains("/.conflicts/")),
+            "sidecars must not appear in the sync scan, got {files:?}"
+        );
+        // Legacy was moved under .conflicts/
+        assert!(!knowledge.join("legacy.conflict.1234567890.abc12345.md").exists());
+        assert!(knowledge
+            .join(".conflicts/legacy.conflict.1234567890.abc12345.md")
+            .exists());
     }
 
     #[test]
     fn test_scan_conflict_files_collects_sidecars() {
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path().to_str().unwrap();
-        let skills_dir = dir.path().join("knowledge");
-        std::fs::create_dir_all(&skills_dir).unwrap();
-        std::fs::write(skills_dir.join("real.md"), b"real").unwrap();
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(knowledge.join(".conflicts/a")).unwrap();
+        std::fs::write(knowledge.join("real.md"), b"real").unwrap();
         std::fs::write(
-            skills_dir.join("foo.conflict.1234567890.abc12345.md"),
+            knowledge.join(".conflicts/a/foo.conflict.1234567890.abc12345.md"),
             b"conflict",
+        )
+        .unwrap();
+        // Legacy beside the note — scan_conflict_files migrates then lists it
+        std::fs::write(
+            knowledge.join("bar.conflict.1234567890.def67890.md"),
+            b"legacy",
         )
         .unwrap();
 
         let conflicts = scan_conflict_files(ws);
-        assert_eq!(conflicts.len(), 1);
-        assert!(conflicts[0].contains(".conflict."));
+        assert_eq!(conflicts.len(), 2, "{conflicts:?}");
+        assert!(conflicts.contains(&"knowledge/.conflicts/a/foo.conflict.1234567890.abc12345.md".to_string()));
+        assert!(conflicts.contains(&"knowledge/.conflicts/bar.conflict.1234567890.def67890.md".to_string()));
         assert!(!conflicts.iter().any(|c| c == "knowledge/real.md"));
+        assert!(!knowledge.join("bar.conflict.1234567890.def67890.md").exists());
+    }
+
+    /// `.conflicts/` is a hard skip — a team negation rule must not re-include it.
+    #[test]
+    fn scan_never_yields_conflicts_dir_even_with_negation_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().to_str().unwrap();
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(knowledge.join(".conflicts")).unwrap();
+        std::fs::write(
+            knowledge.join(".conflicts/foo.conflict.1.aabbccdd.md"),
+            b"sidecar",
+        )
+        .unwrap();
+        std::fs::write(knowledge.join("real.md"), b"real").unwrap();
+        // Team rule that would un-ignore `.conflicts/` if we went through IgnoreRules.
+        std::fs::write(knowledge.join(".amuxignore"), b"!.conflicts/\n").unwrap();
+
+        let state = LocalSyncState::load(ws, "team-test").unwrap();
+        let found: Vec<String> = scan_workspace_with(ws, &state, &IgnoreRules::load(dir.path()))
+            .into_iter()
+            .map(|f| f.rel_path)
+            .collect();
+
+        assert!(found.contains(&"knowledge/real.md".to_string()));
+        assert!(
+            !found.iter().any(|p| p.contains(".conflicts")),
+            "!.conflicts/ must not re-include the hard-skipped dir, got {found:?}"
+        );
+    }
+
+    #[test]
+    fn scan_does_not_descend_into_conflicts_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().to_str().unwrap();
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(knowledge.join(".conflicts/deep")).unwrap();
+        std::fs::write(knowledge.join(".conflicts/deep/x.md"), b"should not sync").unwrap();
+        std::fs::write(knowledge.join("ok.md"), b"ok").unwrap();
+
+        let state = LocalSyncState::load(ws, "team-test").unwrap();
+        let found: Vec<String> = scan_workspace_with(ws, &state, &IgnoreRules::load(dir.path()))
+            .into_iter()
+            .map(|f| f.rel_path)
+            .collect();
+
+        assert_eq!(found, vec!["knowledge/ok.md".to_string()]);
     }
 
     #[test]

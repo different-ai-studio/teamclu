@@ -179,6 +179,13 @@ pub async fn tick_with_progress(
         if super::path_validator::is_retired(&item.path) {
             continue;
         }
+        // Conflict copies live under `.conflicts/` and must never be pulled —
+        // even if a buggy older client somehow pushed one. `continue`, never
+        // `return Err` (§4.5): rejecting a single manifest row used to abort
+        // the whole apply.
+        if super::conflict::is_under_conflicts_dir(&item.path) {
+            continue;
+        }
         // Ignored here means "this device does not want this file on disk" —
         // an older client, or one with looser rules, can still have pushed it.
         // `continue`, never `?`: the retired-prefix comment above records what
