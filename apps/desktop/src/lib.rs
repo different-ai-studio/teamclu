@@ -381,6 +381,8 @@ pub fn run() {
             commands::oauth_loopback::oauth_loopback_start,
             commands::oauth_loopback::oauth_loopback_await,
             commands::oauth_loopback::oauth_loopback_cancel,
+            commands::obsidian::obsidian_status,
+            commands::obsidian::obsidian_open_vault,
             commands::filewatcher::watch_directory,
             commands::filewatcher::unwatch_directory,
             commands::filewatcher::unwatch_all,

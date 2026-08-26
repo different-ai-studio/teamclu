@@ -1,6 +1,10 @@
 {
   "teamShare": {
     "refreshAndSync": "Refresh and sync with cloud",
+    "openInObsidian": "Open in Obsidian",
+    "obsidianNotInstalled": "Obsidian is not installed on this machine",
+    "obsidianFirstRun": "Obsidian is starting. Choose \"Open folder as vault\" and paste the path — it is already on your clipboard.",
+    "obsidianOpenFailed": "Could not open Obsidian: {{msg}}",
     "cloudSyncFailed": "Sync failed: {{msg}}",
     "cloudSyncStuckFiles": "{{count}} files still cannot sync — retrying each time",
     "envAdd": "Add environment variable",

@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import {
   Search,
   Sparkles,
@@ -65,6 +66,9 @@ import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
 import { SkillScanPaths } from './SkillScanPaths'
 import { KnowledgeSyncFooter } from '@/components/teamshare/KnowledgeSyncFooter'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
+import { ObsidianIcon } from '@/components/workspace/ObsidianIcon'
+import { useObsidianStatus } from '@/hooks/use-obsidian'
+import { openVaultInObsidian } from '@/lib/obsidian'
 import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
 
 const SECTION_META: Record<
@@ -335,6 +339,43 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     }
     if (syncAvailable) await syncNow()
   }, [section, loadSection, loadConflicts, refreshSyncStatus, syncAvailable, syncNow])
+
+  // Knowledge only: the bottom bar already runs the sync and reports its state,
+  // so this slot carries the other thing a person wants from a folder of notes.
+  const obsidian = useObsidianStatus(section === 'knowledge' ? knowledgeRoot : null)
+  const handleOpenInObsidian = React.useCallback(async () => {
+    if (!knowledgeRoot) return
+    // Obsidian resolves `obsidian://open?path=` only inside a vault it already
+    // knows, so the first click can only bring the app up — the user still has
+    // to add the folder by hand. Put the path on the clipboard before launching
+    // rather than make them retype a UUID out of a hidden directory.
+    const firstRun = !obsidian.vaultInitialized
+    if (firstRun) {
+      try {
+        await navigator.clipboard.writeText(knowledgeRoot)
+      } catch {
+        // Clipboard denied — the toast below still says what to do.
+      }
+    }
+    try {
+      await openVaultInObsidian(knowledgeRoot)
+      if (firstRun) {
+        toast.info(
+          t(
+            'teamShare.obsidianFirstRun',
+            'Obsidian is starting. Choose "Open folder as vault" and paste the path — it is already on your clipboard.',
+          ),
+          { duration: 8000 },
+        )
+      }
+    } catch (err) {
+      toast.error(
+        t('teamShare.obsidianOpenFailed', 'Could not open Obsidian: {{msg}}', {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      )
+    }
+  }, [knowledgeRoot, obsidian.vaultInitialized, t])
 
   // Opening the column is the other moment the list has to be current: a
   // conflict may have been created by the daemon's own timer while this session
@@ -754,24 +795,54 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
               <Store className="h-4 w-4" />
             </Button>
           ) : null}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-foreground"
-            disabled={refreshing || syncing}
-            onClick={() => void handleRefresh()}
-            title={
-              syncAvailable
-                ? t('teamShare.refreshAndSync', 'Refresh and sync with cloud')
-                : t('common.refresh', 'Refresh')
-            }
-            data-testid="teamshare-refresh"
-          >
-            <RefreshCw
-              className={cn('h-4 w-4', (refreshing || syncing || loading) && 'animate-spin')}
-            />
-          </Button>
+          {section === 'knowledge' ? (
+            // The sync button that used to live here was a duplicate: the
+            // column's bottom bar both reports sync state and runs a sync. This
+            // slot opens the same directory in Obsidian instead — it IS a
+            // vault, `.obsidian/` just never syncs (see
+            // docs/architecture/obsidian-compatible-knowledge.md).
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-muted-foreground hover:text-foreground"
+              disabled={!obsidian.installed || !knowledgeRoot}
+              onClick={() => void handleOpenInObsidian()}
+              title={
+                obsidian.installed
+                  ? t('teamShare.openInObsidian', 'Open in Obsidian')
+                  : t('teamShare.obsidianNotInstalled', 'Obsidian is not installed on this machine')
+              }
+              data-testid="teamshare-open-obsidian"
+            >
+              <ObsidianIcon
+                className="h-4 w-4"
+                // Obsidian's own purple when it is there to be opened; the
+                // inherited muted grey when it is not, so "installed" reads at
+                // a glance and not only from the tooltip.
+                style={obsidian.installed ? { color: '#7C3AED' } : undefined}
+              />
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-muted-foreground hover:text-foreground"
+              disabled={refreshing || syncing}
+              onClick={() => void handleRefresh()}
+              title={
+                syncAvailable
+                  ? t('teamShare.refreshAndSync', 'Refresh and sync with cloud')
+                  : t('common.refresh', 'Refresh')
+              }
+              data-testid="teamshare-refresh"
+            >
+              <RefreshCw
+                className={cn('h-4 w-4', (refreshing || syncing || loading) && 'animate-spin')}
+              />
+            </Button>
+          )}
           {section === 'knowledge' && knowledgeRoot && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
