@@ -661,17 +661,15 @@ fn default_seatalk_group_policy() -> String {
 pub struct Esp32Channel {
     #[serde(default)]
     pub enabled: bool,
-    /// Phase-5 cutover: chat transcripts always use the Core ESP32 path.
-    /// Keep this field for one-release config compatibility; explicit `false`
-    /// no longer toggles runtime behavior.
-    #[serde(default = "default_esp32_use_core")]
-    pub use_core: bool,
+    // A `use_core` flag lived here as the Phase-1 rollback switch. It is gone,
+    // not deprecated: the path it rolled back to (`ChatSink`) was deleted, so
+    // it had nothing left to switch between, and nothing read it. What it did
+    // have was three disagreeing defaults — serde said true, the derived
+    // `Default` said false, and the pairing helper wrote false — which is a
+    // trap laid for whoever adds the first reader. An unknown key in team.toml
+    // is ignored, so old files keep parsing.
     #[serde(default)]
     pub devices: Vec<Esp32DeviceEntry>,
-}
-
-fn default_esp32_use_core() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

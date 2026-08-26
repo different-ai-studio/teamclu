@@ -173,11 +173,6 @@ impl ChannelManager {
         })
     }
 
-    /// Agent handle gateways (and the ESP32 voice Core path) share.
-    pub fn acp(&self) -> &Arc<dyn AgentHandle> {
-        &self.acp
-    }
-
     /// Build the cancel-not-queue inbound sink for ESP32 (Task 1.6).
     ///
     /// Same `Core` adapters as [`Self::core_sink_for`], but wrapped in
@@ -378,7 +373,9 @@ impl ChannelManager {
                 result.map_err(|e| anyhow::anyhow!("seatalk send: {e}"))
             }
             "feishu" | "discord" | "kook" | "wechat" | "email" => {
-                anyhow::bail!("{channel}: send not yet implemented in v2; only WeCom/SeaTalk are wired")
+                anyhow::bail!(
+                    "{channel}: send not yet implemented in v2; only WeCom/SeaTalk are wired"
+                )
             }
             other => anyhow::bail!("unknown channel: {other}"),
         }

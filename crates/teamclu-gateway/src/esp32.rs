@@ -133,6 +133,47 @@ impl Esp32Driver {
         Some((pending.target, text))
     }
 
+    /// Keep at most one playback per device.
+    ///
+    /// The map is keyed by delivery id and only `update(.., Some(end))` removes
+    /// an entry, so three paths leaked one each: a one-shot `deliver` (Core
+    /// `say`, an error line, an attachment) is never updated at all, and a
+    /// streaming turn that fails returns through `?` before it reaches its end.
+    /// In a driver that lives as long as the process that is unbounded growth.
+    ///
+    /// Bounding by device rather than by count is not a heuristic: this channel
+    /// serialises turns per device — a second press cancels the first — so a
+    /// device that has started a new delivery can have no use for the old one.
+    fn retire_previous_playback(&self, target: &Esp32Target) {
+        self.playback
+            .lock()
+            .unwrap()
+            .retain(|_, p| &p.target != target);
+    }
+
+    /// Forget a menu nobody answered, and say where it was showing.
+    ///
+    /// Separate from [`Self::take_menu_option`] because that one answers a
+    /// question; this one abandons it. Reusing it with an out-of-range index
+    /// would remove the entry and then return `None`, leaving the caller unable
+    /// to tell the device its menu is gone — a side effect reported as failure.
+    pub fn forget_menu(&self, question_id: &str) -> Option<Esp32Target> {
+        self.pending_menus
+            .lock()
+            .unwrap()
+            .remove(question_id)
+            .map(|m| m.target)
+    }
+
+    /// Publish a raw ctl to one device. Used to retract a withdrawn menu.
+    pub async fn publish_ctl_for(
+        &self,
+        target: &Esp32Target,
+        json: &str,
+    ) -> Result<(), DriverError> {
+        self.downlink.publish_ctl(target, json).await
+    }
+
     /// Speak the prompt only and publish a `menu` ctl (design §4.4).
     ///
     /// Used by [`ChannelDriver::deliver`] when `OutboundMessage.question` is
@@ -143,6 +184,14 @@ impl Esp32Driver {
         question: &InteractiveQuestion,
     ) -> Result<(), DriverError> {
         self.remember_target(target.clone());
+        {
+            // A device shows one menu at a time, so an older one for the same
+            // device can never be answered — the screen it belonged to is gone.
+            // Without this, every question the user walks away from stays
+            // forever.
+            let mut map = self.pending_menus.lock().unwrap();
+            map.retain(|_, m| &m.target != target);
+        }
         self.pending_menus.lock().unwrap().insert(
             question.question_id.clone(),
             PendingMenu {
@@ -333,6 +382,7 @@ impl ChannelDriver for Esp32Driver {
         // replies; for this turn deliver is primarily menu + prompt speak.
         if let Some(ref question) = msg.question {
             self.present_question(&target, question).await?;
+            self.retire_previous_playback(&target);
             self.playback.lock().unwrap().insert(
                 id.0.clone(),
                 Playback {
@@ -346,6 +396,7 @@ impl ChannelDriver for Esp32Driver {
 
         if msg.text.is_empty() {
             // Streaming placeholder: Core will `update` as the reply grows.
+            self.retire_previous_playback(&target);
             self.playback.lock().unwrap().insert(
                 id.0.clone(),
                 Playback {
@@ -359,6 +410,7 @@ impl ChannelDriver for Esp32Driver {
 
         // One-shot (Core `say`, proactive): full speak + end. No update follows.
         self.downlink.speak(&target, &msg.text).await?;
+        self.retire_previous_playback(&target);
         self.playback.lock().unwrap().insert(
             id.0.clone(),
             Playback {

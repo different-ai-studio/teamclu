@@ -67,6 +67,11 @@ private:
     std::size_t _builtNoteCount = 0;
     std::size_t _builtMenuIndex = 0;
     std::size_t _builtMenuCount = 0;
+    // Identity, not shape. Two different questions can carry the same
+    // option count at the same index, and comparing only those left the
+    // screen showing the previous prompt while a press reported the new
+    // question id — the user answering q1's text against q2.
+    std::string _builtMenuQuestionId;
 
     std::string _clock = "--:--";
     std::uint32_t _quipAt = 0;

@@ -93,8 +93,8 @@ pub async fn mint_pairing_code(
         return Err(format!("pairing: HTTP {status}: {snippet}"));
     }
 
-    let parsed: PairingCodeBody = serde_json::from_str(&body)
-        .map_err(|e| format!("pairing: malformed response: {e}"))?;
+    let parsed: PairingCodeBody =
+        serde_json::from_str(&body).map_err(|e| format!("pairing: malformed response: {e}"))?;
     let expires_at = DateTime::parse_from_rfc3339(&parsed.expires_at)
         .map_err(|e| format!("pairing: bad expiresAt: {e}"))?
         .with_timezone(&Utc);
@@ -157,7 +157,6 @@ pub fn register_device(device_id: &str, name: &str) -> Result<Esp32DeviceEntry, 
     let mut cfg = DaemonConfig::load_hydrated(&path).map_err(|e| e.to_string())?;
     let mut esp32 = cfg.channels.esp32.take().unwrap_or(Esp32Channel {
         enabled: true,
-        use_core: false,
         devices: vec![],
     });
     esp32.enabled = true;

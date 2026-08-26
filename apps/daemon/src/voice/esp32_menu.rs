@@ -26,6 +26,15 @@ pub trait Esp32QuestionPresenter: Send + Sync {
     /// Register a oneshot so a later `menu_reply` completes the blocked agent
     /// turn. Default: no-op (present-only stubs).
     fn register_answer_tx(&self, _question_id: String, _tx: oneshot::Sender<String>) {}
+
+    /// Forget a question nobody answered, and take the menu off the screen.
+    ///
+    /// Without it a question the user walks away from is permanent in three
+    /// places at once: the registration, the driver's pending entry, and a
+    /// parked task holding an `Arc` of the runtime manager. The device is the
+    /// worst of the three — `keepAwake(Screen::Menu)` is true, so a 450 mAh
+    /// battery is held on that screen until it is flat.
+    async fn withdraw(&self, _question_id: &str) {}
 }
 
 /// Bridges driver pending menus ↔ VoiceRouter `menu_reply` ↔ Core inbound.
@@ -37,15 +46,12 @@ pub struct Esp32MenuBridge {
     /// Optional oneshot answer path into the runtime (filled when a mid-turn
     /// question is presented). When absent, menu replies fall back to
     /// [`InboundSink::accept`].
-    answer_tx_by_qid: parking_lot::Mutex<std::collections::HashMap<String, oneshot::Sender<String>>>,
+    answer_tx_by_qid:
+        parking_lot::Mutex<std::collections::HashMap<String, oneshot::Sender<String>>>,
 }
 
 impl Esp32MenuBridge {
-    pub fn new(
-        driver: Arc<Esp32Driver>,
-        inbound: Arc<dyn InboundSink>,
-        cfg: Esp32Channel,
-    ) -> Self {
+    pub fn new(driver: Arc<Esp32Driver>, inbound: Arc<dyn InboundSink>, cfg: Esp32Channel) -> Self {
         Self {
             driver,
             inbound,
@@ -68,6 +74,19 @@ impl Esp32MenuBridge {
 
 #[async_trait]
 impl Esp32QuestionPresenter for Esp32MenuBridge {
+    async fn withdraw(&self, question_id: &str) {
+        self.answer_tx_by_qid.lock().remove(question_id);
+        // Clears the driver's pending entry and returns whatever `target` it
+        // held; `spk_end` is what the firmware turns into `onAgentDone`, which
+        // leaves the Menu screen and lets the device sleep again.
+        if let Some(target) = self.driver.forget_menu(question_id) {
+            let _ = self
+                .driver
+                .publish_ctl_for(&target, r#"{"from":"amuxd","type":"spk_end"}"#)
+                .await;
+        }
+    }
+
     async fn present(&self, binding: &str, question: InteractiveQuestion) {
         // binding = "esp32://{team}/{actor}"
         let rest = binding.strip_prefix("esp32://").unwrap_or(binding);
@@ -127,10 +146,7 @@ impl MenuReplyHandler for Esp32MenuBridge {
         let Some((target, option_text)) = self.driver.take_menu_option(question_id, index) else {
             warn!(
                 team_id,
-                actor_id,
-                question_id,
-                index,
-                "menu_reply: no pending menu or index out of range"
+                actor_id, question_id, index, "menu_reply: no pending menu or index out of range"
             );
             return;
         };
@@ -247,7 +263,6 @@ mod tests {
             sink.clone(),
             Esp32Channel {
                 enabled: true,
-                use_core: true,
                 devices: vec![],
             },
         );
@@ -289,7 +304,6 @@ mod tests {
             sink.clone(),
             Esp32Channel {
                 enabled: true,
-                use_core: true,
                 devices: vec![],
             },
         );

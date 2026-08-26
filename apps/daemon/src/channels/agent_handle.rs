@@ -45,6 +45,13 @@ use crate::runtime::execution_context::{ExecutionContext, IsolationDomainKey, Wo
 use crate::runtime::RuntimeManager;
 use crate::runtime::SpawnRuntimeEnv;
 
+/// How long an on-device menu waits for a press.
+///
+/// Longer than someone reading three options, shorter than a battery. The agent
+/// turn has its own timeout above this; a separate bound exists because the
+/// *device* must not be left lit either way — `keepAwake` is true on Menu.
+const ESP32_QUESTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Cached per-session state that lets `send_prompt` decide whether the
 /// incoming prompt is the FIRST one for a freshly-spawned runtime (and
 /// therefore should be prefixed with the one-shot system note about the
@@ -827,9 +834,25 @@ impl AmuxdAgentHandle {
                 .map(|r| r.real_acp_sid.clone())
         };
         let qid = question_id.clone();
+        let presenter_for_timeout = Arc::clone(&presenter);
         tokio::spawn(async move {
-            let Ok(answer) = rx.await else {
-                return;
+            // Bounded, because nothing else ever ends this wait. A question the
+            // user walks away from — or that reaches a device which then
+            // reboots — used to park this task forever holding an `Arc` of the
+            // runtime manager, with its registration and the driver's pending
+            // entry equally permanent. The device paid worst: `keepAwake` is
+            // true on the Menu screen, so a 450 mAh battery sat lit until flat.
+            let answer = match tokio::time::timeout(ESP32_QUESTION_TIMEOUT, rx).await {
+                Ok(Ok(answer)) => answer,
+                Ok(Err(_)) => return, // sender dropped: already withdrawn
+                Err(_) => {
+                    tracing::info!(
+                        question_id = %qid,
+                        "esp32 menu unanswered; withdrawing so the device can sleep"
+                    );
+                    presenter_for_timeout.withdraw(&qid).await;
+                    return;
+                }
             };
             // `answers` is `[[label], …]` per question (opencode question_reply).
             let answers_json = serde_json::json!([[answer]]).to_string();

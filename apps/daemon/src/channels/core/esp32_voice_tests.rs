@@ -618,7 +618,6 @@ async fn voice_router_turn_start_boot_id_reaches_fork() {
         speaker.clone(),
         Esp32Channel {
             enabled: true,
-            use_core: true,
             devices: vec![Esp32DeviceEntry {
                 device_id: "c19518".into(),
                 name: "工位".into(),

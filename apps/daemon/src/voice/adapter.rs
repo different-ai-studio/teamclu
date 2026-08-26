@@ -203,9 +203,6 @@ struct ActiveStream {
     intent: Intent,
     #[allow(dead_code)]
     session_id: Option<String>,
-    /// From the opening `turn_start` — Core dedup key needs both (design §5.2).
-    boot_id: Option<String>,
-    seq: u64,
     frames_tx: mpsc::Sender<super::stt::AudioFrame>,
     /// The transcript-drain task. Detached on close so it can finish flushing
     /// the final transcript to the sink after the map entry is gone.
@@ -257,10 +254,7 @@ impl VoiceRouter {
     /// Spawn the router on its own task; returns the sender the business
     /// loop forwards `VoiceEvent`s into. The task exits when all senders are
     /// dropped (daemon shutdown).
-    pub fn spawn(
-        self,
-        mut rx: mpsc::UnboundedReceiver<VoiceEvent>,
-    ) -> tokio::task::JoinHandle<()> {
+    pub fn spawn(self, mut rx: mpsc::UnboundedReceiver<VoiceEvent>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             while let Some(ev) = rx.recv().await {
                 self.handle(ev).await;
@@ -363,8 +357,6 @@ impl VoiceRouter {
                             ActiveStream {
                                 intent,
                                 session_id: ctl.session.clone(),
-                                boot_id,
-                                seq,
                                 frames_tx,
                                 _drain: drain,
                             },
@@ -710,11 +702,15 @@ mod tests {
         Arc<parking_lot::Mutex<Vec<(String, String, Intent, Option<String>, String)>>>,
     ) {
         let frames = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let caps: Arc<parking_lot::Mutex<Vec<(String,String,Intent,Option<String>,String)>>> =
+        let caps: Arc<parking_lot::Mutex<Vec<(String, String, Intent, Option<String>, String)>>> =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
         let router = VoiceRouter::new(
-            Arc::new(CountingProvider { frames_seen: frames.clone() }),
-            Arc::new(CaptureSink { finals: caps.clone() }),
+            Arc::new(CountingProvider {
+                frames_seen: frames.clone(),
+            }),
+            Arc::new(CaptureSink {
+                finals: caps.clone(),
+            }),
         );
         (router, frames, caps)
     }
@@ -722,25 +718,31 @@ mod tests {
     #[tokio::test]
     async fn turn_start_to_turn_end_flushes_final_to_sink() {
         let (router, frames, caps) = make_router();
-        router.handle(VoiceEvent::Ctl {
-            team_id: "t".into(),
-            actor_id: "a".into(),
-            ctl: VoiceCtl::parse(br#"{"type":"turn_start","intent":"chat","seq":1}"#).unwrap(),
-        }).await;
-        // Push a few mic frames.
-        for _ in 0..3 {
-            router.handle(VoiceEvent::Mic {
+        router
+            .handle(VoiceEvent::Ctl {
                 team_id: "t".into(),
                 actor_id: "a".into(),
-                payload: Bytes::from_static(b"\x00\x00"),
-            }).await;
+                ctl: VoiceCtl::parse(br#"{"type":"turn_start","intent":"chat","seq":1}"#).unwrap(),
+            })
+            .await;
+        // Push a few mic frames.
+        for _ in 0..3 {
+            router
+                .handle(VoiceEvent::Mic {
+                    team_id: "t".into(),
+                    actor_id: "a".into(),
+                    payload: Bytes::from_static(b"\x00\x00"),
+                })
+                .await;
         }
         // End the turn.
-        router.handle(VoiceEvent::Ctl {
-            team_id: "t".into(),
-            actor_id: "a".into(),
-            ctl: VoiceCtl::parse(br#"{"type":"turn_end","seq":2}"#).unwrap(),
-        }).await;
+        router
+            .handle(VoiceEvent::Ctl {
+                team_id: "t".into(),
+                actor_id: "a".into(),
+                ctl: VoiceCtl::parse(br#"{"type":"turn_end","seq":2}"#).unwrap(),
+            })
+            .await;
         // The drain task runs async; give it a tick.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -754,11 +756,13 @@ mod tests {
     #[tokio::test]
     async fn mic_before_turn_start_is_dropped() {
         let (router, frames, _caps) = make_router();
-        router.handle(VoiceEvent::Mic {
-            team_id: "t".into(),
-            actor_id: "a".into(),
-            payload: Bytes::from_static(b"\x00"),
-        }).await;
+        router
+            .handle(VoiceEvent::Mic {
+                team_id: "t".into(),
+                actor_id: "a".into(),
+                payload: Bytes::from_static(b"\x00"),
+            })
+            .await;
         // No turn_start → no active stream → frame not counted.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert_eq!(frames.load(std::sync::atomic::Ordering::Relaxed), 0);
@@ -767,16 +771,20 @@ mod tests {
     #[tokio::test]
     async fn barge_in_closes_without_final() {
         let (router, _frames, caps) = make_router();
-        router.handle(VoiceEvent::Ctl {
-            team_id: "t".into(),
-            actor_id: "a".into(),
-            ctl: VoiceCtl::parse(br#"{"type":"turn_start","intent":"note","seq":1}"#).unwrap(),
-        }).await;
-        router.handle(VoiceEvent::Ctl {
-            team_id: "t".into(),
-            actor_id: "a".into(),
-            ctl: VoiceCtl::parse(br#"{"type":"barge_in","seq":2}"#).unwrap(),
-        }).await;
+        router
+            .handle(VoiceEvent::Ctl {
+                team_id: "t".into(),
+                actor_id: "a".into(),
+                ctl: VoiceCtl::parse(br#"{"type":"turn_start","intent":"note","seq":1}"#).unwrap(),
+            })
+            .await;
+        router
+            .handle(VoiceEvent::Ctl {
+                team_id: "t".into(),
+                actor_id: "a".into(),
+                ctl: VoiceCtl::parse(br#"{"type":"barge_in","seq":2}"#).unwrap(),
+            })
+            .await;
         // barge_in drops frames_tx → the test provider still emits its final
         // on channel close (it has no concept of "cancelled"). A real provider
         // would suppress the final on barge-in; that's the provider's job,
@@ -791,19 +799,25 @@ mod tests {
     async fn reissue_turn_start_replaces_active_stream() {
         let (router, _frames, caps) = make_router();
         for seq in 1..=2 {
-            router.handle(VoiceEvent::Ctl {
+            router
+                .handle(VoiceEvent::Ctl {
+                    team_id: "t".into(),
+                    actor_id: "a".into(),
+                    ctl: VoiceCtl::parse(
+                        &format!(r#"{{"type":"turn_start","intent":"chat","seq":{seq}}}"#)
+                            .into_bytes(),
+                    )
+                    .unwrap(),
+                })
+                .await;
+        }
+        router
+            .handle(VoiceEvent::Ctl {
                 team_id: "t".into(),
                 actor_id: "a".into(),
-                ctl: VoiceCtl::parse(
-                    &format!(r#"{{"type":"turn_start","intent":"chat","seq":{seq}}}"#).into_bytes(),
-                ).unwrap(),
-            }).await;
-        }
-        router.handle(VoiceEvent::Ctl {
-            team_id: "t".into(),
-            actor_id: "a".into(),
-            ctl: VoiceCtl::parse(br#"{"type":"turn_end","seq":3}"#).unwrap(),
-        }).await;
+                ctl: VoiceCtl::parse(br#"{"type":"turn_end","seq":3}"#).unwrap(),
+            })
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         // First stream's frames_tx was dropped on re-issue → one final from
         // it; second stream ends on turn_end → another final. Two finals.

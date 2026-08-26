@@ -228,7 +228,8 @@ void FaceUi::render(const FaceState& st, std::uint32_t nowMs)
                             ((st.screen() == Screen::Notes || st.screen() == Screen::Saved) &&
                              st.noteCount() != _builtNoteCount) ||
                             (st.screen() == Screen::Menu &&
-                             (st.menuIndex() != _builtMenuIndex ||
+                             (st.menuQuestionId() != _builtMenuQuestionId ||
+                              st.menuIndex() != _builtMenuIndex ||
                               st.menuOptions().size() != _builtMenuCount));
     if (structural) {
         rebuild(st);
@@ -263,6 +264,7 @@ void FaceUi::rebuild(const FaceState& st)
     _builtNoteCount = st.noteCount();
     _builtMenuIndex = st.menuIndex();
     _builtMenuCount = st.menuOptions().size();
+    _builtMenuQuestionId = st.menuQuestionId();
 }
 
 void FaceUi::refreshDynamic(const FaceState& st, std::uint32_t nowMs)

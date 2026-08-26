@@ -239,7 +239,6 @@ mod tests {
     fn esp32_cfg(device_id: &str, name: &str) -> Esp32Channel {
         Esp32Channel {
             enabled: true,
-            use_core: true,
             devices: vec![Esp32DeviceEntry {
                 device_id: device_id.into(),
                 name: name.into(),
@@ -367,7 +366,6 @@ mod tests {
     fn resolve_device_falls_back_to_actor_id() {
         let cfg = Esp32Channel {
             enabled: true,
-            use_core: true,
             devices: vec![],
         };
         assert_eq!(
