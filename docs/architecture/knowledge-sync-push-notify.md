@@ -43,7 +43,7 @@
 
 选 **b**，理由：
 
-1. FC 是唯一知道权威 `change_seq` 的地方 —— 那是 `sync_files` 表里的东西，客户端
+1. FC 是唯一知道权威 `change_seq` 的地方 —— 那是 `amuxc_files` 表里的东西，客户端
    只有自己那次写入的返回值。
 2. 不依赖推送方在线。
 3. 将来任何写入端（web 编辑、网关、agent 直接写）自动获得同样的通知，不用每加一个
@@ -124,7 +124,7 @@ Rust 侧用 `i64` 解析。
 里有这个参数（`fc_client.rs:227`），但 `engine.rs:747` 和 `engine.rs:1096` 两处调用都传
 `node_id: None`。所以要先让 daemon 填上 —— 现成的稳定标识是
 `daemon_device_id()`（`apps/daemon/src/device_id.rs:47`）。这一步可以独立先做，与推送
-无关，做完 `sync_files` 的 `created_by_node_id` 也终于有值了。
+无关，做完 `amuxc_files` 的 `created_by_node_id` 也终于有值了。
 
 **报文的定位：hint，不是命令，不是数据。**
 
