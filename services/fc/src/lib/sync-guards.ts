@@ -81,10 +81,13 @@ export function maxFilesPerTeam(): number {
 // security boundary, so a team briefly running over it is not a failure.
 const COUNT_TTL_MS = 10_000;
 const countCache = new Map<string, { at: number; count: number }>();
+const BYTE_TTL_MS = 10_000;
+const byteCache = new Map<string, { at: number; sum: number }>();
 
-/** Drop cached counts. Tests only — production entries expire on their own. */
+/** Drop cached counts / sums. Tests only — production entries expire on their own. */
 export function resetQuotaCache(): void {
   countCache.clear();
+  byteCache.clear();
 }
 
 /**
@@ -114,4 +117,43 @@ export async function liveFileCount(
  */
 export function isOverFileQuota(count: number | null): boolean {
   return count !== null && count >= maxFilesPerTeam();
+}
+
+/**
+ * Largest total live-file byte size one team may hold.
+ *
+ * Counts current pointers in `amuxc_files` only — not historical version blobs
+ * on disk. Raising the env var does not reclaim space; that is a GC ops concern.
+ */
+export function maxBytesPerTeam(): number {
+  const raw = Number(process.env.SYNC_MAX_BYTES_PER_TEAM);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2 * 1024 ** 3;
+}
+
+/**
+ * Sum of live file sizes for this team, cached for {@link BYTE_TTL_MS}.
+ *
+ * Returns `null` when the sum cannot be established — callers treat that as
+ * "allow", same policy as {@link liveFileCount}.
+ */
+export async function liveByteSum(
+  teamId: string,
+  sumBytes: (teamId: string) => Promise<number | null>,
+): Promise<number | null> {
+  const hit = byteCache.get(teamId);
+  if (hit && Date.now() - hit.at < BYTE_TTL_MS) return hit.sum;
+  const sum = await sumBytes(teamId).catch(() => null);
+  if (sum === null) return null;
+  byteCache.set(teamId, { at: Date.now(), sum });
+  return sum;
+}
+
+/**
+ * Whether a projected byte total (live sum + incoming size) exceeds the ceiling.
+ *
+ * Exactly at the ceiling is still allowed; one byte past is not. `null` → not
+ * over: see {@link liveByteSum}.
+ */
+export function isOverByteQuota(projectedTotal: number | null): boolean {
+  return projectedTotal !== null && projectedTotal > maxBytesPerTeam();
 }

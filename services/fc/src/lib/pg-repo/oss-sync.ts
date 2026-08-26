@@ -431,6 +431,21 @@ export function makeOssSyncRepo(db: DbLike) {
     },
 
     /**
+     * Sum of `size` over live (non-deleted) files for a team.
+     * Empty team → 0. Used by the prepare byte-quota guard.
+     */
+    async sumLiveBytes(teamId: string): Promise<number> {
+      const [row] = await db
+        .select({
+          total: sql<number>`coalesce(sum(${amuxcFiles.size}), 0)`,
+        })
+        .from(amuxcFiles)
+        .where(and(eq(amuxcFiles.teamId, teamId), eq(amuxcFiles.deleted, false)));
+      const n = row?.total;
+      return typeof n === "number" && Number.isFinite(n) ? n : Number(n) || 0;
+    },
+
+    /**
      * Set team sync mode — only team owners may switch.
      * actorId must be a team owner (role='owner' in team_members).
      */

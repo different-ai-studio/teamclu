@@ -50,6 +50,7 @@ resources:
         # own MinIO — one code path, two backends, chosen per deployment.
         TEAM_BLOBS_BACKEND: ${env('TEAM_BLOBS_BACKEND', 's3')}
         SYNC_MAX_FILES_PER_TEAM: ${env('SYNC_MAX_FILES_PER_TEAM', '')}
+        SYNC_MAX_BYTES_PER_TEAM: ${env('SYNC_MAX_BYTES_PER_TEAM', '')}
         # OSS addresses buckets virtual-host style; only MinIO needs path style.
         S3_FORCE_PATH_STYLE: ${env('S3_FORCE_PATH_STYLE', '')}
         LITELLM_URL: ${env('LITELLM_URL', 'https://ai.ucar.cc')}

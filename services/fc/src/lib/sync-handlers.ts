@@ -11,7 +11,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createServiceRoleClient } from './supabase.js';
 import { validateSyncPath } from './sync-path.js';
-import { isOverFileQuota, isRejectedSyncPath, liveFileCount, maxFilesPerTeam } from './sync-guards.js';
+import { isOverByteQuota, isOverFileQuota, isRejectedSyncPath, liveByteSum, liveFileCount, maxBytesPerTeam, maxFilesPerTeam } from './sync-guards.js';
 import { resolveBackendKind } from './backend-kind.js';
 import { getTeamBlobStorage, type BlobStorage } from './team-blob-storage.js';
 import { makeOssSyncRepo, type OssSyncRepo } from './pg-repo/oss-sync.js';
@@ -47,6 +47,8 @@ export interface SyncHandlerDeps {
   storage?: BlobStorage;
   /** Override the live-file count. Tests only — production reads the table. */
   countLiveFiles?: (teamId: string) => Promise<number | null>;
+  /** Override the live-file byte sum. Tests only — production reads the table. */
+  sumLiveBytes?: (teamId: string) => Promise<number | null>;
   /**
    * MQTT publisher for knowledge sync hints. `undefined` → resolve from
    * push-deps (null when MQTT_BROKER_URL is unset). Explicit `null` skips.
@@ -59,6 +61,11 @@ export interface SyncHandlerDeps {
    * all items finish.
    */
   suppressSyncHint?: boolean;
+  /**
+   * When true, skip the byte-quota check inside single prepare — batch
+   * already applied a running total across items.
+   */
+  skipByteQuota?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +118,36 @@ async function countLiveFiles(
     .eq('deleted', false);
   if (error) return null;
   return typeof count === 'number' ? count : null;
+}
+
+/**
+ * Sum of live (non-deleted) file sizes for a team, or `null` when unknown.
+ *
+ * Postgres: drizzle `sum(size)`. Supabase: RPC `amux.amuxc_team_live_bytes`.
+ */
+async function sumLiveBytes(
+  teamId: string,
+  deps: SyncHandlerDeps = {},
+): Promise<number | null> {
+  if (deps.sumLiveBytes) return deps.sumLiveBytes(teamId);
+  if (resolveBackendKind() === 'postgres') {
+    try {
+      return await resolveRepo(deps).sumLiveBytes(teamId);
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const supabase = createServiceRoleClient();
+    const { data, error } = await supabase
+      .schema('amux')
+      .rpc('amuxc_team_live_bytes', { p_team_id: teamId });
+    if (error) return null;
+    const n = typeof data === 'number' ? data : Number(data);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
 }
 
 async function blobRequiresUpload(
@@ -512,6 +549,19 @@ export async function handleSyncUploadPrepare(
       error: `team is at its file limit (${count} of ${maxFilesPerTeam()}); remove files or raise SYNC_MAX_FILES_PER_TEAM`,
       code: 'QuotaExceeded',
     });
+  }
+
+  // Byte ceiling on live pointers only (not historical blobs). Batch prepare
+  // applies a running total itself and sets skipByteQuota.
+  if (!deps.skipByteQuota) {
+    const sum = await liveByteSum(teamId, (id) => sumLiveBytes(id, deps));
+    if (isOverByteQuota(sum === null ? null : sum + size)) {
+      return json(422, {
+        error: `team is at its byte limit (${sum} + ${size} of ${maxBytesPerTeam()}); remove files or raise SYNC_MAX_BYTES_PER_TEAM`,
+        code: 'QuotaExceeded',
+        kind: 'bytes',
+      });
+    }
   }
 
   const ossKey = ossKeyForHash(teamId, contentHash);
@@ -1146,7 +1196,30 @@ export async function handleSyncUploadPrepareBatch(
   body: Record<string, unknown> | undefined,
   deps: SyncHandlerDeps = {},
 ) {
-  return runSyncBatch(body?.items, (item) => handleSyncUploadPrepare(caller, item, deps));
+  // One live sum per batch; running total so later items see earlier sizes.
+  // Sum failure → null → allow (same policy as single prepare).
+  const sum = await liveByteSum(caller.teamId, (id) => sumLiveBytes(id, deps));
+  let running = sum ?? 0;
+  const sumKnown = sum !== null;
+  let crossed = false;
+
+  return runSyncBatch(body?.items, async (item) => {
+    if (sumKnown) {
+      const size = typeof item.size === 'number' ? item.size : NaN;
+      if (Number.isFinite(size) && size >= 0) {
+        if (crossed || isOverByteQuota(running + size)) {
+          crossed = true;
+          return json(422, {
+            error: `team is at its byte limit (${running} + ${size} of ${maxBytesPerTeam()}); remove files or raise SYNC_MAX_BYTES_PER_TEAM`,
+            code: 'QuotaExceeded',
+            kind: 'bytes',
+          });
+        }
+        running += size;
+      }
+    }
+    return handleSyncUploadPrepare(caller, item, { ...deps, skipByteQuota: true });
+  });
 }
 
 /** POST /sync/upload/complete-batch — N CAS completes; per-item ok/conflict/error. */

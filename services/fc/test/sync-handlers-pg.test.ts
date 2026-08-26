@@ -33,6 +33,7 @@ import {
   handleSyncDeleteBatch,
   MAX_SYNC_BATCH,
 } from "../src/lib/sync-handlers.js";
+import { resetQuotaCache } from "../src/lib/sync-guards.js";
 
 // ---------------------------------------------------------------------------
 // Force BACKEND_KIND=postgres
@@ -981,5 +982,112 @@ describe("sync knowledge MQTT hints", () => {
     assert.equal(hint.changeSeq, maxSeq);
     assert.equal(hint.originNodeId, "del-node");
     assert.equal(published[0].topic, `amux/${team.id}/sync/knowledge`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-team byte quota (Phase F) — live sum of amuxc_files.size, not disk.
+// ---------------------------------------------------------------------------
+
+describe("sync upload prepare byte quota", () => {
+  const prevMax = process.env.SYNC_MAX_BYTES_PER_TEAM;
+
+  before(() => {
+    process.env.SYNC_MAX_BYTES_PER_TEAM = "100";
+  });
+
+  after(() => {
+    if (prevMax === undefined) delete process.env.SYNC_MAX_BYTES_PER_TEAM;
+    else process.env.SYNC_MAX_BYTES_PER_TEAM = prevMax;
+  });
+
+  test("single prepare: sum + size over ceiling → 422 QuotaExceeded kind bytes", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    const res = await handleSyncUploadPrepare(
+      makeCaller(team.id, actor.id),
+      { path: "knowledge/big.md", parentVersion: 0, contentHash: h32("q"), size: 40 },
+      {
+        db,
+        repo,
+        storage,
+        sumLiveBytes: async () => 80,
+        countLiveFiles: async () => 0,
+      },
+    );
+
+    assert.equal(res.statusCode, 422);
+    const body = JSON.parse(res.body);
+    assert.equal(body.code, "QuotaExceeded");
+    assert.equal(body.kind, "bytes");
+  });
+
+  test("prepare-batch: item that crosses and every item after it are rejected", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    // max=100, live sum=50 → sizes 30, 30, 30 cross at index 1 (50+30+30=110).
+    const res = await handleSyncUploadPrepareBatch(
+      makeCaller(team.id, actor.id),
+      {
+        items: [
+          { path: "knowledge/b0.md", parentVersion: 0, contentHash: h32("0"), size: 30 },
+          { path: "knowledge/b1.md", parentVersion: 0, contentHash: h32("1"), size: 30 },
+          { path: "knowledge/b2.md", parentVersion: 0, contentHash: h32("2"), size: 30 },
+        ],
+      },
+      {
+        db,
+        repo,
+        storage,
+        sumLiveBytes: async () => 50,
+        countLiveFiles: async () => 0,
+      },
+    );
+
+    assert.equal(res.statusCode, 200);
+    const { results } = JSON.parse(res.body);
+    assert.equal(results.length, 3);
+    assert.equal(results[0].ok, true, "item 0 stays under the ceiling");
+    assert.equal(results[1].ok, false);
+    assert.equal(results[1].status, 422);
+    assert.equal(results[1].code, "QuotaExceeded");
+    assert.equal(results[1].kind, "bytes");
+    assert.equal(results[2].ok, false);
+    assert.equal(results[2].status, 422);
+    assert.equal(results[2].kind, "bytes");
+  });
+
+  test("single prepare: sum failure → allow (null policy)", async () => {
+    resetQuotaCache();
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const storage = makeMockStorage({ objects: new Map() });
+
+    const res = await handleSyncUploadPrepare(
+      makeCaller(team.id, actor.id),
+      { path: "knowledge/ok.md", parentVersion: 0, contentHash: h32("ok"), size: 90 },
+      {
+        db,
+        repo,
+        storage,
+        sumLiveBytes: async () => null,
+        countLiveFiles: async () => 0,
+      },
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.ok(JSON.parse(res.body).uploadSessionId);
   });
 });
