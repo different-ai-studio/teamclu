@@ -266,7 +266,27 @@ esp32:{device_id}:{boot_id}:{seq}
 ## 6. 配对:ESP32 作为 channel 配置
 
 今天设备靠**手工粘贴一个 JWT** 进配网页(`main/net/device_token.h` 里写明了这是
-临时方案)。收编后配对落到 channel 配置里,和其它渠道一致:
+临时方案)。
+
+**握手不用新设计** —— 计划 §8.1 已经定过,而且形状正是"生成一个码、设备填进去",
+配网页那个输入框原地改用途即可:
+
+```
+1. amuxd 生成码           POST /v1/devices/pairing-codes   (amuxd 自己的 token)
+                          { code, teamId, actorId, ttlSeconds: 600 }
+                          桌面把码显示给用户
+2. 设备配网页收 SSID + 密码 + 配对码  → NVS
+3. 设备联网后向 FC 兑换   POST /v1/devices/redeem          (免鉴权,限流)
+                          { code, deviceId, model, fw }
+                          → 200 { deviceSecret, teamId, actorId },码即焚
+4. 稳态                   POST /v1/devices/token { deviceSecret } → 短效 MQTT JWT
+```
+
+码由 **amuxd** 而不是 FC 生成:amuxd 已经持有后端 token,并且知道该绑到哪个
+team / actor 上;FC 只负责兑换与限流。
+
+**这对 channel 配置的影响是简化,不是增加。** 设备兑换后自己持有 `deviceSecret`
+并自行换取短效 JWT,所以 team.toml 里**不需要存任何密钥**,只需要一份名册:
 
 ```toml
 # teams/<id>/state/team.toml
@@ -274,16 +294,16 @@ esp32:{device_id}:{boot_id}:{seq}
 enabled = true
 
 [[channels.esp32.devices]]
-device_id = "c19518"          # 设备自报,来自 MAC 后六位
-name      = "工位 StopWatch"
-token     = "..."             # 密钥叶名 → 自动进 secrets.enc
+device_id  = "c19518"          # 设备自报,MAC 后六位
+name       = "工位 StopWatch"
+paired_at  = "2026-08-26T10:00:00Z"
 ```
 
-`token` 落在 `SECRET_LEAF_KEYS` 里,`team_config` 的密钥拆分会自动把它搬进加密
-存储 —— 和 `voice.token` 走的是同一条路(2026-08-25 已验证)。
+没有 `token` 字段,也就不需要 `secrets.enc` 那条路 —— 比初稿少一个密钥要保管。
+名册的用途是显示与管理(改名、解绑),不是鉴权;鉴权在 EMQX 那边靠 JWT。
 
-配对流程本身(设备自报 → 桌面确认 → 下发 token)是独立的一块,本文只定义配置
-形状,不定义那个握手。
+**现状:一行都没实现。** FC 没有任何 `/v1/devices/*` 路由,计划 §8.1 原文写着
+"FC has **no device-auth concept at all**"。这是第 4 步的全部工作量,不是接线。
 
 ## 7. 三个塞不进去的,以及怎么办
 
