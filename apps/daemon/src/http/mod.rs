@@ -44,6 +44,7 @@ pub mod state;
 pub mod team;
 pub mod team_sync;
 pub mod tokens;
+pub mod voice;
 pub mod workspaces;
 
 mod routes;

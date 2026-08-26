@@ -68,6 +68,7 @@ pub mod funasr;
 pub mod mqtt_publisher;
 pub mod nls;
 pub mod note_sink;
+pub mod pairing;
 pub mod resample;
 pub mod spk;
 pub mod stt;
