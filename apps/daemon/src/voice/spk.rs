@@ -370,6 +370,11 @@ async fn run_turn(
     cfg: SpkConfig,
     seq_base: u64,
 ) {
+    // Milestones for the first spoken frame. This path has a stated budget
+    // (plan §9: 600–1100 ms) and has never been broken down — "2.2 s to first
+    // audio" names the symptom and no cause. Each `elapsed_ms` below is from
+    // `begin`, which runs before the prompt is sent, so the numbers compose.
+    let t0 = Instant::now();
     let TtsStream { text_tx, audio_rx } = match tts.speak().await {
         Ok(s) => s,
         Err(e) => {
@@ -387,9 +392,15 @@ async fn run_turn(
         }
     };
 
+    info!(
+        elapsed_ms = t0.elapsed().as_millis() as u64,
+        "voice: tts stream open"
+    );
+
     // Audio flows on its own task so synthesis of sentence N+1 overlaps
     // playback of sentence N.
     let pump = tokio::spawn(pump_audio(
+        t0,
         key.clone(),
         audio_rx,
         publisher.clone(),
@@ -424,6 +435,8 @@ async fn run_turn(
     let mut exit_reason = "unknown";
     let mut events_seen: u64 = 0;
     let mut spoke_any = false;
+    let mut saw_delta = false;
+    let mut sent_sentence = false;
     let mut completed_text: Option<String> = None;
     let mut errored: Option<String> = None;
 
@@ -460,8 +473,26 @@ async fn run_turn(
                 let Some(text) = ev.data.get("text").and_then(|v| v.as_str()) else {
                     continue;
                 };
+                if !saw_delta {
+                    saw_delta = true;
+                    info!(
+                        elapsed_ms = t0.elapsed().as_millis() as u64,
+                        "voice: first agent delta"
+                    );
+                }
                 for piece in chunker.push(text) {
                     spoke_any = true;
+                    if !sent_sentence {
+                        sent_sentence = true;
+                        // The gap between this and "first agent delta" is what
+                        // the sentence boundary costs: nothing is synthesised
+                        // until the agent finishes a sentence.
+                        info!(
+                            elapsed_ms = t0.elapsed().as_millis() as u64,
+                            chars = piece.chars().count(),
+                            "voice: first sentence to tts"
+                        );
+                    }
                     if pieces_tx.send(piece).is_err() {
                         break;
                     }
@@ -559,6 +590,7 @@ async fn run_turn(
 /// Encodes and publishes audio, announcing `spk_start` before the first frame.
 /// Returns the number of frames published.
 async fn pump_audio(
+    t0: Instant,
     key: DeviceKey,
     mut audio_rx: mpsc::Receiver<PcmChunk>,
     publisher: Arc<dyn VoicePublisher>,
@@ -578,11 +610,20 @@ async fn pump_audio(
     let mut sent = 0usize;
     let mut started: Option<Instant> = None;
 
+    let mut saw_pcm = false;
     'outer: loop {
         let chunk = match audio_rx.recv().await {
             Some(c) => c,
             None => break,
         };
+        if !saw_pcm {
+            saw_pcm = true;
+            // Against "first sentence to tts", this is what the vendor costs.
+            info!(
+                elapsed_ms = t0.elapsed().as_millis() as u64,
+                "voice: first tts audio"
+            );
+        }
         if cancel.load(Ordering::Relaxed) {
             break;
         }
@@ -597,6 +638,12 @@ async fn pump_audio(
                 )
                 .await;
                 started = Some(Instant::now());
+                // The number the budget is actually about: button released to
+                // sound leaving the daemon.
+                info!(
+                    elapsed_ms = t0.elapsed().as_millis() as u64,
+                    "voice: first audio frame published"
+                );
             }
             if !pace(&cfg, started, sent).await {
                 break 'outer;
