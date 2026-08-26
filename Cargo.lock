@@ -297,6 +297,7 @@ dependencies = [
  "http-body 1.0.1",
  "http-body-util",
  "humantime-serde",
+ "ignore",
  "image",
  "include_dir",
  "libc",

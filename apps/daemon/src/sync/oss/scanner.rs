@@ -2,13 +2,18 @@
 //!
 //! Responsibilities:
 //! - Walk the workspace looking for files under allowed prefixes.
+//! - Prune ignored entries ([`IgnoreRules`]) without descending into them —
+//!   never walking `node_modules/` is most of why this stays cheap.
 //! - Skip conflict sidecar files (`*.conflict.*`).
 //! - Cheap dirty check: if mtime+size match state, assume clean.
 //! - If mtime/size differ, recompute sha256(plaintext) and compare against
 //!   `local_plain_hash` in state to detect real changes.
 //! - Returns the list of relative paths that are dirty (or new).
 
-use super::{crypto::sha256_hex, path_validator::ALLOWED_PREFIXES, state::LocalSyncState};
+use super::{
+    crypto::sha256_hex, ignore_rules::IgnoreRules, path_validator::ALLOWED_PREFIXES,
+    state::LocalSyncState,
+};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
@@ -28,9 +33,19 @@ pub struct ScannedFile {
     pub dirty: bool,
 }
 
-/// Scan the workspace and return all files under allowed prefixes,
-/// marking dirty ones.
-pub fn scan_workspace(workspace_path: &str, state: &LocalSyncState) -> Vec<ScannedFile> {
+/// Scan the workspace and return all files under allowed prefixes, marking
+/// dirty ones.
+///
+/// Rules are the caller's to supply, deliberately: a sync tick builds one set
+/// and threads it through scan, pull and tombstone, and a convenience form that
+/// loaded its own would let those three disagree within a single tick — which
+/// is exactly the shape of the delete-everything failure in §4.6 of
+/// `docs/architecture/obsidian-compatible-knowledge.md`.
+pub fn scan_workspace_with(
+    workspace_path: &str,
+    state: &LocalSyncState,
+    rules: &IgnoreRules,
+) -> Vec<ScannedFile> {
     let root = Path::new(workspace_path);
     let mut results = Vec::new();
 
@@ -42,6 +57,10 @@ pub fn scan_workspace(workspace_path: &str, state: &LocalSyncState) -> Vec<Scann
         for entry in WalkDir::new(&prefix_dir)
             .follow_links(false)
             .into_iter()
+            // Prune at the directory, so an ignored tree costs one stat instead
+            // of a full walk. This is also what makes the rules affordable at
+            // all: `node_modules/` is the case they exist for.
+            .filter_entry(|e| !is_ignored_entry(root, e, rules))
             .filter_map(|e| e.ok())
         {
             if !entry.file_type().is_file() {
@@ -115,7 +134,7 @@ pub fn scan_workspace(workspace_path: &str, state: &LocalSyncState) -> Vec<Scann
 /// all conflict sidecar files (`*.conflict.*`) currently on disk.
 ///
 /// Used by `oss_sync_status` to surface conflicted files in the file tree;
-/// `scan_workspace` deliberately skips these, so they need a separate pass.
+/// `scan_workspace_with` deliberately skips these, so they need a separate pass.
 pub fn scan_conflict_files(workspace_path: &str) -> Vec<String> {
     let root = Path::new(workspace_path);
     let mut results = Vec::new();
@@ -144,6 +163,70 @@ pub fn scan_conflict_files(workspace_path: &str) -> Vec<String> {
     }
 
     results
+}
+
+/// Entries the rules exclude, as the shallowest paths that explain the
+/// exclusion: an ignored directory is reported once, and its contents are not
+/// walked at all.
+///
+/// That shape is deliberate. `node_modules/` holds tens of thousands of files;
+/// listing every one of them to tell the UI "these are ignored" would cost more
+/// than the sync this exists to prevent. One entry per ignored root is enough —
+/// the caller marks anything beneath it by prefix.
+///
+/// Paths are relative to `content_root`, forward slashes, sorted.
+pub fn scan_ignored(content_root: &str, rules: &IgnoreRules) -> Vec<String> {
+    let root = Path::new(content_root);
+    let mut out = Vec::new();
+    for prefix in ALLOWED_PREFIXES {
+        let prefix_dir = root.join(prefix.trim_end_matches('/'));
+        if prefix_dir.is_dir() {
+            collect_ignored(root, &prefix_dir, rules, &mut out);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// One level of [`scan_ignored`]: report what is excluded here, recurse only
+/// into what is not.
+fn collect_ignored(root: &Path, dir: &Path, rules: &IgnoreRules, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if rules.is_ignored(&rel, is_dir) {
+            out.push(rel);
+            continue;
+        }
+        // Conflict sidecars are excluded from sync too, but they are not
+        // "ignored" in the sense this list means — the UI has a conflict badge
+        // for them, and dimming them as well would say two things at once.
+        if is_dir {
+            collect_ignored(root, &path, rules, out);
+        }
+    }
+}
+
+/// Whether the walker should refuse to descend into (or emit) this entry.
+///
+/// The prefix root itself always passes: `filter_entry` is called for it too,
+/// and rejecting it would make the whole scan return nothing.
+fn is_ignored_entry(root: &Path, entry: &walkdir::DirEntry, rules: &IgnoreRules) -> bool {
+    let Ok(rel) = entry.path().strip_prefix(root) else {
+        return false;
+    };
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    if rel.is_empty() {
+        return false;
+    }
+    rules.is_ignored(&rel, entry.file_type().is_dir())
 }
 
 /// Returns true if the relative path is a conflict sidecar.
@@ -211,7 +294,7 @@ mod tests {
         std::fs::write(skills_dir.join("hello.md"), b"hello world").unwrap();
 
         let state = LocalSyncState::load(ws, "team-test").unwrap();
-        let files = scan_workspace(ws, &state);
+        let files = scan_workspace_with(ws, &state, &IgnoreRules::load(dir.path()));
 
         // New file → dirty
         let f = files
@@ -236,7 +319,7 @@ mod tests {
         std::fs::write(skills_dir.join("real.md"), b"real").unwrap();
 
         let state = LocalSyncState::load(ws, "team-test").unwrap();
-        let files = scan_workspace(ws, &state);
+        let files = scan_workspace_with(ws, &state, &IgnoreRules::load(dir.path()));
 
         assert!(files.iter().any(|f| f.rel_path == "knowledge/real.md"));
         assert!(!files.iter().any(|f| f.rel_path.contains(".conflict.")));
@@ -270,7 +353,7 @@ mod tests {
         std::fs::write(other_dir.join("file.md"), b"data").unwrap();
 
         let state = LocalSyncState::load(ws, "team-test").unwrap();
-        let files = scan_workspace(ws, &state);
+        let files = scan_workspace_with(ws, &state, &IgnoreRules::load(dir.path()));
         assert!(files.is_empty());
     }
 
@@ -312,11 +395,128 @@ mod tests {
             },
         );
 
-        let files = scan_workspace(ws, &state);
+        let files = scan_workspace_with(ws, &state, &IgnoreRules::load(dir.path()));
         let f = files
             .iter()
             .find(|f| f.rel_path == "knowledge/stable.md")
             .unwrap();
         assert!(!f.dirty, "file should be clean (mtime+size match)");
+    }
+
+    /// The whole reason the rules exist: a repo dragged into the knowledge dir
+    /// must not put tens of thousands of files on the sync path.
+    #[test]
+    fn scan_does_not_descend_into_ignored_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().to_str().unwrap();
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(knowledge.join("node_modules/left-pad")).unwrap();
+        std::fs::create_dir_all(knowledge.join("notes")).unwrap();
+        std::fs::write(knowledge.join("node_modules/left-pad/index.js"), b"x").unwrap();
+        std::fs::write(knowledge.join("node_modules/.package-lock.json"), b"{}").unwrap();
+        std::fs::write(knowledge.join("notes/a.md"), b"# a").unwrap();
+        std::fs::write(knowledge.join("b.md"), b"# b").unwrap();
+
+        let state = LocalSyncState::load(ws, "team-test").unwrap();
+        let found: Vec<String> = scan_workspace_with(ws, &state, &IgnoreRules::load(dir.path()))
+            .into_iter()
+            .map(|f| f.rel_path)
+            .collect();
+
+        assert!(found.contains(&"knowledge/notes/a.md".to_string()));
+        assert!(found.contains(&"knowledge/b.md".to_string()));
+        assert!(
+            !found.iter().any(|p| p.contains("node_modules")),
+            "node_modules must not be scanned at all, got {found:?}"
+        );
+    }
+
+    /// Per-machine tool state is ignored for the same reason, minus the volume:
+    /// `.obsidian/workspace.json` is rewritten every time a pane moves.
+    #[test]
+    fn scan_skips_per_machine_tool_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().to_str().unwrap();
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(knowledge.join(".obsidian")).unwrap();
+        std::fs::write(knowledge.join(".obsidian/workspace.json"), b"{}").unwrap();
+        std::fs::write(knowledge.join(".DS_Store"), b"\0").unwrap();
+        std::fs::write(knowledge.join("real.md"), b"# real").unwrap();
+
+        let state = LocalSyncState::load(ws, "team-test").unwrap();
+        let found: Vec<String> = scan_workspace_with(ws, &state, &IgnoreRules::load(dir.path()))
+            .into_iter()
+            .map(|f| f.rel_path)
+            .collect();
+
+        assert_eq!(found, vec!["knowledge/real.md".to_string()]);
+    }
+
+    /// The list the UI dims by. One entry per ignored root — never the tens of
+    /// thousands of files inside it.
+    #[test]
+    fn scan_ignored_reports_the_root_not_its_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().to_str().unwrap();
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(knowledge.join("node_modules/left-pad")).unwrap();
+        std::fs::create_dir_all(knowledge.join("notes")).unwrap();
+        std::fs::write(knowledge.join("node_modules/left-pad/index.js"), b"x").unwrap();
+        std::fs::write(knowledge.join("notes/a.md"), b"# a").unwrap();
+        std::fs::write(knowledge.join(".DS_Store"), b"x").unwrap();
+
+        let ignored = scan_ignored(ws, &IgnoreRules::load(dir.path()));
+        assert_eq!(
+            ignored,
+            vec![
+                "knowledge/.DS_Store".to_string(),
+                "knowledge/node_modules".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_ignored_finds_nested_ignored_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().to_str().unwrap();
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(knowledge.join("proj/target/debug")).unwrap();
+        std::fs::write(knowledge.join("proj/README.md"), b"x").unwrap();
+
+        let ignored = scan_ignored(ws, &IgnoreRules::load(dir.path()));
+        assert_eq!(ignored, vec!["knowledge/proj/target".to_string()]);
+    }
+
+    #[test]
+    fn scan_ignored_is_empty_for_a_clean_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().to_str().unwrap();
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(&knowledge).unwrap();
+        std::fs::write(knowledge.join("a.md"), b"# a").unwrap();
+
+        assert!(scan_ignored(ws, &IgnoreRules::load(dir.path())).is_empty());
+    }
+
+    /// A team's own rule file has to reach every teammate, so it must sync —
+    /// and therefore must survive the scan.
+    #[test]
+    fn scan_keeps_the_team_rule_file_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().to_str().unwrap();
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(&knowledge).unwrap();
+        std::fs::write(knowledge.join(".amuxignore"), b"scratch/\n").unwrap();
+        std::fs::create_dir_all(knowledge.join("scratch")).unwrap();
+        std::fs::write(knowledge.join("scratch/tmp.md"), b"x").unwrap();
+
+        let state = LocalSyncState::load(ws, "team-test").unwrap();
+        let found: Vec<String> = scan_workspace_with(ws, &state, &IgnoreRules::load(dir.path()))
+            .into_iter()
+            .map(|f| f.rel_path)
+            .collect();
+
+        assert!(found.contains(&"knowledge/.amuxignore".to_string()));
+        assert!(!found.iter().any(|p| p.contains("scratch")));
     }
 }

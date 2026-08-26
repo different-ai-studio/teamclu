@@ -18,8 +18,9 @@ use super::{
     fc_client::{
         BatchItemOutcome, CompleteResult, DeleteBatchItem, FcClient, ManifestItem, PrepareBatchItem,
     },
+    ignore_rules::IgnoreRules,
     path_validator::{validate, validate_no_symlink_escape, ALLOWED_PREFIXES},
-    scanner::{scan_workspace, ScannedFile},
+    scanner::{scan_workspace_with, ScannedFile},
     state::LocalSyncState,
     ProgressSink, SyncPhase,
 };
@@ -74,6 +75,12 @@ pub async fn tick_with_progress(
     // content_root is now a parameter (the global team dir).
     let mut state = LocalSyncState::load_at(team_id).map_err(SyncError::State)?;
 
+    // Built once per tick and threaded through scan, pull and tombstone. Reading
+    // the rule files three times would also let them change mid-tick, and a tick
+    // that ignores a path on the way in but not on the way out is exactly how
+    // §4.6's delete-everything failure happens.
+    let rules = IgnoreRules::load(std::path::Path::new(content_root));
+
     // Refresh the `dirty` flag from the working tree BEFORE PULL so the pull-phase
     // checks reflect the CURRENT tree, not the last-sync snapshot. Without this an
     // unsynced local edit (state still dirty=false) is silently overwritten by a
@@ -83,7 +90,7 @@ pub async fn tick_with_progress(
     // last-synced baseline that the PUSH-phase scan's cheap mtime+size check relies
     // on; mutating them here would make that scan treat an edited file as clean and
     // skip the upload.
-    refresh_dirty(&mut state, content_root);
+    refresh_dirty(&mut state, content_root, &rules);
 
     // ── PULL ─────────────────────────────────────────────────────────────────
     // Paginate /sync/manifest fully before advancing last_server_seq.
@@ -120,6 +127,14 @@ pub async fn tick_with_progress(
         // disk, where they would shadow the cloud copy. Skipped before `validate`
         // so the two never have to agree about them.
         if super::path_validator::is_retired(&item.path) {
+            continue;
+        }
+        // Ignored here means "this device does not want this file on disk" —
+        // an older client, or one with looser rules, can still have pushed it.
+        // `continue`, never `?`: the retired-prefix comment above records what
+        // happens when a per-item rejection aborts the manifest apply, and this
+        // would be the same failure with a different trigger.
+        if rules.is_ignored_with_ancestors(&item.path) {
             continue;
         }
         // Spec §4.3: path-validate all manifest items (defense vs. malicious remote).
@@ -232,7 +247,7 @@ pub async fn tick_with_progress(
     // ── PUSH ─────────────────────────────────────────────────────────────────
     // Re-scan (the tree may have changed during PULL) to pick up current
     // mtime/size/dirty flags.
-    let scan = apply_scan(&mut state, content_root);
+    let scan = apply_scan(&mut state, content_root, &rules);
 
     let dirty_paths: Vec<String> = state
         .files
@@ -287,7 +302,7 @@ pub async fn tick_with_progress(
     // Propagate local deletions: a previously-synced file that is absent from the
     // current scan was deleted locally → emit a server-side tombstone so other
     // nodes pull the deletion. Each tombstone is a parentVersion CAS.
-    let dels = locally_deleted_paths(&state, &scan);
+    let dels = locally_deleted_paths(&state, &scan, &rules);
     progress.report(SyncPhase::Deleting, 0, dels.len() as u32);
     let del_stats = delete_phase(content_root, team_id, fc, &mut state, dels).await;
 
@@ -1328,8 +1343,8 @@ async fn delete_file_retrying(
 /// Refresh ONLY the `dirty` flag of existing state entries from the working tree.
 /// Used before PULL so conflict/deletion checks see current dirtiness. Deliberately
 /// does NOT touch mtime/size (the last-synced baseline the PUSH scan depends on).
-fn refresh_dirty(state: &mut LocalSyncState, content_root: &str) {
-    let scan = scan_workspace(content_root, state);
+fn refresh_dirty(state: &mut LocalSyncState, content_root: &str, rules: &IgnoreRules) {
+    let scan = scan_workspace_with(content_root, state, rules);
     for scanned in &scan {
         if let Some(fs) = state.files.get_mut(&scanned.rel_path) {
             fs.dirty = scanned.dirty;
@@ -1340,8 +1355,12 @@ fn refresh_dirty(state: &mut LocalSyncState, content_root: &str) {
 /// Scan the working tree and apply current mtime/size/hash/dirty back into the
 /// state entries that already exist; returns the scan so callers can also use it
 /// for new-file and deletion detection. Used by PUSH (runs once per tick).
-fn apply_scan(state: &mut LocalSyncState, content_root: &str) -> Vec<ScannedFile> {
-    let scan = scan_workspace(content_root, state);
+fn apply_scan(
+    state: &mut LocalSyncState,
+    content_root: &str,
+    rules: &IgnoreRules,
+) -> Vec<ScannedFile> {
+    let scan = scan_workspace_with(content_root, state, rules);
     for scanned in &scan {
         if let Some(fs) = state.files.get_mut(&scanned.rel_path) {
             fs.mtime = scanned.mtime;
@@ -1355,13 +1374,30 @@ fn apply_scan(state: &mut LocalSyncState, content_root: &str) -> Vec<ScannedFile
 
 /// Paths previously synced (`synced_version > 0`) but absent from the current
 /// scan → deleted locally, needing a server-side tombstone. Sorted for determinism.
-fn locally_deleted_paths(state: &LocalSyncState, scan: &[ScannedFile]) -> Vec<(String, i32)> {
+///
+/// **Ignored paths are excluded, and that exclusion is load-bearing.** Becoming
+/// ignored also makes a file vanish from the scan, which is indistinguishable
+/// here from being deleted. Without this filter, the first tick after any new
+/// ignore rule lands would tombstone every file the rule now covers and delete
+/// them off every teammate's disk — a client-side change silently destroying
+/// server-side data. Ignoring means "stop managing", never "delete": the state
+/// entries stay put, so relaxing the rule later lets the files resume syncing.
+fn locally_deleted_paths(
+    state: &LocalSyncState,
+    scan: &[ScannedFile],
+    rules: &IgnoreRules,
+) -> Vec<(String, i32)> {
     let present: std::collections::HashSet<&str> =
         scan.iter().map(|s| s.rel_path.as_str()).collect();
     let mut out: Vec<(String, i32)> = state
         .files
         .iter()
-        .filter(|(p, f)| !f.deleted_local && f.synced_version > 0 && !present.contains(p.as_str()))
+        .filter(|(p, f)| {
+            !f.deleted_local
+                && f.synced_version > 0
+                && !present.contains(p.as_str())
+                && !rules.is_ignored_with_ancestors(p)
+        })
         .map(|(p, f)| (p.clone(), f.synced_version))
         .collect();
     out.sort();
@@ -1475,7 +1511,7 @@ mod tests {
         // Only a.md is still on disk; b.md was deleted locally.
         let scan = vec![scanned("knowledge/a.md")];
         assert_eq!(
-            locally_deleted_paths(&state, &scan),
+            locally_deleted_paths(&state, &scan, &IgnoreRules::empty()),
             vec![("knowledge/b.md".to_string(), 1)]
         );
     }
@@ -1491,7 +1527,7 @@ mod tests {
         let mut d = synced_file(2);
         d.deleted_local = true;
         state.files.insert("knowledge/gone.md".into(), d);
-        assert!(locally_deleted_paths(&state, &[]).is_empty());
+        assert!(locally_deleted_paths(&state, &[], &IgnoreRules::empty()).is_empty());
     }
 
     #[test]
@@ -1499,7 +1535,7 @@ mod tests {
         let mut state = empty_state();
         state.files.insert("knowledge/a.md".into(), synced_file(2));
         let scan = vec![scanned("knowledge/a.md")];
-        assert!(locally_deleted_paths(&state, &scan).is_empty());
+        assert!(locally_deleted_paths(&state, &scan, &IgnoreRules::empty()).is_empty());
     }
 
     #[test]
@@ -1611,7 +1647,7 @@ mod tests {
 
         // Edit the file (different content + size).
         std::fs::write(&f, b"edited-bigger\n").unwrap();
-        refresh_dirty(&mut state, root);
+        refresh_dirty(&mut state, root, &IgnoreRules::empty());
 
         let fs = &state.files["knowledge/x.md"];
         assert!(fs.dirty, "edited file must be flagged dirty before pull");

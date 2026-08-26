@@ -4,6 +4,7 @@ pub mod crypto;
 pub mod engine;
 pub mod error;
 pub mod fc_client;
+pub mod ignore_rules;
 pub mod manifest;
 pub mod path_validator;
 pub mod scanner;
