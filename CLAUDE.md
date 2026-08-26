@@ -156,10 +156,12 @@ the product.
 producer left in the product — nothing shipped a call that set it — so every team
 created since read as "off", and everything branching on it silently did nothing
 (the sync button, the status poll, the daemon's sync, and a link sweep that
-*removed* the team links it exists to create). Whether a team can sync is decided
-by its **team secret**, checked where the sync runs
-(`sync::dispatch::run_once`): no secret → nothing to encrypt or decrypt with →
-`skipped`; secret → sync.
+*removed* the team links it exists to create). The only remaining precondition
+is the auto-sync toggle checked where the sync runs (`sync::dispatch::run_once`):
+off and not forced → `skipped`; otherwise → sync. The **team secret is fetched,
+not required**: knowledge content is uploaded as **plaintext** (see ADR-0008),
+and the secret is only derived to decrypt blobs written before that switch and
+to seal the local `state/secrets.enc`. A team without a secret syncs fine.
 
 The `teams.share_mode` column and its Postgres enum are still there (in-use enum
 values cannot be dropped, and dropping the column is a one-way door on
