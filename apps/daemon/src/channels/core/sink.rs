@@ -142,6 +142,31 @@ impl InboundSink for CoreSink {
     }
 }
 
+/// Wraps [`Core`] as an [`crate::voice::InboundTurnRunner`] for ESP32.
+///
+/// Used when constructing [`crate::voice::Esp32InboundSink`] (Task 1.6 wiring).
+#[allow(dead_code)] // wired in Task 1.6 (VoiceRouter → core fork)
+pub struct CoreTurnRunner {
+    pub core: Arc<Core>,
+}
+
+#[async_trait]
+impl crate::voice::InboundTurnRunner for CoreTurnRunner {
+    async fn run(
+        &self,
+        driver: &dyn ChannelDriver,
+        msg: InboundMessage,
+    ) -> Result<crate::voice::TurnOutcome, String> {
+        match self.core.handle(driver, msg).await {
+            Ok(Outcome::Handled { session_id, .. }) => Ok(crate::voice::TurnOutcome {
+                session_id: Some(session_id),
+            }),
+            Ok(_) => Ok(crate::voice::TurnOutcome { session_id: None }),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
 /// Whether this daemon routes gateways through the core pipeline.
 ///
 /// On by default. `TEAMCLU_GATEWAY_CORE=0` falls back to each gateway's inline
