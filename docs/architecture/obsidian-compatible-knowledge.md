@@ -281,12 +281,13 @@ DerivedData/
 Pods/
 *.xcuserstate
 
-# 我们自己的
-*.conflict.*
 ```
 
-`*.conflict.*` 目前是扫描器里的一句硬编码（`scanner.rs`），搬进清单让它显式化，
-行为不变。
+**冲突副本刻意不在这份清单里。** 直觉上该加一条 `*.conflict.*`，但那个 glob 会
+连 `merge.conflict.md` 一起吞掉 —— 那是别人写的一篇笔记。后果
+`scanner::has_conflict_infix` 的注释已经记着：同步会静默拒绝上传它，而冲突端点会
+把它列成一个永远做不了的决策。冲突副本继续由扫描器用更严格的
+`<stem>.conflict.<unix_ts>.<hash>` 形状判断。
 
 ### 4.4 兜底护栏（比清单更重要）
 
@@ -327,17 +328,23 @@ pull 侧「跳过而不报错」是有先例的教训：`path_validator.rs` 里 
 `.obsidian/appearance.json`）会从 scan 结果里消失。于是引擎会认为它被本地删除，
 **发出 tombstone，删掉全团队每台设备上的这份文件**。
 
-解法（三选一，倾向 A）：
+**已落地，走的是 A 的简化版**：`locally_deleted_paths` 计算 tombstone 列表时用
+`IgnoreRules::is_ignored_with_ancestors` 过滤一遍 —— 被忽略的路径既不推、也不发
+删除。
 
-- **A. 忽略即「停止管理」，不删除。** 计算 tombstone 列表时先按 ignore 规则过滤
-  一遍：被忽略的路径既不推、也不发删除，同时把它在 `state.files` 里的条目标记为
-  `ignored`（而不是删除条目），这样将来规则放开还能续上。云端那份保持原样，直到
-  有人显式删除。
-- B. 一次性迁移：首次启用时把当前 `state` 里命中新规则的路径整批标记为 ignored，
-  之后走 A 的逻辑。本质是 A 加一个迁移步骤。
-- C. 让忽略等价于删除。**不要选这个** —— 一次客户端升级就会静默清空一批云端文件。
+原方案里的「给 `state.files` 加一个 `ignored` 标记」**不需要**：条目本来就留在
+state 里，只是不再出现在 scan 结果中。规则将来放宽，文件重新被 scan 到，就会自己
+接着同步。少一个状态字段，少一处可能不同步的真相。
 
-无论选哪个，`state.rs` 需要新增 `ignored` 状态，且 tombstone 计算必须显式跳过它。
+`/v1/team/changed` 里那段镜像 `locally_deleted_paths` 的代码也补了同样的排除 ——
+否则 UI 会把被忽略的文件显示成「待删除」，而那个删除永远不会发生。
+
+**另一个必须知道的 API 细节**：`ignore` crate 的匹配只看条目本身，不做父目录传递
+（对 walker 是对的 —— 它边走边剪，子项根本不会出现）。但 tombstone 拿到的是一条
+裸路径，没有 walk 可剪，`node_modules/` 这条规则匹配不到
+`node_modules/a/b.js`。所以有两个形式：`is_ignored`（平的，给 walker）和
+`is_ignored_with_ancestors`（逐级往上，给 tombstone 和 pull）。测试里有一条专门
+断言平的那个**不能**看祖先，因为 walker 依赖它只回答自己。
 
 ### 4.7 服务端一侧
 
@@ -399,7 +406,7 @@ pull 侧「跳过而不报错」是有先例的教训：`path_validator.rs` 里 
 
 | 刀 | 内容 | 依赖 |
 |---|---|---|
-| 1 | ignore 机制：三层规则来源 + 内置清单 + `state` 的 `ignored` 状态 + **tombstone 排除**（§4.6） | 无 |
+| 1 | ~~ignore 机制：三层规则来源 + 内置清单 + **tombstone 排除**（§4.6）~~ **已完成** | 无 |
 | 2 | 兜底护栏：单文件大小 + 单 tick 文件数上限，含 UI 呈现 | 刀 1 |
 | 3 | `.md` 后缀默认值与补全 | 无 |
 | 4 | 文件监听触发即时同步 | 刀 1（必须复用 ignore） |
@@ -431,4 +438,4 @@ pull 侧「跳过而不报错」是有先例的教训：`path_validator.rs` 里 
 - 冲突副本走 §5.2 的 A 还是 B。
 - 附件目录叫 `attachments/` 还是别的；是否需要在 onboarding 时替用户写一次
   Obsidian 配置（等于承认我们在写 `.obsidian/`，与 §3.2 的立场有张力）。
-- 被忽略的文件在 app 的文件树里如何呈现：灰显、隐藏、还是只在同步状态里汇总。
+- ~~被忽略的文件在 app 的文件树里如何呈现~~ **已定**，见 §5.5。

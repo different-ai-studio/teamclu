@@ -2763,6 +2763,7 @@
     "failed": "同步失败"
   },
   "syncBadge": {
+    "ignored": "不同步 —— 被忽略规则排除",
     "localNew": "本机新增 —— 云端还没有",
     "localModified": "本机已改 —— 还没推上去",
     "remoteAhead": "云端有更新的版本等着拉",

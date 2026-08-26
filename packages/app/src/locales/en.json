@@ -2763,6 +2763,7 @@
     "failed": "Sync failed"
   },
   "syncBadge": {
+    "ignored": "Not synced — excluded by the ignore rules",
     "localNew": "New here — not in the cloud yet",
     "localModified": "Edited here — not pushed yet",
     "remoteAhead": "A newer version is waiting in the cloud",

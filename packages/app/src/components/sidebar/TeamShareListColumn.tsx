@@ -69,6 +69,10 @@ import { useTeamConflictsStore } from '@/stores/team-conflicts'
 import { ObsidianIcon } from '@/components/workspace/ObsidianIcon'
 import { useObsidianStatus } from '@/hooks/use-obsidian'
 import { openVaultInObsidian } from '@/lib/obsidian'
+import {
+  KNOWLEDGE_DEFAULT_EXTENSION,
+  withDefaultExtension,
+} from '@/lib/knowledge-file-names'
 import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
 
 const SECTION_META: Record<
@@ -728,7 +732,12 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   // off a node's context menu, which an empty tree has none of — this is the
   // only way in when the team has no documents yet.
   async function handleRootCreate(name: string) {
-    const trimmed = name.trim()
+    // A document with no extension is not a note to Obsidian — it cannot open
+    // it, and hides it by default. Folders are named exactly as typed.
+    const trimmed =
+      rootCreating === 'folder'
+        ? name.trim()
+        : withDefaultExtension(name, KNOWLEDGE_DEFAULT_EXTENSION)
     setRootCreating(null)
     if (!trimmed || !knowledgeRoot) return
     const ok =
@@ -1079,6 +1088,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
               filterText={query}
               onFilterTextChange={setQuery}
               rootCreating={rootCreating}
+              defaultFileExtension={KNOWLEDGE_DEFAULT_EXTENSION}
               onRootCreateCancel={() => setRootCreating(null)}
               onRootCreateConfirm={(name) => {
                 void handleRootCreate(name)

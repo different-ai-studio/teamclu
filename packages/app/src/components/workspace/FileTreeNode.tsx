@@ -208,6 +208,15 @@ export interface FileTreeItemProps {
    * everything else — a workspace file has no cloud counterpart to differ from.
    */
   syncStatus?: SyncBadge | null;
+  /**
+   * The ignore rules exclude this row from sync.
+   *
+   * Deliberately not a sixth `SyncBadge`. Those five are one scale — where a
+   * document sits on the sync path, ordered by urgency — and an ignored file is
+   * not a point on it, it is off the path entirely. So this reads as absence
+   * (dimmed) rather than as another colour to rank against the others.
+   */
+  syncIgnored?: boolean;
   /** True for a team-knowledge document, which has a cloud copy to look at. */
   isTeamKnowledge?: boolean;
   compactName?: string;
@@ -258,6 +267,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   teamLastSyncAt,
   isTeamKnowledge,
   syncStatus,
+  syncIgnored = false,
   onSelectFile,
   onSelectFileRange,
   onToggleFileSelection,
@@ -387,9 +397,18 @@ export const FileTreeItem = React.memo(function FileTreeItem({
         isDragOver && isDirectory &&
           "bg-primary/20 ring-2 ring-inset ring-primary/40",
         isCutTarget && "opacity-50",
+        // Present but not carried. Dimmed rather than coloured — see
+        // `syncIgnored` on the props.
+        syncIgnored && "opacity-45",
       )}
       style={{ paddingLeft: `${level * 12 + 8}px` }}
-      title={syncStatus ? syncStatusHint(syncStatus, t) : undefined}
+      title={
+        syncIgnored
+          ? t('syncBadge.ignored', 'Not synced — excluded by the ignore rules')
+          : syncStatus
+            ? syncStatusHint(syncStatus, t)
+            : undefined
+      }
     >
       {isDirectory ? (
         <span className="w-4 h-4 flex items-center justify-center shrink-0">

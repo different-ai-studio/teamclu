@@ -30,6 +30,11 @@ interface TeamSyncStatusState {
   remoteBySyncKey: Record<string, RemotePendingItem>
   /** Sync key → why this device cannot apply the cloud's copy. */
   stuckBySyncKey: Record<string, StuckFile>
+  /**
+   * Shallowest sync keys the ignore rules exclude — `knowledge/node_modules`,
+   * never the files inside it. Expand with `isIgnoredSyncKey`.
+   */
+  ignoredRoots: Set<string>
   /** `Date.now()` of the last successful remote probe. */
   remoteCheckedAt: number
   loading: boolean
@@ -53,6 +58,7 @@ export const useTeamSyncStatusStore = create<TeamSyncStatusState>((set, get) => 
   localBySyncKey: {},
   remoteBySyncKey: {},
   stuckBySyncKey: {},
+  ignoredRoots: new Set<string>(),
   remoteCheckedAt: 0,
   loading: false,
   error: null,
@@ -61,7 +67,7 @@ export const useTeamSyncStatusStore = create<TeamSyncStatusState>((set, get) => 
     if (!isTauri()) return
     const teamId = useCurrentTeamStore.getState().team?.id
     if (!teamId) {
-      set({ localBySyncKey: {}, stuckBySyncKey: {} })
+      set({ localBySyncKey: {}, stuckBySyncKey: {}, ignoredRoots: new Set() })
       return
     }
     try {
@@ -69,12 +75,20 @@ export const useTeamSyncStatusStore = create<TeamSyncStatusState>((set, get) => 
       const res = await invoke<{
         files: { path: string; status: LocalChangeStatus }[]
         stuck?: { path: string; reason: string; attempts: number }[]
+        ignored?: string[]
       }>('team_changed_files', { teamId })
       const next: Record<string, LocalChangeStatus> = {}
       for (const f of res.files ?? []) next[f.path] = f.status
       const stuck: Record<string, StuckFile> = {}
       for (const f of res.stuck ?? []) stuck[f.path] = { reason: f.reason, attempts: f.attempts }
-      set({ localBySyncKey: next, stuckBySyncKey: stuck, error: null })
+      set({
+        localBySyncKey: next,
+        stuckBySyncKey: stuck,
+        // One entry per ignored root, not per ignored file — see
+        // `scanner::scan_ignored`. `isIgnoredSyncKey` expands it by prefix.
+        ignoredRoots: new Set(res.ignored ?? []),
+        error: null,
+      })
     } catch (e) {
       set({ error: String(e) })
     }
@@ -125,6 +139,7 @@ export const useTeamSyncStatusStore = create<TeamSyncStatusState>((set, get) => 
       localBySyncKey: {},
       remoteBySyncKey: {},
       stuckBySyncKey: {},
+      ignoredRoots: new Set(),
       remoteCheckedAt: 0,
       error: null,
     })
