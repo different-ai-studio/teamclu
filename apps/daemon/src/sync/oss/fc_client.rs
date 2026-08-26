@@ -208,7 +208,7 @@ impl FcClient {
             next_cursor: Option<String>,
         }
 
-        let page: RawPage = self.post("/sync/manifest", &body).await?;
+        let page: RawPage = self.post("/v1/sync/manifest", &body).await?;
         Ok(ManifestPage {
             snapshot_seq: page.snapshot_seq,
             items: page.items,
@@ -236,7 +236,7 @@ impl FcClient {
         if let Some(nid) = node_id {
             body["nodeId"] = Value::String(nid.to_string());
         }
-        self.post("/sync/upload/prepare", &body).await
+        self.post("/v1/sync/upload/prepare", &body).await
     }
 
     /// PUT blob to presigned URL.
@@ -267,7 +267,7 @@ impl FcClient {
             "teamId": team_id,
             "uploadSessionId": upload_session_id,
         });
-        self.post("/sync/upload/complete", &body).await
+        self.post("/v1/sync/upload/complete", &body).await
     }
 
     /// POST /sync/download
@@ -280,7 +280,7 @@ impl FcClient {
             "teamId": team_id,
             "contentHash": content_hash,
         });
-        self.post("/sync/download", &body).await
+        self.post("/v1/sync/download", &body).await
     }
 
     /// GET blob from presigned URL, verifying cipher_hash after download.
@@ -340,7 +340,7 @@ impl FcClient {
         }
         // Returns the tombstone's new version so callers can record it for a later
         // re-add CAS (see engine mark_tombstoned).
-        let resp: DeleteResp = self.post("/sync/delete", &body).await?;
+        let resp: DeleteResp = self.post("/v1/sync/delete", &body).await?;
         Ok(resp.version)
     }
 
@@ -360,7 +360,7 @@ impl FcClient {
     ) -> Result<Vec<BatchItemOutcome<PrepareResult>>, SyncError> {
         let body = serde_json::json!({ "teamId": team_id, "items": items });
         let results = self
-            .post_batch_raw("/sync/upload/prepare-batch", &body, items.len())
+            .post_batch_raw("/v1/sync/upload/prepare-batch", &body, items.len())
             .await?;
         Ok(results.iter().map(parse_batch_item).collect())
     }
@@ -377,7 +377,7 @@ impl FcClient {
             .collect();
         let body = serde_json::json!({ "teamId": team_id, "items": items });
         let results = self
-            .post_batch_raw("/sync/upload/complete-batch", &body, session_ids.len())
+            .post_batch_raw("/v1/sync/upload/complete-batch", &body, session_ids.len())
             .await?;
         Ok(results.iter().map(parse_batch_item).collect())
     }
@@ -394,7 +394,7 @@ impl FcClient {
             .collect();
         let body = serde_json::json!({ "teamId": team_id, "items": items });
         let results = self
-            .post_batch_raw("/sync/download-batch", &body, content_hashes.len())
+            .post_batch_raw("/v1/sync/download-batch", &body, content_hashes.len())
             .await?;
         Ok(results.iter().map(parse_batch_item).collect())
     }
@@ -407,7 +407,7 @@ impl FcClient {
     ) -> Result<Vec<BatchItemOutcome<DeleteResult>>, SyncError> {
         let body = serde_json::json!({ "teamId": team_id, "items": items });
         let results = self
-            .post_batch_raw("/sync/delete-batch", &body, items.len())
+            .post_batch_raw("/v1/sync/delete-batch", &body, items.len())
             .await?;
         Ok(results.iter().map(parse_batch_item).collect())
     }
@@ -511,7 +511,7 @@ impl FcClient {
         struct ModeResp {
             mode: String,
         }
-        let resp: ModeResp = self.post("/sync/set-mode", &body).await?;
+        let resp: ModeResp = self.post("/v1/sync/set-mode", &body).await?;
         Ok(resp.mode)
     }
 
@@ -522,7 +522,7 @@ impl FcClient {
         struct ModeResp {
             mode: Option<String>,
         }
-        let resp: ModeResp = self.post("/sync/team-mode", &body).await?;
+        let resp: ModeResp = self.post("/v1/sync/team-mode", &body).await?;
         Ok(resp.mode)
     }
 

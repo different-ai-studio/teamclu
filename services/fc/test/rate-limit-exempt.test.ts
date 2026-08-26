@@ -9,15 +9,15 @@ function makeDeps() {
   };
 }
 
-// The per-IP limiter allows 10 req/min. /sync/* is the JWT-authenticated
+// The per-IP limiter allows 10 req/min. /v1/sync/* is the JWT-authenticated
 // OSS-sync data plane where one tick issues several requests and team members
 // often share a NAT IP — it must NOT be rate limited (a 429 here failed whole
 // sync ticks in the field). Unauthenticated admin paths stay covered.
 
-test("/sync/* is exempt from the per-IP rate limit", async () => {
+test("/v1/sync/* is exempt from the per-IP rate limit", async () => {
   const app = createApp(makeDeps());
   for (let i = 0; i < 25; i++) {
-    const res = await app.request("/sync/manifest", {
+    const res = await app.request("/v1/sync/manifest", {
       method: "POST",
       headers: {
         "content-type": "application/json",
