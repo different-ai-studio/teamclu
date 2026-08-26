@@ -92,8 +92,9 @@ pub fn scan_workspace_with(
             }
 
             // Legacy sidecar beside a note: relocate under `.conflicts/` and
-            // keep scanning. Sidecars were never uploaded, so this is a local
-            // rename with no tombstone side effect.
+            // keep scanning (whether or not the move succeeds — sync must not
+            // upload it either way). Sidecars were never uploaded, so a
+            // successful move is a local rename with no tombstone side effect.
             if is_conflict_file(&rel) {
                 let _ = conflict::migrate_legacy_conflict_sidecar(root, &rel);
                 continue;
@@ -157,13 +158,14 @@ pub fn scan_workspace_with(
 ///
 /// Relocates any legacy sidecars still sitting beside notes first (move-on-scan),
 /// so the conflicts UI sees a consistent layout even before the next full sync
-/// tick. Used by `GET /v1/team/conflicts`; `scan_workspace_with` deliberately
-/// skips these, so they need a separate pass.
+/// tick. If a relocate fails, the legacy path is still returned — otherwise a
+/// stuck rename would hide the decision entirely. Used by
+/// `GET /v1/team/conflicts`; `scan_workspace_with` deliberately skips these, so
+/// they need a separate pass.
 pub fn scan_conflict_files(workspace_path: &str) -> Vec<String> {
     let root = Path::new(workspace_path);
-    migrate_legacy_sidecars_under(root);
+    let mut results = migrate_legacy_sidecars_under(root);
 
-    let mut results = Vec::new();
     for prefix in ALLOWED_PREFIXES {
         let conflicts_dir = root
             .join(prefix.trim_end_matches('/'))
@@ -189,12 +191,17 @@ pub fn scan_conflict_files(workspace_path: &str) -> Vec<String> {
         }
     }
 
+    results.sort();
+    results.dedup();
     results
 }
 
 /// Relocate every legacy sidecar under allowed prefixes into `.conflicts/`.
 /// Does not descend into `.conflicts/` itself.
-fn migrate_legacy_sidecars_under(root: &Path) {
+///
+/// Returns relative paths that could not be moved and must still be listed.
+fn migrate_legacy_sidecars_under(root: &Path) -> Vec<String> {
+    let mut leftovers = Vec::new();
     for prefix in ALLOWED_PREFIXES {
         let prefix_dir = root.join(prefix.trim_end_matches('/'));
         if !prefix_dir.exists() {
@@ -213,11 +220,17 @@ fn migrate_legacy_sidecars_under(root: &Path) {
                 continue;
             };
             let rel = rel.to_string_lossy().replace('\\', "/");
-            if is_conflict_file(&rel) {
-                let _ = conflict::migrate_legacy_conflict_sidecar(root, &rel);
+            if !is_conflict_file(&rel) {
+                continue;
+            }
+            match conflict::migrate_legacy_conflict_sidecar(root, &rel) {
+                conflict::MigrateOutcome::StillLegacy(path) => leftovers.push(path),
+                conflict::MigrateOutcome::UnderConflicts(_)
+                | conflict::MigrateOutcome::NotApplicable => {}
             }
         }
     }
+    leftovers
 }
 
 /// Entries the rules exclude, as the shallowest paths that explain the
@@ -433,6 +446,35 @@ mod tests {
         assert!(conflicts.contains(&"knowledge/.conflicts/bar.conflict.1234567890.def67890.md".to_string()));
         assert!(!conflicts.iter().any(|c| c == "knowledge/real.md"));
         assert!(!knowledge.join("bar.conflict.1234567890.def67890.md").exists());
+    }
+
+    /// If relocate cannot create `.conflicts/`, the legacy path must still show
+    /// up in the conflicts list — otherwise the decision disappears entirely.
+    #[test]
+    fn scan_conflict_files_lists_legacy_when_migrate_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().to_str().unwrap();
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(knowledge.join("a")).unwrap();
+        // Block knowledge/.conflicts/ as a directory.
+        std::fs::write(knowledge.join(".conflicts"), b"blocker").unwrap();
+        std::fs::write(
+            knowledge.join("a/stuck.conflict.1234567890.abc12345.md"),
+            b"local",
+        )
+        .unwrap();
+        // A note that is not a sidecar must not appear.
+        std::fs::write(knowledge.join("real.md"), b"real").unwrap();
+
+        let conflicts = scan_conflict_files(ws);
+        assert_eq!(
+            conflicts,
+            vec!["knowledge/a/stuck.conflict.1234567890.abc12345.md".to_string()],
+            "{conflicts:?}"
+        );
+        assert!(knowledge
+            .join("a/stuck.conflict.1234567890.abc12345.md")
+            .exists());
     }
 
     /// `.conflicts/` is a hard skip — a team negation rule must not re-include it.

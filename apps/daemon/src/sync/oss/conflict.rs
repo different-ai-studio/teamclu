@@ -141,36 +141,62 @@ pub fn is_under_conflicts_dir(rel_path: &str) -> bool {
     false
 }
 
+/// Result of trying to move a legacy sidecar into `.conflicts/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MigrateOutcome {
+    /// Sidecar is under `.conflicts/` (was already, or move/cleanup succeeded).
+    UnderConflicts(String),
+    /// Move could not finish; the legacy file is still on disk at this path and
+    /// must stay visible in the conflicts list.
+    StillLegacy(String),
+    /// Not a sidecar, or the path is gone — nothing to list.
+    NotApplicable,
+}
+
 /// Relocate a legacy sidecar (`knowledge/a/foo.conflict…` beside the note) into
 /// the mirrored `.conflicts/` path. No-op when already there or not a sidecar.
 ///
 /// Sidecars were never uploaded, so this is a local rename with no tombstone.
-/// Returns the destination relative path when the file is (or becomes) a
-/// sidecar under `.conflicts/`.
-pub fn migrate_legacy_conflict_sidecar(root: &Path, rel: &str) -> Option<String> {
+/// Callers that list conflicts must treat [`MigrateOutcome::StillLegacy`] as a
+/// path to emit — swallowing the failure and only walking `.conflicts/` would
+/// hide the decision from the UI.
+pub fn migrate_legacy_conflict_sidecar(root: &Path, rel: &str) -> MigrateOutcome {
     if !crate::sync::oss::scanner::is_conflict_file(rel) {
-        return None;
+        return MigrateOutcome::NotApplicable;
     }
     if is_under_conflicts_dir(rel) {
-        return Some(rel.to_string());
+        return MigrateOutcome::UnderConflicts(rel.to_string());
     }
 
-    let new_rel = legacy_rel_to_conflicts_rel(rel)?;
+    let Some(new_rel) = legacy_rel_to_conflicts_rel(rel) else {
+        // Shaped like a sidecar but not under a sync prefix we know how to
+        // mirror — keep listing it where it is.
+        return MigrateOutcome::StillLegacy(rel.to_string());
+    };
     let src = root.join(rel);
     let dst = root.join(&new_rel);
     if !src.is_file() {
-        return None;
+        return MigrateOutcome::NotApplicable;
     }
     if let Some(parent) = dst.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if std::fs::create_dir_all(parent).is_err() {
+            return MigrateOutcome::StillLegacy(rel.to_string());
+        }
     }
     if dst.exists() {
-        // Destination already holds a copy — drop the legacy leftover.
-        let _ = std::fs::remove_file(&src);
-    } else if std::fs::rename(&src, &dst).is_err() {
-        return None;
+        // Destination already holds a copy — drop the legacy leftover. If the
+        // delete fails, do not claim the move succeeded: the conflicts list
+        // must still see the legacy path (and will also see `dst` when it
+        // walks `.conflicts/`).
+        if std::fs::remove_file(&src).is_err() {
+            return MigrateOutcome::StillLegacy(rel.to_string());
+        }
+        return MigrateOutcome::UnderConflicts(new_rel);
     }
-    Some(new_rel)
+    match std::fs::rename(&src, &dst) {
+        Ok(()) => MigrateOutcome::UnderConflicts(new_rel),
+        Err(_) => MigrateOutcome::StillLegacy(rel.to_string()),
+    }
 }
 
 /// `knowledge/a/foo.conflict.ts.hash.md` → `knowledge/.conflicts/a/foo.conflict.ts.hash.md`
@@ -481,23 +507,117 @@ mod tests {
         let legacy = knowledge.join("foo.conflict.1000.aabbccdd.md");
         std::fs::write(&legacy, b"local copy").unwrap();
 
-        let new_rel =
-            migrate_legacy_conflict_sidecar(root, "knowledge/a/foo.conflict.1000.aabbccdd.md")
-                .unwrap();
+        let outcome =
+            migrate_legacy_conflict_sidecar(root, "knowledge/a/foo.conflict.1000.aabbccdd.md");
         assert_eq!(
-            new_rel,
-            "knowledge/.conflicts/a/foo.conflict.1000.aabbccdd.md"
+            outcome,
+            MigrateOutcome::UnderConflicts(
+                "knowledge/.conflicts/a/foo.conflict.1000.aabbccdd.md".into()
+            )
         );
         assert!(!legacy.exists());
         assert_eq!(
-            std::fs::read(root.join(&new_rel)).unwrap(),
+            std::fs::read(root.join("knowledge/.conflicts/a/foo.conflict.1000.aabbccdd.md"))
+                .unwrap(),
             b"local copy"
         );
         // Idempotent when already under .conflicts/
         assert_eq!(
-            migrate_legacy_conflict_sidecar(root, &new_rel).as_deref(),
-            Some(new_rel.as_str())
+            migrate_legacy_conflict_sidecar(
+                root,
+                "knowledge/.conflicts/a/foo.conflict.1000.aabbccdd.md"
+            ),
+            MigrateOutcome::UnderConflicts(
+                "knowledge/.conflicts/a/foo.conflict.1000.aabbccdd.md".into()
+            )
         );
+    }
+
+    /// Destination already has the sidecar: remove the legacy leftover. Claiming
+    /// success while `remove_file` failed would hide the leftover from listing.
+    #[test]
+    fn migrate_collision_removes_legacy_when_dst_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("knowledge/.conflicts")).unwrap();
+        std::fs::write(
+            root.join("knowledge/foo.conflict.1000.aabbccdd.md"),
+            b"legacy leftover",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("knowledge/.conflicts/foo.conflict.1000.aabbccdd.md"),
+            b"already there",
+        )
+        .unwrap();
+
+        let outcome =
+            migrate_legacy_conflict_sidecar(root, "knowledge/foo.conflict.1000.aabbccdd.md");
+        assert_eq!(
+            outcome,
+            MigrateOutcome::UnderConflicts(
+                "knowledge/.conflicts/foo.conflict.1000.aabbccdd.md".into()
+            )
+        );
+        assert!(!root.join("knowledge/foo.conflict.1000.aabbccdd.md").exists());
+        assert_eq!(
+            std::fs::read(root.join("knowledge/.conflicts/foo.conflict.1000.aabbccdd.md"))
+                .unwrap(),
+            b"already there"
+        );
+    }
+
+    /// Same collision, but the legacy file cannot be deleted: must report
+    /// StillLegacy so the conflicts list keeps seeing it.
+    #[test]
+    fn migrate_collision_still_legacy_when_remove_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let knowledge = root.join("knowledge");
+        std::fs::create_dir_all(knowledge.join(".conflicts")).unwrap();
+        let legacy = "knowledge/foo.conflict.1000.aabbccdd.md";
+        std::fs::write(root.join(legacy), b"legacy leftover").unwrap();
+        std::fs::write(
+            root.join("knowledge/.conflicts/foo.conflict.1000.aabbccdd.md"),
+            b"already there",
+        )
+        .unwrap();
+
+        // Deleting a file needs write on the parent directory.
+        let mut perms = std::fs::metadata(&knowledge).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&knowledge, perms.clone()).unwrap();
+
+        let outcome = migrate_legacy_conflict_sidecar(root, legacy);
+
+        perms.set_readonly(false);
+        std::fs::set_permissions(&knowledge, perms).unwrap();
+
+        assert_eq!(outcome, MigrateOutcome::StillLegacy(legacy.into()));
+        assert!(root.join(legacy).is_file());
+    }
+
+    /// `create_dir_all` must not be swallowed: a file blocking the `.conflicts`
+    /// path leaves the legacy sidecar in place and reports StillLegacy.
+    #[test]
+    fn migrate_returns_still_legacy_when_conflicts_path_is_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("knowledge/a")).unwrap();
+        // Block mkdir of knowledge/.conflicts/a — `.conflicts` is a regular file.
+        std::fs::write(root.join("knowledge/.conflicts"), b"not a directory").unwrap();
+        std::fs::write(
+            root.join("knowledge/a/foo.conflict.1000.aabbccdd.md"),
+            b"stuck",
+        )
+        .unwrap();
+
+        let legacy = "knowledge/a/foo.conflict.1000.aabbccdd.md";
+        assert_eq!(
+            migrate_legacy_conflict_sidecar(root, legacy),
+            MigrateOutcome::StillLegacy(legacy.into())
+        );
+        assert!(root.join(legacy).is_file());
     }
 
     #[tokio::test]
