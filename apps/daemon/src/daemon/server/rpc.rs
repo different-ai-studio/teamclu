@@ -1024,6 +1024,15 @@ impl DaemonServer {
                     }
                 }
             }
+            subscriber::IncomingMessage::SyncHint {
+                team_id,
+                resource,
+                payload,
+            } => {
+                self.sync_dispatcher
+                    .handle_sync_hint(&team_id, &resource, &payload)
+                    .await;
+            }
         }
         super::command_executor::HandlerOutcome::Success
     }

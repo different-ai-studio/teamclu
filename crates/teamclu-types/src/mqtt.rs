@@ -75,6 +75,11 @@ impl Topics {
     pub fn sync(&self, resource: &str) -> String {
         sync_topic(&self.team_id, resource)
     }
+
+    /// Wildcard covering every sync resource: `amux/<team>/sync/+`.
+    pub fn sync_wildcard(&self) -> String {
+        sync_wildcard(&self.team_id)
+    }
 }
 
 pub fn session_live(team_id: &str, session_id: &str) -> String {
@@ -93,6 +98,11 @@ pub fn sync_topic(team_id: &str, resource: &str) -> String {
     format!("amux/{team_id}/sync/{resource}")
 }
 
+/// Subscribe filter for all sync resources under a team.
+pub fn sync_wildcard(team_id: &str) -> String {
+    format!("amux/{team_id}/sync/+")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +113,7 @@ mod tests {
         assert_eq!(actor_state("t1", "d1"), "amux/t1/d1/state");
         // Resource segment last so ACL `amux/%s/sync/+` covers future resources.
         assert_eq!(sync_topic("TEAM", "knowledge"), "amux/TEAM/sync/knowledge");
+        assert_eq!(sync_wildcard("TEAM"), "amux/TEAM/sync/+");
     }
 
     #[test]
@@ -131,5 +142,6 @@ mod tests {
             "amux/team1/user/actor-xyz/notify"
         );
         assert_eq!(t.sync("knowledge"), "amux/team1/sync/knowledge");
+        assert_eq!(t.sync_wildcard(), "amux/team1/sync/+");
     }
 }

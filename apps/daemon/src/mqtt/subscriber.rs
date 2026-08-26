@@ -29,6 +29,12 @@ pub enum IncomingMessage {
         session_id: String,
         payload: Vec<u8>,
     },
+    /// Team-scoped sync hint: `amux/{team}/sync/{resource}`.
+    SyncHint {
+        team_id: String,
+        resource: String,
+        payload: Vec<u8>,
+    },
 }
 
 pub fn parse_incoming(publish: &Publish) -> Option<IncomingMessage> {
@@ -76,6 +82,23 @@ pub fn parse_frame(frame: &IncomingFrame) -> Option<IncomingMessage> {
                 actor_id: parts[2].to_string(),
                 payload: payload.clone(),
             });
+        }
+    }
+
+    // Sync hint: amux/{team}/sync/{resource} (4 segments). Unknown resources
+    // are ignored so an older daemon does not log on future topic families.
+    if topic.starts_with("amux/") {
+        let parts: Vec<&str> = topic.split('/').collect();
+        if parts.len() == 4 && parts[2] == "sync" {
+            let resource = parts[3];
+            if resource == "knowledge" {
+                return Some(IncomingMessage::SyncHint {
+                    team_id: parts[1].to_string(),
+                    resource: resource.to_string(),
+                    payload: payload.clone(),
+                });
+            }
+            return None;
         }
     }
 
@@ -176,5 +199,47 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn parse_sync_knowledge_hint() {
+        let payload = br#"{"v":1,"changeSeq":42,"originNodeId":"n1"}"#.to_vec();
+        let frame = IncomingFrame {
+            topic: "amux/team-a/sync/knowledge".to_string(),
+            payload: payload.clone(),
+            retained: false,
+        };
+        match parse_frame(&frame).expect("should parse") {
+            IncomingMessage::SyncHint {
+                team_id,
+                resource,
+                payload: got,
+            } => {
+                assert_eq!(team_id, "team-a");
+                assert_eq!(resource, "knowledge");
+                assert_eq!(got, payload);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parse_sync_unknown_resource_is_ignored() {
+        let frame = IncomingFrame {
+            topic: "amux/team-a/sync/skills".to_string(),
+            payload: br#"{"v":1,"changeSeq":1}"#.to_vec(),
+            retained: false,
+        };
+        assert!(parse_frame(&frame).is_none());
+    }
+
+    #[test]
+    fn parse_sync_wrong_segment_count_is_ignored() {
+        let frame = IncomingFrame {
+            topic: "amux/team-a/sync/knowledge/extra".to_string(),
+            payload: br#"{}"#.to_vec(),
+            retained: false,
+        };
+        assert!(parse_frame(&frame).is_none());
     }
 }

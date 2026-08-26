@@ -913,6 +913,28 @@ impl DaemonServer {
                     return Err(format!("teamclu subscription failed: {e}"));
                 }
             }
+            // Optional: ACL for sync/+ may lag token rotation (Task 6). Never
+            // escalate a deny into worker rebuild — timer remains the fallback.
+            if self.config.team_id.is_some() {
+                let sync_topic = self.topics.sync_wildcard();
+                if let Err(e) = self
+                    .publisher_handle
+                    .subscribe_optional(
+                        &sync_topic,
+                        teamclu_transport::DeliveryGuarantee::AtLeastOnce,
+                    )
+                    .await
+                {
+                    // subscribe_optional should not Err on broker reject; log
+                    // any unexpected transport failure without reconnecting.
+                    warn!(
+                        context,
+                        topic = %sync_topic,
+                        error = %e,
+                        "optional sync/+ subscribe failed; continuing without MQTT hints"
+                    );
+                }
+            }
         }
         if !current() {
             return Err("stale MQTT generation before state restore".to_string());

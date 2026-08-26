@@ -7,8 +7,81 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
 
+use crate::sync::oss::state::LocalSyncState;
 use crate::sync::scheduler::{SyncScheduler, SystemClock, Trigger};
 use crate::sync::secret_store::SecretStore;
+
+/// Decoded MQTT knowledge sync hint (`amux/<team>/sync/knowledge`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyncHintPayload {
+    pub v: i64,
+    pub change_seq: i64,
+    pub origin_node_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncHintDecision {
+    /// Schedule a Remote trigger with this seq.
+    Accept { seq: i64 },
+    /// Our own upload echoed back — drop.
+    DropEcho,
+    /// Already covered by local high-water — drop.
+    DropStale,
+    /// Unknown wire version — drop (caller warns once).
+    DropUnknownVersion,
+}
+
+/// Parse the JSON body published by FC. Missing/invalid fields → `None`.
+pub fn parse_sync_hint_payload(bytes: &[u8]) -> Option<SyncHintPayload> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let v = value.get("v")?.as_i64()?;
+    let change_seq = value.get("changeSeq")?.as_i64()?;
+    if change_seq <= 0 {
+        return None;
+    }
+    let origin_node_id = value
+        .get("originNodeId")
+        .and_then(|n| n.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(SyncHintPayload {
+        v,
+        change_seq,
+        origin_node_id,
+    })
+}
+
+/// Echo / high-water / version filters before the per-team scheduler.
+pub fn evaluate_sync_hint(
+    hint: &SyncHintPayload,
+    high_water: i64,
+    self_node_id: &str,
+) -> SyncHintDecision {
+    if hint.v != 1 {
+        return SyncHintDecision::DropUnknownVersion;
+    }
+    if hint
+        .origin_node_id
+        .as_deref()
+        .is_some_and(|id| id == self_node_id)
+    {
+        return SyncHintDecision::DropEcho;
+    }
+    if hint.change_seq <= high_water {
+        return SyncHintDecision::DropStale;
+    }
+    SyncHintDecision::Accept {
+        seq: hint.change_seq,
+    }
+}
+
+fn warn_unknown_hint_version_once(v: i64) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(v, "dropping knowledge sync hint with unknown version");
+    }
+}
 
 /// Per-team coalescing state + wake handle for the background fire driver.
 ///
@@ -109,6 +182,36 @@ impl SyncDispatcher {
         }
         self.ensure_scheduler_driver(team_id, slot.clone());
         slot.wake.notify_one();
+    }
+
+    /// Apply MQTT sync-hint filters, then [`Self::trigger_sync`] with
+    /// [`Trigger::Remote`] when the hint is actionable.
+    ///
+    /// Manual checklist (do not automate): A→B ≤10s; ≤10 hints for 2000 files;
+    /// no re-tick on own echo once nodeId set; EMQX down → 300s timer still
+    /// works / no rebuild loop beyond backoff; pre-migration token → one warn,
+    /// worker not rebuilt; payload has no paths; rate / coalesce / pull
+    /// self-write checks from the plan.
+    pub async fn handle_sync_hint(&self, team_id: &str, resource: &str, payload: &[u8]) {
+        if resource != "knowledge" {
+            return;
+        }
+        let Some(hint) = parse_sync_hint_payload(payload) else {
+            return;
+        };
+        let high_water = LocalSyncState::load_at(team_id)
+            .map(|s| s.last_server_seq)
+            .unwrap_or(0);
+        let self_id = crate::device_id::daemon_device_id();
+        match evaluate_sync_hint(&hint, high_water, &self_id) {
+            SyncHintDecision::Accept { seq } => {
+                self.trigger_sync(team_id, Trigger::Remote { seq }).await;
+            }
+            SyncHintDecision::DropEcho | SyncHintDecision::DropStale => {}
+            SyncHintDecision::DropUnknownVersion => {
+                warn_unknown_hint_version_once(hint.v);
+            }
+        }
     }
 
     async fn scheduler_slot(&self, team_id: &str) -> Arc<TeamSchedulerSlot> {
@@ -567,5 +670,101 @@ mod tests {
         assert!(logic.next_fire_at().is_some());
         assert_eq!(logic.pending_remote_seq(), Some(9));
         assert!(!logic.in_tick());
+    }
+
+    #[test]
+    fn sync_hint_drops_own_echo() {
+        let hint = SyncHintPayload {
+            v: 1,
+            change_seq: 99,
+            origin_node_id: Some("node-self".into()),
+        };
+        assert_eq!(
+            evaluate_sync_hint(&hint, 0, "node-self"),
+            SyncHintDecision::DropEcho
+        );
+    }
+
+    #[test]
+    fn sync_hint_drops_stale_or_equal_seq() {
+        let hint = SyncHintPayload {
+            v: 1,
+            change_seq: 10,
+            origin_node_id: Some("peer".into()),
+        };
+        assert_eq!(
+            evaluate_sync_hint(&hint, 10, "self"),
+            SyncHintDecision::DropStale
+        );
+        assert_eq!(
+            evaluate_sync_hint(&hint, 11, "self"),
+            SyncHintDecision::DropStale
+        );
+    }
+
+    #[test]
+    fn sync_hint_drops_unknown_version() {
+        let hint = SyncHintPayload {
+            v: 2,
+            change_seq: 99,
+            origin_node_id: None,
+        };
+        assert_eq!(
+            evaluate_sync_hint(&hint, 0, "self"),
+            SyncHintDecision::DropUnknownVersion
+        );
+    }
+
+    #[test]
+    fn sync_hint_accepts_newer_peer_change() {
+        let hint = SyncHintPayload {
+            v: 1,
+            change_seq: 42,
+            origin_node_id: Some("peer".into()),
+        };
+        assert_eq!(
+            evaluate_sync_hint(&hint, 10, "self"),
+            SyncHintDecision::Accept { seq: 42 }
+        );
+    }
+
+    #[test]
+    fn parse_sync_hint_payload_reads_fc_shape() {
+        let raw = br#"{"v":1,"changeSeq":7,"originNodeId":"mac-1","at":"2026-08-26T07:12:00Z"}"#;
+        let hint = parse_sync_hint_payload(raw).expect("parse");
+        assert_eq!(hint.v, 1);
+        assert_eq!(hint.change_seq, 7);
+        assert_eq!(hint.origin_node_id.as_deref(), Some("mac-1"));
+    }
+
+    #[test]
+    fn parse_sync_hint_payload_rejects_non_positive_seq() {
+        assert!(parse_sync_hint_payload(br#"{"v":1,"changeSeq":0}"#).is_none());
+        assert!(parse_sync_hint_payload(br#"{"v":1}"#).is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_sync_hint_triggers_remote_when_accepted() {
+        let _lock = crate::config::global_team_store::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let orig = std::env::var("AMUXD_HOME").ok();
+        std::env::set_var("AMUXD_HOME", tmp.path());
+
+        let d = SyncDispatcher::new(crate::sync::secret_store::SecretStore::new(), None);
+        let payload = br#"{"v":1,"changeSeq":55,"originNodeId":"other-node"}"#;
+        d.handle_sync_hint("team-hint", "knowledge", payload).await;
+
+        let map = d.team_schedulers.lock().await;
+        let slot = map.get("team-hint").expect("scheduler armed");
+        let logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(logic.pending_remote_seq(), Some(55));
+
+        if let Some(v) = orig {
+            std::env::set_var("AMUXD_HOME", v);
+        } else {
+            std::env::remove_var("AMUXD_HOME");
+        }
     }
 }

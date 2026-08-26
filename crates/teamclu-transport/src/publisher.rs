@@ -37,6 +37,17 @@ pub trait MessagePublisher: Send + Sync {
         delivery: DeliveryGuarantee,
     ) -> Result<(), PublisherError>;
 
+    /// Best-effort subscribe. Default: same as [`Self::subscribe`].
+    /// MQTT supervisor overrides this so broker ACL rejection does not rebuild
+    /// the worker (used for `amux/<team>/sync/+` before ACL migration lands).
+    async fn subscribe_optional(
+        &self,
+        topic: &str,
+        delivery: DeliveryGuarantee,
+    ) -> Result<(), PublisherError> {
+        self.subscribe(topic, delivery).await
+    }
+
     async fn unsubscribe(&self, topic: &str) -> Result<(), PublisherError>;
 }
 

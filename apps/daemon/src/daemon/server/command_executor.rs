@@ -112,5 +112,8 @@ fn validate_inbound_message(
                 .map(|_| ())
                 .map_err(|error| format!("invalid Notify: {error}"))
         }
+        // JSON hint — malformed payloads are dropped in the dispatcher, not
+        // dead-lettered here (hints are best-effort; timer is the fallback).
+        IncomingMessage::SyncHint { .. } => Ok(()),
     }
 }
