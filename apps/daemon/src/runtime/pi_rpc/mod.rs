@@ -948,6 +948,20 @@ async fn emit_frame(
         .await;
 }
 
+/// Mid-turn follow-up plan — aligned with opencode_http `do_prompt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PiMidTurnPromptPlan {
+    emit_turn_open: bool,
+    use_steer: bool,
+}
+
+fn pi_mid_turn_prompt_plan(was_turn_active: bool) -> PiMidTurnPromptPlan {
+    PiMidTurnPromptPlan {
+        emit_turn_open: !was_turn_active,
+        use_steer: was_turn_active,
+    }
+}
+
 async fn do_prompt(
     shared: &Arc<Shared>,
     session_id: &str,
@@ -959,6 +973,17 @@ async fn do_prompt(
     let reply_to = reply_to_message_id.filter(|id| !id.is_empty());
     let resolved =
         crate::runtime::prompt_attachments::resolve_all(&attachment_urls, session_id).await;
+
+    let was_turn_active = {
+        let routes = shared.routes.lock();
+        let Some(route) = routes.get(session_id) else {
+            warn!(session_id, "prompt for unknown pi session");
+            return;
+        };
+        route.turn_active
+    };
+    let plan = pi_mid_turn_prompt_plan(was_turn_active);
+
     let event_tx = {
         let mut routes = shared.routes.lock();
         let Some(route) = routes.get_mut(session_id) else {
@@ -972,44 +997,39 @@ async fn do_prompt(
     };
 
     crate::runtime::agent_trace::log_prompt_begin(session_id, &text, attachment_urls.len());
-    emit_frame(
-        &event_tx,
-        session_id,
-        status_change(amux::AgentStatus::Idle, amux::AgentStatus::Active),
-        reply_to.clone(),
-    )
-    .await;
+    if plan.emit_turn_open {
+        emit_frame(
+            &event_tx,
+            session_id,
+            status_change(amux::AgentStatus::Idle, amux::AgentStatus::Active),
+            reply_to.clone(),
+        )
+        .await;
+    } else {
+        debug!(
+            session_id,
+            "mid-turn pi prompt: steer without Idle→Active re-emit"
+        );
+    }
 
     let mut message = text;
     crate::runtime::prompt_attachments::substitute_in_message(&mut message, &resolved);
     crate::runtime::prompt_attachments::append_unreferenced(&mut message, &resolved, true);
 
+    let mut prompt_body = serde_json::json!({
+        "type": "prompt",
+        "message": message,
+    });
+    // pi reads `streamingBehavior` only while a turn is streaming. Mid-turn
+    // follow-ups use `steer` (fold into the live run); idle prompts omit it.
+    if plan.use_steer {
+        prompt_body["streamingBehavior"] = serde_json::json!("steer");
+    }
+
     let result = match ensure_session_ready(shared, session_id).await {
         Ok(proc) => {
             proc.client
-                .request(with_session(
-                    serde_json::json!({
-                        "type": "prompt",
-                        "message": message,
-                        // pi refuses a bare prompt while a turn is running:
-                        // "Agent is already processing. Specify streamingBehavior
-                        // ('steer' or 'followUp') to queue the message." Sending
-                        // one anyway is how a message typed mid-reply was lost.
-                        //
-                        // `followUp` runs it after the current turn; `steer` folds
-                        // it into the running one. followUp matches what TeamClu
-                        // already promises elsewhere — a message is its own turn
-                        // with its own reply, and the client's own queue holds
-                        // messages until the stream ends rather than redirecting it.
-                        //
-                        // Always sent, not only when busy: pi reads the field only
-                        // on the streaming branch, so an idle prompt is unaffected
-                        // and no extra `get_state` round trip is needed to decide.
-                        "streamingBehavior": "followUp"
-                    }),
-                    proc.mode,
-                    session_id,
-                ))
+                .request(with_session(prompt_body, proc.mode, session_id))
                 .await
         }
         Err(e) => Err(e),
@@ -1577,6 +1597,17 @@ impl AgentBackend for PiRpcBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mid_turn_prompt_plan_steers_without_turn_open() {
+        let idle = pi_mid_turn_prompt_plan(false);
+        assert!(idle.emit_turn_open);
+        assert!(!idle.use_steer);
+
+        let busy = pi_mid_turn_prompt_plan(true);
+        assert!(!busy.emit_turn_open);
+        assert!(busy.use_steer);
+    }
 
     #[test]
     fn split_model_id_at_first_slash() {

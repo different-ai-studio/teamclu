@@ -11,6 +11,14 @@ use crate::proto::amux;
 
 const BASIC_AUTH_USER: &str = "opencode";
 
+/// opencode `SessionStatus.type` collapsed for turn-boundary decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpencodeSessionPhase {
+    Idle,
+    Running,
+    Unknown,
+}
+
 #[derive(Clone)]
 pub struct ServeClient {
     http: reqwest::Client,
@@ -232,6 +240,22 @@ impl ServeClient {
             .map_err(|e| crate::error::AmuxError::Agent(format!("session status body: {e}")))
     }
 
+    /// Classify one session's `SessionStatus` object from `/session/status`.
+    pub fn session_phase_from_status(status: &serde_json::Value) -> OpencodeSessionPhase {
+        match status.get("type").and_then(|v| v.as_str()) {
+            Some("idle") => OpencodeSessionPhase::Idle,
+            Some("busy") | Some("retry") => OpencodeSessionPhase::Running,
+            _ => OpencodeSessionPhase::Unknown,
+        }
+    }
+
+    /// Look up `session_id` in a `/session/status` response map.
+    pub fn session_phase_from_map(map: &serde_json::Value, session_id: &str) -> OpencodeSessionPhase {
+        map.get(session_id)
+            .map(Self::session_phase_from_status)
+            .unwrap_or(OpencodeSessionPhase::Unknown)
+    }
+
     /// GET /question → all pending question requests (across sessions).
     pub async fn question_list(
         &self,
@@ -443,6 +467,44 @@ pub fn session_model_id(session: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_phase_from_status_classifies_idle_busy_retry() {
+        assert_eq!(
+            ServeClient::session_phase_from_status(&serde_json::json!({"type":"idle"})),
+            OpencodeSessionPhase::Idle
+        );
+        assert_eq!(
+            ServeClient::session_phase_from_status(&serde_json::json!({"type":"busy"})),
+            OpencodeSessionPhase::Running
+        );
+        assert_eq!(
+            ServeClient::session_phase_from_status(&serde_json::json!({
+                "type":"retry","attempt":1,"message":"quota","next":0
+            })),
+            OpencodeSessionPhase::Running
+        );
+        assert_eq!(
+            ServeClient::session_phase_from_status(&serde_json::json!({})),
+            OpencodeSessionPhase::Unknown
+        );
+    }
+
+    #[test]
+    fn session_phase_from_map_looks_up_session_id() {
+        let map = serde_json::json!({
+            "ses_a": {"type":"busy"},
+            "ses_b": {"type":"idle"},
+        });
+        assert_eq!(
+            ServeClient::session_phase_from_map(&map, "ses_a"),
+            OpencodeSessionPhase::Running
+        );
+        assert_eq!(
+            ServeClient::session_phase_from_map(&map, "ses_missing"),
+            OpencodeSessionPhase::Unknown
+        );
+    }
 
     #[test]
     fn session_model_id_rejoins_provider_and_id() {

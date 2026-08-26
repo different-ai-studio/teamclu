@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
@@ -926,6 +926,56 @@ async fn emit_frame(
         .await;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveTurnStatusCheck {
+    emit_turn_open: bool,
+    reconcile_stale_idle: bool,
+}
+
+/// When daemon already claims an active turn, cross-check opencode before
+/// deciding whether to re-emit Idle→Active on the next prompt.
+fn active_turn_status_check(phase: client::OpencodeSessionPhase) -> ActiveTurnStatusCheck {
+    match phase {
+        client::OpencodeSessionPhase::Running => ActiveTurnStatusCheck {
+            emit_turn_open: false,
+            reconcile_stale_idle: false,
+        },
+        client::OpencodeSessionPhase::Idle => ActiveTurnStatusCheck {
+            emit_turn_open: true,
+            reconcile_stale_idle: true,
+        },
+        client::OpencodeSessionPhase::Unknown => ActiveTurnStatusCheck {
+            emit_turn_open: false,
+            reconcile_stale_idle: false,
+        },
+    }
+}
+
+async fn opencode_session_phase(
+    shared: &Arc<HostGeneration>,
+    directory: &str,
+    session_id: &str,
+) -> client::OpencodeSessionPhase {
+    let client = match shared.serve.ensure().await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                session_id,
+                error = %e,
+                "session/status poll skipped: serve unavailable"
+            );
+            return client::OpencodeSessionPhase::Unknown;
+        }
+    };
+    match client.session_status(directory).await {
+        Ok(map) => client::ServeClient::session_phase_from_map(&map, session_id),
+        Err(e) => {
+            warn!(session_id, error = %e, "session/status poll failed");
+            client::OpencodeSessionPhase::Unknown
+        }
+    }
+}
+
 async fn do_prompt(
     shared: &Arc<HostGeneration>,
     session_id: &str,
@@ -939,6 +989,41 @@ async fn do_prompt(
     // consume the stuck-turn watchdog budget.
     let resolved =
         crate::runtime::prompt_attachments::resolve_all(&attachment_urls, session_id).await;
+
+    let (directory, was_turn_active) = {
+        let routes = shared.routes.lock();
+        let Some(route) = routes.get(session_id) else {
+            warn!(session_id, "prompt for unknown opencode session");
+            return;
+        };
+        (route.directory.clone(), route.turn_active)
+    };
+
+    let mut emit_turn_open = !was_turn_active;
+    if was_turn_active {
+        let phase = opencode_session_phase(&shared, &directory, session_id).await;
+        let check = active_turn_status_check(phase);
+        if check.reconcile_stale_idle {
+            warn!(
+                session_id,
+                "turn_active but opencode session/status is idle; reconciling stale turn"
+            );
+            let taken = {
+                let mut routes = shared.routes.lock();
+                routes
+                    .get_mut(session_id)
+                    .and_then(take_active_turn)
+            };
+            close_orphaned_turn(session_id, taken).await;
+        } else if phase == client::OpencodeSessionPhase::Running {
+            debug!(
+                session_id,
+                "turn_active confirmed by opencode session/status busy/retry"
+            );
+        }
+        emit_turn_open = check.emit_turn_open;
+    }
+
     let (event_tx, directory, model, turn_seq) = {
         let mut routes = shared.routes.lock();
         let Some(route) = routes.get_mut(session_id) else {
@@ -962,13 +1047,15 @@ async fn do_prompt(
     };
 
     crate::runtime::agent_trace::log_prompt_begin(session_id, &text, attachment_urls.len());
-    emit_frame(
-        &event_tx,
-        session_id,
-        translate::status_change(amux::AgentStatus::Idle, amux::AgentStatus::Active),
-        reply_to.clone(),
-    )
-    .await;
+    if emit_turn_open {
+        emit_frame(
+            &event_tx,
+            session_id,
+            translate::status_change(amux::AgentStatus::Idle, amux::AgentStatus::Active),
+            reply_to.clone(),
+        )
+        .await;
+    }
 
     let mut text = text;
     crate::runtime::prompt_attachments::substitute_in_message(&mut text, &resolved);
@@ -2308,6 +2395,21 @@ mod turn_activity_tests {
         )
     }
 
+    #[test]
+    fn active_turn_status_check_confirms_running_and_reconciles_idle() {
+        let running = active_turn_status_check(client::OpencodeSessionPhase::Running);
+        assert!(!running.emit_turn_open);
+        assert!(!running.reconcile_stale_idle);
+
+        let idle = active_turn_status_check(client::OpencodeSessionPhase::Idle);
+        assert!(idle.emit_turn_open);
+        assert!(idle.reconcile_stale_idle);
+
+        let unknown = active_turn_status_check(client::OpencodeSessionPhase::Unknown);
+        assert!(!unknown.emit_turn_open);
+        assert!(!unknown.reconcile_stale_idle);
+    }
+
     /// A route whose runtime goes away mid-turn must still close the turn, or
     /// the client sits on "replying" forever. Reproduces the app-workspace
     /// re-point: a prompt is in flight when the session is detached and
@@ -2330,11 +2432,10 @@ mod turn_activity_tests {
         assert_eq!(frame.turn_reply_to_message_id.as_deref(), Some("reply-1"));
     }
 
-    /// Reproduces mid-turn follow-up: `do_prompt` has no busy gate, so a second
-    /// prompt while `turn_active` re-emits Idle→Active and clears
-    /// `tools_in_flight` (turn 1 tools still running upstream).
+    /// Mid-turn follow-up must not re-emit Idle→Active — the agent is already
+    /// active and the frontend treats that transition as a turn boundary.
     #[tokio::test]
-    async fn second_prompt_while_turn_active_reopens_turn_and_clears_tools() {
+    async fn second_prompt_while_turn_active_skips_idle_to_active() {
         let shared = test_generation();
         let (tx, mut rx) = mpsc::channel(8);
         {
@@ -2347,41 +2448,46 @@ mod turn_activity_tests {
             routes.insert("ses_repro".to_string(), route);
         }
 
-        // Mirror the synchronous head of `do_prompt` (lines 1046–1074).
-        let (event_tx, turn_seq) = {
+        // Mirror the synchronous head of `do_prompt`.
+        let was_turn_active = {
+            let routes = shared.routes.lock();
+            routes.get("ses_repro").expect("route").turn_active
+        };
+        let (event_tx, turn_seq, emit_turn_open) = {
             let mut routes = shared.routes.lock();
             let route = routes.get_mut("ses_repro").expect("route");
+            let was_turn_active = route.turn_active;
             route.turn_active = true;
             route.turn_seq += 1;
             route.tools_in_flight.clear();
-            (route.event_tx.clone(), route.turn_seq)
+            (
+                route.event_tx.clone(),
+                route.turn_seq,
+                !was_turn_active,
+            )
         };
-        emit_frame(
-            &event_tx,
-            "ses_repro",
-            translate::status_change(amux::AgentStatus::Idle, amux::AgentStatus::Active),
-            None,
-        )
-        .await;
-
-        let frame = rx.try_recv().expect("second prompt emits Idle→Active");
-        assert_eq!(frame.acp_session_id, "ses_repro");
-        match frame.event.event {
-            Some(amux::acp_event::Event::StatusChange(sc)) => {
-                assert_eq!(sc.old_status, amux::AgentStatus::Idle as i32);
-                assert_eq!(sc.new_status, amux::AgentStatus::Active as i32);
-            }
-            other => panic!("expected StatusChange, got {other:?}"),
+        assert!(was_turn_active);
+        assert!(!emit_turn_open);
+        if emit_turn_open {
+            emit_frame(
+                &event_tx,
+                "ses_repro",
+                translate::status_change(amux::AgentStatus::Idle, amux::AgentStatus::Active),
+                None,
+            )
+            .await;
         }
+
+        assert!(
+            rx.try_recv().is_err(),
+            "mid-turn prompt must not emit Idle→Active"
+        );
 
         let routes = shared.routes.lock();
         let route = routes.get("ses_repro").expect("route");
         assert!(route.turn_active);
-        assert_eq!(turn_seq, 2);
-        assert!(
-            route.tools_in_flight.is_empty(),
-            "second prompt clears in-flight tool tracking for turn 1"
-        );
+        assert_eq!(route.turn_seq, turn_seq);
+        assert!(route.tools_in_flight.is_empty());
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@ import {
 import {
   buildInterruptedStreamAnchor,
   isAgentActiveStatus,
+  isTurnOpeningStatusChange,
   isTerminalAgentStatus,
   joinDistinctPendingReplyChunks,
   isToolOnlyTurnAnchor,
@@ -124,6 +125,18 @@ describe("live agent stream event helpers", () => {
     expect(isAgentActiveStatus(AgentStatus.ACTIVE)).toBe(true);
     expect(isAgentActiveStatus(AgentStatus.IDLE)).toBe(false);
     expect(isAgentActiveStatus(2)).toBe(true);
+  });
+
+  it("recognizes turn-opening statusChange only for Idle to Active", () => {
+    expect(
+      isTurnOpeningStatusChange(AgentStatus.IDLE, AgentStatus.ACTIVE),
+    ).toBe(true);
+    expect(
+      isTurnOpeningStatusChange(AgentStatus.ACTIVE, AgentStatus.ACTIVE),
+    ).toBe(false);
+    expect(
+      isTurnOpeningStatusChange(AgentStatus.ACTIVE, AgentStatus.IDLE),
+    ).toBe(false);
   });
 
   it("dedupes repeated live event ids per session", () => {
