@@ -504,6 +504,8 @@ pub struct ChannelsConfig {
     pub email: Option<EmailChannel>,
     #[serde(default)]
     pub seatalk: Option<SeaTalkChannel>,
+    #[serde(default)]
+    pub esp32: Option<Esp32Channel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -653,6 +655,26 @@ fn default_seatalk_dm_policy() -> String {
 
 fn default_seatalk_group_policy() -> String {
     "open".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Esp32Channel {
+    #[serde(default)]
+    pub enabled: bool,
+    /// When true, final chat transcripts go to CoreSink instead of ChatSink.
+    /// Default false until Phase 1 acceptance.
+    #[serde(default)]
+    pub use_core: bool,
+    #[serde(default)]
+    pub devices: Vec<Esp32DeviceEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Esp32DeviceEntry {
+    pub device_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub paired_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

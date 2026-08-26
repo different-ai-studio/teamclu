@@ -19,7 +19,8 @@ mod workspace_resolver;
 
 pub use daemon_config::{
     ActorConfig, AgentBackendConfig, AgentsConfig, ChannelsConfig, ClaudeAgentConfig,
-    CursorAgentConfig, DaemonConfig, DiscordChannel, EmailChannel, FeishuChannel, HttpConfig,
+    CursorAgentConfig, DaemonConfig, DiscordChannel, EmailChannel, Esp32Channel, Esp32DeviceEntry,
+    FeishuChannel, HttpConfig,
     KookChannel, MqttConfig, PiAgentConfig, SeaTalkChannel, TeamShareConfig, TransportKind,
     VoiceConfig, WeChatChannel, WeComChannel, BOOTSTRAP_ACTOR_NAME,
 };

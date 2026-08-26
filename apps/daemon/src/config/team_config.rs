@@ -788,6 +788,61 @@ secret = ""
     }
 
     #[test]
+    fn esp32_channel_round_trips_with_use_core_and_devices() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = BrandEnvGuard::set_amuxd_home(home.path());
+        std::fs::write(
+            home.path().join("daemon.toml"),
+            "active_team = \"team-1\"\n",
+        )
+        .unwrap();
+
+        save_value(
+            "team-1",
+            doc(
+                r#"
+[channels.esp32]
+enabled = true
+use_core = true
+
+[[channels.esp32.devices]]
+device_id = "c19518"
+name = "工位 StopWatch"
+paired_at = "2026-08-26T10:00:00Z"
+"#,
+            ),
+        )
+        .unwrap();
+
+        let written = std::fs::read_to_string(path_for("team-1")).unwrap();
+        assert!(written.contains("use_core = true"), "{written}");
+        assert!(written.contains("device_id = \"c19518\""), "{written}");
+
+        let loaded = load_typed("team-1").unwrap();
+        let esp32 = loaded.channels.esp32.unwrap();
+        assert!(esp32.enabled);
+        assert!(esp32.use_core);
+        assert_eq!(esp32.devices.len(), 1);
+        assert_eq!(esp32.devices[0].device_id, "c19518");
+        assert_eq!(esp32.devices[0].name, "工位 StopWatch");
+        assert_eq!(
+            esp32.devices[0].paired_at.as_deref(),
+            Some("2026-08-26T10:00:00Z")
+        );
+
+        let mut config = super::super::DaemonConfig::bootstrap();
+        config.channels.esp32 = Some(esp32);
+        persist_from(&config).unwrap();
+
+        let mut fresh = super::super::DaemonConfig::bootstrap();
+        hydrate(&mut fresh).unwrap();
+        let round_tripped = fresh.channels.esp32.unwrap();
+        assert!(round_tripped.enabled);
+        assert!(round_tripped.use_core);
+        assert_eq!(round_tripped.devices[0].device_id, "c19518");
+    }
+
+    #[test]
     fn hydrate_fills_daemon_config_and_persist_round_trips() {
         let home = tempfile::tempdir().unwrap();
         let _guard = BrandEnvGuard::set_amuxd_home(home.path());
