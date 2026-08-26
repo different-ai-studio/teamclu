@@ -253,8 +253,18 @@ impl SpkEncoder {
 // Synthesizer
 // ---------------------------------------------------------------------------
 
+/// Open TTS feed for the Core streaming path ([`SpeechSynthesizer::speak_delta`]).
+struct StreamingFeed {
+    text_tx: mpsc::Sender<String>,
+    pump: tokio::task::JoinHandle<usize>,
+    seq_base: u64,
+}
+
 struct ActiveSpeech {
     cancel: Arc<AtomicBool>,
+    /// `Some` when opened via [`SpeechSynthesizer::speak_delta`]; `None` for
+    /// one-shot `speak_text` / ChatSink `begin` (those own their own text_tx).
+    stream: Option<StreamingFeed>,
 }
 
 pub struct SpeechSynthesizer {
@@ -336,6 +346,7 @@ impl SpeechSynthesizer {
             key.clone(),
             ActiveSpeech {
                 cancel: cancel.clone(),
+                stream: None,
             },
         );
 
@@ -403,6 +414,160 @@ impl SpeechSynthesizer {
             "voice: speak_text complete"
         );
         Ok(())
+    }
+
+    /// Feed one already-chunked sentence without ending the turn.
+    ///
+    /// Opens the TTS stream on the first non-empty piece and keeps it open
+    /// until [`Self::end_speak_turn`]. The ESP32 driver owns sentence boundaries
+    /// ([`teamclu_gateway::esp32`]); this only synthesises what it is given.
+    pub async fn speak_delta(&self, key: DeviceKey, text: &str) -> Result<(), String> {
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+
+        // Fast path: stream already open for this device.
+        {
+            let map = self.active.lock().await;
+            if let Some(active) = map.get(&key) {
+                if let Some(ref feed) = active.stream {
+                    let tx = feed.text_tx.clone();
+                    drop(map);
+                    return tx
+                        .send(text.to_string())
+                        .await
+                        .map_err(|_| "tts text channel closed".to_string());
+                }
+            }
+        }
+
+        // Slow path: open a new streaming turn (supersedes any in-flight speech).
+        ReplySpeaker::cancel(self, &key).await;
+
+        let TtsStream { text_tx, audio_rx } = match self.tts.speak().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "voice: TTS unavailable for speak_delta");
+                self.send_ctl(
+                    &key,
+                    serde_json::json!({
+                        "from": super::ctl::FROM_DAEMON,
+                        "type": "error",
+                        "code": "tts_unavailable",
+                        "message": e.to_string(),
+                    }),
+                )
+                .await;
+                return Err(e.to_string());
+            }
+        };
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let seq_base = self.seq.fetch_add(64, Ordering::Relaxed);
+        let publisher = self.publisher.clone();
+        let cfg = self.cfg.clone();
+        let t0 = Instant::now();
+        let pump = tokio::spawn(pump_audio(
+            t0,
+            key.clone(),
+            audio_rx,
+            publisher,
+            cancel.clone(),
+            cfg,
+            seq_base + 1,
+        ));
+
+        let feed_tx = text_tx.clone();
+        self.active.lock().await.insert(
+            key.clone(),
+            ActiveSpeech {
+                cancel,
+                stream: Some(StreamingFeed {
+                    text_tx,
+                    pump,
+                    seq_base,
+                }),
+            },
+        );
+
+        feed_tx
+            .send(text.to_string())
+            .await
+            .map_err(|_| "tts text channel closed".to_string())?;
+        Ok(())
+    }
+
+    /// Close a streaming speak started by [`Self::speak_delta`].
+    ///
+    /// `TurnEnd::Answered` waits for audio to drain then sends `spk_end`.
+    /// `TurnEnd::NoAnswer` shows the NoAgent error face (design §4.3).
+    pub async fn end_speak_turn(
+        &self,
+        key: &DeviceKey,
+        end: teamclu_gateway::driver::TurnEnd,
+    ) -> Result<(), String> {
+        use teamclu_gateway::driver::TurnEnd;
+
+        match end {
+            TurnEnd::NoAnswer => {
+                self.fail(key, "no_agent", "电脑没醒着").await;
+                Ok(())
+            }
+            TurnEnd::Answered => {
+                let active = self.active.lock().await.remove(key);
+                match active {
+                    Some(ActiveSpeech {
+                        cancel,
+                        stream: Some(feed),
+                    }) => {
+                        drop(feed.text_tx);
+                        let frames = feed.pump.await.unwrap_or(0);
+                        if cancel.load(Ordering::Relaxed) {
+                            info!(
+                                team_id = %key.team_id,
+                                frames,
+                                "voice: speak_delta turn cancelled before end"
+                            );
+                            return Ok(());
+                        }
+                        publish_ctl(
+                            &self.publisher,
+                            key,
+                            serde_json::json!({
+                                "from": super::ctl::FROM_DAEMON,
+                                "type": "spk_end",
+                                "seq": feed.seq_base + 63,
+                            }),
+                        )
+                        .await;
+                        info!(
+                            team_id = %key.team_id,
+                            actor_id = %key.actor_id,
+                            frames,
+                            "voice: speak_delta turn complete"
+                        );
+                        Ok(())
+                    }
+                    Some(ActiveSpeech {
+                        stream: None,
+                        ..
+                    })
+                    | None => {
+                        // Never got a sentence (or only Think was shown): still
+                        // need spk_end so the face leaves Think.
+                        self.send_ctl(
+                            key,
+                            serde_json::json!({
+                                "from": super::ctl::FROM_DAEMON,
+                                "type": "spk_end",
+                            }),
+                        )
+                        .await;
+                        Ok(())
+                    }
+                }
+            }
+        }
     }
 
     /// Publish a ctl JSON object on the device's `voice/ctl` topic (QoS 1).
@@ -482,6 +647,7 @@ impl ReplySpeaker for SpeechSynthesizer {
             key.clone(),
             ActiveSpeech {
                 cancel: cancel.clone(),
+                stream: None,
             },
         );
 

@@ -2,18 +2,13 @@
 //!
 //! The gateway crate stays free of MQTT and NLS. This module wires the
 //! existing [`SpeechSynthesizer`] + [`VoicePublisher`] stack so
-//! [`Esp32Driver`](teamclu_gateway::esp32::Esp32Driver) can speak a final
-//! reply and publish ctl JSON.
-//!
-//! **Not** [`ReplySpeaker::begin`]: that watches agent session deltas (ChatSink
-//! path). Core Phase 1 deliver already hands the buffered reply text, so
-//! [`speak`](Esp32Downlink::speak) TTSes that string via
-//! [`SpeechSynthesizer::speak_text`].
+//! [`Esp32Driver`](teamclu_gateway::esp32::Esp32Driver) can stream a reply
+//! (`speak_delta` / `end_turn`) or speak a one-shot (`speak`).
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use teamclu_gateway::driver::DriverError;
+use teamclu_gateway::driver::{DriverError, TurnEnd};
 use teamclu_gateway::esp32::{Esp32Downlink, Esp32Target};
 
 use super::adapter::DeviceKey;
@@ -43,6 +38,22 @@ impl Esp32Downlink for Esp32VoiceDownlink {
         let key = Self::key(device);
         self.synth
             .speak_text(key, text)
+            .await
+            .map_err(DriverError::Transport)
+    }
+
+    async fn speak_delta(&self, device: &Esp32Target, text: &str) -> Result<(), DriverError> {
+        let key = Self::key(device);
+        self.synth
+            .speak_delta(key, text)
+            .await
+            .map_err(DriverError::Transport)
+    }
+
+    async fn end_turn(&self, device: &Esp32Target, end: TurnEnd) -> Result<(), DriverError> {
+        let key = Self::key(device);
+        self.synth
+            .end_speak_turn(&key, end)
             .await
             .map_err(DriverError::Transport)
     }
@@ -96,6 +107,8 @@ mod tests {
         samples_per_piece: usize,
         spoken: Arc<Mutex<Vec<String>>>,
         opened: Arc<AtomicBool>,
+        /// How many times [`TtsProvider::speak`] opened a stream.
+        open_count: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     #[async_trait]
@@ -105,6 +118,7 @@ mod tests {
         }
         async fn speak(&self) -> Result<TtsStream, super::super::tts::TtsError> {
             self.opened.store(true, Ordering::Relaxed);
+            self.open_count.fetch_add(1, Ordering::Relaxed);
             let (text_tx, mut text_rx) = mpsc::channel::<String>(16);
             let (audio_tx, audio_rx) = mpsc::channel::<PcmChunk>(64);
             let n = self.samples_per_piece;
@@ -136,13 +150,16 @@ mod tests {
         Arc<RecordingPublisher>,
         Arc<Mutex<Vec<String>>>,
         Arc<AtomicBool>,
+        Arc<std::sync::atomic::AtomicUsize>,
     ) {
         let spoken = Arc::new(Mutex::new(Vec::new()));
         let opened = Arc::new(AtomicBool::new(false));
+        let open_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let tts: Arc<dyn TtsProvider> = Arc::new(FakeTts {
             samples_per_piece: SPK_FRAME_SAMPLES * 2,
             spoken: spoken.clone(),
             opened: opened.clone(),
+            open_count: open_count.clone(),
         });
         let publisher = Arc::new(RecordingPublisher::default());
         let pub_dyn: Arc<dyn VoicePublisher> = publisher.clone();
@@ -153,12 +170,12 @@ mod tests {
         };
         let synth = Arc::new(SpeechSynthesizer::new(tts, pub_dyn, runtime, cfg));
         let downlink = esp32_downlink(synth);
-        (downlink, publisher, spoken, opened)
+        (downlink, publisher, spoken, opened, open_count)
     }
 
     #[tokio::test]
     async fn speak_opens_tts_and_publishes_spk_ctl() {
-        let (downlink, publisher, spoken, opened) = setup().await;
+        let (downlink, publisher, spoken, opened, _) = setup().await;
         downlink
             .speak(&target(), "你好。")
             .await
@@ -193,8 +210,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn speak_delta_keeps_one_tts_stream_until_end_turn() {
+        let (downlink, publisher, spoken, _, open_count) = setup().await;
+        let t = target();
+
+        downlink
+            .speak_delta(&t, "第一句。")
+            .await
+            .expect("delta 1");
+        downlink
+            .speak_delta(&t, "第二句。")
+            .await
+            .expect("delta 2");
+        assert_eq!(
+            open_count.load(Ordering::Relaxed),
+            1,
+            "must not reopen TTS mid-turn"
+        );
+
+        downlink
+            .end_turn(&t, TurnEnd::Answered)
+            .await
+            .expect("end");
+
+        assert_eq!(*spoken.lock().await, vec!["第一句。", "第二句。"]);
+        let pubs = publisher.pubs.lock().await;
+        let types: Vec<_> = pubs
+            .iter()
+            .filter(|(t, _, _)| t.ends_with("/ctl"))
+            .filter_map(|(_, p, _)| {
+                let v: serde_json::Value = serde_json::from_slice(p).ok()?;
+                v.get("type")?.as_str().map(str::to_string)
+            })
+            .collect();
+        assert!(
+            types.contains(&"spk_start".to_string()),
+            "got {types:?}"
+        );
+        assert!(types.contains(&"spk_end".to_string()), "got {types:?}");
+        assert!(
+            !types.iter().any(|t| t == "error"),
+            "Answered must not error, got {types:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn end_turn_no_answer_publishes_error_face() {
+        let (downlink, publisher, _, _, _) = setup().await;
+        downlink
+            .end_turn(&target(), TurnEnd::NoAnswer)
+            .await
+            .expect("end");
+
+        let pubs = publisher.pubs.lock().await;
+        assert_eq!(pubs.len(), 1);
+        let v: serde_json::Value = serde_json::from_slice(&pubs[0].1).unwrap();
+        assert_eq!(v["type"], "error");
+        assert_eq!(v["code"], "no_agent");
+        assert_eq!(v["message"], "电脑没醒着");
+    }
+
+    #[tokio::test]
     async fn publish_ctl_goes_to_voice_ctl_with_qos1_and_from() {
-        let (downlink, publisher, _, _) = setup().await;
+        let (downlink, publisher, _, _, _) = setup().await;
         downlink
             .publish_ctl(&target(), r#"{"type":"thinking"}"#)
             .await
@@ -212,7 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_ctl_preserves_existing_from() {
-        let (downlink, publisher, _, _) = setup().await;
+        let (downlink, publisher, _, _, _) = setup().await;
         downlink
             .publish_ctl(
                 &target(),

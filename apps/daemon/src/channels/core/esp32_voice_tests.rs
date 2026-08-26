@@ -203,6 +203,8 @@ impl TurnRunner for FailTurnRunner {
 #[derive(Default)]
 struct FakeDownlink {
     speaks: Mutex<Vec<(String, String, String, String)>>,
+    deltas: Mutex<Vec<(String, String, String, String)>>,
+    ends: Mutex<Vec<(String, teamclu_gateway::driver::TurnEnd)>>,
 }
 
 #[async_trait]
@@ -218,6 +220,30 @@ impl Esp32Downlink for FakeDownlink {
             device.device_id.clone(),
             text.to_string(),
         ));
+        Ok(())
+    }
+    async fn speak_delta(
+        &self,
+        device: &Esp32Target,
+        text: &str,
+    ) -> Result<(), teamclu_gateway::driver::DriverError> {
+        self.deltas.lock().unwrap().push((
+            device.team_id.clone(),
+            device.actor_id.clone(),
+            device.device_id.clone(),
+            text.to_string(),
+        ));
+        Ok(())
+    }
+    async fn end_turn(
+        &self,
+        device: &Esp32Target,
+        end: teamclu_gateway::driver::TurnEnd,
+    ) -> Result<(), teamclu_gateway::driver::DriverError> {
+        self.ends
+            .lock()
+            .unwrap()
+            .push((device.device_id.clone(), end));
         Ok(())
     }
     async fn publish_ctl(
@@ -394,10 +420,10 @@ fn sink_for(
     agent: Arc<RecordingAgent>,
     speaker: Arc<RecordingSpeaker>,
 ) -> Esp32InboundSink {
-    let driver: Arc<dyn ChannelDriver> = Arc::new(Esp32Driver {
-        downlink: downlink as Arc<dyn Esp32Downlink>,
-        team_id: "team-1".into(),
-    });
+    let driver: Arc<dyn ChannelDriver> = Arc::new(Esp32Driver::new(
+        downlink as Arc<dyn Esp32Downlink>,
+        "team-1",
+    ));
     Esp32InboundSink::new(
         Arc::new(CoreTurnRunner { core }),
         driver,
@@ -429,7 +455,8 @@ async fn wait_fails(speaker: &RecordingSpeaker, n: usize) {
 
 fn assert_no_queue_speak(downlink: &FakeDownlink) {
     let speaks = downlink.speaks.lock().unwrap().clone();
-    for (_t, _a, _d, text) in &speaks {
+    let deltas = downlink.deltas.lock().unwrap().clone();
+    for (_t, _a, _d, text) in speaks.iter().chain(deltas.iter()) {
         assert!(
             !text.contains("排队") && !text.contains("排在第"),
             "must not speak queue notices, got {text:?}"

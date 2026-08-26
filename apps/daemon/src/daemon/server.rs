@@ -990,10 +990,10 @@ impl DaemonServer {
                     let esp32 = esp32_cfg.expect("use_core implies esp32 cfg");
                     let downlink = crate::voice::esp32_downlink(synth.clone());
                     let driver: Arc<dyn teamclu_gateway::driver::ChannelDriver> =
-                        Arc::new(teamclu_gateway::esp32::Esp32Driver {
+                        Arc::new(teamclu_gateway::esp32::Esp32Driver::new(
                             downlink,
-                            team_id: mgr.team_id().to_string(),
-                        });
+                            mgr.team_id().to_string(),
+                        ));
                     let inbound = Arc::new(mgr.build_esp32_inbound_sink(
                         driver,
                         synth.clone() as Arc<dyn ReplySpeaker>,
