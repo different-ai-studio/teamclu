@@ -48,6 +48,10 @@ fn pull_writes() -> &'static Mutex<PullWriteSuppress> {
 /// Record that pull is about to write `rel_path` (content-root relative, e.g.
 /// `knowledge/notes/a.md`). Events on that path within 3s are dropped.
 ///
+/// Records the ancestor directories too: pull calls `create_dir_all` for the
+/// parent, and the Create events for freshly materialized directories would
+/// otherwise schedule a Local trigger and cost the receiver a no-op push tick.
+///
 /// **Ordering contract:** callers MUST invoke this *before* `create_dir_all` /
 /// `fs::write` for that path. Recording after the write races the OS watcher:
 /// inotify can deliver a Local trigger before the suppress entry exists.
@@ -55,7 +59,7 @@ pub fn record_pull_write(team_id: &str, rel_path: &str) {
     let mut guard = pull_writes()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    guard.record(team_id, rel_path, Instant::now());
+    guard.record_with_parents(team_id, rel_path, Instant::now());
 }
 
 /// Test / internal: clear all recorded pull writes.
@@ -79,11 +83,35 @@ impl PullWriteSuppress {
         Self::default()
     }
 
+    /// Record one path. Expired entries for this team are dropped on the way in,
+    /// so the map stays bounded by "paths written in the last 3s" even when the
+    /// watch loop is not running to call [`Self::is_suppressed`] (watcher failed
+    /// to arm, inotify exhausted, `knowledge/` never created) while the 300s
+    /// timer keeps pulling.
     pub fn record(&mut self, team_id: &str, rel_path: &str, now: Instant) {
-        self.by_team
-            .entry(team_id.to_string())
-            .or_default()
-            .insert(normalize_rel(rel_path), now);
+        let paths = self.by_team.entry(team_id.to_string()).or_default();
+        paths.retain(|_, at| now.duration_since(*at) < PULL_WRITE_SUPPRESS);
+        paths.insert(normalize_rel(rel_path), now);
+    }
+
+    /// Record `rel_path` and every ancestor directory under the content root.
+    ///
+    /// `knowledge/projects/alpha/a.md` also records `knowledge/projects/alpha`,
+    /// `knowledge/projects` and `knowledge` — the directories `create_dir_all`
+    /// materializes during a pull. Suppressing the directory does not hide a
+    /// user's concurrent edit: inotify reports a new file at its own path, not
+    /// at its parent's.
+    pub fn record_with_parents(&mut self, team_id: &str, rel_path: &str, now: Instant) {
+        let rel = normalize_rel(rel_path);
+        self.record(team_id, &rel, now);
+        let mut cursor = rel.as_str();
+        while let Some((parent, _)) = cursor.rsplit_once('/') {
+            if parent.is_empty() {
+                break;
+            }
+            self.record(team_id, parent, now);
+            cursor = parent;
+        }
     }
 
     pub fn is_suppressed(&mut self, team_id: &str, rel_path: &str, now: Instant) -> bool {
@@ -149,13 +177,35 @@ pub fn should_schedule_local(
     if crate::sync::oss::conflict::is_under_conflicts_dir(&rel) {
         return false;
     }
-    if rules.is_ignored_with_ancestors(&rel) {
+    if is_ignored_for_event(rules, &rel, abs_path) {
         return false;
     }
     if suppress.is_suppressed(team_id, &rel, now) {
         return false;
     }
     true
+}
+
+/// Ignore test for a filesystem *event*, which may name a directory.
+///
+/// [`IgnoreRules::is_ignored_with_ancestors`] evaluates the leaf as a file
+/// (`is_dir = false`) — right for the tombstone and pull callers, which only
+/// ever hold file paths. A watch event can name the ignored directory itself,
+/// and `node_modules/` is directory-only under gitignore semantics, so the leaf
+/// check alone lets `Create(knowledge/repo/node_modules)` through.
+///
+/// A path that has already vanished (Remove) is treated as a directory: a
+/// removed *file* named exactly `node_modules` is not a thing, and dropping
+/// that event only defers the delete to the 300s timer.
+fn is_ignored_for_event(rules: &IgnoreRules, rel: &str, abs_path: &Path) -> bool {
+    if rules.is_ignored_with_ancestors(rel) {
+        return true;
+    }
+    let treat_as_dir = match std::fs::metadata(abs_path) {
+        Ok(meta) => meta.is_dir(),
+        Err(_) => true,
+    };
+    treat_as_dir && rules.is_ignored(rel, true)
 }
 
 #[derive(Debug)]
@@ -213,14 +263,18 @@ async fn run_watch_loop(dispatcher: SyncDispatcher, team_id: String) {
     let mut watched = false;
     let mut reconcile = tokio::time::interval(WATCH_RECONCILE_INTERVAL);
     reconcile.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    // Reload ignore rules periodically so a new `.amuxignore` takes effect
-    // without a daemon restart. Cheap: one file read every reconcile.
+    // Reload ignore rules when they change, so a new `.amuxignore` takes effect
+    // without a daemon restart — gated on a stat fingerprint, not rebuilt every
+    // tick. Stamp first: a rule file edited between the stamp and the load leaves
+    // a stale stamp, which costs one extra reload rather than missing the edit.
+    let mut rules_stamp = rules_fingerprint(&content_root);
     let mut rules = IgnoreRules::load(&content_root);
 
     if reconcile_arm(
         &mut watcher,
         &mut watched,
         &mut rules,
+        &mut rules_stamp,
         &content_root,
         &knowledge_root,
         &team_id,
@@ -236,6 +290,7 @@ async fn run_watch_loop(dispatcher: SyncDispatcher, team_id: String) {
                     &mut watcher,
                     &mut watched,
                     &mut rules,
+                    &mut rules_stamp,
                     &content_root,
                     &knowledge_root,
                     &team_id,
@@ -281,15 +336,46 @@ async fn run_watch_loop(dispatcher: SyncDispatcher, team_id: String) {
     }
 }
 
+/// Cheap change-detector for the two on-disk rule files, so the 2s reconcile
+/// tick does not recompile the globset 30 times a minute forever.
+///
+/// `(len, mtime)` per file, `None` when absent. Missing → present, edited, and
+/// deleted all change the fingerprint.
+type RulesFingerprint = [Option<(u64, std::time::SystemTime)>; 2];
+
+fn rules_fingerprint(content_root: &Path) -> RulesFingerprint {
+    let stat = |p: PathBuf| {
+        std::fs::metadata(p)
+            .ok()
+            .and_then(|m| m.modified().ok().map(|t| (m.len(), t)))
+    };
+    [
+        stat(
+            content_root
+                .join("knowledge")
+                .join(crate::sync::oss::ignore_rules::TEAM_IGNORE_FILE),
+        ),
+        stat(content_root.join(crate::sync::oss::ignore_rules::LOCAL_IGNORE_FILE)),
+    ]
+}
+
 fn reconcile_arm(
     watcher: &mut RecommendedWatcher,
     watched: &mut bool,
     rules: &mut IgnoreRules,
+    rules_stamp: &mut RulesFingerprint,
     content_root: &Path,
     knowledge_root: &Path,
     team_id: &str,
 ) -> ArmOutcome {
-    *rules = IgnoreRules::load(content_root);
+    // Reload only when `.amuxignore` / `.syncignore.local` actually changed: a
+    // rebuild re-adds every builtin rule and recompiles the globset, and this
+    // runs on the same task that must stay responsive to fs events.
+    let stamp = rules_fingerprint(content_root);
+    if stamp != *rules_stamp {
+        *rules = IgnoreRules::load(content_root);
+        *rules_stamp = stamp;
+    }
     if knowledge_root.is_dir() {
         if !*watched {
             match watcher.watch(knowledge_root, RecursiveMode::Recursive) {
@@ -538,6 +624,119 @@ mod tests {
             !should_schedule_local(team, content_root, &abs, &rules, &mut suppress, now),
             "event arriving immediately after write must already be suppressed"
         );
+    }
+
+    /// Pull materializes `knowledge/projects/alpha/` — the Create events for the
+    /// two new directories must not schedule a Local tick (plan acceptance #9).
+    #[test]
+    fn pull_created_directories_are_suppressed() {
+        let dir = tempfile::tempdir().unwrap();
+        let content_root = dir.path();
+        std::fs::create_dir_all(content_root.join("knowledge/projects/alpha")).unwrap();
+        let rules = IgnoreRules::load(content_root);
+        let mut suppress = PullWriteSuppress::new();
+        let now = Instant::now();
+        let team = "team-dirs";
+
+        suppress.record_with_parents(team, "knowledge/projects/alpha/a.md", now);
+
+        for rel in [
+            "knowledge/projects/alpha/a.md",
+            "knowledge/projects/alpha",
+            "knowledge/projects",
+            "knowledge",
+        ] {
+            assert!(
+                !should_schedule_local(
+                    team,
+                    content_root,
+                    &content_root.join(rel),
+                    &rules,
+                    &mut suppress,
+                    now,
+                ),
+                "{rel} was written by pull and must not schedule"
+            );
+        }
+
+        // A note the user creates in the same tree during the pull still does.
+        assert!(should_schedule_local(
+            team,
+            content_root,
+            &content_root.join("knowledge/projects/alpha/mine.md"),
+            &rules,
+            &mut suppress,
+            now,
+        ));
+    }
+
+    /// The map must stay bounded even when the watch loop never runs, because
+    /// `is_suppressed` (the only other reaper) is then never called.
+    #[test]
+    fn record_prunes_expired_entries_without_the_watch_loop() {
+        let mut suppress = PullWriteSuppress::new();
+        let team = "team-leak";
+        let t0 = Instant::now();
+
+        for i in 0..500 {
+            suppress.record(team, &format!("knowledge/old-{i}.md"), t0);
+        }
+        // A later pull, after the suppress window: recording must drop the lot.
+        suppress.record(team, "knowledge/new.md", t0 + Duration::from_secs(10));
+
+        let held = suppress.by_team.get(team).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(
+            held, 1,
+            "expired pull-write entries must be reaped on record, got {held}"
+        );
+    }
+
+    /// `node_modules/` is directory-only under gitignore semantics, so the
+    /// Create event for the directory itself needs the is_dir form.
+    #[test]
+    fn ignored_directory_event_itself_is_filtered() {
+        let dir = tempfile::tempdir().unwrap();
+        let content_root = dir.path();
+        let ignored_dir = content_root.join("knowledge/repo/node_modules");
+        std::fs::create_dir_all(&ignored_dir).unwrap();
+        let rules = IgnoreRules::load(content_root);
+        let mut suppress = PullWriteSuppress::new();
+        let now = Instant::now();
+
+        assert!(
+            !should_schedule_local(
+                "team-dir-ignore",
+                content_root,
+                &ignored_dir,
+                &rules,
+                &mut suppress,
+                now,
+            ),
+            "Create on the ignored directory itself must not schedule"
+        );
+
+        // Removed (already gone) ignored directory: same answer.
+        let gone = content_root.join("knowledge/repo/target");
+        assert!(!should_schedule_local(
+            "team-dir-ignore",
+            content_root,
+            &gone,
+            &rules,
+            &mut suppress,
+            now,
+        ));
+
+        // An ordinary directory still schedules.
+        let real = content_root.join("knowledge/repo/notes");
+        std::fs::create_dir_all(&real).unwrap();
+        assert!(should_schedule_local(
+            "team-dir-ignore",
+            content_root,
+            &real,
+            &rules,
+            &mut suppress,
+            now,
+        ));
     }
 
     #[test]

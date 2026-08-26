@@ -1030,7 +1030,7 @@ impl DaemonServer {
                 payload,
             } => {
                 self.sync_dispatcher
-                    .handle_sync_hint(&team_id, &resource, &payload)
+                    .handle_sync_hint(self.backend.team_id(), &team_id, &resource, &payload)
                     .await;
             }
         }

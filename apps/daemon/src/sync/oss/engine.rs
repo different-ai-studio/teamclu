@@ -283,8 +283,13 @@ pub async fn tick_with_progress(
             if ls.dirty && item.version > ls.synced_version {
                 // Write local content as a conflict sidecar before overwriting.
                 if let Ok(local_bytes) = std::fs::read(&abs_path) {
-                    let _ = write_conflict_sidecar(&abs_path, &local_bytes, &ls.synced_cipher_hash)
-                        .await;
+                    let _ = write_conflict_sidecar(
+                        Path::new(content_root),
+                        &item.path,
+                        &local_bytes,
+                        &ls.synced_cipher_hash,
+                    )
+                    .await;
                     pull_conflicts += 1;
                 }
             }
@@ -1121,7 +1126,13 @@ async fn handle_push_conflict(
             .get(path)
             .map(|f| f.synced_cipher_hash.as_str())
             .unwrap_or("unknown");
-        let _ = write_conflict_sidecar(&abs_path, &local_bytes, local_cipher_hash).await;
+        let _ = write_conflict_sidecar(
+            Path::new(content_root),
+            path,
+            &local_bytes,
+            local_cipher_hash,
+        )
+        .await;
     }
     if let Some(hash) = remote_cipher_hash {
         let version = remote_version.unwrap_or(0);

@@ -76,10 +76,19 @@ pub fn evaluate_sync_hint(
 }
 
 fn warn_unknown_hint_version_once(v: i64) {
-    use std::sync::atomic::{AtomicBool, Ordering};
     static WARNED: AtomicBool = AtomicBool::new(false);
     if !WARNED.swap(true, Ordering::Relaxed) {
         tracing::warn!(v, "dropping knowledge sync hint with unknown version");
+    }
+}
+
+/// A hint whose topic names a team this daemon is not onboarded to. Never
+/// expected; warn once rather than per message so a misconfigured broker cannot
+/// flood the log.
+fn warn_foreign_hint_team_once() {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!("dropping knowledge sync hint addressed to another team");
     }
 }
 
@@ -192,7 +201,27 @@ impl SyncDispatcher {
     /// works / no rebuild loop beyond backoff; pre-migration token → one warn,
     /// worker not rebuilt; payload has no paths; rate / coalesce / pull
     /// self-write checks from the plan.
-    pub async fn handle_sync_hint(&self, team_id: &str, resource: &str, payload: &[u8]) {
+    ///
+    /// `own_team_id` is the team this daemon is onboarded to. The hint's team
+    /// comes from a topic segment, and a topic segment is not a capability: a
+    /// misrouted or hostile publish carrying `..` would otherwise resolve
+    /// `sync_content_root("..")` to the amuxd home itself, and every distinct
+    /// value would permanently allocate a scheduler slot plus a driver task that
+    /// never exits. A correct broker cannot deliver one — the subscribe filter
+    /// pins the team — so this is defence in depth, and cheap.
+    pub async fn handle_sync_hint(
+        &self,
+        own_team_id: &str,
+        team_id: &str,
+        resource: &str,
+        payload: &[u8],
+    ) {
+        if team_id.trim().is_empty() || team_id != own_team_id.trim() {
+            warn_foreign_hint_team_once();
+            return;
+        }
+        // `subscriber::parse_frame` already drops every other resource; this is
+        // the public entry point's own contract, not a duplicate of that filter.
         if resource != "knowledge" {
             return;
         }
@@ -753,12 +782,44 @@ mod tests {
 
         let d = SyncDispatcher::new(crate::sync::secret_store::SecretStore::new(), None);
         let payload = br#"{"v":1,"changeSeq":55,"originNodeId":"other-node"}"#;
-        d.handle_sync_hint("team-hint", "knowledge", payload).await;
+        d.handle_sync_hint("team-hint", "team-hint", "knowledge", payload)
+            .await;
 
         let map = d.team_schedulers.lock().await;
         let slot = map.get("team-hint").expect("scheduler armed");
         let logic = slot.logic.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(logic.pending_remote_seq(), Some(55));
+
+        if let Some(v) = orig {
+            std::env::set_var("AMUXD_HOME", v);
+        } else {
+            std::env::remove_var("AMUXD_HOME");
+        }
+    }
+
+    /// A hint whose topic names another team (or a traversal segment) must not
+    /// allocate a scheduler slot — each one would also spawn a driver task that
+    /// never exits, and `..` resolves the content root to the amuxd home.
+    #[tokio::test]
+    async fn handle_sync_hint_rejects_foreign_team() {
+        let _lock = crate::config::global_team_store::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let orig = std::env::var("AMUXD_HOME").ok();
+        std::env::set_var("AMUXD_HOME", tmp.path());
+
+        let d = SyncDispatcher::new(crate::sync::secret_store::SecretStore::new(), None);
+        let payload = br#"{"v":1,"changeSeq":55,"originNodeId":"other-node"}"#;
+        for foreign in ["..", "someone-elses-team", ""] {
+            d.handle_sync_hint("my-team", foreign, "knowledge", payload)
+                .await;
+        }
+
+        assert!(
+            d.team_schedulers.lock().await.is_empty(),
+            "a hint for another team must not arm a scheduler"
+        );
 
         if let Some(v) = orig {
             std::env::set_var("AMUXD_HOME", v);

@@ -53,6 +53,8 @@ pub fn scan_workspace_with(
 ) -> Vec<ScannedFile> {
     let root = Path::new(workspace_path);
     let mut results = Vec::new();
+    // Collected during the walk, relocated after it — see the push site.
+    let mut legacy_sidecars: Vec<String> = Vec::new();
 
     for prefix in ALLOWED_PREFIXES {
         let prefix_dir = root.join(prefix.trim_end_matches('/'));
@@ -91,12 +93,14 @@ pub fn scan_workspace_with(
                 continue;
             }
 
-            // Legacy sidecar beside a note: relocate under `.conflicts/` and
-            // keep scanning (whether or not the move succeeds — sync must not
-            // upload it either way). Sidecars were never uploaded, so a
-            // successful move is a local rename with no tombstone side effect.
+            // Legacy sidecar beside a note: note it and keep scanning (sync must
+            // not upload it either way). The relocate happens AFTER the walk —
+            // renaming entries out of the directory `readdir` is currently
+            // reading has unspecified behaviour, and on ext4 with dir_index it
+            // reliably skips siblings, which would silently drop notes from this
+            // tick's dirty list.
             if is_conflict_file(&rel) {
-                let _ = conflict::migrate_legacy_conflict_sidecar(root, &rel);
+                legacy_sidecars.push(rel);
                 continue;
             }
 
@@ -148,6 +152,13 @@ pub fn scan_workspace_with(
                 dirty,
             });
         }
+    }
+
+    // Walk is finished: no `readdir` is in flight, so renaming these out of
+    // their directories cannot make the walk skip anything. Sidecars were never
+    // uploaded, so each move is a local rename with no tombstone side effect.
+    for rel in legacy_sidecars {
+        let _ = conflict::migrate_legacy_conflict_sidecar(root, &rel);
     }
 
     results

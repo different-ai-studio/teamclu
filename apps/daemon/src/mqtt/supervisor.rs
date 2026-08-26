@@ -1726,7 +1726,16 @@ impl MqttWorker {
                                     generation,
                                     worker_generation: self.worker_generation,
                                 })).await;
-                                if !auto_restore_subscriptions {
+                                // Announce when nothing is left to wait for. The
+                                // SUBACK handler is the other announce site, and
+                                // it only runs if something was actually queued:
+                                // when every restore was rejected at the queue
+                                // AND every one of them was optional (tolerated,
+                                // no forced rebuild), no SUBACK ever arrives and
+                                // the worker would sit un-announced forever.
+                                if !auto_restore_subscriptions
+                                    || subscribe_waiting_for_write.is_empty()
+                                {
                                     self.announce_subscriptions_ready(
                                         generation,
                                         &mut subscriptions_ready_announced,

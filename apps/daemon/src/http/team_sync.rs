@@ -740,9 +740,32 @@ fn apply_conflict_decision(
         }
     }
 
+    // The sidecar is gone; the mirrored directories it lived in are not. Without
+    // this, `knowledge/.conflicts/a/b/c/` survives every resolution and a vault
+    // that has seen many conflicts keeps a full shadow tree that
+    // `scan_conflict_files` walks on every poll.
+    prune_empty_conflict_dirs(&root, &sidecar);
+
     st.save_at(team_id)
         .map_err(|e| DecisionError::Failed(format!("save sync state: {e}")))?;
     Ok(Some(sidecar))
+}
+
+/// Remove the now-empty directories a resolved sidecar leaves behind.
+///
+/// `remove_dir` only succeeds on an empty directory, so this can never take one
+/// that still holds another conflict — or, for a legacy sidecar that sat beside
+/// its note, the note's own directory. Stops at the sync prefix root, so
+/// `knowledge/` itself always stays.
+fn prune_empty_conflict_dirs(root: &std::path::Path, sidecar_rel: &str) {
+    let mut parts: Vec<&str> = sidecar_rel.split('/').filter(|s| !s.is_empty()).collect();
+    parts.pop(); // the filename
+    while parts.len() > 1 {
+        if std::fs::remove_dir(root.join(parts.join("/"))).is_err() {
+            return;
+        }
+        parts.pop();
+    }
 }
 
 /// Whether a sync path belongs to a prefix the product still carries.
