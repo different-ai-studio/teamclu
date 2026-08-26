@@ -40,6 +40,11 @@ pub struct VoiceCtl {
     /// Device-local sequence number for QoS-1 dedup. Defaults to 0.
     #[serde(default)]
     pub seq: u64,
+    /// Per-boot random id from the device (hex). Part of the gateway dedup key.
+    /// Absent on pre-migration firmware — caller must refuse core-path dedup
+    /// or fall back carefully (see Esp32Listener).
+    #[serde(default)]
+    pub boot_id: Option<String>,
     /// Who sent this. `Some("amuxd")` on everything the daemon publishes.
     ///
     /// `voice/ctl` carries BOTH directions on one topic (plan §7), and the
@@ -129,5 +134,20 @@ mod tests {
         // Forward-compat: a future ctl type round-trips; the router logs it.
         let v = VoiceCtl::parse(br#"{"type":"future_thing","seq":1}"#).expect("parse");
         assert_eq!(v.kind, "future_thing");
+    }
+
+    #[test]
+    fn parses_boot_id_on_turn_start() {
+        let v = VoiceCtl::parse(
+            br#"{"type":"turn_start","intent":"chat","seq":1,"boot_id":"a1b2c3d4"}"#,
+        )
+        .unwrap();
+        assert_eq!(v.boot_id.as_deref(), Some("a1b2c3d4"));
+    }
+
+    #[test]
+    fn boot_id_optional_for_old_firmware() {
+        let v = VoiceCtl::parse(br#"{"type":"turn_start","intent":"chat","seq":1}"#).unwrap();
+        assert!(v.boot_id.is_none());
     }
 }
