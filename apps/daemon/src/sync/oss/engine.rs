@@ -29,6 +29,36 @@ use super::{
 /// (`MAX_SYNC_BATCH`). The daemon auto-splits larger working sets into chunks.
 const MAX_BATCH: usize = 200;
 
+/// Stable node id stamped on prepare/delete so FC can set `created_by_node_id`
+/// and (via top-level `nodeId` on complete/delete-batch) publish MQTT hints
+/// with a filterable `originNodeId`. Peers drop echoes matching this value.
+fn knowledge_created_by_node_id() -> Option<String> {
+    Some(crate::device_id::daemon_device_id())
+}
+
+fn prepare_batch_item_for(
+    path: &str,
+    parent_version: i32,
+    content_hash: &str,
+    size: u64,
+) -> PrepareBatchItem {
+    PrepareBatchItem {
+        path: path.to_string(),
+        parent_version,
+        content_hash: content_hash.to_string(),
+        size,
+        node_id: knowledge_created_by_node_id(),
+    }
+}
+
+fn delete_batch_item_for(path: &str, parent_version: i32) -> DeleteBatchItem {
+    DeleteBatchItem {
+        path: path.to_string(),
+        parent_version,
+        node_id: knowledge_created_by_node_id(),
+    }
+}
+
 /// Largest single file the sync will carry.
 ///
 /// The ignore rules match on names, so they only stop what someone thought to
@@ -840,12 +870,8 @@ async fn push_phase(
         // Stage 1: prepare-batch (session + presigned PUT per item).
         let items: Vec<PrepareBatchItem> = prepared
             .iter()
-            .map(|pu| PrepareBatchItem {
-                path: pu.path.clone(),
-                parent_version: pu.parent_version,
-                content_hash: pu.cipher_hash.clone(),
-                size: pu.size,
-                node_id: None,
+            .map(|pu| {
+                prepare_batch_item_for(&pu.path, pu.parent_version, &pu.cipher_hash, pu.size)
             })
             .collect();
 
@@ -954,54 +980,61 @@ async fn push_phase(
             continue;
         }
         let session_ids: Vec<String> = ready.iter().map(|r| r.session_id.clone()).collect();
-        let comp_outcomes =
-            match with_batch_retry(|| fc.upload_complete_batch(team_id, &session_ids)).await {
-                Ok(o) => o,
-                Err(SyncError::BatchUnsupported) => {
-                    // prepare-batch worked but complete-batch 404 — vanishingly
-                    // unlikely, but degrade per-item rather than lose the uploads.
-                    for r in &ready {
-                        let pu = &prepared[r.idx];
-                        match fc.upload_complete(team_id, &r.session_id).await {
-                            Ok(c) => finalize_upload(content_root, pu, c, state, &mut stats),
-                            Err(SyncError::Conflict {
+        let node_id = knowledge_created_by_node_id();
+        let comp_outcomes = match with_batch_retry(|| {
+            fc.upload_complete_batch(team_id, &session_ids, node_id.as_deref())
+        })
+        .await
+        {
+            Ok(o) => o,
+            Err(SyncError::BatchUnsupported) => {
+                // prepare-batch worked but complete-batch 404 — vanishingly
+                // unlikely, but degrade per-item rather than lose the uploads.
+                for r in &ready {
+                    let pu = &prepared[r.idx];
+                    match fc
+                        .upload_complete(team_id, &r.session_id, node_id.as_deref())
+                        .await
+                    {
+                        Ok(c) => finalize_upload(content_root, pu, c, state, &mut stats),
+                        Err(SyncError::Conflict {
+                            remote_version,
+                            remote_cipher_hash,
+                        }) => {
+                            handle_push_conflict(
+                                content_root,
+                                &pu.path,
                                 remote_version,
                                 remote_cipher_hash,
-                            }) => {
-                                handle_push_conflict(
-                                    content_root,
-                                    &pu.path,
-                                    remote_version,
-                                    remote_cipher_hash,
-                                    key,
-                                    fc,
-                                    state,
-                                    &mut stats,
-                                )
-                                .await
-                            }
-                            Err(e) => {
-                                if is_transient(&e) {
-                                    stats.deferred += 1;
-                                    stats.last_transient = Some(e);
-                                } else {
-                                    tracing::warn!("[oss_sync] complete {}: {e}", pu.path);
-                                }
+                                key,
+                                fc,
+                                state,
+                                &mut stats,
+                            )
+                            .await
+                        }
+                        Err(e) => {
+                            if is_transient(&e) {
+                                stats.deferred += 1;
+                                stats.last_transient = Some(e);
+                            } else {
+                                tracing::warn!("[oss_sync] complete {}: {e}", pu.path);
                             }
                         }
                     }
-                    continue;
                 }
-                Err(e) => {
-                    if is_transient(&e) {
-                        stats.deferred += ready.len() as u32;
-                        stats.last_transient = Some(e);
-                    } else {
-                        tracing::warn!("[oss_sync] complete-batch: {e}");
-                    }
-                    continue;
+                continue;
+            }
+            Err(e) => {
+                if is_transient(&e) {
+                    stats.deferred += ready.len() as u32;
+                    stats.last_transient = Some(e);
+                } else {
+                    tracing::warn!("[oss_sync] complete-batch: {e}");
                 }
-            };
+                continue;
+            }
+        };
 
         for (r, oc) in ready.iter().zip(comp_outcomes.into_iter()) {
             let pu = &prepared[r.idx];
@@ -1191,46 +1224,45 @@ async fn delete_phase(
     for chunk in dels.chunks(MAX_BATCH) {
         let items: Vec<DeleteBatchItem> = chunk
             .iter()
-            .map(|(p, v)| DeleteBatchItem {
-                path: p.clone(),
-                parent_version: *v,
-                node_id: None,
-            })
+            .map(|(p, v)| delete_batch_item_for(p, *v))
             .collect();
+        let node_id = knowledge_created_by_node_id();
 
-        let outcomes = match with_batch_retry(|| fc.delete_batch(team_id, &items)).await {
-            Ok(o) => o,
-            Err(SyncError::BatchUnsupported) => {
-                for (p, v) in chunk {
-                    match delete_file_retrying(fc, team_id, p, *v).await {
-                        Ok(version) => {
-                            state.mark_tombstoned(p, version);
-                            prune_empty_parents(Path::new(content_root), p).await;
-                            stats.pushed += 1;
-                        }
-                        Err(SyncError::Conflict { .. }) => stats.conflicts += 1,
-                        Err(e) => {
-                            if is_transient(&e) {
-                                stats.deferred += 1;
-                                stats.last_transient = Some(e);
-                            } else {
-                                tracing::warn!("[oss_sync] delete {p}: {e}");
+        let outcomes =
+            match with_batch_retry(|| fc.delete_batch(team_id, &items, node_id.as_deref())).await
+            {
+                Ok(o) => o,
+                Err(SyncError::BatchUnsupported) => {
+                    for (p, v) in chunk {
+                        match delete_file_retrying(fc, team_id, p, *v).await {
+                            Ok(version) => {
+                                state.mark_tombstoned(p, version);
+                                prune_empty_parents(Path::new(content_root), p).await;
+                                stats.pushed += 1;
+                            }
+                            Err(SyncError::Conflict { .. }) => stats.conflicts += 1,
+                            Err(e) => {
+                                if is_transient(&e) {
+                                    stats.deferred += 1;
+                                    stats.last_transient = Some(e);
+                                } else {
+                                    tracing::warn!("[oss_sync] delete {p}: {e}");
+                                }
                             }
                         }
                     }
+                    continue;
                 }
-                continue;
-            }
-            Err(e) => {
-                if is_transient(&e) {
-                    stats.deferred += chunk.len() as u32;
-                    stats.last_transient = Some(e);
-                } else {
-                    tracing::warn!("[oss_sync] delete-batch: {e}");
+                Err(e) => {
+                    if is_transient(&e) {
+                        stats.deferred += chunk.len() as u32;
+                        stats.last_transient = Some(e);
+                    } else {
+                        tracing::warn!("[oss_sync] delete-batch: {e}");
+                    }
+                    continue;
                 }
-                continue;
-            }
-        };
+            };
 
         for ((p, _v), oc) in chunk.iter().zip(outcomes.into_iter()) {
             match oc {
@@ -1333,7 +1365,7 @@ async fn upload_one(
             parent_version,
             &remote_cipher_hash,
             blob.len() as u64,
-            None,
+            knowledge_created_by_node_id().as_deref(),
         )
         .await?;
 
@@ -1344,7 +1376,11 @@ async fn upload_one(
     }
 
     let complete = fc
-        .upload_complete(team_id, &prepare.upload_session_id)
+        .upload_complete(
+            team_id,
+            &prepare.upload_session_id,
+            knowledge_created_by_node_id().as_deref(),
+        )
         .await?;
 
     let meta = std::fs::metadata(&abs_path).map_err(SyncError::from)?;
@@ -1419,7 +1455,15 @@ async fn delete_file_retrying(
 ) -> Result<i32, SyncError> {
     let mut attempt = 0u32;
     loop {
-        match fc.delete_file(team_id, path, parent_version, None).await {
+        match fc
+            .delete_file(
+                team_id,
+                path,
+                parent_version,
+                knowledge_created_by_node_id().as_deref(),
+            )
+            .await
+        {
             Err(e) if is_transient(&e) && attempt < MAX_TRANSIENT_RETRIES => {
                 attempt += 1;
                 backoff_sleep(attempt).await;
@@ -2120,5 +2164,22 @@ mod tests {
             pu.parent_version, 2,
             "re-add must CAS against the tombstone version, not 0"
         );
+    }
+
+    #[test]
+    fn prepare_and_delete_payloads_carry_daemon_device_id() {
+        let expected = crate::device_id::daemon_device_id();
+        assert!(!expected.is_empty());
+
+        let prep = prepare_batch_item_for("knowledge/a.md", 0, "abc", 3);
+        let del = delete_batch_item_for("knowledge/a.md", 1);
+
+        assert_eq!(prep.node_id.as_deref(), Some(expected.as_str()));
+        assert_eq!(del.node_id.as_deref(), Some(expected.as_str()));
+
+        let prep_json = serde_json::to_value(&prep).unwrap();
+        assert_eq!(prep_json["nodeId"], expected);
+        let del_json = serde_json::to_value(&del).unwrap();
+        assert_eq!(del_json["nodeId"], expected);
     }
 }
