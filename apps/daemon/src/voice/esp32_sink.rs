@@ -130,6 +130,22 @@ impl Esp32InboundSink {
         }
     }
 
+    /// Test-only: prime sticky ACP so barge-in can call [`AgentHandle::cancel`].
+    #[cfg(test)]
+    pub(crate) async fn test_seed_acp(&self, team_id: &str, actor_id: &str, acp_session_id: &str) {
+        let mut g = self.active.lock().await;
+        g.insert(
+            DeviceKey {
+                team_id: team_id.to_string(),
+                actor_id: actor_id.to_string(),
+            },
+            DeviceState {
+                acp_session_id: Some(acp_session_id.to_string()),
+                in_flight: None,
+            },
+        );
+    }
+
     /// `(team, actor)` for speech cancel and active-turn tracking.
     fn device_key(&self, msg: &InboundMessage) -> DeviceKey {
         if let Some(ctx) = msg.reply_context.as_deref() {
@@ -580,17 +596,8 @@ mod tests {
     }
 
     async fn seed_acp(sink: &Esp32InboundSink, acp_session_id: &str) {
-        let mut g = sink.active.lock().await;
-        g.insert(
-            DeviceKey {
-                team_id: "team-1".into(),
-                actor_id: "actor-1".into(),
-            },
-            DeviceState {
-                acp_session_id: Some(acp_session_id.to_string()),
-                in_flight: None,
-            },
-        );
+        sink.test_seed_acp("team-1", "actor-1", acp_session_id)
+            .await;
     }
 
     fn sink_with(

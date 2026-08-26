@@ -562,3 +562,5 @@ fn compose_prompt(msg: &InboundMessage) -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod esp32_voice_tests;
