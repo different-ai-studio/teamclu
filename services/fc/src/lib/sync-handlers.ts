@@ -20,12 +20,26 @@ import { getDb, type Db } from '../db/client.js';
 import { ApiError } from './http-utils.js';
 import { teamWorkspaceConfig, amuxcUploadSessions } from '../db/schema/index.js';
 import { eq } from 'drizzle-orm';
+import { syncTopic } from './mqtt-topics.js';
+import { pgPushDeps, pushDeps } from './push-deps.js';
 
 const DOWNLOAD_TTL_SEC = 900;
+
+/** Best-effort MQTT publish budget for sync hints — never blocks the HTTP 200. */
+const SYNC_HINT_PUBLISH_TIMEOUT_MS = 500;
 
 // ---------------------------------------------------------------------------
 // Injectable deps — production callers omit these; tests inject stubs.
 // ---------------------------------------------------------------------------
+
+/** Minimal publisher surface (matches createMqttPublisher / push-deps). */
+export interface SyncMqttPublisher {
+  publish(
+    topic: string,
+    payload: string,
+    options?: { qos?: number; retain?: boolean },
+  ): Promise<void>;
+}
 
 export interface SyncHandlerDeps {
   db?: Db;
@@ -33,6 +47,18 @@ export interface SyncHandlerDeps {
   storage?: BlobStorage;
   /** Override the live-file count. Tests only — production reads the table. */
   countLiveFiles?: (teamId: string) => Promise<number | null>;
+  /**
+   * MQTT publisher for knowledge sync hints. `undefined` → resolve from
+   * push-deps (null when MQTT_BROKER_URL is unset). Explicit `null` skips.
+   */
+  mqtt?: SyncMqttPublisher | null;
+  /** Clock override for hint `at` (tests). */
+  now?: () => Date;
+  /**
+   * When true, skip the per-call hint — batch wrappers publish once after
+   * all items finish.
+   */
+  suppressSyncHint?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +133,127 @@ function resolveRepo(deps: SyncHandlerDeps): OssSyncRepo {
   if (deps.repo) return deps.repo;
   const db = deps.db ?? getDb();
   return makeOssSyncRepo(db);
+}
+
+function resolveMqtt(deps: SyncHandlerDeps): SyncMqttPublisher | null {
+  if (deps.mqtt !== undefined) return deps.mqtt;
+  try {
+    const bundle = resolveBackendKind() === 'postgres' ? pgPushDeps() : pushDeps();
+    return bundle.mqtt ?? null;
+  } catch (e: any) {
+    console.warn('[sync] mqtt resolve failed:', e?.message ?? e);
+    return null;
+  }
+}
+
+function originNodeIdFromBody(body: Record<string, unknown> | undefined): string | null {
+  const raw = body?.nodeId;
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
+
+/**
+ * Best-effort knowledge sync hint: one MQTT message with the highest changeSeq
+ * among successful items. Never throws; 500ms timeout; missing broker is a no-op.
+ */
+async function publishKnowledgeSyncHint(opts: {
+  teamId: string;
+  changeSeq: number;
+  originNodeId: string | null;
+  deps: SyncHandlerDeps;
+}): Promise<void> {
+  const { teamId, changeSeq, originNodeId, deps } = opts;
+  if (deps.suppressSyncHint) return;
+  if (!Number.isFinite(changeSeq) || changeSeq <= 0) return;
+
+  const mqtt = resolveMqtt(deps);
+  if (!mqtt) return;
+
+  const now = deps.now ?? (() => new Date());
+  const topic = syncTopic(teamId, 'knowledge');
+  const payload = JSON.stringify({
+    v: 1,
+    changeSeq,
+    originNodeId,
+    at: now().toISOString(),
+  });
+
+  try {
+    await Promise.race([
+      mqtt.publish(topic, payload, { qos: 1, retain: false }),
+      new Promise<never>((_, reject) => {
+        setTimeout(
+          () => reject(new Error(`mqtt publish timeout after ${SYNC_HINT_PUBLISH_TIMEOUT_MS}ms`)),
+          SYNC_HINT_PUBLISH_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } catch (e: any) {
+    console.warn('[sync] knowledge hint publish failed:', e?.message ?? e);
+  }
+}
+
+/** Max changeSeq among successful batch results; null if none succeeded. */
+function maxSuccessfulChangeSeq(envelope: SyncEnvelope): number | null {
+  if (envelope.statusCode < 200 || envelope.statusCode >= 300) return null;
+  let parsed: { results?: unknown };
+  try {
+    parsed = envelope.body ? JSON.parse(envelope.body) : {};
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed.results)) return null;
+  let max: number | null = null;
+  for (const item of parsed.results) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as Record<string, unknown>;
+    if (row.ok !== true) continue;
+    const seq = row.changeSeq;
+    if (typeof seq === 'number' && Number.isFinite(seq)) {
+      max = max === null ? seq : Math.max(max, seq);
+    }
+  }
+  return max;
+}
+
+async function publishHintAfterBatch(
+  caller: { teamId: string },
+  body: Record<string, unknown> | undefined,
+  envelope: SyncEnvelope,
+  deps: SyncHandlerDeps,
+): Promise<void> {
+  const changeSeq = maxSuccessfulChangeSeq(envelope);
+  if (changeSeq === null) return;
+  await publishKnowledgeSyncHint({
+    teamId: caller.teamId,
+    changeSeq,
+    originNodeId: originNodeIdFromBody(body),
+    deps: { ...deps, suppressSyncHint: false },
+  });
+}
+
+async function publishHintAfterSingle(
+  caller: { teamId: string },
+  body: Record<string, unknown> | undefined,
+  envelope: SyncEnvelope,
+  deps: SyncHandlerDeps,
+): Promise<SyncEnvelope> {
+  if (deps.suppressSyncHint) return envelope;
+  if (envelope.statusCode < 200 || envelope.statusCode >= 300) return envelope;
+  let changeSeq: number | undefined;
+  try {
+    const parsed = envelope.body ? JSON.parse(envelope.body) : {};
+    if (typeof parsed.changeSeq === 'number') changeSeq = parsed.changeSeq;
+  } catch {
+    return envelope;
+  }
+  if (changeSeq === undefined) return envelope;
+  await publishKnowledgeSyncHint({
+    teamId: caller.teamId,
+    changeSeq,
+    originNodeId: originNodeIdFromBody(body),
+    deps,
+  });
+  return envelope;
 }
 
 // ---------------------------------------------------------------------------
@@ -515,11 +662,16 @@ export async function handleSyncUploadComplete(
 
     try {
       const result = await repo.completeUpload(uploadSessionId as string, actorId);
-      return json(200, {
-        version:     result.version,
-        contentHash: result.contentHash,
-        changeSeq:   result.changeSeq,
-      });
+      return publishHintAfterSingle(
+        caller,
+        body,
+        json(200, {
+          version:     result.version,
+          contentHash: result.contentHash,
+          changeSeq:   result.changeSeq,
+        }),
+        deps,
+      );
     } catch (e: any) {
       if (e instanceof ApiError) {
         if (e.statusCode === 409) return json(409, { reason: 'cas-mismatch', remoteVersion: undefined, remoteHash: undefined });
@@ -601,11 +753,16 @@ export async function handleSyncUploadComplete(
   }
 
   const result = (rpcResult as any[])[0];
-  return json(200, {
-    version:     result.version,
-    contentHash: result.content_hash,
-    changeSeq:   result.change_seq,
-  });
+  return publishHintAfterSingle(
+    caller,
+    body,
+    json(200, {
+      version:     result.version,
+      contentHash: result.content_hash,
+      changeSeq:   result.change_seq,
+    }),
+    deps,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -701,7 +858,12 @@ export async function handleSyncDelete(
         actorId,
         nodeId: (nodeId as string | undefined) ?? null,
       });
-      return json(200, { version: result.version, changeSeq: result.changeSeq });
+      return publishHintAfterSingle(
+        caller,
+        body,
+        json(200, { version: result.version, changeSeq: result.changeSeq }),
+        deps,
+      );
     } catch (e: any) {
       if (e instanceof ApiError) {
         if (e.statusCode === 409) return json(409, { reason: 'cas-mismatch', remoteVersion: undefined, remoteHash: undefined });
@@ -746,10 +908,15 @@ export async function handleSyncDelete(
   }
 
   const result = (rpcResult as any[])[0];
-  return json(200, {
-    version:   result.version,
-    changeSeq: result.change_seq,
-  });
+  return publishHintAfterSingle(
+    caller,
+    body,
+    json(200, {
+      version:   result.version,
+      changeSeq: result.change_seq,
+    }),
+    deps,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -988,7 +1155,11 @@ export async function handleSyncUploadCompleteBatch(
   body: Record<string, unknown> | undefined,
   deps: SyncHandlerDeps = {},
 ) {
-  return runSyncBatch(body?.items, (item) => handleSyncUploadComplete(caller, item, deps));
+  const envelope = await runSyncBatch(body?.items, (item) =>
+    handleSyncUploadComplete(caller, item, { ...deps, suppressSyncHint: true }),
+  );
+  await publishHintAfterBatch(caller, body, envelope, deps);
+  return envelope;
 }
 
 /** POST /sync/download-batch — N presigned GET URLs in one round-trip. */
@@ -1006,5 +1177,9 @@ export async function handleSyncDeleteBatch(
   body: Record<string, unknown> | undefined,
   deps: SyncHandlerDeps = {},
 ) {
-  return runSyncBatch(body?.items, (item) => handleSyncDelete(caller, item, deps));
+  const envelope = await runSyncBatch(body?.items, (item) =>
+    handleSyncDelete(caller, item, { ...deps, suppressSyncHint: true }),
+  );
+  await publishHintAfterBatch(caller, body, envelope, deps);
+  return envelope;
 }

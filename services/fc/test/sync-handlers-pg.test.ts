@@ -738,3 +738,248 @@ describe("sync batch endpoints postgres path", () => {
     assert.deepEqual(JSON.parse(empty.body).results, []);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Knowledge sync MQTT hints — one publish per successful complete/delete call.
+// ---------------------------------------------------------------------------
+
+describe("sync knowledge MQTT hints", () => {
+  function makeMqttRecorder() {
+    const published: Array<{ topic: string; payload: string; options?: Record<string, unknown> }> = [];
+    return {
+      published,
+      mqtt: {
+        publish: async (topic: string, payload: string, options?: Record<string, unknown>) => {
+          published.push({ topic, payload, options });
+        },
+      },
+    };
+  }
+
+  test("complete-batch of N → exactly one publish with max changeSeq, no path", async () => {
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const caller = makeCaller(team.id, actor.id);
+
+    const hA = h32("1");
+    const hB = h32("2");
+    const hC = h32("3");
+    const storeState: MockStorageState = {
+      objects: new Map([
+        [ossKeyFor(team.id, hA), 10],
+        [ossKeyFor(team.id, hB), 20],
+        [ossKeyFor(team.id, hC), 30],
+      ]),
+    };
+    const storage = makeMockStorage(storeState);
+    const { mqtt, published } = makeMqttRecorder();
+    const fixedNow = new Date("2026-08-26T07:12:00.000Z");
+    const deps = { db, repo, storage, mqtt, now: () => fixedNow };
+
+    const prep = async (path: string, hash: string, size: number) =>
+      JSON.parse(
+        (await handleSyncUploadPrepare(
+          caller,
+          { path, parentVersion: 0, contentHash: hash, size },
+          { db, repo, storage },
+        )).body,
+      ).uploadSessionId;
+
+    const sessA = await prep("knowledge/hint-a.md", hA, 10);
+    const sessB = await prep("knowledge/hint-b.md", hB, 20);
+    const sessC = await prep("knowledge/hint-c.md", hC, 30);
+
+    const res = await handleSyncUploadCompleteBatch(
+      caller,
+      {
+        nodeId: "mac-9f3c",
+        items: [
+          { uploadSessionId: sessA },
+          { uploadSessionId: sessB },
+          { uploadSessionId: sessC },
+        ],
+      },
+      deps,
+    );
+
+    assert.equal(res.statusCode, 200);
+    const { results } = JSON.parse(res.body);
+    assert.equal(results.length, 3);
+    assert.ok(results.every((r: any) => r.ok));
+    const maxSeq = Math.max(...results.map((r: any) => r.changeSeq));
+
+    assert.equal(published.length, 1, "exactly one MQTT publish for the batch");
+    assert.equal(published[0].topic, `amux/${team.id}/sync/knowledge`);
+    assert.equal(published[0].options?.retain, false);
+    assert.equal(published[0].options?.qos, 1);
+
+    const hint = JSON.parse(published[0].payload);
+    assert.equal(hint.v, 1);
+    assert.equal(hint.changeSeq, maxSeq);
+    assert.equal(hint.originNodeId, "mac-9f3c");
+    assert.equal(hint.at, "2026-08-26T07:12:00.000Z");
+    assert.equal("path" in hint, false, "hint must not carry path");
+  });
+
+  test("publish failure does not change the HTTP 200 result", async () => {
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const caller = makeCaller(team.id, actor.id);
+
+    const hash = h32("f");
+    const size = 7;
+    const storeState: MockStorageState = {
+      objects: new Map([[ossKeyFor(team.id, hash), size]]),
+    };
+    const storage = makeMockStorage(storeState);
+    const mqtt = {
+      publish: async () => {
+        throw new Error("broker unreachable");
+      },
+    };
+
+    const prep = await handleSyncUploadPrepare(
+      caller,
+      { path: "knowledge/fail-hint.md", parentVersion: 0, contentHash: hash, size },
+      { db, repo, storage },
+    );
+    const sess = JSON.parse(prep.body).uploadSessionId;
+
+    const res = await handleSyncUploadCompleteBatch(
+      caller,
+      { items: [{ uploadSessionId: sess }] },
+      { db, repo, storage, mqtt },
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(JSON.parse(res.body).results[0].ok, true);
+  });
+
+  test("mqtt: null (no MQTT_BROKER_URL) still returns 200", async () => {
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const caller = makeCaller(team.id, actor.id);
+
+    const hash = h32("n");
+    const size = 5;
+    const storeState: MockStorageState = {
+      objects: new Map([[ossKeyFor(team.id, hash), size]]),
+    };
+    const storage = makeMockStorage(storeState);
+
+    const prep = await handleSyncUploadPrepare(
+      caller,
+      { path: "knowledge/no-mqtt.md", parentVersion: 0, contentHash: hash, size },
+      { db, repo, storage },
+    );
+    const sess = JSON.parse(prep.body).uploadSessionId;
+
+    const res = await handleSyncUploadCompleteBatch(
+      caller,
+      { items: [{ uploadSessionId: sess }] },
+      { db, repo, storage, mqtt: null },
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(JSON.parse(res.body).results[0].ok, true);
+  });
+
+  test("single complete publishes one hint (legacy path)", async () => {
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const caller = makeCaller(team.id, actor.id);
+
+    const hash = h32("s");
+    const size = 4;
+    const storeState: MockStorageState = {
+      objects: new Map([[ossKeyFor(team.id, hash), size]]),
+    };
+    const storage = makeMockStorage(storeState);
+    const { mqtt, published } = makeMqttRecorder();
+
+    const prep = await handleSyncUploadPrepare(
+      caller,
+      { path: "knowledge/single.md", parentVersion: 0, contentHash: hash, size },
+      { db, repo, storage },
+    );
+    const res = await handleSyncUploadComplete(
+      caller,
+      { uploadSessionId: JSON.parse(prep.body).uploadSessionId, nodeId: "node-legacy" },
+      { db, repo, storage, mqtt },
+    );
+
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(published.length, 1);
+    const hint = JSON.parse(published[0].payload);
+    assert.equal(hint.changeSeq, body.changeSeq);
+    assert.equal(hint.originNodeId, "node-legacy");
+  });
+
+  test("delete-batch publishes once with max successful changeSeq", async () => {
+    const { db } = await makeTestDb();
+    const repo = makeOssSyncRepo(db);
+    const team = await seedTeam(db);
+    const actor = await seedMember(db, team.id);
+    const caller = makeCaller(team.id, actor.id);
+
+    const hA = h32("d");
+    const hB = h32("e");
+    const storeState: MockStorageState = {
+      objects: new Map([
+        [ossKeyFor(team.id, hA), 8],
+        [ossKeyFor(team.id, hB), 9],
+      ]),
+    };
+    const storage = makeMockStorage(storeState);
+    const { mqtt, published } = makeMqttRecorder();
+    const deps = { db, repo, storage };
+
+    for (const [path, hash, size] of [
+      ["knowledge/del-a.md", hA, 8],
+      ["knowledge/del-b.md", hB, 9],
+    ] as const) {
+      const pr = await handleSyncUploadPrepare(
+        caller,
+        { path, parentVersion: 0, contentHash: hash, size },
+        deps,
+      );
+      await handleSyncUploadComplete(
+        caller,
+        { uploadSessionId: JSON.parse(pr.body).uploadSessionId },
+        { ...deps, mqtt: null },
+      );
+    }
+
+    published.length = 0;
+    const res = await handleSyncDeleteBatch(
+      caller,
+      {
+        nodeId: "del-node",
+        items: [
+          { path: "knowledge/del-a.md", parentVersion: 1 },
+          { path: "knowledge/del-b.md", parentVersion: 1 },
+        ],
+      },
+      { db, repo, mqtt },
+    );
+
+    assert.equal(res.statusCode, 200);
+    const { results } = JSON.parse(res.body);
+    assert.ok(results.every((r: any) => r.ok));
+    const maxSeq = Math.max(...results.map((r: any) => r.changeSeq));
+    assert.equal(published.length, 1);
+    const hint = JSON.parse(published[0].payload);
+    assert.equal(hint.changeSeq, maxSeq);
+    assert.equal(hint.originNodeId, "del-node");
+    assert.equal(published[0].topic, `amux/${team.id}/sync/knowledge`);
+  });
+});
