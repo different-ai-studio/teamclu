@@ -66,6 +66,11 @@ pub struct DeviceKey {
 
 /// Consumer of a final transcript. M3-3 wires a `chat` sink (→
 /// `RuntimeManager::send_prompt`), M3-4 a `note` sink (→ session store).
+///
+/// The Core fork (Task 1.6) needs `boot_id` / `seq` from the opening
+/// `turn_start` for the dedup key — see [`Self::on_final_turn`]. Chat/Note
+/// sinks keep implementing [`Self::on_final`]; the default turn method
+/// forwards and ignores ctl meta.
 #[async_trait]
 pub trait TranscriptSink: Send + Sync {
     async fn on_final(
@@ -76,6 +81,24 @@ pub trait TranscriptSink: Send + Sync {
         session_id: Option<&str>,
         text: &str,
     );
+
+    /// Final transcript plus the `turn_start` ctl fields that opened the stream.
+    ///
+    /// Default: drop `boot_id`/`seq` and call [`Self::on_final`]. Override when
+    /// the sink builds a gateway `InboundMessage` (ESP32 Core path).
+    async fn on_final_turn(
+        &self,
+        team_id: &str,
+        actor_id: &str,
+        intent: Intent,
+        session_id: Option<&str>,
+        text: &str,
+        _boot_id: Option<&str>,
+        _seq: u64,
+    ) {
+        self.on_final(team_id, actor_id, intent, session_id, text)
+            .await;
+    }
 }
 
 /// Delivers each final transcript to several sinks.
@@ -110,8 +133,22 @@ impl TranscriptSink for FanOutSink {
         session_id: Option<&str>,
         text: &str,
     ) {
+        self.on_final_turn(team_id, actor_id, intent, session_id, text, None, 0)
+            .await;
+    }
+
+    async fn on_final_turn(
+        &self,
+        team_id: &str,
+        actor_id: &str,
+        intent: Intent,
+        session_id: Option<&str>,
+        text: &str,
+        boot_id: Option<&str>,
+        seq: u64,
+    ) {
         for sink in &self.sinks {
-            sink.on_final(team_id, actor_id, intent, session_id, text)
+            sink.on_final_turn(team_id, actor_id, intent, session_id, text, boot_id, seq)
                 .await;
         }
     }
@@ -148,6 +185,9 @@ struct ActiveStream {
     intent: Intent,
     #[allow(dead_code)]
     session_id: Option<String>,
+    /// From the opening `turn_start` — Core dedup key needs both (design §5.2).
+    boot_id: Option<String>,
+    seq: u64,
     frames_tx: mpsc::Sender<super::stt::AudioFrame>,
     /// The transcript-drain task. Detached on close so it can finish flushing
     /// the final transcript to the sink after the map entry is gone.
@@ -279,6 +319,8 @@ impl VoiceRouter {
                         let t = team_id.clone();
                         let a = actor_id.clone();
                         let session_id = ctl.session.clone();
+                        let boot_id = ctl.boot_id.clone();
+                        let seq = ctl.seq;
                         let drain = tokio::spawn(drain_transcripts(
                             transcripts_rx,
                             sink,
@@ -286,12 +328,16 @@ impl VoiceRouter {
                             a,
                             intent,
                             session_id,
+                            boot_id.clone(),
+                            seq,
                         ));
                         self.active.lock().insert(
                             key.clone(),
                             ActiveStream {
                                 intent,
                                 session_id: ctl.session.clone(),
+                                boot_id,
+                                seq,
                                 frames_tx,
                                 _drain: drain,
                             },
@@ -301,6 +347,8 @@ impl VoiceRouter {
                             actor_id = %key.actor_id,
                             ?intent,
                             session_id = ?ctl.session,
+                            boot_id = ?ctl.boot_id,
+                            seq = ctl.seq,
                             "voice turn started"
                         );
                     }
@@ -374,6 +422,7 @@ impl VoiceRouter {
 /// Drain a provider's transcript receiver until a `final` arrives, hand it
 /// to the sink, then return. Owned by the spawned `JoinHandle` in
 /// [`ActiveStream::_drain`].
+#[allow(clippy::too_many_arguments)]
 async fn drain_transcripts(
     mut transcripts_rx: mpsc::Receiver<Transcript>,
     sink: Arc<dyn TranscriptSink>,
@@ -381,11 +430,21 @@ async fn drain_transcripts(
     actor_id: String,
     intent: Intent,
     session_id: Option<String>,
+    boot_id: Option<String>,
+    seq: u64,
 ) {
     while let Some(t) = transcripts_rx.recv().await {
         if t.is_final {
-            sink.on_final(&team_id, &actor_id, intent, session_id.as_deref(), &t.text)
-                .await;
+            sink.on_final_turn(
+                &team_id,
+                &actor_id,
+                intent,
+                session_id.as_deref(),
+                &t.text,
+                boot_id.as_deref(),
+                seq,
+            )
+            .await;
             break;
         }
     }

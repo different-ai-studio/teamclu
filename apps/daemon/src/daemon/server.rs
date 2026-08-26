@@ -958,8 +958,9 @@ impl DaemonServer {
 
         // The speech downlink. Without TTS the chat sink still prompts the
         // agent — the device just hears nothing, which is the pre-§13.6
-        // behaviour rather than a broken turn.
-        let speaker: Option<Arc<dyn ReplySpeaker>> =
+        // behaviour rather than a broken turn. Keep the concrete
+        // SpeechSynthesizer so the Core path can wrap it as Esp32Downlink.
+        let synth: Option<Arc<SpeechSynthesizer>> =
             match crate::voice::tts::build_provider(&tts_cfg, credentials) {
                 Ok(tts) => Some(Arc::new(SpeechSynthesizer::new(
                     Arc::from(tts),
@@ -972,28 +973,97 @@ impl DaemonServer {
                     None
                 }
             };
+        let speaker: Option<Arc<dyn ReplySpeaker>> = synth
+            .clone()
+            .map(|s| s as Arc<dyn ReplySpeaker>);
 
-        let mut chat = ChatSink::new(
-            runtime,
-            // Sessions are scoped to the token that created them. The device
-            // has no HTTP token, so the daemon's own actor id owns them —
-            // stable across restarts, which a random uuid would not be.
-            uuid::Uuid::new_v5(
-                &uuid::Uuid::NAMESPACE_URL,
-                format!("teamclu-voice:{}", self.config.actor.id).as_bytes(),
-            ),
-            Some(self.config.agents.local_agent.clone()),
-        );
-        if let Some(sp) = &speaker {
-            chat = chat.with_speaker(sp.clone());
+        let esp32_cfg = self.config.channels.esp32.clone();
+        let use_core = esp32_cfg
+            .as_ref()
+            .is_some_and(|c| c.enabled && c.use_core);
+
+        let mut sinks: Vec<Arc<dyn TranscriptSink>> = Vec::new();
+
+        if use_core {
+            match (self.channel_mgr.as_ref(), synth.clone()) {
+                (Some(mgr), Some(synth)) => {
+                    let esp32 = esp32_cfg.expect("use_core implies esp32 cfg");
+                    let downlink = crate::voice::esp32_downlink(synth.clone());
+                    let driver: Arc<dyn teamclu_gateway::driver::ChannelDriver> =
+                        Arc::new(teamclu_gateway::esp32::Esp32Driver {
+                            downlink,
+                            team_id: mgr.team_id().to_string(),
+                        });
+                    let inbound = Arc::new(mgr.build_esp32_inbound_sink(
+                        driver,
+                        synth.clone() as Arc<dyn ReplySpeaker>,
+                    ));
+                    sinks.push(Arc::new(crate::voice::Esp32CoreForkSink::new(
+                        inbound,
+                        synth as Arc<dyn ReplySpeaker>,
+                        esp32,
+                    )));
+                    info!(
+                        team_id = %mgr.team_id(),
+                        "voice: chat finals fork to Esp32InboundSink (use_core)"
+                    );
+                }
+                (None, _) => {
+                    warn!(
+                        "voice: use_core set but ChannelManager unavailable; \
+                         falling back to ChatSink"
+                    );
+                    let mut chat = ChatSink::new(
+                        runtime.clone(),
+                        uuid::Uuid::new_v5(
+                            &uuid::Uuid::NAMESPACE_URL,
+                            format!("teamclu-voice:{}", self.config.actor.id).as_bytes(),
+                        ),
+                        Some(self.config.agents.local_agent.clone()),
+                    );
+                    if let Some(sp) = &speaker {
+                        chat = chat.with_speaker(sp.clone());
+                    }
+                    sinks.push(Arc::new(chat));
+                }
+                (_, None) => {
+                    warn!(
+                        "voice: use_core set but TTS/speaker unavailable; \
+                         falling back to ChatSink (no spoken replies)"
+                    );
+                    sinks.push(Arc::new(ChatSink::new(
+                        runtime.clone(),
+                        uuid::Uuid::new_v5(
+                            &uuid::Uuid::NAMESPACE_URL,
+                            format!("teamclu-voice:{}", self.config.actor.id).as_bytes(),
+                        ),
+                        Some(self.config.agents.local_agent.clone()),
+                    )));
+                }
+            }
+        } else {
+            let mut chat = ChatSink::new(
+                runtime,
+                // Sessions are scoped to the token that created them. The device
+                // has no HTTP token, so the daemon's own actor id owns them —
+                // stable across restarts, which a random uuid would not be.
+                uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_URL,
+                    format!("teamclu-voice:{}", self.config.actor.id).as_bytes(),
+                ),
+                Some(self.config.agents.local_agent.clone()),
+            );
+            if let Some(sp) = &speaker {
+                chat = chat.with_speaker(sp.clone());
+            }
+            sinks.push(Arc::new(chat));
         }
-
-        let mut sinks: Vec<Arc<dyn TranscriptSink>> = vec![Arc::new(chat)];
 
         // Notes need a session to be written into, and the daemon has no
         // per-device notes session to resolve yet (M2-2). Until then the
         // session is named explicitly or notes are not stored at all — better
         // than inventing a destination for the user's captures.
+        // Intent::Note always stays on NoteSink (design §7.3), both flags.
         let notes_session = std::env::var("TEAMCLU_VOICE_NOTES_SESSION")
             .ok()
             .or_else(|| {
@@ -1029,6 +1099,7 @@ impl DaemonServer {
         info!(
             team_id = %self.config.team_id.as_deref().unwrap_or("<none>"),
             actor_id = %self.config.actor.id,
+            use_core,
             "voice: router started"
         );
     }
@@ -1256,6 +1327,11 @@ impl DaemonServer {
         // Escapes the HTTP-setup block so the prewarm notifier can be installed
         // once the sock command channel exists (below).
         let mut supervisor_for_prewarm: Option<Arc<crate::runtime::RuntimeSupervisor>> = None;
+        // Voice router starts after `start_channels` so `use_core` can share
+        // ChannelManager's AgentHandle + ChannelStore (Task 1.6).
+        let mut pending_voice_runtime: Option<
+            Arc<dyn crate::http::runtime_adapter::RuntimeAdapter>,
+        > = None;
         let team_skill_reconciler = self.team_skill_reconciler.clone();
         let _http_handle = {
             let mut meta = crate::http::server::metadata(self.actor_id.clone(), "amuxd");
@@ -1298,15 +1374,9 @@ impl DaemonServer {
                     Some(execution_context_assembler.clone()),
                 );
 
-            // ── Voice router ────────────────────────────────────────────────
-            //
-            // Built here, not in `new()`: the chat sink needs the
-            // `RuntimeAdapter` above, and the speech downlink needs the MQTT
-            // publisher. Everything degrades rather than aborting startup — a
-            // daemon that cannot do speech must still be a daemon.
-            if let Some(rx) = self.voice_router_rx.take() {
-                self.spawn_voice_router(rx, runtime.clone()).await;
-            }
+            // Voice router needs ChannelManager's store/agent when
+            // `[channels.esp32] use_core` — spawn after `start_channels` below.
+            pending_voice_runtime = Some(runtime.clone());
 
             // Start the refresh watchers with an empty workspace set so the
             // (cloud-dependent) `cloud_workspace_list()` fetch does not delay the
@@ -1420,6 +1490,21 @@ impl DaemonServer {
         // keeps `/v1/healthz` responsive under FC latency while still preceding
         // the MQTT reconnect loop.
         self.start_channels().await;
+
+        // ── Voice router ────────────────────────────────────────────────────
+        //
+        // After channels: ChatSink needs the RuntimeAdapter from HTTP setup,
+        // and the Core fork needs ChannelManager adapters when use_core.
+        // Everything degrades rather than aborting startup — a daemon that
+        // cannot do speech must still be a daemon. MQTT has not started yet,
+        // so no voice events are dropped by spawning here.
+        if let (Some(rx), Some(runtime)) = (
+            self.voice_router_rx.take(),
+            pending_voice_runtime.take(),
+        ) {
+            self.spawn_voice_router(rx, runtime).await;
+        }
+
         self.sync_team_shared_dirs_for_known_workspaces().await;
         {
             let team_id = self.backend.team_id().to_string();

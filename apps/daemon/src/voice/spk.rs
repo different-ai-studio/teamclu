@@ -121,6 +121,14 @@ pub trait ReplySpeaker: Send + Sync {
 
     /// Abandon the turn and put the device on its error screen.
     async fn fail(&self, key: &DeviceKey, code: &str, message: &str);
+
+    /// Put the device on the Think screen (design §5.4).
+    ///
+    /// The Core path does not call [`Self::begin`] (no HTTP session watch);
+    /// the voice listener publishes `thinking` itself before
+    /// `Esp32InboundSink::accept`. Default is a no-op so ChatSink test fakes
+    /// stay unchanged.
+    async fn thinking(&self, _key: &DeviceKey) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +495,14 @@ impl ReplySpeaker for SpeechSynthesizer {
         self.send_ctl(
             key,
             serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "error", "code": code, "message": message }),
+        )
+        .await;
+    }
+
+    async fn thinking(&self, key: &DeviceKey) {
+        self.send_ctl(
+            key,
+            serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "thinking" }),
         )
         .await;
     }

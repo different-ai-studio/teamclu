@@ -164,7 +164,6 @@ impl InboundSink for CoreSink {
 /// Wraps [`Core`] as an [`crate::voice::InboundTurnRunner`] for ESP32.
 ///
 /// Used when constructing [`crate::voice::Esp32InboundSink`] (Task 1.6 wiring).
-#[allow(dead_code)] // wired in Task 1.6 (VoiceRouter → core fork)
 pub struct CoreTurnRunner {
     pub core: Arc<Core>,
 }

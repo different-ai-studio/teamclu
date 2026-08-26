@@ -93,12 +93,12 @@ impl ChannelManager {
     /// A fresh `Core` per channel is deliberate — the dedup store is
     /// per-channel-keyed anyway, and sharing one would make a channel's restart
     /// silently inherit another's memory of what it had already seen.
-    fn core_sink_for(
+    fn build_core(
         &self,
-        driver: Arc<dyn teamclu_gateway::driver::ChannelDriver>,
-    ) -> Arc<dyn teamclu_gateway::driver::InboundSink> {
-        use crate::channels::core::{adapters, dedup, sink, Core};
-        let core = Core {
+        driver: &dyn teamclu_gateway::driver::ChannelDriver,
+    ) -> crate::channels::core::Core {
+        use crate::channels::core::{adapters, dedup, Core};
+        Core {
             dedup: Arc::new(dedup::MemoryDedup::default()),
             router: Arc::new(adapters::StoreRouter {
                 store: self.store.clone(),
@@ -124,9 +124,16 @@ impl ChannelManager {
                 agent: self.acp.clone(),
                 store: self.store.clone(),
             }),
-        };
+        }
+    }
+
+    fn core_sink_for(
+        &self,
+        driver: Arc<dyn teamclu_gateway::driver::ChannelDriver>,
+    ) -> Arc<dyn teamclu_gateway::driver::InboundSink> {
+        use crate::channels::core::sink;
         Arc::new(sink::CoreSink {
-            core: Arc::new(core),
+            core: Arc::new(self.build_core(driver.as_ref())),
             // A queued message is given one full turn to reach the front. Any
             // shorter and a message waiting behind a healthy long turn gets
             // dropped for being late.
@@ -137,6 +144,32 @@ impl ChannelManager {
             ),
             driver,
         })
+    }
+
+    /// Agent handle gateways (and the ESP32 voice Core path) share.
+    pub fn acp(&self) -> &Arc<dyn AgentHandle> {
+        &self.acp
+    }
+
+    /// Build the cancel-not-queue inbound sink for ESP32 (Task 1.6).
+    ///
+    /// Same `Core` adapters as [`Self::core_sink_for`], but wrapped in
+    /// [`crate::voice::Esp32InboundSink`] + [`crate::channels::core::sink::CoreTurnRunner`]
+    /// so PTT barge-in cancels instead of queuing.
+    pub fn build_esp32_inbound_sink(
+        &self,
+        driver: Arc<dyn teamclu_gateway::driver::ChannelDriver>,
+        speaker: Arc<dyn crate::voice::ReplySpeaker>,
+    ) -> crate::voice::Esp32InboundSink {
+        use crate::channels::core::sink::CoreTurnRunner;
+        let core = Arc::new(self.build_core(driver.as_ref()));
+        crate::voice::Esp32InboundSink::new(
+            Arc::new(CoreTurnRunner { core }),
+            driver,
+            self.team_id.clone(),
+            self.acp.clone(),
+            speaker,
+        )
     }
 
     /// The team these channels belong to. Used to build attachment bucket
