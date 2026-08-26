@@ -880,6 +880,10 @@ export function SkillDetail({ slug }: { slug: string }) {
   )
   const syncError = useTeamShareBrowserStore((s) => s.skillSyncErrors[slug])
   const archivedPath = useTeamShareBrowserStore((s) => s.skillArchived[slug])
+  // Optional-chained for the same reason as TeamSkillAutoFollow: partial store
+  // doubles in tests never set this field.
+  const retired = useTeamShareBrowserStore((s) => s.skillRetired?.[item?.slug ?? slug])
+  const dismissRetired = useTeamShareBrowserStore((s) => s.dismissRetired)
   const keepArchivedCopy = useTeamShareBrowserStore((s) => s.keepArchivedCopy)
   const dismissArchived = useTeamShareBrowserStore((s) => s.dismissArchived)
   const reconcileSkills = useTeamShareBrowserStore((s) => s.reconcileSkills)
@@ -1512,6 +1516,40 @@ export function SkillDetail({ slug }: { slug: string }) {
                 'Nothing was changed. Uninstall the other copy, or rename one of them, and this will install on the next sync.',
               )}
             </p>
+          </div>
+        </div>
+      )}
+
+      {/*
+        The team deleted this skill and auto-follow could not take the pack away,
+        because the member had edited it. Their copy is theirs now — but nothing
+        else on this screen says so: the row has quietly re-labelled itself
+        "personal" (the agent inventory reports any unclaimed directory that
+        way), which reads as though it was never a team skill at all.
+      */}
+      {retired === 'kept' && (
+        <div className="border-b border-border px-5 py-3">
+          <div className="rounded-[8px] border border-border border-l-2 border-l-foreground bg-paper px-4 py-3">
+            <span className="text-[13px] font-semibold text-foreground">
+              {t('teamShare.skillRetiredKeptTitle', '团队已移除这个技能')}
+            </span>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+              {t(
+                'teamShare.skillRetiredKeptBody',
+                '因为你改过它，本地这份保留了下来，现在是你自己的技能，不再跟随团队更新。',
+              )}
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => dismissRetired(item.slug)}
+                disabled={busy}
+                className="h-8 text-[13px] text-muted-foreground hover:text-foreground"
+              >
+                {t('common.dismiss', 'Dismiss')}
+              </Button>
+            </div>
           </div>
         </div>
       )}

@@ -55,6 +55,7 @@ vi.mock('@/stores/current-team', () => ({
     }),
     {
       getState: () => ({ team: null }),
+      subscribe: () => () => {},
     },
   ),
 }))

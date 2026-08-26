@@ -90,6 +90,34 @@ export const RECONCILE_INTERVAL_MS = 10 * 60 * 1000
  * anybody stopped wanting it. Planning removal off the Agent's set alone would
  * empty a machine's team packs on the first tick after the switch.
  */
+/**
+ * Packs on disk whose registry row is gone *entirely* — the team deleted the
+ * skill.
+ *
+ * Deliberately not the same question as `plan.remove`, which also fires for the
+ * ordinary case of a skill that is still in the registry and that this member
+ * simply uninstalled. That one the member did themselves and needs no telling;
+ * this one happened on somebody else's machine, and without it their skill just
+ * silently stops existing.
+ *
+ * `desired` here must be the *whole* registry listing, installed rows and not —
+ * filtering to installed first would report every uninstalled skill as deleted.
+ *
+ * Packs belonging to another team, and packs with no team recorded at all, are
+ * excluded: neither can be attributed to this team's deletion, and `planReconcile`
+ * already refuses to remove them.
+ */
+export function retiredSlugs(
+  desired: DesiredSkill[],
+  onDisk: OnDiskSkill[],
+  teamId: string,
+): string[] {
+  const inRegistry = new Set(desired.map((s) => s.slug))
+  return onDisk
+    .filter((pack) => pack.teamId === teamId && !inRegistry.has(pack.slug))
+    .map((pack) => pack.slug)
+}
+
 export function planReconcile(
   desired: DesiredSkill[],
   onDisk: OnDiskSkill[],
