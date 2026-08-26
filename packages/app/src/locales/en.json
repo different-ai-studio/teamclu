@@ -3,7 +3,7 @@
     "refreshAndSync": "Refresh and sync with cloud",
     "openInObsidian": "Open in Obsidian",
     "obsidianNotInstalled": "Obsidian is not installed on this machine",
-    "obsidianFirstRun": "Obsidian is starting. Choose \"Open folder as vault\" and paste the path — it is already on your clipboard.",
+    "obsidianNeedsRestart": "Added to Obsidian as a vault. Restart Obsidian once to open it — after that this button goes straight there.",
     "obsidianOpenFailed": "Could not open Obsidian: {{msg}}",
     "cloudSyncFailed": "Sync failed: {{msg}}",
     "cloudSyncStuckFiles": "{{count}} files still cannot sync — retrying each time",

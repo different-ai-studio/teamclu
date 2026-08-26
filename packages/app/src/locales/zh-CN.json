@@ -3,7 +3,7 @@
     "refreshAndSync": "刷新并同步云端",
     "openInObsidian": "在 Obsidian 中打开",
     "obsidianNotInstalled": "本机未检测到 Obsidian",
-    "obsidianFirstRun": "Obsidian 正在启动。选择「Open folder as vault」并粘贴路径 —— 路径已复制到剪贴板。",
+    "obsidianNeedsRestart": "已加入 Obsidian 的库列表。重启一次 Obsidian 就能打开，之后点这个按钮会直接进去。",
     "obsidianOpenFailed": "无法打开 Obsidian：{{msg}}",
     "cloudSyncFailed": "同步失败：{{msg}}",
     "cloudSyncStuckFiles": "还有 {{count}} 个文件同步不了，每次同步都会重试",

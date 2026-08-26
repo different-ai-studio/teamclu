@@ -10,10 +10,10 @@ import {
  * Obsidian's availability for `vaultPath`, refreshed when the window regains
  * focus.
  *
- * The focus listener is the point: installing Obsidian, or adding the folder as
- * a vault, both happen in another app. Without it the button stays grey (or
- * keeps claiming the vault is unregistered) until the app restarts, which is
- * exactly the moment the user just did the thing we asked them to do.
+ * The focus listener is the point: installing Obsidian, and restarting it after
+ * a first-run registration, both happen in another app. Without it the button
+ * stays grey — or keeps claiming a restart is needed — until this app restarts,
+ * which is exactly the moment the user just did what we asked.
  */
 export function useObsidianStatus(vaultPath: string | null): ObsidianStatus {
   const [status, setStatus] = React.useState<ObsidianStatus>(OBSIDIAN_ABSENT)

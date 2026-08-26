@@ -119,39 +119,81 @@ Knowledge 列 header 上原本是一个「刷新并同步」按钮，它是多�
 
 | 命令 | 作用 |
 |---|---|
-| `obsidian_status(vaultPath)` | `{ installed, vaultInitialized }` |
-| `obsidian_open_vault(vaultPath)` | 打开，或首次时只拉起应用 |
+| `obsidian_status(vaultPath)` | `{ installed, vaultRegistered }` |
+| `obsidian_open_vault(vaultPath)` | 打开；首次会先把目录注册成 vault |
 
-**装了才亮。** `installed` 决定按钮是 Obsidian 紫（`#7C3AED`）还是继承的 muted
-灰 + disabled。检测按平台分开做，因为没有可移植的「这个 app 装没装」：
+#### Obsidian 认 vault 的机制（实测，非推断）
 
-- **macOS**：`/Applications/Obsidian.app` 与 `~/Applications/Obsidian.app`，
-  再用 Spotlight（`mdfind kMDItemCFBundleIdentifier == 'md.obsidian'`）兜底装在
-  别处的情况。
+对着本机 Obsidian 1.13.7 (macOS) 实测得到，这几条决定了实现形状：
+
+1. **vault 列表在 `<config dir>/obsidian/obsidian.json`**，形如
+   `{"vaults": {"<id>": {"path": …, "ts": …, "open": bool}}}`。
+   `dirs::config_dir()` 在三个平台正好都对：`~/Library/Application Support`、
+   `%APPDATA%`、`~/.config`。
+2. **那个 id 不是路径 hash。** 拿真实条目试过 md5/sha1/sha256（含带尾斜杠、
+   `file://` 前缀、小写等变体）全不匹配 —— 它是个不透明值，只用来做字典 key 和
+   `<id>.json` 窗口状态文件名。所以任何唯一值都行；我们用 `sha256(path)[..8]`，
+   好处是同一目录重复注册会覆盖自己那条，天然幂等。
+3. **`obsidian://open?path=` 只解析注册表里的 vault。** 未注册的路径发过去会被
+   接受然后什么也不做。
+4. **`.obsidian/` 是 Obsidian 打开目录时创建的**，是注册的结果而不是原因。所以
+   「`.obsidian/` 存在」**不能**用来判断「这是不是 vault」—— 注册表才是唯一诚实的
+   来源。（第一版实现用错了这个判据，实测才发现。）
+5. **Obsidian 只在启动时读一次注册表。** 在它运行期间注册的新 vault，URI 打不开 ——
+   实测：URI 被接受、静默无事发生。
+
+#### 首次打开的流程
+
+第 5 条决定了必须分支，所以 `obsidian_open_vault` 返回一个 outcome 而不是
+`()`：
+
+```
+点击
+ ├─ 已注册 → 发 URI → Opened
+ └─ 未注册
+     ├─ seed `.obsidian/app.json`（见下）
+     ├─ 注册进 obsidian.json（原子写，open: false）
+     ├─ Obsidian 未运行 → 发 URI → Opened          ← 绝大多数情况，一步到位
+     └─ Obsidian 运行中 → RegisteredNeedsRestart   ← 提示重启一次，不发 URI
+```
+
+注册时 `open` 写 `false` 是刻意的：`true` 会让 Obsidian 下次启动时打开我们的库而
+不是用户原来那个，一个叫「在 Obsidian 中打开」的按钮没有权力劫持这个。
+
+写注册表用临时文件 + rename 原子替换 —— Obsidian 随时可能读它，半个文件会让用户
+丢掉所有 vault。读不动或解析不了时按空处理而不是报错：Obsidian 会整体重写这个
+文件，为一个我们只是没看懂的文件让按钮永久失效不划算。
+
+#### 预置的 vault 配置
+
+首次注册时写 `.obsidian/app.json`（**已存在就不碰**，那是用户的文件）：
+
+| 设置 | 为什么 |
+|---|---|
+| `attachmentFolderPath: "attachments"` | 落地 §5.4 的附件约定，Obsidian 里粘贴的图片和 app 里加的附件落到同一处 |
+| `showUnsupportedFiles: true` | 知识树里有无 `.md` 后缀的文件（§5.1 缺口 1），不开这个 Obsidian 会把它们藏起来，看着像被删了 |
+| `alwaysUpdateLinks: true` | 重命名笔记时自动改写指向它的 `[[链接]]`。共享树上不开这个，一个人重命名就会静默打断所有人的链接 |
+
+注意这和 §3.2「`.obsidian/` 完全不同步」不矛盾：**本地创建、不上传**。所以这是每台
+设备各自的初始化，不是共享配置 —— 每台设备第一次点按钮时都会 seed 一次，行为一致。
+
+#### 装了才亮
+
+`installed` 决定按钮是 Obsidian 紫（`#7C3AED`）还是继承的 muted 灰 + disabled。
+检测按平台分开做，因为没有可移植的「这个 app 装没装」：
+
+- **macOS**：`/Applications/Obsidian.app` 与 `~/Applications/Obsidian.app`，再用
+  Spotlight（`mdfind kMDItemCFBundleIdentifier == 'md.obsidian'`）兜底装在别处的。
 - **Windows**：`%LOCALAPPDATA%` / `%ProgramFiles%` / `%ProgramFiles(x86)%` 下的
-  `Obsidian\Obsidian.exe` 与 Squirrel 的 `Programs\Obsidian\Obsidian.exe`，
-  再用注册表里的 `obsidian://` URI handler（`HKCU\Software\Classes\obsidian`）
-  兜底绿色版/异常位置安装。
+  `Obsidian\Obsidian.exe` 与 Squirrel 的 `Programs\Obsidian\Obsidian.exe`，再用
+  注册表里的 `obsidian://` handler（`HKCU\Software\Classes\obsidian`）兜底绿色版。
 - **Linux**（顺带）：PATH 上的 `obsidian`，然后 Flatpak id。
 
-探测在窗口重新获得焦点时重跑（`useObsidianStatus`）。理由很实际：安装 Obsidian、
-把目录加成 vault，这两件事都发生在别的 app 里 —— 不重探的话，用户刚照我们说的做
-完，按钮还是灰的，得重启应用才变亮。
+探测在窗口重新获得焦点时重跑（`useObsidianStatus`）。安装 Obsidian、以及首次注册后
+重启它，都发生在别的 app 里 —— 不重探的话，用户刚照提示做完，按钮状态还是旧的。
 
-**首次的处理。** `obsidian://open?path=` 只能解析 Obsidian 已知 vault 内的路径，
-对一个它从没打开过的目录会弹错误框。所以用 `.obsidian/` 目录是否存在判断这个目录
-有没有被当成 vault 打开过：
-
-- 没有 → 只把 Obsidian 拉起来（macOS `open -a Obsidian`；Windows spawn 那个 exe），
-  同时把 vault 路径写进剪贴板并 toast 一句「选择 Open folder as vault 并粘贴」。
-  比让用户去一个隐藏目录里手抄一个 UUID 强。
-- 有 → 走 URI。
-
-路径必须 percent-encode：home 目录带空格很常见，团队里 CJK 文件夹名是常态。这条
-有单测（`open_uri_percent_encodes_the_path` / `open_uri_encodes_non_ascii`）。
-
-注意 `.obsidian/` 在**本地**是存在的，只是不上传（§3.2）—— 所以它作为「这个目录
-是不是 vault」的判据依然成立。
+路径必须 percent-encode：home 目录带空格很常见，团队里 CJK 文件夹名是常态。这条有
+单测。
 
 ## 4. 忽略机制
 
@@ -319,6 +361,9 @@ pull 侧「跳过而不报错」是有先例的教训：`path_validator.rs` 里 
   尊重用户（附件、图片是合法内容）。
 - 已存在的无后缀文件：不自动改名（会打断队友的链接），但在文件树上给一个提示。
 
+§3.3 预置的 `showUnsupportedFiles: true` 让这些文件在 Obsidian 里至少**可见**，
+但它们仍然打不开、也不是笔记 —— 那只是止血，这一刀还是要做。
+
 ### 5.2 冲突副本（缺口 3）
 
 两个选项：
@@ -344,8 +389,9 @@ pull 侧「跳过而不报错」是有先例的教训：`path_validator.rs` 里 
 
 ### 5.4 附件（缺口 5）
 
-- 约定附件目录为 `knowledge/attachments/`，并在文档里告诉用户把 Obsidian 的
-  「Default location for new attachments」指过去。
+- ~~约定附件目录为 `knowledge/attachments/`，并在文档里告诉用户把 Obsidian 的
+  「Default location for new attachments」指过去。~~ **已完成**：§3.3 首次注册
+  vault 时就把 `attachmentFolderPath` 预置好了，用户不用自己配。
 - 我们的 Markdown 编辑器支持渲染 `![[file.png]]` 嵌入。
 - 附件天然受 §4.4 的单文件大小闸门保护。
 
@@ -360,7 +406,7 @@ pull 侧「跳过而不报错」是有先例的教训：`path_validator.rs` 里 
 | 5 | ~~「在 Obsidian 中打开」入口~~ **已完成** + 用户文档 | 刀 3 |
 | 6 | 服务端写入口拒绝 + 每 team 配额 | 刀 1（共用清单） |
 | 7 | 冲突副本迁 `.conflicts/` | 独立 |
-| 8 | 附件目录约定 + 编辑器渲染 `![[...]]` | 独立 |
+| 8 | ~~附件目录约定~~ **已完成**（§3.3 预置 `attachmentFolderPath`）+ 编辑器渲染 `![[...]]` | 独立 |
 
 刀 1 与刀 2 是「防止服务器被冲垮」的实质内容，优先级最高。刀 1 里的 §4.6 是**上
 线前必须验证的一条**：拿一个历史上同步过 `.DS_Store` 的团队做回归，确认升级后云
@@ -373,6 +419,8 @@ pull 侧「跳过而不报错」是有先例的教训：`path_validator.rs` 里 
 2. 用 Obsidian 打开 vault，改一篇笔记 → 2 秒内 tick 发出 → 另一台设备收到。
 3. Obsidian 产生的 `.obsidian/workspace.json` 在任何设备上都不产生同步流量。
 4. 在 app 里新建笔记 → Obsidian 里立刻可见可编辑（`.md` 后缀生效）。
+4b. 一台从没打开过这个目录的机器：Obsidian 没在运行时点按钮 → 直接进 vault，无需
+   任何手工步骤；Obsidian 正在运行时点按钮 → 提示重启，重启后再点直接进。
 5. 升级前同步过 `.DS_Store` 的团队，升级后云端那份仍在，本地不再推送它。
 6. 一台故意不升级的旧客户端推 `node_modules/` → 服务端 422 拒绝，且不影响该团队
    其它文件的正常同步。

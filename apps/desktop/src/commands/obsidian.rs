@@ -1,20 +1,30 @@
-//! Open the team knowledge directory in Obsidian, and report whether Obsidian
-//! is even installed so the button can be greyed out instead of failing.
+//! Open the team knowledge directory in Obsidian, initializing it as a vault
+//! the first time so the user never has to add it by hand.
 //!
-//! Detection is per-platform because there is no portable way to ask "is this
-//! app installed":
-//! - macOS: the bundle's well-known locations, then Spotlight for people who
-//!   keep their apps somewhere else.
-//! - Windows: the install roots the installer uses (per-user and machine-wide),
-//!   then the `obsidian://` URI handler in the registry.
-//! - Linux: PATH, then the Flatpak id.
+//! ## How Obsidian decides what a vault is
 //!
-//! Opening a vault goes through the `obsidian://` URI, not argv: Obsidian does
-//! not accept a folder as a command-line argument, and the URI is the only
-//! entry point it documents. That URI can only resolve a path inside a vault
-//! Obsidian already knows, so a directory it has never opened gets the app
-//! launched bare instead — the caller walks the user through
-//! "Open folder as vault" once, and every later click takes the URI path.
+//! Verified against Obsidian 1.13.7 on macOS, not inferred:
+//!
+//! - The vault list lives in `<config dir>/obsidian/obsidian.json`, shaped
+//!   `{"vaults": {"<id>": {"path": …, "ts": …, "open": bool}}}`. The id is an
+//!   opaque 16-hex string — **not** a hash of the path (md5/sha1/sha256 of the
+//!   path all fail to reproduce a real one), so any unique value works. We
+//!   derive ours from the path anyway, which makes re-registration idempotent.
+//! - `obsidian://open?path=…` resolves only against vaults in that file.
+//! - A vault's `.obsidian/` directory is created by Obsidian **when it first
+//!   opens the folder** — it is a consequence of registration, not the cause.
+//!   So `.obsidian/` existing cannot be used to decide "is this a vault"; the
+//!   registry is the only honest source.
+//! - **Obsidian reads that file at startup only.** Registering a vault while
+//!   Obsidian is running does not make the URI work — measured: the URI was
+//!   accepted and silently did nothing. Hence [`OpenOutcome`].
+//!
+//! ## Detection
+//!
+//! Per-platform, because there is no portable way to ask "is this app
+//! installed": macOS looks at the two bundle locations then Spotlight; Windows
+//! at the installer's roots then the `obsidian://` handler in the registry;
+//! Linux at PATH then the Flatpak id.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,51 +39,41 @@ use crate::process_util::CommandNoWindow;
 pub struct ObsidianStatus {
     /// Obsidian is installed on this machine. `false` greys the button out.
     pub installed: bool,
-    /// The directory already carries a `.obsidian/` folder, i.e. Obsidian has
-    /// opened it as a vault before. While this is false the URI cannot resolve
-    /// the path, so the caller has to hand the user the path once.
-    pub vault_initialized: bool,
+    /// The directory is already in Obsidian's vault registry, so the URI will
+    /// resolve it. When false the first open has to register it first.
+    pub vault_registered: bool,
 }
 
-/// Is Obsidian installed, and has `vault_path` been opened as a vault yet?
+/// What [`obsidian_open_vault`] actually managed to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OpenOutcome {
+    /// Obsidian was handed the vault and is opening it.
+    Opened,
+    /// The vault was added to Obsidian's registry, but Obsidian is already
+    /// running and only reads that file at startup — the user has to restart it
+    /// once. Every later open takes the `Opened` path.
+    RegisteredNeedsRestart,
+}
+
+/// Is Obsidian installed, and is `vault_path` registered with it?
 ///
 /// `vault_path` may be empty — then only `installed` is meaningful.
 #[tauri::command]
 pub fn obsidian_status(vault_path: String) -> ObsidianStatus {
     ObsidianStatus {
         installed: obsidian_app_path().is_some() || uri_handler_registered(),
-        vault_initialized: !vault_path.is_empty() && is_vault_initialized(Path::new(&vault_path)),
+        vault_registered: !vault_path.is_empty() && is_vault_registered(&vault_path),
     }
 }
 
-/// A directory Obsidian has opened before has a `.obsidian/` config folder in
-/// it. That is the only marker it leaves on disk, and it is what decides
-/// whether `obsidian://open?path=` resolves or just raises an error dialog.
-fn is_vault_initialized(dir: &Path) -> bool {
-    dir.join(".obsidian").is_dir()
-}
-
-/// Build the `obsidian://open?path=<abs path>` URI for a vault directory.
-///
-/// Kept separate from the spawn so the encoding can be unit-tested without an
-/// Obsidian install: encoding is the part that breaks. Team dirs sit under a
-/// home directory that often contains spaces, and CJK folder names are routine
-/// in this product.
-fn open_uri(vault_path: &str) -> String {
-    format!("obsidian://open?path={}", urlencoding::encode(vault_path))
-}
-
-/// Hand `vault_path` to Obsidian.
-///
-/// When the directory has never been opened as a vault, this launches Obsidian
-/// without a target instead: the URI would resolve to nothing and the user
-/// would get an error dialog rather than the app they asked for.
+/// Open `vault_path` in Obsidian, registering it as a vault first if needed.
 ///
 /// Errors when Obsidian is not installed. The button should be disabled in that
 /// case, so reaching here means the UI and the filesystem disagree — saying so
 /// beats silently doing nothing.
 #[tauri::command]
-pub fn obsidian_open_vault(vault_path: String) -> Result<(), String> {
+pub fn obsidian_open_vault(vault_path: String) -> Result<OpenOutcome, String> {
     if vault_path.trim().is_empty() {
         return Err("obsidian: empty vault path".to_string());
     }
@@ -81,16 +81,184 @@ pub fn obsidian_open_vault(vault_path: String) -> Result<(), String> {
     if !dir.is_dir() {
         return Err(format!("obsidian: no such directory: {vault_path}"));
     }
-    let app = obsidian_app_path();
-    if app.is_none() && !uri_handler_registered() {
+    if obsidian_app_path().is_none() && !uri_handler_registered() {
         return Err("obsidian: not installed".to_string());
     }
 
-    if is_vault_initialized(dir) {
-        open_target(&open_uri(&vault_path))
-    } else {
-        launch_app(app)
+    if is_vault_registered(&vault_path) {
+        open_target(&open_uri(&vault_path))?;
+        return Ok(OpenOutcome::Opened);
     }
+
+    // First time: seed the vault's own config, then register it.
+    seed_vault_config(dir);
+    register_vault(&vault_path)?;
+
+    if obsidian_is_running() {
+        // The registry write lands, but the running instance will not see it.
+        // Sending the URI now would be accepted and do nothing at all, which
+        // reads as a broken button — say what happened instead.
+        Ok(OpenOutcome::RegisteredNeedsRestart)
+    } else {
+        open_target(&open_uri(&vault_path))?;
+        Ok(OpenOutcome::Opened)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Vault registry
+// ---------------------------------------------------------------------------
+
+/// `<config dir>/obsidian/obsidian.json`.
+///
+/// `dirs::config_dir()` happens to be right on all three platforms:
+/// `~/Library/Application Support` (macOS), `%APPDATA%` (Windows),
+/// `~/.config` (Linux) — which is exactly where Obsidian keeps it.
+fn registry_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("obsidian").join("obsidian.json"))
+}
+
+/// Compare two vault paths. Obsidian stores what it was given, so a trailing
+/// separator difference must not read as a different vault.
+fn same_vault_path(a: &str, b: &str) -> bool {
+    a.trim_end_matches(['/', '\\']) == b.trim_end_matches(['/', '\\'])
+}
+
+/// Whether Obsidian's registry already lists this directory.
+fn is_vault_registered(vault_path: &str) -> bool {
+    let Some(registry) = registry_path() else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(&registry) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    json.get("vaults")
+        .and_then(|v| v.as_object())
+        .is_some_and(|vaults| {
+            vaults.values().any(|entry| {
+                entry
+                    .get("path")
+                    .and_then(|p| p.as_str())
+                    .is_some_and(|p| same_vault_path(p, vault_path))
+            })
+        })
+}
+
+/// Vault id: 16 hex chars, derived from the path.
+///
+/// Obsidian's own ids are opaque and look random; nothing reads them back, they
+/// only key the dictionary and name a `<id>.json` window-state file. Deriving
+/// ours from the path means a second registration of the same directory
+/// overwrites its own entry instead of adding a duplicate.
+fn vault_id(vault_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let normalized = vault_path.trim_end_matches(['/', '\\']);
+    let digest = Sha256::digest(normalized.as_bytes());
+    digest[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Add `vault_path` to Obsidian's registry.
+///
+/// `open: false` deliberately: `true` would make Obsidian open this vault on
+/// next launch instead of whatever the user had, and hijacking that is not what
+/// a button labelled "open in Obsidian" is allowed to do.
+fn register_vault(vault_path: &str) -> Result<(), String> {
+    let registry = registry_path().ok_or_else(|| "obsidian: no config dir".to_string())?;
+    if let Some(parent) = registry.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("obsidian: create {}: {e}", parent.display()))?;
+    }
+
+    // A missing or unparseable registry is treated as empty rather than fatal:
+    // Obsidian rewrites this file wholesale, and refusing to proceed would make
+    // the button permanently dead on a machine whose file we merely failed to
+    // understand. `preserve_order` on serde_json keeps every other vault's
+    // position intact through the round-trip.
+    let mut json = std::fs::read_to_string(&registry)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    if !json.get("vaults").is_some_and(|v| v.is_object()) {
+        json["vaults"] = serde_json::json!({});
+    }
+    let normalized = vault_path.trim_end_matches(['/', '\\']).to_string();
+    json["vaults"][vault_id(&normalized)] = serde_json::json!({
+        "path": normalized,
+        "ts": now_millis(),
+        "open": false,
+    });
+
+    // Atomic replace: Obsidian may read this file at any moment, and a
+    // half-written registry loses every vault the user has.
+    let tmp = registry.with_extension("json.teamclu-tmp");
+    std::fs::write(
+        &tmp,
+        serde_json::to_string(&json).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("obsidian: write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &registry)
+        .map_err(|e| format!("obsidian: replace {}: {e}", registry.display()))?;
+    Ok(())
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Defaults written into the vault's own `.obsidian/app.json` the first time.
+///
+/// - `attachmentFolderPath`: the attachment location this product assumes, so
+///   an image pasted in Obsidian and one added from the app land together.
+/// - `showUnsupportedFiles`: knowledge trees hold files with no `.md`
+///   extension; without this Obsidian hides them and they look deleted.
+/// - `alwaysUpdateLinks`: renaming a note rewrites the `[[links]]` pointing at
+///   it. On a shared tree the alternative is one person's rename silently
+///   breaking everyone else's links.
+///
+/// Never overwrites an existing `app.json` — that file is the user's.
+/// `.obsidian/` is deliberately excluded from team sync, so this is per-device
+/// setup, not shared config.
+fn seed_vault_config(dir: &Path) {
+    let config_dir = dir.join(".obsidian");
+    let app_json = config_dir.join("app.json");
+    if app_json.exists() {
+        return;
+    }
+    if std::fs::create_dir_all(&config_dir).is_err() {
+        return;
+    }
+    let defaults = serde_json::json!({
+        "attachmentFolderPath": "attachments",
+        "showUnsupportedFiles": true,
+        "alwaysUpdateLinks": true,
+    });
+    // Best-effort: failing to seed defaults is not a reason to refuse to open
+    // the vault. Obsidian writes its own `app.json` when it starts.
+    let _ = std::fs::write(
+        &app_json,
+        serde_json::to_string_pretty(&defaults).unwrap_or_default(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Opening
+// ---------------------------------------------------------------------------
+
+/// Build the `obsidian://open?path=<abs path>` URI for a vault directory.
+///
+/// Kept separate from the spawn so the encoding can be unit-tested without an
+/// Obsidian install: encoding is the part that breaks. Home directories with a
+/// space are common, and CJK folder names are routine in this product.
+fn open_uri(vault_path: &str) -> String {
+    format!("obsidian://open?path={}", urlencoding::encode(vault_path))
 }
 
 /// Hand a URI to the platform's URL opener.
@@ -123,53 +291,31 @@ fn open_target(uri: &str) -> Result<(), String> {
         .map_err(|e| format!("obsidian: failed to open: {e}"))
 }
 
-/// Start Obsidian with no target, for the first-run case where the directory is
-/// not a vault yet and the user has to add it by hand.
-fn launch_app(app: Option<PathBuf>) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = app;
-        Command::new("open")
-            .args(["-a", "Obsidian"])
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("obsidian: failed to launch: {e}"))
-    }
+// ---------------------------------------------------------------------------
+// Process and installation detection
+// ---------------------------------------------------------------------------
 
-    #[cfg(target_os = "windows")]
-    {
-        match app {
-            Some(exe) => Command::new(exe)
-                .no_window()
-                .spawn()
-                .map(|_| ())
-                .map_err(|e| format!("obsidian: failed to launch: {e}")),
-            // Only the registry knew about this install, so there is no exe
-            // path to spawn. The URI handler is registered, so ask it to open
-            // nothing in particular — Obsidian comes up on its vault picker.
-            None => open_target("obsidian://"),
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        match app {
-            Some(exe) => Command::new(exe)
-                .spawn()
-                .map(|_| ())
-                .map_err(|e| format!("obsidian: failed to launch: {e}")),
-            None => Command::new("flatpak")
-                .args(["run", "md.obsidian.Obsidian"])
-                .spawn()
-                .map(|_| ())
-                .map_err(|e| format!("obsidian: failed to launch: {e}")),
-        }
-    }
+#[cfg(target_os = "windows")]
+fn obsidian_is_running() -> bool {
+    Command::new("tasklist")
+        .no_window()
+        .args(["/FI", "IMAGENAME eq Obsidian.exe", "/NH"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("Obsidian.exe"))
+        .unwrap_or(false)
 }
 
-// ---------------------------------------------------------------------------
-// Installation detection
-// ---------------------------------------------------------------------------
+#[cfg(not(target_os = "windows"))]
+fn obsidian_is_running() -> bool {
+    // macOS's process is `Obsidian`, most Linux packages ship `obsidian`.
+    ["Obsidian", "obsidian"].iter().any(|name| {
+        Command::new("pgrep")
+            .args(["-x", name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
 
 /// Path to the Obsidian executable/bundle, when it can be found by looking.
 /// `None` does not prove Obsidian is absent — see [`uri_handler_registered`].
@@ -281,20 +427,49 @@ mod tests {
     }
 
     #[test]
-    fn a_dir_without_dot_obsidian_is_not_an_initialized_vault() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!is_vault_initialized(dir.path()));
-        std::fs::create_dir(dir.path().join(".obsidian")).unwrap();
-        assert!(is_vault_initialized(dir.path()));
+    fn vault_id_is_sixteen_hex_and_stable() {
+        let id = vault_id("/tmp/a");
+        assert_eq!(id.len(), 16);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(id, vault_id("/tmp/a"));
+        assert_ne!(id, vault_id("/tmp/b"));
     }
 
-    /// A file named `.obsidian` is not a vault marker — the check is
-    /// specifically for a directory.
+    /// A trailing separator must not produce a second registry entry for a
+    /// directory that is already there.
     #[test]
-    fn a_dot_obsidian_file_does_not_count() {
+    fn vault_id_ignores_a_trailing_separator() {
+        assert_eq!(vault_id("/tmp/a"), vault_id("/tmp/a/"));
+    }
+
+    #[test]
+    fn same_vault_path_ignores_trailing_separators() {
+        assert!(same_vault_path("/tmp/a", "/tmp/a/"));
+        assert!(same_vault_path("C:\\vault\\", "C:\\vault"));
+        assert!(!same_vault_path("/tmp/a", "/tmp/ab"));
+    }
+
+    #[test]
+    fn seeding_writes_defaults_into_a_fresh_vault() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".obsidian"), b"").unwrap();
-        assert!(!is_vault_initialized(dir.path()));
+        seed_vault_config(dir.path());
+        let text = std::fs::read_to_string(dir.path().join(".obsidian/app.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(json["attachmentFolderPath"], "attachments");
+        assert_eq!(json["showUnsupportedFiles"], true);
+        assert_eq!(json["alwaysUpdateLinks"], true);
+    }
+
+    /// `app.json` is the user's file once it exists. Overwriting it would reset
+    /// their editor settings every time they clicked the button.
+    #[test]
+    fn seeding_never_overwrites_an_existing_app_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".obsidian")).unwrap();
+        std::fs::write(dir.path().join(".obsidian/app.json"), r#"{"mine":1}"#).unwrap();
+        seed_vault_config(dir.path());
+        let text = std::fs::read_to_string(dir.path().join(".obsidian/app.json")).unwrap();
+        assert_eq!(text, r#"{"mine":1}"#);
     }
 
     #[test]

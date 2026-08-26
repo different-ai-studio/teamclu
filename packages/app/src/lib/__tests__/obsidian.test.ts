@@ -20,7 +20,7 @@ describe('getObsidianStatus', () => {
   })
 
   it('passes the vault path through to the backend', async () => {
-    invokeMock.mockResolvedValue({ installed: true, vaultInitialized: true })
+    invokeMock.mockResolvedValue({ installed: true, vaultRegistered: true })
     const { getObsidianStatus } = await import('../obsidian')
 
     const status = await getObsidianStatus('/tmp/team/knowledge')
@@ -28,11 +28,11 @@ describe('getObsidianStatus', () => {
     expect(invokeMock).toHaveBeenCalledWith('obsidian_status', {
       vaultPath: '/tmp/team/knowledge',
     })
-    expect(status).toEqual({ installed: true, vaultInitialized: true })
+    expect(status).toEqual({ installed: true, vaultRegistered: true })
   })
 
   it('sends an empty string when there is no knowledge dir yet', async () => {
-    invokeMock.mockResolvedValue({ installed: true, vaultInitialized: false })
+    invokeMock.mockResolvedValue({ installed: true, vaultRegistered: false })
     const { getObsidianStatus } = await import('../obsidian')
 
     await getObsidianStatus(null)
@@ -49,7 +49,7 @@ describe('getObsidianStatus', () => {
 
     await expect(getObsidianStatus('/tmp/team/knowledge')).resolves.toEqual({
       installed: false,
-      vaultInitialized: false,
+      vaultRegistered: false,
     })
   })
 
@@ -59,7 +59,7 @@ describe('getObsidianStatus', () => {
 
     await expect(getObsidianStatus('/tmp/team/knowledge')).resolves.toEqual({
       installed: false,
-      vaultInitialized: false,
+      vaultRegistered: false,
     })
     expect(invokeMock).not.toHaveBeenCalled()
   })
@@ -85,7 +85,7 @@ describe('openVaultInObsidian', () => {
   })
 
   it('invokes the backend with the vault path', async () => {
-    invokeMock.mockResolvedValue(undefined)
+    invokeMock.mockResolvedValue('opened')
     const { openVaultInObsidian } = await import('../obsidian')
 
     await openVaultInObsidian('/tmp/team/knowledge')
@@ -93,5 +93,16 @@ describe('openVaultInObsidian', () => {
     expect(invokeMock).toHaveBeenCalledWith('obsidian_open_vault', {
       vaultPath: '/tmp/team/knowledge',
     })
+  })
+
+  // The caller branches on this to decide whether to tell the user to restart
+  // Obsidian, so it has to come back untouched.
+  it('returns the outcome the backend reports', async () => {
+    invokeMock.mockResolvedValue('registeredNeedsRestart')
+    const { openVaultInObsidian } = await import('../obsidian')
+
+    await expect(openVaultInObsidian('/tmp/team/knowledge')).resolves.toBe(
+      'registeredNeedsRestart',
+    )
   })
 })

@@ -345,25 +345,16 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const obsidian = useObsidianStatus(section === 'knowledge' ? knowledgeRoot : null)
   const handleOpenInObsidian = React.useCallback(async () => {
     if (!knowledgeRoot) return
-    // Obsidian resolves `obsidian://open?path=` only inside a vault it already
-    // knows, so the first click can only bring the app up — the user still has
-    // to add the folder by hand. Put the path on the clipboard before launching
-    // rather than make them retype a UUID out of a hidden directory.
-    const firstRun = !obsidian.vaultInitialized
-    if (firstRun) {
-      try {
-        await navigator.clipboard.writeText(knowledgeRoot)
-      } catch {
-        // Clipboard denied — the toast below still says what to do.
-      }
-    }
     try {
-      await openVaultInObsidian(knowledgeRoot)
-      if (firstRun) {
+      // The backend registers the directory as a vault on first use, so there
+      // is nothing for the user to set up — except in the one case it cannot
+      // work around: Obsidian reads its vault registry at startup only.
+      const outcome = await openVaultInObsidian(knowledgeRoot)
+      if (outcome === 'registeredNeedsRestart') {
         toast.info(
           t(
-            'teamShare.obsidianFirstRun',
-            'Obsidian is starting. Choose "Open folder as vault" and paste the path — it is already on your clipboard.',
+            'teamShare.obsidianNeedsRestart',
+            'Added to Obsidian as a vault. Restart Obsidian once to open it — after that this button goes straight there.',
           ),
           { duration: 8000 },
         )
@@ -375,7 +366,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         }),
       )
     }
-  }, [knowledgeRoot, obsidian.vaultInitialized, t])
+  }, [knowledgeRoot, t])
 
   // Opening the column is the other moment the list has to be current: a
   // conflict may have been created by the daemon's own timer while this session

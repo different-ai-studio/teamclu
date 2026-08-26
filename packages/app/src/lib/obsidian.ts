@@ -9,15 +9,23 @@ export interface ObsidianStatus {
   /** Obsidian is installed on this machine. */
   installed: boolean
   /**
-   * The directory carries a `.obsidian/` folder, so Obsidian has opened it as a
-   * vault before. Until then `obsidian://open?path=` cannot resolve it and the
-   * user has to add the folder as a vault once.
+   * The directory is in Obsidian's vault registry, so `obsidian://open?path=`
+   * resolves it. When false, the first open registers it first.
    */
-  vaultInitialized: boolean
+  vaultRegistered: boolean
 }
 
+/**
+ * What an open actually managed to do. Mirrors `OpenOutcome` in the backend.
+ *
+ * `registeredNeedsRestart` exists because Obsidian reads its vault registry at
+ * startup only — a vault registered while it is running is invisible to it
+ * until the next launch.
+ */
+export type ObsidianOpenOutcome = 'opened' | 'registeredNeedsRestart'
+
 /** Not installed, no vault — what every non-desktop caller gets. */
-export const OBSIDIAN_ABSENT: ObsidianStatus = { installed: false, vaultInitialized: false }
+export const OBSIDIAN_ABSENT: ObsidianStatus = { installed: false, vaultRegistered: false }
 
 /**
  * Ask the backend about Obsidian. Never throws: a probe that fails is reported
@@ -35,18 +43,13 @@ export async function getObsidianStatus(vaultPath: string | null): Promise<Obsid
 }
 
 /**
- * Open `vaultPath` in Obsidian.
- *
- * When the directory has never been opened as a vault the backend launches
- * Obsidian without a target instead — the URI would resolve to nothing and the
- * user would get an error dialog. Callers should check `vaultInitialized` and
- * tell the user what to do in that case.
+ * Open `vaultPath` in Obsidian, registering it as a vault on first use.
  *
  * Rejects with the backend's message so the caller can surface a real failure
  * rather than a silent no-op.
  */
-export async function openVaultInObsidian(vaultPath: string): Promise<void> {
+export async function openVaultInObsidian(vaultPath: string): Promise<ObsidianOpenOutcome> {
   if (!isTauri()) throw new Error('obsidian: desktop only')
   const { invoke } = await import('@tauri-apps/api/core')
-  await invoke('obsidian_open_vault', { vaultPath })
+  return await invoke<ObsidianOpenOutcome>('obsidian_open_vault', { vaultPath })
 }
