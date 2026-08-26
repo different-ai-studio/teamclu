@@ -68,15 +68,15 @@ test(
 );
 
 test(
-  "GET /sync/versions: teamId+path query params reach legacy handler (live)",
+  "GET /v1/sync/versions: teamId+path query params reach legacy handler (live)",
   { skip: !LIVE },
   async () => {
-    const missing = await get("/sync/versions");
+    const missing = await get("/v1/sync/versions");
     assert.equal(missing.status, 400);
     assert.match(errorMessage(missing.body), /teamId is required/i);
 
     const withParams = await get(
-      `/sync/versions?teamId=${encodeURIComponent(TEAM_ID)}&path=${encodeURIComponent("smoke.md")}`,
+      `/v1/sync/versions?teamId=${encodeURIComponent(TEAM_ID)}&path=${encodeURIComponent("smoke.md")}`,
     );
     assert.ok(
       !/teamId is required/i.test(errorMessage(withParams.body)),
