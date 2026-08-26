@@ -272,9 +272,142 @@ impl SpeechSynthesizer {
         }
         publish_ctl(&self.publisher, key, body).await;
     }
+
+    /// TTS `text` for a device without watching a session.
+    ///
+    /// Used by the ESP32 Core downlink (`Esp32Downlink::speak`): Phase 1
+    /// deliver already has the final reply string, so there is nothing to
+    /// subscribe to. Cancels any in-flight speech for `key`, then drives the
+    /// same TTS → Opus → `spk` / `spk_start`/`spk_end` path as a spoken turn.
+    pub async fn speak_text(&self, key: DeviceKey, text: &str) -> Result<(), String> {
+        ReplySpeaker::cancel(self, &key).await;
+
+        if text.trim().is_empty() {
+            // Face may still be on Think; spk_end returns it to idle.
+            self.send_ctl(
+                &key,
+                serde_json::json!({ "from": super::ctl::FROM_DAEMON, "type": "spk_end" }),
+            )
+            .await;
+            return Ok(());
+        }
+
+        let TtsStream { text_tx, audio_rx } = match self.tts.speak().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "voice: TTS unavailable");
+                self.send_ctl(
+                    &key,
+                    serde_json::json!({
+                        "from": super::ctl::FROM_DAEMON,
+                        "type": "error",
+                        "code": "tts_unavailable",
+                        "message": e.to_string(),
+                    }),
+                )
+                .await;
+                return Err(e.to_string());
+            }
+        };
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.active.lock().await.insert(
+            key.clone(),
+            ActiveSpeech {
+                cancel: cancel.clone(),
+            },
+        );
+
+        let seq_base = self.seq.fetch_add(64, Ordering::Relaxed);
+        let publisher = self.publisher.clone();
+        let cfg = self.cfg.clone();
+        let t0 = Instant::now();
+        let pump = tokio::spawn(pump_audio(
+            t0,
+            key.clone(),
+            audio_rx,
+            publisher.clone(),
+            cancel.clone(),
+            cfg,
+            seq_base + 1,
+        ));
+
+        let mut chunker = SentenceChunker::default();
+        let mut feed_ok = true;
+        for piece in chunker.push(text) {
+            if text_tx.send(piece).await.is_err() {
+                feed_ok = false;
+                break;
+            }
+        }
+        if feed_ok {
+            if let Some(tail) = chunker.finish() {
+                let _ = text_tx.send(tail).await;
+            }
+        }
+        drop(text_tx);
+
+        let frames = pump.await.unwrap_or(0);
+
+        // Drop our active entry if nothing newer replaced it.
+        {
+            let mut map = self.active.lock().await;
+            if map
+                .get(&key)
+                .is_some_and(|a| Arc::ptr_eq(&a.cancel, &cancel))
+            {
+                map.remove(&key);
+            }
+        }
+
+        if cancel.load(Ordering::Relaxed) {
+            info!(team_id = %key.team_id, frames, "voice: speak_text cancelled");
+            return Ok(());
+        }
+
+        publish_ctl(
+            &publisher,
+            &key,
+            serde_json::json!({
+                "from": super::ctl::FROM_DAEMON,
+                "type": "spk_end",
+                "seq": seq_base + 63,
+            }),
+        )
+        .await;
+        info!(
+            team_id = %key.team_id,
+            actor_id = %key.actor_id,
+            frames,
+            "voice: speak_text complete"
+        );
+        Ok(())
+    }
+
+    /// Publish a ctl JSON object on the device's `voice/ctl` topic (QoS 1).
+    ///
+    /// Ensures `from` is [`super::ctl::FROM_DAEMON`] when the caller omitted it.
+    /// Returns an error if `json` is not an object or publish fails.
+    pub async fn publish_ctl_json(&self, key: &DeviceKey, json: &str) -> Result<(), String> {
+        let mut body: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| format!("ctl json: {e}"))?;
+        let obj = body
+            .as_object_mut()
+            .ok_or_else(|| "ctl json must be an object".to_string())?;
+        if !obj.contains_key("from") {
+            obj.insert(
+                "from".into(),
+                serde_json::Value::String(super::ctl::FROM_DAEMON.to_string()),
+            );
+        }
+        let topic = super::voice_ctl_topic(&key.team_id, &key.actor_id);
+        let payload =
+            serde_json::to_vec(&body).map_err(|e| format!("ctl serialise: {e}"))?;
+        self.publisher.publish(topic, payload, true).await
+    }
 }
 
-async fn publish_ctl(
+pub(crate) async fn publish_ctl(
     publisher: &Arc<dyn VoicePublisher>,
     key: &DeviceKey,
     body: serde_json::Value,
