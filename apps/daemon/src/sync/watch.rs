@@ -15,6 +15,9 @@
 //! registration. Events under ignored subtrees are dropped; if the OS watcher
 //! errors (e.g. Linux inotify exhaustion), we `warn!` once, stop watching that
 //! team, and rely on the 300s timer — the daemon keeps running.
+//!
+//! Pull self-writes: [`record_pull_write`] must run *before* `create_dir_all` /
+//! `fs::write`, or inotify can schedule Local before the path is suppressed.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,8 +45,12 @@ fn pull_writes() -> &'static Mutex<PullWriteSuppress> {
     PULL_WRITES.get_or_init(|| Mutex::new(PullWriteSuppress::new()))
 }
 
-/// Record that pull just wrote `rel_path` (content-root relative, e.g.
+/// Record that pull is about to write `rel_path` (content-root relative, e.g.
 /// `knowledge/notes/a.md`). Events on that path within 3s are dropped.
+///
+/// **Ordering contract:** callers MUST invoke this *before* `create_dir_all` /
+/// `fs::write` for that path. Recording after the write races the OS watcher:
+/// inotify can deliver a Local trigger before the suppress entry exists.
 pub fn record_pull_write(team_id: &str, rel_path: &str) {
     let mut guard = pull_writes()
         .lock()
@@ -503,6 +510,34 @@ mod tests {
         };
         assert!(suppressed, "global record_pull_write must suppress the path");
         clear_pull_writes();
+    }
+
+    /// Ordering contract: suppress must be registered *before* the write
+    /// returns, so an inotify event that races the write await is already
+    /// covered. Simulates: record → (write returns / event arrives) → filter.
+    ///
+    /// Uses a local suppress map (not the process-global) so parallel test
+    /// binaries cannot clear the entry mid-assert.
+    #[test]
+    fn record_before_write_covers_immediate_post_write_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let content_root = dir.path();
+        let rel = "knowledge/race.md";
+        let abs = content_root.join(rel);
+        std::fs::create_dir_all(content_root.join("knowledge")).unwrap();
+        let rules = IgnoreRules::load(content_root);
+        let team = "team-race";
+        let mut suppress = PullWriteSuppress::new();
+        let now = Instant::now();
+
+        // Production order in engine.rs: record, then create_dir_all / write.
+        suppress.record(team, rel, now);
+        std::fs::write(&abs, b"from-pull").unwrap();
+
+        assert!(
+            !should_schedule_local(team, content_root, &abs, &rules, &mut suppress, now),
+            "event arriving immediately after write must already be suppressed"
+        );
     }
 
     #[test]

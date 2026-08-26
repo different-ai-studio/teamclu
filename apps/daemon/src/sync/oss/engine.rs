@@ -740,6 +740,9 @@ async fn pull_phase(
                         let plaintext =
                             decode_pulled_blob(blob, key_copy.as_ref()).map_err(&fail)?;
                         let abs = Path::new(content_root).join(&path);
+                        // MUST precede create_dir_all / write: inotify can deliver
+                        // Local before this task resumes after an await.
+                        crate::sync::watch::record_pull_write(&team_id, &path);
                         if let Some(parent) = abs.parent() {
                             tokio::fs::create_dir_all(parent)
                                 .await
@@ -748,8 +751,6 @@ async fn pull_phase(
                         tokio::fs::write(&abs, &plaintext)
                             .await
                             .map_err(|e| fail(SyncError::Io(e.to_string())))?;
-                        // Suppress fs-watch Local triggers for this path for 3s.
-                        crate::sync::watch::record_pull_write(&team_id, &path);
                         let meta = std::fs::metadata(&abs)
                             .map_err(|e| fail(SyncError::Io(e.to_string())))?;
                         let mtime = meta
@@ -1269,6 +1270,9 @@ pub async fn download_and_write(
     let plain_hash = sha256_hex(&plaintext);
 
     let abs_path = Path::new(content_root).join(rel_path);
+    // MUST precede create_dir_all / write: inotify can deliver Local before
+    // this task resumes after an await.
+    crate::sync::watch::record_pull_write(&team_id, rel_path);
     if let Some(parent) = abs_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -1277,8 +1281,6 @@ pub async fn download_and_write(
     tokio::fs::write(&abs_path, &plaintext)
         .await
         .map_err(|e| SyncError::Io(e.to_string()))?;
-    // Suppress fs-watch Local triggers for this path for 3s (path-set, not blanket).
-    crate::sync::watch::record_pull_write(&team_id, rel_path);
 
     let meta = std::fs::metadata(&abs_path).map_err(SyncError::from)?;
     let mtime = meta
