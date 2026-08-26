@@ -202,7 +202,7 @@ export function KnowledgeCloudVersion({ path }: { path: string }) {
           <div className="px-4 py-8 text-center text-[13px] text-muted-foreground">
             {t(
               'cloudVersion.unreadable',
-              'The cloud copy cannot be read here: it is either binary, or encrypted with a team secret this device does not have.',
+              'The cloud copy cannot be read here: it is binary.',
             )}
           </div>
         ) : (

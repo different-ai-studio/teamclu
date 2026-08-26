@@ -2784,7 +2784,7 @@
     "restored": "已把云端版本写回这篇文档",
     "restoreFailed": "恢复失败：{{msg}}",
     "notPushed": "这篇文档只存在于本机 —— 云端还没有它。",
-    "unreadable": "这份云端内容在这台机器上读不出来：要么是二进制，要么是用本机没有的团队密钥加密的。",
+    "unreadable": "这份云端内容在这台机器上读不出来：是二进制。",
     "notTeamContent": "这个文件不属于团队知识库。"
   },
   "knowledgeConflict": {

@@ -509,18 +509,18 @@ struct PullItem {
     version: i32,
 }
 
-/// Front half of an upload — read + encrypt + hash, with no network. Computed
+/// Front half of an upload — read + hash, with no network. Computed
 /// before the prepare/complete batch round-trips so the blob is ready to PUT.
 struct PreparedUpload {
     path: String,
     /// sha256 of the plaintext (what local dirty-detection compares against).
     plain_hash: String,
-    /// encrypted bytes uploaded to OSS.
+    /// plaintext bytes uploaded to OSS (knowledge blobs are not encrypted).
     blob: Vec<u8>,
     /// sha256 of `blob` — the content hash the FC CAS keys on.
     cipher_hash: String,
     parent_version: i32,
-    /// ciphertext length — the `size` the FC HEAD-check verifies on the OSS blob.
+    /// blob length — the `size` the FC HEAD-check verifies on the OSS object.
     size: u64,
 }
 
@@ -831,7 +831,7 @@ async fn pull_phase(
     pulled
 }
 
-/// Batched PUSH: encrypt locally → prepare-batch → concurrent blob PUT →
+/// Batched PUSH: hash locally → prepare-batch → concurrent blob PUT →
 /// complete-batch → per-item apply. Per-file fallback on a pre-batch FC.
 async fn push_phase(
     content_root: &str,
@@ -855,12 +855,12 @@ async fn push_phase(
     let uploaded = Arc::new(AtomicU32::new(0));
 
     for chunk in paths.chunks(MAX_BATCH) {
-        // Stage 0: encrypt + hash. Unreadable files are skipped (stay dirty).
+        // Stage 0: read + hash. Unreadable files are skipped (stay dirty).
         let mut prepared: Vec<PreparedUpload> = Vec::new();
         for p in chunk {
             match prepare_upload(content_root, p, state) {
                 Ok(pu) => prepared.push(pu),
-                Err(e) => tracing::warn!("[oss_sync] encrypt {p}: {e}"),
+                Err(e) => tracing::warn!("[oss_sync] prepare {p}: {e}"),
             }
         }
         if prepared.is_empty() {

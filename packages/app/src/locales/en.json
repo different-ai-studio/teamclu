@@ -2784,7 +2784,7 @@
     "restored": "The cloud version was written to this document",
     "restoreFailed": "Could not restore: {{msg}}",
     "notPushed": "This document only exists here — the cloud has no copy of it yet.",
-    "unreadable": "The cloud copy cannot be read here: it is either binary, or encrypted with a team secret this device does not have.",
+    "unreadable": "The cloud copy cannot be read here: it is binary.",
     "notTeamContent": "This file is not part of the team knowledge base."
   },
   "knowledgeConflict": {
