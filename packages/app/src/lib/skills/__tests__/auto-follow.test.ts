@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest'
 import {
   planReconcile,
   planVersionWriteback,
+  retiredSlugs,
   type DesiredSkill,
   type OnDiskSkill,
 } from '../auto-follow'
@@ -220,5 +221,45 @@ describe('planVersionWriteback', () => {
       [pack('triage', '9')],
     )
     expect(out).toEqual([])
+  })
+})
+
+describe('retiredSlugs', () => {
+  test('a pack whose registry row is gone is a deletion', () => {
+    expect(retiredSlugs([], [pack('deploy-check', '3')], TEAM)).toEqual(['deploy-check'])
+  })
+
+  test('an uninstalled skill is not a deletion — the row is still there', () => {
+    // The distinction the whole notice rests on. Both end up in `plan.remove`,
+    // but only one of them happened on somebody else's machine.
+    expect(
+      retiredSlugs(
+        [skill({ slug: 'deploy-check', installed: false })],
+        [pack('deploy-check', '3')],
+        TEAM,
+      ),
+    ).toEqual([])
+  })
+
+  test('a skill still installed is obviously not a deletion', () => {
+    expect(
+      retiredSlugs([skill({ slug: 'deploy-check' })], [pack('deploy-check', '1')], TEAM),
+    ).toEqual([])
+  })
+
+  test('another team\'s pack, and an unattributed one, are never reported', () => {
+    // Same rule `planReconcile` removal follows: neither can be blamed on this
+    // team deleting anything, and neither is ours to touch.
+    expect(
+      retiredSlugs(
+        [],
+        [pack('theirs', '1', 'team-b'), pack('ancient', '1', null)],
+        TEAM,
+      ),
+    ).toEqual([])
+  })
+
+  test('nothing on disk, nothing to report', () => {
+    expect(retiredSlugs([skill({ slug: 'deploy-check' })], [], TEAM)).toEqual([])
   })
 })

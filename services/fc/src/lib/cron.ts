@@ -15,6 +15,7 @@ import {
   amuxcFileVersions,
   amuxcFiles,
 } from "../db/schema/oss-sync.js";
+import { teamSkills, teamSkillVersions } from "../db/schema/team-skills.js";
 import { getTeamBlobStorage, type BlobStorage } from "./team-blob-storage.js";
 
 /** What the cron tasks need injected; everything defaults to the real thing. */
@@ -104,6 +105,11 @@ export async function ossSyncAbandonExpiredSessions(
 // registry, so "garbage collection" meant forgetting where the garbage was:
 // every collected blob left its object behind with nothing left pointing at it.
 //
+// It is no longer a faithful mirror in one other way: the original predicate
+// knew only about `amuxc_file_versions`, which was true when it was written and
+// stopped being true when the skills registry started keeping its packages in
+// the same table. See `orphanBlobPredicate`.
+//
 // Order is deliberate. The row goes first, the object second:
 //
 //   * row deleted, object delete fails  → a leaked object. Exactly the old
@@ -134,7 +140,32 @@ export async function ossSyncAbandonExpiredSessions(
 /** Blobs collected per run. ~30ms/delete against OSS leaves room in 30s. */
 const GC_BATCH_LIMIT = 500;
 
-/** `created_at` older than 7 days and no file version pointing at the hash. */
+/**
+ * `created_at` older than 7 days and nothing left pointing at the hash.
+ *
+ * TWO reference tables, not one. `amuxc_blobs` predates the skills registry, so
+ * it reads as the OSS-sync file store — but `prepareTeamSkillBlob` writes skill
+ * packages into the same table (they share the content-addressed key layout,
+ * and the table is the dedup ledger). Their only referent is
+ * `team_skill_versions.content_hash`, which the file-versions branch below
+ * cannot see: to it, every skill package in the table is an orphan.
+ *
+ * Left that way, every team skill's package row was collectible 7 days after
+ * publish. Losing the row alone breaks installs — `getTeamSkillDownload`
+ * left-joins `amuxc_blobs` for the object key and answers 409 `blob_missing`
+ * when it is absent, whether or not the bytes survived. It has not fired in
+ * production because the compose `cron` service is opt-in and nobody enabled
+ * it; that is a deployment accident, not a defence.
+ *
+ * Marketplace packages need no branch here: they are deliberately absent from
+ * `amuxc_blobs` (see `isTeamScopedSkillObjectPath`), so a collector that walks
+ * this table never reaches them.
+ *
+ * The skills branch matches on hash alone, without filtering `blob_scope`. A
+ * marketplace-scope version whose bytes happen to hash the same as a team blob
+ * then keeps that blob alive — which is the safe direction for a collector to
+ * err in.
+ */
 function orphanBlobPredicate(db: Db) {
   return and(
     lt(amuxcBlobs.createdAt, sql`now() - interval '7 days'`),
@@ -147,6 +178,18 @@ function orphanBlobPredicate(db: Db) {
           and(
             eq(amuxcFiles.teamId, amuxcBlobs.teamId),
             eq(amuxcFileVersions.contentHash, amuxcBlobs.contentHash)
+          )
+        )
+    ),
+    notExists(
+      db
+        .select({ one: sql`1` })
+        .from(teamSkillVersions)
+        .innerJoin(teamSkills, eq(teamSkills.id, teamSkillVersions.skillId))
+        .where(
+          and(
+            eq(teamSkills.teamId, amuxcBlobs.teamId),
+            eq(teamSkillVersions.contentHash, amuxcBlobs.contentHash)
           )
         )
     )

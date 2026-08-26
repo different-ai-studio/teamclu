@@ -12,6 +12,7 @@ import { ensureAgentsSkillsPaths } from '@/lib/skills/ensure-agents-paths'
 import {
   planReconcile,
   planVersionWriteback,
+  retiredSlugs,
   type OnDiskSkill,
   type SkillLocalState,
 } from '@/lib/skills/auto-follow'
@@ -25,6 +26,17 @@ import {
   teamShareSectionForTarget,
   type TeamShareTarget,
 } from '@/lib/tabs/teamshare-target'
+
+/**
+ * Slugs this client just deleted from the registry, awaiting the reconcile that
+ * clears them off disk.
+ *
+ * The reconcile cannot tell "the team deleted this" from "*I* deleted this" —
+ * both look like a pack whose registry row is gone — and the deleter has
+ * already been told. Consumed on the first tick that sees the slug, so a stale
+ * entry cannot silence a real deletion later.
+ */
+const selfDeleted = new Set<string>()
 
 function closeTeamShareTabs(match: (target: string) => boolean): void {
   const { tabs, closeTab } = useTabsStore.getState()
@@ -148,6 +160,9 @@ export type TeamSkillKind = 'team-available' | 'team-installed' | 'personal'
 
 export type TeamMcpKind = 'team-available' | 'team-installed' | 'personal' | 'builtin'
 
+/** What became of a local pack when the team deleted the skill. */
+export type SkillRetirement = 'removed' | 'kept'
+
 /**
  * A row in the unified skills list.
  *
@@ -268,6 +283,18 @@ interface TeamShareBrowserState {
   uninstallSkill: (slug: string) => Promise<void>
   /** Remove a personal skill directory from disk (not a team-registry delete). */
   deletePersonalSkill: (slug: string) => Promise<void>
+  /**
+   * Delete a skill from the team registry — for the whole team, not just here.
+   *
+   * Deliberately ungated: any member can delete, the same way any member can
+   * publish, patch and revert (see the pg-repo header). The registry is team
+   * property; `ownerActorId` answers "who is responsible", not "who may write".
+   *
+   * Every member's next auto-follow tick sees the row gone and uninstalls the
+   * pack, so this reaches other machines on its own — a pack with local edits
+   * is held back as `blocked` there, as with any other removal.
+   */
+  deleteTeamSkill: (slug: string) => Promise<void>
   /** Install a team MCP server for yourself — there is no install-for-others. */
   installMcp: (name: string) => Promise<void>
   uninstallMcp: (name: string) => Promise<void>
@@ -309,6 +336,17 @@ interface TeamShareBrowserState {
    * path. Offered back to the user under a new name; see `keepArchivedCopy`.
    */
   skillArchived: Record<string, string>
+  /**
+   * Skills the team deleted out from under this machine, by slug.
+   *
+   * `removed` — the pack was uninstalled here; the row is gone from the list,
+   * so a toast is the only place left to say why.
+   * `kept` — the pack had local edits, so auto-follow left it alone. It stays
+   * on disk and now reads as a personal skill, which needs explaining where it
+   * still shows: the detail pane.
+   */
+  skillRetired: Record<string, SkillRetirement>
+  dismissRetired: (slug: string) => void
   /** Restore an archived directory under `newSlug`, keeping the team pack. */
   keepArchivedCopy: (slug: string, newSlug: string) => Promise<void>
   dismissArchived: (slug: string) => void
@@ -978,6 +1016,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   skillLocalState: {},
   skillSyncErrors: {},
   skillArchived: {},
+  skillRetired: {},
 
   counts: () => {
     const s = get()
@@ -1136,6 +1175,27 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       itemId: skill.id.startsWith('personal:') ? skill.id : `personal:${skill.slug}`,
       timeoutMs: AGENT_MUTATION_TIMEOUT_MS,
     })
+
+    closeSkillTabs(slug)
+    await get().loadSection('skills', { force: true })
+    window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
+  },
+
+  deleteTeamSkill: async (slug) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    const skill = get().skills.items.find((s) => s.origin === 'registry' && s.slug === slug)
+    if (!skill) throw new Error(`${slug} is not a team skill`)
+
+    await getBackend().teamSkills.deleteTeamSkill(teamId, slug)
+    selfDeleted.add(slug)
+
+    // The registry row is what auto-follow reconciles against, so removing it
+    // is the whole delete: this tick takes the pack off this machine, and every
+    // other member's next tick does the same for theirs. Failures here are the
+    // reconcile's to retry — the delete itself already happened, and reporting
+    // it as failed would invite a second delete of a skill that is gone.
+    await get().reconcileSkills().catch(() => {})
 
     closeSkillTabs(slug)
     await get().loadSection('skills', { force: true })
@@ -1478,6 +1538,13 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     await get().loadSection('skills', { force: true })
   },
 
+  dismissRetired: (slug) =>
+    set((s) => {
+      const next = { ...s.skillRetired }
+      delete next[slug]
+      return { skillRetired: next }
+    }),
+
   dismissArchived: (slug) =>
     set((s) => {
       const next = { ...s.skillArchived }
@@ -1591,6 +1658,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       }
     }
 
+    const uninstalled = new Set<string>()
     for (const slug of plan.remove) {
       try {
         await invoke('team_skill_uninstall', {
@@ -1598,10 +1666,30 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
           slug,
           isGlobal: true,
         })
+        uninstalled.add(slug)
         delete states[slug]
         delete errors[slug]
       } catch {
         // Retried next tick.
+      }
+    }
+
+    // Which of those removals were the team deleting a skill, rather than this
+    // member uninstalling one. Recorded per slug so the UI can say what became
+    // of the pack — otherwise a skill somebody else deleted simply stops
+    // existing here, with the row first re-labelling itself "personal" (the
+    // agent inventory reports any unclaimed directory that way) and then
+    // vanishing on this tick.
+    const retired = { ...get().skillRetired }
+    for (const slug of retiredSlugs(desired, onDisk, teamId)) {
+      // Whoever pressed delete already got told. They still hear about `kept`:
+      // that one is about *their* edited copy surviving, which the delete
+      // confirmation does not cover.
+      const bySelf = selfDeleted.delete(slug)
+      if (uninstalled.has(slug)) {
+        if (!bySelf) retired[slug] = 'removed'
+      } else if (blocked.has(slug)) {
+        retired[slug] = 'kept'
       }
     }
 
@@ -1625,7 +1713,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       }
     }
 
-    set({ skillSyncErrors: errors, skillArchived: archived })
+    set({ skillSyncErrors: errors, skillArchived: archived, skillRetired: retired })
 
     set({ skillLocalState: states })
   },
@@ -1829,5 +1917,15 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     ])
   },
 }))
+
+// A retirement notice names a slug, and slugs are unique per team, not globally.
+// Carrying one across a team switch would announce team A's deletion while the
+// user is looking at team B — and, if B happens to have the same slug, hang the
+// explanation on a skill nobody deleted.
+useCurrentTeamStore.subscribe((state, prev) => {
+  if (state.team?.id !== prev.team?.id) {
+    useTeamShareBrowserStore.setState({ skillRetired: {} })
+  }
+})
 
 export type { TeamEnvListing }

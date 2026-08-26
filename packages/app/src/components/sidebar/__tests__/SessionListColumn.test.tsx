@@ -63,7 +63,7 @@ const currentTeamState = {
 vi.mock('@/stores/current-team', () => ({
   useCurrentTeamStore: Object.assign(
     (selector: (s: typeof currentTeamState) => unknown) => selector(currentTeamState),
-    { getState: () => currentTeamState },
+    { getState: () => currentTeamState, subscribe: () => () => {} },
   ),
 }))
 

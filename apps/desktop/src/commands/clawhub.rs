@@ -402,6 +402,47 @@ pub(crate) fn set_skill_permission_ask(workspace_path: &str, slug: &str) {
     }
 }
 
+/// Drop a skill's `permission.skill` entry when its pack leaves the machine.
+///
+/// The entry is a decision about *content*, keyed by slug — and a slug is
+/// reusable. Delete a team skill, publish a different one under the same name,
+/// and the old decision silently governs the new code: `set_skill_permission_ask`
+/// only ever inserts when the key is absent, so the reinstall does not reset it
+/// to `ask`. Nothing else removed it, so the entry outlived every pack it was
+/// ever about.
+///
+/// The cost is that uninstalling and reinstalling the *same* skill also forgets
+/// the decision and asks once more. That is the direction to err in: the
+/// alternative silently grants a skill an approval that was granted to
+/// different code.
+///
+/// Written back only when something actually changed. The daemon watches this
+/// file and a permission write means "restart the runtime", so a no-op rewrite
+/// on every background reconcile tick would churn the agent for nothing.
+pub(crate) fn clear_skill_permission(workspace_path: &str, slug: &str) {
+    let config_path = PathBuf::from(workspace_path).join("opencode.json");
+    let Ok(content) = std::fs::read_to_string(&config_path) else {
+        return;
+    };
+    let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+
+    let removed = json
+        .get_mut("permission")
+        .and_then(|p| p.get_mut("skill"))
+        .and_then(|s| s.as_object_mut())
+        .map(|skills| skills.remove(slug).is_some())
+        .unwrap_or(false);
+    if !removed {
+        return;
+    }
+
+    if let Ok(out) = serde_json::to_string_pretty(&json) {
+        let _ = std::fs::write(&config_path, format!("{}\n", out));
+    }
+}
+
 // ─── Tauri Commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
