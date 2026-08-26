@@ -68,7 +68,7 @@ loses days here. We do not: see §1.
 | Device auth | Device secret in NVS → `/v1/devices/token` → short-lived MQTT JWT | A static token cannot work (§8.1) |
 | Topic scope | Device-scoped `.../voice/{mic,spk,ctl}`, intent in payload | Device can't subscribe to a session that doesn't exist yet |
 | UI | 10 screens, geometric face; **no transcript except the notes list** | Per the design canvas (§5) |
-| Latency tier | ~600–1100 ms PTT-release→first-audio, **unmeasured** | Still the core untested bet (§9) |
+| Latency tier | **3291 ms measured** PTT-release→first-audio (2026-08-26) | Bet settled: the threshold assumed an always-listening product, and PTT supplies the boundary instead (§9) |
 
 ## 2. The reference project changes the shape of this work
 
@@ -480,7 +480,44 @@ Because the credential is minted per team (§13.9), per-team attribution is
 available if it is ever needed — the same place LiteLLM already does it for
 LLM spend.
 
-## 9. Latency budget — still a bet
+## 9. Latency budget — MEASURED 2026-08-26, and the threshold was wrong
+
+**Resolved.** The estimates below were roughly right in shape and wrong in
+total, and the abort criterion they carried has been retired rather than met.
+
+Measured on hardware, PTT-release → first audio:
+
+```
+turn_end ─── 658 ms ──→ ctl session ─── 2633 ms ──→ first audio
+                                                     3291 ms total
+```
+
+That is past the "~1500 ms → revisit the product thesis" line below, by more
+than double. The revisit happened, and the conclusion is that the line was
+calibrated for the wrong interaction model.
+
+**Push-to-talk supplies the boundary that latency was standing in for.** A
+device that listens continuously has to answer fast or it feels dead, because
+nothing tells the user their turn ended. Here the user releases a button — an
+explicit "I am done" — and the face switches to Thinking on the same event.
+Waiting two or three seconds for an answer you deliberately asked for is
+ordinary; it is what every chat client does. The threshold assumed an
+always-listening product this one is not.
+
+So the bet is settled, not still open. What follows is kept for the per-hop
+shape, which remains useful, but no number here gates further work.
+
+One consequence worth stating: the 2633 ms is dominated by agent thinking and
+the vendor's first synthesis chunk, not by anything in the transport. Efforts
+aimed at the transport — prebuffer size, encoder settings, MQTT QoS — cannot
+move it meaningfully, and the 200 ms prebuffer defended below is not worth
+trading away for 6% of a figure nobody is waiting on. Related: the Cloud API
+write that §6.2 of the channel-migration design once treated as a blocker
+measures ~30 ms, or 0.9% of this.
+
+---
+
+### The original estimates (kept for shape)
 
 | Hop | Estimate |
 |---|---|
@@ -491,9 +528,13 @@ LLM spend.
 | amuxd → EMQX → device (incl. 200 ms prebuffer) | ~200–300 ms |
 | **PTT-release → first audio** | **~700–1400 ms** |
 
-Every figure is an estimate; none has been measured. P0-4 measures it with the
+~~Every figure is an estimate; none has been measured. P0-4 measures it with the
 fake device, no hardware involved. **If the real number lands past ~1500 ms the
-product thesis needs revisiting before more firmware is written.**
+product thesis needs revisiting before more firmware is written.**~~
+
+Struck through, not deleted: this tripwire was crossed, and a crossed tripwire
+that quietly stays on the page is worse than no tripwire. See the header above
+for what replaced it.
 
 Two notes. The vendor hops are back after §13.9 withdrew self-hosting, but a
 hosted GPU almost certainly beats laptop CPU inference by more than the WAN hop
