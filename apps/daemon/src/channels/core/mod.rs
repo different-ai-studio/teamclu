@@ -152,6 +152,9 @@ pub enum Outcome {
     },
     Handled {
         session_id: String,
+        /// Agent runtime session id — what [`AgentHandle::cancel`] / `send_prompt`
+        /// address. Distinct from the cloud `session_id` row.
+        acp_session_id: String,
         /// How many times the channel was asked to render. One for a channel
         /// that cannot edit; more when it streams.
         deliveries: usize,
@@ -317,6 +320,7 @@ impl Core {
 
         Ok(Outcome::Handled {
             session_id: session.session_id,
+            acp_session_id: session.acp_session_id,
             deliveries: result?,
         })
     }

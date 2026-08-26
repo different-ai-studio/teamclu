@@ -38,9 +38,16 @@ impl CoreSink {
         match core.handle(driver.as_ref(), msg).await {
             Ok(Outcome::Handled {
                 session_id,
+                acp_session_id,
                 deliveries,
             }) => {
-                tracing::info!(channel, session_id, deliveries, "gateway: turn complete");
+                tracing::info!(
+                    channel,
+                    session_id,
+                    acp_session_id,
+                    deliveries,
+                    "gateway: turn complete"
+                );
             }
             Ok(other) => {
                 tracing::debug!(channel, external_id, ?other, "gateway: message not a turn");
@@ -158,10 +165,18 @@ impl crate::voice::InboundTurnRunner for CoreTurnRunner {
         msg: InboundMessage,
     ) -> Result<crate::voice::TurnOutcome, String> {
         match self.core.handle(driver, msg).await {
-            Ok(Outcome::Handled { session_id, .. }) => Ok(crate::voice::TurnOutcome {
+            Ok(Outcome::Handled {
+                session_id,
+                acp_session_id,
+                ..
+            }) => Ok(crate::voice::TurnOutcome {
                 session_id: Some(session_id),
+                acp_session_id: Some(acp_session_id),
             }),
-            Ok(_) => Ok(crate::voice::TurnOutcome { session_id: None }),
+            Ok(_) => Ok(crate::voice::TurnOutcome {
+                session_id: None,
+                acp_session_id: None,
+            }),
             Err(e) => Err(e.to_string()),
         }
     }
