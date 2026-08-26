@@ -90,6 +90,8 @@ pub fn inject_remote_context(prompt: &str, remote_context_id: &str) -> String {
 }
 
 pub fn remote_context_instructions(remote_context_id: &str) -> String {
+    // Used by `prepare_remote_tool_context_for_turn` when per-turn injection is
+    // re-enabled (see daemon/server/remote_tools.rs).
     if remote_context_id.is_empty() {
         return String::new();
     }

@@ -31,6 +31,21 @@ impl DaemonServer {
         teamclu_session_id: &str,
         requester_actor_id: &str,
     ) {
+        // ── Remote-tool per-turn prompt injection (PAUSED) ─────────────────
+        // Host-level `amuxd-remote-tools` MCP auto-inject is already off
+        // (`runtime/supervisor.rs`). This hook still ran on every @mention /
+        // RPC prompt and prefixed user text with `remote_context_instructions`
+        // (rtctx_* + amuxd-remote-tools routing hints via
+        // `RuntimeHandle::next_prompt_context` → `send_prompt_with_requester`).
+        //
+        // To restore end-to-end remote tools:
+        // 1. Re-enable MCP baseline in `supervisor.rs` (strip/remove pause).
+        // 2. Uncomment the block below.
+        // 3. See `docs/remote-tools.md`.
+        let _ = (runtime_id, teamclu_session_id, requester_actor_id);
+        return;
+
+        /*
         let (acp_session_id, worktree) = {
             let agents = self.agents.lock().await;
             agents
@@ -57,6 +72,7 @@ impl DaemonServer {
             }
             None => {}
         }
+        */
     }
 
     pub(crate) async fn spawn_remote_tool_sock_handler(
