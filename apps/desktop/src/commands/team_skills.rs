@@ -26,8 +26,9 @@ use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use super::clawhub::{
-    extract_zip_to_dir, global_skills_dir, now_millis, read_lockfile, set_skill_permission_ask,
-    skills_dir, validate_slug, write_lockfile, LockfileEntry, SOURCE_TEAM,
+    clear_skill_permission, extract_zip_to_dir, global_skills_dir, now_millis, read_lockfile,
+    set_skill_permission_ask, skills_dir, validate_slug, write_lockfile, LockfileEntry,
+    SOURCE_TEAM,
 };
 
 /// Cloud API / SGW-facing client — mirrors `oss_sync::fc_client::FcClient`.
@@ -581,6 +582,15 @@ pub fn team_skill_uninstall(
         let mut lock = read_lockfile(ws);
         lock.skills.remove(&slug);
         write_lockfile(ws, &lock)?;
+        // The permission entry is keyed by slug, and slugs get reused: a team
+        // can delete a skill and publish different content under the same name.
+        // Left behind, the old decision governs the new pack — `install` only
+        // writes `ask` when the key is absent, so nothing resets it.
+        //
+        // Same workspace-shaped limitation as the lockfile above, for the same
+        // reason: packs are global, both of these are per-workspace, and this
+        // command is handed one path. Other workspaces keep their entry.
+        clear_skill_permission(ws, &slug);
     }
 
     Ok(format!("Uninstalled {}", slug))
@@ -1317,6 +1327,102 @@ mod tests {
             force: false,
             archive_unmanaged: false,
         }
+    }
+
+    /// A workspace `opencode.json` carrying a decision about `deploy-check`.
+    fn workspace_with_permission(value: &str) -> tempfile::TempDir {
+        let ws = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            ws.path().join("opencode.json"),
+            serde_json::json!({
+                "permission": { "bash": "ask", "skill": { "deploy-check": value, "other": "allow" } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        ws
+    }
+
+    fn skill_permissions(ws: &std::path::Path) -> serde_json::Value {
+        let raw = std::fs::read_to_string(ws.join("opencode.json")).unwrap();
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap()["permission"]["skill"].clone()
+    }
+
+    /// The whole reason this fix exists: a slug is reusable, so an approval that
+    /// outlives its pack ends up governing whatever content claims the name next.
+    #[test]
+    fn uninstall_forgets_the_skills_permission() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_home::HomeGuard::set(home.path());
+        let ws = workspace_with_permission("allow");
+        std::fs::create_dir_all(global_skills_dir().unwrap().join("deploy-check")).unwrap();
+
+        team_skill_uninstall(
+            Some(ws.path().display().to_string()),
+            "deploy-check".into(),
+            Some(true),
+        )
+        .expect("uninstall");
+
+        let skills = skill_permissions(ws.path());
+        assert!(skills.get("deploy-check").is_none(), "the entry must go");
+        // Only this skill's. The map is shared with every other skill in the
+        // workspace, and with the non-skill defaults beside it.
+        assert_eq!(skills["other"], "allow");
+        let raw = std::fs::read_to_string(ws.path().join("opencode.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(json["permission"]["bash"], "ask");
+    }
+
+    /// The daemon watches this file and treats a permission write as "restart
+    /// the runtime". Uninstall runs unattended on every reconcile tick, so a
+    /// no-op rewrite would churn the agent for nothing.
+    #[test]
+    fn uninstall_leaves_the_config_untouched_when_there_is_no_entry() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_home::HomeGuard::set(home.path());
+        let ws = tempfile::tempdir().expect("tempdir");
+        let config = ws.path().join("opencode.json");
+        std::fs::write(
+            &config,
+            "{\"permission\":{\"skill\":{\"other\":\"allow\"}}}",
+        )
+        .unwrap();
+        let before = std::fs::read_to_string(&config).unwrap();
+
+        team_skill_uninstall(
+            Some(ws.path().display().to_string()),
+            "deploy-check".into(),
+            Some(true),
+        )
+        .expect("uninstall");
+
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+    }
+
+    /// No config, or one that is not JSON, is a normal state — the reconcile
+    /// calls this unattended and must not fail the removal over it.
+    #[test]
+    fn uninstall_survives_a_missing_or_unparseable_config() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_home::HomeGuard::set(home.path());
+
+        let bare = tempfile::tempdir().expect("tempdir");
+        team_skill_uninstall(
+            Some(bare.path().display().to_string()),
+            "deploy-check".into(),
+            Some(true),
+        )
+        .expect("uninstall with no config");
+
+        let broken = tempfile::tempdir().expect("tempdir");
+        std::fs::write(broken.path().join("opencode.json"), "{not json").unwrap();
+        team_skill_uninstall(
+            Some(broken.path().display().to_string()),
+            "deploy-check".into(),
+            Some(true),
+        )
+        .expect("uninstall with broken config");
     }
 
     #[test]
