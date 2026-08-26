@@ -37,7 +37,26 @@ def clone_or_update_repo(
             subprocess.run(["git", "-C", path, "apply", patch_full_path], check=True)
             print(f"Applied patch {patch_path} to {path}")
         else:
-            print(f"Patch {patch_path} cannot be applied cleanly to {path}, skipped.")
+            # Fail, do not skip.
+            #
+            # Skipping produced a build that looks entirely healthy and is
+            # missing half a feature: when the esp-wifi-connect patch stopped
+            # applying, the provisioning portal lost its pairing-code field, the
+            # firmware shipped without it, and the only trace was one line of
+            # output above a successful `idf.py build`. Pairing then failed on
+            # hardware with "pairing code missing" — a symptom two layers away
+            # from the cause.
+            #
+            # A patch that no longer applies means upstream moved. That needs a
+            # person to look, not a warning nobody reads.
+            raise SystemExit(
+                f"ERROR: patch {patch_path} no longer applies to {path}.\n"
+                f"       Upstream has moved. Regenerate the patch against the "
+                f"current checkout — do not build without it, the result will "
+                f"be silently missing whatever the patch adds.\n"
+                f"       Diagnose with: git -C {path} apply --check -v "
+                f"{patch_full_path}"
+            )
 
 
 def fetch_dependencies():

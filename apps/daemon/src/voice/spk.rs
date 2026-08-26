@@ -163,7 +163,7 @@ const MAKEUP_GAIN: f32 = 2.0;
 
 /// Below this the transfer is exactly linear, so ordinary speech is amplified
 /// and nothing else.
-const KNEE: f32 = 0.6;
+pub(crate) const KNEE: f32 = 0.6;
 
 /// Asymptotic ceiling. Deliberately short of 1.0: Opus is lossy, and a decoded
 /// sample can exceed the peak that went in — measured at +0.3 dB on this very
@@ -178,7 +178,7 @@ const CEILING: f32 = 0.92;
 /// buzz. `tanh` above the knee compresses peaks smoothly and asymptotically —
 /// no input, however loud, reaches the ceiling — so what is lost is a little
 /// dynamic range at the top rather than the shape of the waveform.
-fn limit(sample: i16) -> i16 {
+pub(crate) fn limit(sample: i16) -> i16 {
     let x = sample as f32 / 32768.0 * MAKEUP_GAIN;
     let mag = x.abs();
     let y = if mag <= KNEE {

@@ -514,6 +514,67 @@ mod live {
     }
 
     #[tokio::test]
+    #[ignore = "measurement: spends vendor quota; needs TEAMCLU_VOICE_*"]
+    async fn measures_what_the_limiter_does_to_real_speech() {
+        // "It sounds bad" has two candidate causes and only one of them needs
+        // hardware. This is the other: `spk::limit` adds 6 dB and bends the top
+        // with tanh, and on a small speaker that shaping could be the problem
+        // rather than the fix. Measured against the same sentence, before and
+        // after.
+        let Some(creds) = from_env_or_skip() else {
+            eprintln!("no TEAMCLU_VOICE_* in env; skipping");
+            return;
+        };
+        let p = AliyunTtsProvider::new(creds).with_config(AliyunTtsConfig::default());
+        let stream = p.speak().await.expect("stream opens");
+        stream
+            .text_tx
+            .send("今天天气不错，我们出去走走吧。".to_string())
+            .await
+            .expect("send");
+        drop(stream.text_tx);
+        let mut pcm: Vec<i16> = Vec::new();
+        let mut rx = stream.audio_rx;
+        while let Some(c) = rx.recv().await {
+            pcm.extend_from_slice(&c.samples);
+        }
+
+        let stats = |v: &[i16]| {
+            let peak = v.iter().map(|&s| (s as i32).abs()).max().unwrap_or(0);
+            let rms = (v.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>()
+                / v.len().max(1) as f64)
+                .sqrt();
+            // How much of the signal the soft knee is actually bending. A large
+            // share means most of the waveform is being reshaped, not just its
+            // peaks — which is what would make speech sound wrong rather than
+            // loud.
+            (peak, rms)
+        };
+        let (p0, r0) = stats(&pcm);
+        let shaped: Vec<i16> = pcm.iter().map(|&s| crate::voice::spk::limit(s)).collect();
+        let (p1, r1) = stats(&shaped);
+        let knee = (crate::voice::spk::KNEE * 32768.0 / 2.0) as i32; // pre-gain input level
+        let above = pcm.iter().filter(|&&s| (s as i32).abs() > knee).count();
+
+        eprintln!(
+            "before: peak={p0:5} ({:.1}% FS) rms={r0:6.0} ({:.1}% FS)",
+            p0 as f64 / 327.68,
+            r0 / 327.68
+        );
+        eprintln!(
+            "after : peak={p1:5} ({:.1}% FS) rms={r1:6.0} ({:.1}% FS)  gain={:.1} dB",
+            p1 as f64 / 327.68,
+            r1 / 327.68,
+            20.0 * (r1 / r0.max(1.0)).log10()
+        );
+        eprintln!(
+            "samples pushed past the knee: {above} of {} ({:.1}%)",
+            pcm.len(),
+            above as f64 * 100.0 / pcm.len() as f64
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "needs TEAMCLU_VOICE_APPKEY + TEAMCLU_VOICE_TOKEN"]
     async fn synthesises_real_16k_pcm() {
         let Some(creds) = from_env_or_skip() else {
