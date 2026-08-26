@@ -17,6 +17,8 @@ import {
   amuxcFiles,
 } from "../src/db/schema/oss-sync.js";
 import { teams, actors, members, teamMembers, teamWorkspaceConfig } from "../src/db/schema/index.js";
+import { teamSkills, teamSkillVersions } from "../src/db/schema/team-skills.js";
+import { eq } from "drizzle-orm";
 import type { BlobStorage } from "../src/lib/team-blob-storage.js";
 import { handler } from "../src/index.js";
 
@@ -285,6 +287,113 @@ test("ossSyncGcOrphanBlobs: orphan blob >7d → deleted; referenced blob → kep
     ["recent-orphan-key", "ref-key"],
     "only the collected blob's object should be gone",
   );
+});
+
+test("ossSyncGcOrphanBlobs: a skill package is a reference, not an orphan", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const actor = await seedActor(db, team.id);
+
+  // A published skill package: in `amuxc_blobs` like any other blob, but its
+  // only referent is `team_skill_versions` — no file, no file version. The
+  // file-versions branch alone reads this as garbage.
+  const skillHash = "skill-pkg-hash";
+  await db.insert(amuxcBlobs).values({
+    teamId: team.id,
+    contentHash: skillHash,
+    ossKey: `teams/${team.id}/blobs/sha256/sk/il/${skillHash}`,
+    size: 100,
+    verified: true,
+    createdAt: ago(30 * 24 * 3_600_000),
+  });
+
+  const [skill] = await db
+    .insert(teamSkills)
+    .values({
+      teamId: team.id,
+      slug: "deploy-check",
+      ownerActorId: actor.id,
+      summary: "s",
+      category: "devops",
+      whenToUse: "w",
+      whenNotToUse: "n",
+      latestVersion: 1,
+      createdBy: actor.id,
+    })
+    .returning();
+
+  await db.insert(teamSkillVersions).values({
+    skillId: skill.id,
+    version: 1,
+    contentHash: skillHash,
+    size: 100,
+    changelog: "first",
+    summary: "s",
+    whenToUse: "w",
+    whenNotToUse: "n",
+    createdBy: actor.id,
+  });
+
+  const objects = new Set([`teams/${team.id}/blobs/sha256/sk/il/${skillHash}`]);
+  const result = await ossSyncGcOrphanBlobs(db, { storage: makeMockStorage(objects) });
+
+  assert.equal(result.deleted, 0, "a live skill package must not be collected");
+  assert.equal(objects.size, 1, "and its bytes must stay");
+  const remaining: any[] = await db.select().from(amuxcBlobs);
+  assert.deepEqual(remaining.map((r: any) => r.contentHash), [skillHash]);
+});
+
+test("ossSyncGcOrphanBlobs: deleting the skill releases its package", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const actor = await seedActor(db, team.id);
+
+  const skillHash = "retired-skill-hash";
+  await db.insert(amuxcBlobs).values({
+    teamId: team.id,
+    contentHash: skillHash,
+    ossKey: "retired-skill-key",
+    size: 100,
+    verified: true,
+    createdAt: ago(30 * 24 * 3_600_000),
+  });
+
+  const [skill] = await db
+    .insert(teamSkills)
+    .values({
+      teamId: team.id,
+      slug: "retired",
+      ownerActorId: actor.id,
+      summary: "s",
+      category: "devops",
+      whenToUse: "w",
+      whenNotToUse: "n",
+      latestVersion: 1,
+      createdBy: actor.id,
+    })
+    .returning();
+  await db.insert(teamSkillVersions).values({
+    skillId: skill.id,
+    version: 1,
+    contentHash: skillHash,
+    size: 100,
+    changelog: "first",
+    summary: "s",
+    whenToUse: "w",
+    whenNotToUse: "n",
+    createdBy: actor.id,
+  });
+
+  // The other half of the rule: protection is held by the version rows, so a
+  // registry delete (which cascades them away) hands the bytes back to the
+  // collector. Without this the fix above would just leak instead.
+  await db.delete(teamSkills).where(eq(teamSkills.id, skill.id));
+
+  const objects = new Set(["retired-skill-key"]);
+  const result = await ossSyncGcOrphanBlobs(db, { storage: makeMockStorage(objects) });
+
+  assert.equal(result.deleted, 1);
+  assert.equal(objects.size, 0);
 });
 
 test("ossSyncGcOrphanBlobs: a failed object delete is counted, not thrown", async () => {
