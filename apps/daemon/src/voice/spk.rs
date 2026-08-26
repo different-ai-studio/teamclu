@@ -154,23 +154,46 @@ pub trait ReplySpeaker: Send + Sync {
 /// boundaries, so this buffers across them: encoding whatever arrived as one
 /// packet would produce frames the device's fixed-size decode buffer cannot
 /// take.
-/// Makeup gain applied before the soft knee. Speech from NLS arrives around
-/// -14 dBFS RMS with peaks near full scale — a crest factor of about 14 dB —
-/// so raising the synthesis volume alone runs the peaks into the rail while
-/// the loudness a listener perceives barely moves. That combination is exactly
-/// what a small speaker reported as "quiet, and distorted".
-const MAKEUP_GAIN: f32 = 2.0;
+/// Makeup gain before the soft knee. **1.0 — the limiter no longer boosts.**
+///
+/// It was 2.0, and that was measured wrong. The reasoning was sound (speech has
+/// a ~14 dB crest factor, so synthesis volume buys clipping before loudness)
+/// but the check stopped at the limiter's own output: peak 91.9% of full scale,
+/// comfortably short of the rail. What reaches the speaker is the *decoded*
+/// signal, and Opus overshoots — far more on a signal this dense.
+///
+/// Measured on real speech, through limit → encode(24 kbps) → decode, counting
+/// samples that land on the rail:
+///
+/// | gain | ceiling | railed | of signal | RMS |
+/// |------|---------|--------|-----------|-----|
+/// | none (control) | —    |   160 | 0.19% | 30.9% |
+/// | 1.1  | 0.85    |   282 | 0.34% | 33.3% |
+/// | 1.2  | 0.85    |   521 | 0.63% | 35.5% |
+/// | 2.0  | 0.92    | 3449  | 4.2%  | 46.3% |
+///
+/// 4% of a reply arriving clipped is what the device reported as "很杂很刺耳".
+/// The boost bought 3.5 dB and cost a twentyfold rise in clipped samples.
+///
+/// It also turned out the source needs no help: NLS at volume 85 already
+/// decodes to ~31% RMS, about -10 dBFS, which is hot for speech. Loudness
+/// belongs to the two stages that can raise it without clipping — synthesis
+/// volume, and the device's own output — not to a gain applied to an already
+/// hot signal.
+const MAKEUP_GAIN: f32 = 1.0;
 
 /// Below this the transfer is exactly linear, so ordinary speech is amplified
 /// and nothing else.
 pub(crate) const KNEE: f32 = 0.6;
 
-/// Asymptotic ceiling. Deliberately short of 1.0: Opus is lossy, and a decoded
-/// sample can exceed the peak that went in — measured at +0.3 dB on this very
-/// path. Encoding speech that already touches 0 dBFS makes that overshoot wrap
-/// around int16, which is heard as a crack rather than as volume. This leaves
-/// it somewhere to go.
-const CEILING: f32 = 0.92;
+/// Asymptotic ceiling — a guard, not a loudness control.
+///
+/// The same sweep showed this barely matters: at gain 1.2, dropping it from
+/// 0.85 to 0.65 moved railed samples from 521 to 503. Overshoot tracks the
+/// signal's energy, not its peak, so a lower ceiling shapes more of the
+/// waveform for almost no benefit. 0.85 keeps a little headroom against a
+/// hotter synthesis voice without reshaping ordinary speech.
+const CEILING: f32 = 0.85;
 
 /// Amplify, then bend rather than break.
 ///
@@ -1191,15 +1214,81 @@ mod tests {
     // ---- encoder -------------------------------------------------------
 
     #[test]
-    fn the_limiter_amplifies_speech_and_never_reaches_the_ceiling() {
+    #[ignore = "diagnostic: decodes a captured spk stream named by SPK_RAW"]
+    fn decodes_a_captured_downlink_and_reports_its_shape() {
+        // "It sounds harsh" needs a waveform, not an argument. This reads the
+        // exact frames the device received — captured off MQTT — and decodes
+        // them with the same decoder the firmware uses, so whatever it reports
+        // is what the speaker was asked to reproduce.
+        let Ok(path) = std::env::var("SPK_RAW") else {
+            eprintln!("set SPK_RAW to a captured stream; skipping");
+            return;
+        };
+        let raw = std::fs::read(&path).expect("read capture");
+        let mut dec =
+            audiopus::coder::Decoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono)
+                .expect("decoder");
+
+        let (mut i, mut pcm) = (0usize, Vec::<i16>::new());
+        let mut out = vec![0i16; SPK_FRAME_SAMPLES];
+        let mut frames = 0usize;
+        let mut decode_errors = 0usize;
+        while i + 2 <= raw.len() {
+            let n = u16::from_be_bytes([raw[i], raw[i + 1]]) as usize;
+            i += 2;
+            if i + n > raw.len() {
+                break;
+            }
+            match dec.decode(Some(&raw[i..i + n]), &mut out[..], false) {
+                Ok(got) => pcm.extend_from_slice(&out[..got]),
+                Err(_) => decode_errors += 1,
+            }
+            frames += 1;
+            i += n;
+        }
+
+        let peak = pcm.iter().map(|&s| (s as i32).abs()).max().unwrap_or(0);
+        let rms = (pcm.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>()
+            / pcm.len().max(1) as f64)
+            .sqrt();
+        // Samples within a hair of the rail: what survives of clipping.
+        let railed = pcm.iter().filter(|&&s| (s as i32).abs() >= 32000).count();
+        // Sample-to-sample jumps larger than a third of full scale. Speech does
+        // not do this; a decoder fed a corrupt or interleaved stream does, and
+        // it is heard as a click rather than as a loud note.
+        let jumps = pcm
+            .windows(2)
+            .filter(|w| ((w[1] as i32) - (w[0] as i32)).abs() > 22000)
+            .count();
+
+        eprintln!(
+            "frames={frames} decode_errors={decode_errors} samples={}",
+            pcm.len()
+        );
+        eprintln!(
+            "peak={peak} ({:.1}% FS)  rms={rms:.0} ({:.1}% FS)",
+            peak as f64 / 327.68,
+            rms / 327.68
+        );
+        eprintln!(
+            "at the rail: {railed} ({:.3}%)   large discontinuities: {jumps}",
+            railed as f64 * 100.0 / pcm.len().max(1) as f64
+        );
+    }
+
+    #[test]
+    fn the_limiter_passes_speech_through_and_never_reaches_the_ceiling() {
         // The two properties that matter. Ordinary speech has to get louder,
         // or the limiter is pointless; nothing may reach full scale, or Opus's
         // overshoot wraps and the reply cracks — which is the defect this
         // exists to fix, not a theoretical concern.
+        // Below the knee the transfer is identity. It used to amplify; that
+        // boost was removed after measurement (see `MAKEUP_GAIN`), so what is
+        // pinned now is that ordinary speech passes through untouched.
         let quiet = 3_000i16; // ~-20 dBFS, a typical speech sample
         assert!(
-            limit(quiet) > quiet,
-            "speech below the knee must be amplified: {} -> {}",
+            (limit(quiet) as i32 - quiet as i32).abs() <= 1,
+            "speech below the knee must pass through unchanged: {} -> {}",
             quiet,
             limit(quiet)
         );
@@ -1221,7 +1310,7 @@ mod tests {
     }
 
     #[test]
-    fn the_limiter_raises_rms_without_clipping_a_full_scale_ramp() {
+    fn the_limiter_shapes_a_full_scale_ramp_gently() {
         // A ramp through the whole range: every input the encoder can ever see.
         let input: Vec<i16> = (-32768..=32767).step_by(7).map(|v| v as i16).collect();
         let output: Vec<i16> = input.iter().map(|&s| limit(s)).collect();
@@ -1229,9 +1318,11 @@ mod tests {
         let rms = |v: &[i16]| {
             (v.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / v.len() as f64).sqrt()
         };
+        // No longer "louder" — the boost is gone. What must hold is that the
+        // shaping is gentle: a full-scale ramp keeps most of its energy.
         assert!(
-            rms(&output) > rms(&input),
-            "rms fell: {:.0} -> {:.0}",
+            rms(&output) > rms(&input) * 0.8,
+            "shaping lost too much: {:.0} -> {:.0}",
             rms(&input),
             rms(&output)
         );

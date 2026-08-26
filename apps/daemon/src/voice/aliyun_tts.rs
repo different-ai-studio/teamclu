@@ -575,6 +575,99 @@ mod live {
     }
 
     #[tokio::test]
+    #[ignore = "measurement: spends vendor quota; needs TEAMCLU_VOICE_*"]
+    async fn sweeps_limiter_parameters_through_the_opus_round_trip() {
+        // The number that matters is the peak AFTER decoding, not after
+        // limiting. Choosing 0.92 from a +0.3 dB overshoot measured on
+        // unlimited audio was an extrapolation from the wrong signal: limiting
+        // doubles the energy density, and Opus overshoots a dense signal by far
+        // more. The captured downlink came back at 100.0% of full scale with
+        // 557 samples on the rail — heard as harsh.
+        //
+        // So sweep, and pick a pair whose decoded peak still has room.
+        let Some(creds) = from_env_or_skip() else {
+            eprintln!("no TEAMCLU_VOICE_* in env; skipping");
+            return;
+        };
+        let p = AliyunTtsProvider::new(creds).with_config(AliyunTtsConfig::default());
+        let stream = p.speak().await.expect("stream opens");
+        stream
+            .text_tx
+            .send("你好，今天天气不错，我们下午出去走走吧，顺便把那件事聊一下。".to_string())
+            .await
+            .expect("send");
+        drop(stream.text_tx);
+        let mut src: Vec<i16> = Vec::new();
+        let mut rx = stream.audio_rx;
+        while let Some(c) = rx.recv().await {
+            src.extend_from_slice(&c.samples);
+        }
+        eprintln!("source: {} samples", src.len());
+
+        let shape = |s: i16, gain: f32, knee: f32, ceiling: f32| -> i16 {
+            let x = s as f32 / 32768.0 * gain;
+            let mag = x.abs();
+            let y = if mag <= knee {
+                x
+            } else {
+                let over = (mag - knee) / (ceiling - knee);
+                (knee + (ceiling - knee) * over.tanh()).copysign(x)
+            };
+            (y * 32767.0).round().clamp(-32767.0, 32767.0) as i16
+        };
+
+        // Bitrate matters more than the ceiling, which the first sweep showed
+        // barely moves the decoded peak at all. Low-bitrate Opus rings around
+        // transients, and ringing is exactly what "harsh" sounds like.
+        eprintln!("gain  ceil  kbps | 限幅后峰值  解码后峰值  贴轨样本   RMS");
+        for &(gain, ceiling, kbps) in &[
+            (1.0f32, 99.0f32, 24_000i32), // control: no shaping
+            (1.0, 0.85, 24_000),
+            (1.1, 0.85, 24_000),
+            (1.2, 0.85, 24_000),
+            (1.3, 0.85, 24_000),
+            (1.2, 0.75, 24_000),
+            (1.2, 0.65, 24_000),
+            (2.0, 0.92, 24_000), // shipped, for scale
+        ] {
+            let shaped: Vec<i16> = src.iter().map(|&s| shape(s, gain, 0.6, ceiling)).collect();
+            let pre_peak = shaped.iter().map(|&s| (s as i32).abs()).max().unwrap_or(0);
+
+            let mut enc = crate::voice::spk::SpkEncoder::new(kbps).expect("enc");
+            let mut dec = audiopus::coder::Decoder::new(
+                audiopus::SampleRate::Hz16000,
+                audiopus::Channels::Mono,
+            )
+            .expect("dec");
+            let mut out = vec![0i16; 320];
+            let (mut peak, mut railed, mut sumsq, mut n) = (0i32, 0usize, 0f64, 0usize);
+            for frame in shaped.chunks(320) {
+                for pkt in enc.push(frame) {
+                    if let Ok(got) = dec.decode(Some(&pkt), &mut out[..], false) {
+                        for &d in &out[..got] {
+                            let a = (d as i32).abs();
+                            peak = peak.max(a);
+                            if a >= 32000 {
+                                railed += 1;
+                            }
+                            sumsq += (d as f64) * (d as f64);
+                            n += 1;
+                        }
+                    }
+                }
+            }
+            let rms = (sumsq / n.max(1) as f64).sqrt();
+            eprintln!(
+                "{gain:4.1}  {ceiling:4.2}  {:3} |    {:5.1}%      {:5.1}%     {railed:5}    {:5.1}%",
+                kbps / 1000,
+                pre_peak as f64 / 327.68,
+                peak as f64 / 327.68,
+                rms / 327.68
+            );
+        }
+    }
+
+    #[tokio::test]
     #[ignore = "needs TEAMCLU_VOICE_APPKEY + TEAMCLU_VOICE_TOKEN"]
     async fn synthesises_real_16k_pcm() {
         let Some(creds) = from_env_or_skip() else {
