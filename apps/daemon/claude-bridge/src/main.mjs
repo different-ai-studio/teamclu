@@ -17,6 +17,7 @@
 import readline from 'node:readline'
 import { query, AbortError } from '@anthropic-ai/claude-agent-sdk'
 
+import { mcpServersOption } from './mcp-servers-claude.mjs'
 import { repairTranscript } from './transcript-repair.mjs'
 
 /**
@@ -291,11 +292,6 @@ async function pumpSession(sessionKey, session) {
       pendingPermissions.delete(requestId)
     }
   }
-}
-
-function mcpServersOption(mcpServers) {
-  if (!mcpServers || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) return {}
-  return Object.keys(mcpServers).length > 0 ? { mcpServers } : {}
 }
 
 async function emitSlashCommands(sessionKey, q, fallbackNames = []) {

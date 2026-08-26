@@ -25,29 +25,38 @@ pub fn ensure_claude_team_skills(workspace_path: &Path) -> Result<(), WorkspaceC
         return Ok(());
     }
 
-    let desired = collect_desired_team_skills(&team_roots);
+    let desired = collect_desired_team_skills(&team_roots, &claude_skills);
     let desired_slugs: HashSet<String> = desired.keys().cloned().collect();
 
     for (slug, target) in &desired {
         let link = claude_skills.join(slug);
-        if link.exists() {
-            if link.is_dir() && !is_symlink(&link) {
+        // Never symlink a pack onto itself — happens when `.claude/skills` is
+        // listed in `skills.paths` and a previous prepare already materialized
+        // team packs there.
+        if same_path(&link, target) {
+            continue;
+        }
+        if symlink_points_to(&link, target) {
+            continue;
+        }
+
+        match std::fs::symlink_metadata(&link) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
                 // Workspace-local skill wins over team.
                 continue;
             }
-            if is_symlink(&link) {
-                if symlink_points_to(&link, target) {
-                    continue;
-                }
-                if is_team_managed_symlink(&link, &team_roots) {
+            Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => continue,
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let broken = !link.exists();
+                if is_team_managed_symlink(&link, &team_roots) || (broken && desired_slugs.contains(slug)) {
                     std::fs::remove_file(&link).map_err(io_err)?;
                 } else {
                     // User-owned symlink — do not overwrite.
                     continue;
                 }
-            } else if link.is_file() {
-                continue;
             }
+            Ok(_) => continue,
+            Err(_) => {}
         }
         create_dir_symlink(target, &link)?;
     }
@@ -56,9 +65,18 @@ pub fn ensure_claude_team_skills(workspace_path: &Path) -> Result<(), WorkspaceC
     Ok(())
 }
 
-fn collect_desired_team_skills(team_roots: &[PathBuf]) -> HashMap<String, PathBuf> {
+fn collect_desired_team_skills(
+    team_roots: &[PathBuf],
+    claude_skills: &Path,
+) -> HashMap<String, PathBuf> {
     let mut desired = HashMap::new();
     for root in team_roots {
+        // The bridge writes into `.claude/skills`; treating that tree as a
+        // source would read back the symlinks we just created and try to link
+        // each slug to itself (`EEXIST`, os error 17).
+        if is_bridge_destination_root(root, claude_skills) {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(root) else {
             continue;
         };
@@ -103,6 +121,27 @@ fn prune_stale_team_symlinks(
         }
     }
     Ok(())
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(l), Ok(r)) => l == r,
+        _ => false,
+    }
+}
+
+/// Whether `root` is the bridge destination dir (or inside it).
+fn is_bridge_destination_root(root: &Path, claude_skills: &Path) -> bool {
+    if root == claude_skills {
+        return true;
+    }
+    match (root.canonicalize(), claude_skills.canonicalize()) {
+        (Ok(root), Ok(claude)) => root == claude || root.starts_with(&claude),
+        _ => false,
+    }
 }
 
 fn is_symlink(path: &Path) -> bool {
@@ -276,7 +315,51 @@ mod tests {
         std::fs::write(root_a.join("dup/SKILL.md"), "from-a").unwrap();
         std::fs::write(root_b.join("dup/SKILL.md"), "from-b").unwrap();
 
-        let desired = collect_desired_team_skills(&[root_a.clone(), root_b]);
+        let claude = ws.path().join(".claude/skills");
+        let desired = collect_desired_team_skills(&[root_a.clone(), root_b], &claude);
         assert_eq!(desired.get("dup").unwrap(), &root_a.join("dup"));
+    }
+
+    #[test]
+    fn ignores_claude_skills_tree_as_a_team_root_source() {
+        let (_lock, home, ws, _team_skills) = workspace_with_team_root();
+        let pack_root = home.path().join(".agents/skills");
+        std::fs::create_dir_all(&pack_root).unwrap();
+        write_skill(&pack_root, "market-skill");
+        std::fs::write(
+            ws.path().join("opencode.json"),
+            format!(
+                r#"{{"skills":{{"paths":["{}","{}"]}}}}"#,
+                ws.path().join(".claude/skills").to_string_lossy(),
+                pack_root.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        ensure_claude_team_skills(ws.path()).unwrap();
+        // Second apply is the failure mode: the bridge symlink is visible when
+        // `.claude/skills` is listed in `skills.paths`.
+        ensure_claude_team_skills(ws.path()).unwrap();
+
+        let link = ws.path().join(".claude/skills/market-skill");
+        assert!(is_symlink(&link));
+        assert!(symlink_points_to(&link, &pack_root.join("market-skill")));
+    }
+
+    #[test]
+    fn repairs_broken_team_symlink() {
+        let (_lock, _home, ws, team_skills) = workspace_with_team_root();
+        write_skill(&team_skills, "broken-link");
+        let link = ws.path().join(".claude/skills/broken-link");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(team_skills.join("missing-target"), &link).unwrap();
+            assert!(!link.exists());
+            ensure_claude_team_skills(ws.path()).unwrap();
+            assert!(is_symlink(&link));
+            assert!(link.join("SKILL.md").is_file());
+            assert!(symlink_points_to(&link, &team_skills.join("broken-link")));
+        }
     }
 }
