@@ -149,6 +149,7 @@ pub struct ChannelCaps {
     pub interactive: bool,
     pub threading: Threading,
     /// Hard limit per outbound message; the core splits above it.
+    /// `0` means unlimited / do not split.
     pub max_chars: usize,
     /// How long one turn may take before the queue gives up on it.
     ///

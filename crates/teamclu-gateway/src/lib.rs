@@ -17,6 +17,7 @@ pub mod driver;
 pub mod email;
 pub mod email_config;
 pub mod email_db;
+pub mod esp32;
 pub mod feishu;
 pub mod feishu_config;
 pub mod i18n;
