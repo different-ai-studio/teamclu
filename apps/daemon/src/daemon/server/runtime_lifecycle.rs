@@ -604,17 +604,13 @@ impl DaemonServer {
         }
 
         if !session_id.is_empty() {
-            if let Err(e) = teamclu_runtime_env::write_active_session_id(
-                Path::new(&resolved_worktree),
+            // Phase 2: daemon-managed runtimes resolve session context via the
+            // runtime context registry; do not stamp ambient worktree state.
+            tracing::debug!(
                 session_id,
-            ) {
-                warn!(
-                    session_id,
-                    worktree = %resolved_worktree,
-                    error = %e,
-                    "apply_start_runtime: failed to stamp active session id for MCP introspect"
-                );
-            }
+                worktree = %resolved_worktree,
+                "apply_start_runtime: session context registry owns active session binding"
+            );
         }
 
         if should_bind_remote_target {

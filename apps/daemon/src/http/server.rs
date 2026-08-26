@@ -83,6 +83,7 @@ pub async fn spawn(
     local_rpc_tx: Option<crate::http::state::LocalRpcTx>,
     local_live_ingest_tx: Option<crate::http::state::LocalLiveIngestTx>,
     team_skills: Option<Arc<crate::runtime::team_skills::TeamSkillReconciler>>,
+    runtime_context: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
 ) -> anyhow::Result<HttpHandle> {
     // Resolve token + port files (defaults live in DaemonConfig::config_dir).
     let token_path = http
@@ -107,6 +108,9 @@ pub async fn spawn(
         .map_err(|e| anyhow::anyhow!("bind {addr}: {e}"))?;
     let local_addr = listener.local_addr()?;
     tokens::write_port_file(&port_path, local_addr.port());
+    if let Some(service) = runtime_context.as_ref() {
+        service.set_base_url(format!("http://{local_addr}"));
+    }
 
     tracing::info!(
         bind = %local_addr,
@@ -151,6 +155,11 @@ pub async fn spawn(
     .with_team_skills(team_skills)
     .with_local_rpc(local_rpc_tx)
     .with_local_live_ingest(local_live_ingest_tx);
+    let state = if let Some(service) = runtime_context {
+        state.with_runtime_context(service)
+    } else {
+        state
+    };
 
     spawn_reapers(state.clone());
     let mut app: Router = routes::build(state);
@@ -268,6 +277,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -297,6 +307,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -352,6 +363,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -555,6 +567,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -629,6 +642,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -717,6 +731,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -817,6 +832,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -945,6 +961,7 @@ mod tests {
             Some(rpc_tx),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1063,6 +1080,7 @@ mod tests {
             None,
             None,
             Some(reconciler),
+            None,
         )
         .await
         .unwrap();

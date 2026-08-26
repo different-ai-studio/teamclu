@@ -38,6 +38,7 @@ pub mod live_ingest;
 pub mod observ;
 pub mod rpc;
 pub mod runtime_adapter;
+pub mod runtime_context;
 pub mod sessions;
 pub mod setup;
 pub mod state;

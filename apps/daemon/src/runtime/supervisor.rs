@@ -31,6 +31,9 @@ const LEGACY_MCP_NAMES: &[&str] = &["teamclaw-introspect", "amuxd-send"];
 const INSTRUCTION_PLUGIN_TEMPLATE: &str = include_str!(
     "../../../../packages/app/src/lib/opencode/templates/teamclu-instruction-plugin.mjs.txt"
 );
+const SESSION_CONTEXT_PLUGIN_TEMPLATE: &str = include_str!(
+    "../../../../packages/app/src/lib/opencode/templates/teamclu-session-context-plugin.mjs.txt"
+);
 
 use crate::config::workspace_control::{
     ApplyOutcome, EnvActivationBlocker, EnvActivationDiagnostics, RuntimeStatus,
@@ -228,6 +231,33 @@ fn mutate_instruction_plugin(
     Ok(true)
 }
 
+fn mutate_session_context_plugin(
+    config: &mut serde_json::Value,
+) -> Result<bool, WorkspaceControlError> {
+    use crate::runtime::workspace_runtime::SESSION_CONTEXT_PLUGIN_CONFIG_ENTRY;
+
+    let obj = config.as_object_mut().ok_or_else(|| {
+        WorkspaceControlError::Parse("opencode.json root is not an object".into())
+    })?;
+
+    let plugins = obj.entry("plugin").or_insert_with(|| serde_json::json!([]));
+    let plugin_list = plugins.as_array_mut().ok_or_else(|| {
+        WorkspaceControlError::Parse("opencode.json plugin field is not an array".into())
+    })?;
+
+    let already_registered = plugin_list.iter().any(|entry| {
+        entry
+            .as_str()
+            .map(|value| value.contains("teamclu-session-context"))
+            .unwrap_or(false)
+    });
+    if already_registered {
+        return Ok(false);
+    }
+    plugin_list.push(serde_json::json!(SESSION_CONTEXT_PLUGIN_CONFIG_ENTRY));
+    Ok(true)
+}
+
 /// One read-modify-write for prepare/reload paths.
 pub fn materialize_opencode_for_prepare(
     workspace_path: &Path,
@@ -238,6 +268,7 @@ pub fn materialize_opencode_for_prepare(
         changed |= mutate_default_permissions(config).map_err(ws_to_store_err)?;
         changed |= mutate_inherent_mcp(workspace_path, config).map_err(ws_to_store_err)?;
         changed |= mutate_instruction_plugin(config).map_err(ws_to_store_err)?;
+        changed |= mutate_session_context_plugin(config).map_err(ws_to_store_err)?;
         Ok(changed)
     })
     .map_err(map_store_err)?;
@@ -717,6 +748,36 @@ fn install_instruction_plugin_file(workspace_path: &Path) -> Result<(), Workspac
     Ok(())
 }
 
+fn install_session_context_plugin_file(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
+    use crate::runtime::workspace_runtime::SESSION_CONTEXT_PLUGIN_REL;
+
+    let plugin_path = workspace_path.join(SESSION_CONTEXT_PLUGIN_REL);
+    if let Some(parent) = plugin_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
+    }
+
+    let should_write = match std::fs::read_to_string(&plugin_path) {
+        Ok(existing) => existing != SESSION_CONTEXT_PLUGIN_TEMPLATE,
+        Err(_) => true,
+    };
+    if should_write {
+        std::fs::write(&plugin_path, SESSION_CONTEXT_PLUGIN_TEMPLATE)
+            .map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Install the TeamClu session-context OpenCode plugin and register it in `opencode.json`.
+pub fn ensure_session_context_plugin(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
+    install_session_context_plugin_file(workspace_path)?;
+
+    teamclu_runtime_env::opencode_config::OpencodeConfigStore::apply(workspace_path, |config| {
+        mutate_session_context_plugin(config).map_err(ws_to_store_err)
+    })
+    .map_err(map_store_err)?;
+    Ok(())
+}
+
 /// Install the TeamClu instruction OpenCode plugin and register it in `opencode.json`.
 pub fn ensure_instruction_plugin(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
     install_instruction_plugin_file(workspace_path)?;
@@ -778,6 +839,7 @@ pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlEr
     ensure_workspace_knowledge_link(workspace_path);
 
     install_instruction_plugin_file(workspace_path)?;
+    install_session_context_plugin_file(workspace_path)?;
     materialize_opencode_for_prepare(workspace_path)?;
     ensure_inherent_skills_in_dir(&inherent_skills_dir()?)?;
     crate::runtime::claude_skills::ensure_claude_team_skills(workspace_path)?;

@@ -188,6 +188,8 @@ pub struct RuntimeManager {
     /// republishes the actor snapshot. See `mark_actor_state_dirty`.
     actor_state_dirty: bool,
     refresh_coordinator: Option<Arc<RuntimeRefreshCoordinator>>,
+    /// Maps backend session ids to TeamClu cloud sessions for MCP adapters.
+    context_service: Option<Arc<super::context_service::RuntimeContextService>>,
     /// Test-only: records the last body sent per agent_id via send_prompt_raw.
     #[cfg(test)]
     last_sent: HashMap<String, String>,
@@ -219,6 +221,20 @@ impl RuntimeManager {
     pub fn attach_refresh_coordinator(&mut self, coordinator: Arc<RuntimeRefreshCoordinator>) {
         crate::runtime::refresh::set_global_coordinator(Arc::clone(&coordinator));
         self.refresh_coordinator = Some(coordinator);
+    }
+
+    pub fn attach_context_service(&mut self, service: Arc<super::context_service::RuntimeContextService>) {
+        self.context_service = Some(service);
+    }
+
+    pub async fn wire_context_service_to_backend(&self) {
+        let Some(service) = self.context_service.as_ref() else {
+            return;
+        };
+        self.agent_backend
+            .lock()
+            .await
+            .attach_context_service(Arc::clone(service));
     }
 
     /// Shared OpenCode host pool used by chat and workspace services.
@@ -268,6 +284,7 @@ impl RuntimeManager {
             model_catalog_path,
             backend,
             refresh_coordinator: None,
+            context_service: None,
             evicted_pending_publish: Vec::new(),
             actor_state_dirty: false,
             #[cfg(test)]
@@ -645,6 +662,7 @@ impl RuntimeManager {
                 handle.event_tx.clone(),
                 permission,
                 forbid_new_session_fallback,
+                session_id.to_string(),
             )
             .await?;
 
@@ -680,6 +698,16 @@ impl RuntimeManager {
         }
         if let Some(model_id) = startup.initial_model {
             self.set_current_model(&agent_id, &model_id);
+        }
+
+        if let Some(service) = self.context_service.as_ref() {
+            service.register_attached_session(
+                agent_type,
+                &startup.host_generation_id,
+                &startup.acp_session_id,
+                session_id,
+                &agent_id,
+            );
         }
 
         self.seed_cursor_from_prior_runtime(&agent_id, Some(session_id))
@@ -804,6 +832,7 @@ impl RuntimeManager {
                 handle.event_tx.clone(),
                 permission,
                 forbid_new_session_fallback,
+                session_id.to_string(),
             )
             .await?;
 
@@ -825,11 +854,21 @@ impl RuntimeManager {
         self.record_catalog(&worktree, &startup.available_models);
         if let Some(h) = self.agents.get_mut(session_id) {
             h.available_models = startup.available_models;
-            h.acp_session_id = startup.acp_session_id;
+            h.acp_session_id = new_acp_sid.clone();
             h.status = amux::AgentStatus::Active;
         }
         if let Some(model_id) = startup.initial_model {
             self.set_current_model(session_id, &model_id);
+        }
+
+        if let Some(service) = self.context_service.as_ref() {
+            service.register_attached_session(
+                agent_type,
+                &startup.host_generation_id,
+                &new_acp_sid,
+                session_id,
+                session_id,
+            );
         }
 
         self.seed_cursor_from_prior_runtime(session_id, Some(session_id))
@@ -843,14 +882,18 @@ impl RuntimeManager {
             self.mark_actor_state_dirty();
             self.aggregators.remove(agent_id);
             self.agent_state.remove(agent_id);
+            if let Some(service) = self.context_service.as_ref() {
+                service.unregister_backend_session(
+                    handle.agent_type,
+                    &handle.host_generation_id,
+                    &handle.acp_session_id,
+                );
+            }
             self.release_opencode_snapshot(&handle.worktree);
             handle.status = amux::AgentStatus::Stopped;
             handle.shutdown().await;
-            // Clear the workspace's active-session stamp so a later session on
-            // the same worktree (esp. the shared per-team default worktree)
-            // doesn't read this stopped session's id via the MCP
-            // `get_session_deeplink` tool. Compare-and-clear: if a concurrent
-            // session already restamped, leave its id alone.
+            // Best-effort cleanup of legacy ambient stamp files left from pre-Phase-2
+            // builds. Managed runtimes no longer write active-session-id.
             if !handle.session_id.is_empty() && !handle.worktree.is_empty() {
                 teamclu_runtime_env::clear_active_session_id_if_matches(
                     std::path::Path::new(&handle.worktree),
@@ -2049,6 +2092,7 @@ mod tests {
             _event_tx: mpsc::Sender<AcpEventFrame>,
             _permission: PermissionPolicy,
             _forbid_new_session_fallback: bool,
+            _teamclu_session_id: String,
         ) -> crate::error::Result<(
             mpsc::Sender<super::super::backend::AcpCommand>,
             super::super::backend::AcpStartupMetadata,

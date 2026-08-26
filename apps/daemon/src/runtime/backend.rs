@@ -45,6 +45,8 @@ pub enum AcpCommand {
         permission: PermissionPolicy,
         /// When resuming, fail instead of falling back to a new session.
         forbid_new_session_fallback: bool,
+        /// TeamClu cloud session this attachment belongs to.
+        teamclu_session_id: String,
     },
     /// Drop routing state for a session; the backend process keeps running.
     DetachSession {
@@ -137,6 +139,7 @@ pub trait AgentBackend: Send {
         event_tx: mpsc::Sender<AcpEventFrame>,
         permission: PermissionPolicy,
         forbid_new_session_fallback: bool,
+        teamclu_session_id: String,
     ) -> crate::error::Result<(mpsc::Sender<AcpCommand>, AcpStartupMetadata)>;
 
     /// Pre-warm: start the backend process ahead of the first session.
@@ -218,6 +221,12 @@ pub trait AgentBackend: Send {
     ) -> Option<std::sync::Arc<super::opencode_http::host_pool::OpenCodeHostPool>> {
         None
     }
+
+    fn attach_context_service(
+        &mut self,
+        _service: std::sync::Arc<super::context_service::RuntimeContextService>,
+    ) {
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +250,13 @@ impl OpencodeHttpBackend {
     pub(crate) fn test_with_host(host: OpencodeHost) -> Self {
         Self { host }
     }
+
+    pub fn attach_context_service(
+        &mut self,
+        service: std::sync::Arc<super::context_service::RuntimeContextService>,
+    ) {
+        self.host.attach_context_service(service);
+    }
 }
 
 impl Default for OpencodeHttpBackend {
@@ -251,6 +267,13 @@ impl Default for OpencodeHttpBackend {
 
 #[async_trait]
 impl AgentBackend for OpencodeHttpBackend {
+    fn attach_context_service(
+        &mut self,
+        service: std::sync::Arc<super::context_service::RuntimeContextService>,
+    ) {
+        self.host.attach_context_service(service);
+    }
+
     async fn attach_session(
         &mut self,
         agent_type: amux::AgentType,
@@ -268,6 +291,7 @@ impl AgentBackend for OpencodeHttpBackend {
         event_tx: mpsc::Sender<AcpEventFrame>,
         permission: PermissionPolicy,
         forbid_new_session_fallback: bool,
+        teamclu_session_id: String,
     ) -> crate::error::Result<(mpsc::Sender<AcpCommand>, AcpStartupMetadata)> {
         self.host
             .attach_session(
@@ -286,6 +310,7 @@ impl AgentBackend for OpencodeHttpBackend {
                 event_tx,
                 permission,
                 forbid_new_session_fallback,
+                teamclu_session_id,
             )
             .await
     }

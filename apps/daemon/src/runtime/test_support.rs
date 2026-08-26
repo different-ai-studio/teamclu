@@ -44,6 +44,7 @@ impl AgentBackend for CapturingBackend {
         _event_tx: mpsc::Sender<AcpEventFrame>,
         permission: PermissionPolicy,
         _forbid_new_session_fallback: bool,
+        _teamclu_session_id: String,
     ) -> crate::error::Result<(mpsc::Sender<AcpCommand>, AcpStartupMetadata)> {
         self.captures.lock().unwrap().push(CapturedAttach {
             domain,
@@ -157,6 +158,7 @@ impl AgentBackend for PoolCapturingBackend {
         _event_tx: mpsc::Sender<AcpEventFrame>,
         permission: PermissionPolicy,
         _forbid_new_session_fallback: bool,
+        _teamclu_session_id: String,
     ) -> crate::error::Result<(mpsc::Sender<AcpCommand>, AcpStartupMetadata)> {
         let lease = self
             .pool

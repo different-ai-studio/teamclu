@@ -283,6 +283,7 @@ function makeUiContext(sessionId) {
     out({ type: "extension_ui_request", id: crypto.randomUUID(), sessionId, ...request });
 
   return {
+    sessionId,
     select: (title, options, opts) =>
       dialog(
         { method: "select", title, options, timeout: opts?.timeout },

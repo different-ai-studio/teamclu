@@ -13,6 +13,8 @@ mod agent_runtime_state;
 mod agent_trace;
 pub mod builtin_commands;
 pub mod env_assembly;
+pub mod context_registry;
+pub mod context_service;
 mod handle;
 mod instruction_delivery;
 pub mod managed_llm;
@@ -31,6 +33,7 @@ pub mod well_known_bin;
 mod workspace_runtime;
 
 pub use backend::{create_backend, AgentBackend, OpencodeHttpBackend};
+pub use context_service::RuntimeContextService;
 pub use handle::{InjectedContextItem, PendingMessage, RuntimeHandle};
 pub use instruction_delivery::{
     resolve_instruction_delivery, skips_buffered_inject, InstructionDelivery,

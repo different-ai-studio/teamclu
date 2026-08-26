@@ -467,6 +467,14 @@ fn maybe_register_subagent_route(
         return;
     };
     let _ = shared.ensure_child_route(session_id, &parent_id);
+    if let Some(service) = shared.context_service() {
+        service.register_child_session(
+            crate::proto::amux::AgentType::Opencode,
+            &shared.generation_id,
+            session_id,
+            &parent_id,
+        );
+    }
 }
 
 /// Look up `Session.parentID` for an unrouted child via `GET /session/{id}`

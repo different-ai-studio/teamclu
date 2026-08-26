@@ -7,6 +7,9 @@ use crate::proto::amux;
 
 pub const INSTRUCTION_PLUGIN_REL: &str = ".opencode/plugins/teamclu-instruction.mjs";
 pub const INSTRUCTION_PLUGIN_CONFIG_ENTRY: &str = "./.opencode/plugins/teamclu-instruction.mjs";
+pub const SESSION_CONTEXT_PLUGIN_REL: &str = ".opencode/plugins/teamclu-session-context.mjs";
+pub const SESSION_CONTEXT_PLUGIN_CONFIG_ENTRY: &str =
+    "./.opencode/plugins/teamclu-session-context.mjs";
 
 pub fn instruction_plugin_installed(worktree: &Path) -> bool {
     if !worktree.join(INSTRUCTION_PLUGIN_REL).is_file() {

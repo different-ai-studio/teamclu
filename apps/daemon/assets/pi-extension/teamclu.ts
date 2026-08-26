@@ -68,6 +68,7 @@ type ToolCallEvent = {
   input: Record<string, unknown>;
 };
 type ExtensionContext = {
+  sessionId?: string;
   ui: {
     confirm(title: string, message?: string, options?: { timeout?: number }): Promise<boolean>;
     select(
@@ -102,6 +103,85 @@ type ExtensionAPI = {
   }): void;
   registerProvider(id: string, config: Record<string, unknown>): void;
 };
+
+// ---------------------------------------------------------------------------
+// Session context injection (concurrent session deeplink correctness)
+// ---------------------------------------------------------------------------
+
+const SESSION_SCOPED_TOOLS = new Set([
+  "get_session_deeplink",
+  "manage_participants",
+  "archive_session",
+]);
+
+function isSessionScopedTool(name: string): boolean {
+  const base = name.split("/").pop()?.trim() ?? name;
+  return SESSION_SCOPED_TOOLS.has(base);
+}
+
+async function resolveTeamcluSessionId(backendSessionId: string): Promise<string> {
+  const baseUrl = process.env.TEAMCLU_RUNTIME_CONTEXT_URL?.trim()?.replace(/\/$/, "");
+  const token = process.env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim();
+  const generationId = process.env.TEAMCLU_HOST_GENERATION_ID?.trim();
+  const backendKind = process.env.TEAMCLU_AGENT_BACKEND?.trim();
+  const sessionId = backendSessionId.trim();
+  if (!baseUrl || !token || !generationId || !backendKind || !sessionId) {
+    throw new Error("session_context_unavailable");
+  }
+  const resp = await fetch(`${baseUrl}/internal/runtime-context/resolve`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      backendSessionId: sessionId,
+      hostGenerationId: generationId,
+      backendKind,
+    }),
+  });
+  if (!resp.ok) {
+    throw new Error("session_context_unavailable");
+  }
+  const body = (await resp.json()) as { teamcluSessionId?: string };
+  const teamcluSessionId = String(body?.teamcluSessionId ?? "").trim();
+  if (!teamcluSessionId) {
+    throw new Error("session_context_unavailable");
+  }
+  return teamcluSessionId;
+}
+
+async function injectSessionIdForTool(
+  toolName: string,
+  params: Record<string, unknown>,
+  backendSessionId?: string,
+): Promise<Record<string, unknown>> {
+  if (!isSessionScopedTool(toolName)) {
+    return params ?? {};
+  }
+  const next = { ...(params ?? {}) };
+  const explicit = String(next.session_id ?? next.sessionId ?? "").trim();
+  if (explicit) {
+    return next;
+  }
+  if (!backendSessionId?.trim()) {
+    throw new Error("session_context_unavailable");
+  }
+  next.session_id = await resolveTeamcluSessionId(backendSessionId);
+  return next;
+}
+
+function sessionContextUnavailableResult() {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: "session_context_unavailable: Unable to determine the TeamClu session for this tool call.",
+      },
+    ],
+    isError: true,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Permission rules
@@ -876,7 +956,7 @@ function registerBridgeTools(
       // MCP inputSchema is plain JSON Schema; pi's TypeBox parameters are
       // JSON Schema objects at runtime, so pass it through directly.
       parameters: tool.inputSchema ?? { type: "object", properties: {} },
-      async execute(_toolCallId, params, signal) {
+      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
         // A server can drop a tool at runtime (`tools/list_changed`). pi has no
         // unregister, so the registration outlives the tool: answer honestly
         // instead of calling a name the server no longer knows.
@@ -886,10 +966,16 @@ function registerBridgeTools(
             isError: true,
           };
         }
+        let callParams = params ?? {};
+        try {
+          callParams = await injectSessionIdForTool(tool.name, callParams, ctx?.sessionId);
+        } catch {
+          return sessionContextUnavailableResult();
+        }
         // On a cached start the connection may still be opening; this is the
         // only place that waits for it, and only when a tool is actually used.
         const bridge = await entry.ready;
-        const result = await bridge.callTool(tool.name, params ?? {}, signal);
+        const result = await bridge.callTool(tool.name, callParams, signal);
         return { content: toPiContent(result), isError: result?.isError === true };
       },
     });

@@ -164,6 +164,7 @@ struct AttachArgs {
     event_tx: mpsc::Sender<AcpEventFrame>,
     permission: PermissionPolicy,
     forbid_new_session_fallback: bool,
+    teamclu_session_id: String,
 }
 
 /// Install the `preToolUse` gate in the worktree. Best-effort: a worktree we
@@ -188,7 +189,8 @@ async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMeta
     load_cursor_pool_config(&shared.pool);
     let worktree = canonical_dir(&args.worktree);
     install_permission_hook(&worktree);
-    let mcp_servers = mcp::assemble(&worktree, args.mcp_config_path.as_deref());
+    let mut mcp_servers = mcp::assemble(&worktree, args.mcp_config_path.as_deref());
+    mcp::stamp_managed_session_context(&mut mcp_servers, &args.teamclu_session_id);
     let proc = shared
         .pool
         .ensure(shared, &worktree)
@@ -416,6 +418,7 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                 startup_tx,
                 permission,
                 forbid_new_session_fallback,
+                teamclu_session_id,
             } => {
                 let result = attach(
                     &shared,
@@ -428,6 +431,7 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                         event_tx,
                         permission,
                         forbid_new_session_fallback,
+                        teamclu_session_id,
                     },
                 )
                 .await;
@@ -571,6 +575,7 @@ impl AgentBackend for CursorSdkBackend {
         event_tx: mpsc::Sender<AcpEventFrame>,
         permission: PermissionPolicy,
         forbid_new_session_fallback: bool,
+        teamclu_session_id: String,
     ) -> crate::error::Result<(mpsc::Sender<AcpCommand>, AcpStartupMetadata)> {
         load_cursor_pool_config(&self.shared.pool);
         self.shared
@@ -588,6 +593,7 @@ impl AgentBackend for CursorSdkBackend {
                 event_tx,
                 permission,
                 forbid_new_session_fallback,
+                teamclu_session_id,
             },
         )
         .await

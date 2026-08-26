@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use serde_json::{json, Value};
-use teamclu_runtime_env::{read_active_session_id, TEAMCLU_SESSION_ID_ENV};
+use teamclu_runtime_env::{
+    read_active_session_id, require_explicit_session_id_from_env, TEAMCLU_SESSION_ID_ENV,
+};
 
 const DEFAULT_SCHEME: &str = "teamclu";
 
@@ -58,6 +60,13 @@ pub(crate) fn resolve_session_id(workspace: &str, arguments: &Value) -> Result<S
         return Ok(id.to_string());
     }
 
+    if require_explicit_session_id_from_env() {
+        return Err(
+            "session_id is required: pass session_id explicitly (managed runtime context)"
+                .to_string(),
+        );
+    }
+
     if let Ok(id) = std::env::var(TEAMCLU_SESSION_ID_ENV) {
         let id = id.trim();
         if !id.is_empty() {
@@ -67,6 +76,7 @@ pub(crate) fn resolve_session_id(workspace: &str, arguments: &Value) -> Result<S
     }
 
     if let Some(id) = read_active_session_id(Path::new(workspace)) {
+        teamclu_runtime_env::session_context::warn_deprecated_active_session_file_fallback();
         validate_session_id(&id)?;
         return Ok(id);
     }
@@ -179,10 +189,38 @@ mod tests {
 
     #[test]
     fn handle_reads_active_session_id_file() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let prev_managed = std::env::var("TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID").ok();
+        std::env::remove_var("TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID");
         let dir = tempfile::tempdir().unwrap();
         write_active_session_id(dir.path(), UUID).unwrap();
         let result = handle(dir.path().to_str().unwrap(), &json!({})).unwrap();
         assert_eq!(result["session_id"], UUID);
+        match prev_managed {
+            Some(v) => std::env::set_var("TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID", v),
+            None => std::env::remove_var("TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID"),
+        }
+    }
+
+    #[test]
+    fn handle_requires_session_id_in_managed_mode() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let prev = std::env::var(TEAMCLU_SESSION_ID_ENV).ok();
+        let prev_managed = std::env::var("TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID").ok();
+        std::env::remove_var(TEAMCLU_SESSION_ID_ENV);
+        std::env::set_var("TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID", "1");
+        let dir = tempfile::tempdir().unwrap();
+        write_active_session_id(dir.path(), UUID).unwrap();
+        let err = handle(dir.path().to_str().unwrap(), &json!({})).unwrap_err();
+        assert!(err.contains("session_id is required"));
+        match prev {
+            Some(v) => std::env::set_var(TEAMCLU_SESSION_ID_ENV, v),
+            None => std::env::remove_var(TEAMCLU_SESSION_ID_ENV),
+        }
+        match prev_managed {
+            Some(v) => std::env::set_var("TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID", v),
+            None => std::env::remove_var("TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID"),
+        }
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub mod active_session;
+pub mod session_context;
 pub mod amuxd_layout;
 pub mod atomic_write;
 pub mod env_activation;
@@ -29,6 +30,12 @@ use std::path::Path;
 pub use active_session::{
     clear_active_session_id_if_matches, read_active_session_id, write_active_session_id,
     ACTIVE_SESSION_ID_FILE, TEAMCLU_SESSION_ID_ENV,
+};
+pub use session_context::{
+    is_session_scoped_mcp_tool, require_explicit_session_id_from_env,
+    SESSION_SCOPED_MCP_TOOLS, TEAMCLU_AGENT_BACKEND_ENV, TEAMCLU_HOST_GENERATION_ID_ENV,
+    TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID_ENV, TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV,
+    TEAMCLU_RUNTIME_CONTEXT_URL_ENV,
 };
 pub use env_activation::{
     analyze_env_activation, find_unresolved_config_placeholders, EnvActivationAnalysis,

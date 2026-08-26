@@ -143,6 +143,7 @@ pub(crate) struct PiProcessPool {
     envs: parking_lot::Mutex<HashMap<PoolKey, SpawnEnv>>,
     /// `[agents.pi].binary` override from daemon config, when configured.
     binary_override: parking_lot::Mutex<Option<String>>,
+    context_service: parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
 }
 
 impl PiProcessPool {
@@ -151,6 +152,27 @@ impl PiProcessPool {
             procs: parking_lot::Mutex::new(HashMap::new()),
             envs: parking_lot::Mutex::new(HashMap::new()),
             binary_override: parking_lot::Mutex::new(None),
+            context_service: parking_lot::RwLock::new(None),
+        }
+    }
+
+    pub(crate) fn attach_context_service(
+        &self,
+        service: Arc<crate::runtime::context_service::RuntimeContextService>,
+    ) {
+        *self.context_service.write() = Some(service);
+    }
+
+    fn clear_generation_for_process(&self, proc: &PiProcess) {
+        if let Some(service) = self.context_service.read().as_ref() {
+            service.clear_generation(crate::proto::amux::AgentType::Pi, &proc.generation_id);
+        }
+    }
+
+    fn retire_process(&self, proc: &PiProcess) {
+        self.clear_generation_for_process(proc);
+        if proc.is_alive() {
+            proc.kill();
         }
     }
 
@@ -224,6 +246,7 @@ impl PiProcessPool {
         let procs: Vec<Arc<PiProcess>> = self.procs.lock().drain().map(|(_, p)| p).collect();
         let mut killed = 0;
         for p in procs {
+            self.clear_generation_for_process(&p);
             if p.is_alive() {
                 p.kill();
                 killed += 1;
@@ -248,6 +271,7 @@ impl PiProcessPool {
         };
         let mut killed = 0;
         for (_key, p) in victims {
+            self.clear_generation_for_process(&p);
             if p.is_alive() {
                 p.kill();
                 killed += 1;
@@ -284,7 +308,7 @@ impl PiProcessPool {
             // Env or mode changed since this child spawned (e.g. a prewarmed
             // child that predates the session's MCP servers/secrets) — replace.
             info!(worktree = %key.worktree, "pi env changed; respawning");
-            p.kill();
+            self.retire_process(&p);
             self.procs.lock().remove(key);
         }
         let proc = self.spawn(shared, key, &env, &launch, want)?;
@@ -437,6 +461,13 @@ impl PiProcessPool {
             "TEAMCLU_MCP_CONFIG_PATH",
             Path::new(worktree).join("opencode.json"),
         );
+        let generation_id = format!("pi-{}", uuid::Uuid::new_v4());
+        if let Some(service) = self.context_service.read().as_ref() {
+            let ctx_env = service.env_for_generation(crate::proto::amux::AgentType::Pi, &generation_id);
+            for (k, v) in ctx_env {
+                cmd.env(k, v);
+            }
+        }
         let tool_cache = mcp_tool_cache_dir();
         if let Err(e) = std::fs::create_dir_all(&tool_cache) {
             warn!(path = %tool_cache.display(), error = %e, "pi MCP tool cache dir unavailable");
@@ -512,7 +543,7 @@ impl PiProcessPool {
         let proc = Arc::new(PiProcess {
             client: client.clone(),
             mode,
-            generation_id: format!("pi-{}", uuid::Uuid::new_v4()),
+            generation_id,
             open_sessions: parking_lot::Mutex::new(HashMap::new()),
             active_acp_session: parking_lot::Mutex::new(None),
             switch_lock: tokio::sync::Mutex::new(()),
