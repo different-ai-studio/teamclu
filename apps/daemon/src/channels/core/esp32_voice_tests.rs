@@ -222,11 +222,7 @@ impl Esp32Downlink for FakeDownlink {
         ));
         Ok(())
     }
-    async fn speak_delta(
-        &self,
-        device: &Esp32Target,
-        text: &str,
-    ) -> Result<(), teamclu_gateway::driver::DriverError> {
+    async fn speak_delta(&self, device: &Esp32Target, _turn: &str, text: &str) -> Result<(), teamclu_gateway::driver::DriverError> {
         self.deltas.lock().unwrap().push((
             device.team_id.clone(),
             device.actor_id.clone(),
@@ -238,6 +234,7 @@ impl Esp32Downlink for FakeDownlink {
     async fn end_turn(
         &self,
         device: &Esp32Target,
+        _turn: &str,
         end: teamclu_gateway::driver::TurnEnd,
     ) -> Result<(), teamclu_gateway::driver::DriverError> {
         self.ends

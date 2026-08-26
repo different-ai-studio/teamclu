@@ -312,6 +312,18 @@ void FaceState::onAgentThinking()
 void FaceState::onAgentSpeaking()
 {
     clearDeadline();
+    // Don't clobber an open menu — the same reason `onAgentDone` doesn't.
+    //
+    // A question arrives as `menu` (screen = Menu) and then the prompt is read
+    // aloud, so `spk_start` lands *while the menu is showing*. Overwriting it
+    // meant the menu was never seen: `spk_end` then found Reply rather than
+    // Menu, fell through to `enterIdle`, and the question could not be
+    // answered at all — it parked until the turn timed out. The prompt is
+    // spoken over the menu on purpose; the options are on screen because
+    // reading three of them aloud is worse than showing them.
+    if (_screen == Screen::Menu) {
+        return;
+    }
     if (_screen != Screen::Reply) {
         fire(_hooks.vibrate, BumpReplyMs, BumpStrength);
     }

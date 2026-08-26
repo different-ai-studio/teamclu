@@ -55,7 +55,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::Instant;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::adapter::DeviceKey;
@@ -262,6 +262,12 @@ struct StreamingFeed {
 
 struct ActiveSpeech {
     cancel: Arc<AtomicBool>,
+    /// Which delivery opened this. `end_speak_turn` refuses to tear down a
+    /// stream it did not start: a superseded turn reaching its own `end_turn`
+    /// used to remove whatever the *current* turn had installed, cutting live
+    /// speech mid-sentence and publishing `spk_end` over a running reply.
+    /// `speak_text` already guarded the same removal with `Arc::ptr_eq`.
+    turn: String,
     /// `Some` when opened via [`SpeechSynthesizer::speak_delta`]; `None` for
     /// one-shot `speak_text` / sink `begin` (those own their own text_tx).
     stream: Option<StreamingFeed>,
@@ -346,6 +352,9 @@ impl SpeechSynthesizer {
             key.clone(),
             ActiveSpeech {
                 cancel: cancel.clone(),
+                // One-shot and `begin` own their own text_tx; no delivery id
+                // addresses them, and `end_speak_turn` is never called for them.
+                turn: String::new(),
                 stream: None,
             },
         );
@@ -421,7 +430,7 @@ impl SpeechSynthesizer {
     /// Opens the TTS stream on the first non-empty piece and keeps it open
     /// until [`Self::end_speak_turn`]. The ESP32 driver owns sentence boundaries
     /// ([`teamclu_gateway::esp32`]); this only synthesises what it is given.
-    pub async fn speak_delta(&self, key: DeviceKey, text: &str) -> Result<(), String> {
+    pub async fn speak_delta(&self, key: DeviceKey, turn: &str, text: &str) -> Result<(), String> {
         if text.trim().is_empty() {
             return Ok(());
         }
@@ -482,6 +491,7 @@ impl SpeechSynthesizer {
             key.clone(),
             ActiveSpeech {
                 cancel,
+                turn: turn.to_string(),
                 stream: Some(StreamingFeed {
                     text_tx,
                     pump,
@@ -504,6 +514,7 @@ impl SpeechSynthesizer {
     pub async fn end_speak_turn(
         &self,
         key: &DeviceKey,
+        turn: &str,
         end: teamclu_gateway::driver::TurnEnd,
     ) -> Result<(), String> {
         use teamclu_gateway::driver::TurnEnd;
@@ -514,11 +525,28 @@ impl SpeechSynthesizer {
                 Ok(())
             }
             TurnEnd::Answered => {
-                let active = self.active.lock().await.remove(key);
+                let active = {
+                    let mut map = self.active.lock().await;
+                    match map.get(key) {
+                        Some(a) if a.turn == turn => map.remove(key),
+                        // Somebody newer owns the device now. Ending their turn
+                        // would cut a live reply and send `spk_end` over it.
+                        Some(_) => {
+                            debug!(
+                                team_id = %key.team_id,
+                                turn,
+                                "voice: end_turn for a superseded stream; leaving the current one alone"
+                            );
+                            return Ok(());
+                        }
+                        None => None,
+                    }
+                };
                 match active {
                     Some(ActiveSpeech {
                         cancel,
                         stream: Some(feed),
+                        ..
                     }) => {
                         drop(feed.text_tx);
                         let frames = feed.pump.await.unwrap_or(0);
@@ -548,11 +576,7 @@ impl SpeechSynthesizer {
                         );
                         Ok(())
                     }
-                    Some(ActiveSpeech {
-                        stream: None,
-                        ..
-                    })
-                    | None => {
+                    Some(ActiveSpeech { stream: None, .. }) | None => {
                         // Never got a sentence (or only Think was shown): still
                         // need spk_end so the face leaves Think.
                         self.send_ctl(
@@ -647,6 +671,9 @@ impl ReplySpeaker for SpeechSynthesizer {
             key.clone(),
             ActiveSpeech {
                 cancel: cancel.clone(),
+                // One-shot and `begin` own their own text_tx; no delivery id
+                // addresses them, and `end_speak_turn` is never called for them.
+                turn: String::new(),
                 stream: None,
             },
         );

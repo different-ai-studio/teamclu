@@ -221,6 +221,23 @@ void test_a_tap_on_the_error_screen_only_dismisses()
     CHECK(s.screen() != Screen::Listen);
 }
 
+void test_speaking_the_prompt_does_not_close_the_menu()
+{
+    // The menu is shown, then its prompt is read aloud — so spk_start/spk_end
+    // arrive with the menu open. If speaking overwrote the screen, the user
+    // never saw the options and the question could not be answered.
+    FaceState s;
+    s.setLink(Link::Online);
+    s.onMenu("q-1", "选哪个?", {"甲", "乙"});
+    CHECK(s.screen() == Screen::Menu);
+
+    s.onAgentSpeaking();
+    CHECK(s.screen() == Screen::Menu);
+
+    s.onAgentDone();
+    CHECK(s.screen() == Screen::Menu);
+}
+
 void test_late_note_saved_replaces_the_error()
 {
     std::printf("note_saved after the timeout still shows saved\n");
@@ -509,6 +526,7 @@ int main()
     test_note_saved_marker_cancels_the_timeout();
     test_a_hold_on_the_error_screen_starts_talking_without_a_second_press();
     test_a_tap_on_the_error_screen_only_dismisses();
+    test_speaking_the_prompt_does_not_close_the_menu();
     test_late_note_saved_replaces_the_error();
     test_note_saved_without_text_adds_no_blank_row();
     test_note_without_a_backend_still_demos_offline();

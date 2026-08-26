@@ -427,7 +427,7 @@ async fn handle_ui_request(
                     route.turn_reply_to.clone(),
                 )
             };
-            if permission.is_full_access() {
+            if permission.auto_rejects_questions() {
                 // Same policy as opencode's question handling: unattended
                 // sessions auto-reject — the tool reports "dismissed" and the
                 // agent proceeds, instead of parking a card nobody will answer.

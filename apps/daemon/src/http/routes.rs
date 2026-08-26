@@ -221,10 +221,6 @@ pub fn build(state: HttpState) -> Router {
         // (called by the app right after enabling/joining team-share).
         .route("/v1/team/link", post(team::link_team_workspace))
         .route("/v1/team/unlink", post(team::unlink_team_workspace))
-        .route(
-            "/v1/team/esp32/pairing-code",
-            post(team::mint_esp32_pairing_code),
-        )
         // Daemon-owned team sync: desktop triggers sync + reads status over loopback.
         .route("/v1/team/sync", post(team_sync::sync_now))
         .route("/v1/team/sync/status", get(team_sync::sync_status))
@@ -268,6 +264,10 @@ pub fn build(state: HttpState) -> Router {
         .route("/v1/team/changed", get(team_sync::list_changed))
         // ESP32 pairing: mint a code (FC) + register a roster entry locally.
         // Paths match the plan's `/voice/…` shape on the daemon loopback.
+        // The ONE pairing-code route. A second one existed at
+        // `/v1/team/esp32/pairing-code` behind `workspace:write`, which made
+        // that the real gate: minting a code binds a physical device to the
+        // team's actor, and the weaker of two doors is the one that decides.
         .route("/voice/pairing-code", post(voice::mint_pairing_code))
         .route("/voice/devices", post(voice::register_device))
         .layer(body_limit_layer(body_cap))

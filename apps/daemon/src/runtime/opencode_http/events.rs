@@ -582,7 +582,7 @@ async fn handle_question_asked(
         match routes.get(session_id) {
             Some(route) => route
                 .permission
-                .is_full_access()
+                .auto_rejects_questions()
                 .then(|| route.directory.clone()),
             None => {
                 warn!(session_id, "question.asked for unrouted session");

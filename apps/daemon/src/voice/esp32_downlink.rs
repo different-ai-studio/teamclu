@@ -42,18 +42,28 @@ impl Esp32Downlink for Esp32VoiceDownlink {
             .map_err(DriverError::Transport)
     }
 
-    async fn speak_delta(&self, device: &Esp32Target, text: &str) -> Result<(), DriverError> {
+    async fn speak_delta(
+        &self,
+        device: &Esp32Target,
+        turn: &str,
+        text: &str,
+    ) -> Result<(), DriverError> {
         let key = Self::key(device);
         self.synth
-            .speak_delta(key, text)
+            .speak_delta(key, turn, text)
             .await
             .map_err(DriverError::Transport)
     }
 
-    async fn end_turn(&self, device: &Esp32Target, end: TurnEnd) -> Result<(), DriverError> {
+    async fn end_turn(
+        &self,
+        device: &Esp32Target,
+        turn: &str,
+        end: TurnEnd,
+    ) -> Result<(), DriverError> {
         let key = Self::key(device);
         self.synth
-            .end_speak_turn(&key, end)
+            .end_speak_turn(&key, turn, end)
             .await
             .map_err(DriverError::Transport)
     }
@@ -92,12 +102,7 @@ mod tests {
 
     #[async_trait]
     impl VoicePublisher for RecordingPublisher {
-        async fn publish(
-            &self,
-            topic: String,
-            payload: Vec<u8>,
-            qos1: bool,
-        ) -> Result<(), String> {
+        async fn publish(&self, topic: String, payload: Vec<u8>, qos1: bool) -> Result<(), String> {
             self.pubs.lock().await.push((topic, payload, qos1));
             Ok(())
         }
@@ -126,8 +131,7 @@ mod tests {
             tokio::spawn(async move {
                 while let Some(t) = text_rx.recv().await {
                     spoken.lock().await.push(t);
-                    let samples: Vec<i16> =
-                        (0..n).map(|i| ((i % 200) as i16 - 100) * 40).collect();
+                    let samples: Vec<i16> = (0..n).map(|i| ((i % 200) as i16 - 100) * 40).collect();
                     if audio_tx.send(PcmChunk { samples }).await.is_err() {
                         break;
                     }
@@ -176,10 +180,7 @@ mod tests {
     #[tokio::test]
     async fn speak_opens_tts_and_publishes_spk_ctl() {
         let (downlink, publisher, spoken, opened, _) = setup().await;
-        downlink
-            .speak(&target(), "你好。")
-            .await
-            .expect("speak");
+        downlink.speak(&target(), "你好。").await.expect("speak");
 
         assert!(opened.load(Ordering::Relaxed), "TTS stream must open");
         assert_eq!(*spoken.lock().await, vec!["你好。"]);
@@ -204,7 +205,8 @@ mod tests {
             "expected spk_end"
         );
         assert!(
-            pubs.iter().any(|(t, _, qos1)| t.ends_with("/spk") && !*qos1),
+            pubs.iter()
+                .any(|(t, _, qos1)| t.ends_with("/spk") && !*qos1),
             "expected at least one spk frame"
         );
     }
@@ -215,11 +217,11 @@ mod tests {
         let t = target();
 
         downlink
-            .speak_delta(&t, "第一句。")
+            .speak_delta(&t, "t-1", "第一句。")
             .await
             .expect("delta 1");
         downlink
-            .speak_delta(&t, "第二句。")
+            .speak_delta(&t, "t-1", "第二句。")
             .await
             .expect("delta 2");
         assert_eq!(
@@ -229,7 +231,7 @@ mod tests {
         );
 
         downlink
-            .end_turn(&t, TurnEnd::Answered)
+            .end_turn(&t, "t-1", TurnEnd::Answered)
             .await
             .expect("end");
 
@@ -243,10 +245,7 @@ mod tests {
                 v.get("type")?.as_str().map(str::to_string)
             })
             .collect();
-        assert!(
-            types.contains(&"spk_start".to_string()),
-            "got {types:?}"
-        );
+        assert!(types.contains(&"spk_start".to_string()), "got {types:?}");
         assert!(types.contains(&"spk_end".to_string()), "got {types:?}");
         assert!(
             !types.iter().any(|t| t == "error"),
@@ -258,7 +257,7 @@ mod tests {
     async fn end_turn_no_answer_publishes_error_face() {
         let (downlink, publisher, _, _, _) = setup().await;
         downlink
-            .end_turn(&target(), TurnEnd::NoAnswer)
+            .end_turn(&target(), "t-1", TurnEnd::NoAnswer)
             .await
             .expect("end");
 
@@ -292,10 +291,7 @@ mod tests {
     async fn publish_ctl_preserves_existing_from() {
         let (downlink, publisher, _, _, _) = setup().await;
         downlink
-            .publish_ctl(
-                &target(),
-                r#"{"type":"error","from":"device","code":"x"}"#,
-            )
+            .publish_ctl(&target(), r#"{"type":"error","from":"device","code":"x"}"#)
             .await
             .expect("publish_ctl");
         let pubs = publisher.pubs.lock().await;

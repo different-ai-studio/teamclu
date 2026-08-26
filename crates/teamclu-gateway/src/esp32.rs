@@ -38,11 +38,25 @@ pub trait Esp32Downlink: Send + Sync {
 
     /// Feed one sentence-sized chunk without ending the turn. Opens the TTS
     /// stream on the first call; keeps it open until [`Self::end_turn`].
-    async fn speak_delta(&self, device: &Esp32Target, text: &str) -> Result<(), DriverError>;
+    ///
+    /// `turn` identifies which delivery this belongs to. Without it the
+    /// downlink keys only by device, and a superseded turn's `end_turn` tears
+    /// down whatever the *current* turn had opened.
+    async fn speak_delta(
+        &self,
+        device: &Esp32Target,
+        turn: &str,
+        text: &str,
+    ) -> Result<(), DriverError>;
 
     /// Flush remaining audio and close the turn. `TurnEnd::NoAnswer` shows the
     /// device error face (`no_agent` / 电脑没醒着) instead of a quiet idle.
-    async fn end_turn(&self, device: &Esp32Target, end: TurnEnd) -> Result<(), DriverError>;
+    async fn end_turn(
+        &self,
+        device: &Esp32Target,
+        turn: &str,
+        end: TurnEnd,
+    ) -> Result<(), DriverError>;
 
     async fn publish_ctl(&self, device: &Esp32Target, json: &str) -> Result<(), DriverError>;
 }
@@ -108,7 +122,11 @@ impl Esp32Driver {
 
     /// Resolve a `menu_reply` index against the options we published.
     /// Removes the pending entry (one shot).
-    pub fn take_menu_option(&self, question_id: &str, index: usize) -> Option<(Esp32Target, String)> {
+    pub fn take_menu_option(
+        &self,
+        question_id: &str,
+        index: usize,
+    ) -> Option<(Esp32Target, String)> {
         let mut map = self.pending_menus.lock().unwrap();
         let pending = map.remove(question_id)?;
         let text = pending.options.get(index)?.clone();
@@ -140,9 +158,7 @@ impl Esp32Driver {
             "options": question.options,
             "from": "amuxd",
         });
-        self.downlink
-            .publish_ctl(target, &ctl.to_string())
-            .await?;
+        self.downlink.publish_ctl(target, &ctl.to_string()).await?;
 
         if !question.prompt.is_empty() {
             self.downlink.speak(target, &question.prompt).await?;
@@ -371,11 +387,11 @@ impl ChannelDriver for Esp32Driver {
         };
 
         for piece in &pieces {
-            self.downlink.speak_delta(&target, piece).await?;
+            self.downlink.speak_delta(&target, &id.0, piece).await?;
         }
 
         if let Some(end) = end {
-            self.downlink.end_turn(&target, end).await?;
+            self.downlink.end_turn(&target, &id.0, end).await?;
             self.playback.lock().unwrap().remove(&id.0);
         }
         Ok(())
@@ -405,7 +421,12 @@ mod tests {
             Ok(())
         }
 
-        async fn speak_delta(&self, device: &Esp32Target, text: &str) -> Result<(), DriverError> {
+        async fn speak_delta(
+            &self,
+            device: &Esp32Target,
+            _turn: &str,
+            text: &str,
+        ) -> Result<(), DriverError> {
             self.deltas
                 .lock()
                 .unwrap()
@@ -413,7 +434,12 @@ mod tests {
             Ok(())
         }
 
-        async fn end_turn(&self, device: &Esp32Target, end: TurnEnd) -> Result<(), DriverError> {
+        async fn end_turn(
+            &self,
+            device: &Esp32Target,
+            _turn: &str,
+            end: TurnEnd,
+        ) -> Result<(), DriverError> {
             self.ends
                 .lock()
                 .unwrap()

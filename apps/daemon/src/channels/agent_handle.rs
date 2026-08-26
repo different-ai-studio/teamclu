@@ -575,11 +575,13 @@ impl AmuxdAgentHandle {
         let mut context = self
             .assemble_execution_context(workspace_dir.as_deref())
             .await?;
-        // ESP32 has an on-device menu for InteractiveQuestion (Phase 3). Other
-        // gateway channels stay on Full (auto-reject questions).
+        // ESP32 has an on-device menu for InteractiveQuestion (Phase 3), so its
+        // questions are worth forwarding. Its tool approvals are not: nothing
+        // on the device presents "may I run bash", and plain `Ask` forwarded
+        // both — parking the turn on a card nobody could see. Other gateway
+        // channels stay on Full (auto-reject questions too).
         if binding.starts_with("esp32://") {
-            context.spawn_env.permission =
-                Some(crate::runtime::PermissionPolicy::Ask);
+            context.spawn_env.permission = Some(crate::runtime::PermissionPolicy::QuestionsOnly);
         }
         let real = {
             let mut mgr = self.manager.lock().await;
@@ -1036,8 +1038,7 @@ impl AmuxdAgentHandle {
                         if let Ok(body) =
                             serde_json::from_slice::<serde_json::Value>(&raw.json_payload)
                         {
-                            self.forward_esp32_question(&outcome.binding, &body)
-                                .await;
+                            self.forward_esp32_question(&outcome.binding, &body).await;
                         }
                     }
                 }

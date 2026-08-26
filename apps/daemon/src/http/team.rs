@@ -19,7 +19,6 @@ use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::config::workspace_link::{LinkKind, LinkStatus};
-use crate::voice::pairing;
 
 use super::auth::{require_scope, Principal};
 use super::errors::HttpError;
@@ -120,50 +119,6 @@ pub async fn unlink_team_workspace(
     Ok(Json(UnlinkTeamWorkspaceResponse {
         team_id,
         path: path.to_string(),
-    }))
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MintPairingCodeRequest {
-    /// Optional TTL override in seconds. Clamped in the pairing helper.
-    pub ttl_seconds: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MintPairingCodeResponse {
-    pub code: String,
-    pub team_id: String,
-    pub actor_id: String,
-    pub ttl_seconds: u64,
-    pub expires_at: String,
-}
-
-/// `POST /v1/team/esp32/pairing-code` — mint a single-use device pairing code.
-///
-/// This is a desktop-facing helper: the daemon already holds the team-scoped
-/// cloud session and actor identity, so the UI can mint a pairing code without
-/// carrying or requesting a separate cloud bearer itself.
-pub async fn mint_esp32_pairing_code(
-    principal: Principal,
-    State(state): State<HttpState>,
-    Json(body): Json<MintPairingCodeRequest>,
-) -> Result<Json<MintPairingCodeResponse>, HttpError> {
-    require_scope(&principal, "workspace:write")?;
-    let backend = state
-        .backend
-        .as_ref()
-        .ok_or_else(|| HttpError::runtime_unavailable("cloud backend unavailable"))?;
-    let minted = pairing::mint_pairing_code(backend, body.ttl_seconds)
-        .await
-        .map_err(HttpError::internal)?;
-    Ok(Json(MintPairingCodeResponse {
-        code: minted.code,
-        team_id: minted.team_id,
-        actor_id: minted.actor_id,
-        ttl_seconds: minted.ttl_seconds,
-        expires_at: minted.expires_at.to_rfc3339(),
     }))
 }
 

@@ -202,10 +202,20 @@ mod tests {
             self.speaks.lock().await.push(text.to_string());
             Ok(())
         }
-        async fn speak_delta(&self, _d: &Esp32Target, _t: &str) -> Result<(), DriverError> {
+        async fn speak_delta(
+            &self,
+            _d: &Esp32Target,
+            _turn: &str,
+            _t: &str,
+        ) -> Result<(), DriverError> {
             Ok(())
         }
-        async fn end_turn(&self, _d: &Esp32Target, _e: TurnEnd) -> Result<(), DriverError> {
+        async fn end_turn(
+            &self,
+            _d: &Esp32Target,
+            _turn: &str,
+            _e: TurnEnd,
+        ) -> Result<(), DriverError> {
             Ok(())
         }
         async fn publish_ctl(&self, _d: &Esp32Target, json: &str) -> Result<(), DriverError> {
