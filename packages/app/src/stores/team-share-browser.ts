@@ -268,6 +268,18 @@ interface TeamShareBrowserState {
   uninstallSkill: (slug: string) => Promise<void>
   /** Remove a personal skill directory from disk (not a team-registry delete). */
   deletePersonalSkill: (slug: string) => Promise<void>
+  /**
+   * Delete a skill from the team registry — for the whole team, not just here.
+   *
+   * Deliberately ungated: any member can delete, the same way any member can
+   * publish, patch and revert (see the pg-repo header). The registry is team
+   * property; `ownerActorId` answers "who is responsible", not "who may write".
+   *
+   * Every member's next auto-follow tick sees the row gone and uninstalls the
+   * pack, so this reaches other machines on its own — a pack with local edits
+   * is held back as `blocked` there, as with any other removal.
+   */
+  deleteTeamSkill: (slug: string) => Promise<void>
   /** Install a team MCP server for yourself — there is no install-for-others. */
   installMcp: (name: string) => Promise<void>
   uninstallMcp: (name: string) => Promise<void>
@@ -1136,6 +1148,26 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       itemId: skill.id.startsWith('personal:') ? skill.id : `personal:${skill.slug}`,
       timeoutMs: AGENT_MUTATION_TIMEOUT_MS,
     })
+
+    closeSkillTabs(slug)
+    await get().loadSection('skills', { force: true })
+    window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
+  },
+
+  deleteTeamSkill: async (slug) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    const skill = get().skills.items.find((s) => s.origin === 'registry' && s.slug === slug)
+    if (!skill) throw new Error(`${slug} is not a team skill`)
+
+    await getBackend().teamSkills.deleteTeamSkill(teamId, slug)
+
+    // The registry row is what auto-follow reconciles against, so removing it
+    // is the whole delete: this tick takes the pack off this machine, and every
+    // other member's next tick does the same for theirs. Failures here are the
+    // reconcile's to retry — the delete itself already happened, and reporting
+    // it as failed would invite a second delete of a skill that is gone.
+    await get().reconcileSkills().catch(() => {})
 
     closeSkillTabs(slug)
     await get().loadSection('skills', { force: true })
