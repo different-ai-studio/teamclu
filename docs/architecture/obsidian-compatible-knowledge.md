@@ -39,7 +39,7 @@
 | 同步前缀只剩 `knowledge/` | `apps/daemon/src/sync/oss/path_validator.rs:8`、`services/fc/src/lib/sync-path.ts:11` |
 | 内容根是 `~/.amuxd[-<brand>]/teams/<id>/shared/`，vault 候选是其下的 `knowledge/` | `apps/daemon/src/config/global_team_store.rs` |
 | 也可从 `<workspace>/team-knowledge` 软链进入 | `apps/daemon/src/config/workspace_link.rs:200` |
-| **磁盘上是明文，上传也是明文**（`cipher_hash == plain_hash`）；`crypto.rs` 只剩读切换前的旧 blob 与本地 `secrets.enc` 两个用途；团队 secret 不再是同步前置条件 | `apps/daemon/src/sync/oss/engine.rs:552-575`、`dispatch.rs:198-205`，见 ADR-0008 |
+| **磁盘上是明文，上传也是明文**（`cipher_hash == plain_hash`）；`crypto.rs` 只剩读切换前的旧 blob 与本地 `secrets.enc` 两个用途；团队 secret 不再是同步前置条件 | `apps/daemon/src/sync/oss/engine.rs` `prepare_upload`、`dispatch.rs` `run_once`，见 ADR-0008 |
 | 扫描器全量 walk，**只跳过 `*.conflict.*`**，点开头的目录照收 | `apps/daemon/src/sync/oss/scanner.rs:33` |
 | 任意文件类型都同步（字节走 blob） | `apps/daemon/src/sync/oss/engine.rs` |
 | 触发：app 内手动 + 300 秒定时器 | `apps/daemon/src/sync/timer.rs:21` |
