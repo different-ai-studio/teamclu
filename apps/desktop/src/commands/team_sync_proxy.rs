@@ -175,8 +175,12 @@ fn urlencode(value: &str) -> String {
 pub async fn daemon_team_sync(
     workspace_path: Option<&str>,
     force_sync: bool,
+    allow_bulk_add: bool,
 ) -> Result<serde_json::Value, String> {
-    let mut body = serde_json::json!({ "forceSync": force_sync });
+    let mut body = serde_json::json!({
+        "forceSync": force_sync,
+        "allowBulkAdd": allow_bulk_add,
+    });
     if let Some(path) = workspace_path.map(str::trim).filter(|p| !p.is_empty()) {
         body["workspacePath"] = serde_json::Value::String(path.to_string());
     }
@@ -480,9 +484,13 @@ async fn redeliver_local_team_secret(team_id: &str, workspace_path: Option<&str>
 pub async fn oss_sync_now(
     workspace_path: Option<String>,
     team_id: String,
+    allow_bulk_add: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let workspace_path = workspace_path.as_deref();
-    let mut status = daemon_team_sync(workspace_path, true).await?;
+    // Defaults to false: this flag is a person's answer to "you added N files
+    // at once — send them?", so it has to be passed explicitly every time.
+    let allow_bulk_add = allow_bulk_add.unwrap_or(false);
+    let mut status = daemon_team_sync(workspace_path, true, allow_bulk_add).await?;
     // Self-heal: if the daemon reports it has no team secret, re-deliver the
     // locally-stored one and retry the sync once.
     if status
@@ -491,7 +499,7 @@ pub async fn oss_sync_now(
         .is_some_and(is_missing_team_secret_error)
         && redeliver_local_team_secret(&team_id, workspace_path).await
     {
-        status = daemon_team_sync(workspace_path, true).await?;
+        status = daemon_team_sync(workspace_path, true, allow_bulk_add).await?;
     }
     let pick = |k: &str| status.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
     Ok(serde_json::json!({
@@ -501,6 +509,11 @@ pub async fn oss_sync_now(
         // Dropping this was how "every file failed" reached the app as a clean
         // run: the frontend defaults the missing field to 0.
         "failed": pick("failed"),
+        // The two size/count guards. Passed through verbatim: a skipped file
+        // the user is not told about is worse than a slow sync, because they
+        // believe it went up.
+        "oversize": status.get("oversize").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+        "blockedNewFiles": status.get("blockedNewFiles").cloned().unwrap_or(serde_json::Value::Null),
     }))
 }
 
@@ -526,7 +539,7 @@ pub async fn oss_sync_status(
         .is_some_and(is_missing_team_secret_error)
         && redeliver_local_team_secret(&team_id, workspace_path).await
     {
-        let _ = daemon_team_sync(workspace_path, true).await;
+        let _ = daemon_team_sync(workspace_path, true, false).await;
         return daemon_team_sync_status(&team_id).await;
     }
     Ok(status)
@@ -585,7 +598,7 @@ async fn invoke_daemon_team_sync(
     workspace_path: Option<&str>,
     force_sync: bool,
 ) -> Result<serde_json::Value, String> {
-    match daemon_team_sync(workspace_path, force_sync).await {
+    match daemon_team_sync(workspace_path, force_sync, false).await {
         Ok(resp) => {
             if resp.get("skipped").and_then(|v| v.as_bool()) == Some(true) {
                 return Ok(serde_json::json!({

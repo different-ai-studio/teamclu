@@ -29,6 +29,11 @@ pub struct SyncRequest {
     /// When `true`, run sync even if `team_share.auto_sync` is `false`.
     #[serde(default)]
     pub force_sync: bool,
+    /// When `true`, push a batch of new files an earlier tick held back for
+    /// confirmation. Set by the UI when a person answers "yes, send them" —
+    /// never by a retry, or the guard becomes a one-tick delay.
+    #[serde(default)]
+    pub allow_bulk_add: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,6 +65,7 @@ pub async fn sync_now(
             &team_id,
             crate::sync::dispatch::SyncOptions {
                 force: body.force_sync,
+                allow_bulk_add: body.allow_bulk_add,
             },
         )
         .await;

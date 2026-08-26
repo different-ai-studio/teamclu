@@ -209,7 +209,8 @@ async fn handle_team_sync_all(app: &AppHandle, _body: &[u8]) -> Result<String, S
         .lock()
         .ok()
         .and_then(|cw| cw.clone());
-    let result = super::team_sync_proxy::daemon_team_sync(workspace.as_deref(), true).await?;
+    let result =
+        super::team_sync_proxy::daemon_team_sync(workspace.as_deref(), true, false).await?;
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
 }
 

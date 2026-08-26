@@ -2758,6 +2758,8 @@
     "phasePulling": "下载中",
     "phasePushing": "上传中",
     "phaseDeleting": "删除中",
+    "bulkAddHeld": "一次新增 {{count}} 个文件 —— 已拦下，点击发送",
+    "oversizeSkipped": "{{count}} 个文件太大，已跳过",
     "conflicts": "{{count}} 个冲突待决策",
     "failedFiles": "{{count}} 个文件同步不了 · 持续重试",
     "failed": "同步失败"

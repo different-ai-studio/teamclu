@@ -35,6 +35,8 @@ const sync = vi.hoisted(() => ({
   progress: null as { phase: string; done: number; total: number } | null,
   lastSyncAt: null as string | null,
   failed: 0,
+  oversize: [] as string[],
+  blockedNewFiles: null as number | null,
   lastError: null as string | null,
 }))
 vi.mock('@/stores/oss-sync', () => ({
@@ -70,6 +72,8 @@ beforeEach(() => {
   sync.progress = null
   sync.lastSyncAt = new Date(Date.now() - 120_000).toISOString()
   sync.failed = 0
+  sync.oversize = []
+  sync.blockedNewFiles = null
   sync.lastError = null
   conflictState.entries = []
   syncStatusState.localBySyncKey = {}
@@ -89,6 +93,33 @@ describe('KnowledgeSyncFooter', () => {
     expect(screen.getByText(/Synced/)).toBeTruthy()
     fireEvent.click(screen.getByTestId('knowledge-sync-footer'))
     expect(syncNow).toHaveBeenCalled()
+  })
+
+  // The whole point of the bulk-add guard: nothing was pushed, and only a
+  // person can unblock it. Reporting it as ordinary "pending" would be a lie —
+  // pending implies it is on its way.
+  it('asks about a held-back bulk add instead of reporting it as pending', () => {
+    sync.blockedNewFiles = 3500
+    render(<KnowledgeSyncFooter />)
+
+    expect(screen.getByText(/3500 new files at once/)).toBeTruthy()
+  })
+
+  it('sends the held-back batch only when the user says so', () => {
+    sync.blockedNewFiles = 3500
+    render(<KnowledgeSyncFooter />)
+
+    fireEvent.click(screen.getByTestId('knowledge-sync-footer'))
+    expect(syncNow).toHaveBeenCalledWith({ allowBulkAdd: true })
+  })
+
+  // A silently skipped file is worse than a slow sync: the user believes it
+  // went up.
+  it('names how many files were too large to carry', () => {
+    sync.oversize = ['knowledge/huge.mov', 'knowledge/raw.psd']
+    render(<KnowledgeSyncFooter />)
+
+    expect(screen.getByText(/2 files too large/)).toBeTruthy()
   })
 
   it('stays quiet for a sync that finishes before the bar would be readable', () => {

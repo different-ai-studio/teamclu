@@ -2758,6 +2758,8 @@
     "phasePulling": "Downloading",
     "phasePushing": "Uploading",
     "phaseDeleting": "Removing",
+    "bulkAddHeld": "{{count}} new files at once — held back, tap to send",
+    "oversizeSkipped": "{{count}} files too large to sync — skipped",
     "conflicts": "{{count}} conflicts need a decision",
     "failedFiles": "{{count}} files cannot sync · retrying",
     "failed": "Sync failed"

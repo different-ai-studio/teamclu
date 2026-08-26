@@ -36,6 +36,8 @@ function percent(done: number, total: number): number {
 export function KnowledgeSyncFooter() {
   const { t } = useTranslation()
   const syncing = useOssSyncStore((s) => s.syncing)
+  const blockedNewFiles = useOssSyncStore((s) => s.blockedNewFiles)
+  const oversize = useOssSyncStore((s) => s.oversize)
   const progress = useOssSyncStore((s) => s.progress)
   const lastSyncAt = useOssSyncStore((s) => s.lastSyncAt)
   const failed = useOssSyncStore((s) => s.failed)
@@ -109,6 +111,10 @@ export function KnowledgeSyncFooter() {
   // both beat the running sync's own chatter.
   const conflicted = conflicts.length > 0
   const broken = !syncing && (failed > 0 || !!lastError)
+  // A held-back bulk add outranks everything except a conflict: nothing at all
+  // was pushed, and only a person can unblock it. Reporting it as ordinary
+  // "pending" would be a lie — pending implies it is on its way.
+  const awaitingBulkAdd = !syncing && typeof blockedNewFiles === 'number' && blockedNewFiles > 0
   const outgoing = Object.keys(localBySyncKey).length
   const incoming = Object.keys(remoteBySyncKey).length
   const pending = outgoing + incoming > 0
@@ -190,11 +196,17 @@ export function KnowledgeSyncFooter() {
   const bar = (
     <button
       type="button"
-      onClick={hasList ? undefined : () => void syncNow()}
+      onClick={
+        awaitingBulkAdd
+          ? () => void syncNow({ allowBulkAdd: true })
+          : hasList
+            ? undefined
+            : () => void syncNow()
+      }
       // With something to list, the bar is always openable — reading the list
       // during a sync is exactly when a person wants it. With nothing to list
       // it is just the sync button, and that needs the cloud side to be there.
-      disabled={hasList ? false : !available || syncing}
+      disabled={awaitingBulkAdd ? syncing : hasList ? false : !available || syncing}
       data-testid="knowledge-sync-footer"
       className={cn(
         // Same slot and chrome as the skills column's scan-paths bar.
@@ -216,6 +228,26 @@ export function KnowledgeSyncFooter() {
             <span className="min-w-0 flex-1 truncate text-red-500">
               {t('knowledgeSync.conflicts', '{{count}} conflicts need a decision', {
                 count: conflicts.length,
+              })}
+            </span>
+          </>
+        ) : awaitingBulkAdd ? (
+          <>
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+            <span className="min-w-0 flex-1 truncate text-amber-500">
+              {t(
+                'knowledgeSync.bulkAddHeld',
+                '{{count}} new files at once — held back, tap to send',
+                { count: blockedNewFiles ?? 0 },
+              )}
+            </span>
+          </>
+        ) : oversize.length > 0 ? (
+          <>
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+            <span className="min-w-0 flex-1 truncate text-amber-500">
+              {t('knowledgeSync.oversizeSkipped', '{{count}} files too large to sync — skipped', {
+                count: oversize.length,
               })}
             </span>
           </>

@@ -32,9 +32,14 @@ export function useTeamCloudSync() {
   // enable call was removed from the product).
   const available = isTauri()
 
-  const syncNow = React.useCallback(async () => {
+  /**
+   * `allowBulkAdd` answers the daemon's "you added N files at once — send
+   * them?". Pass it only when a person has seen the count and said yes: a
+   * retry or timer setting it would turn that guard into a one-tick delay.
+   */
+  const syncNow = React.useCallback(async (opts?: { allowBulkAdd?: boolean }) => {
     if (!available || syncing) return
-    await ossSyncNow(workspacePath)
+    await ossSyncNow(workspacePath, opts)
     const { lastError: err, failed } = useOssSyncStore.getState()
     if (err) {
       toast.error(t('teamShare.cloudSyncFailed', 'Sync failed: {{msg}}', { msg: err }))

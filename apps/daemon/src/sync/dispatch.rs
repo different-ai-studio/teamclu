@@ -24,6 +24,14 @@ pub struct SyncStatus {
     /// Set when sync was skipped because `team_share.auto_sync` is disabled.
     #[serde(default)]
     pub skipped: bool,
+    /// Paths this tick refused to upload for being over the per-file size
+    /// limit. Not an error — but the user believes these went up unless told.
+    #[serde(default)]
+    pub oversize: Vec<String>,
+    /// How many new files were held back pending confirmation, if any. The UI
+    /// turns this into "you added N files at once — send them?".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_new_files: Option<u32>,
     /// How far the RUNNING tick has got. `None` whenever nothing is running —
     /// it is live state, not a record of the last tick, so a finished sync can
     /// never be left looking like an in-flight one.
@@ -35,6 +43,12 @@ pub struct SyncStatus {
 pub struct SyncOptions {
     /// When `true`, run sync even if `team_share.auto_sync` is `false`.
     pub force: bool,
+    /// When `true`, push a batch of new files a previous tick held back.
+    ///
+    /// This is a person's answer to "you added N files at once — send them?",
+    /// so it must never be set by the timer or by any automatic retry: doing so
+    /// turns the guard into a one-tick delay.
+    pub allow_bulk_add: bool,
 }
 
 #[derive(Clone)]
@@ -194,9 +208,18 @@ impl SyncDispatcher {
         let jwt = self.oss_jwt().await?;
         let fc = oss::fc_client::FcClient::new(self.fc_endpoint()?, jwt);
         let content_root = content_root_dir.to_string_lossy().to_string();
-        let r = oss::tick_with_progress(&content_root, team_id, secret.as_deref(), &fc, progress)
-            .await
-            .map_err(|e| e.to_string())?;
+        let r = oss::tick_with_progress(
+            &content_root,
+            team_id,
+            secret.as_deref(),
+            &fc,
+            progress,
+            oss::engine::TickOptions {
+                allow_bulk_add: options.allow_bulk_add,
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         Ok(SyncStatus {
             mode: Some("oss".into()),
             last_sync_at: now_rfc3339(),
@@ -204,6 +227,8 @@ impl SyncDispatcher {
             pushed: r.pushed,
             conflicts: r.conflicts,
             failed: r.failed,
+            oversize: r.oversize,
+            blocked_new_files: r.blocked_new_files,
             ..Default::default()
         })
     }
@@ -276,7 +301,15 @@ mod tests {
             .unwrap();
 
         let (d, _backend) = dispatcher_with_mock(&tmp);
-        let st = d.sync_team("t", SyncOptions { force: false }).await;
+        let st = d
+            .sync_team(
+                "t",
+                SyncOptions {
+                    force: false,
+                    ..Default::default()
+                },
+            )
+            .await;
         assert!(st.skipped);
         assert!(st.last_error.is_none());
 
@@ -319,14 +352,30 @@ mod tests {
             )
             .unwrap();
         let d = SyncDispatcher::new(store, None);
-        let err_st = d.sync_team("t", SyncOptions { force: true }).await;
+        let err_st = d
+            .sync_team(
+                "t",
+                SyncOptions {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+            .await;
         assert!(err_st.last_error.is_some());
 
         team.team_share.auto_sync = false;
         crate::config::team_config::save_typed(&crate::config::layout::active_team(), &team)
             .unwrap();
 
-        let st = d.sync_team("t", SyncOptions { force: false }).await;
+        let st = d
+            .sync_team(
+                "t",
+                SyncOptions {
+                    force: false,
+                    ..Default::default()
+                },
+            )
+            .await;
         assert!(st.skipped);
         assert!(st.last_error.is_some());
 
@@ -356,7 +405,13 @@ mod tests {
 
         let (d, _backend) = dispatcher_with_mock(&tmp);
         let st = d
-            .sync_team("no-secret-team", SyncOptions { force: true })
+            .sync_team(
+                "no-secret-team",
+                SyncOptions {
+                    force: true,
+                    ..Default::default()
+                },
+            )
             .await;
 
         // Knowledge content is plaintext now, so a missing team secret is no
