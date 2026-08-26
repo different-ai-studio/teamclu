@@ -29,6 +29,11 @@ pub struct SyncRequest {
     /// When `true`, run sync even if `team_share.auto_sync` is `false`.
     #[serde(default)]
     pub force_sync: bool,
+    /// When `true`, push a batch of new files an earlier tick held back for
+    /// confirmation. Set by the UI when a person answers "yes, send them" —
+    /// never by a retry, or the guard becomes a one-tick delay.
+    #[serde(default)]
+    pub allow_bulk_add: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,6 +65,7 @@ pub async fn sync_now(
             &team_id,
             crate::sync::dispatch::SyncOptions {
                 force: body.force_sync,
+                allow_bulk_add: body.allow_bulk_add,
             },
         )
         .await;
@@ -1188,6 +1194,12 @@ pub struct ChangedResponse {
     /// both to answer one question — "what is not in sync here" — and this one
     /// is already read on every write to the knowledge tree.
     pub stuck: Vec<StuckFile>,
+    /// Paths the ignore rules exclude, as the shallowest path that explains
+    /// each exclusion — `knowledge/node_modules`, never the files inside it.
+    /// The UI dims these and everything beneath them; see
+    /// `scanner::scan_ignored` for why the list is shaped this way.
+    #[serde(default)]
+    pub ignored: Vec<String>,
 }
 
 /// `GET /v1/team/changed?teamId=` — list files with local changes: dirty
@@ -1211,9 +1223,12 @@ pub async fn list_changed(
         })
         .collect();
     stuck.sort_by(|a, b| a.path.cmp(&b.path));
+    let root = root.to_string_lossy().to_string();
+    let rules = crate::sync::oss::ignore_rules::IgnoreRules::load(std::path::Path::new(&root));
     Ok(Json(ChangedResponse {
-        files: local_changes(&root.to_string_lossy(), &state),
+        files: local_changes_with(&root, &state, &rules),
         stuck,
+        ignored: crate::sync::oss::scanner::scan_ignored(&root, &rules),
     }))
 }
 
@@ -1228,11 +1243,24 @@ pub async fn list_changed(
 ///
 /// The scan is the same cheap one the engine runs: mtime+size decides, and only
 /// a file that fails that check gets re-hashed.
+#[cfg(test)]
 fn local_changes(
     content_root: &str,
     state: &crate::sync::oss::state::LocalSyncState,
 ) -> Vec<ChangedFile> {
-    let scan = crate::sync::oss::scanner::scan_workspace(content_root, state);
+    let rules =
+        crate::sync::oss::ignore_rules::IgnoreRules::load(std::path::Path::new(content_root));
+    local_changes_with(content_root, state, &rules)
+}
+
+/// Same rules the engine scans with, so this endpoint cannot report pending
+/// work for a file the engine will never touch.
+fn local_changes_with(
+    content_root: &str,
+    state: &crate::sync::oss::state::LocalSyncState,
+    rules: &crate::sync::oss::ignore_rules::IgnoreRules,
+) -> Vec<ChangedFile> {
+    let scan = crate::sync::oss::scanner::scan_workspace_with(content_root, state, rules);
     let mut out: Vec<ChangedFile> = Vec::new();
 
     for file in &scan {
@@ -1257,11 +1285,18 @@ fn local_changes(
     }
 
     // Synced once, gone from the tree now: a deletion this device still owes
-    // the team. Mirrors `engine::locally_deleted_paths`.
+    // the team. Mirrors `engine::locally_deleted_paths` — including its ignore
+    // exclusion, which is not optional here either: a file that became ignored
+    // is also absent from the scan, and reporting it as a pending deletion
+    // would show the user a deletion the engine is never going to perform.
     let present: std::collections::HashSet<&str> =
         scan.iter().map(|s| s.rel_path.as_str()).collect();
     for (path, f) in &state.files {
-        if !f.deleted_local && f.synced_version > 0 && !present.contains(path.as_str()) {
+        if !f.deleted_local
+            && f.synced_version > 0
+            && !present.contains(path.as_str())
+            && !rules.is_ignored_with_ancestors(path)
+        {
             out.push(ChangedFile {
                 path: path.clone(),
                 status: "deleted".to_string(),

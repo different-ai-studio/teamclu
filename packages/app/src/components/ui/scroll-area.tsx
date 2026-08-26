@@ -14,9 +14,17 @@ function ScrollArea({
       className={cn("relative", className)}
       {...props}
     >
+      {/*
+        `max-h-[inherit]` is what makes a `max-h-*` on the root do anything.
+        Radix scrolls the viewport, but `h-full` against an auto-height root
+        resolves to auto, so the viewport grows to its content and paints past
+        the root — which does not clip. Inheriting the root's computed
+        max-height caps the scrollable box itself; with no max-height on the
+        root it inherits `none` and nothing changes.
+      */}
       <ScrollAreaPrimitive.Viewport
         data-slot="scroll-area-viewport"
-        className="focus-visible:ring-ring/50 size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[1.5px] focus-visible:outline-1"
+        className="focus-visible:ring-ring/50 size-full max-h-[inherit] rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[1.5px] focus-visible:outline-1"
       >
         {children}
       </ScrollAreaPrimitive.Viewport>

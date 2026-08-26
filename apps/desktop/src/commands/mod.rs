@@ -19,6 +19,7 @@ pub mod local_secret_store;
 pub mod mcp;
 pub mod mqtt_bus;
 pub mod oauth_loopback;
+pub mod obsidian;
 pub mod oss_sync;
 pub mod server_config;
 pub mod session_export;

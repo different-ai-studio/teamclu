@@ -11,6 +11,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createServiceRoleClient } from './supabase.js';
 import { validateSyncPath } from './sync-path.js';
+import { isOverFileQuota, isRejectedSyncPath, liveFileCount, maxFilesPerTeam } from './sync-guards.js';
 import { resolveBackendKind } from './backend-kind.js';
 import { getTeamBlobStorage, type BlobStorage } from './team-blob-storage.js';
 import { makeOssSyncRepo, type OssSyncRepo } from './pg-repo/oss-sync.js';
@@ -30,6 +31,8 @@ export interface SyncHandlerDeps {
   db?: Db;
   repo?: OssSyncRepo;
   storage?: BlobStorage;
+  /** Override the live-file count. Tests only — production reads the table. */
+  countLiveFiles?: (teamId: string) => Promise<number | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +66,27 @@ function resolveStorage(deps: SyncHandlerDeps): BlobStorage {
  * changed file per sync tick, an order of magnitude more often than a skill
  * install, and Supabase Storage has no HEAD — the fallback is a `list` call.
  */
+/**
+ * Live (non-deleted) file rows for a team, or `null` when it cannot be counted.
+ *
+ * `head: true` makes this a COUNT with no row transfer, and `liveFileCount`
+ * caches the answer so a 200-item batch pays for it once.
+ */
+async function countLiveFiles(
+  teamId: string,
+  deps: SyncHandlerDeps = {},
+): Promise<number | null> {
+  if (deps.countLiveFiles) return deps.countLiveFiles(teamId);
+  const supabase = createServiceRoleClient();
+  const { count, error } = await supabase
+    .from('amuxc_files')
+    .select('id', { count: 'exact', head: true })
+    .eq('team_id', teamId)
+    .eq('deleted', false);
+  if (error) return null;
+  return typeof count === 'number' ? count : null;
+}
+
 async function blobRequiresUpload(
   storage: BlobStorage,
   ossKey: string,
@@ -308,6 +332,18 @@ export async function handleSyncUploadPrepare(
     return json(422, { error: pathCheck.message, code: pathCheck.code });
   }
 
+  // Server-side backstop, WRITE PATH ONLY. A client that predates the ignore
+  // rules still pushes whatever it likes, and `/v1/sync/*` is exempt from the
+  // per-IP limiter, so this is the only ceiling left. Deliberately not in
+  // `validateSyncPath`: that runs on the pull side too, where one rejected
+  // historical row aborts the whole manifest apply.
+  if (isRejectedSyncPath(path as string)) {
+    return json(422, {
+      error: `path is excluded from sync: ${path}`,
+      code: 'IgnoredPath',
+    });
+  }
+
   if (!contentHash || typeof contentHash !== 'string') {
     return json(400, { error: 'contentHash is required' });
   }
@@ -319,6 +355,18 @@ export async function handleSyncUploadPrepare(
   }
 
   const { teamId, actorId } = caller;
+
+  // Volume ceiling. Unlike the name list this cannot produce a false positive:
+  // it only fires on an amount that is a problem whatever the files are called.
+  // A count that could not be established allows the write — see `liveFileCount`.
+  const count = await liveFileCount(teamId, (id) => countLiveFiles(id, deps));
+  if (isOverFileQuota(count)) {
+    return json(422, {
+      error: `team is at its file limit (${count} of ${maxFilesPerTeam()}); remove files or raise SYNC_MAX_FILES_PER_TEAM`,
+      code: 'QuotaExceeded',
+    });
+  }
+
   const ossKey = ossKeyForHash(teamId, contentHash);
   const storage = resolveStorage(deps);
 

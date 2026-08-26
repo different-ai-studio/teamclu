@@ -50,6 +50,8 @@ subtle = "2"
 getrandom = "0.2"
 flate2 = "1"
 walkdir = "2"
+# gitignore-syntax matching for the sync ignore rules (ripgrep's implementation).
+ignore = "0.4"
 # App starter templates are compiled into the binary (see sync::app_templates)
 # so seeding an app needs no network, no git remote, and no credentials.
 include_dir = "0.7"

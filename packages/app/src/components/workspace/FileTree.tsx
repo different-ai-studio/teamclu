@@ -8,7 +8,10 @@ import { isChatInputDropTarget, isPointOverElement } from '@/lib/chat-file-drop'
 import { copyToClipboard, isTauri } from '@/lib/utils';
 import { useWorkspaceStore, type FileNode } from "@/stores/workspace";
 import { useOssSyncStore } from "@/stores/oss-sync";
-import { useTeamConflictsStore, isConflictSidecarName } from "@/stores/team-conflicts";
+import { useTeamConflictsStore } from "@/stores/team-conflicts";
+import { withDefaultExtension } from "@/lib/knowledge-file-names";
+import { pruneKnowledgeNoise } from "@/lib/knowledge-tree-pruning";
+import { isIgnoredSyncKey } from "@/lib/knowledge-ignored";
 import { useTeamSyncStatusStore } from "@/stores/team-sync-status";
 import { buildBadgeMap, badgeForDirectory } from "@/lib/team-sync-badges";
 import { teamSyncKeyForPath } from "@/lib/team-skill-paths";
@@ -50,47 +53,6 @@ interface FlatTreeNode {
   compactName?: string;
   /** All directory paths in a compacted chain (for collapsing all at once) */
   compactedPaths?: string[];
-}
-
-/**
- * Drop conflict sidecars from a team-knowledge tree.
- *
- * A sidecar is a local-only copy the sync engine parked next to a document it
- * had to overwrite. Listing it turns one conflict into two near-identical rows
- * with no explanation; the document's own row carries the badge instead, and the
- * sidecar is what the decision view reads.
- *
- * Returns the SAME array when nothing was pruned, so the common case costs one
- * walk and no downstream re-render.
- */
-function pruneConflictSidecars(
-  nodes: FileNode[],
-  opts: { knowledgeDir?: string | null; workspacePath?: string | null },
-): FileNode[] {
-  let changed = false;
-  const out: FileNode[] = [];
-  for (const node of nodes) {
-    if (
-      node.type !== "directory" &&
-      isConflictSidecarName(node.name) &&
-      // Only inside team knowledge: a workspace source file may legitimately be
-      // called `foo.conflict.ts`, and hiding it would be a bug of our own.
-      teamSyncKeyForPath(node.path, opts) !== null
-    ) {
-      changed = true;
-      continue;
-    }
-    if (node.children) {
-      const children = pruneConflictSidecars(node.children, opts);
-      if (children !== node.children) {
-        changed = true;
-        out.push({ ...node, children });
-        continue;
-      }
-    }
-    out.push(node);
-  }
-  return changed ? out : nodes;
 }
 
 // Filter tree nodes recursively based on filter text.
@@ -217,6 +179,12 @@ interface FileTreeProps {
   rootCreating?: 'file' | 'folder' | null;
   onRootCreateConfirm?: (name: string) => void;
   onRootCreateCancel?: () => void;
+  /**
+   * Extension given to a newly created file when the user types none (e.g.
+   * `.md` in the knowledge tree). Left unset for the workspace tree, where a
+   * new file is as likely to be `.ts` as anything else.
+   */
+  defaultFileExtension?: string;
 }
 
 export function FileTree({
@@ -226,6 +194,7 @@ export function FileTree({
   rootCreating,
   onRootCreateConfirm,
   onRootCreateCancel,
+  defaultFileExtension,
 }: FileTreeProps) {
   const { t } = useTranslation();
   const storeFileTree = useWorkspaceStore(s => s.fileTree);
@@ -234,6 +203,7 @@ export function FileTree({
   // case, which is what keeps the per-row lookup below free.
   const conflictsBySyncKey = useTeamConflictsStore(s => s.bySyncKey);
   const knowledgeDir = useTeamConflictsStore(s => s.knowledgeDir);
+  const ignoredRoots = useTeamSyncStatusStore(s => s.ignoredRoots);
   const localBySyncKey = useTeamSyncStatusStore(s => s.localBySyncKey);
   const remoteBySyncKey = useTeamSyncStatusStore(s => s.remoteBySyncKey);
   const expandedPaths = useWorkspaceStore(s => s.expandedPaths);
@@ -249,7 +219,7 @@ export function FileTree({
   const collapseDirectory = useWorkspaceStore(s => s.collapseDirectory);
   const setFocusedPath = useWorkspaceStore(s => s.setFocusedPath);
   const fileTree = useMemo(
-    () => pruneConflictSidecars(rawFileTree, { knowledgeDir, workspacePath }),
+    () => pruneKnowledgeNoise(rawFileTree, { knowledgeDir, workspacePath }),
     [rawFileTree, knowledgeDir, workspacePath],
   );
   // One badge per document, folded from the three things that can be true of
@@ -366,9 +336,13 @@ export function FileTree({
   );
 
   const handleCreateConfirm = useCallback(
-    async (name: string) => {
+    async (rawName: string) => {
       if (!creatingIn) return;
       const { dirPath, type } = creatingIn;
+      const name =
+        type === "file" && defaultFileExtension
+          ? withDefaultExtension(rawName, defaultFileExtension)
+          : rawName;
       const success =
         type === "file"
           ? await createNewFile(dirPath, name)
@@ -383,7 +357,7 @@ export function FileTree({
       }
       setCreatingIn(null);
     },
-    [creatingIn, refreshFileTree, expandDirectory, selectFile],
+    [creatingIn, refreshFileTree, expandDirectory, selectFile, defaultFileExtension],
   );
 
   const handleRename = useCallback((path: string) => {
@@ -1118,7 +1092,11 @@ export function FileTree({
       return (
         <div className="py-1">
           <InlineInput
-            defaultValue={rootCreating === "file" ? "untitled" : "new-folder"}
+            defaultValue={
+              rootCreating === "file"
+                ? `untitled${defaultFileExtension ?? ""}`
+                : "new-folder"
+            }
             onConfirm={onRootCreateConfirm}
             onCancel={onRootCreateCancel}
             level={0}
@@ -1190,6 +1168,14 @@ export function FileTree({
         ? badgeForDirectory(syncKey, badges)
         : (badges[syncKey] ?? null);
     })(),
+    // Excluded from sync by the ignore rules. Not a sync state — it is the
+    // absence of one — so the row is dimmed rather than given a sixth colour
+    // alongside the five that make up the sync-status scale.
+    syncIgnored: (() => {
+      if (ignoredRoots.size === 0) return false;
+      const syncKey = teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath });
+      return syncKey !== null && isIgnoredSyncKey(syncKey, ignoredRoots);
+    })(),
     // Whether the row has a cloud counterpart at all — which is what decides
     // if "show the cloud version" is a meaningful thing to offer on it.
     isTeamKnowledge:
@@ -1230,7 +1216,9 @@ export function FileTree({
     <div className="py-1">
       {rootCreating && onRootCreateConfirm && onRootCreateCancel && (
         <InlineInput
-          defaultValue={rootCreating === 'file' ? 'untitled' : 'new-folder'}
+          defaultValue={
+            rootCreating === 'file' ? `untitled${defaultFileExtension ?? ''}` : 'new-folder'
+          }
           onConfirm={onRootCreateConfirm}
           onCancel={onRootCreateCancel}
           level={0}
@@ -1249,7 +1237,9 @@ export function FileTree({
           {creatingIn && index === creatingIndex - 1 && (
             <InlineInput
               defaultValue={
-                creatingIn.type === "file" ? "untitled" : "new-folder"
+                creatingIn.type === "file"
+                  ? `untitled${defaultFileExtension ?? ""}`
+                  : "new-folder"
               }
               onConfirm={handleCreateConfirm}
               onCancel={() => setCreatingIn(null)}

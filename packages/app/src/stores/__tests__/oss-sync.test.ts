@@ -125,6 +125,10 @@ describe('useOssSyncStore', () => {
       expect(mockInvoke).toHaveBeenCalledWith('oss_sync_now', {
         workspacePath: '/workspace/path',
         teamId: 'team-active',
+        // Explicitly false, not omitted: this flag is a person's answer to
+        // "you added N files at once — send them?", and a default-on anywhere
+        // would quietly remove the guard.
+        allowBulkAdd: false,
       })
       expect(useOssSyncStore.getState().syncing).toBe(false)
       expect(useOssSyncStore.getState().lastError).toBeNull()

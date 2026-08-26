@@ -1,6 +1,10 @@
 {
   "teamShare": {
     "refreshAndSync": "刷新并同步云端",
+    "openInObsidian": "在 Obsidian 中打开",
+    "obsidianNotInstalled": "本机未检测到 Obsidian",
+    "obsidianNeedsRestart": "已加入 Obsidian 的库列表。重启一次 Obsidian 就能打开，之后点这个按钮会直接进去。",
+    "obsidianOpenFailed": "无法打开 Obsidian：{{msg}}",
     "cloudSyncFailed": "同步失败：{{msg}}",
     "cloudSyncStuckFiles": "还有 {{count}} 个文件同步不了，每次同步都会重试",
     "envAdd": "新增环境变量",
@@ -2754,11 +2758,14 @@
     "phasePulling": "下载中",
     "phasePushing": "上传中",
     "phaseDeleting": "删除中",
+    "bulkAddHeld": "一次新增 {{count}} 个文件 —— 已拦下，点击发送",
+    "oversizeSkipped": "{{count}} 个文件太大，已跳过",
     "conflicts": "{{count}} 个冲突待决策",
     "failedFiles": "{{count}} 个文件同步不了 · 持续重试",
     "failed": "同步失败"
   },
   "syncBadge": {
+    "ignored": "不同步 —— 被忽略规则排除",
     "localNew": "本机新增 —— 云端还没有",
     "localModified": "本机已改 —— 还没推上去",
     "remoteAhead": "云端有更新的版本等着拉",

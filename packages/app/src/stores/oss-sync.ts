@@ -66,6 +66,18 @@ export interface OssSyncState {
    * with `failed > 0` is not "clean" even though it returned successfully.
    */
   failed: number
+  /**
+   * Paths the last tick refused to upload for exceeding the per-file size
+   * limit. The tick still succeeded — but silence here would leave the user
+   * believing these went up.
+   */
+  oversize: string[]
+  /**
+   * How many new files the last tick held back, waiting to be told to send
+   * them. `null` on a normal tick. Non-null means NOTHING was pushed, so the
+   * bar has to ask rather than just report.
+   */
+  blockedNewFiles: number | null
   lastError: string | null
   /**
    * Live progress of the running tick, `null` when nothing is running. The
@@ -82,7 +94,12 @@ export interface OssSyncState {
    * desktop's team-secret self-heal has somewhere to read from.
    */
   refresh(workspacePath?: string | null): Promise<void>
-  syncNow(workspacePath?: string | null): Promise<void>
+  /**
+   * `allowBulkAdd` answers the "you added N files at once — send them?"
+   * question. Never pass it on a retry or a timer: that turns the guard into a
+   * one-tick delay.
+   */
+  syncNow(workspacePath?: string | null, opts?: { allowBulkAdd?: boolean }): Promise<void>
   listVersions(
     workspacePath: string | null,
     path: string,
@@ -122,6 +139,8 @@ interface SyncNowResult {
   pushed: number
   conflicts: number
   failed?: number
+  oversize?: string[]
+  blockedNewFiles?: number | null
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +163,8 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
   pushed: 0,
   conflicts: 0,
   failed: 0,
+  oversize: [],
+  blockedNewFiles: null,
   lastError: null,
   progress: null,
 
@@ -180,7 +201,7 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
     }
   },
 
-  async syncNow(workspacePath?: string | null) {
+  async syncNow(workspacePath?: string | null, opts?: { allowBulkAdd?: boolean }) {
     if (!isTauri()) return
     const teamId = activeTeamId()
     if (!teamId) {
@@ -193,12 +214,15 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
       const result = await invoke<SyncNowResult>('oss_sync_now', {
         workspacePath: workspacePath ?? null,
         teamId,
+        allowBulkAdd: opts?.allowBulkAdd ?? false,
       })
       set({
         pulled: result.pulled ?? 0,
         pushed: result.pushed ?? 0,
         conflicts: result.conflicts ?? 0,
         failed: result.failed ?? 0,
+        oversize: result.oversize ?? [],
+        blockedNewFiles: result.blockedNewFiles ?? null,
       })
       // Re-fetch status to get fresh lastSyncAt / mode from the daemon.
       await get().refresh(workspacePath)

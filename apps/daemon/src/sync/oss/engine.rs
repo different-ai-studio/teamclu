@@ -18,8 +18,9 @@ use super::{
     fc_client::{
         BatchItemOutcome, CompleteResult, DeleteBatchItem, FcClient, ManifestItem, PrepareBatchItem,
     },
+    ignore_rules::IgnoreRules,
     path_validator::{validate, validate_no_symlink_escape, ALLOWED_PREFIXES},
-    scanner::{scan_workspace, ScannedFile},
+    scanner::{scan_workspace_with, ScannedFile},
     state::LocalSyncState,
     ProgressSink, SyncPhase,
 };
@@ -27,6 +28,41 @@ use super::{
 /// Chunk size for batch FC calls — must not exceed the FC server cap
 /// (`MAX_SYNC_BATCH`). The daemon auto-splits larger working sets into chunks.
 const MAX_BATCH: usize = 200;
+
+/// Largest single file the sync will carry.
+///
+/// The ignore rules match on names, so they only stop what someone thought to
+/// name. A 4 GB screen recording dropped into the knowledge dir has an entirely
+/// ordinary name and no rule will ever match it — but the object store behind
+/// this sync has single-digit GB free. This guard is the one that does not need
+/// to have anticipated anything.
+///
+/// Same number the desktop uses to decide a workspace file is too big to open
+/// (`MAX_WORKSPACE_FILE_BYTES`), so "too big to edit" and "too big to sync"
+/// agree.
+const MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
+
+/// How many previously-unseen files one tick will push without being asked
+/// twice.
+///
+/// This is the guard that actually catches "somebody dropped a repo in here":
+/// it counts, it does not read names, so it fires before anyone has written a
+/// rule — including for the build tool nobody on this team has heard of yet.
+/// Editing 2000 documents by hand between two ticks does not happen; a
+/// `git clone` lands ten times that in one second.
+const MAX_NEW_FILES_PER_TICK: usize = 2000;
+
+/// Per-tick knobs a caller can set. A tick with `Default` values is the
+/// autonomous one the timer runs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TickOptions {
+    /// Send a batch of new files that an earlier tick refused to send.
+    ///
+    /// Set only when a person has been shown the count and said yes — this is
+    /// the acknowledgement, so defaulting it to `true` anywhere would quietly
+    /// remove the guard.
+    pub allow_bulk_add: bool,
+}
 
 /// Max concurrent direct-to-OSS blob transfers (PUT on push, GET on pull). OSS
 /// presigned transfers bypass FC and are not rate-limited, but we still cap the
@@ -45,6 +81,20 @@ pub struct TickResult {
     /// `warn!`, the tick still returned `Ok`, and the UI just saw a smaller
     /// `pulled`. Surfacing it is what makes the failure observable at all.
     pub failed: u32,
+    /// Paths skipped for exceeding [`MAX_FILE_BYTES`].
+    ///
+    /// The tick still succeeds — one huge file is not a reason to stop syncing
+    /// the notes around it — but this has to reach the UI. A silently skipped
+    /// file is worse than a slow sync: the user believes it went up.
+    pub oversize: Vec<String>,
+    /// How many new files this tick refused to push, when
+    /// [`MAX_NEW_FILES_PER_TICK`] was exceeded. `None` on a normal tick.
+    ///
+    /// Nothing was pushed in that case — not even the first
+    /// [`MAX_NEW_FILES_PER_TICK`] of them. Half a source tree in the team's
+    /// cloud is worse than none of it, and the user has to make one decision,
+    /// not watch a partial upload.
+    pub blocked_new_files: Option<u32>,
 }
 
 /// Run a full sync tick: PULL then PUSH (spec §4.3), reporting how far it has
@@ -59,6 +109,7 @@ pub async fn tick_with_progress(
     team_secret: Option<&str>,
     fc: &FcClient,
     progress: &ProgressSink,
+    opts: TickOptions,
 ) -> Result<TickResult, SyncError> {
     // Knowledge content is pushed as plaintext, so a key is no longer required
     // to sync. It is still derived when the team has a secret, because blobs
@@ -74,6 +125,12 @@ pub async fn tick_with_progress(
     // content_root is now a parameter (the global team dir).
     let mut state = LocalSyncState::load_at(team_id).map_err(SyncError::State)?;
 
+    // Built once per tick and threaded through scan, pull and tombstone. Reading
+    // the rule files three times would also let them change mid-tick, and a tick
+    // that ignores a path on the way in but not on the way out is exactly how
+    // §4.6's delete-everything failure happens.
+    let rules = IgnoreRules::load(std::path::Path::new(content_root));
+
     // Refresh the `dirty` flag from the working tree BEFORE PULL so the pull-phase
     // checks reflect the CURRENT tree, not the last-sync snapshot. Without this an
     // unsynced local edit (state still dirty=false) is silently overwritten by a
@@ -83,7 +140,7 @@ pub async fn tick_with_progress(
     // last-synced baseline that the PUSH-phase scan's cheap mtime+size check relies
     // on; mutating them here would make that scan treat an edited file as clean and
     // skip the upload.
-    refresh_dirty(&mut state, content_root);
+    refresh_dirty(&mut state, content_root, &rules);
 
     // ── PULL ─────────────────────────────────────────────────────────────────
     // Paginate /sync/manifest fully before advancing last_server_seq.
@@ -120,6 +177,14 @@ pub async fn tick_with_progress(
         // disk, where they would shadow the cloud copy. Skipped before `validate`
         // so the two never have to agree about them.
         if super::path_validator::is_retired(&item.path) {
+            continue;
+        }
+        // Ignored here means "this device does not want this file on disk" —
+        // an older client, or one with looser rules, can still have pushed it.
+        // `continue`, never `?`: the retired-prefix comment above records what
+        // happens when a per-item rejection aborts the manifest apply, and this
+        // would be the same failure with a different trigger.
+        if rules.is_ignored_with_ancestors(&item.path) {
             continue;
         }
         // Spec §4.3: path-validate all manifest items (defense vs. malicious remote).
@@ -232,7 +297,7 @@ pub async fn tick_with_progress(
     // ── PUSH ─────────────────────────────────────────────────────────────────
     // Re-scan (the tree may have changed during PULL) to pick up current
     // mtime/size/dirty flags.
-    let scan = apply_scan(&mut state, content_root);
+    let scan = apply_scan(&mut state, content_root, &rules);
 
     let dirty_paths: Vec<String> = state
         .files
@@ -261,14 +326,37 @@ pub async fn tick_with_progress(
         .map(|(p, _)| p.clone())
         .collect();
 
-    let all_dirty: Vec<String> = {
-        let mut v = dirty_paths;
-        v.append(&mut extra_dirty);
-        v.append(&mut readd_paths);
-        v.sort();
-        v.dedup();
-        v
-    };
+    // The two name-blind guards live in `plan_push`; see its doc for why they
+    // count and measure instead of matching names.
+    let sizes: std::collections::HashMap<&str, u64> =
+        scan.iter().map(|s| (s.rel_path.as_str(), s.size)).collect();
+    let PushPlan {
+        to_push: all_dirty,
+        oversize,
+        blocked_new_files,
+    } = plan_push(
+        dirty_paths,
+        extra_dirty,
+        readd_paths,
+        &sizes,
+        opts.allow_bulk_add,
+    );
+    if let Some(count) = blocked_new_files {
+        tracing::warn!(
+            team_id,
+            new_files = count,
+            limit = MAX_NEW_FILES_PER_TICK,
+            "push held back: too many new files at once, waiting for confirmation"
+        );
+    }
+    if !oversize.is_empty() {
+        tracing::warn!(
+            team_id,
+            count = oversize.len(),
+            limit_bytes = MAX_FILE_BYTES,
+            "skipping files above the per-file size limit"
+        );
+    }
 
     // Batched PUSH (upload) — collect → prepare-batch → concurrent blob PUT →
     // complete-batch → per-item apply. Falls back to per-file on a pre-batch FC.
@@ -287,7 +375,7 @@ pub async fn tick_with_progress(
     // Propagate local deletions: a previously-synced file that is absent from the
     // current scan was deleted locally → emit a server-side tombstone so other
     // nodes pull the deletion. Each tombstone is a parentVersion CAS.
-    let dels = locally_deleted_paths(&state, &scan);
+    let dels = locally_deleted_paths(&state, &scan, &rules);
     progress.report(SyncPhase::Deleting, 0, dels.len() as u32);
     let del_stats = delete_phase(content_root, team_id, fc, &mut state, dels).await;
 
@@ -324,6 +412,8 @@ pub async fn tick_with_progress(
         // counted until it finally lands, which is the number a person needs to
         // see. `pull_failures` is only interesting to the log line above.
         failed: state.quarantined.len() as u32,
+        oversize,
+        blocked_new_files,
     };
     let _ = pull_failures;
 
@@ -1328,8 +1418,8 @@ async fn delete_file_retrying(
 /// Refresh ONLY the `dirty` flag of existing state entries from the working tree.
 /// Used before PULL so conflict/deletion checks see current dirtiness. Deliberately
 /// does NOT touch mtime/size (the last-synced baseline the PUSH scan depends on).
-fn refresh_dirty(state: &mut LocalSyncState, content_root: &str) {
-    let scan = scan_workspace(content_root, state);
+fn refresh_dirty(state: &mut LocalSyncState, content_root: &str, rules: &IgnoreRules) {
+    let scan = scan_workspace_with(content_root, state, rules);
     for scanned in &scan {
         if let Some(fs) = state.files.get_mut(&scanned.rel_path) {
             fs.dirty = scanned.dirty;
@@ -1340,8 +1430,12 @@ fn refresh_dirty(state: &mut LocalSyncState, content_root: &str) {
 /// Scan the working tree and apply current mtime/size/hash/dirty back into the
 /// state entries that already exist; returns the scan so callers can also use it
 /// for new-file and deletion detection. Used by PUSH (runs once per tick).
-fn apply_scan(state: &mut LocalSyncState, content_root: &str) -> Vec<ScannedFile> {
-    let scan = scan_workspace(content_root, state);
+fn apply_scan(
+    state: &mut LocalSyncState,
+    content_root: &str,
+    rules: &IgnoreRules,
+) -> Vec<ScannedFile> {
+    let scan = scan_workspace_with(content_root, state, rules);
     for scanned in &scan {
         if let Some(fs) = state.files.get_mut(&scanned.rel_path) {
             fs.mtime = scanned.mtime;
@@ -1353,15 +1447,103 @@ fn apply_scan(state: &mut LocalSyncState, content_root: &str) -> Vec<ScannedFile
     scan
 }
 
+/// What a push should actually send, and what it is holding back.
+struct PushPlan {
+    to_push: Vec<String>,
+    oversize: Vec<String>,
+    blocked_new_files: Option<u32>,
+}
+
+/// Apply the two name-blind guards to the push candidates.
+///
+/// The ignore rules stop what somebody thought to name. These stop what nobody
+/// did — a build tool no one here has heard of, a 4 GB screen recording with a
+/// perfectly ordinary filename. That is why they count and measure rather than
+/// match.
+///
+/// Split out of the tick so it can be tested without an FC client: this is the
+/// last thing standing between "somebody dropped a repo in the notes folder"
+/// and an object store with single-digit GB free.
+fn plan_push(
+    dirty_paths: Vec<String>,
+    mut extra_dirty: Vec<String>,
+    mut readd_paths: Vec<String>,
+    sizes: &std::collections::HashMap<&str, u64>,
+    allow_bulk_add: bool,
+) -> PushPlan {
+    // Counted before anything is filtered out, so the number the user is asked
+    // about is the number of files they actually created.
+    let new_file_count = extra_dirty.len();
+    if !allow_bulk_add && new_file_count > MAX_NEW_FILES_PER_TICK {
+        // Nothing goes up — not even edits to documents that were already
+        // there. This tick is a question, not a partial upload: half a source
+        // tree in the team's cloud is worse than none of it, and the user
+        // should make one decision rather than watch an upload they never
+        // asked for get most of the way through.
+        return PushPlan {
+            to_push: Vec::new(),
+            oversize: Vec::new(),
+            blocked_new_files: Some(new_file_count as u32),
+        };
+    }
+
+    let mut to_push = {
+        let mut v = dirty_paths;
+        v.append(&mut extra_dirty);
+        v.append(&mut readd_paths);
+        v.sort();
+        v.dedup();
+        v
+    };
+
+    // One file too large to carry does not stop the notes around it: drop it
+    // from this push and report it. A path with no recorded size (gone since
+    // the scan) stays in — the push path already handles a missing file, and
+    // guessing here would drop a document on a race.
+    let mut oversize: Vec<String> = Vec::new();
+    to_push.retain(|path| {
+        let too_big = sizes
+            .get(path.as_str())
+            .is_some_and(|&n| n > MAX_FILE_BYTES);
+        if too_big {
+            oversize.push(path.clone());
+        }
+        !too_big
+    });
+
+    PushPlan {
+        to_push,
+        oversize,
+        blocked_new_files: None,
+    }
+}
+
 /// Paths previously synced (`synced_version > 0`) but absent from the current
 /// scan → deleted locally, needing a server-side tombstone. Sorted for determinism.
-fn locally_deleted_paths(state: &LocalSyncState, scan: &[ScannedFile]) -> Vec<(String, i32)> {
+///
+/// **Ignored paths are excluded, and that exclusion is load-bearing.** Becoming
+/// ignored also makes a file vanish from the scan, which is indistinguishable
+/// here from being deleted. Without this filter, the first tick after any new
+/// ignore rule lands would tombstone every file the rule now covers and delete
+/// them off every teammate's disk — a client-side change silently destroying
+/// server-side data. Ignoring means "stop managing", never "delete": the state
+/// entries stay put, so relaxing the rule later lets the files resume syncing.
+fn locally_deleted_paths(
+    state: &LocalSyncState,
+    scan: &[ScannedFile],
+    rules: &IgnoreRules,
+) -> Vec<(String, i32)> {
     let present: std::collections::HashSet<&str> =
         scan.iter().map(|s| s.rel_path.as_str()).collect();
     let mut out: Vec<(String, i32)> = state
         .files
         .iter()
-        .filter(|(p, f)| !f.deleted_local && f.synced_version > 0 && !present.contains(p.as_str()))
+        .filter(|(p, f)| {
+            !f.deleted_local
+                && f.synced_version > 0
+                && !present.contains(p.as_str())
+                && !rules.is_ignored_with_ancestors(p)
+        })
         .map(|(p, f)| (p.clone(), f.synced_version))
         .collect();
     out.sort();
@@ -1467,6 +1649,125 @@ mod tests {
         }
     }
 
+    fn sizes_of(pairs: &[(&'static str, u64)]) -> std::collections::HashMap<&'static str, u64> {
+        pairs.iter().copied().collect()
+    }
+
+    #[test]
+    fn plan_push_sends_everything_when_nothing_trips_a_guard() {
+        let plan = plan_push(
+            vec!["knowledge/a.md".into()],
+            vec!["knowledge/b.md".into()],
+            vec![],
+            &sizes_of(&[("knowledge/a.md", 10), ("knowledge/b.md", 20)]),
+            false,
+        );
+        assert_eq!(plan.to_push, vec!["knowledge/a.md", "knowledge/b.md"]);
+        assert!(plan.oversize.is_empty());
+        assert_eq!(plan.blocked_new_files, None);
+    }
+
+    /// A 4 GB recording has an ordinary name, so no ignore rule will ever match
+    /// it. The size guard is what keeps it off an object store with
+    /// single-digit GB free.
+    #[test]
+    fn plan_push_drops_a_file_over_the_size_limit_and_keeps_the_rest() {
+        let plan = plan_push(
+            vec!["knowledge/notes.md".into(), "knowledge/huge.mov".into()],
+            vec![],
+            vec![],
+            &sizes_of(&[
+                ("knowledge/notes.md", 1024),
+                ("knowledge/huge.mov", MAX_FILE_BYTES + 1),
+            ]),
+            false,
+        );
+        assert_eq!(plan.to_push, vec!["knowledge/notes.md"]);
+        assert_eq!(plan.oversize, vec!["knowledge/huge.mov"]);
+    }
+
+    #[test]
+    fn plan_push_allows_a_file_exactly_at_the_size_limit() {
+        let plan = plan_push(
+            vec!["knowledge/edge.bin".into()],
+            vec![],
+            vec![],
+            &sizes_of(&[("knowledge/edge.bin", MAX_FILE_BYTES)]),
+            false,
+        );
+        assert_eq!(plan.to_push, vec!["knowledge/edge.bin"]);
+        assert!(plan.oversize.is_empty());
+    }
+
+    /// A path the scan no longer knows the size of must not be dropped on a
+    /// guess — the push path already copes with a file that vanished.
+    #[test]
+    fn plan_push_keeps_a_path_with_no_recorded_size() {
+        let plan = plan_push(
+            vec!["knowledge/raced.md".into()],
+            vec![],
+            vec![],
+            &sizes_of(&[]),
+            false,
+        );
+        assert_eq!(plan.to_push, vec!["knowledge/raced.md"]);
+    }
+
+    /// What "somebody dropped a repo into the notes folder" looks like from in
+    /// here. Nothing goes up, including the ordinary edit alongside it: this
+    /// tick is a question, not a partial upload.
+    #[test]
+    fn plan_push_holds_everything_back_when_too_many_new_files_appear() {
+        let new_files: Vec<String> = (0..MAX_NEW_FILES_PER_TICK + 1)
+            .map(|i| format!("knowledge/repo/file-{i}.js"))
+            .collect();
+        let plan = plan_push(
+            vec!["knowledge/an-ordinary-edit.md".into()],
+            new_files,
+            vec![],
+            &sizes_of(&[]),
+            false,
+        );
+        assert!(plan.to_push.is_empty());
+        assert_eq!(
+            plan.blocked_new_files,
+            Some(MAX_NEW_FILES_PER_TICK as u32 + 1)
+        );
+    }
+
+    #[test]
+    fn plan_push_lets_exactly_the_limit_through() {
+        let new_files: Vec<String> = (0..MAX_NEW_FILES_PER_TICK)
+            .map(|i| format!("knowledge/f{i}.md"))
+            .collect();
+        let plan = plan_push(vec![], new_files, vec![], &sizes_of(&[]), false);
+        assert_eq!(plan.blocked_new_files, None);
+        assert_eq!(plan.to_push.len(), MAX_NEW_FILES_PER_TICK);
+    }
+
+    /// The acknowledgement path: a person saw the count and said yes.
+    #[test]
+    fn plan_push_sends_the_batch_once_it_is_allowed() {
+        let new_files: Vec<String> = (0..MAX_NEW_FILES_PER_TICK + 500)
+            .map(|i| format!("knowledge/f{i}.md"))
+            .collect();
+        let expected = new_files.len();
+        let plan = plan_push(vec![], new_files, vec![], &sizes_of(&[]), true);
+        assert_eq!(plan.blocked_new_files, None);
+        assert_eq!(plan.to_push.len(), expected);
+    }
+
+    /// Editing thousands of documents that already sync is not a flood — only
+    /// previously-unseen files are counted.
+    #[test]
+    fn plan_push_does_not_count_edits_to_existing_files_as_new() {
+        let edits: Vec<String> = (0..MAX_NEW_FILES_PER_TICK + 1)
+            .map(|i| format!("knowledge/existing-{i}.md"))
+            .collect();
+        let plan = plan_push(edits, vec![], vec![], &sizes_of(&[]), false);
+        assert_eq!(plan.blocked_new_files, None);
+    }
+
     #[test]
     fn locally_deleted_detects_synced_file_absent_from_scan() {
         let mut state = empty_state();
@@ -1475,7 +1776,7 @@ mod tests {
         // Only a.md is still on disk; b.md was deleted locally.
         let scan = vec![scanned("knowledge/a.md")];
         assert_eq!(
-            locally_deleted_paths(&state, &scan),
+            locally_deleted_paths(&state, &scan, &IgnoreRules::empty()),
             vec![("knowledge/b.md".to_string(), 1)]
         );
     }
@@ -1491,7 +1792,7 @@ mod tests {
         let mut d = synced_file(2);
         d.deleted_local = true;
         state.files.insert("knowledge/gone.md".into(), d);
-        assert!(locally_deleted_paths(&state, &[]).is_empty());
+        assert!(locally_deleted_paths(&state, &[], &IgnoreRules::empty()).is_empty());
     }
 
     #[test]
@@ -1499,7 +1800,7 @@ mod tests {
         let mut state = empty_state();
         state.files.insert("knowledge/a.md".into(), synced_file(2));
         let scan = vec![scanned("knowledge/a.md")];
-        assert!(locally_deleted_paths(&state, &scan).is_empty());
+        assert!(locally_deleted_paths(&state, &scan, &IgnoreRules::empty()).is_empty());
     }
 
     #[test]
@@ -1611,7 +1912,7 @@ mod tests {
 
         // Edit the file (different content + size).
         std::fs::write(&f, b"edited-bigger\n").unwrap();
-        refresh_dirty(&mut state, root);
+        refresh_dirty(&mut state, root, &IgnoreRules::empty());
 
         let fs = &state.files["knowledge/x.md"];
         assert!(fs.dirty, "edited file must be flagged dirty before pull");

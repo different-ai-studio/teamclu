@@ -55,9 +55,15 @@ interface FileBrowserProps {
   onFilterTextChange?: (value: string) => void
   searchExpanded?: boolean
   onSearchExpandedChange?: (value: boolean) => void
+  /**
+   * Extension given to a newly created file when the user types none. Set to
+   * `.md` for the knowledge tree; left unset for the workspace tree, where a
+   * new file is as likely to be `.ts` as anything else.
+   */
+  defaultFileExtension?: string
 }
 
-export function FileBrowser({ className, variant = 'default', rootPath, rootPaths, rootLabels, hideFileActions = false, actionIcons, rootCreating, onRootCreateConfirm, onRootCreateCancel, hideToolbar = false, filterText: controlledFilterText, onFilterTextChange, searchExpanded: controlledSearchExpanded, onSearchExpandedChange }: FileBrowserProps) {
+export function FileBrowser({ className, variant = 'default', rootPath, rootPaths, rootLabels, hideFileActions = false, actionIcons, rootCreating, onRootCreateConfirm, onRootCreateCancel, hideToolbar = false, filterText: controlledFilterText, onFilterTextChange, searchExpanded: controlledSearchExpanded, onSearchExpandedChange, defaultFileExtension }: FileBrowserProps) {
   const { t } = useTranslation()
   const workspacePath = useWorkspaceStore(s => s.workspacePath)
   const isPanelOpen = useWorkspaceStore(s => s.isPanelOpen)
@@ -422,7 +428,7 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
       <ScrollAreaPrimitive.Root className="flex-1 relative overflow-hidden">
         <ScrollAreaPrimitive.Viewport className="h-full w-full">
           <div className="py-1 min-w-max">
-            <FileTree filterText={deferredFilterText} nodes={effectiveTree} rootPath={singleRootPath} rootCreating={rootCreating} onRootCreateConfirm={onRootCreateConfirm} onRootCreateCancel={onRootCreateCancel} />
+            <FileTree filterText={deferredFilterText} nodes={effectiveTree} rootPath={singleRootPath} rootCreating={rootCreating} onRootCreateConfirm={onRootCreateConfirm} onRootCreateCancel={onRootCreateCancel} defaultFileExtension={defaultFileExtension} />
           </div>
         </ScrollAreaPrimitive.Viewport>
         <ScrollBar orientation="vertical" />
