@@ -293,7 +293,11 @@ export function KnowledgeSyncFooter() {
     <Popover>
       <PopoverTrigger asChild>{bar}</PopoverTrigger>
       <PopoverContent side="top" align="start" className="w-[320px] p-0" data-testid="knowledge-sync-list">
-        <ScrollArea className="max-h-[280px]">
+        {/* Radix wraps the viewport's children in a `display: table` div, which
+            sizes to the widest row — so a long document name would widen the
+            list instead of ellipsing. `!block` puts the rows back on the
+            popover's own width, which is what `truncate` needs. */}
+        <ScrollArea className="max-h-[280px] [&_[data-slot=scroll-area-viewport]>div]:!block">
           <div className="py-1">
             {groups.map((group) => (
               <div key={group.id}>
