@@ -66,14 +66,16 @@ export function registerApps(router) {
 
   router.post("/v1/apps/:appId/deploy", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
-    const out = await ctx.repository.deployApp(appId);
+    const body = ctx.json ?? {};
+    const out = await ctx.repository.deployApp(appId, body);
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { statusCode: 202, body: out };
   });
 
   router.post("/v1/apps/:appId/deploy/finalize", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
-    const out = await ctx.repository.finalizeDeploy(appId);
+    const body = ctx.json ?? {};
+    const out = await ctx.repository.finalizeDeploy(appId, body);
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
   });
@@ -82,6 +84,28 @@ export function registerApps(router) {
     const appId = decodeURIComponent(ctx.params.appId);
     const items = await ctx.repository.listAppSessions(appId);
     return { body: { items } };
+  });
+
+  // Secret response — never log the body (private deploy key).
+  router.get("/v1/apps/:appId/git-credential", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.getAppGitCredential(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.get("/v1/apps/:appId/git-head", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.getAppGitHead(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.get("/v1/apps/:appId/membership", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.getAppMembership(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
   });
 
 }

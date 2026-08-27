@@ -24,10 +24,33 @@
 
 ## 怎么上线
 
-用户在 TeamClu 的应用列表里点「部署」。你不需要、也没有权限自己部署 ——
-把文件改好就行，剩下的交给用户。
+部署按 **Gitea 远端 commit** 构建，不是按本机未保存的文件。改完代码后：
 
-想在本地看效果：`pnpm dev`，然后打开 `http://localhost:9000`。
+1. **commit** 到本地 git
+2. **push** 到 Gitea（未 push 的 commit 部署时会被拒绝）
+3. 让用户在 TeamClu 应用列表里点「部署」，并选中刚 push 的 commit
+
+你不需要、也没有权限自己触发部署 —— 把改动 commit + push 好，剩下的交给用户。
+
+本地预览：`pnpm dev`，打开 `http://localhost:9000`。
+
+## 登录（`auth_mode`）
+
+应用的 `auth_mode` 在 TeamClu 控制面设置，不由模板代码决定：
+
+| 值 | 含义 | Phase 1 |
+|----|------|---------|
+| `none` | 无登录墙，**公网可达**（部署前用户需确认） | 默认 |
+| `platform` | 平台 GoTrue OAuth；部署时注入 `OAUTH_CLIENT_*`、`APP_PUBLIC_URL`、`API_BASE` | 见下 |
+| `third` | 第三方 IdP | **不可部署**（控制面会拒绝） |
+
+**静态网页模板 Phase 1 不含 OAuth 回调实现。** 若用户要「平台账号登录」，应建
+「数据操作」类型应用（TanStack 全栈模板带 `src/lib/platform-auth.ts` 契约 stub）。
+
+若将来在本模板加登录：`redirect_uri` 必须用部署注入的 **`APP_PUBLIC_URL`**
+（形如 `https://<slug>-<id8>.<domain>/auth/callback`），**不要**从 `Host`
+请求头自拼 —— app 跑在 FC 反代后面，`Host` 是内部地址，与 IdP 登记不一致。
+本地开发可设 `APP_PUBLIC_URL=http://localhost:9000` 做对照。
 
 ## 没有数据库
 

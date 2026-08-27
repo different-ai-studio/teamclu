@@ -60,6 +60,22 @@ export function canReseed(status: string): boolean {
   return status === 'pending' || status === 'repo_created' || status === 'error'
 }
 
+/** i18n key when deploy is blocked by auth/runtime policy, or null when allowed. */
+export function deployDisabledReason(
+  app: Pick<AppRow, 'authMode' | 'runtime'>,
+): string | null {
+  if (app.authMode === 'third') return 'apps.deployDisabledThird'
+  if (app.runtime === 'container') return 'apps.deployDisabledContainer'
+  return null
+}
+
+/** Show the public-access badge on live apps with no auth gate. */
+export function showsPublicBadge(
+  app: Pick<AppRow, 'authMode' | 'fcStatus'>,
+): boolean {
+  return app.authMode === 'none' && app.fcStatus === 'live'
+}
+
 interface RowProps {
   app: AppRow
   onClick: () => void
@@ -104,6 +120,8 @@ function AppItemRow({ app, onClick, onRename }: RowProps) {
   const meta = appStatusMeta(app, deploying)
   const appTypeMeta = resolveAppType(app.type)
   const isLive = app.fcStatus === 'live' && !!app.fcEndpoint
+  const deployBlocked = deployDisabledReason(app)
+  const publicLive = showsPublicBadge(app)
 
   const handleReveal = React.useCallback(async (e: React.SyntheticEvent) => {
     e.stopPropagation()
@@ -149,7 +167,17 @@ function AppItemRow({ app, onClick, onRename }: RowProps) {
           {deploying ? <Loader2 className="h-[15px] w-[15px] animate-spin" /> : <AppWindow className="h-[15px] w-[15px]" />}
         </span>
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-[13.5px] font-semibold text-foreground">{app.name}</span>
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-[13.5px] font-semibold text-foreground">{app.name}</span>
+            {publicLive && (
+              <span
+                className="shrink-0 rounded border border-border px-1.5 py-px text-[9.5px] font-mono font-semibold uppercase tracking-wide text-muted-foreground"
+                title={t('apps.publicBadgeHint', '未启用登录；任何拿到链接的人均可访问（与上方可见性无关）')}
+              >
+                {t('apps.publicBadge', '公开')}
+              </span>
+            )}
+          </span>
           <span className="flex items-center gap-1.5 truncate text-[11.5px] text-muted-foreground">
             <span className="shrink-0">{t(appTypeMeta.labelKey, appTypeMeta.label)}</span>
             <span className="shrink-0 text-faint">·</span>
@@ -180,7 +208,14 @@ function AppItemRow({ app, onClick, onRename }: RowProps) {
         <DropdownMenuContent align="end" className="w-44">
           <DropdownMenuItem
             className="text-[13px]"
-            disabled={deploying || app.provisionStatus !== 'ready'}
+            disabled={deploying || app.provisionStatus !== 'ready' || !!deployBlocked}
+            title={
+              deployBlocked
+                ? t(deployBlocked, deployBlocked === 'apps.deployDisabledThird'
+                  ? '第三方登录尚未支持部署'
+                  : '容器运行时暂不支持部署')
+                : undefined
+            }
             onClick={(e) => {
               e.stopPropagation()
               void useAppsStore.getState().deploy(app.id)

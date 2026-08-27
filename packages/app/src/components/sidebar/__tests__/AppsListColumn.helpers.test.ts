@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { canReseed, appStatusMeta } from '../AppsListColumn'
+import { canReseed, appStatusMeta, deployDisabledReason, showsPublicBadge } from '../AppsListColumn'
 import { pickMostRecentSession, firstPromptForApp } from '@/lib/app-session'
 import type { AppSessionRow } from '@/lib/backend/types'
 
@@ -104,6 +104,22 @@ describe('appStatusMeta', () => {
     expect(appStatusMeta(app({ provisionStatus: 'ready' }), false).key).toBe('apps.ready')
     expect(appStatusMeta(app({ provisionStatus: 'error' }), false).key).toBe('apps.error')
     expect(appStatusMeta(app({ provisionStatus: 'repo_created' }), false).key).toBe('apps.provisioning')
+  })
+})
+
+describe('deployDisabledReason', () => {
+  test('blocks third-party auth and container runtime', () => {
+    expect(deployDisabledReason({ authMode: 'third', runtime: 'node' })).toBe('apps.deployDisabledThird')
+    expect(deployDisabledReason({ authMode: 'none', runtime: 'container' })).toBe('apps.deployDisabledContainer')
+    expect(deployDisabledReason({ authMode: 'none', runtime: 'node' })).toBeNull()
+  })
+})
+
+describe('showsPublicBadge', () => {
+  test('only when live with no auth gate', () => {
+    expect(showsPublicBadge({ authMode: 'none', fcStatus: 'live' })).toBe(true)
+    expect(showsPublicBadge({ authMode: 'none', fcStatus: 'deploy_error' })).toBe(false)
+    expect(showsPublicBadge({ authMode: 'platform', fcStatus: 'live' })).toBe(false)
   })
 })
 

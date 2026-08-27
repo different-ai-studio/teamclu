@@ -5,9 +5,8 @@
  *  never move a row back TO `pending` or `repo_created` (no list includes
  *  them); `seeding` is kept reachable for a future real "in progress" signal.
  *
- *  `repo_created` is no longer produced — apps have no remote repo (see
- *  docs/specs/2026-07-28-app-types-design.md §5) — but rows created before that
- *  are still sitting in it, so it stays a legal source state. */
+ *  `repo_created` is produced by createApp's Gitea provisioning step; legacy
+ *  rows may still sit in it from before the no-remote-repo era. */
 const ALLOWED: Record<string, string[]> = {
   pending: ["seeding", "ready", "error"],
   repo_created: ["seeding", "ready", "error"],

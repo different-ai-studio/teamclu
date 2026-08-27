@@ -5168,6 +5168,12 @@ paths:
                 deployError:
                   type: string
                   description: "Reason stored alongside `fcStatus: deploy_error`."
+                authMode:
+                  $ref: "#/components/schemas/AppAuthMode"
+                  description: >-
+                    How the deployed app authenticates end users. Side effects
+                    (GoTrue OAuth client registration, secrets) are applied in
+                    Task 7; the field is accepted here for PATCH updates.
       responses:
         "200":
           description: The updated app.
@@ -5190,6 +5196,22 @@ paths:
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                gitCommitSha:
+                  type: string
+                  pattern: "^[0-9a-f]{7,40}$"
+                  description: >-
+                    Git commit SHA (7–40 hex) being deployed. Required for an
+                    app whose `gitAuthKind` is `gitea_deploy_key`; omitted for
+                    one imported from an external remote, whose deploy builds
+                    the local checkout as it sits and has no forge commit to
+                    pin itself to.
       responses:
         "202":
           description: Deploy started.
@@ -5199,12 +5221,21 @@ paths:
                 allOf:
                   - $ref: "#/components/schemas/App"
                   - type: object
-                    required: [ossObjectName, presignedPut]
+                    required: [ossObjectName, presignedPut, deployToken]
                     properties:
                       ossObjectName: { type: string }
                       presignedPut:
                         type: string
                         description: Short-lived presigned PUT URL for the build artifact. Secret — never log it.
+                      deployToken:
+                        type: string
+                        format: uuid
+                        description: Short-lived bearer required by `/deploy/finalize`. Secret — never log it.
+                      gitCommitSha:
+                        type: [string, "null"]
+                        description: >-
+                          Echo of the requested commit SHA for this deploy
+                          attempt; null when none was supplied.
         "404":
           $ref: "#/components/responses/Error"
         "409":
@@ -5226,6 +5257,24 @@ paths:
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deployToken]
+              properties:
+                gitCommitSha:
+                  type: string
+                  pattern: "^[0-9a-f]{7,40}$"
+                  description: >-
+                    Git commit SHA of the uploaded artifact. Omitted for an app
+                    with no forge repo — see the same field on `/deploy`.
+                deployToken:
+                  type: string
+                  format: uuid
+                  description: Bearer returned by `/deploy` for this attempt. Secret — never log it.
       responses:
         "200":
           description: The app, now live.
@@ -5270,6 +5319,79 @@ paths:
                         createdAt: { type: string, format: date-time }
                         updatedAt: { type: string, format: date-time }
         "400":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/git-credential:
+    get:
+      operationId: getAppGitCredential
+      summary: Mint a short-lived Gitea deploy key for the app repo (creator only)
+      description: |
+        Generates an ed25519 deploy key, registers the public half on the app's
+        Gitea repo (`tc-app-{appId}`), and returns the private key for one-time
+        use by the local daemon. The private key is never persisted, and is in
+        OpenSSH format (`BEGIN OPENSSH PRIVATE KEY`) — OpenSSH cannot load an
+        ed25519 key from a PKCS#8 block. Secret — never log the response body.
+
+        Each call also revokes the keys it minted more than 15 minutes ago, so
+        `expiresAt` bounds how long a handed-out credential stays usable.
+
+        404 when the app is not Gitea-managed (`gitAuthKind` is null): there is
+        no repo of ours to register a key on.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: JIT deploy-key credential for git push/pull.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppGitCredential" }
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/git-head:
+    get:
+      operationId: getAppGitHead
+      summary: Default-branch HEAD commit on the app's Gitea repo
+      description: |
+        Reads the default branch SHA via the server-side Gitea bot token.
+        Visible to the same callers as `getApp`. 404 when the app is not
+        Gitea-managed (`gitAuthKind` is null).
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Default branch HEAD.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppGitHead" }
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/membership:
+    get:
+      operationId: getAppMembership
+      summary: Whether the caller is a member of the app's team
+      description: |
+        Used by deployed apps with `authMode: platform` to gate login: the app
+        holds the end-user's bearer token (not a service role) and asks whether
+        that user belongs to the team that owns this app. Returns `{ member:
+        boolean }` only — no team metadata. Route handler is implemented in
+        Task 8; this documents the contract.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Membership verdict for the authenticated user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppMembership" }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
 components:
   securitySchemes:
@@ -5602,6 +5724,22 @@ components:
         Deploy lifecycle, orthogonal to `provisionStatus` (which tracks the repo
         and its seeding). `null` means the app has never been deployed.
       enum: [not_deployed, awaiting_build, building, deploying, live, deploy_error]
+    AppRuntime:
+      type: string
+      description: |
+        FC runtime for the deployed artifact. Phase 1 supports `node` only;
+        `container` is reserved for bring-your-own-image deploys.
+      enum: [node, container]
+      default: node
+    AppAuthMode:
+      type: string
+      description: |
+        How the deployed app authenticates end users. `none` means the live URL
+        is reachable without login; `platform` uses TeamClu SSO (GoTrue OAuth
+        client per app); `third` uses the app's own OAuth client id stored on
+        this row (secret in `app_secrets`, never returned here).
+      enum: [none, platform, third]
+      default: none
     App:
       type: object
       required: [id, teamId, name, slug, type, visibility, provisionStatus, createdAt, updatedAt]
@@ -5624,8 +5762,33 @@ components:
         gitRemoteUrl:
           type: [string, "null"]
           description: >-
-            The repository this app was imported from, or null for an app seeded
-            from a starter template. Set at creation and not editable.
+            The app's git remote: the Gitea repo provisioned for it (an SSH URL
+            — the deploy key we issue cannot authenticate over HTTPS), or the
+            repository it was imported from. Set at creation and not editable.
+        gitAuthKind:
+          type: [string, "null"]
+          enum: [gitea_deploy_key, null]
+          description: >-
+            `gitea_deploy_key` when this deployment provisioned the app's repo
+            and holds a deploy key for it — `/git-head` and `/git-credential`
+            answer only for those. Null for an app imported from a remote we
+            have no credential for; those deploy the local checkout instead.
+        gitCommitSha:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{7,40}$"
+          description: >-
+            HEAD commit SHA on the app's Gitea repo at last successful deploy;
+            null before the first deploy completes.
+        runtime:
+          $ref: "#/components/schemas/AppRuntime"
+        authMode:
+          $ref: "#/components/schemas/AppAuthMode"
+        oauthClientId:
+          type: [string, "null"]
+          description: >-
+            Public OAuth client id when `authMode` is `third`, or the GoTrue
+            client id when `authMode` is `platform`. Never includes the matching
+            secret.
         provisionStatus:
           type: string
           enum: [pending, repo_created, seeding, ready, error]
@@ -5650,6 +5813,44 @@ components:
         fcRegion: { type: [string, "null"] }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    AppGitCredential:
+      type: object
+      required: [remoteUrl, authKind, privateKeyPem, deployKeyId, expiresAt]
+      description: >-
+        One-time deploy-key credential for the app's Gitea repo. Secret — never log.
+      properties:
+        remoteUrl: { type: string }
+        authKind: { type: string, enum: [deploy_key] }
+        privateKeyPem:
+          type: string
+          description: PKCS#8 PEM private key for git over SSH.
+        deployKeyId:
+          type: integer
+          description: Gitea deploy key id (for optional cleanup after push).
+        expiresAt:
+          type: string
+          format: date-time
+          description: Informational TTL (~15m); the key remains until deleted on Gitea.
+    AppGitHead:
+      type: object
+      required: [sha]
+      properties:
+        sha:
+          type: string
+          description: Default-branch HEAD commit id on the app's Gitea repo.
+    AppMembership:
+      type: object
+      required: [member]
+      description: >-
+        Whether the authenticated user is a member of the team that owns the
+        app. Used by deployed apps to gate platform SSO without a service role.
+      properties:
+        member:
+          type: boolean
+          description: >-
+            True when the caller has a member actor in the app's `teamId`;
+            false otherwise (including when the app is personal and the caller
+            is not the creator).
     BootstrapConfig:
       type: object
       description: >-

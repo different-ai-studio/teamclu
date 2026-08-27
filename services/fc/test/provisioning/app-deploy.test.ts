@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startDeploy, finalizeDeploy, needsDatabase } from "../../src/lib/provisioning/app-deploy.js";
+import {
+  startDeploy,
+  finalizeDeploy,
+  needsDatabase,
+  checkDeployInProgress,
+  isStaleDeploy,
+  parseOptionalGitCommitSha,
+  STALE_DEPLOY_MS,
+} from "../../src/lib/provisioning/app-deploy.js";
 
 test("startDeploy mints the upload handle and names the function + object", async () => {
   const out = await startDeploy(
@@ -105,4 +113,74 @@ test("an unknown or legacy type is treated as a data app", async () => {
   assert.equal(needsDatabase("data_app"), true);
   assert.equal(needsDatabase("static_web"), false);
   assert.equal(needsDatabase(" slides "), false);
+});
+
+test("finalizeDeploy merges platform OAuth env into the function env", async () => {
+  const calls: any[] = [];
+  await finalizeDeploy(
+    {
+      fcOps: {
+        ensureFunction: async (_n: string, a: any) => { calls.push(a); },
+        ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
+      },
+    },
+    {
+      appId: "app-1",
+      slug: "demo",
+      appType: "static_web",
+      fcFunctionName: "tc-app-1",
+      ossObjectName: "apps/app-1/code.zip",
+      platformOAuthEnv: {
+        OAUTH_CLIENT_ID: "cid",
+        OAUTH_CLIENT_SECRET: "sec",
+        APP_PUBLIC_URL: "https://demo-app1.apps.example",
+        API_BASE: "https://api.example",
+      },
+    },
+  );
+  assert.equal(calls[0].env.OAUTH_CLIENT_ID, "cid");
+  assert.equal(calls[0].env.OAUTH_CLIENT_SECRET, "sec");
+  assert.equal(calls[0].env.APP_PUBLIC_URL, "https://demo-app1.apps.example");
+  assert.equal(calls[0].env.API_BASE, "https://api.example");
+  assert.ok(!("SUPABASE_SERVICE_ROLE_KEY" in calls[0].env));
+});
+
+test("a deploy stuck mid-flight goes stale, whatever status it is stuck in", () => {
+  // finalizeDeploy writes `deploying` before calling the FC provisioner, so a
+  // process killed at that point used to block every future deploy forever:
+  // the staleness escape only covered `awaiting_build`.
+  const started = new Date(Date.now() - STALE_DEPLOY_MS - 1000);
+  for (const fc_status of ["awaiting_build", "building", "deploying"]) {
+    assert.equal(
+      checkDeployInProgress({ fc_status, deploy_started_at: started }),
+      "stale",
+      `${fc_status} must be reclaimable`,
+    );
+  }
+});
+
+test("a deploy that is merely in flight still blocks a second one", () => {
+  const justStarted = new Date(Date.now() - 1000);
+  for (const fc_status of ["awaiting_build", "building", "deploying"]) {
+    assert.equal(checkDeployInProgress({ fc_status, deploy_started_at: justStarted }), "blocked");
+  }
+  assert.equal(checkDeployInProgress({ fc_status: "live", deploy_started_at: null }), "ok");
+  assert.equal(checkDeployInProgress({ fc_status: null, deploy_started_at: null }), "ok");
+  // No timestamp at all is not evidence of staleness.
+  assert.equal(checkDeployInProgress({ fc_status: "deploying", deploy_started_at: null }), "blocked");
+  assert.equal(isStaleDeploy("live", new Date(0)), false);
+});
+
+test("checkDeployInProgress needs only the deploy columns", () => {
+  // It used to demand the whole app row (id + slug), which the supabase backend
+  // does not select here — and that mismatch failed the production typecheck.
+  assert.equal(checkDeployInProgress({ fcStatus: "live" }), "ok");
+});
+
+test("gitCommitSha is optional for an app with no forge repo", () => {
+  assert.equal(parseOptionalGitCommitSha(undefined), null);
+  assert.equal(parseOptionalGitCommitSha(null), null);
+  assert.equal(parseOptionalGitCommitSha("  "), null);
+  assert.equal(parseOptionalGitCommitSha("ABC1234"), "abc1234");
+  assert.throws(() => parseOptionalGitCommitSha("nope"), /gitCommitSha/);
 });

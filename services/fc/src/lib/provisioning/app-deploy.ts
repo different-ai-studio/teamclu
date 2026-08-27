@@ -1,6 +1,134 @@
 import { randomBytes } from "node:crypto";
 import { ensureAppSchema } from "./app-postgres.js";
+import { appPublicUrl } from "../apps-public-host.js";
 import { ApiError } from "../http-utils.js";
+
+/** Git commit SHA — 7–40 lowercase/uppercase hex (short or full). */
+export const GIT_COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/i;
+
+const DEPLOY_IN_PROGRESS = new Set(["awaiting_build", "building", "deploying"]);
+export const STALE_DEPLOY_MS = 30 * 60 * 1000;
+
+export function parseGitCommitSha(raw: unknown): string {
+  if (typeof raw !== "string") {
+    throw new ApiError(400, "validation_failed", "gitCommitSha must be a string");
+  }
+  const sha = raw.trim();
+  if (!GIT_COMMIT_SHA_RE.test(sha)) {
+    throw new ApiError(400, "validation_failed", "gitCommitSha must be 7–40 hexadecimal characters");
+  }
+  return sha.toLowerCase();
+}
+
+/**
+ * {@link parseGitCommitSha} where an absent value is allowed.
+ *
+ * An app imported from someone else's repo has no Gitea repo and no credential
+ * for the origin it came from, so its deploy builds the workdir as it sits and
+ * has no forge commit to pin itself to.
+ */
+export function parseOptionalGitCommitSha(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === "string" && !raw.trim()) return null;
+  return parseGitCommitSha(raw);
+}
+
+export function parseDeployToken(raw: unknown): string {
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new ApiError(400, "validation_failed", "deployToken is required");
+  }
+  return raw.trim();
+}
+
+type DeployGateRow = {
+  id: string;
+  slug: string;
+  runtime?: string | null;
+  authMode?: string | null;
+  auth_mode?: string | null;
+};
+
+function authModeOf(row: DeployGateRow): string {
+  return row.authMode ?? row.auth_mode ?? "none";
+}
+
+function runtimeOf(row: DeployGateRow): string {
+  return row.runtime ?? "node";
+}
+
+/** Shared deploy/finalize preconditions — runtime and auth mode. */
+export function assertDeployAllowed(row: DeployGateRow): void {
+  if (runtimeOf(row) !== "node") {
+    throw new ApiError(409, "unsupported_runtime", "container runtime deploy is not supported yet");
+  }
+  const authMode = authModeOf(row);
+  if (authMode === "third") {
+    throw new ApiError(409, "unsupported_auth_mode", "third-party login is not supported for deploy yet");
+  }
+  if (authMode === "platform" && !appPublicUrl(row.slug, row.id)) {
+    throw new ApiError(409, "vanity_required", "platform auth requires an apps public domain");
+  }
+}
+
+/**
+ * Deliberately NOT `DeployGateRow & {…}`: the progress check reads only the
+ * deploy-lifecycle columns, and requiring `id`/`slug` here forced callers to
+ * hand over a whole row they had no other use for — the supabase backend
+ * passed the two columns it actually selects and failed the build's typecheck.
+ */
+type DeployProgressRow = {
+  fcStatus?: string | null;
+  fc_status?: string | null;
+  deployStartedAt?: Date | string | null;
+  deploy_started_at?: Date | string | null;
+};
+
+function fcStatusOf(row: DeployProgressRow): string | null {
+  return row.fcStatus ?? row.fc_status ?? null;
+}
+
+function deployStartedAtOf(row: DeployProgressRow): Date | null {
+  const v = row.deployStartedAt ?? row.deploy_started_at;
+  if (!v) return null;
+  return v instanceof Date ? v : new Date(v);
+}
+
+/**
+ * An in-progress deploy old enough to be abandoned.
+ *
+ * Every in-progress status counts, not just `awaiting_build`. `finalizeDeploy`
+ * writes `deploying` before calling the FC provisioner, so a process killed at
+ * that point left a row no later deploy could ever get past: the staleness
+ * escape did not apply to `deploying`, `checkDeployInProgress` answered
+ * "blocked" for all time, and every subsequent deploy 409'd with no admin path
+ * to reset it.
+ */
+export function isStaleDeploy(
+  fcStatus: string | null | undefined,
+  deployStartedAt: Date | null,
+  now = Date.now(),
+): boolean {
+  if (!fcStatus || !DEPLOY_IN_PROGRESS.has(fcStatus) || !deployStartedAt) return false;
+  return now - deployStartedAt.getTime() > STALE_DEPLOY_MS;
+}
+
+/** @deprecated Use {@link isStaleDeploy}; kept for the narrower original name. */
+export function isStaleAwaitingBuild(
+  fcStatus: string | null | undefined,
+  deployStartedAt: Date | null,
+  now = Date.now(),
+): boolean {
+  if (fcStatus !== "awaiting_build") return false;
+  return isStaleDeploy(fcStatus, deployStartedAt, now);
+}
+
+/** Whether a new deploy may start, must reclaim a stale attempt, or is blocked. */
+export function checkDeployInProgress(row: DeployProgressRow): "ok" | "stale" | "blocked" {
+  const fcStatus = fcStatusOf(row);
+  if (!fcStatus || !DEPLOY_IN_PROGRESS.has(fcStatus)) return "ok";
+  if (isStaleDeploy(fcStatus, deployStartedAtOf(row))) return "stale";
+  return "blocked";
+}
 
 export function appFunctionName(appId: string): string { return `tc-app-${appId}`; }
 export function appOssObjectName(appId: string): string { return `apps/${appId}/code.zip`; }
@@ -63,6 +191,7 @@ export interface FinalizeDeps {
   };
   appsBaseUrl?: string;
   genPassword?: () => string;
+  extraEnv?: (input: FinalizeInput) => Record<string, string>;
 }
 export interface FinalizeInput {
   appId: string;
@@ -72,6 +201,8 @@ export interface FinalizeInput {
   appType: string;
   fcFunctionName: string;
   ossObjectName: string;
+  /** Injected by the repo when auth_mode=platform (§6.5). No service role. */
+  platformOAuthEnv?: Record<string, string>;
 }
 
 /** Only data apps get a Postgres schema; the other types are static files. */
@@ -96,6 +227,9 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     });
     env.DATABASE_URL = conn.connectionString;
   }
+
+  if (input.platformOAuthEnv) Object.assign(env, input.platformOAuthEnv);
+  if (deps.extraEnv) Object.assign(env, deps.extraEnv(input));
 
   await deps.fcOps.ensureFunction(input.fcFunctionName, {
     ossObjectName: input.ossObjectName,

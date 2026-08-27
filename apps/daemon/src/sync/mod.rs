@@ -5,6 +5,7 @@
 
 pub mod app_build;
 pub mod app_clone;
+pub mod app_git;
 pub mod app_seed;
 pub mod app_templates;
 pub mod dispatch;

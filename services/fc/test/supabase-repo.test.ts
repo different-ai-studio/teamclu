@@ -1822,12 +1822,27 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
   };
 }
 
+function fakeGitea(over: Record<string, unknown> = {}) {
+  return {
+    createAppRepo: async (appId: string) => ({
+      cloneUrl: `https://gitea.example/teamclaw-apps/tc-app-${appId}.git`,
+      sshUrl: `git@gitea.example:teamclaw-apps/tc-app-${appId}.git`,
+    }),
+    createDeployKey: async () => ({ id: 1 }),
+    listDeployKeys: async () => [],
+    deleteDeployKey: async () => {},
+    getRepoHead: async () => ({ sha: "abc123" }),
+    ...over,
+  };
+}
+
 function appsRepo(supabase: any, extra: any = {}) {
   return createSupabaseBusinessRepository({
     supabaseUrl: "https://example.supabase.co",
     publishableKey: "publishable-key",
     accessToken: "caller-token",
     createClient: () => supabase,
+    gitea: fakeGitea(),
     ...extra,
   });
 }
@@ -1841,6 +1856,10 @@ const APP_ROW = {
   visibility: "team",
   workspace_id: "ws-1",
   git_remote_url: null,
+  git_commit_sha: null,
+  runtime: "node",
+  auth_mode: "none",
+  oauth_client_id: null,
   provision_status: "pending",
   fc_status: null,
   created_at: "2026-06-13T00:00:00Z",
@@ -1852,10 +1871,15 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   const items = await repo.listApps({ teamId: "team-1", limit: 100 });
   assert.equal(items.length, 1);
   assert.deepEqual(Object.keys(items[0]).sort(), [
-    "createdAt", "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
-    "gitRemoteUrl", "id", "name", "provisionStatus", "publicUrl",
-    "slug", "teamId", "type", "updatedAt", "visibility", "workspaceId",
+    "authMode", "createdAt", "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
+    "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "name", "oauthClientId",
+    "provisionStatus", "publicUrl",
+    "runtime", "slug", "teamId", "type", "updatedAt", "visibility", "workspaceId",
   ].sort());
+  assert.equal(items[0].authMode, "none");
+  assert.equal(items[0].runtime, "node");
+  assert.equal(items[0].gitCommitSha, null);
+  assert.equal(items[0].oauthClientId, null);
   // Null unless the deployment sets an apps domain — this suite sets none.
   assert.equal(items[0].publicUrl, null);
   assert.equal(items[0].teamId, "team-1");
@@ -1874,6 +1898,30 @@ test("apps: listApps filters by team_id, orders created_at desc, limits", async 
 test("apps: getApp returns null when RLS hides the row", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [] } }));
   assert.equal(await repo.getApp("missing"), null);
+});
+
+test("apps: getAppMembership returns member true for team member", async () => {
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  assert.deepEqual(await repo.getAppMembership("app-1"), { member: true });
+});
+
+test("apps: getAppMembership returns member false for authenticated outsider", async () => {
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [] }, actorRow: null }), {
+    createServiceRoleClient: () => admin,
+  });
+  assert.deepEqual(await repo.getAppMembership("app-1"), { member: false });
+});
+
+test("apps: getAppMembership returns null when app is missing", async () => {
+  const admin = appsSupabase({ seed: { apps: [] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  assert.equal(await repo.getAppMembership("missing"), null);
 });
 
 test("apps: createApp inserts workspace + app and resolves caller actor", async () => {
@@ -1895,16 +1943,128 @@ test("apps: createApp inserts workspace + app and resolves caller actor", async 
   assert.equal(appInsert?.row.provision_status, "pending");
   assert.equal(appInsert?.row.slug, "my-app");
   assert.equal(appInsert?.row.visibility, "team");
-  // no provisioner injected → returns the pending app
-  assert.equal(app.provisionStatus, "pending");
+  // Gitea provisioning updates the row after insert
+  assert.equal(app.provisionStatus, "repo_created");
+  assert.match(app.gitRemoteUrl ?? "", /tc-app-/);
   assert.equal(app.teamId, "team-1");
+  const appUpdate = calls.find((c) => c.table === "apps" && c.op === "update");
+  assert.equal(appUpdate?.row.git_auth_kind, "gitea_deploy_key");
+  assert.equal(appUpdate?.row.provision_status, "repo_created");
 });
 
-test("apps: createApp inserts a pending app with no repo", async () => {
-  // An app's source lives only in the local checkout the daemon seeds, so
-  // creation provisions nothing — the desktop drives the seed and writes back.
+test("apps: createApp without Gitea configured throws gitea_unavailable before insert", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ calls }), {
+    gitea: undefined,
+    giteaUnavailableReason: "GITEA_URL is empty",
+  });
+  await assert.rejects(
+    () => repo.createApp({ teamId: "team-1", name: "NoGitea", type: "static_web" }),
+    (err: any) => err?.code === "gitea_unavailable" && err?.statusCode === 503,
+  );
+  const appInsert = calls.find((c) => c.table === "apps" && c.op === "insert");
+  assert.equal(appInsert, undefined, "no orphan app row when Gitea is unavailable");
+});
+
+test("apps: createApp marks the row error when Gitea provisioning fails", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ calls }), {
+    gitea: fakeGitea({
+      createAppRepo: async () => {
+        throw new Error("gitea down");
+      },
+    }),
+  });
+  await assert.rejects(
+    () => repo.createApp({ teamId: "team-1", name: "Fail", type: "static_web" }),
+    (err: any) => err?.code === "gitea_provision_failed" && err?.statusCode === 502,
+  );
+  const errUpdate = calls.find(
+    (c) => c.table === "apps" && c.op === "update" && c.row.provision_status === "error",
+  );
+  assert.ok(errUpdate, "expected error update");
+  assert.match(errUpdate.row.provision_error, /gitea down/);
+});
+
+test("apps: a non-creator's authMode change destroys nothing before the 404", async () => {
+  // apps_select_if_visible lets any teammate READ a team-visible app, while
+  // apps_update_if_creator gates the write. Running applyAuthModeChange first
+  // meant a teammate's PATCH deleted the live app's GoTrue client (a hard
+  // DELETE) and its sealed secret with a service-role client, and only then
+  // matched zero rows and answered 404.
+  const disabled: string[] = [];
+  const admin = appsSupabase({ seed: { apps: [] } });
+  const repo = appsRepo(
+    appsSupabase({
+      seed: {
+        apps: [
+          {
+            ...APP_ROW,
+            auth_mode: "platform",
+            oauth_client_id: "cid",
+            created_by_actor_id: "someone-else",
+          },
+        ],
+      },
+      // The caller has an actor in the team — just not the app's creator.
+      actorRow: { id: "actor-app-1" },
+    }),
+    {
+      createServiceRoleClient: () => admin,
+      gotrue: {
+        createOAuthClient: async () => { throw new Error("must not be called"); },
+        updateOAuthClient: async () => { throw new Error("must not be called"); },
+        disableOAuthClient: async (id: string) => { disabled.push(id); },
+      },
+    },
+  );
+
+  assert.equal(await repo.updateApp("app-1", { authMode: "none" }), null);
+  assert.deepEqual(disabled, [], "the OAuth client must survive a 404'd PATCH");
+});
+
+test("apps: git-credential and git-head are null for an imported app", async () => {
+  // An imported app has no tc-app-<id> repo on Gitea; asking for one 404s, and
+  // routing deploy through Gitea unconditionally made these apps undeployable.
+  const gitea = fakeGitea({
+    createDeployKey: async () => { throw new Error("must not be called"); },
+    getRepoHead: async () => { throw new Error("must not be called"); },
+  });
+  const imported = {
+    ...APP_ROW,
+    created_by_actor_id: "actor-app-1",
+    git_remote_url: "https://github.com/owner/repo.git",
+    git_auth_kind: null,
+  };
+  const repo = appsRepo(appsSupabase({ seed: { apps: [imported] } }), { gitea });
+  assert.equal(await repo.getAppGitCredential("app-1"), null);
+  assert.equal(await repo.getAppGitHead("app-1"), null);
+});
+
+test("apps: a Gitea-managed app gets an OpenSSH credential and its repo head", async () => {
+  const managed = {
+    ...APP_ROW,
+    created_by_actor_id: "actor-app-1",
+    git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git",
+    git_auth_kind: "gitea_deploy_key",
+  };
+  const repo = appsRepo(appsSupabase({ seed: { apps: [managed] } }));
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.equal(cred?.remoteUrl, managed.git_remote_url);
+  assert.match(cred!.privateKeyPem, /BEGIN OPENSSH PRIVATE KEY/);
+  assert.deepEqual(await repo.getAppGitHead("app-1"), { sha: "abc123" });
+});
+
+test("apps: createApp inserts a pending app when importing an external repo", async () => {
+  // External import skips Gitea — the desktop seeds from the supplied remote.
   const repo = appsRepo(appsSupabase({}));
-  const app = await repo.createApp({ teamId: "team-1", name: "My App", type: "slides", visibility: "personal" });
+  const app = await repo.createApp({
+    teamId: "team-1",
+    name: "My App",
+    type: "slides",
+    visibility: "personal",
+    gitRemoteUrl: "https://github.com/owner/repo.git",
+  });
   assert.equal(app.provisionStatus, "pending");
 });
 
@@ -1941,6 +2101,9 @@ test("apps: updateApp rejects an illegal provisionStatus jump", async () => {
   );
 });
 
+const APP_SHA = "abc1234";
+const APP_DEPLOY = { gitCommitSha: APP_SHA };
+
 test("apps: deployApp method is present", async () => {
   const repo = appsRepo(appsSupabase({}));
   assert.equal(typeof repo.deployApp, "function");
@@ -1950,7 +2113,7 @@ test("apps: deployApp returns null when RLS hides the app", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [] } }), {
     startDeploy: async () => { throw new Error("should not be called"); },
   });
-  assert.equal(await repo.deployApp("app-1"), null);
+  assert.equal(await repo.deployApp("app-1", APP_DEPLOY), null);
 });
 
 test("apps: deployApp rejects 409 when app not ready", async () => {
@@ -1959,7 +2122,7 @@ test("apps: deployApp rejects 409 when app not ready", async () => {
     { startDeploy: async () => { throw new Error("should not be called"); } },
   );
   await assert.rejects(
-    () => repo.deployApp("app-1"),
+    () => repo.deployApp("app-1", APP_DEPLOY),
     (err: any) => err?.code === "app_not_ready" && err?.statusCode === 409,
   );
 });
@@ -1969,7 +2132,7 @@ test("apps: deployApp rejects 503 when startDeploy dep missing", async () => {
     appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }),
   );
   await assert.rejects(
-    () => repo.deployApp("app-1"),
+    () => repo.deployApp("app-1", APP_DEPLOY),
     (err: any) => err?.code === "deploy_unavailable" && err?.statusCode === 503,
   );
 });
@@ -1983,7 +2146,7 @@ test("apps: the 503 names the missing configuration when one is given", async ()
     { deployUnavailableReason: "APPS_ACCESS_KEY_ID is set but APPS_OSS_BUCKET is empty" },
   );
   await assert.rejects(
-    () => repo.deployApp("app-1"),
+    () => repo.deployApp("app-1", APP_DEPLOY),
     (err: any) =>
       err?.code === "deploy_unavailable" &&
       err?.statusCode === 503 &&
@@ -2008,12 +2171,14 @@ test("apps: deployApp on ready app returns awaiting_build + ossObjectName", asyn
       },
     },
   );
-  const result = await repo.deployApp("app-1");
+  const result = await repo.deployApp("app-1", APP_DEPLOY);
   assert.equal(result.fcStatus, "awaiting_build");
   assert.equal(result.fcFunctionName, "app-my-app");
   assert.equal(result.fcRegion, "cn-hangzhou");
   assert.equal(result.ossObjectName, "apps/app-1/build.zip");
   assert.equal(result.presignedPut, "https://oss/put?sig=x");
+  assert.equal(result.gitCommitSha, APP_SHA);
+  assert.match(result.deployToken, /^[0-9a-f-]{36}$/i);
 });
 
 test("apps: deployApp wraps startDeploy failure as 502", async () => {
@@ -2022,8 +2187,23 @@ test("apps: deployApp wraps startDeploy failure as 502", async () => {
     { startDeploy: async () => { throw new Error("fc boom"); } },
   );
   await assert.rejects(
-    () => repo.deployApp("app-1"),
+    () => repo.deployApp("app-1", APP_DEPLOY),
     (err: any) => err?.code === "deploy_failed" && err?.statusCode === 502,
+  );
+});
+
+test("apps: second deploy while awaiting_build returns 409", async () => {
+  const sb = appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } });
+  const repo = appsRepo(sb, {
+    startDeploy: async () => ({
+      fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+      ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+    }),
+  });
+  await repo.deployApp("app-1", APP_DEPLOY);
+  await assert.rejects(
+    () => repo.deployApp("app-1", APP_DEPLOY),
+    (err: any) => err?.code === "deploy_in_progress" && err?.statusCode === 409,
   );
 });
 
@@ -2036,45 +2216,60 @@ test("apps: finalizeDeploy returns null when RLS hides the app", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [] } }), {
     finalizeDeploy: async () => { throw new Error("should not be called"); },
   });
-  assert.equal(await repo.finalizeDeploy("app-1"), null);
+  assert.equal(await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }), null);
 });
 
 test("apps: finalizeDeploy rejects 409 when app has no function", async () => {
   const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: null, fc_status: null }] } }),
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: null, fc_status: null, deploy_token: "tok" }] } }),
     { finalizeDeploy: async () => { throw new Error("should not be called"); } },
   );
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1"),
+    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }),
     (err: any) => err?.code === "not_deploying" && err?.statusCode === 409,
   );
 });
 
 test("apps: finalizeDeploy rejects 409 on illegal fc_status transition", async () => {
   const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "live" }] } }),
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "live", deploy_token: "tok" }] } }),
     { finalizeDeploy: async () => { throw new Error("should not be called"); } },
   );
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1"),
+    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }),
     (err: any) => err?.code === "invalid_deploy_state" && err?.statusCode === 409,
+  );
+});
+
+test("apps: finalizeDeploy rejects 409 when deployToken mismatches", async () => {
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "awaiting_build", deploy_token: "good" }] } }),
+    { finalizeDeploy: async () => { throw new Error("should not be called"); } },
+  );
+  await assert.rejects(
+    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "bad" }),
+    (err: any) => err?.code === "deploy_token_mismatch" && err?.statusCode === 409,
   );
 });
 
 test("apps: finalizeDeploy rejects 503 when finalizeDeploy dep missing", async () => {
   const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "awaiting_build" }] } }),
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "awaiting_build", deploy_token: "tok" }] } }),
   );
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1"),
+    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }),
     (err: any) => err?.code === "deploy_unavailable" && err?.statusCode === 503,
   );
 });
 
 test("apps: finalizeDeploy on awaiting_build app returns live + fcEndpoint", async () => {
   const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "awaiting_build" }] } }),
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }),
     {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
       finalizeDeploy: async ({ fcFunctionName, ossObjectName }: any) => {
         assert.equal(fcFunctionName, "tc-app-1");
         assert.equal(ossObjectName, "apps/app-1/code.zip");
@@ -2082,18 +2277,27 @@ test("apps: finalizeDeploy on awaiting_build app returns live + fcEndpoint", asy
       },
     },
   );
-  const result = await repo.finalizeDeploy("app-1");
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const result = await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
   assert.equal(result.fcStatus, "live");
   assert.equal(result.fcEndpoint, "https://x.fcapp.run");
+  assert.equal(result.gitCommitSha, APP_SHA);
 });
 
 test("apps: finalizeDeploy wraps finalize failure as 502", async () => {
   const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "awaiting_build" }] } }),
-    { finalizeDeploy: async () => { throw new Error("fc boom"); } },
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }),
+    {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
+      finalizeDeploy: async () => { throw new Error("fc boom"); },
+    },
   );
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1"),
+    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken }),
     (err: any) => err?.code === "finalize_failed" && err?.statusCode === 502,
   );
 });

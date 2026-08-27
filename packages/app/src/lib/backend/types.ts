@@ -936,6 +936,10 @@ export interface WorkspacesBackend {
   }): Promise<DaemonWorkspaceBackendRow>;
 }
 
+export type AppRuntime = "node" | "container";
+
+export type AppAuthMode = "none" | "platform" | "third";
+
 export interface AppRow {
   id: string;
   teamId: string;
@@ -945,9 +949,21 @@ export interface AppRow {
   visibility: "personal" | "team";
   workspaceId: string | null;
   gitRemoteUrl: string | null;
+  /** `"gitea_deploy_key"` when this deployment provisioned the app's repo and
+   *  holds a deploy key for it; null when the app was imported from a remote we
+   *  have no credential for — those deploy the local workdir as it sits. */
+  gitAuthKind: string | null;
+  /** HEAD SHA at last successful deploy; null before first deploy completes. */
+  gitCommitSha: string | null;
+  runtime: AppRuntime;
+  authMode: AppAuthMode;
+  /** Public OAuth client id for `third` or GoTrue client id for `platform`. */
+  oauthClientId: string | null;
   provisionStatus: string;
   fcStatus: string | null;
   fcEndpoint: string | null;
+  fcFunctionName: string | null;
+  fcRegion: string | null;
   /** Vanity URL (`<slug>-<id8>.<apps domain>`), or null on a deployment that
    *  has no apps domain — then `fcEndpoint` is the only address there is. */
   publicUrl: string | null;
@@ -960,6 +976,27 @@ export interface AppRow {
 export interface DeployAppResult extends AppRow {
   ossObjectName: string;
   presignedPut: string;
+  /** Short-lived bearer for finalize; not stored on the app row in mapApp. */
+  deployToken: string;
+  /** Null for an imported app: there is no forge commit to pin the deploy to. */
+  gitCommitSha: string | null;
+}
+
+export interface AppGitCredential {
+  remoteUrl: string;
+  authKind: "deploy_key";
+  privateKeyPem: string;
+  deployKeyId: number;
+  expiresAt: string;
+}
+
+export interface AppGitHead {
+  sha: string;
+}
+
+/** `GET /v1/apps/:id/membership` — whether the caller belongs to the app's team. */
+export interface AppMembership {
+  member: boolean;
 }
 
 export interface AppSessionRow {
@@ -991,11 +1028,20 @@ export interface AppsBackend {
   updateAppDeployStatus(appId: string, fcStatus: string, deployError?: string): Promise<AppRow | null>;
   /** Rename an app (PATCH name). Returns null on 404. */
   renameApp(appId: string, name: string): Promise<AppRow | null>;
-  /** Start FC deploy: provisions the function + returns the OSS upload handle. */
-  deployApp(appId: string): Promise<DeployAppResult>;
+  /** Start FC deploy: provisions the function + returns the OSS upload handle.
+   *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
+  deployApp(appId: string, input: { gitCommitSha?: string }): Promise<DeployAppResult>;
   /** Finalize FC deploy after the artifact is uploaded: points the function at
    *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */
-  finalizeDeploy(appId: string): Promise<AppRow>;
+  finalizeDeploy(appId: string, input: { gitCommitSha?: string; deployToken: string }): Promise<AppRow>;
+  /** Mint a JIT Gitea deploy key for git push (creator only). Returns null on
+   *  404, and for an app that is not Gitea-managed. */
+  getGitCredential(appId: string): Promise<AppGitCredential | null>;
+  /** Default-branch HEAD on the app's Gitea repo (same visibility as getApp).
+   *  Null for an app that is not Gitea-managed. */
+  getGitHead(appId: string): Promise<AppGitHead | null>;
+  /** Whether the caller is a member of the app's team (platform-auth templates). */
+  getAppMembership(appId: string): Promise<AppMembership | null>;
 }
 
 export interface ActorDirectorySyncRow {

@@ -22,6 +22,8 @@ import { startDeploy as startDeployImpl, finalizeDeploy as finalizeDeployImpl } 
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { resolveAppsOss, getAppsS3Client } from "./lib/provisioning/apps-oss.js";
+import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
+import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
 import { createServiceRoleClient } from "./lib/supabase.js";
 import type { JWTVerifyGetKey } from "jose";
@@ -30,7 +32,8 @@ import type { JWTVerifyGetKey } from "jose";
 // Environment (used only for /v1 business API). Read lazily inside the deps
 // closures so importing this module never requires env at load time.
 // ---------------------------------------------------------------------------
-const SUPABASE_URL_FN = () => process.env.SUPABASE_URL || "";
+const SUPABASE_URL_FN = () =>
+  process.env.FC_SUPABASE_URL?.trim() || process.env.SUPABASE_URL || "";
 // Public, browser-reachable GoTrue base used for OAuth `authorize` redirects.
 // SUPABASE_URL is typically an internal/VPC address the browser can't reach.
 const SUPABASE_PUBLIC_URL_FN = () =>
@@ -108,9 +111,27 @@ function makeDeployDeps() {
       appType: string;
       fcFunctionName: string;
       ossObjectName: string;
+      platformOAuthEnv?: Record<string, string>;
     }) => finalizeDeployImpl({ adminExec, fcOps, appsBaseUrl }, a),
   };
 }
+
+// Gitea repo provisioning deps. Returns `giteaUnavailableReason` when any of
+// GITEA_URL / GITEA_TOKEN / GITEA_OWNER is empty so createApp surfaces a 503
+// that names the missing variable rather than half-provisioning a row.
+function makeGiteaDeps() {
+  const resolved = readGiteaConfig();
+  if (resolved.error) return { giteaUnavailableReason: resolved.error };
+  return { gitea: makeGiteaClient(resolved.config) };
+}
+
+function makeGotrueOAuthDeps() {
+  const resolved = readGotrueOAuthConfig();
+  if (resolved.error) return { gotrueUnavailableReason: resolved.error };
+  return { gotrue: makeGotrueOAuthClient(resolved.config) };
+}
+
+export { makeGiteaDeps };
 
 /**
  * Vanity-host lookup, wired for whichever backend this deployment runs.
@@ -179,6 +200,8 @@ export function makeBusinessRepoFactory(
         // by Drizzle queries via buildPgPushDeps() — no Supabase service-role.
         dispatchPush: async (record) => { await dispatchPush(record, pgPushDeps()); },
         ...makeDeployDeps(),
+        ...makeGiteaDeps(),
+        ...makeGotrueOAuthDeps(),
         publishReadEvent: async ({ userId, sessionId }) => {
           const { mqtt } = pgPushDeps();
           if (!mqtt) return;
@@ -195,6 +218,8 @@ export function makeBusinessRepoFactory(
       publishableKey: SUPABASE_PUBLISHABLE_KEY(),
       accessToken,
       ...makeDeployDeps(),
+      ...makeGiteaDeps(),
+      ...makeGotrueOAuthDeps(),
     });
 }
 
@@ -226,6 +251,8 @@ export function makeSystemRepoFactory(kind: "supabase" | "postgres") {
       publishableKey: serviceKey,
       accessToken: serviceKey,
       ...makeDeployDeps(),
+      ...makeGiteaDeps(),
+      ...makeGotrueOAuthDeps(),
     });
   };
 }

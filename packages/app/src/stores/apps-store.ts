@@ -1,5 +1,6 @@
 import { create, type StoreApi } from "zustand";
 import { getBackend } from "@/lib/backend";
+import { publicDeployConfirm } from "@/lib/app-deploy-confirm";
 import { seedDaemonApp, buildDaemonApp, type SeedAppResult } from "@/lib/daemon-local-client";
 import type { AppRow } from "@/lib/backend/types";
 
@@ -75,6 +76,75 @@ async function reportDeployError(set: SetState, appId: string, reason: string): 
   }
 }
 
+/** Map daemon / cloud errors to short Chinese copy for deploy toasts. */
+export function mapDeployErrorReason(raw: string): string {
+  const lower = raw.toLowerCase();
+  if (raw.includes("uncommitted or unpushed")) {
+    return "工作区有未提交或未推送的改动，请先 commit 并 push 后再部署。";
+  }
+  if (lower.includes("pnpm install timed out")) {
+    return "依赖安装超时（10 分钟），请检查网络或 lockfile 后重试。";
+  }
+  if (lower.includes("pnpm build timed out")) {
+    return "构建超时（10 分钟），请检查构建脚本后重试。";
+  }
+  if (lower.includes("artifact exceeds") || lower.includes("50 mib")) {
+    return "构建产物超过 50 MiB 上限，请精简输出后重试。";
+  }
+  if (lower.includes("presigned") || lower.includes("upload url expired")) {
+    return "上传链接已过期，请重新发起部署。";
+  }
+  if (lower.includes("unsupported_auth_mode") || lower.includes("third-party login")) {
+    return "第三方登录尚未支持部署，请切换到平台登录或无登录模式。";
+  }
+  if (lower.includes("vanity_required") || lower.includes("apps public domain")) {
+    return "平台登录需要配置应用公开域名（APPS_PUBLIC_DOMAIN）。";
+  }
+  if (lower.includes("git commit not found on remote")) {
+    return "Gitea 上找不到该 commit，请确认已 push 后再部署。";
+  }
+  if (lower.includes("lockfile out of sync")) {
+    return "pnpm-lock.yaml 与 package.json 不一致，请提交 lockfile 后重试。";
+  }
+  if (lower.includes("build output missing")) {
+    return "构建未产出 .output/ 目录，请检查构建脚本。";
+  }
+  // Last, and on whole phrases only. Matching the bare substring "amuxd" put
+  // this first and swallowed every real build failure whose message quotes the
+  // workdir path (`~/.amuxd/teams/…`) — the user was told the daemon was down
+  // while it was running fine and the actual cause was discarded.
+  if (
+    lower.includes("daemon is not connected") ||
+    lower.includes("cannot reach amuxd") ||
+    lower.includes("amuxd is not running")
+  ) {
+    return "本机 amuxd 未连接，无法构建。请确认守护进程在运行后重试。";
+  }
+  return raw;
+}
+
+/**
+ * Whether this deployment provisioned the app's repo on Gitea and holds a
+ * deploy key for it.
+ *
+ * False for an app imported from someone else's remote: it has no
+ * `tc-app-<id>` repo, so `git-head` and `git-credential` both 404 on it and
+ * its deploy has to build the local workdir instead.
+ */
+export function isGiteaManaged(app: Pick<AppRow, "gitAuthKind">): boolean {
+  return app.gitAuthKind === "gitea_deploy_key";
+}
+
+function mapCloudDeployError(e: unknown): string {
+  if (e && typeof e === "object" && "code" in e && "message" in e) {
+    const err = e as { code: unknown; message: unknown };
+    if (typeof err.code === "string" && typeof err.message === "string") {
+      return mapDeployErrorReason(`${err.code}: ${err.message}`);
+    }
+  }
+  return mapDeployErrorReason(e instanceof Error ? e.message : String(e));
+}
+
 /**
  * Kick the local daemon seed and write back the terminal status. The desktop
  * writes ONLY `ready`/`error`; `unreachable` writes nothing so the row stays
@@ -90,9 +160,41 @@ async function reportDeployError(set: SetState, appId: string, reason: string): 
  * typed the URL, and the app is empty until they fix it.
  */
 async function runSeed(set: SetState, app: AppRow): Promise<void> {
+  let deployKeyPem: string | null = null;
+  // Keyed on how the repo is authenticated, not on the status the row happens
+  // to be sitting at. Requiring `repo_created` meant a reseed — which is
+  // offered on `pending` and `error` — fetched no deploy key and fell into the
+  // clone-only path: the daemon then refused to clone over the template, or
+  // (worse, on an empty workdir) cloned the empty Gitea repo and reported the
+  // app ready with no files in it.
+  const needsGiteaPush = isGiteaManaged(app) && !!app.gitRemoteUrl?.trim();
+  if (needsGiteaPush) {
+    try {
+      const cred = await getBackend().apps.getGitCredential(app.id);
+      deployKeyPem = cred?.privateKeyPem ?? null;
+      if (!deployKeyPem) {
+        await patchStatus(set, app.id, "error");
+        await toastError("仓库初始化失败", "无法获取 Gitea 部署密钥");
+        return;
+      }
+    } catch (e) {
+      console.warn("getGitCredential failed (non-fatal)", e);
+      await patchStatus(set, app.id, "error");
+      await toastError("仓库初始化失败", e instanceof Error ? e.message : String(e));
+      return;
+    }
+  }
+
   let result: SeedAppResult = { outcome: "unreachable", workdir: null, error: null };
   try {
-    result = await seedDaemonApp(app.id, app.teamId, app.name, app.type, app.gitRemoteUrl);
+    result = await seedDaemonApp(
+      app.id,
+      app.teamId,
+      app.name,
+      app.type,
+      app.gitRemoteUrl,
+      deployKeyPem,
+    );
   } catch (e) {
     console.warn("app seed kick failed (non-fatal)", e);
   }
@@ -168,36 +270,75 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       await toastError("应用尚未就绪，无法部署");
       return;
     }
+
+    if (app.authMode === "none") {
+      const accepted = publicDeployConfirm.run(
+        "此应用未启用登录保护，任何拿到链接的人都能访问。\n\n确定继续部署吗？",
+      );
+      if (!accepted) return;
+    }
+
     set((s) => ({ deployingIds: [...s.deployingIds, appId] }));
     try {
-      // 1. Cloud: provision the FC function + DB schema, mint the OSS upload URL.
-      const started = await getBackend().apps.deployApp(appId);
+      // Only a Gitea-managed app deploys a commit off the forge. An imported
+      // app has no repo of ours and no credential for the one it came from, so
+      // it deploys the workdir as it sits — which is how it worked before
+      // Gitea existed, and going through Gitea unconditionally broke it.
+      const viaGitea = isGiteaManaged(app);
+      let gitCommitSha: string | undefined;
+      if (viaGitea) {
+        const head = await getBackend().apps.getGitHead(appId);
+        if (!head?.sha) {
+          throw new Error("无法读取 Gitea 默认分支 HEAD，请确认仓库已 push");
+        }
+        gitCommitSha = head.sha;
+      }
+
+      const started = await getBackend().apps.deployApp(
+        appId,
+        gitCommitSha ? { gitCommitSha } : {},
+      );
       mergeRow(set, started);
 
-      // 2. Local daemon: build the artifact in the app workdir + upload to OSS.
-      const outcome = await buildDaemonApp(appId, app.teamId, started.presignedPut);
-      if (outcome !== "built") {
+      let gitRemoteUrl: string | undefined;
+      let deployKeyPem: string | undefined;
+      if (viaGitea) {
+        const cred = await getBackend().apps.getGitCredential(appId);
+        if (!cred?.privateKeyPem || !cred.remoteUrl) {
+          throw new Error("无法获取 Gitea 部署凭证");
+        }
+        gitRemoteUrl = cred.remoteUrl;
+        deployKeyPem = cred.privateKeyPem;
+      }
+
+      const build = await buildDaemonApp(appId, app.teamId, {
+        gitCommitSha,
+        gitRemoteUrl,
+        deployKeyPem,
+        presignedPut: started.presignedPut,
+      });
+      if (build.outcome !== "built") {
         const reason =
-          outcome === "unreachable"
-            ? "本机 amuxd 未连接，无法构建。请确认守护进程在运行后重试。"
-            : "应用构建或上传失败，请查看日志后重试。";
+          build.outcome === "unreachable"
+            ? mapDeployErrorReason("amuxd daemon is not connected")
+            : mapDeployErrorReason(build.error ?? "应用构建或上传失败");
         await reportDeployError(set, appId, reason);
         await toastError("部署失败：构建未完成", reason);
         return;
       }
 
-      // 3. Cloud: point the function at the uploaded code, get the live endpoint.
       // No success toast. It showed `fcEndpoint` — the raw FC function URL —
       // which is not the address the product hands out (that is the app's
       // vanity domain, and the row already carries it into the UI). A popup
       // naming the wrong host on every deploy is worse than no popup: the
       // merged row flips the row to live on its own.
-      const finalized = await getBackend().apps.finalizeDeploy(appId);
+      const finalized = await getBackend().apps.finalizeDeploy(appId, {
+        ...(gitCommitSha ? { gitCommitSha } : {}),
+        deployToken: started.deployToken,
+      });
       mergeRow(set, finalized);
     } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
-      // The cloud already marks its own failures; this covers the ones it
-      // cannot see (the daemon leg, and anything thrown in between).
+      const reason = mapCloudDeployError(e);
       await reportDeployError(set, appId, reason);
       await toastError("部署失败", reason);
     } finally {

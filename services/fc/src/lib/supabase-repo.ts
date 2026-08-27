@@ -40,7 +40,20 @@ import {
   readEnvelope as readTeamEnvEnvelope,
 } from "./pg-repo/team-env-secrets.js";
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
-import { appOssObjectName, deployUnavailable } from "./provisioning/app-deploy.js";
+import { appOssObjectName, deployUnavailable, parseOptionalGitCommitSha, parseDeployToken, assertDeployAllowed, checkDeployInProgress } from "./provisioning/app-deploy.js";
+import { giteaUnavailable, GITEA_AUTH_KIND } from "./provisioning/gitea.js";
+import { issueJitDeployKey } from "./provisioning/deploy-key.js";
+import {
+  applyAuthModeChange,
+  buildPlatformOAuthEnv,
+  parseAuthMode,
+  type AuthMode,
+} from "./provisioning/app-auth-mode.js";
+import {
+  deleteAppSecretSupabase,
+  getAppSecretSupabase,
+  putAppSecretSupabase,
+} from "./provisioning/app-secrets.js";
 import { normalizeAgentTypes } from "./agent-types.js";
 import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-status.js";
 import { computeRange, getLiteLlmSql, queryTeamUsage } from "./litellm-usage.js";
@@ -284,6 +297,10 @@ export function createSupabaseBusinessRepository(options) {
     // Set when the two above are absent: names the environment variable that
     // made deploy provisioning unavailable (see makeDeployDeps in index.ts).
     deployUnavailableReason,
+    gitea,
+    giteaUnavailableReason,
+    gotrue,
+    gotrueUnavailableReason,
     // Injectable for tests; defaults to querying the LiteLLM RDS directly.
     queryLiteLlmUsage = (litellmTeamId, range) => queryTeamUsage(getLiteLlmSql(), litellmTeamId, range),
     // Injectable for tests; defaults to the shared LiteLLM HTTP client.
@@ -2897,6 +2914,8 @@ export function createSupabaseBusinessRepository(options) {
       const createdByActorId = resolved.id;
       const slug = slugify(input.name);
       const visibility = input.visibility === "team" ? "team" : "personal";
+      const importUrl = input.gitRemoteUrl?.trim() || null;
+      if (!importUrl && !gitea) throw giteaUnavailable(giteaUnavailableReason);
 
       // 1:1 workspace for the app. created_by_member_id = the resolved actor so
       // the workspace RLS insert policy is satisfied (same actor identity).
@@ -2921,33 +2940,121 @@ export function createSupabaseBusinessRepository(options) {
           type: input.type,
           visibility,
           workspace_id: ws.id,
-          git_remote_url: input.gitRemoteUrl?.trim() || null,
+          git_remote_url: importUrl,
           provision_status: "pending",
         })
         .select(APP_COLUMNS)
         .single();
       if (appErr) throw appErr;
 
-      // No repo provisioning here either way: an app's source lives only in the
-      // local checkout the daemon writes (docs/specs/2026-07-28-app-types-design.md
-      // §5) — from the starter template, or cloned from `gitRemoteUrl` when the
-      // user gave one. The row is returned `pending`; the desktop kicks the
-      // local seed and writes back `ready` or `error`.
-      return mapApp(row);
+      if (importUrl) return mapApp(row);
+
+      try {
+        // The SSH URL, not `clone_url`: the deploy key is the only credential
+        // we hand out for this repo, and it is useless over HTTPS.
+        const { sshUrl } = await gitea!.createAppRepo(row.id);
+        const { data: updated, error: updErr } = await supabase
+          .from("apps")
+          .update({
+            git_remote_url: sshUrl,
+            git_auth_kind: GITEA_AUTH_KIND,
+            provision_status: "repo_created",
+            provision_error: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", row.id)
+          .select(APP_COLUMNS)
+          .single();
+        if (updErr) throw updErr;
+        return mapApp(updated);
+      } catch (e: unknown) {
+        const msg = e instanceof ApiError ? e.message : String((e as Error)?.message ?? e);
+        const { data: errored, error: errUpd } = await supabase
+          .from("apps")
+          .update({
+            provision_status: "error",
+            provision_error: msg,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", row.id)
+          .select(APP_COLUMNS)
+          .single();
+        if (errUpd) throw errUpd;
+        if (e instanceof ApiError) throw e;
+        // `details`, not a bare 4th-argument object — ApiError reads only
+        // `options.details` / `options.cause`, so the errored row was dropped.
+        throw new ApiError(502, "gitea_provision_failed", msg, {
+          details: { app: mapApp(errored) },
+        });
+      }
     },
 
     async updateApp(
       appId: string,
-      patch: { name?: string; visibility?: string; provisionStatus?: string; fcStatus?: string; deployError?: string },
+      patch: {
+        name?: string;
+        visibility?: string;
+        provisionStatus?: string;
+        fcStatus?: string;
+        deployError?: string;
+        authMode?: string;
+      },
     ) {
       // RLS apps_update_if_creator blocks non-creators: the UPDATE matches zero
       // rows and .maybeSingle() returns null → surface as null (route 404s).
-      const { data: cur } = await supabase.from("apps").select("provision_status, fc_status").eq("id", appId).maybeSingle();
+      const { data: cur } = await supabase
+        .from("apps")
+        .select(
+          "provision_status, fc_status, name, slug, auth_mode, oauth_client_id, oauth_app_id, team_id, created_by_actor_id",
+        )
+        .eq("id", appId)
+        .maybeSingle();
       const set: any = { updated_at: new Date().toISOString() };
       if (typeof patch.name === "string" && patch.name.length > 0) set.name = patch.name;
       if (patch.visibility === "team" || patch.visibility === "personal") {
         set.visibility = patch.visibility;
       }
+
+      const nextAuthMode = parseAuthMode(patch.authMode);
+      if (nextAuthMode !== undefined && cur) {
+        const fromAuthMode = (cur.auth_mode ?? "none") as AuthMode;
+        if (nextAuthMode !== fromAuthMode) {
+          // Check creatorship BEFORE the side effects, not after.
+          //
+          // `apps_select_if_visible` lets any teammate read a team-visible app,
+          // while `apps_update_if_creator` gates the write. Running the auth-mode
+          // change first meant a non-creator's PATCH deleted the app's GoTrue
+          // client (a hard DELETE) and its sealed secret with a service-role
+          // client, and only then matched zero rows and answered 404 — the live
+          // app's login destroyed by a request the API called "not found".
+          // pg-repo gates on the creator first; this is the same order.
+          if (!(await this.isAppCreator(cur.team_id, cur.created_by_actor_id))) return null;
+          const admin = await serviceRoleClient("store app secrets");
+          const oauth = await applyAuthModeChange(
+            {
+              gotrue,
+              gotrueUnavailableReason,
+              secrets: {
+                putSecret: (kind, plaintext) => putAppSecretSupabase(admin, appId, kind, plaintext),
+                deleteSecret: (kind) => deleteAppSecretSupabase(admin, appId, kind),
+              },
+            },
+            {
+              appId,
+              name: cur.name,
+              slug: cur.slug,
+              from: fromAuthMode,
+              to: nextAuthMode,
+              oauthClientId: cur.oauth_client_id ?? null,
+              oauthAppId: cur.oauth_app_id ?? null,
+            },
+          );
+          set.auth_mode = nextAuthMode;
+          set.oauth_client_id = oauth.oauthClientId;
+          set.oauth_app_id = oauth.oauthAppId;
+        }
+      }
+
       if (typeof patch.provisionStatus === "string") {
         const from = cur?.provision_status ?? "";
         if (isLegalStatusTransition(from, patch.provisionStatus)) {
@@ -2982,12 +3089,14 @@ export function createSupabaseBusinessRepository(options) {
       return data ? mapApp(data) : null;
     },
 
-    async deployApp(appId: string) {
+    async deployApp(appId: string, input: { gitCommitSha?: string }) {
+      // Optional: only a Gitea-managed app pins its deploy to a forge commit.
+      const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
       // Visibility + readiness gate. RLS on amux.apps returns nothing when the
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, provision_status")
+        .select("id, slug, provision_status, runtime, auth_mode, fc_status, deploy_started_at")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -2995,13 +3104,28 @@ export function createSupabaseBusinessRepository(options) {
       if (existing.provision_status !== "ready") {
         throw new ApiError(409, "app_not_ready", "app must be seeded (provision_status=ready) before deploy");
       }
+      assertDeployAllowed({ id: existing.id, slug: existing.slug, auth_mode: existing.auth_mode, runtime: existing.runtime });
+      const progress = checkDeployInProgress({
+        fc_status: existing.fc_status,
+        deploy_started_at: existing.deploy_started_at,
+      });
+      if (progress === "blocked") {
+        throw new ApiError(409, "deploy_in_progress", "a deploy is already in progress");
+      }
+      if (progress === "stale") {
+        await supabase.from("apps").update({
+          fc_status: "deploy_error",
+          provision_error: "previous deploy timed out",
+          deploy_token: null,
+          deploy_started_at: null,
+          updated_at: new Date().toISOString(),
+        }).eq("id", appId);
+      }
       if (!startDeploy) throw deployUnavailable(deployUnavailableReason);
+      const deployToken = randomUUID();
+      const deployStartedAt = new Date().toISOString();
       try {
         const r = await startDeploy({ appId, region: process.env.REGION || "cn-hangzhou" });
-        // Persist only fc_function_name / fc_region / fc_status. The app's own
-        // DATABASE_URL from startDeploy is intentionally NOT persisted. The
-        // UPDATE is RLS-gated (apps_update_if_creator): a non-creator matches
-        // zero rows → .maybeSingle() returns null → surface as null (route 404s).
         const { data: row, error: updErr } = await supabase
           .from("apps")
           .update({
@@ -3009,14 +3133,23 @@ export function createSupabaseBusinessRepository(options) {
             fc_region: r.fcRegion,
             fc_status: "awaiting_build",
             provision_error: null,
-            updated_at: new Date().toISOString(),
+            deploy_token: deployToken,
+            deploy_started_at: deployStartedAt,
+            ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
+            updated_at: deployStartedAt,
           })
           .eq("id", appId)
           .select(APP_COLUMNS)
           .maybeSingle();
         if (updErr) throw updErr;
         if (!row) return null;
-        return { ...mapApp(row), ossObjectName: r.ossObjectName, presignedPut: r.presignedPut };
+        return {
+          ...mapApp(row),
+          ossObjectName: r.ossObjectName,
+          presignedPut: r.presignedPut,
+          deployToken,
+          gitCommitSha,
+        };
       } catch (e: any) {
         if (e instanceof ApiError) throw e;
         await supabase
@@ -3024,6 +3157,8 @@ export function createSupabaseBusinessRepository(options) {
           .update({
             fc_status: "deploy_error",
             provision_error: String(e?.message ?? e),
+            deploy_token: null,
+            deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId);
@@ -3031,16 +3166,22 @@ export function createSupabaseBusinessRepository(options) {
       }
     },
 
-    async finalizeDeploy(appId: string) {
+    async finalizeDeploy(appId: string, input: { gitCommitSha?: string; deployToken: string }) {
+      const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
+      const deployToken = parseDeployToken(input?.deployToken);
       // Visibility gate. RLS on amux.apps returns nothing when the app is not
       // visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, type, fc_function_name, fc_status")
+        .select("id, slug, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
       if (!existing) return null;
+      if (!existing.deploy_token || existing.deploy_token !== deployToken) {
+        throw new ApiError(409, "deploy_token_mismatch", "deployToken does not match the in-progress deploy");
+      }
+      assertDeployAllowed({ id: existing.id, slug: existing.slug, auth_mode: existing.auth_mode, runtime: existing.runtime });
       if (!existing.fc_function_name) throw new ApiError(409, "not_deploying", "app has no function; call deploy first");
       if (!isLegalFcTransition(existing.fc_status, "deploying")) {
         throw new ApiError(409, "invalid_deploy_state", `cannot finalize from fc_status ${existing.fc_status}`);
@@ -3049,20 +3190,35 @@ export function createSupabaseBusinessRepository(options) {
       // Mark deploying (RLS-gated UPDATE).
       await supabase.from("apps").update({ fc_status: "deploying", updated_at: new Date().toISOString() }).eq("id", appId);
       try {
+        let platformOAuthEnv: Record<string, string> | undefined;
+        if ((existing.auth_mode ?? "none") === "platform") {
+          const admin = await serviceRoleClient("read app secrets");
+          platformOAuthEnv = await buildPlatformOAuthEnv(
+            {
+              gotrue,
+              gotrueUnavailableReason,
+              getSecret: (kind) => getAppSecretSupabase(admin, appId, kind),
+            },
+            { appId, slug: existing.slug, oauthClientId: existing.oauth_client_id ?? null },
+          );
+        }
         const r = await finalizeDeploy({
           appId,
           slug: existing.slug,
           appType: existing.type,
           fcFunctionName: existing.fc_function_name,
           ossObjectName: appOssObjectName(appId),
+          platformOAuthEnv,
         });
-        // Persist fc_status=live + fc_endpoint. No secret is persisted.
         const { data: row, error: updErr } = await supabase
           .from("apps")
           .update({
             fc_status: "live",
             fc_endpoint: r.fcEndpoint,
+            ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
             provision_error: null,
+            deploy_token: null,
+            deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId)
@@ -3078,6 +3234,8 @@ export function createSupabaseBusinessRepository(options) {
           .update({
             fc_status: "deploy_error",
             provision_error: String(e?.message ?? e),
+            deploy_token: null,
+            deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId);
@@ -3102,6 +3260,79 @@ export function createSupabaseBusinessRepository(options) {
         createdAt: appIso(r.created_at)!,
         updatedAt: appIso(r.updated_at)!,
       }));
+    },
+
+    /**
+     * Whether the caller is the actor that created this app.
+     *
+     * The creator-only gate for operations with side effects outside Postgres,
+     * which RLS cannot roll back. RLS still has the last word on the write
+     * itself; this only makes sure nothing irreversible happens first.
+     */
+    async isAppCreator(teamId: string, createdByActorId: string | null): Promise<boolean> {
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const userId = userData?.user?.id;
+      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+      const resolved = await this.resolveCurrentMemberActor(teamId, userId);
+      return Boolean(resolved?.id) && createdByActorId === resolved!.id;
+    },
+
+    async getAppGitCredential(appId: string) {
+      const { data: existing, error: selErr } = await supabase
+        .from("apps")
+        .select("id, team_id, git_remote_url, git_auth_kind, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (selErr) throw selErr;
+      if (!existing) return null;
+      if (!(await this.isAppCreator(existing.team_id, existing.created_by_actor_id))) return null;
+
+      if (!existing.git_remote_url) return null;
+      // An imported app has a remote this deployment holds no credential for;
+      // minting a Gitea key for it would 404 on a repo that does not exist.
+      if (existing.git_auth_kind !== GITEA_AUTH_KIND) return null;
+      if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
+
+      const jit = await issueJitDeployKey(gitea, appId);
+      return {
+        remoteUrl: existing.git_remote_url,
+        authKind: "deploy_key" as const,
+        ...jit,
+      };
+    },
+
+    async getAppGitHead(appId: string) {
+      const { data: existing, error: selErr } = await supabase
+        .from("apps")
+        .select("id, git_auth_kind")
+        .eq("id", appId)
+        .maybeSingle();
+      if (selErr) throw selErr;
+      if (!existing) return null;
+      if (existing.git_auth_kind !== GITEA_AUTH_KIND) return null;
+      if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
+      return gitea.getRepoHead(appId);
+    },
+
+    async getAppMembership(appId: string) {
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const userId = userData?.user?.id;
+      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+      // Bypass apps RLS: membership is team-scoped, not visibility-scoped. A
+      // logged-in user checking access to a deployed app may not pass
+      // apps_select_if_visible yet still need a truthful member/non-member answer.
+      const admin = await serviceRoleClient("read app team for membership check");
+      const { data: row, error } = await admin
+        .from("apps")
+        .select("id, team_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!row) return null;
+      const resolved = await this.resolveCurrentMemberActor(row.team_id, userId);
+      return { member: Boolean(resolved?.id) };
     },
 
     // ─── Team skills registry ────────────────────────────────────────────────

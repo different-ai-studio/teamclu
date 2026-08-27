@@ -21,7 +21,7 @@ import { makeTeamMcpRepo } from "./team-mcp.js";
 import { makeTeamEnvSecretsRepo } from "./team-env-secrets.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createPgBusinessRepository({ db, accessToken, userId, callerActorId, provisionLiteLlm, fetchLiteLlmModels: fetchLiteLlmModelsOpt, provisionMemberKey, queryLiteLlmUsage, startDeploy, finalizeDeploy, dispatchPush, publishReadEvent, deleteMemberKey }: { db: PgDatabase<any, any>; accessToken?: string; userId?: string; callerActorId?: string; provisionLiteLlm?: TeamsRepoDeps["provisionLiteLlm"]; fetchLiteLlmModels?: TeamsRepoDeps["fetchLiteLlmModels"]; provisionMemberKey?: TeamsRepoDeps["provisionMemberKey"]; queryLiteLlmUsage?: TeamsRepoDeps["queryLiteLlmUsage"]; deleteMemberKey?: TeamsRepoDeps["deleteMemberKey"]; startDeploy?: AppsRepoDeps["startDeploy"]; finalizeDeploy?: AppsRepoDeps["finalizeDeploy"]; dispatchPush?: MessagesRepoDeps["dispatchPush"]; publishReadEvent?: SessionsRepoDeps["publishReadEvent"] }) {
+export function createPgBusinessRepository({ db, accessToken, userId, callerActorId, provisionLiteLlm, fetchLiteLlmModels: fetchLiteLlmModelsOpt, provisionMemberKey, queryLiteLlmUsage, startDeploy, finalizeDeploy, deployUnavailableReason, gitea, giteaUnavailableReason, gotrue, gotrueUnavailableReason, dispatchPush, publishReadEvent, deleteMemberKey }: { db: PgDatabase<any, any>; accessToken?: string; userId?: string; callerActorId?: string; provisionLiteLlm?: TeamsRepoDeps["provisionLiteLlm"]; fetchLiteLlmModels?: TeamsRepoDeps["fetchLiteLlmModels"]; provisionMemberKey?: TeamsRepoDeps["provisionMemberKey"]; queryLiteLlmUsage?: TeamsRepoDeps["queryLiteLlmUsage"]; deleteMemberKey?: TeamsRepoDeps["deleteMemberKey"]; startDeploy?: AppsRepoDeps["startDeploy"]; finalizeDeploy?: AppsRepoDeps["finalizeDeploy"]; deployUnavailableReason?: AppsRepoDeps["deployUnavailableReason"]; gitea?: AppsRepoDeps["gitea"]; giteaUnavailableReason?: AppsRepoDeps["giteaUnavailableReason"]; gotrue?: AppsRepoDeps["gotrue"]; gotrueUnavailableReason?: AppsRepoDeps["gotrueUnavailableReason"]; dispatchPush?: MessagesRepoDeps["dispatchPush"]; publishReadEvent?: SessionsRepoDeps["publishReadEvent"] }) {
   // accessToken is verified upstream (makeBusinessRepoFactory) and its `sub`
   // claim is passed here as `userId`. It is kept in the signature only for the
   // few methods that need to forward the raw bearer (none currently); identity
@@ -61,7 +61,7 @@ export function createPgBusinessRepository({ db, accessToken, userId, callerActo
         teamsCtx,
       ),
   });
-  const appsRepo = makeAppsRepo(db, ctx, { startDeploy, finalizeDeploy });
+  const appsRepo = makeAppsRepo(db, ctx, { startDeploy, finalizeDeploy, deployUnavailableReason, gitea, giteaUnavailableReason, gotrue, gotrueUnavailableReason });
   const heartbeatRepo = makeHeartbeatRepo(db, ctx);
   const notificationsRepo = makeNotificationsRepo(db, ctx);
   const telemetryRepo = makeTelemetryRepo(db, ctx);

@@ -234,6 +234,12 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
                 </label>
               ))}
             </div>
+            <span className="text-[11.5px] text-faint">
+              {t(
+                'apps.visibilityHint',
+                '可见性只控制团队内谁能看到此应用；上线后若未启用登录，任何拿到链接的人均可访问。',
+              )}
+            </span>
           </div>
 
           {error && (

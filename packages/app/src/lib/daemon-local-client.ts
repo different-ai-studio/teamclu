@@ -1150,6 +1150,7 @@ export async function seedDaemonApp(
   appName: string,
   appType: string,
   gitRemoteUrl?: string | null,
+  deployKeyPem?: string | null,
 ): Promise<SeedAppResult> {
   try {
     const result = await daemonFetch<{ status: string; workdir?: string }>('/v1/apps/seed', {
@@ -1160,6 +1161,7 @@ export async function seedDaemonApp(
         appName,
         appType,
         ...(gitRemoteUrl?.trim() ? { gitRemoteUrl: gitRemoteUrl.trim() } : {}),
+        ...(deployKeyPem?.trim() ? { deployKeyPem: deployKeyPem.trim() } : {}),
       }),
     })
     if (result.ok) {
@@ -1188,6 +1190,26 @@ export async function seedDaemonApp(
  * - `"unreachable"` — daemon down/unreachable; the caller should not finalize.
  */
 export type BuildAppOutcome = "built" | "failed" | "unreachable";
+
+export interface BuildAppResult {
+  outcome: BuildAppOutcome
+  /** Why it failed, for the toast. Null unless the outcome is `failed`. */
+  error: string | null
+}
+
+/**
+ * The three git fields are all-or-nothing, and the daemon enforces that.
+ *
+ * With them it fetches the app's Gitea repo and builds that exact commit; with
+ * none of them it builds the workdir as it sits, which is the only thing it can
+ * do for an app imported from a remote this deployment has no credential for.
+ */
+export interface BuildDaemonAppInput {
+  gitCommitSha?: string | null
+  gitRemoteUrl?: string | null
+  deployKeyPem?: string | null
+  presignedPut: string
+}
 
 /**
  * Where the local daemon keeps this app's checkout.
@@ -1227,23 +1249,30 @@ export async function daemonAppWorkdir(
 export async function buildDaemonApp(
   appId: string,
   teamId: string,
-  presignedPut: string,
-): Promise<BuildAppOutcome> {
+  input: BuildDaemonAppInput,
+): Promise<BuildAppResult> {
   try {
     const result = await daemonFetch<{ status: string }>('/v1/apps/build', {
       method: 'POST',
-      body: JSON.stringify({ appId, teamId, presignedPut }),
+      body: JSON.stringify({
+        appId,
+        teamId,
+        ...(input.gitCommitSha?.trim() ? { gitCommitSha: input.gitCommitSha.trim() } : {}),
+        ...(input.gitRemoteUrl?.trim() ? { gitRemoteUrl: input.gitRemoteUrl.trim() } : {}),
+        ...(input.deployKeyPem?.trim() ? { deployKeyPem: input.deployKeyPem.trim() } : {}),
+        presignedPut: input.presignedPut.trim(),
+      }),
     })
-    if (result.ok) return "built"
+    if (result.ok) return { outcome: "built", error: null }
     if (result.status === 0) {
       console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return "unreachable"
+      return { outcome: "unreachable", error: null }
     }
     console.warn('[daemon-local-client] app build failed:', result.error)
-    return "failed"
+    return { outcome: "failed", error: result.error ?? null }
   } catch (err) {
     console.warn('[daemon-local-client] app build unavailable:', err)
-    return "unreachable"
+    return { outcome: "unreachable", error: null }
   }
 }
 

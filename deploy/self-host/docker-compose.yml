@@ -340,6 +340,14 @@ services:
       # Function Compute trigger URL and Caddy never asks about a certificate.
       # Requires a wildcard A record for *.<this> pointing at this box.
       APPS_PUBLIC_DOMAIN: "${APPS_PUBLIC_DOMAIN:-}"
+      # Per-app git repos on Gitea. Blank disables repo provisioning (503
+      # gitea_unavailable naming the empty variable).
+      GITEA_URL: "${GITEA_URL:-}"
+      GITEA_TOKEN: "${GITEA_TOKEN:-}"
+      GITEA_OWNER: "${GITEA_OWNER:-}"
+      # 32-byte base64 AES-GCM key for app_secrets at rest. Blank disables
+      # secret storage until encrypt/decrypt is wired.
+      APP_SECRETS_ENCRYPTION_KEY: "${APP_SECRETS_ENCRYPTION_KEY:-}"
       # Optional partner-integration features, all off unless set here. This
       # `environment:` map is an explicit allowlist — a var absent from it never
       # reaches the container, no matter what the box's .env says.

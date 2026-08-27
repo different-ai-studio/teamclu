@@ -89,6 +89,14 @@ resources:
         # reverse proxy that terminates them, so this is normally blank here —
         # declared so the two targets stay in step (deploy-env-parity.test.ts).
         APPS_PUBLIC_DOMAIN: ${env('APPS_PUBLIC_DOMAIN', '')}
+        # Per-app git repos on Gitea. Blank disables repo provisioning (503
+        # gitea_unavailable naming the empty variable).
+        GITEA_URL: ${env('GITEA_URL', '')}
+        GITEA_TOKEN: ${env('GITEA_TOKEN', '')}
+        GITEA_OWNER: ${env('GITEA_OWNER', '')}
+        # 32-byte base64 AES-GCM key for app_secrets at rest. Blank disables
+        # secret storage until Task 7 wires encrypt/decrypt.
+        APP_SECRETS_ENCRYPTION_KEY: ${env('APP_SECRETS_ENCRYPTION_KEY', '')}
         PUSH_WEBHOOK_SECRET: ${env('PUSH_WEBHOOK_SECRET')}
         MARKETPLACE_ADMIN_SECRET: ${env('MARKETPLACE_ADMIN_SECRET', '')}
         AGENT_MANAGEMENT_GRANT_SECRET: ${env('AGENT_MANAGEMENT_GRANT_SECRET', '')}
@@ -98,6 +106,11 @@ resources:
         # a var declared on only one target silently drops `mqtt.tcpUrl` from
         # /v1/config/bootstrap there.
         MQTT_PUBLIC_TCP_BROKER_URL: ${env('MQTT_PUBLIC_TCP_BROKER_URL', '')}
+        # Self-host may point FC at an external Supabase project while keeping
+        # the bundled stack as rollback. Compose maps FC_SUPABASE_* → SUPABASE_*;
+        # on this target set SUPABASE_* directly and leave these blank.
+        FC_SUPABASE_URL: ${env('FC_SUPABASE_URL', '')}
+        TRUSTED_EXTERNAL_JWT_SECRET: ${env('TRUSTED_EXTERNAL_JWT_SECRET', '')}
         SUPABASE_URL: ${env('SUPABASE_URL')}
         SUPABASE_PUBLIC_URL: ${env('SUPABASE_PUBLIC_URL', '')}
         SUPABASE_SERVICE_ROLE_KEY: ${env('SUPABASE_SERVICE_ROLE_KEY')}

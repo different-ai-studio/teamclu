@@ -1,10 +1,8 @@
 //! Clone an existing repository into an app's checkout.
 //!
-//! This is the one place the product shells out to `git`. Everything else that
-//! used to — managed-git team share, the old app remote — is gone, and nothing
-//! here brings any of it back: the clone is a one-shot import of whatever the
-//! user typed in the create dialog, after which the checkout is an ordinary
-//! directory the agent edits and `app_build` builds.
+//! Used when the user imports an external repo (`gitRemoteUrl` without a deploy
+//! key). The Gitea seed-and-push path lives in [`super::app_seed`] +
+//! [`super::app_git`] instead.
 //!
 //! An app created with a repo URL is NOT seeded with a starter template. The
 //! repo is the user's own project; writing our `AGENTS.md`/`build.mjs` over the
@@ -14,43 +12,7 @@ use crate::process_util::CommandNoWindow;
 use std::path::Path;
 use std::process::Command;
 
-/// Remote URL forms we hand to `git clone`.
-///
-/// Deliberately a small allowlist rather than "anything git accepts". A URL
-/// arrives here from the desktop over loopback HTTP, and git's remote-helper
-/// syntax turns some of what it accepts into command execution: `ext::sh -c …`
-/// runs a shell, and a URL that starts with `-` is read as an option, not an
-/// address. Neither is something an app's repo field needs.
-fn validate_remote_url(raw: &str) -> anyhow::Result<String> {
-    let url = raw.trim();
-    if url.is_empty() {
-        anyhow::bail!("git repo URL must not be empty");
-    }
-    if url.starts_with('-') {
-        anyhow::bail!("git repo URL must not start with '-'");
-    }
-    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        anyhow::bail!("git repo URL must not contain whitespace or control characters");
-    }
-    // `ext::`/`fd::` are transport helpers, not addresses.
-    if url.contains("::") && !url.contains("://") {
-        anyhow::bail!("unsupported git transport in URL");
-    }
-
-    let scheme_ok = ["https://", "http://", "ssh://", "git://"]
-        .iter()
-        .any(|s| url.starts_with(s));
-    // scp-like shorthand: `git@github.com:owner/repo.git`. The `@` must come
-    // before the `:` or this is a scheme we did not list.
-    let scp_like = match (url.find('@'), url.find(':')) {
-        (Some(at), Some(colon)) => at < colon && !url.contains("://"),
-        _ => false,
-    };
-    if !scheme_ok && !scp_like {
-        anyhow::bail!("git repo URL must be an http(s), ssh or git:// address");
-    }
-    Ok(url.to_string())
-}
+use crate::sync::app_git;
 
 /// Whether `dir` has anything in it (a missing directory counts as empty).
 fn is_empty_dir(dir: &Path) -> bool {
@@ -71,7 +33,7 @@ fn is_empty_dir(dir: &Path) -> bool {
 /// password prompt no one can see — hence `GIT_TERMINAL_PROMPT=0` and ssh's
 /// `BatchMode`.
 pub fn clone_app_repo(url: &str, workdir: &Path) -> anyhow::Result<()> {
-    let url = validate_remote_url(url)?;
+    let url = app_git::validate_remote_url(url)?;
     if !is_empty_dir(workdir) {
         anyhow::bail!(
             "refusing to clone into a non-empty directory: {}",
@@ -133,7 +95,7 @@ mod tests {
             "git://example.com/repo.git",
             "git@github.com:owner/repo.git",
         ] {
-            assert!(validate_remote_url(url).is_ok(), "rejected {url}");
+            assert!(app_git::validate_remote_url(url).is_ok(), "rejected {url}");
         }
     }
 
@@ -150,7 +112,7 @@ mod tests {
             "   ",
             "https://example.com/repo .git",
         ] {
-            assert!(validate_remote_url(url).is_err(), "accepted {url:?}");
+            assert!(app_git::validate_remote_url(url).is_err(), "accepted {url:?}");
         }
     }
 
