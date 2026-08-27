@@ -222,6 +222,21 @@ mint_bot_token() {
     echo "gitea-bootstrap: GITEA_BOT_PASSWORD is required to mint the bot token" >&2
     exit 1
   fi
+  # A token's secret is returned once, at creation, and never again. So whenever
+  # the value in .env no longer authenticates — a fresh volume, a lost .env, a
+  # rotated instance — the only way forward is to replace the token, and Gitea
+  # refuses a duplicate name with `400 access token name has been used already`.
+  # Drop the stale same-named token first so re-running the script is a way out
+  # of that state rather than a hard stop.
+  local stale_id
+  stale_id="$(gitea_curl -u "${GITEA_BOT_USERNAME}:${GITEA_BOT_PASSWORD}" \
+    "${GITEA_INTERNAL_URL}/api/v1/users/${GITEA_BOT_USERNAME}/tokens" 2>/dev/null \
+    | jq -r --arg n "$TOKEN_NAME" '.[] | select(.name == $n) | .id' | head -n1)"
+  if [ -n "$stale_id" ] && [ "$stale_id" != "null" ]; then
+    echo "gitea-bootstrap: dropping the unusable token ${TOKEN_NAME} (id ${stale_id})…" >&2
+    gitea_curl -u "${GITEA_BOT_USERNAME}:${GITEA_BOT_PASSWORD}" -X DELETE \
+      "${GITEA_INTERNAL_URL}/api/v1/users/${GITEA_BOT_USERNAME}/tokens/${stale_id}" >/dev/null
+  fi
   echo "gitea-bootstrap: creating API token ${TOKEN_NAME} for ${GITEA_BOT_USERNAME}…" >&2
   # Basic-auth AS THE BOT: /users/{username}/tokens mints for the authenticated
   # user, so admin credentials here would mint an admin token (or be rejected).
