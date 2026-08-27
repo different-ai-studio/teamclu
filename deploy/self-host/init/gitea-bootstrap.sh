@@ -51,6 +51,11 @@ GITEA_ADMIN_PASSWORD="${GITEA_ADMIN_PASSWORD:-}"
 GITEA_ADMIN_EMAIL="${GITEA_ADMIN_EMAIL:-ops@example.com}"
 GITEA_BOT_USERNAME="${GITEA_BOT_USERNAME:-teamclu-bot}"
 GITEA_BOT_PASSWORD="${GITEA_BOT_PASSWORD:-}"
+# Gitea validates this: `user@localhost` is rejected with a bare
+# `422 {"message":"[Email]: Email"}`, so the bot's address has to carry a real
+# domain. Default to the admin's domain rather than adding another required
+# variable — an operator who set GITEA_ADMIN_EMAIL has already supplied one.
+GITEA_BOT_EMAIL="${GITEA_BOT_EMAIL:-${GITEA_BOT_USERNAME}@${GITEA_ADMIN_EMAIL#*@}}"
 GITEA_TOKEN="${GITEA_TOKEN:-}"
 TOKEN_NAME="${GITEA_TOKEN_NAME:-teamclu-fc}"
 
@@ -71,10 +76,14 @@ fi
 gitea_curl() {
   # Prefer exec into the running container — works before fc/caddy are up and
   # needs no published HTTP port on the host.
+  #
+  # `--fail-with-body` rather than `-f`: Gitea explains its 4xx in the response
+  # body (`{"message":"[Email]: Email"}`), and plain `-f` discards it, leaving
+  # only `curl: (22) ... error: 422` to debug from.
   if docker inspect "$GITEA_CONTAINER" >/dev/null 2>&1; then
-    docker exec -i "$GITEA_CONTAINER" curl -fsS "$@"
+    docker exec -i "$GITEA_CONTAINER" curl -sS --fail-with-body "$@"
   else
-    curl -fsS "$@"
+    curl -sS --fail-with-body "$@"
   fi
 }
 
@@ -160,7 +169,7 @@ ensure_bot_user() {
     -d "$(jq -nc \
       --arg user "$GITEA_BOT_USERNAME" \
       --arg pass "$GITEA_BOT_PASSWORD" \
-      --arg email "${GITEA_BOT_USERNAME}@localhost" \
+      --arg email "$GITEA_BOT_EMAIL" \
       '{
         username: $user,
         email: $email,
