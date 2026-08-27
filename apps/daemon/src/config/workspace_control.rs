@@ -30,6 +30,8 @@ pub enum WorkspaceControlError {
     Parse(String),
     /// Caller supplied an unsafe or out-of-bounds path/segment. Maps to 400.
     InvalidInput(String),
+    /// Workspace has an active agent turn; runtime reload/stop is rejected.
+    ActiveTurn(String),
 }
 
 impl std::fmt::Display for WorkspaceControlError {
@@ -40,6 +42,7 @@ impl std::fmt::Display for WorkspaceControlError {
             Self::Io(e) => write!(f, "io error: {e}"),
             Self::Parse(e) => write!(f, "parse error: {e}"),
             Self::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
+            Self::ActiveTurn(id) => write!(f, "workspace has active turn: {id}"),
         }
     }
 }

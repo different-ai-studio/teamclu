@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::path::Path as StdPath;
 
 use super::auth::{require_scope, Principal};
-use super::errors::HttpError;
+use super::errors::{ErrorCode, HttpError};
 use super::state::HttpState;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -53,6 +53,10 @@ fn map_control_err(e: WorkspaceControlError) -> HttpError {
         WorkspaceControlError::Io(e) => HttpError::internal(format!("io error: {e}")),
         WorkspaceControlError::Parse(e) => HttpError::internal(format!("parse error: {e}")),
         WorkspaceControlError::InvalidInput(msg) => HttpError::validation(msg),
+        WorkspaceControlError::ActiveTurn(id) => HttpError::new(
+            ErrorCode::SessionBusy,
+            format!("workspace {id} has an active agent turn"),
+        ),
     }
 }
 
@@ -174,16 +178,6 @@ async fn record_skills_refresh_change(
             "failed to record skills refresh change after workspace mutation"
         );
         return;
-    }
-
-    // OpenCode discovers skills when `opencode serve` starts, not when an
-    // individual session is attached. Preserve active turns, detach resumable
-    // idle sessions, then drain the generation so the next session starts a
-    // fresh host and sees the mutation without requiring an explicit Apply.
-    if let Some(supervisor) = state.runtime_supervisor.as_ref() {
-        supervisor
-            .request_workspace_host_refresh(&runtime_workspace_id, workspace_path)
-            .await;
     }
 }
 

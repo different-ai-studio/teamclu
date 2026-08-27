@@ -526,10 +526,6 @@
     "startNewChat": "开始新对话",
     "askAboutFile": "询问关于文件的问题",
     "askAnything": "向我提问",
-    "runtimeRefresh": {
-      "sessionHint": "点击应用以刷新当前会话（下一条消息生效）；新会话会自动加载变更。",
-      "sessionHintKinds": "点击应用以在当前会话加载 {{kinds}}（下一条消息生效）；新会话会自动加载。"
-    },
     "planningMoves": "规划下一步",
     "loadEarlierMessages": "加载前 {{count}} 条消息",
     "compaction": {
@@ -942,13 +938,12 @@
   "workspace": {
     "daemonUnavailableHint": "请在本机启动 amuxd（例如 pnpm daemon:run），确认 ~/.amuxd/ 下已写入 HTTP port/token 文件后重试。",
     "runtimeRefresh": {
-      "pendingTitle": "工作区配置已变更，需要重载",
-      "applyingTitle": "正在应用工作区变更…",
-      "failedTitle": "运行时重载失败",
-      "pendingKinds": "待处理：{{kinds}}",
-      "pendingGeneric": "运行中的 Agent 尚未加载最新的配置或技能。",
-      "blockedByActive": "当前有 Agent 在运行 — 确认后将执行重载。",
-      "apply": "应用变更"
+      "pendingTitle": "工作区配置已更新",
+      "failedTitle": "运行时配置读取失败",
+      "pendingKinds": "已更新：{{kinds}}",
+      "pendingBody": "运行中的会话保持当前配置，运行环境下次启动时自动加载最新配置。",
+      "failedGeneric": "无法读取更新后的工作区配置。",
+      "dismiss": "知道了"
     },
     "selectWorkspace": "选择工作区"
   },

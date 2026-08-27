@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertCircle, Loader2, RefreshCw } from 'lucide-react'
+import { AlertCircle, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -10,21 +10,25 @@ import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refr
 export function RuntimeRefreshWorkspaceBanner() {
   const { t } = useTranslation()
   const refresh = useWorkspaceRuntimeRefreshStore((s) => s.refresh)
-  const isApplying = useWorkspaceRuntimeRefreshStore((s) => s.isApplying)
-  const applyError = useWorkspaceRuntimeRefreshStore((s) => s.applyError)
-  const applyChanges = useWorkspaceRuntimeRefreshStore((s) => s.applyChanges)
+  const dismissedAt = useWorkspaceRuntimeRefreshStore((s) => s.dismissedAt)
+  const dismissBanner = useWorkspaceRuntimeRefreshStore((s) => s.dismissBanner)
 
   if (!runtimeRefreshNeedsBanner(refresh?.status)) {
     return null
   }
 
-  const kindsLabel = formatRuntimeRefreshChangeKinds(refresh?.change_kinds ?? [])
-  const showApply =
-    refresh?.recommended_action === 'apply_changes' &&
-    refresh.status !== 'applying' &&
-    !isApplying
   const failed = refresh?.status === 'failed'
-  const applying = refresh?.status === 'applying' || isApplying
+  const isDismissed =
+    !failed &&
+    refresh?.status === 'pending' &&
+    dismissedAt != null &&
+    dismissedAt === refresh.last_detected_at
+
+  if (isDismissed) {
+    return null
+  }
+
+  const kindsLabel = formatRuntimeRefreshChangeKinds(refresh?.change_kinds ?? [])
 
   return (
     <div
@@ -43,44 +47,43 @@ export function RuntimeRefreshWorkspaceBanner() {
         <p className="font-medium text-foreground">
           {failed
             ? t('workspace.runtimeRefresh.failedTitle', 'Runtime refresh failed')
-            : applying
-              ? t('workspace.runtimeRefresh.applyingTitle', 'Applying workspace changes…')
-              : t('workspace.runtimeRefresh.pendingTitle', 'Workspace changes need a reload')}
+            : t(
+                'workspace.runtimeRefresh.pendingTitle',
+                'Workspace configuration updated',
+              )}
         </p>
         <p className="text-[12px] text-muted-foreground">
-          {kindsLabel
-            ? t('workspace.runtimeRefresh.pendingKinds', 'Pending: {{kinds}}', { kinds: kindsLabel })
-            : t(
-                'workspace.runtimeRefresh.pendingGeneric',
-                'Configuration or skills changed outside the running agent.',
-              )}
-          {refresh?.auto_apply_blocked_by_active_runtime
+          {failed
+            ? (refresh?.last_error ??
+              t(
+                'workspace.runtimeRefresh.failedGeneric',
+                'Could not read the updated workspace configuration.',
+              ))
+            : kindsLabel
+              ? t('workspace.runtimeRefresh.pendingKinds', 'Updated: {{kinds}}', { kinds: kindsLabel })
+              : t(
+                  'workspace.runtimeRefresh.pendingBody',
+                  'Running sessions keep their current configuration; the latest configuration loads the next time their runtime starts.',
+                )}
+          {!failed && kindsLabel
             ? ` ${t(
-                'workspace.runtimeRefresh.blockedByActive',
-                'An agent runtime is active — apply reloads when you confirm.',
+                'workspace.runtimeRefresh.pendingBody',
+                'Running sessions keep their current configuration; the latest configuration loads the next time their runtime starts.',
               )}`
             : null}
         </p>
-        {(applyError || refresh?.last_error) && (
-          <p className="mt-1 text-[12px] text-destructive">
-            {applyError ?? refresh?.last_error}
-          </p>
-        )}
       </div>
-      {showApply && (
+      {!failed && (
         <Button
           size="sm"
-          variant={failed ? 'destructive' : 'default'}
-          className="gap-1.5 shrink-0"
-          onClick={() => void applyChanges()}
-          data-testid="runtime-refresh-apply"
+          variant="ghost"
+          className="h-7 shrink-0 gap-1 px-2 text-[12px] text-muted-foreground"
+          onClick={() => dismissBanner()}
+          data-testid="runtime-refresh-dismiss"
         >
-          <RefreshCw className="h-3.5 w-3.5" />
-          {t('workspace.runtimeRefresh.apply', 'Apply changes')}
+          <X className="h-3.5 w-3.5" />
+          {t('workspace.runtimeRefresh.dismiss', 'Got it')}
         </Button>
-      )}
-      {applying && (
-        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
       )}
     </div>
   )

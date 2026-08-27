@@ -526,10 +526,6 @@
     "startNewChat": "Start a New Chat",
     "askAboutFile": "Ask questions about the file",
     "askAnything": "Ask me anything",
-    "runtimeRefresh": {
-      "sessionHint": "Apply to refresh the current session (next message). New sessions pick up changes automatically.",
-      "sessionHintKinds": "Apply to load {{kinds}} in this session (next message). New sessions pick them up automatically."
-    },
     "planningMoves": "Planning next moves",
     "loadEarlierMessages": "Load {{count}} earlier messages",
     "compaction": {
@@ -942,13 +938,12 @@
   "workspace": {
     "daemonUnavailableHint": "Start amuxd on this machine (e.g. pnpm daemon:run), confirm the HTTP port/token files exist under ~/.amuxd/, then retry.",
     "runtimeRefresh": {
-      "pendingTitle": "Workspace changes need a reload",
-      "applyingTitle": "Applying workspace changes…",
+      "pendingTitle": "Workspace configuration updated",
       "failedTitle": "Runtime refresh failed",
-      "pendingKinds": "Pending: {{kinds}}",
-      "pendingGeneric": "Configuration or skills changed outside the running agent.",
-      "blockedByActive": "An agent runtime is active — apply reloads when you confirm.",
-      "apply": "Apply changes"
+      "pendingKinds": "Updated: {{kinds}}",
+      "pendingBody": "Running sessions keep their current configuration; the latest configuration loads the next time their runtime starts.",
+      "failedGeneric": "Could not read the updated workspace configuration.",
+      "dismiss": "Got it"
     },
     "selectWorkspace": "Select Workspace"
   },
