@@ -54,8 +54,6 @@ type CompatExplicit = {
   sessionDiff: Compat[];
   pendingQuestionIdsBySession: Record<string, Compat>;
   sessionStatuses: Record<string, Compat>;
-  isLoadingChildMessages: Record<string, boolean>;
-  childSessionStreaming: Record<string, Compat>;
   todos: Compat[];
 };
 
@@ -100,10 +98,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   errorSessionId: null,
   inactivityWarning: null,
   isConnected: true,
-  isLoadingChildMessages: {},
-  childSessionStreaming: {},
   viewingArchivedSessionId: null,
-  viewingChildSessionId: null,
   draftInput: "",
   messageQueue: [],
   pendingPermissions: [],
@@ -154,9 +149,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     useSessionListStore.getState().addHighlightedSession(sid, ttlMs);
   },
   setSelectedModel: (model: Compat) => set({ selectedModel: model }),
-  setViewingChildSession: (sid: string | null) => {
-    useSessionSelectionStore.getState().setViewingChildSession(sid);
-  },
   setConnected: (v: boolean) => set({ isConnected: v }),
   setInactivityWarning: (v: Compat) => set({ inactivityWarning: v }),
 
@@ -294,8 +286,7 @@ useSessionSelectionStore.subscribe((state, prev) => {
   if (
     state.activeSessionId === prev.activeSessionId &&
     state.currentSessionId === prev.currentSessionId &&
-    state.viewingArchivedSessionId === prev.viewingArchivedSessionId &&
-    state.viewingChildSessionId === prev.viewingChildSessionId
+    state.viewingArchivedSessionId === prev.viewingArchivedSessionId
   ) {
     return;
   }
@@ -303,7 +294,6 @@ useSessionSelectionStore.subscribe((state, prev) => {
     activeSessionId: state.activeSessionId,
     currentSessionId: state.currentSessionId,
     viewingArchivedSessionId: state.viewingArchivedSessionId,
-    viewingChildSessionId: state.viewingChildSessionId,
   });
 });
 {
@@ -312,7 +302,6 @@ useSessionSelectionStore.subscribe((state, prev) => {
     activeSessionId: initial.activeSessionId,
     currentSessionId: initial.currentSessionId,
     viewingArchivedSessionId: initial.viewingArchivedSessionId,
-    viewingChildSessionId: initial.viewingChildSessionId,
   });
 }
 

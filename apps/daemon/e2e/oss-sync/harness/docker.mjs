@@ -26,7 +26,8 @@ export function composeProject() {
 }
 
 export function contentRootPath(teamId) {
-  return `/root/.amuxd/teams/${teamId}/teamclu-team`;
+  // v2 layout: sync scans teams/<id>/shared (knowledge/ lives directly under it).
+  return `/root/.amuxd/teams/${teamId}/shared`;
 }
 export function syncStatePath(teamId) {
   return `/root/.amuxd/teams/${teamId}/sync/state.json`;

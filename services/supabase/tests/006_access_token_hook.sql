@@ -1,6 +1,6 @@
 begin;
 
-select plan(28);
+select plan(30);
 
 -- Rule catalog for a member yields exactly 10 allow rules with the expected topic shapes.
 select is(
@@ -107,7 +107,7 @@ select is(
   'hook with null user_id returns event unchanged'
 );
 
--- Single-team member: memberships has 1 row, acl has 10 allow + 1 deny rules.
+-- Single-team member: memberships has 1 row, acl has 10 team allow + 1 inbox + 1 deny.
 do $$
 declare
   v_team  uuid := gen_random_uuid();
@@ -143,8 +143,13 @@ begin
   );
   perform is(
     jsonb_array_length(v_claims->'acl'),
-    11,
-    'single-team member: acl has 10 allow + 1 deny = 11 rules'
+    12,
+    'single-team member: acl has 10 team allow + 1 inbox + 1 deny = 12 rules'
+  );
+  perform is(
+    v_claims->'acl'->10->>'topic',
+    format('inbox/%s', v_user),
+    'single-team member: inbox sub rule matches auth user_id'
   );
   perform is(
     jsonb_array_length(v_claims->'app_metadata'->'memberships'),
@@ -164,8 +169,7 @@ begin
 end;
 $$;
 
--- User with zero actors: memberships empty, acl has only deny-all, other
--- claims untouched.
+-- User with zero actors: memberships empty, acl has inbox sub + deny-all.
 do $$
 declare
   v_user   uuid := gen_random_uuid();
@@ -193,13 +197,18 @@ begin
   );
   perform is(
     jsonb_array_length(v_claims->'acl'),
-    1,
-    'zero-actor: acl has only the deny-all'
+    2,
+    'zero-actor: acl has inbox sub + deny-all'
   );
   perform is(
-    v_claims->'acl'->0,
+    v_claims->'acl'->0->>'topic',
+    format('inbox/%s', v_user),
+    'zero-actor: first rule is personal inbox sub'
+  );
+  perform is(
+    v_claims->'acl'->1,
     jsonb_build_object('permission','deny','action','all','topic','#'),
-    'zero-actor: lone rule is deny-all'
+    'zero-actor: last rule is deny-all'
   );
   perform is(
     (v_claims->>'exp')::bigint,
@@ -209,7 +218,7 @@ begin
 end;
 $$;
 
--- Multi-team member: 2 memberships, 2*10+1 = 21 acl rules.
+-- Multi-team member: 2 memberships, 2*10+1 inbox+1 deny = 22 acl rules.
 do $$
 declare
   v_user   uuid := gen_random_uuid();
@@ -249,8 +258,8 @@ begin
   );
   perform is(
     jsonb_array_length(v_claims->'acl'),
-    21,
-    'multi-team member: 20 allow + 1 deny = 21 rules'
+    22,
+    'multi-team member: 20 team allow + 1 inbox + 1 deny = 22 rules'
   );
   perform is(
     v_claims->'acl'->-1,
@@ -261,7 +270,7 @@ end;
 $$;
 
 -- Mixed actor types on one user: member in team A, agent in team B.
--- Expected: memberships has 2 entries, acl has 10 + 14 + 1 = 25 rules.
+-- Expected: memberships has 2 entries, acl has 10 + 14 + 1 inbox + 1 deny = 26 rules.
 do $$
 declare
   v_user   uuid := gen_random_uuid();
@@ -301,8 +310,8 @@ begin
   );
   perform is(
     jsonb_array_length(v_claims->'acl'),
-    25,
-    'mixed: 10 (member) + 14 (agent) + 1 (deny) = 25 rules'
+    26,
+    'mixed: 10 (member) + 14 (agent) + 1 (inbox) + 1 (deny) = 26 rules'
   );
 end;
 $$;

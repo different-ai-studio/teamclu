@@ -27,11 +27,12 @@ test("resolve KeepLocal: B's version re-pushed and wins; both converge to B", { 
   const { nodes, teamId } = ctx;
   await makeConflict(ctx);
 
-  // KeepLocal → 标 dirty → 下次 push 上传 B 当前本地。但 B 本地此刻已是远端(A)内容，
-  // 故先把 B 想保留的内容写回，再 KeepLocal 重推。
+  // KeepLocal restores bytes FROM the sidecar onto the document (engine already
+  // wrote remote into x.md). Writing B-final before resolve used to work when
+  // KeepLocal only flipped dirty; now it would be overwritten by the sidecar.
+  await resolve(nodes.b, "knowledge/x.md", "keepLocal");
   const root = contentRootPath(teamId);
   await writeFile("node-b", `${root}/knowledge/x.md`, Buffer.from("B-final\n"));
-  await resolve(nodes.b, "knowledge/x.md", "keepLocal");
   const b2 = await sync(nodes.b);
   assert.equal(b2.lastError ?? null, null, `B resync error: ${b2.lastError}`);
 

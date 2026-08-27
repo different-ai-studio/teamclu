@@ -167,8 +167,6 @@ export function SessionList({ compact, onSessionSelected }: SessionListProps) {
   void clearSelection
 
   const handleSelectSession = useCallback((id: string) => {
-    const { viewingChildSessionId: vcid, setViewingChildSession: setVcs } = useSessionStore.getState()
-    if (vcid) setVcs(null)
     useUIStore.getState().switchToSession(id)
     onSessionSelected?.()
   }, [onSessionSelected])

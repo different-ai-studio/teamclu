@@ -37,6 +37,7 @@ type MqttLikeClient = {
     opts: { qos: 0 | 1 | 2 },
     cb: (err?: Error | null, granted?: unknown[]) => void,
   ): void
+  unsubscribe(topic: string, cb: (err?: Error | null) => void): void
   publish(topic: string, payload: Uint8Array | string, opts: { retain?: boolean }, cb: (err?: Error | null) => void): void
   end(force: boolean, opts: { properties?: { sessionExpiryInterval?: number } }, cb: () => void): void
 }
@@ -44,6 +45,7 @@ type MqttLikeClient = {
 export type BrowserMqttAdapter = {
   connect(args: BrowserMqttConnectArgs): Promise<void>
   subscribe(topic: string): Promise<void>
+  unsubscribe(topic: string): Promise<void>
   publish(topic: string, payload: Uint8Array, retain?: boolean): Promise<void>
   disconnect(): Promise<void>
   onMessage(handler: (m: BrowserMqttMessage) => void): () => void
@@ -169,6 +171,25 @@ export function createBrowserMqttAdapter(deps: BrowserMqttAdapterDeps = {}): Bro
             return
           }
           recordMqttDiag('mqtt-adapter', 'subscribe:callback-ok', { topic, granted })
+          resolve()
+        })
+      })
+    },
+    async unsubscribe(topic) {
+      const c = client
+      if (!c) throw new Error('MQTT client is not connected')
+      await new Promise<void>((resolve, reject) => {
+        recordMqttDiag('mqtt-adapter', 'unsubscribe:call', { topic })
+        c.unsubscribe(topic, (e) => {
+          if (e) {
+            recordMqttDiag('mqtt-adapter', 'unsubscribe:callback-error', {
+              topic,
+              error: summarizeError(e),
+            })
+            reject(e)
+            return
+          }
+          recordMqttDiag('mqtt-adapter', 'unsubscribe:callback-ok', { topic })
           resolve()
         })
       })

@@ -11,6 +11,7 @@ import type { BrowserMqttConnectOptions } from './browser-mqtt-adapter'
 export type MqttWorkerRequest =
   | { id: number; op: 'connect'; url: string; options?: BrowserMqttConnectOptions }
   | { id: number; op: 'subscribe'; topic: string }
+  | { id: number; op: 'unsubscribe'; topic: string }
   | { id: number; op: 'publish'; topic: string; payload: Uint8Array; retain: boolean }
   | { id: number; op: 'disconnect' }
 
@@ -48,6 +49,9 @@ scope.onmessage = async (e: MessageEvent<MqttWorkerRequest>) => {
         break
       case 'subscribe':
         await adapter.subscribe(req.topic)
+        break
+      case 'unsubscribe':
+        await adapter.unsubscribe(req.topic)
         break
       case 'publish':
         await adapter.publish(req.topic, req.payload, req.retain)

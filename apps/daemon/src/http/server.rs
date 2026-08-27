@@ -89,6 +89,7 @@ pub(crate) fn loopback_runtime_context_url(requested_bind: SocketAddr, bound: So
     }
 }
 
+
 /// Public bind addresses that are not loopback-reachable need a dedicated
 /// loopback listener for `/internal/runtime-context/resolve`.
 pub(crate) fn needs_dedicated_runtime_context_listener(requested_bind: SocketAddr) -> bool {
@@ -1318,6 +1319,8 @@ mod tests {
             .send()
             .await
             .unwrap();
+        assert_eq!(bad_token.status().as_u16(), 401);
+
         assert_eq!(bad_token.status().as_u16(), 401);
 
         let unknown: reqwest::Response = client

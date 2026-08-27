@@ -159,6 +159,81 @@ test("insertMessage writes a messages row and maps response", async () => {
   assert.equal(message.senderActorId, "actor-1");
 });
 
+test("insertMessage calls injected dispatchPush once with snake_case record", async () => {
+  const calls: any[] = [];
+  const repo = createRepo(fakeSupabase({
+    tableData: {
+      messages: [{
+        id: "message-1",
+        team_id: "team-1",
+        session_id: "session-1",
+        turn_id: null,
+        sender_actor_id: "actor-1",
+        reply_to_message_id: null,
+        kind: "text",
+        content: "hello",
+        metadata: null,
+        model: null,
+        created_at: "2026-05-27T01:00:00Z",
+        updated_at: null,
+      }],
+    },
+  }), {
+    dispatchPush: async (record) => { calls.push(record); },
+  });
+
+  const message = await repo.insertMessage("session-1", {
+    id: "message-1",
+    teamId: "team-1",
+    senderActorId: "actor-1",
+    content: "hello",
+  });
+
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(calls.length, 1, "dispatchPush should be called exactly once");
+  assert.equal(calls[0].id, message.id);
+  assert.equal(calls[0].session_id, "session-1");
+  assert.equal(calls[0].team_id, "team-1");
+  assert.equal(calls[0].sender_actor_id, "actor-1");
+  assert.equal(calls[0].kind, "text");
+  assert.equal(calls[0].content, "hello");
+});
+
+test("insertMessage succeeds even when dispatchPush throws", async () => {
+  const repo = createRepo(fakeSupabase({
+    tableData: {
+      messages: [{
+        id: "message-2",
+        team_id: "team-1",
+        session_id: "session-1",
+        turn_id: null,
+        sender_actor_id: "actor-1",
+        reply_to_message_id: null,
+        kind: "text",
+        content: "push throws",
+        metadata: null,
+        model: null,
+        created_at: "2026-05-27T01:00:00Z",
+        updated_at: null,
+      }],
+    },
+  }), {
+    dispatchPush: async () => { throw new Error("push failure"); },
+  });
+
+  const message = await repo.insertMessage("session-1", {
+    id: "message-2",
+    teamId: "team-1",
+    senderActorId: "actor-1",
+    content: "push throws",
+  });
+
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(message.id, "message-2");
+});
+
 test("auth repo claimInvite calls claim_team_invite RPC anonymously", async () => {
   // The bootstrap claim flow has no caller bearer; the auth repo must use an
   // anon-key Supabase client (no Authorization header) to invoke the

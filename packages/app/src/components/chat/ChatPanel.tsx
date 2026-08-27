@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { AlertCircle, Archive, ArrowLeft, Bot, Loader2, RefreshCw } from "lucide-react";
+import { AlertCircle, Archive, ArrowLeft, Loader2, RefreshCw } from "lucide-react";
 import {
   cn,
   isTauri,
@@ -227,20 +227,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   const archivedSessionError = useSessionStore(s => s.archivedSessionError);
   const isViewingArchived = !!viewingArchivedSessionId;
 
-  // ── Child session viewing ──────────────────────────────────────────
-  const viewingChildSessionId = useSessionStore(s => s.viewingChildSessionId);
-  const childSessionMessages = useSessionStore(s =>
-    s.viewingChildSessionId && !s.viewingArchivedSessionId
-      ? (s.childSessionMessages[s.viewingChildSessionId] || EMPTY_MESSAGES)
-      : EMPTY_MESSAGES
-  );
-  const isLoadingChildMessages = useSessionStore(s => s.isLoadingChildMessages);
-  const childStreamingContent = useStreamingStore(s =>
-    viewingChildSessionId && !isViewingArchived
-      ? s.childSessionStreaming[viewingChildSessionId]
-      : undefined
-  );
-  const isViewingChild = !!viewingChildSessionId && !isViewingArchived;
   const acpPendingForTodo = React.useMemo(
     () =>
       collectAcpStreamingPermissions(
@@ -255,7 +241,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   );
   const showInlineTodo = React.useMemo(() => {
     if (isViewingArchived) return false;
-    if (isViewingChild) return false;
     if (todos.length === 0 && messageQueue.length === 0 && planTodos.length === 0)
       return false;
     return !hasVisiblePendingPermissions(
@@ -273,7 +258,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     acpPendingForTodo,
     activeToolPermissionSig,
     isViewingArchived,
-    isViewingChild,
     messageQueue.length,
     pendingPermissions,
     sessionPermissionMode,
@@ -291,51 +275,10 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   );
   const hasComposerPlanData =
     !isViewingArchived &&
-    !isViewingChild &&
     (combinedTodos.length > 0 || messageQueue.length > 0);
-  const displayedChildSessionMessages = React.useMemo(() => {
-    if (!isViewingChild || !viewingChildSessionId) return EMPTY_MESSAGES;
-
-    const hasLiveChildStreaming =
-      !!childStreamingContent &&
-      (childStreamingContent.isStreaming ||
-        !!childStreamingContent.text ||
-        !!childStreamingContent.reasoning);
-
-    if (!hasLiveChildStreaming) {
-      return childSessionMessages;
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const hasStreamingPlaceholder = childSessionMessages.some((message: any) => message.isStreaming);
-    if (hasStreamingPlaceholder) {
-      return childSessionMessages;
-    }
-
-    const lastTimestamp = childSessionMessages[childSessionMessages.length - 1]?.timestamp;
-    const placeholderTimestamp =
-      lastTimestamp instanceof Date
-        ? new Date(lastTimestamp.getTime() + 1)
-        : new Date();
-
-    return [
-      ...childSessionMessages,
-      {
-        id: `child-streaming-${viewingChildSessionId}`,
-        sessionId: viewingChildSessionId,
-        role: "assistant" as const,
-        content: childStreamingContent?.text || "",
-        parts: [],
-        toolCalls: [],
-        isStreaming: true,
-        timestamp: placeholderTimestamp,
-      },
-    ];
-  }, [childSessionMessages, childStreamingContent, isViewingChild, viewingChildSessionId]);
   const activeInputQuestion = React.useMemo(() => {
     if (!activeSessionId) return null;
     if (isViewingArchived) return null;
-    if (isViewingChild) return null;
     return (
       pendingQuestions.find((question) => {
         if (!question.sessionId) return true;
@@ -352,7 +295,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   }, [
     activeSessionId,
     isViewingArchived,
-    isViewingChild,
     pendingQuestions,
     sessionParentLinks,
   ]);
@@ -392,7 +334,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   const setStoreSelectedModel = acts.setSelectedModel;
   const closeArchivedSession = acts.closeArchivedSession;
   const restoreSession = acts.restoreSession;
-  const setViewingChildSession = acts.setViewingChildSession;
 
   // ── Workspace store ───────────────────────────────────────────────────
   const workspacePath = useWorkspaceStore(s => s.workspacePath);
@@ -1145,8 +1086,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   // ── Empty state ───────────────────────────────────────────────────────
   const handleCloseArchivedSession = React.useCallback(() => {
     closeArchivedSession();
-    setViewingChildSession?.(null);
-  }, [closeArchivedSession, setViewingChildSession]);
+  }, [closeArchivedSession]);
 
   const handleRestoreArchivedSession = React.useCallback(async () => {
     if (!viewingArchivedSessionId || isRestoringArchivedRef.current) return;
@@ -1271,8 +1211,8 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   const hasSessionNotices = useSessionNoticeStore((s) =>
     displaySessionId ? (s.bySession[displaySessionId]?.length ?? 0) > 0 : false,
   );
-  const messageBottomContent = !isViewingChild &&
-    (visibleSessionError || visibleError || hasSessionNotices) ? (
+  const messageBottomContent =
+    visibleSessionError || visibleError || hasSessionNotices ? (
     <>
       {hasSessionNotices ? <SessionNoticeList sessionId={displaySessionId} /> : null}
       {visibleSessionError ? (
@@ -1340,27 +1280,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
         </div>
       )}
 
-      {/* ─── Child session back bar ─── */}
-      {isViewingChild && (
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-muted/30">
-          <button
-            type="button"
-            onClick={() => useSessionStore.getState().setViewingChildSession(null)}
-            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <ArrowLeft size={14} />
-            <span>{t("chat.backToMainSession", "Back to main session")}</span>
-          </button>
-          <div className="flex items-center gap-1.5 ml-auto text-xs text-muted-foreground">
-            <Bot size={12} />
-            <span>Sub-agent</span>
-            {childStreamingContent?.isStreaming && (
-              <Loader2 size={12} className="animate-spin" />
-            )}
-          </div>
-        </div>
-      )}
-
       {workspaceBootstrapped && !workspaceReady && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-background/80 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3 px-4 text-center">
@@ -1383,9 +1302,9 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
           "flex-1 min-h-0 flex flex-col overflow-hidden",
           "transition-opacity duration-150 ease-in-out motion-reduce:transition-none",
         )}
-        style={{ opacity: isViewingArchived || isViewingChild ? 1 : sessionFadeOpacity }}
+        style={{ opacity: isViewingArchived ? 1 : sessionFadeOpacity }}
       >
-        {!isViewingArchived && !isViewingChild ? (
+        {!isViewingArchived ? (
           <AcpStreamDebugPanel sessionId={displaySessionId} />
         ) : null}
         {isViewingArchived ? (
@@ -1398,21 +1317,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
             compact={compact}
             sessionDirectory={archivedSession?.directory}
           />
-        ) : isViewingChild ? (
-          isLoadingChildMessages ? (
-            <div className="flex items-center justify-center flex-1">
-              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-            </div>
-          ) : (
-            <MessageList
-              ref={messageListRef}
-              messages={displayedChildSessionMessages}
-              activeSessionId={viewingChildSessionId}
-              isStreaming={!!childStreamingContent?.isStreaming}
-              streamingMessageId={null}
-              compact={compact}
-            />
-          )
         ) : (
           <MessageList
             ref={messageListRef}
@@ -1447,7 +1351,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
             {t("chat.restoreArchivedHint", "Restore this session to continue chatting")}
           </div>
         </div>
-      ) : !isViewingChild ? (
+      ) : (
         activeInputQuestion ? (
           <QuestionInputDock
             compact={compact}
@@ -1503,7 +1407,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
           />
           </>
         ) : null
-      ) : null}
+      )}
 
       {terminalOpen && workspacePath && (
         <React.Suspense fallback={null}>

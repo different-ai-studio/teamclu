@@ -31,6 +31,7 @@ function makeUiContext(sessionId) {
   return { sessionId, confirm: async () => true, select: async () => undefined };
 }
 
+
 test("PI reopen/resume uses the new ctx.ui.sessionId backend identity", async () => {
   const beforeReopen = { ui: makeUiContext("pi:/tmp/workspace/session-a.json") };
   const afterReopen = { ui: makeUiContext("pi:/tmp/workspace/session-b.json") };
