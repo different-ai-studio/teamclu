@@ -189,8 +189,17 @@ async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMeta
     load_cursor_pool_config(&shared.pool);
     let worktree = canonical_dir(&args.worktree);
     install_permission_hook(&worktree);
-    let mut mcp_servers = mcp::assemble(&worktree, args.mcp_config_path.as_deref());
-    mcp::stamp_managed_session_context(&mut mcp_servers, &args.teamclu_session_id);
+    let mcp_servers = mcp::assemble_stamped_managed(
+        &worktree,
+        args.mcp_config_path.as_deref(),
+        &args.teamclu_session_id,
+    );
+    if !mcp::managed_introspect_stamped(&mcp_servers) {
+        warn!(
+            session_id = %args.teamclu_session_id,
+            "managed session context: teamclu-introspect missing or unstamped in mcpServers"
+        );
+    }
     let proc = shared
         .pool
         .ensure(shared, &worktree)
