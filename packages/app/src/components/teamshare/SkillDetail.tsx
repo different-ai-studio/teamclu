@@ -1625,15 +1625,21 @@ export function SkillDetail({ slug }: { slug: string }) {
                 Telling that user to install it is a dead end: installing again
                 changes nothing, and the pane stays read-only either way.
               */}
-              {item.installed || isPersonal
+              {item.kind === 'team-installed' && item.hasUpdate && !item.dirPath
                 ? t(
-                    'teamShare.skillOnRemoteAgentBody',
-                    '这个 Skill 装在所选 Agent 的机器上，远程暂不支持查看和编辑内容。',
+                    'teamShare.skillSyncingBody',
+                    '正在同步到 v{{v}}，完成后即可查看和编辑文件。',
+                    { v: item.latestVersion ?? item.installedVersion ?? '?' },
                   )
-                : t(
-                    'teamShare.skillNotInstalledBody',
-                    'Install this skill to read and edit its package contents on disk.',
-                  )}
+                : item.installed || isPersonal
+                  ? t(
+                      'teamShare.skillOnRemoteAgentBody',
+                      '这个 Skill 装在所选 Agent 的机器上，远程暂不支持查看和编辑内容。',
+                    )
+                  : t(
+                      'teamShare.skillNotInstalledBody',
+                      'Install this skill to read and edit its package contents on disk.',
+                    )}
             </p>
             {latestChangelog && (
               <p className="max-w-md text-[12px] leading-relaxed text-faint">
