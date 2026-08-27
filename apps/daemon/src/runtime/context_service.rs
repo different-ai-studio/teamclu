@@ -131,6 +131,12 @@ impl RuntimeContextService {
         bearer_token: &str,
         req: &ResolveRuntimeContextRequest,
     ) -> Result<ResolveRuntimeContextResponse, ResolveError> {
+        if req.backend_session_id.trim().is_empty() {
+            return Err(ResolveError::InvalidBackendSessionId);
+        }
+        if req.host_generation_id.trim().is_empty() {
+            return Err(ResolveError::StaleHostGeneration);
+        }
         let inner = self.inner.read();
         inner.tokens.validate(
             bearer_token,

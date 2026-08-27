@@ -29,15 +29,25 @@ use super::tokens::{self, TokenStore};
 /// and for clients that need to log it.
 pub struct HttpHandle {
     pub local_addr: SocketAddr,
+    /// Loopback URL adapters use for `/internal/runtime-context/resolve`.
+    pub runtime_context_base_url: Option<String>,
     #[allow(dead_code)]
     pub tokens: TokenStore,
     join: JoinHandle<()>,
     shutdown_tx: Option<oneshot::Sender<()>>,
+    runtime_context_join: Option<JoinHandle<()>>,
+    runtime_context_shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl HttpHandle {
     #[allow(dead_code)]
     pub async fn shutdown(mut self) {
+        if let Some(tx) = self.runtime_context_shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(join) = self.runtime_context_join.take() {
+            let _ = join.await;
+        }
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
@@ -47,6 +57,12 @@ impl HttpHandle {
 
 impl Drop for HttpHandle {
     fn drop(&mut self) {
+        if let Some(tx) = self.runtime_context_shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(join) = self.runtime_context_join.take() {
+            join.abort();
+        }
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
@@ -71,6 +87,46 @@ pub(crate) fn loopback_runtime_context_url(requested_bind: SocketAddr, bound: So
         }
         _ => format!("http://127.0.0.1:{port}"),
     }
+}
+
+/// Public bind addresses that are not loopback-reachable need a dedicated
+/// loopback listener for `/internal/runtime-context/resolve`.
+pub(crate) fn needs_dedicated_runtime_context_listener(requested_bind: SocketAddr) -> bool {
+    match requested_bind.ip() {
+        std::net::IpAddr::V4(v4) => !(v4.is_unspecified() || v4.is_loopback()),
+        std::net::IpAddr::V6(v6) => !(v6.is_unspecified() || v6.is_loopback()),
+    }
+}
+
+async fn spawn_dedicated_runtime_context_listener(
+    state: HttpState,
+) -> anyhow::Result<(String, JoinHandle<()>, oneshot::Sender<()>)> {
+    use axum::routing::post;
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| anyhow::anyhow!("bind runtime-context loopback listener: {e}"))?;
+    let addr = listener.local_addr()?;
+    let base_url = format!("http://127.0.0.1:{}", addr.port());
+    let app = Router::new()
+        .route(
+            "/internal/runtime-context/resolve",
+            post(crate::http::runtime_context::resolve_runtime_context),
+        )
+        .with_state(state);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let join = tokio::spawn(async move {
+        let server = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
+        });
+        if let Err(e) = server.await {
+            tracing::error!("runtime-context loopback listener exited with error: {e}");
+        }
+    });
+    Ok((base_url, join, shutdown_tx))
 }
 
 /// Spawn the HTTP listener. Errors surface as `anyhow::Result` because
@@ -127,9 +183,6 @@ pub async fn spawn(
         .map_err(|e| anyhow::anyhow!("bind {addr}: {e}"))?;
     let local_addr = listener.local_addr()?;
     tokens::write_port_file(&port_path, local_addr.port());
-    if let Some(service) = runtime_context.as_ref() {
-        service.set_base_url(loopback_runtime_context_url(addr, local_addr));
-    }
 
     tracing::info!(
         bind = %local_addr,
@@ -180,6 +233,23 @@ pub async fn spawn(
         state
     };
 
+    let mut runtime_context_join = None;
+    let mut runtime_context_shutdown = None;
+    let mut runtime_context_base_url = None;
+    if let Some(service) = state.runtime_context.as_ref() {
+        let base_url = if needs_dedicated_runtime_context_listener(addr) {
+            let (url, join, shutdown_tx) =
+                spawn_dedicated_runtime_context_listener(state.clone()).await?;
+            runtime_context_join = Some(join);
+            runtime_context_shutdown = Some(shutdown_tx);
+            url
+        } else {
+            loopback_runtime_context_url(addr, local_addr)
+        };
+        runtime_context_base_url = Some(base_url.clone());
+        service.set_base_url(base_url);
+    }
+
     spawn_reapers(state.clone());
     let mut app: Router = routes::build(state);
     if let Some(layer) = cors_layer {
@@ -204,9 +274,12 @@ pub async fn spawn(
 
     Ok(HttpHandle {
         local_addr,
+        runtime_context_base_url,
         tokens,
         join,
         shutdown_tx: Some(shutdown_tx),
+        runtime_context_join,
+        runtime_context_shutdown,
     })
 }
 
@@ -1215,7 +1288,7 @@ mod tests {
             None,
             None,
             None,
-            Some(service),
+            Some(Arc::clone(&service)),
         )
         .await
         .unwrap();
@@ -1247,6 +1320,118 @@ mod tests {
             .unwrap();
         assert_eq!(bad_token.status().as_u16(), 401);
 
+        let unknown: reqwest::Response = client
+            .post(format!("{base}/internal/runtime-context/resolve"))
+            .bearer_auth(&token)
+            .json(&ResolveRuntimeContextRequest {
+                backend_session_id: "missing-backend".into(),
+                host_generation_id: "gen-test".into(),
+                backend_kind: "opencode".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unknown.status().as_u16(), 404);
+
+        let stale_gen: reqwest::Response = client
+            .post(format!("{base}/internal/runtime-context/resolve"))
+            .bearer_auth(&token)
+            .json(&ResolveRuntimeContextRequest {
+                backend_session_id: "backend-a".into(),
+                host_generation_id: String::new(),
+                backend_kind: "opencode".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stale_gen.status().as_u16(), 409);
+
+        service.clear_generation(amux::AgentType::Opencode, "gen-test");
+        let revoked_token: reqwest::Response = client
+            .post(format!("{base}/internal/runtime-context/resolve"))
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(revoked_token.status().as_u16(), 401);
+
         handle.shutdown().await;
+    }
+
+    #[test]
+    fn needs_dedicated_runtime_context_listener_for_public_bind() {
+        let lan: SocketAddr = "192.168.1.10:8080".parse().unwrap();
+        assert!(needs_dedicated_runtime_context_listener(lan));
+        let loopback: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        assert!(!needs_dedicated_runtime_context_listener(loopback));
+        let any: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        assert!(!needs_dedicated_runtime_context_listener(any));
+    }
+
+    #[tokio::test]
+    async fn dedicated_runtime_context_listener_resolves_registered_session() {
+        use crate::proto::amux;
+        use crate::runtime::context_registry::ResolveRuntimeContextRequest;
+        use crate::runtime::context_service::RuntimeContextService;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = HttpConfig {
+            bind: "127.0.0.1:0".into(),
+            token_file: Some(dir.path().join("token")),
+            port_file: Some(dir.path().join("port")),
+            ..HttpConfig::default()
+        };
+        let service = Arc::new(RuntimeContextService::new());
+        service.register_attached_session(
+            amux::AgentType::Opencode,
+            "gen-dedicated",
+            "backend-z",
+            "teamclu-z",
+            "runtime-z",
+        );
+        let env = service.env_for_generation(amux::AgentType::Opencode, "gen-dedicated");
+        let token = env
+            .get("TEAMCLU_RUNTIME_CONTEXT_TOKEN")
+            .cloned()
+            .expect("token");
+        let meta = metadata("actor-test".into(), "test");
+        let runtime = crate::http::runtime_adapter::StubRuntimeAdapter::new(256);
+        let state = HttpState::new(
+            cfg,
+            tokens::TokenStore::load_or_init(&dir.path().join("token")).unwrap(),
+            meta,
+            runtime,
+            None,
+            None,
+            None,
+            test_dispatcher(),
+            None,
+        )
+        .with_runtime_context(Arc::clone(&service));
+
+        let (dedicated_base, join, shutdown_tx) =
+            spawn_dedicated_runtime_context_listener(state).await.unwrap();
+        assert!(dedicated_base.starts_with("http://127.0.0.1:"));
+
+        let client = reqwest::Client::new();
+        let ok: serde_json::Value = client
+            .post(format!("{dedicated_base}/internal/runtime-context/resolve"))
+            .bearer_auth(&token)
+            .json(&ResolveRuntimeContextRequest {
+                backend_session_id: "backend-z".into(),
+                host_generation_id: "gen-dedicated".into(),
+                backend_kind: "opencode".into(),
+            })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(ok["teamcluSessionId"], "teamclu-z");
+
+        let _ = shutdown_tx.send(());
+        let _ = join.await;
     }
 }

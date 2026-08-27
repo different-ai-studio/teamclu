@@ -31,6 +31,16 @@ function makeUiContext(sessionId) {
   return { sessionId, confirm: async () => true, select: async () => undefined };
 }
 
+test("PI reopen/resume uses the new ctx.ui.sessionId backend identity", async () => {
+  const beforeReopen = { ui: makeUiContext("pi:/tmp/workspace/session-a.json") };
+  const afterReopen = { ui: makeUiContext("pi:/tmp/workspace/session-b.json") };
+  const before = await injectForPiTool("get_session_deeplink", {}, beforeReopen);
+  const after = await injectForPiTool("get_session_deeplink", {}, afterReopen);
+  assert.equal(before.session_id, "teamclu-for-pi:/tmp/workspace/session-a.json");
+  assert.equal(after.session_id, "teamclu-for-pi:/tmp/workspace/session-b.json");
+  assert.notEqual(before.session_id, after.session_id);
+});
+
 test("PI ctx.ui.sessionId drives injection for session-scoped tools", async () => {
   const ctxA = { ui: makeUiContext("pi:/tmp/a.json") };
   const ctxB = { ui: makeUiContext("pi:/tmp/b.json") };
