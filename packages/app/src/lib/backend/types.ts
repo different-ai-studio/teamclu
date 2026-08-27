@@ -936,6 +936,10 @@ export interface WorkspacesBackend {
   }): Promise<DaemonWorkspaceBackendRow>;
 }
 
+export type AppRuntime = "node" | "container";
+
+export type AppAuthMode = "none" | "platform" | "third";
+
 export interface AppRow {
   id: string;
   teamId: string;
@@ -945,9 +949,26 @@ export interface AppRow {
   visibility: "personal" | "team";
   workspaceId: string | null;
   gitRemoteUrl: string | null;
+  /** `"gitea_deploy_key"` when this deployment provisioned the app's repo and
+   *  holds a deploy key for it; null when the app was imported from a remote we
+   *  have no credential for — those deploy the local workdir as it sits. */
+  gitAuthKind: string | null;
+  /** HEAD SHA at last successful deploy; null before first deploy completes. */
+  gitCommitSha: string | null;
+  runtime: AppRuntime;
+  authMode: AppAuthMode;
+  /** `authMode` was changed after the live deploy, so the running function still
+   *  enforces the OLD gate (the OAuth env is injected at finalize). Server-derived
+   *  from `fc_status` + `deployed_auth_mode` so it survives a reload and agrees
+   *  across devices — see design §7.4. */
+  authModePendingRedeploy: boolean;
+  /** Public OAuth client id for `third` or GoTrue client id for `platform`. */
+  oauthClientId: string | null;
   provisionStatus: string;
   fcStatus: string | null;
   fcEndpoint: string | null;
+  fcFunctionName: string | null;
+  fcRegion: string | null;
   /** Vanity URL (`<slug>-<id8>.<apps domain>`), or null on a deployment that
    *  has no apps domain — then `fcEndpoint` is the only address there is. */
   publicUrl: string | null;
@@ -960,6 +981,38 @@ export interface AppRow {
 export interface DeployAppResult extends AppRow {
   ossObjectName: string;
   presignedPut: string;
+  /** Short-lived bearer for finalize; not stored on the app row in mapApp. */
+  deployToken: string;
+  /** Null for an imported app: there is no forge commit to pin the deploy to. */
+  gitCommitSha: string | null;
+}
+
+export interface AppGitCredential {
+  remoteUrl: string;
+  authKind: "deploy_key";
+  privateKeyPem: string;
+  deployKeyId: number;
+  expiresAt: string;
+}
+
+export interface AppGitHead {
+  sha: string;
+}
+
+/** `GET /v1/apps/:id/membership` — whether the caller belongs to the app's team. */
+export interface AppMembership {
+  member: boolean;
+}
+
+/** Per-member app permission (`view` | `prompt` | `admin`). */
+export type AppPermissionLevel = "view" | "prompt" | "admin";
+
+/** Row from `GET /v1/apps/:id/access` or `PUT …/access/:memberId`. */
+export interface AppMemberAccessRow {
+  memberId: string;
+  permissionLevel: AppPermissionLevel;
+  grantedByMemberId: string | null;
+  createdAt: string;
 }
 
 export interface AppSessionRow {
@@ -970,6 +1023,59 @@ export interface AppSessionRow {
   lastMessageAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** One column of an app table, as `information_schema` describes it. */
+export interface AppDataColumn {
+  name: string;
+  /** Postgres `data_type` — drives how the cell is rendered (json, bytea, …). */
+  dataType: string;
+  nullable: boolean;
+}
+
+export interface AppDataTable {
+  name: string;
+  columns: AppDataColumn[];
+  /** Ordered primary-key columns; empty when the table has none. */
+  primaryKey: string[];
+  /** False when there is no primary key: no safe way to address a single row,
+   *  so the table is browsable but its row actions are disabled. */
+  editable: boolean;
+}
+
+export interface AppDataRowsPage {
+  table: string;
+  columns: AppDataColumn[];
+  primaryKey: string[];
+  editable: boolean;
+  rows: Array<Record<string, unknown>>;
+  /** Pass back as `after`. Null means this was the last page. There is no total
+   *  count — `count(*)` is a full scan on a production table. */
+  nextCursor: string | null;
+}
+
+/**
+ * Why the data browser has nothing to show.
+ *
+ * A union rather than an error because the three "nothing here" cases need
+ * three different sentences, and the difference between them is the whole
+ * point: "this type has no database" is permanent, "not deployed yet" is a
+ * next step, and an empty table list is the normal state of a freshly deployed
+ * app nobody has visited yet.
+ */
+export type AppDataTablesResult =
+  | { status: "ok"; tables: AppDataTable[] }
+  | { status: "no_database" }
+  | { status: "not_deployed" }
+  | { status: "unavailable"; reason: string };
+
+export type AppDataFilterOp = "eq" | "contains" | "isNull" | "notNull";
+
+export interface AppDataRowsQuery {
+  after?: string | null;
+  direction?: "asc" | "desc";
+  limit?: number;
+  filter?: { column: string; op: AppDataFilterOp; value?: string } | null;
 }
 
 export interface AppsBackend {
@@ -991,11 +1097,53 @@ export interface AppsBackend {
   updateAppDeployStatus(appId: string, fcStatus: string, deployError?: string): Promise<AppRow | null>;
   /** Rename an app (PATCH name). Returns null on 404. */
   renameApp(appId: string, name: string): Promise<AppRow | null>;
-  /** Start FC deploy: provisions the function + returns the OSS upload handle. */
-  deployApp(appId: string): Promise<DeployAppResult>;
+  /** Start FC deploy: provisions the function + returns the OSS upload handle.
+   *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
+  deployApp(appId: string, input: { gitCommitSha?: string }): Promise<DeployAppResult>;
   /** Finalize FC deploy after the artifact is uploaded: points the function at
    *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */
-  finalizeDeploy(appId: string): Promise<AppRow>;
+  finalizeDeploy(appId: string, input: { gitCommitSha?: string; deployToken: string }): Promise<AppRow>;
+  /** Mint a JIT Gitea deploy key for git push (creator only). Returns null on
+   *  404, and for an app that is not Gitea-managed. */
+  getGitCredential(appId: string): Promise<AppGitCredential | null>;
+  /** Default-branch HEAD on the app's Gitea repo (same visibility as getApp).
+   *  Null for an app that is not Gitea-managed. */
+  getGitHead(appId: string): Promise<AppGitHead | null>;
+  /** Whether the caller is a member of the app's team (platform-auth templates). */
+  getAppMembership(appId: string): Promise<AppMembership | null>;
+  /** List per-member grants (creator or app admin only). Null on 404. */
+  listAppAccess(appId: string): Promise<AppMemberAccessRow[] | null>;
+  /** Upsert a member grant (creator or app admin only). Null on 404. */
+  setAppAccess(
+    appId: string,
+    memberId: string,
+    permissionLevel: AppPermissionLevel,
+  ): Promise<AppMemberAccessRow | null>;
+  /** Revoke a member grant (creator or app admin only). False on 404. */
+  removeAppAccess(appId: string, memberId: string): Promise<boolean>;
+  /** Delete an app (admin required). False on 404. */
+  deleteApp(appId: string): Promise<boolean>;
+  /** Change auth mode (creator only). Returns null on 404. */
+  updateAppAuthMode(appId: string, authMode: AppAuthMode): Promise<AppRow | null>;
+
+  // --- Data browser (design 2026-08-27-app-data-browser) ---
+  // `prompt` may read, `admin` may also edit; `view` gets null, same as a
+  // non-member, so the tier never learns the feature exists.
+
+  /** Tables in the app's own database, or why there are none. Null on 404. */
+  listAppDataTables(appId: string): Promise<AppDataTablesResult | null>;
+  /** One page of rows, keyset-paged over the primary key. */
+  readAppDataRows(appId: string, table: string, query?: AppDataRowsQuery): Promise<AppDataRowsPage>;
+  /** Update one row by key; returns the row **re-read after the write**, so
+   *  triggers and defaults that rewrote the submitted value are visible. */
+  updateAppDataRow(
+    appId: string,
+    table: string,
+    rowKey: string,
+    patch: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
+  /** Delete one row by key. */
+  deleteAppDataRow(appId: string, table: string, rowKey: string): Promise<void>;
 }
 
 export interface ActorDirectorySyncRow {

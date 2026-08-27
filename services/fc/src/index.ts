@@ -16,12 +16,16 @@ import { dispatchPush } from "./lib/push-dispatch.js";
 import { pushDeps, pgPushDeps } from "./lib/admin-handlers.js";
 import { verifyAccessToken } from "./auth/verify.js";
 import { ApiError } from "./lib/http-utils.js";
-import { getAppsAdminExecutor } from "./lib/provisioning/app-postgres.js";
 import { getFcClient, makeFcOps, resolveFcEndpoint } from "./lib/provisioning/fc-client.js";
 import { startDeploy as startDeployImpl, finalizeDeploy as finalizeDeployImpl } from "./lib/provisioning/app-deploy.js";
+import { readAppsAdminUrl } from "./lib/provisioning/app-postgres.js";
+import { makeAppDataOps, type AppDataOps } from "./lib/provisioning/app-data-db.js";
+import { makeTeardownAppDeps, type TeardownAppDeps } from "./lib/provisioning/app-delete.js";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { resolveAppsOss, getAppsS3Client } from "./lib/provisioning/apps-oss.js";
+import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
+import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
 import { createServiceRoleClient } from "./lib/supabase.js";
 import type { JWTVerifyGetKey } from "jose";
@@ -30,7 +34,8 @@ import type { JWTVerifyGetKey } from "jose";
 // Environment (used only for /v1 business API). Read lazily inside the deps
 // closures so importing this module never requires env at load time.
 // ---------------------------------------------------------------------------
-const SUPABASE_URL_FN = () => process.env.SUPABASE_URL || "";
+const SUPABASE_URL_FN = () =>
+  process.env.FC_SUPABASE_URL?.trim() || process.env.SUPABASE_URL || "";
 // Public, browser-reachable GoTrue base used for OAuth `authorize` redirects.
 // SUPABASE_URL is typically an internal/VPC address the browser can't reach.
 const SUPABASE_PUBLIC_URL_FN = () =>
@@ -89,8 +94,7 @@ function makeDeployDeps() {
     // from — a layer ARN is region-scoped.
     region: profile.region,
   });
-  const appsBaseUrl = process.env.APPS_DB_ADMIN_URL;
-  const adminExec = appsBaseUrl ? getAppsAdminExecutor() : undefined;
+  const appsAdminUrl = process.env.APPS_DB_ADMIN_URL?.trim() || undefined;
   const s3 = getAppsS3Client(profile);
   // 30 min: the daemon runs `pnpm install && pnpm build` between minting this
   // URL and using it, and a cold install on a modest laptop outlasts 15.
@@ -105,12 +109,70 @@ function makeDeployDeps() {
     finalizeDeploy: (a: {
       appId: string;
       slug: string;
+      orgId?: string | null;
       appType: string;
       fcFunctionName: string;
       ossObjectName: string;
-    }) => finalizeDeployImpl({ adminExec, fcOps, appsBaseUrl }, a),
+      platformOAuthEnv?: Record<string, string>;
+    }) => finalizeDeployImpl({ appsAdminUrl, fcOps }, a),
   };
 }
+
+/**
+ * Deps for reclaiming an app's cloud resources on delete.
+ *
+ * Returned under a `teardownDeps` key, NOT spread flat: both repo factories
+ * destructure `teardownDeps` and pass it on as a unit. Returning the bare
+ * `{ fcOps, deleteOssObject }` made the spread land those two at the top
+ * level, where nothing reads them — so `teardownDeps` was `undefined` on every
+ * real request and deleting an app left its FC function, HTTP trigger and OSS
+ * artifact in place. The site stayed reachable while the dialog said it had
+ * been taken down.
+ */
+/**
+ * Deps for browsing an app's own Postgres from the control panel.
+ *
+ * Separate from makeDeployDeps even though both need APPS_DB_ADMIN_URL: deploy
+ * is unavailable without OSS *and* FC, while browsing needs neither. Folding
+ * this into that function would make a missing FC endpoint hide the data
+ * browser too.
+ */
+function makeAppDataDeps(): { appData?: AppDataOps; appDataUnavailableReason?: string } {
+  const adminUrl = readAppsAdminUrl();
+  if (!adminUrl) return { appDataUnavailableReason: "APPS_DB_ADMIN_URL is not set" };
+  return { appData: makeAppDataOps(adminUrl) };
+}
+
+function makeTeardownDeps(): { teardownDeps?: TeardownAppDeps } {
+  const resolved = resolveAppsOss();
+  if (resolved.error) return {};
+  const profile = resolved.profile;
+  if (!resolveFcEndpoint()) return {};
+  const fcOps = makeFcOps(getFcClient(profile), {
+    bucket: profile.bucket,
+    role: process.env.ROLE_ARN,
+    region: profile.region,
+  });
+  const s3 = getAppsS3Client(profile);
+  return { teardownDeps: makeTeardownAppDeps({ bucket: profile.bucket, s3, fcOps }) };
+}
+
+// Gitea repo provisioning deps. Returns `giteaUnavailableReason` when any of
+// GITEA_URL / GITEA_TOKEN / GITEA_OWNER is empty so createApp surfaces a 503
+// that names the missing variable rather than half-provisioning a row.
+function makeGiteaDeps() {
+  const resolved = readGiteaConfig();
+  if (resolved.error) return { giteaUnavailableReason: resolved.error };
+  return { gitea: makeGiteaClient(resolved.config) };
+}
+
+function makeGotrueOAuthDeps() {
+  const resolved = readGotrueOAuthConfig();
+  if (resolved.error) return { gotrueUnavailableReason: resolved.error };
+  return { gotrue: makeGotrueOAuthClient(resolved.config) };
+}
+
+export { makeGiteaDeps };
 
 /**
  * Vanity-host lookup, wired for whichever backend this deployment runs.
@@ -179,6 +241,11 @@ export function makeBusinessRepoFactory(
         // by Drizzle queries via buildPgPushDeps() — no Supabase service-role.
         dispatchPush: async (record) => { await dispatchPush(record, pgPushDeps()); },
         ...makeDeployDeps(),
+        ...makeTeardownDeps(),
+      ...makeAppDataDeps(),
+        ...makeAppDataDeps(),
+        ...makeGiteaDeps(),
+        ...makeGotrueOAuthDeps(),
         publishReadEvent: async ({ userId, sessionId }) => {
           const { mqtt } = pgPushDeps();
           if (!mqtt) return;
@@ -196,6 +263,10 @@ export function makeBusinessRepoFactory(
       accessToken,
       dispatchPush: async (record) => { await dispatchPush(record, pushDeps()); },
       ...makeDeployDeps(),
+      ...makeTeardownDeps(),
+      ...makeAppDataDeps(),
+      ...makeGiteaDeps(),
+      ...makeGotrueOAuthDeps(),
     });
 }
 
@@ -227,6 +298,8 @@ export function makeSystemRepoFactory(kind: "supabase" | "postgres") {
       publishableKey: serviceKey,
       accessToken: serviceKey,
       ...makeDeployDeps(),
+      ...makeGiteaDeps(),
+      ...makeGotrueOAuthDeps(),
     });
   };
 }

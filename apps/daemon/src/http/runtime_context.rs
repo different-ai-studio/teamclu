@@ -13,13 +13,18 @@ use crate::runtime::context_registry::{ResolveError, ResolveRuntimeContextReques
 
 use super::state::HttpState;
 
+/// Resolver accepts requests only from loopback peers.
+pub(crate) fn runtime_context_peer_allowed(peer: SocketAddr) -> bool {
+    peer.ip().is_loopback()
+}
+
 pub async fn resolve_runtime_context(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<ResolveRuntimeContextRequest>,
 ) -> Response {
-    if !peer.ip().is_loopback() {
+    if !runtime_context_peer_allowed(peer) {
         return problem(
             StatusCode::FORBIDDEN,
             "forbidden",
@@ -91,4 +96,79 @@ fn problem(status: StatusCode, code: &str, detail: &str) -> Response {
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        extract::{ConnectInfo, State},
+        http::{header, HeaderMap, StatusCode},
+        Json,
+    };
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn runtime_context_peer_allowed_accepts_loopback_only() {
+        assert!(runtime_context_peer_allowed(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            8787
+        )));
+        assert!(!runtime_context_peer_allowed(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)),
+            8787
+        )));
+    }
+
+    #[tokio::test]
+    async fn resolve_runtime_context_rejects_non_loopback_peer() {
+        use crate::config::HttpConfig;
+        use crate::http::server::metadata;
+        use crate::http::state::HttpState;
+        use crate::http::tokens;
+        use crate::runtime::context_registry::ResolveRuntimeContextRequest;
+        use crate::runtime::context_service::RuntimeContextService;
+        use std::sync::Arc;
+
+        let service = Arc::new(RuntimeContextService::new());
+        let dir = tempfile::tempdir().unwrap();
+        let state = HttpState::new(
+            HttpConfig {
+                bind: "127.0.0.1:0".into(),
+                token_file: Some(dir.path().join("token")),
+                ..Default::default()
+            },
+            tokens::TokenStore::load_or_init(&dir.path().join("token")).unwrap(),
+            metadata("actor".into(), "test"),
+            crate::http::runtime_adapter::StubRuntimeAdapter::new(8),
+            None,
+            None,
+            None,
+            crate::sync::dispatch::SyncDispatcher::new(
+                crate::sync::secret_store::SecretStore::new(),
+                None,
+            ),
+            None,
+        )
+        .with_runtime_context(service);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer rtctx_test".parse().unwrap(),
+        );
+        let body = ResolveRuntimeContextRequest {
+            backend_session_id: "backend-a".into(),
+            host_generation_id: "gen-test".into(),
+            backend_kind: "opencode".into(),
+        };
+        let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 4242);
+        let response = resolve_runtime_context(
+            State(state),
+            ConnectInfo(peer),
+            headers,
+            Json(body),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
 }

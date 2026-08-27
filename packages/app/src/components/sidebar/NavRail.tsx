@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Inbox, Lightbulb, Keyboard, AppWindow, ChevronDown } from 'lucide-react'
+import { Inbox, Lightbulb, Keyboard, ChevronDown } from 'lucide-react'
 import { useUIStore } from '@/stores/ui'
 import { useSessionListStore } from '@/stores/session-list-store'
 
@@ -23,6 +23,7 @@ import {
   useTeamShareCountsLoader,
 } from '@/components/sidebar/TeamShareNavSection'
 import { NewChatSplitButton } from '@/components/sidebar/NewChatSplitButton'
+import { AppsNavSection } from '@/components/sidebar/AppsNavSection'
 import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 import { useFeatures } from '@/lib/remote-features'
 import { isScheduledSession } from '@/lib/session-origin'
@@ -219,14 +220,7 @@ export function NavRail() {
                 onClick={() => setFilter({ kind: 'ideas' })}
               />
             ) : null}
-            {features.apps && (
-              <TopEntry
-                label={t('sidebar.apps', '演示及 APP')}
-                icon={AppWindow}
-                active={filter.kind === 'apps'}
-                onClick={() => setFilter({ kind: 'apps' })}
-              />
-            )}
+            {features.apps && <AppsNavSection />}
             {!embedMode ? (
               <TopEntry
                 label={t('common.shortcuts', 'Shortcuts')}

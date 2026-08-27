@@ -1,5 +1,5 @@
 import postgres from "postgres";
-import { appSchemaName, appRoleName } from "./pg-name.js";
+import { appSchemaName, appRoleName, orgDatabaseName } from "./pg-name.js";
 
 const SAFE_IDENT = /^[a-z0-9_]+$/;
 
@@ -52,15 +52,15 @@ export interface EnsureAppSchemaParams {
   appId: string;
   slug: string;
   password: string;
-  // The teamclu_apps base URL WITHOUT credentials/db-specific role, e.g.
-  // postgres://host:5432/teamclu_apps — used to compose the app's own
-  // connection string (role + password + pinned search_path).
+  // Base URL of the org database (or legacy shared apps DB), used to compose
+  // the app's own connection string (role + password + pinned search_path).
   baseUrl: string;
 }
 
 export interface AppConnection {
   schema: string;
   role: string;
+  database: string;
   connectionString: string;
 }
 
@@ -77,14 +77,95 @@ export async function ensureAppSchema(
   u.username = role;
   u.password = password;
   u.searchParams.set("options", `-c search_path=${schema}`);
-  return { schema, role, connectionString: u.toString() };
+  const database = decodeURIComponent(u.pathname.replace(/^\//, "")) || "postgres";
+  return { schema, role, database, connectionString: u.toString() };
+}
+
+/** Rewrite a postgres URL so it targets `database` (pathname). */
+export function withDatabaseName(adminUrl: string, database: string): string {
+  assertSafe(database);
+  const u = new URL(adminUrl);
+  u.pathname = `/${database}`;
+  return u.toString();
+}
+
+/**
+ * Idempotent CREATE DATABASE for an org.
+ *
+ * Postgres has no `CREATE DATABASE IF NOT EXISTS` on the versions we run, so
+ * we probe `pg_database` first. Must not run inside a multi-statement
+ * transaction with other DDL.
+ */
+export async function ensureOrgDatabaseExists(
+  adminUrl: string,
+  orgId: string,
+  connect: (url: string) => ReturnType<typeof postgres> = (url) =>
+    postgres(url, { max: 1, prepare: false, idle_timeout: 5, connect_timeout: 10 }),
+): Promise<string> {
+  const database = orgDatabaseName(orgId);
+  assertSafe(database);
+  const sql = connect(adminUrl);
+  try {
+    const rows = await sql<{ exists: number }[]>`
+      select 1 as exists from pg_database where datname = ${database}
+    `;
+    if (rows.length === 0) {
+      // Identifier already assertSafe'd — CREATE DATABASE cannot take a param.
+      await sql.unsafe(`CREATE DATABASE ${database}`);
+    }
+  } finally {
+    await sql.end({ timeout: 5 }).catch(() => {});
+  }
+  return database;
+}
+
+export interface ProvisionAppPostgresParams {
+  orgId: string;
+  appId: string;
+  slug: string;
+  password: string;
+}
+
+/**
+ * Org DB + per-app schema in one shot.
+ *
+ * `adminUrl` is a superuser (or CREATEDB) connection — typically the self-host
+ * compose Postgres (`…/postgres`), not a pre-created shared apps database.
+ * Creates `tc_org_<orgIdHex>` if missing, then schema + role inside it.
+ */
+export async function provisionAppPostgres(
+  adminUrl: string,
+  params: ProvisionAppPostgresParams,
+  connect: (url: string) => ReturnType<typeof postgres> = (url) =>
+    postgres(url, { max: 1, prepare: false, idle_timeout: 5, connect_timeout: 10 }),
+): Promise<AppConnection> {
+  const database = await ensureOrgDatabaseExists(adminUrl, params.orgId, connect);
+  const orgDbUrl = withDatabaseName(adminUrl, database);
+  const sql = connect(orgDbUrl);
+  try {
+    const exec: SqlExecutor = async (statement) => {
+      await sql.unsafe(statement);
+    };
+    return await ensureAppSchema(exec, {
+      appId: params.appId,
+      slug: params.slug,
+      password: params.password,
+      baseUrl: orgDbUrl,
+    });
+  } finally {
+    await sql.end({ timeout: 5 }).catch(() => {});
+  }
 }
 
 let _adminSql: ReturnType<typeof postgres> | null = null;
 
-// Dedicated admin connection to the teamclu_apps database (NOT supabase_db).
-// Mirrors db/client.ts serverless-safe defaults. Separate singleton so app
-// provisioning never shares the control-plane pool.
+/**
+ * Admin connection pointed at whatever APPS_DB_ADMIN_URL names.
+ *
+ * Prefer {@link provisionAppPostgres} for new deploys (per-org DB). This
+ * helper remains for call sites that only need a raw executor against the
+ * admin URL.
+ */
 export function getAppsAdminExecutor(): SqlExecutor {
   const url = process.env.APPS_DB_ADMIN_URL;
   if (!url) throw new Error("APPS_DB_ADMIN_URL is not set");
@@ -100,4 +181,10 @@ export function getAppsAdminExecutor(): SqlExecutor {
   return async (statement: string) => {
     await sql.unsafe(statement);
   };
+}
+
+/** Read APPS_DB_ADMIN_URL; empty → undefined (data_app deploy will fail loudly). */
+export function readAppsAdminUrl(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const url = env.APPS_DB_ADMIN_URL?.trim();
+  return url || undefined;
 }

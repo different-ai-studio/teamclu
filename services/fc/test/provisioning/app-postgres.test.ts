@@ -87,6 +87,7 @@ test("ensureAppSchema creates the schema and a scoped role on a real PG (pglite)
   );
   assert.equal(roles.rows.length, 1);
   assert.match(conn.connectionString, /app_3f1c9a2e_0000_4000_8000_000000000abc/);
+  assert.equal(conn.database, "teamclu_apps");
   assert.match(
     conn.connectionString,
     new RegExp(`[?&]options=.*search_path%3D${expectedSchema}`),

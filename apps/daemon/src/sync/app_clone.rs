@@ -1,10 +1,8 @@
 //! Clone an existing repository into an app's checkout.
 //!
-//! This is the one place the product shells out to `git`. Everything else that
-//! used to — managed-git team share, the old app remote — is gone, and nothing
-//! here brings any of it back: the clone is a one-shot import of whatever the
-//! user typed in the create dialog, after which the checkout is an ordinary
-//! directory the agent edits and `app_build` builds.
+//! Used when the user imports an external repo (`gitRemoteUrl` without a deploy
+//! key). The Gitea seed-and-push path lives in [`super::app_seed`] +
+//! [`super::app_git`] instead.
 //!
 //! An app created with a repo URL is NOT seeded with a starter template. The
 //! repo is the user's own project; writing our `AGENTS.md`/`build.mjs` over the
@@ -14,43 +12,7 @@ use crate::process_util::CommandNoWindow;
 use std::path::Path;
 use std::process::Command;
 
-/// Remote URL forms we hand to `git clone`.
-///
-/// Deliberately a small allowlist rather than "anything git accepts". A URL
-/// arrives here from the desktop over loopback HTTP, and git's remote-helper
-/// syntax turns some of what it accepts into command execution: `ext::sh -c …`
-/// runs a shell, and a URL that starts with `-` is read as an option, not an
-/// address. Neither is something an app's repo field needs.
-fn validate_remote_url(raw: &str) -> anyhow::Result<String> {
-    let url = raw.trim();
-    if url.is_empty() {
-        anyhow::bail!("git repo URL must not be empty");
-    }
-    if url.starts_with('-') {
-        anyhow::bail!("git repo URL must not start with '-'");
-    }
-    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        anyhow::bail!("git repo URL must not contain whitespace or control characters");
-    }
-    // `ext::`/`fd::` are transport helpers, not addresses.
-    if url.contains("::") && !url.contains("://") {
-        anyhow::bail!("unsupported git transport in URL");
-    }
-
-    let scheme_ok = ["https://", "http://", "ssh://", "git://"]
-        .iter()
-        .any(|s| url.starts_with(s));
-    // scp-like shorthand: `git@github.com:owner/repo.git`. The `@` must come
-    // before the `:` or this is a scheme we did not list.
-    let scp_like = match (url.find('@'), url.find(':')) {
-        (Some(at), Some(colon)) => at < colon && !url.contains("://"),
-        _ => false,
-    };
-    if !scheme_ok && !scp_like {
-        anyhow::bail!("git repo URL must be an http(s), ssh or git:// address");
-    }
-    Ok(url.to_string())
-}
+use crate::sync::app_git;
 
 /// Whether `dir` has anything in it (a missing directory counts as empty).
 fn is_empty_dir(dir: &Path) -> bool {
@@ -71,7 +33,7 @@ fn is_empty_dir(dir: &Path) -> bool {
 /// password prompt no one can see — hence `GIT_TERMINAL_PROMPT=0` and ssh's
 /// `BatchMode`.
 pub fn clone_app_repo(url: &str, workdir: &Path) -> anyhow::Result<()> {
-    let url = validate_remote_url(url)?;
+    let url = app_git::validate_remote_url(url)?;
     if !is_empty_dir(workdir) {
         anyhow::bail!(
             "refusing to clone into a non-empty directory: {}",
@@ -85,23 +47,58 @@ pub fn clone_app_repo(url: &str, workdir: &Path) -> anyhow::Result<()> {
     // empty, but leaving it behind on failure would make the next attempt look
     // like a half-finished checkout.
     let _ = std::fs::remove_dir(workdir);
-    run_clone(&url, workdir)
+    run_clone(&url, workdir, None)
+}
+
+/// Clone `url` into `workdir` using a Gitea deploy key (on-demand checkout for
+/// collaborators — §5.4). Same empty-dir rule as [`clone_app_repo`].
+pub fn clone_app_repo_with_deploy_key(
+    url: &str,
+    workdir: &Path,
+    deploy_key_pem: &str,
+    git_user_name: Option<&str>,
+    git_user_email: Option<&str>,
+) -> anyhow::Result<()> {
+    let url = app_git::validate_remote_url(url)?;
+    if !is_empty_dir(workdir) {
+        anyhow::bail!(
+            "refusing to clone into a non-empty directory: {}",
+            workdir.display()
+        );
+    }
+    if let Some(parent) = workdir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _ = std::fs::remove_dir(workdir);
+    let ssh = app_git::SshEnv::from_deploy_key_pem(deploy_key_pem)?;
+    run_clone(&url, workdir, Some(&ssh))?;
+    // Same identity the seed path writes. Without it a collaborator's checkout
+    // has no repo-local `user.name` / `user.email`, so their commits either
+    // take that machine's global git config or fail outright with "Please tell
+    // me who you are" — and the attribution the deploy-key title provides ends
+    // at "which machine pushed", not "who wrote it".
+    app_git::set_repo_user_identity(workdir, git_user_name, git_user_email)
 }
 
 /// `git clone <remote> <workdir>`, with the environment that keeps it
 /// non-interactive. Split out so tests can drive a real clone from a local
 /// path — which [`validate_remote_url`] rejects, by design.
-fn run_clone(remote: &str, workdir: &Path) -> anyhow::Result<()> {
+fn run_clone(remote: &str, workdir: &Path, ssh: Option<&app_git::SshEnv>) -> anyhow::Result<()> {
     let git = crate::runtime::well_known_bin::resolve_binary("git", None, &[]);
-    let out = Command::new(&git)
-        .no_window()
+    let mut cmd = Command::new(&git);
+    cmd.no_window()
         .arg("clone")
         .arg("--")
         .arg(remote)
         .arg(workdir)
         .env("PATH", crate::runtime::well_known_bin::augmented_path())
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    if let Some(ssh) = ssh {
+        cmd.env("GIT_SSH_COMMAND", ssh.git_ssh_command());
+    } else {
+        cmd.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
+    }
+    let out = cmd
         .output()
         .map_err(|e| anyhow::anyhow!("could not run git ({git}): {e}"))?;
     if !out.status.success() {
@@ -133,7 +130,7 @@ mod tests {
             "git://example.com/repo.git",
             "git@github.com:owner/repo.git",
         ] {
-            assert!(validate_remote_url(url).is_ok(), "rejected {url}");
+            assert!(app_git::validate_remote_url(url).is_ok(), "rejected {url}");
         }
     }
 
@@ -150,7 +147,10 @@ mod tests {
             "   ",
             "https://example.com/repo .git",
         ] {
-            assert!(validate_remote_url(url).is_err(), "accepted {url:?}");
+            assert!(
+                app_git::validate_remote_url(url).is_err(),
+                "accepted {url:?}"
+            );
         }
     }
 
@@ -207,7 +207,7 @@ mod tests {
             return;
         };
         let work = tmp.path().join("app");
-        run_clone(&origin.to_string_lossy(), &work).unwrap();
+        run_clone(&origin.to_string_lossy(), &work, None).unwrap();
 
         assert!(work.join("README.md").is_file());
         assert!(work.join(".git").exists(), "history comes with it");
@@ -218,7 +218,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("no-such-repo");
         let work = tmp.path().join("app");
-        let err = run_clone(&missing.to_string_lossy(), &work)
+        let err = run_clone(&missing.to_string_lossy(), &work, None)
             .expect_err("cloning a repo that is not there must fail");
         let msg = format!("{err}");
         if msg.contains("could not run git") {

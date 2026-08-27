@@ -8,6 +8,8 @@ function makeRouter() {
     get: (p, h) => routes.push(["GET", p, h]),
     post: (p, h) => routes.push(["POST", p, h]),
     patch: (p, h) => routes.push(["PATCH", p, h]),
+    put: (p, h) => routes.push(["PUT", p, h]),
+    delete: (p, h) => routes.push(["DELETE", p, h]),
   };
   return { router, routes };
 }
@@ -66,31 +68,295 @@ test("POST /v1/apps/:id/deploy returns 202 with deploy result", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
   const handler = routes.find((r) => r[0] === "POST" && r[1] === "/v1/apps/:appId/deploy")[2];
-  const result = { id: "app-1", fcStatus: "awaiting_build", ossObjectName: "apps/app-1/code.zip" };
-  const res = await handler({ params: { appId: "app-1" }, repository: { deployApp: async () => result } });
+  const result = { id: "app-1", fcStatus: "awaiting_build", ossObjectName: "apps/app-1/code.zip", deployToken: "tok", gitCommitSha: "abc1234" };
+  let seenBody: unknown;
+  const res = await handler({
+    params: { appId: "app-1" },
+    json: { gitCommitSha: "abc1234" },
+    repository: { deployApp: async (_id, body) => { seenBody = body; return result; } },
+  });
   assert.equal(res.statusCode, 202);
   assert.deepEqual(res.body, result);
+  assert.deepEqual(seenBody, { gitCommitSha: "abc1234" });
 });
 
 test("POST /v1/apps/:id/deploy 404s when repo returns null", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
   const handler = routes.find((r) => r[0] === "POST" && r[1] === "/v1/apps/:appId/deploy")[2];
-  await assert.rejects(() => handler({ params: { appId: "x" }, repository: { deployApp: async () => null } }));
+  await assert.rejects(() => handler({
+    params: { appId: "x" },
+    json: { gitCommitSha: "abc1234" },
+    repository: { deployApp: async () => null },
+  }));
 });
 
 test("POST /v1/apps/:id/deploy/finalize returns 200 with the app", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
   const handler = routes.find((r) => r[0] === "POST" && r[1] === "/v1/apps/:appId/deploy/finalize")[2];
-  const result = { id: "app-1", fcStatus: "live", fcEndpoint: "https://x.fcapp.run" };
-  const res = await handler({ params: { appId: "app-1" }, repository: { finalizeDeploy: async () => result } });
+  const result = { id: "app-1", fcStatus: "live", fcEndpoint: "https://x.fcapp.run", gitCommitSha: "deadbeef" };
+  let seenBody: unknown;
+  const res = await handler({
+    params: { appId: "app-1" },
+    json: { gitCommitSha: "deadbeef", deployToken: "tok" },
+    repository: { finalizeDeploy: async (_id, body) => { seenBody = body; return result; } },
+  });
   assert.deepEqual(res.body, result);
+  assert.deepEqual(seenBody, { gitCommitSha: "deadbeef", deployToken: "tok" });
 });
 
 test("POST /v1/apps/:id/deploy/finalize 404s when repo returns null", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
   const handler = routes.find((r) => r[0] === "POST" && r[1] === "/v1/apps/:appId/deploy/finalize")[2];
-  await assert.rejects(() => handler({ params: { appId: "x" }, repository: { finalizeDeploy: async () => null } }));
+  await assert.rejects(() => handler({
+    params: { appId: "x" },
+    json: { gitCommitSha: "abc1234", deployToken: "tok" },
+    repository: { finalizeDeploy: async () => null },
+  }));
+});
+
+test("GET /v1/apps/:id/git-credential 404s when repo returns null (non-creator)", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-credential")[2];
+  await assert.rejects(
+    () => handler({ params: { appId: "app-1" }, repository: { getAppGitCredential: async () => null } }),
+    (e) => (e as { statusCode?: number }).statusCode === 404,
+  );
+});
+
+test("GET /v1/apps/:id/git-credential returns deploy key for creator", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-credential")[2];
+  const cred = {
+    remoteUrl: "https://gitea.example/tc-app-1.git",
+    authKind: "deploy_key",
+    privateKeyPem: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n",
+    deployKeyId: 9,
+    expiresAt: "2026-08-27T02:30:00.000Z",
+  };
+  const res = await handler({
+    params: { appId: "app-1" },
+    repository: { getAppGitCredential: async () => cred },
+  });
+  assert.deepEqual(res.body, cred);
+});
+
+test("GET /v1/apps/:id/git-head 404s when repo returns null", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-head")[2];
+  await assert.rejects(
+    () => handler({ params: { appId: "app-1" }, repository: { getAppGitHead: async () => null } }),
+    (e) => (e as { statusCode?: number }).statusCode === 404,
+  );
+});
+
+test("GET /v1/apps/:id/git-head returns default branch sha", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-head")[2];
+  const res = await handler({
+    params: { appId: "app-1" },
+    repository: { getAppGitHead: async () => ({ sha: "abc123def456" }) },
+  });
+  assert.deepEqual(res.body, { sha: "abc123def456" });
+});
+
+test("GET /v1/apps/:id/membership returns member verdict", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/membership")[2];
+  const res = await handler({
+    params: { appId: "app-1" },
+    repository: { getAppMembership: async () => ({ member: true }) },
+  });
+  assert.deepEqual(res.body, { member: true });
+});
+
+test("GET /v1/apps/:id/membership 404s when repo returns null", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/membership")[2];
+  await assert.rejects(
+    () => handler({ params: { appId: "missing" }, repository: { getAppMembership: async () => null } }),
+    (e) => (e as { statusCode?: number }).statusCode === 404,
+  );
+});
+
+test("PUT /v1/apps/:id/access/:memberId 404s when repo returns null (non-admin)", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "PUT" && r[1] === "/v1/apps/:appId/access/:memberId")[2];
+  await assert.rejects(
+    () => handler({
+      params: { appId: "app-1", memberId: "member-2" },
+      json: { permissionLevel: "prompt" },
+      repository: { setAppAccess: async () => null },
+    }),
+    (e) => (e as { statusCode?: number }).statusCode === 404,
+  );
+});
+
+test("GET /v1/apps/:id/access returns access rows", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/access")[2];
+  const items = [{
+    memberId: "member-2",
+    permissionLevel: "prompt",
+    grantedByMemberId: "actor-app-1",
+    createdAt: "2026-08-27T00:00:00.000Z",
+  }];
+  const res = await handler({
+    params: { appId: "app-1" },
+    repository: { listAppAccess: async () => items },
+  });
+  assert.deepEqual(res.body, { items });
+});
+
+test("DELETE /v1/apps/:id/access/:memberId returns ok", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "DELETE" && r[1] === "/v1/apps/:appId/access/:memberId")[2];
+  const res = await handler({
+    params: { appId: "app-1", memberId: "member-2" },
+    repository: { removeAppAccess: async () => true },
+  });
+  assert.deepEqual(res.body, { ok: true });
+});
+
+test("DELETE /v1/apps/:id returns ok when repo deletes", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "DELETE" && r[1] === "/v1/apps/:appId")[2];
+  let seenId: string | undefined;
+  const res = await handler({
+    params: { appId: "app-1" },
+    repository: { deleteApp: async (id) => { seenId = id; return true; } },
+  });
+  assert.deepEqual(res.body, { ok: true });
+  assert.equal(seenId, "app-1");
+});
+
+test("DELETE /v1/apps/:id 404s when repo returns false", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "DELETE" && r[1] === "/v1/apps/:appId")[2];
+  await assert.rejects(
+    () => handler({ params: { appId: "missing" }, repository: { deleteApp: async () => false } }),
+    (e) => (e as { statusCode?: number }).statusCode === 404,
+  );
+});
+
+// --- App data browser routes ------------------------------------------------
+
+test("GET /v1/apps/:id/data/tables forwards the app id and 404s on null", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/data/tables")[2];
+  const res = await handler({
+    params: { appId: "app-1" },
+    query: new URLSearchParams(""),
+    repository: { listAppDataTables: async (id: string) => ({ items: [{ name: `t-${id}` }] }) },
+  });
+  assert.deepEqual(res.body, { items: [{ name: "t-app-1" }] });
+
+  await assert.rejects(
+    () => handler({
+      params: { appId: "x" },
+      query: new URLSearchParams(""),
+      repository: { listAppDataTables: async () => null },
+    }),
+    (e: any) => e?.statusCode === 404,
+  );
+});
+
+test("GET .../rows forwards paging and filter params", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/data/tables/:table/rows")[2];
+  let seen: any;
+  await handler({
+    params: { appId: "app-1", table: "items" },
+    query: new URLSearchParams(
+      "after=CURSOR&direction=desc&limit=25&filterColumn=note&filterOp=eq&filterValue=keep",
+    ),
+    repository: {
+      readAppDataRows: async (appId: string, table: string, query: any) => {
+        seen = { appId, table, query };
+        return { rows: [] };
+      },
+    },
+  });
+  assert.equal(seen.appId, "app-1");
+  assert.equal(seen.table, "items");
+  assert.deepEqual(seen.query, {
+    after: "CURSOR",
+    direction: "desc",
+    limit: "25",
+    filterColumn: "note",
+    filterOp: "eq",
+    filterValue: "keep",
+  });
+});
+
+test("GET .../rows decodes a table name that needed escaping", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/data/tables/:table/rows")[2];
+  let seenTable = "";
+  await handler({
+    params: { appId: "app-1", table: "my%20table" },
+    query: new URLSearchParams(""),
+    repository: { readAppDataRows: async (_a: string, table: string) => { seenTable = table; return { rows: [] }; } },
+  });
+  assert.equal(seenTable, "my table");
+});
+
+test("PATCH .../rows/:rowKey forwards the opaque key and body", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find(
+    (r) => r[0] === "PATCH" && r[1] === "/v1/apps/:appId/data/tables/:table/rows/:rowKey",
+  )[2];
+  let seen: any;
+  const res = await handler({
+    params: { appId: "app-1", table: "items", rowKey: "WzJd" },
+    json: { patch: { title: "x" } },
+    repository: {
+      updateAppDataRow: async (appId: string, table: string, rowKey: string, body: any) => {
+        seen = { appId, table, rowKey, body };
+        return { row: { id: 2 } };
+      },
+    },
+  });
+  assert.deepEqual(seen, {
+    appId: "app-1", table: "items", rowKey: "WzJd", body: { patch: { title: "x" } },
+  });
+  assert.deepEqual(res.body, { row: { id: 2 } });
+});
+
+test("DELETE .../rows/:rowKey 404s when the repo says the app is invisible", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find(
+    (r) => r[0] === "DELETE" && r[1] === "/v1/apps/:appId/data/tables/:table/rows/:rowKey",
+  )[2];
+  const ok = await handler({
+    params: { appId: "app-1", table: "items", rowKey: "WzJd" },
+    repository: { deleteAppDataRow: async () => ({ ok: true }) },
+  });
+  assert.deepEqual(ok.body, { ok: true });
+
+  await assert.rejects(
+    () => handler({
+      params: { appId: "app-1", table: "items", rowKey: "WzJd" },
+      repository: { deleteAppDataRow: async () => null },
+    }),
+    (e: any) => e?.statusCode === 404,
+  );
 });

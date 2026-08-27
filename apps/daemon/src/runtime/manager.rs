@@ -610,6 +610,26 @@ impl RuntimeManager {
             })
     }
 
+    async fn detach_backend_session(cmd_tx: &mpsc::Sender<AcpCommand>, acp_session_id: &str) {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        if cmd_tx
+            .send(AcpCommand::DetachSession {
+                acp_session_id: acp_session_id.to_string(),
+                ack: Some(ack_tx),
+            })
+            .await
+            .is_ok()
+            && tokio::time::timeout(std::time::Duration::from_secs(5), ack_rx)
+                .await
+                .is_err()
+        {
+            tracing::warn!(
+                acp_session_id,
+                "timed out waiting for runtime detach acknowledgement"
+            );
+        }
+    }
+
     async fn finalize_attached_session(
         &self,
         agent_type: amux::AgentType,
@@ -619,10 +639,19 @@ impl RuntimeManager {
         cmd_tx: &mpsc::Sender<AcpCommand>,
         prompt: &str,
     ) -> crate::error::Result<()> {
-        Self::validate_managed_session_metadata(agent_type, startup, teamclu_session_id)?;
+        if let Err(err) = Self::validate_managed_session_metadata(agent_type, startup, teamclu_session_id) {
+            Self::detach_backend_session(cmd_tx, &startup.acp_session_id).await;
+            return Err(err);
+        }
         self.register_attached_session_context(agent_type, startup, teamclu_session_id, runtime_id);
-        self.send_deferred_initial_prompt(agent_type, cmd_tx, startup, prompt)
+        if let Err(err) = self
+            .send_deferred_initial_prompt(agent_type, cmd_tx, startup, prompt)
             .await
+        {
+            Self::detach_backend_session(cmd_tx, &startup.acp_session_id).await;
+            return Err(err);
+        }
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -3424,5 +3453,115 @@ mod tests {
         // Second sweep: nothing left, buffer is empty.
         assert!(mgr.evict_idle(60).await.is_empty());
         assert!(mgr.drain_evicted().is_empty());
+    }
+
+    #[tokio::test]
+    async fn finalize_attached_session_registers_before_prompt_is_resolvable() {
+        use super::super::context_registry::ResolveRuntimeContextRequest;
+        use super::super::context_service::RuntimeContextService;
+        use teamclu_runtime_env::session_context::TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV;
+
+        let service = Arc::new(RuntimeContextService::new());
+        service.set_base_url("http://127.0.0.1:1");
+        let mut mgr = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
+        mgr.attach_context_service(Arc::clone(&service));
+
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(4);
+        let startup = super::super::backend::AcpStartupMetadata {
+            available_models: Vec::new(),
+            initial_model: None,
+            acp_session_id: "backend-a".into(),
+            host_generation_id: "gen-1".into(),
+            route_lease: None,
+        };
+
+        let service_bg = Arc::clone(&service);
+        let checker = tokio::spawn(async move {
+            let Some(super::super::backend::AcpCommand::Prompt { .. }) = cmd_rx.recv().await else {
+                panic!("expected Prompt command");
+            };
+            let token = service_bg
+                .env_for_generation(amux::AgentType::Opencode, "gen-1")
+                .get(TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV)
+                .cloned()
+                .expect("token");
+            let resolved = service_bg
+                .resolve_with_token(
+                    &token,
+                    &ResolveRuntimeContextRequest {
+                        backend_session_id: "backend-a".into(),
+                        host_generation_id: "gen-1".into(),
+                        backend_kind: "opencode".into(),
+                    },
+                )
+                .expect("registry must be bound before prompt runs");
+            assert_eq!(resolved.teamclu_session_id, "teamclu-a");
+        });
+
+        mgr.finalize_attached_session(
+            amux::AgentType::Opencode,
+            &startup,
+            "teamclu-a",
+            "runtime-a",
+            &cmd_tx,
+            "hello",
+        )
+        .await
+        .unwrap();
+        checker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn finalize_attached_session_rejects_incomplete_metadata_before_prompt() {
+        use super::super::context_service::RuntimeContextService;
+
+        let service = Arc::new(RuntimeContextService::new());
+        service.set_base_url("http://127.0.0.1:1");
+        let mut mgr = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
+        mgr.attach_context_service(service);
+
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(4);
+        let startup = super::super::backend::AcpStartupMetadata {
+            available_models: Vec::new(),
+            initial_model: None,
+            acp_session_id: "backend-a".into(),
+            host_generation_id: String::new(),
+            route_lease: None,
+        };
+
+        let drain = tokio::spawn(async move {
+            let mut prompt_seen = false;
+            let mut detach_seen = false;
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    super::super::backend::AcpCommand::DetachSession { ack, .. } => {
+                        detach_seen = true;
+                        if let Some(tx) = ack {
+                            let _ = tx.send(());
+                        }
+                    }
+                    super::super::backend::AcpCommand::Prompt { .. } => prompt_seen = true,
+                    _ => {}
+                }
+            }
+            (prompt_seen, detach_seen)
+        });
+
+        let err = mgr
+            .finalize_attached_session(
+                amux::AgentType::Opencode,
+                &startup,
+                "teamclu-a",
+                "runtime-a",
+                &cmd_tx,
+                "hello",
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("session context metadata incomplete"));
+        drop(cmd_tx);
+        let (prompt_seen, detach_seen) = drain.await.unwrap();
+        assert!(!prompt_seen, "prompt must not be enqueued");
+        assert!(detach_seen, "backend session must be detached on validation failure");
     }
 }

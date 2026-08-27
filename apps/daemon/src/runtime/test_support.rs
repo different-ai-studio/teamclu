@@ -60,7 +60,10 @@ impl AgentBackend for CapturingBackend {
                 available_models: Vec::new(),
                 initial_model: None,
                 acp_session_id: format!("captured-{}", self.captures.lock().unwrap().len()),
-                host_generation_id: String::new(),
+                host_generation_id: format!(
+                    "capturing-gen-{}",
+                    self.captures.lock().unwrap().len()
+                ),
                 route_lease: None,
             },
         ))

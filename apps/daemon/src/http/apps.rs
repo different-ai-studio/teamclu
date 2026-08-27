@@ -24,12 +24,15 @@
 //! in any registry. `workspaceId` is accepted for caller bookkeeping only.
 //! The target may already exist — seeding writes over it.
 //!
-//! ### Seeding vs cloning
+//! ### Seeding vs cloning vs Gitea push
 //!
-//! With `gitRemoteUrl` set, the app is imported instead of seeded: the repo is
-//! cloned and **no template file is written** (see
-//! [`crate::sync::app_clone`]). Without it, the embedded starter template for
-//! the app's type is written, as before.
+//! Three paths, depending on the body:
+//!
+//! - **`gitRemoteUrl` + `deployKeyPem`** — write the starter template, init git,
+//!   commit, and push to Gitea (`status: "seeded"`, `gitCommitSha` returned).
+//! - **`gitRemoteUrl` only** — clone an existing repo; no template
+//!   ([`crate::sync::app_clone`], `status: "ready"`).
+//! - **Neither** — template only, backwards compatible (`status: "ready"`).
 
 use std::path::PathBuf;
 
@@ -113,8 +116,10 @@ fn apps_root_for_team(team_id: &str) -> PathBuf {
 /// Resolve the checkout directory for an app.
 ///
 /// If `workdir` is present and non-empty, use it verbatim (legacy explicit
-/// path). Otherwise `teams/<teamId>/apps/<appId>`, with one back-compat step:
-/// an app that already has a checkout under the *active* team's root keeps it.
+/// path). Otherwise consult the per-machine override in
+/// `teams/<teamId>/state/app-workdir-overrides.json`, then
+/// `teams/<teamId>/apps/<appId>`, with one back-compat step: an app that
+/// already has a checkout under the *active* team's root keeps it.
 /// Before this, the root came from the active team alone, so an app created
 /// while the daemon was claimed by another team is sitting there — and moving
 /// it silently is how a user's work goes missing. Both answers are stable, so
@@ -126,6 +131,24 @@ fn resolve_workdir(workdir: &str, app_id: &str, team_id: &str) -> Result<PathBuf
     if !workdir.is_empty() {
         return Ok(PathBuf::from(workdir));
     }
+    let app_id = app_id.trim();
+    if app_id.is_empty() {
+        return Err(HttpError::validation(
+            "appId must not be empty when workdir is omitted",
+        ));
+    }
+    if let Some(override_path) = crate::sync::app_workdir::read_override(team_id, app_id) {
+        return Ok(override_path);
+    }
+    Ok(resolve_workdir_in(
+        &apps_root_for_team(team_id),
+        &apps_data_root(),
+        app_id,
+    ))
+}
+
+/// Derived checkout path without consulting overrides — for move/update logic.
+fn derived_workdir(app_id: &str, team_id: &str) -> Result<PathBuf, HttpError> {
     let app_id = app_id.trim();
     if app_id.is_empty() {
         return Err(HttpError::validation(
@@ -173,10 +196,14 @@ pub struct SeedAppBody {
     /// an imported repo gets no template.
     #[serde(default)]
     pub app_type: String,
-    /// Optional repo to import. When set, the app is cloned from it and no
-    /// template is written; when absent, the starter template is written.
+    /// Optional repo to import (clone-only when no deploy key) or push target
+    /// (with `deployKeyPem`).
     #[serde(default)]
     pub git_remote_url: Option<String>,
+    /// Gitea deploy key PEM for seed push / deploy fetch. Required with
+    /// `gitRemoteUrl` on the Gitea seed path; optional for import-only clone.
+    #[serde(default)]
+    pub deploy_key_pem: Option<String>,
     /// Team id — names the app's directory (`teams/<teamId>/apps/<appId>`).
     #[serde(default)]
     pub team_id: String,
@@ -188,6 +215,18 @@ pub struct SeedAppBody {
     /// resolves `<amuxd home>/apps/<appId>`.
     #[serde(default)]
     pub workdir: Option<String>,
+    /// Git commit author name for repo-local `.git/config`. Falls back to the
+    /// daemon default when omitted.
+    #[serde(default)]
+    pub git_user_name: Option<String>,
+    /// Git commit author email for repo-local `.git/config`. Falls back to the
+    /// daemon default when omitted.
+    #[serde(default)]
+    pub git_user_email: Option<String>,
+    /// When true with `gitRemoteUrl` + `deployKeyPem`, clone the remote into an
+    /// empty workdir instead of seeding a starter template and pushing.
+    #[serde(default)]
+    pub clone_only: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,12 +239,17 @@ pub struct SeedAppResponse {
     /// — the agent then edited one directory while deploys built another, and
     /// the deployed site silently stayed the seed template.
     pub workdir: String,
+    /// HEAD on Gitea after a successful seed push.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_commit_sha: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppWorkdirResponse {
     pub workdir: String,
+    /// Human-friendly label for this machine (from daemon.toml `[actor].name`).
+    pub device_name: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -230,19 +274,25 @@ pub async fn app_workdir(
     axum::extract::Query(query): axum::extract::Query<AppWorkdirQuery>,
 ) -> Result<Json<AppWorkdirResponse>, HttpError> {
     require_scope(&principal, "workspace:read")?;
-    let path = resolve_workdir("", &app_id, query.team_id.as_deref().unwrap_or(""))?;
+    let team_id = query.team_id.as_deref().unwrap_or("");
+    let path = resolve_workdir("", &app_id, team_id)?;
     Ok(Json(AppWorkdirResponse {
         workdir: path.to_string_lossy().into_owned(),
+        device_name: daemon_device_name(),
     }))
+}
+
+fn daemon_device_name() -> String {
+    crate::config::DaemonConfig::load(&crate::config::DaemonConfig::default_path())
+        .map(|c| c.actor.name)
+        .unwrap_or_else(|_| crate::config::BOOTSTRAP_ACTOR_NAME.to_string())
 }
 
 /// `POST /v1/apps/seed` — put the app's files in place.
 ///
-/// Two ways in, depending on the body: `gitRemoteUrl` clones that repo and
-/// writes nothing else, everything else writes the starter template for the
-/// app's type. Requires `workspace:write` (same scope `register_workspace`
-/// uses). Returns `{ "status": "ready", "workdir": … }` on success. The work
-/// runs on a blocking thread.
+/// See [`SeedAppBody`] for the three seed paths. Requires `workspace:write`.
+/// Returns `{ "status": "ready" | "seeded", "workdir": …, "gitCommitSha"? }`.
+/// The work runs on a blocking thread.
 ///
 /// Re-seeding an existing template checkout is safe: the template is written
 /// over the top, so a wrecked app can be repaired without losing the agent's
@@ -279,36 +329,88 @@ pub async fn seed_app(
         .map(str::trim)
         .filter(|u| !u.is_empty())
         .map(str::to_string);
+    let deploy_key_pem = body
+        .deploy_key_pem
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(str::to_string);
+    let git_user_name = body
+        .git_user_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string);
+    let git_user_email = body
+        .git_user_email
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_string);
 
-    let cloned = git_remote_url.is_some();
-    tokio::task::spawn_blocking(move || match git_remote_url {
-        Some(url) => crate::sync::app_clone::clone_app_repo(&url, &workdir_path),
-        None => crate::sync::app_seed::seed_app_repo(
-            &workdir_path,
-            &crate::sync::app_templates::TemplateVars {
-                app_id: &app_id,
-                app_name: &app_name,
-                app_type,
-            },
-        ),
+    let seed_result = tokio::task::spawn_blocking(move || {
+        let vars = crate::sync::app_templates::TemplateVars {
+            app_id: &app_id,
+            app_name: &app_name,
+            app_type,
+        };
+        let clone_only = body.clone_only.unwrap_or(false);
+        match (git_remote_url.as_deref(), deploy_key_pem.as_deref()) {
+            (Some(url), Some(key)) if clone_only => {
+                crate::sync::app_clone::clone_app_repo_with_deploy_key(
+                    url,
+                    &workdir_path,
+                    key,
+                    git_user_name.as_deref(),
+                    git_user_email.as_deref(),
+                )?;
+                Ok(("ready", None))
+            }
+            (Some(url), Some(key)) => {
+                let push = crate::sync::app_seed::SeedGitPush {
+                    remote_url: url,
+                    deploy_key_pem: key,
+                    git_user_name: git_user_name.as_deref(),
+                    git_user_email: git_user_email.as_deref(),
+                };
+                let out = crate::sync::app_seed::seed_app_repo(&workdir_path, &vars, Some(&push))?;
+                Ok(("seeded", out.git_commit_sha))
+            }
+            (Some(url), None) => {
+                crate::sync::app_clone::clone_app_repo(url, &workdir_path)?;
+                Ok(("ready", None))
+            }
+            (None, Some(_)) => {
+                anyhow::bail!("deployKeyPem requires gitRemoteUrl");
+            }
+            (None, None) => {
+                crate::sync::app_seed::seed_app_repo(&workdir_path, &vars, None)?;
+                Ok(("ready", None))
+            }
+        }
     })
     .await
     .map_err(|e| HttpError::internal(format!("seed task panicked: {e}")))?
-    .map_err(|e| {
-        if cloned {
-            // The user typed this URL; the message names what git objected to
-            // and is the only thing that can tell them whether it was a typo,
-            // a private repo or no network.
-            HttpError::validation(format!("{e}"))
-        } else {
-            HttpError::internal(format!("app seed failed: {e}"))
-        }
-    })?;
+    .map_err(map_seed_error)?;
 
     Ok(Json(SeedAppResponse {
-        status: "ready",
+        status: seed_result.0,
         workdir: seeded_at,
+        git_commit_sha: seed_result.1,
     }))
+}
+
+fn map_seed_error(err: anyhow::Error) -> HttpError {
+    let msg = format!("{err}");
+    if msg.contains("deployKeyPem requires")
+        || msg.contains("git repo URL")
+        || msg.starts_with("git clone failed")
+        || msg.contains("refusing to clone")
+    {
+        HttpError::validation(msg)
+    } else {
+        HttpError::internal(format!("app seed failed: {msg}"))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,6 +431,16 @@ pub struct BuildAppBody {
     /// `<amuxd home>/teams/<teamId>/apps/<appId>`.
     #[serde(default)]
     pub workdir: Option<String>,
+    /// Commit to build (must exist on the remote). Part of the git triple
+    /// below — supplied for Gitea-managed apps, omitted for imported ones.
+    #[serde(default)]
+    pub git_commit_sha: String,
+    /// Git remote for fetch/checkout. See `git_commit_sha`.
+    #[serde(default)]
+    pub git_remote_url: String,
+    /// Deploy key PEM for SSH access during fetch. See `git_commit_sha`.
+    #[serde(default)]
+    pub deploy_key_pem: String,
     /// Presigned OSS PUT URL for the build artifact. Short-lived signed-URL
     /// secret — REQUIRED, and never logged.
     pub presigned_put: String,
@@ -346,6 +458,12 @@ pub struct BuildAppResponse {
 /// Requires `workspace:write`. The workdir MUST already exist (it's the seeded
 /// checkout). Returns `{ "status": "built" }`. The presigned URL is a
 /// short-lived secret and is never logged.
+///
+/// `gitCommitSha` + `gitRemoteUrl` + `deployKeyPem` are an all-or-nothing
+/// triple. With them the workdir is fetched and checked out at that commit
+/// (the Gitea-managed path). Without them the workdir is built exactly as it
+/// sits — which is how an app imported from someone else's repo deploys, since
+/// this deployment holds no credential for that remote.
 pub async fn build_app(
     principal: Principal,
     State(_state): State<HttpState>,
@@ -357,6 +475,22 @@ pub async fn build_app(
     if presigned_put.is_empty() {
         return Err(HttpError::validation("presignedPut must not be empty"));
     }
+
+    let git_commit_sha = body.git_commit_sha.trim().to_string();
+    let git_remote_url = body.git_remote_url.trim().to_string();
+    let deploy_key_pem = body.deploy_key_pem.trim().to_string();
+    let present = [
+        !git_commit_sha.is_empty(),
+        !git_remote_url.is_empty(),
+        !deploy_key_pem.is_empty(),
+    ];
+    let use_git = present.iter().all(|p| *p);
+    if !use_git && present.iter().any(|p| *p) {
+        return Err(HttpError::validation(
+            "gitCommitSha, gitRemoteUrl and deployKeyPem must be supplied together",
+        ));
+    }
+
     let workdir_path = resolve_workdir(
         body.workdir.as_deref().unwrap_or(""),
         &body.app_id,
@@ -369,11 +503,17 @@ pub async fn build_app(
         )));
     }
 
-    let bytes =
-        tokio::task::spawn_blocking(move || crate::sync::app_build::build_artifact(&workdir_path))
-            .await
-            .map_err(|e| HttpError::internal(format!("build task panicked: {e}")))?
-            .map_err(|e| HttpError::internal(format!("app build failed: {e}")))?;
+    let bytes = tokio::task::spawn_blocking(move || {
+        let git_ctx = use_git.then(|| crate::sync::app_build::BuildGitContext {
+            commit_sha: &git_commit_sha,
+            remote_url: &git_remote_url,
+            deploy_key_pem: &deploy_key_pem,
+        });
+        crate::sync::app_build::build_artifact(&workdir_path, git_ctx.as_ref())
+    })
+    .await
+    .map_err(|e| HttpError::internal(format!("build task panicked: {e}")))?
+    .map_err(map_build_error)?;
 
     let resp = reqwest::Client::new()
         .put(&presigned_put)
@@ -381,6 +521,11 @@ pub async fn build_app(
         .send()
         .await
         .map_err(|e| HttpError::internal(format!("upload PUT failed: {e}")))?;
+    if resp.status() == axum::http::StatusCode::FORBIDDEN {
+        return Err(HttpError::validation(
+            "presigned upload URL expired; retry deploy",
+        ));
+    }
     if !resp.status().is_success() {
         return Err(HttpError::internal(format!(
             "upload PUT failed: HTTP {}",
@@ -391,9 +536,134 @@ pub async fn build_app(
     Ok(Json(BuildAppResponse { status: "built" }))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveAppWorkdirBody {
+    /// The app's team — names the override file and derived root.
+    #[serde(default)]
+    pub team_id: String,
+    /// Absolute destination path for the checkout.
+    pub dest_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveAppWorkdirResponse {
+    pub workdir: String,
+}
+
+/// `POST /v1/apps/:appId/move-workdir` — relocate this app's checkout on disk.
+///
+/// Moves the entire directory (`.git`, `node_modules`, …). Same filesystem uses
+/// `rename`; cross-filesystem uses copy + verify + delete. On failure the
+/// original directory and override pointer are left unchanged.
+pub async fn move_app_workdir(
+    principal: Principal,
+    State(_state): State<HttpState>,
+    axum::extract::Path(app_id): axum::extract::Path<String>,
+    Json(body): Json<MoveAppWorkdirBody>,
+) -> Result<Json<MoveAppWorkdirResponse>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+
+    let dest = body.dest_path.trim();
+    if dest.is_empty() {
+        return Err(HttpError::validation("destPath must not be empty"));
+    }
+    let dest_path = PathBuf::from(dest);
+    if !dest_path.is_absolute() {
+        return Err(HttpError::validation("destPath must be an absolute path"));
+    }
+
+    let team_id = body.team_id.clone();
+    let app_id = app_id.trim().to_string();
+    if app_id.is_empty() {
+        return Err(HttpError::validation("appId must not be empty"));
+    }
+
+    let from_path = resolve_workdir("", &app_id, &team_id)?;
+    if from_path == dest_path {
+        return Ok(Json(MoveAppWorkdirResponse {
+            workdir: dest_path.to_string_lossy().into_owned(),
+        }));
+    }
+
+    let derived = derived_workdir(&app_id, &team_id)?;
+    let moved_to = dest_path.to_string_lossy().into_owned();
+
+    tokio::task::spawn_blocking(move || {
+        // Pointer first, then the tree, and roll the pointer back if the move
+        // fails. Moving first meant a failed override write left the tree at
+        // the new path while `resolve_workdir` still answered the old one —
+        // an empty directory — which is exactly what the handler's contract
+        // promises cannot happen. The override file is a small tmp+rename
+        // write, so it is both the cheaper and the reversible half.
+        let previous = crate::sync::app_workdir::read_override(&team_id, &app_id);
+        let point_at = |target: Option<&std::path::Path>| -> std::io::Result<()> {
+            match target {
+                Some(path) if path != derived => {
+                    crate::sync::app_workdir::set_override(&team_id, &app_id, path)
+                }
+                _ => crate::sync::app_workdir::clear_override(&team_id, &app_id),
+            }
+        };
+
+        point_at(Some(dest_path.as_path()))?;
+        if let Err(e) = crate::sync::app_workdir::move_directory(&from_path, &dest_path) {
+            if let Err(restore) = point_at(previous.as_deref()) {
+                tracing::error!(
+                    error = %restore,
+                    app_id = %app_id,
+                    "apps: could not restore the workdir override after a failed move"
+                );
+            }
+            return Err(e);
+        }
+        Ok::<_, std::io::Error>(())
+    })
+    .await
+    .map_err(|e| HttpError::internal(format!("move task panicked: {e}")))?
+    .map_err(map_move_error)?;
+
+    Ok(Json(MoveAppWorkdirResponse { workdir: moved_to }))
+}
+
+fn map_move_error(err: std::io::Error) -> HttpError {
+    match err.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::AlreadyExists => {
+            HttpError::validation(err.to_string())
+        }
+        std::io::ErrorKind::InvalidInput => HttpError::validation(err.to_string()),
+        _ => HttpError::internal(format!("app workdir move failed: {err}")),
+    }
+}
+
+fn map_build_error(err: anyhow::Error) -> HttpError {
+    let msg = format!("{err}");
+    let validation_markers = [
+        crate::sync::app_git::ERR_DIRTY,
+        crate::sync::app_git::ERR_SHA_NOT_ON_REMOTE,
+        crate::sync::app_git::ERR_INVALID_SHA,
+        crate::sync::app_build::ERR_OUTPUT_MISSING,
+        crate::sync::app_build::ERR_ARTIFACT_TOO_LARGE,
+        crate::sync::app_build::ERR_LOCKFILE_MISMATCH,
+        crate::sync::app_build::ERR_INSTALL_TIMEOUT,
+        crate::sync::app_build::ERR_BUILD_TIMEOUT,
+        "git repo URL",
+        "deploy key PEM",
+    ];
+    if validation_markers.iter().any(|m| msg.contains(m)) {
+        HttpError::validation(msg)
+    } else {
+        HttpError::internal(format!("app build failed: {msg}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `super` here is this module, not `http` — `errors` only resolves from the
+    // crate root.
+    use crate::http::errors::ErrorCode;
 
     #[test]
     fn body_deserializes_camel_case() {
@@ -489,6 +759,41 @@ mod tests {
     }
 
     #[test]
+    fn seed_body_carries_git_user_identity() {
+        let body: SeedAppBody = serde_json::from_value(serde_json::json!({
+            "appId": "app-1",
+            "gitUserName": "Alice",
+            "gitUserEmail": "alice@example.com"
+        }))
+        .unwrap();
+        assert_eq!(body.git_user_name.as_deref(), Some("Alice"));
+        assert_eq!(body.git_user_email.as_deref(), Some("alice@example.com"));
+        let body: SeedAppBody =
+            serde_json::from_value(serde_json::json!({"appId": "app-1"})).unwrap();
+        assert!(body.git_user_name.is_none());
+        assert!(body.git_user_email.is_none());
+    }
+
+    #[test]
+    fn seed_body_carries_git_remote_and_deploy_key() {
+        let body: SeedAppBody = serde_json::from_value(serde_json::json!({
+            "appId": "app-1",
+            "gitRemoteUrl": "git@gitea.example.com:org/tc-app-app-1.git",
+            "deployKeyPem": "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n"
+        }))
+        .unwrap();
+        assert_eq!(
+            body.git_remote_url.as_deref(),
+            Some("git@gitea.example.com:org/tc-app-app-1.git")
+        );
+        assert!(body.deploy_key_pem.as_deref().unwrap().contains("OPENSSH"));
+        let body: SeedAppBody =
+            serde_json::from_value(serde_json::json!({"appId": "app-1"})).unwrap();
+        assert!(body.git_remote_url.is_none());
+        assert!(body.deploy_key_pem.is_none());
+    }
+
+    #[test]
     fn seed_body_carries_an_optional_git_remote() {
         let body: SeedAppBody = serde_json::from_value(serde_json::json!({
             "appId": "app-1",
@@ -562,12 +867,31 @@ mod tests {
         let body: BuildAppBody = serde_json::from_value(serde_json::json!({
             "appId": "app-1",
             "teamId": "team-1",
+            "gitCommitSha": "abc1234567890",
+            "gitRemoteUrl": "git@gitea.example.com:org/repo.git",
+            "deployKeyPem": "-----BEGIN OPENSSH PRIVATE KEY-----\n",
             "presignedPut": "https://oss/put?sig=x"
         }))
         .unwrap();
         assert_eq!(body.app_id, "app-1");
+        assert_eq!(body.git_commit_sha, "abc1234567890");
         assert_eq!(body.presigned_put, "https://oss/put?sig=x");
         assert!(body.workdir.is_none());
+    }
+
+    #[test]
+    fn build_body_may_omit_the_git_triple() {
+        // An app imported from someone else's repo has no Gitea repo and no
+        // deploy key; its build is of the workdir as it sits.
+        let body: BuildAppBody = serde_json::from_value(serde_json::json!({
+            "appId": "app-1",
+            "teamId": "team-1",
+            "presignedPut": "https://oss/put?sig=x"
+        }))
+        .unwrap();
+        assert_eq!(body.git_commit_sha, "");
+        assert_eq!(body.git_remote_url, "");
+        assert_eq!(body.deploy_key_pem, "");
     }
 
     #[test]
@@ -580,10 +904,35 @@ mod tests {
     }
 
     #[test]
+    fn map_build_error_marks_known_validation_failures() {
+        let err = map_build_error(anyhow::anyhow!(crate::sync::app_git::ERR_DIRTY));
+        assert!(matches!(err.code, ErrorCode::ValidationFailed));
+        let err = map_build_error(anyhow::anyhow!("mystery failure"));
+        assert!(matches!(err.code, ErrorCode::Internal));
+    }
+
+    #[test]
+    fn map_seed_error_marks_clone_failures_as_validation() {
+        let err = map_seed_error(anyhow::anyhow!("git clone failed: repo not found"));
+        assert!(matches!(err.code, ErrorCode::ValidationFailed));
+    }
+
+    #[test]
     fn resolve_workdir_requires_app_id_when_workdir_omitted() {
         let err = resolve_workdir("", "  ", "").unwrap_err();
-        // A validation error (not a path) when neither workdir nor appId given.
         let msg = format!("{err:?}");
         assert!(msg.contains("appId"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn resolve_workdir_prefers_override_over_derived_path() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+
+        let custom = home.path().join("custom").join("app-1");
+        crate::sync::app_workdir::set_override("team-a", "app-1", &custom).unwrap();
+
+        let p = resolve_workdir("", "app-1", "team-a").unwrap();
+        assert_eq!(p, custom);
     }
 }

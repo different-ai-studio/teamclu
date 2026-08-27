@@ -249,8 +249,11 @@ impl FcClient {
             .await
             .map_err(|e| SyncError::Network(e.to_string()))?;
         if !resp.status().is_success() {
+            // Include the host that rejected the PUT (after any redirects) so a
+            // 413/403 surfaces which hop returned it, not just the status.
+            let host = resp.url().host_str().unwrap_or("<unknown host>");
             return Err(SyncError::Network(format!(
-                "PUT blob failed: HTTP {}",
+                "PUT blob failed ({host}): HTTP {}",
                 resp.status()
             )));
         }
@@ -300,8 +303,9 @@ impl FcClient {
             .await
             .map_err(|e| SyncError::Network(e.to_string()))?;
         if !resp.status().is_success() {
+            let host = resp.url().host_str().unwrap_or("<unknown host>");
             return Err(SyncError::Network(format!(
-                "GET blob failed: HTTP {}",
+                "GET blob failed ({host}): HTTP {}",
                 resp.status()
             )));
         }
@@ -830,6 +834,33 @@ mod tests {
             .await
             .expect("complete-batch");
         assert!(matches!(out.as_slice(), [BatchItemOutcome::Ok(_)]));
+    }
+
+    #[tokio::test]
+    async fn put_blob_failure_names_the_host() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let srv = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(413))
+            .expect(1)
+            .mount(&srv)
+            .await;
+
+        let fc = FcClient::new(srv.uri(), "jwt".into());
+        let url = format!("{}/blob", srv.uri());
+        let err = fc
+            .put_blob(&url, b"payload".to_vec())
+            .await
+            .expect_err("a 413 must surface as an error");
+        let msg = match err {
+            SyncError::Network(m) => m,
+            other => panic!("expected Network error, got {other:?}"),
+        };
+        // host_str() drops the port; the mock server is 127.0.0.1:<port>.
+        assert!(msg.contains("127.0.0.1"), "error should name the host that returned 413: {msg}");
+        assert!(msg.contains("413"), "error should name the status: {msg}");
     }
 
     #[tokio::test]

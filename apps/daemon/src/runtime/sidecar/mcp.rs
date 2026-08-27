@@ -182,9 +182,37 @@ pub fn assemble(worktree: &str, mcp_config_path: Option<&Path>) -> McpServers {
     out
 }
 
-/// Stamp session-scoped TeamClu MCP tools with an explicit cloud session id for
-/// this query/agent. Used by Claude/Cursor bridges where each SDK session gets
-/// its own `mcpServers` config.
+/// Assemble workspace MCP servers and stamp managed session env for Claude/Cursor SDK sessions.
+pub fn assemble_stamped_managed(
+    worktree: &str,
+    mcp_config_path: Option<&Path>,
+    teamclu_session_id: &str,
+) -> McpServers {
+    let mut servers = assemble(worktree, mcp_config_path);
+    stamp_managed_session_context(&mut servers, teamclu_session_id);
+    servers
+}
+
+/// Whether a stamped introspect server is present for managed session context.
+pub fn managed_introspect_stamped(servers: &McpServers) -> bool {
+    for name in ["teamclu-introspect", "teamclaw-introspect"] {
+        let Some(obj) = servers.get(name).and_then(|v| v.as_object()) else {
+            continue;
+        };
+        let Some(env) = obj.get("env").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        if env
+            .get(teamclu_runtime_env::TEAMCLU_SESSION_ID_ENV)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty())
+        {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn stamp_managed_session_context(servers: &mut McpServers, teamclu_session_id: &str) {
     let id = teamclu_session_id.trim();
     if id.is_empty() {
@@ -404,4 +432,63 @@ mod tests {
         stamp_managed_session_context(&mut servers, "sess-x");
         assert_eq!(servers["teamclu-introspect"], "not-an-object");
     }
+
+    #[test]
+    fn bridge_mcp_servers_payload_includes_stamped_introspect() {
+        let _iso = isolate_home();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("opencode.json"),
+            r#"{"mcp":{"teamclu-introspect":{"type":"local","command":["teamclu-introspect"]}}}"#,
+        )
+        .unwrap();
+        let servers = assemble_stamped_managed(dir.path().to_str().unwrap(), None, "teamclu-bridge");
+        let payload = serde_json::json!({ "mcpServers": serde_json::Value::Object(servers) });
+        assert_eq!(
+            payload["mcpServers"]["teamclu-introspect"]["env"]["TEAMCLU_SESSION_ID"],
+            "teamclu-bridge"
+        );
+        assert!(managed_introspect_stamped(
+            payload["mcpServers"].as_object().unwrap()
+        ));
+    }
+
+    #[test]
+    fn assemble_stamped_managed_isolates_ab_session_env() {
+        let _iso = isolate_home();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("opencode.json"),
+            r#"{"mcp":{"teamclu-introspect":{"type":"local","command":["teamclu-introspect"]}}}"#,
+        )
+        .unwrap();
+        let a = assemble_stamped_managed(dir.path().to_str().unwrap(), None, "teamclu-a");
+        let b = assemble_stamped_managed(dir.path().to_str().unwrap(), None, "teamclu-b");
+        assert_eq!(
+            a["teamclu-introspect"]["env"]["TEAMCLU_SESSION_ID"],
+            "teamclu-a"
+        );
+        assert_eq!(
+            b["teamclu-introspect"]["env"]["TEAMCLU_SESSION_ID"],
+            "teamclu-b"
+        );
+    }
+
+    #[test]
+    fn managed_introspect_stamped_false_when_server_missing() {
+        let servers = Map::new();
+        assert!(!managed_introspect_stamped(&servers));
+    }
+
+    #[test]
+    fn managed_introspect_stamped_true_after_stamp() {
+        let mut servers = Map::new();
+        servers.insert(
+            "teamclu-introspect".into(),
+            json!({ "type": "stdio", "command": "teamclu-introspect" }),
+        );
+        stamp_managed_session_context(&mut servers, "sess-1");
+        assert!(managed_introspect_stamped(&servers));
+    }
+
 }

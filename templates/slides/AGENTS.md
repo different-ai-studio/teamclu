@@ -34,10 +34,32 @@ reveal 自带的全部主题（black、white、league、solarized 等）。
 
 ## 怎么上线
 
-用户在 TeamClu 的应用列表里点「部署」。你不需要、也没有权限自己部署。
+部署按 **Gitea 远端 commit** 构建。改完幻灯片后：
+
+1. **commit** 到本地 git
+2. **push** 到 Gitea（有未 push 的 commit 时部署会被拒绝）
+3. 让用户在 TeamClu 应用列表里点「部署」，并选中刚 push 的 commit
+
+你不需要、也没有权限自己触发部署。
 
 本地预览：`pnpm dev`，打开 `http://localhost:9000`。左右键翻页，`S` 演讲者视图，
 `Esc` 总览。
+
+## 登录（`auth_mode`）
+
+应用的 `auth_mode` 在 TeamClu 控制面设置：
+
+| 值 | 含义 | Phase 1 |
+|----|------|---------|
+| `none` | 无登录墙，**公网可达** | 默认 |
+| `platform` | 平台 GoTrue OAuth（部署注入 env） | 本模板 Phase 1 **未实现** |
+| `third` | 第三方 IdP | **不可部署** |
+
+演示材料是纯静态 deck，Phase 1 不含 OAuth 回调。需要登录墙时，请建议用户建
+「数据操作」类型应用。
+
+若将来加登录：`redirect_uri` 用注入的 **`APP_PUBLIC_URL`**（+ `/auth/callback`），
+勿从 `Host` 自拼（反代后面 `Host` 是 FC 内部地址）。
 
 ## 没有数据库
 

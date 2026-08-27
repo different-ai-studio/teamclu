@@ -40,7 +40,22 @@ import {
   readEnvelope as readTeamEnvEnvelope,
 } from "./pg-repo/team-env-secrets.js";
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
-import { appOssObjectName, deployUnavailable } from "./provisioning/app-deploy.js";
+import { appOssObjectName, deployUnavailable, parseOptionalGitCommitSha, parseDeployToken, assertDeployAllowed, checkDeployInProgress, needsDatabase } from "./provisioning/app-deploy.js";
+import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
+import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
+import { giteaUnavailable, GITEA_AUTH_KIND } from "./provisioning/gitea.js";
+import { issueJitDeployKey, revokeActorDeployKeys } from "./provisioning/deploy-key.js";
+import {
+  applyAuthModeChange,
+  buildPlatformOAuthEnv,
+  parseAuthMode,
+  type AuthMode,
+} from "./provisioning/app-auth-mode.js";
+import {
+  deleteAppSecretSupabase,
+  getAppSecretSupabase,
+  putAppSecretSupabase,
+} from "./provisioning/app-secrets.js";
 import { normalizeAgentTypes } from "./agent-types.js";
 import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-status.js";
 import { computeRange, getLiteLlmSql, queryTeamUsage } from "./litellm-usage.js";
@@ -266,6 +281,65 @@ async function archiveSessionsForWorkspace(supabase, workspaceId) {
   });
 }
 
+const APP_PERMISSION_LEVELS = new Set(["view", "prompt", "admin"]);
+
+function parseAppPermissionLevel(raw: string): string {
+  if (!APP_PERMISSION_LEVELS.has(raw)) {
+    throw new ApiError(400, "validation_failed", "permissionLevel must be view, prompt, or admin");
+  }
+  return raw;
+}
+
+function mapAppAccessRow(r: any) {
+  return {
+    memberId: r.member_id,
+    permissionLevel: r.permission_level,
+    grantedByMemberId: r.granted_by_member_id ?? null,
+    createdAt: appIso(r.created_at)!,
+  };
+}
+
+/**
+ * Turn a driver error into an ApiError without letting the query or the row
+ * values escape.
+ *
+ * Postgres error objects carry `query`, `parameters`, and frequently a fragment
+ * of the offending value in `detail`. Rethrowing one as-is puts the user's
+ * business data into an HTTP body and, worse, into whatever logs the error.
+ */
+async function runAppData<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e: any) {
+    if (e instanceof ApiError) throw e;
+    const { sqlstate } = describeDbError(e);
+    if (sqlstate === "57014") {
+      throw new ApiError(504, "query_timeout", "the query took too long and was cancelled");
+    }
+    // 22P02 invalid_text_representation: the filter value cannot be coerced to
+    // the column's type ("abc" against an integer column). That is the caller's
+    // input being wrong, not the database failing.
+    if (sqlstate === "22P02" || sqlstate === "22007") {
+      throw new ApiError(400, "invalid_filter_value", "the filter value does not match the column's type");
+    }
+    console.warn(`[apps] app data query failed (sqlstate ${sqlstate ?? "unknown"})`);
+    throw new ApiError(502, "app_data_query_failed", `the app database rejected the query${sqlstate ? ` (${sqlstate})` : ""}`);
+  }
+}
+
+const APP_DATA_FILTER_OPS: readonly FilterOp[] = ["eq", "contains", "isNull", "notNull"];
+
+/** `filterColumn` + `filterOp` (+ `filterValue`), or nothing. */
+function parseAppDataFilter(query: any): { column: string; op: FilterOp; value?: unknown } | null {
+  const column = query?.filterColumn;
+  if (typeof column !== "string" || !column) return null;
+  const op = query?.filterOp;
+  if (!APP_DATA_FILTER_OPS.includes(op)) {
+    throw new ApiError(400, "validation_failed", `filterOp must be one of ${APP_DATA_FILTER_OPS.join(", ")}`);
+  }
+  return { column, op, value: query?.filterValue };
+}
+
 export function createSupabaseBusinessRepository(options) {
   const {
     supabaseUrl,
@@ -284,6 +358,16 @@ export function createSupabaseBusinessRepository(options) {
     // Set when the two above are absent: names the environment variable that
     // made deploy provisioning unavailable (see makeDeployDeps in index.ts).
     deployUnavailableReason,
+    gitea,
+    giteaUnavailableReason,
+    gotrue,
+    gotrueUnavailableReason,
+    teardownDeps,
+    // The app-data browser's four operations, with the admin connection bound
+    // (see makeAppDataOps). Absent when APPS_DB_ADMIN_URL is unset — the
+    // reason names the variable so the 503 is actionable.
+    appData,
+    appDataUnavailableReason,
     // Injectable for tests; defaults to querying the LiteLLM RDS directly.
     queryLiteLlmUsage = (litellmTeamId, range) => queryTeamUsage(getLiteLlmSql(), litellmTeamId, range),
     // Injectable for tests; defaults to the shared LiteLLM HTTP client.
@@ -435,6 +519,33 @@ export function createSupabaseBusinessRepository(options) {
     }
     const { createServiceRoleClient } = await import("./supabase.js");
     return createServiceRoleClient();
+  }
+
+  /**
+   * Revoke JIT deploy keys when access is removed or downgraded to view-only.
+   *
+   * Best-effort throughout, like the `revokeActorDeployKeys` it wraps. This
+   * runs *after* the grant row is already gone, so throwing here reported a
+   * completed revoke as a 500 — the caller then retries against a grant that
+   * no longer exists. A deployment with no service-role key, or a transient
+   * PostgREST error, must not turn "access removed" into "request failed".
+   * The keys that survive are still bounded by the expiry sweep.
+   */
+  async function revokeAppMemberDeployKeysIfGitea(appId: string, memberId: string): Promise<void> {
+    if (!gitea) return;
+    try {
+      const admin = await serviceRoleClient("revoke deploy keys on deauth");
+      const { data: app, error } = await admin
+        .from("apps")
+        .select("id, git_auth_kind")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app || app.git_auth_kind !== GITEA_AUTH_KIND) return;
+      await revokeActorDeployKeys(gitea, appId, memberId);
+    } catch (e) {
+      console.warn("[apps] deploy key revoke failed after deauth (non-fatal)", e);
+    }
   }
 
 
@@ -2914,6 +3025,8 @@ export function createSupabaseBusinessRepository(options) {
       const createdByActorId = resolved.id;
       const slug = slugify(input.name);
       const visibility = input.visibility === "team" ? "team" : "personal";
+      const importUrl = input.gitRemoteUrl?.trim() || null;
+      if (!importUrl && !gitea) throw giteaUnavailable(giteaUnavailableReason);
 
       // 1:1 workspace for the app. created_by_member_id = the resolved actor so
       // the workspace RLS insert policy is satisfied (same actor identity).
@@ -2938,33 +3051,136 @@ export function createSupabaseBusinessRepository(options) {
           type: input.type,
           visibility,
           workspace_id: ws.id,
-          git_remote_url: input.gitRemoteUrl?.trim() || null,
+          git_remote_url: importUrl,
           provision_status: "pending",
         })
         .select(APP_COLUMNS)
         .single();
       if (appErr) throw appErr;
 
-      // No repo provisioning here either way: an app's source lives only in the
-      // local checkout the daemon writes (docs/specs/2026-07-28-app-types-design.md
-      // §5) — from the starter template, or cloned from `gitRemoteUrl` when the
-      // user gave one. The row is returned `pending`; the desktop kicks the
-      // local seed and writes back `ready` or `error`.
-      return mapApp(row);
+      if (importUrl) return mapApp(row);
+
+      try {
+        // The SSH URL, not `clone_url`: the deploy key is the only credential
+        // we hand out for this repo, and it is useless over HTTPS.
+        const { sshUrl } = await gitea!.createAppRepo(row.id);
+        const { data: updated, error: updErr } = await supabase
+          .from("apps")
+          .update({
+            git_remote_url: sshUrl,
+            git_auth_kind: GITEA_AUTH_KIND,
+            provision_status: "repo_created",
+            provision_error: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", row.id)
+          .select(APP_COLUMNS)
+          .single();
+        if (updErr) throw updErr;
+        return mapApp(updated);
+      } catch (e: unknown) {
+        const msg = e instanceof ApiError ? e.message : String((e as Error)?.message ?? e);
+        const { data: errored, error: errUpd } = await supabase
+          .from("apps")
+          .update({
+            provision_status: "error",
+            provision_error: msg,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", row.id)
+          .select(APP_COLUMNS)
+          .single();
+        if (errUpd) throw errUpd;
+        if (e instanceof ApiError) throw e;
+        // `details`, not a bare 4th-argument object — ApiError reads only
+        // `options.details` / `options.cause`, so the errored row was dropped.
+        throw new ApiError(502, "gitea_provision_failed", msg, {
+          details: { app: mapApp(errored) },
+        });
+      }
     },
 
     async updateApp(
       appId: string,
-      patch: { name?: string; visibility?: string; provisionStatus?: string; fcStatus?: string; deployError?: string },
+      patch: {
+        name?: string;
+        visibility?: string;
+        provisionStatus?: string;
+        fcStatus?: string;
+        deployError?: string;
+        authMode?: string;
+      },
     ) {
       // RLS apps_update_if_creator blocks non-creators: the UPDATE matches zero
       // rows and .maybeSingle() returns null → surface as null (route 404s).
-      const { data: cur } = await supabase.from("apps").select("provision_status, fc_status").eq("id", appId).maybeSingle();
+      const { data: cur } = await supabase
+        .from("apps")
+        .select(
+          "provision_status, fc_status, name, slug, auth_mode, oauth_client_id, oauth_app_id, team_id, created_by_actor_id",
+        )
+        .eq("id", appId)
+        .maybeSingle();
+      // Authorize BEFORE any side effect, not after.
+      //
+      // `apps_select_if_visible` lets any teammate read a team-visible app,
+      // while `apps_update_if_creator` gates the write. Running the auth-mode
+      // change first meant a non-creator's PATCH deleted the app's GoTrue
+      // client (a hard DELETE) and its sealed secret with a service-role
+      // client, and only then matched zero rows and answered 404 — the live
+      // app's login destroyed by a request the API called "not found".
+      //
+      // The gate is `admin`, not creator: design §5.2 gives admin grantees
+      // authMode plus deploy, and a grantee who can deploy must also be able to
+      // write `fc_status` back — otherwise their own deploy is stranded at
+      // `awaiting_build` forever with nothing able to report the failure.
+      // Not visible to the caller under `apps_select_if_visible` → 404, and
+      // emphatically no escalation: a row we cannot read is not one we may
+      // write with a service-role client.
+      if (!cur) return null;
+      const callerPermission = await this.resolveAppCallerPermissionForApp({
+        id: appId,
+        team_id: cur.team_id,
+        created_by_actor_id: cur.created_by_actor_id,
+      });
+      if (callerPermission?.level !== "admin") return null;
+      const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
+
       const set: any = { updated_at: new Date().toISOString() };
       if (typeof patch.name === "string" && patch.name.length > 0) set.name = patch.name;
       if (patch.visibility === "team" || patch.visibility === "personal") {
         set.visibility = patch.visibility;
       }
+
+      const nextAuthMode = parseAuthMode(patch.authMode);
+      if (nextAuthMode !== undefined && cur) {
+        const fromAuthMode = (cur.auth_mode ?? "none") as AuthMode;
+        if (nextAuthMode !== fromAuthMode) {
+          const admin = await serviceRoleClient("store app secrets");
+          const oauth = await applyAuthModeChange(
+            {
+              gotrue,
+              gotrueUnavailableReason,
+              secrets: {
+                putSecret: (kind, plaintext) => putAppSecretSupabase(admin, appId, kind, plaintext),
+                deleteSecret: (kind) => deleteAppSecretSupabase(admin, appId, kind),
+              },
+            },
+            {
+              appId,
+              name: cur.name,
+              slug: cur.slug,
+              from: fromAuthMode,
+              to: nextAuthMode,
+              oauthClientId: cur.oauth_client_id ?? null,
+              oauthAppId: cur.oauth_app_id ?? null,
+            },
+          );
+          set.auth_mode = nextAuthMode;
+          set.oauth_client_id = oauth.oauthClientId;
+          set.oauth_app_id = oauth.oauthAppId;
+        }
+      }
+
       if (typeof patch.provisionStatus === "string") {
         const from = cur?.provision_status ?? "";
         if (isLegalStatusTransition(from, patch.provisionStatus)) {
@@ -2989,7 +3205,14 @@ export function createSupabaseBusinessRepository(options) {
             : "deploy failed";
         }
       }
-      const { data, error } = await supabase
+      // The creator writes with their own token so RLS stays a second gate.
+      // An `admin` grantee cannot: `apps_update_if_creator` is creator-only, so
+      // their UPDATE would match zero rows and 404 despite being authorized.
+      // Same escalation the sibling grant write uses (see setAppAccess).
+      const writer = callerIsCreator
+        ? supabase
+        : await serviceRoleClient("apply an app update authorized by an admin grant");
+      const { data, error } = await writer
         .from("apps")
         .update(set)
         .eq("id", appId)
@@ -2999,26 +3222,45 @@ export function createSupabaseBusinessRepository(options) {
       return data ? mapApp(data) : null;
     },
 
-    async deployApp(appId: string) {
+    async deployApp(appId: string, input: { gitCommitSha?: string }) {
+      // Optional: only a Gitea-managed app pins its deploy to a forge commit.
+      const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
       // Visibility + readiness gate. RLS on amux.apps returns nothing when the
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, provision_status")
+        .select("id, slug, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, deploy_started_at")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
       if (!existing) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(existing);
+      if (!permission || permission.level !== "admin") return null;
       if (existing.provision_status !== "ready") {
         throw new ApiError(409, "app_not_ready", "app must be seeded (provision_status=ready) before deploy");
       }
+      assertDeployAllowed({ id: existing.id, slug: existing.slug, auth_mode: existing.auth_mode, runtime: existing.runtime });
+      const progress = checkDeployInProgress({
+        fc_status: existing.fc_status,
+        deploy_started_at: existing.deploy_started_at,
+      });
+      if (progress === "blocked") {
+        throw new ApiError(409, "deploy_in_progress", "a deploy is already in progress");
+      }
+      if (progress === "stale") {
+        await supabase.from("apps").update({
+          fc_status: "deploy_error",
+          provision_error: "previous deploy timed out",
+          deploy_token: null,
+          deploy_started_at: null,
+          updated_at: new Date().toISOString(),
+        }).eq("id", appId);
+      }
       if (!startDeploy) throw deployUnavailable(deployUnavailableReason);
+      const deployToken = randomUUID();
+      const deployStartedAt = new Date().toISOString();
       try {
         const r = await startDeploy({ appId, region: process.env.REGION || "cn-hangzhou" });
-        // Persist only fc_function_name / fc_region / fc_status. The app's own
-        // DATABASE_URL from startDeploy is intentionally NOT persisted. The
-        // UPDATE is RLS-gated (apps_update_if_creator): a non-creator matches
-        // zero rows → .maybeSingle() returns null → surface as null (route 404s).
         const { data: row, error: updErr } = await supabase
           .from("apps")
           .update({
@@ -3026,14 +3268,23 @@ export function createSupabaseBusinessRepository(options) {
             fc_region: r.fcRegion,
             fc_status: "awaiting_build",
             provision_error: null,
-            updated_at: new Date().toISOString(),
+            deploy_token: deployToken,
+            deploy_started_at: deployStartedAt,
+            ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
+            updated_at: deployStartedAt,
           })
           .eq("id", appId)
           .select(APP_COLUMNS)
           .maybeSingle();
         if (updErr) throw updErr;
         if (!row) return null;
-        return { ...mapApp(row), ossObjectName: r.ossObjectName, presignedPut: r.presignedPut };
+        return {
+          ...mapApp(row),
+          ossObjectName: r.ossObjectName,
+          presignedPut: r.presignedPut,
+          deployToken,
+          gitCommitSha,
+        };
       } catch (e: any) {
         if (e instanceof ApiError) throw e;
         await supabase
@@ -3041,6 +3292,8 @@ export function createSupabaseBusinessRepository(options) {
           .update({
             fc_status: "deploy_error",
             provision_error: String(e?.message ?? e),
+            deploy_token: null,
+            deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId);
@@ -3048,16 +3301,24 @@ export function createSupabaseBusinessRepository(options) {
       }
     },
 
-    async finalizeDeploy(appId: string) {
+    async finalizeDeploy(appId: string, input: { gitCommitSha?: string; deployToken: string }) {
+      const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
+      const deployToken = parseDeployToken(input?.deployToken);
       // Visibility gate. RLS on amux.apps returns nothing when the app is not
       // visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, type, fc_function_name, fc_status")
+        .select("id, slug, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
       if (!existing) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(existing);
+      if (!permission || permission.level !== "admin") return null;
+      if (!existing.deploy_token || existing.deploy_token !== deployToken) {
+        throw new ApiError(409, "deploy_token_mismatch", "deployToken does not match the in-progress deploy");
+      }
+      assertDeployAllowed({ id: existing.id, slug: existing.slug, auth_mode: existing.auth_mode, runtime: existing.runtime });
       if (!existing.fc_function_name) throw new ApiError(409, "not_deploying", "app has no function; call deploy first");
       if (!isLegalFcTransition(existing.fc_status, "deploying")) {
         throw new ApiError(409, "invalid_deploy_state", `cannot finalize from fc_status ${existing.fc_status}`);
@@ -3066,20 +3327,52 @@ export function createSupabaseBusinessRepository(options) {
       // Mark deploying (RLS-gated UPDATE).
       await supabase.from("apps").update({ fc_status: "deploying", updated_at: new Date().toISOString() }).eq("id", appId);
       try {
+        let platformOAuthEnv: Record<string, string> | undefined;
+        if ((existing.auth_mode ?? "none") === "platform") {
+          const admin = await serviceRoleClient("read app secrets");
+          platformOAuthEnv = await buildPlatformOAuthEnv(
+            {
+              gotrue,
+              gotrueUnavailableReason,
+              getSecret: (kind) => getAppSecretSupabase(admin, appId, kind),
+            },
+            { appId, slug: existing.slug, oauthClientId: existing.oauth_client_id ?? null },
+          );
+        }
+        // Which database this app's data lives in is a fact decided once, at
+        // the first successful finalize — not a property re-derived from the
+        // team's CURRENT org. `teams.oid` is nullable and nothing guards it, so
+        // re-deriving after it changes would provision a brand-new empty schema
+        // in a different database and take the app live with no data. Deploy
+        // where the data already is.
+        const orgId = existing.org_id ?? (await this.resolveTeamOrgId(existing.team_id));
         const r = await finalizeDeploy({
           appId,
           slug: existing.slug,
+          orgId,
           appType: existing.type,
           fcFunctionName: existing.fc_function_name,
           ossObjectName: appOssObjectName(appId),
+          platformOAuthEnv,
         });
-        // Persist fc_status=live + fc_endpoint. No secret is persisted.
         const { data: row, error: updErr } = await supabase
           .from("apps")
           .update({
             fc_status: "live",
             fc_endpoint: r.fcEndpoint,
+            ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
+            // The function that just went live carries this auth_mode's env.
+            // Recording it here is what lets `authModePendingRedeploy` clear —
+            // and what makes the pending state a property of the row rather
+            // than of one desktop's memory.
+            deployed_auth_mode: existing.auth_mode ?? "none",
+            // Pin the org on the first success; a no-op on every later one.
+            // Static apps have no schema anywhere, so they get no ledger entry
+            // — a non-null org_id on one would claim data exists that does not.
+            ...(orgId && needsDatabase(existing.type) ? { org_id: orgId } : {}),
             provision_error: null,
+            deploy_token: null,
+            deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId)
@@ -3095,11 +3388,122 @@ export function createSupabaseBusinessRepository(options) {
           .update({
             fc_status: "deploy_error",
             provision_error: String(e?.message ?? e),
+            deploy_token: null,
+            deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId);
         throw new ApiError(502, "finalize_failed", String(e?.message ?? e));
       }
+    },
+
+    /**
+     * Resolve an app for the data browser: visibility, permission tier, whether
+     * it has a database at all, and which one.
+     *
+     * Returns null for "the caller cannot see this app" so the route 404s —
+     * indistinguishable, on purpose, from the app not existing.
+     */
+    async resolveAppDataTarget(
+      appId: string,
+      required: "prompt" | "admin",
+    ): Promise<{ target: AppDataTarget } | null> {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select("id, slug, team_id, org_id, type, fc_endpoint, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      // `view` is not "read-only access to the data" — design §6 hides the
+      // feature from that tier entirely, so it must not learn the app has one.
+      if (!permission || permission.level === "view") return null;
+      if (required === "admin" && permission.level !== "admin") {
+        throw new ApiError(403, "forbidden", "editing this app's data requires admin access");
+      }
+
+      // Two distinct 409s, not one 404: the control panel shows a different
+      // sentence for each, and "not found" would be a third, wrong story.
+      if (!needsDatabase(app.type)) {
+        throw new ApiError(409, "app_has_no_database", "this app type has no database");
+      }
+      if (!app.fc_endpoint) {
+        throw new ApiError(409, "app_not_deployed", "the database is created by the first deploy");
+      }
+
+      let orgId = app.org_id ?? null;
+      if (!orgId) {
+        // A row that predates apps.org_id. Deriving is the best we can do and
+        // it is the one case where we may be pointed at the wrong database
+        // (design §3.1) — so it goes in the log, without any of the data.
+        orgId = await this.resolveTeamOrgId(app.team_id);
+        console.warn(`[apps] app ${appId} has no org_id; deriving it from the team`);
+      }
+      if (!orgId) {
+        throw new ApiError(409, "app_org_unknown", "this app is not associated with an org database");
+      }
+
+      return { target: { orgId, appId: app.id, slug: app.slug } };
+    },
+
+    /** Shared guard: the ops facade is only present when FC has an admin URL. */
+    requireAppData() {
+      if (!appData) {
+        throw new ApiError(
+          503,
+          "app_data_unavailable",
+          appDataUnavailableReason
+            ? `app data browsing is not configured: ${appDataUnavailableReason}`
+            : "app data browsing is not configured",
+        );
+      }
+      return appData;
+    },
+
+    async listAppDataTables(appId: string) {
+      const resolved = await this.resolveAppDataTarget(appId, "prompt");
+      if (!resolved) return null;
+      const ops = this.requireAppData();
+      return { items: await runAppData(() => ops.listTables(resolved.target)) };
+    },
+
+    async readAppDataRows(appId: string, table: string, query: any = {}) {
+      const resolved = await this.resolveAppDataTarget(appId, "prompt");
+      if (!resolved) return null;
+      const ops = this.requireAppData();
+      return runAppData(() =>
+        ops.readRows(resolved.target, {
+          table,
+          after: typeof query.after === "string" ? query.after : null,
+          direction: query.direction === "desc" ? "desc" : "asc",
+          filter: parseAppDataFilter(query),
+          limit: parsePageLimit(query.limit),
+        }),
+      );
+    },
+
+    async updateAppDataRow(appId: string, table: string, rowKey: string, body: any = {}) {
+      const resolved = await this.resolveAppDataTarget(appId, "admin");
+      if (!resolved) return null;
+      const ops = this.requireAppData();
+      const patch = body?.patch;
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+        throw new ApiError(400, "validation_failed", "patch must be an object of column values");
+      }
+      const row = await runAppData(() =>
+        ops.updateRow(resolved.target, { table, key: decodeRowKey(rowKey), patch }),
+      );
+      return { row };
+    },
+
+    async deleteAppDataRow(appId: string, table: string, rowKey: string) {
+      const resolved = await this.resolveAppDataTarget(appId, "admin");
+      if (!resolved) return null;
+      const ops = this.requireAppData();
+      await runAppData(() => ops.deleteRow(resolved.target, { table, key: decodeRowKey(rowKey) }));
+      return { ok: true };
     },
 
     async listAppSessions(appId: string) {
@@ -3119,6 +3523,269 @@ export function createSupabaseBusinessRepository(options) {
         createdAt: appIso(r.created_at)!,
         updatedAt: appIso(r.updated_at)!,
       }));
+    },
+
+    /**
+     * Whether the caller is the actor that created this app.
+     *
+     * The creator-only gate for operations with side effects outside Postgres,
+     * which RLS cannot roll back. RLS still has the last word on the write
+     * itself; this only makes sure nothing irreversible happens first.
+     */
+    async isAppCreator(teamId: string, createdByActorId: string | null): Promise<boolean> {
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const userId = userData?.user?.id;
+      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+      const resolved = await this.resolveCurrentMemberActor(teamId, userId);
+      return Boolean(resolved?.id) && createdByActorId === resolved!.id;
+    },
+
+    /**
+     * `public.orgs.id` for a team (`amux.teams.oid`). Null when the team has
+     * no org — data_app finalize then fails with a clear error rather than
+     * inventing a shared database.
+     */
+    async resolveTeamOrgId(teamId: string): Promise<string | null> {
+      const { data, error } = await supabase
+        .from("teams")
+        .select("oid")
+        .eq("id", teamId)
+        .maybeSingle();
+      if (error) throw error;
+      const oid = data?.oid;
+      return typeof oid === "string" && oid.trim() ? oid.trim() : null;
+    },
+
+    /**
+     * Effective per-app permission for the caller. Creator → admin; no access row
+     * and not creator → null. Used for git credentials and deploy gates.
+     */
+    async resolveAppCallerPermissionForApp(app: {
+      id: string;
+      team_id: string;
+      created_by_actor_id: string | null;
+    }): Promise<{ level: "view" | "prompt" | "admin"; callerMemberId: string } | null> {
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const userId = userData?.user?.id;
+      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+
+      const resolved = await this.resolveCurrentMemberActor(app.team_id, userId);
+      if (!resolved?.id) return null;
+
+      if (await this.isAppCreator(app.team_id, app.created_by_actor_id)) {
+        return { level: "admin", callerMemberId: resolved.id };
+      }
+
+      const { data: access, error: accErr } = await supabase
+        .from("app_member_access")
+        .select("permission_level")
+        .eq("app_id", app.id)
+        .eq("member_id", resolved.id)
+        .maybeSingle();
+      if (accErr) throw accErr;
+      const level = access?.permission_level;
+      if (level === "view" || level === "prompt" || level === "admin") {
+        return { level, callerMemberId: resolved.id };
+      }
+      return null;
+    },
+
+    async getAppGitCredential(appId: string) {
+      const { data: existing, error: selErr } = await supabase
+        .from("apps")
+        .select("id, team_id, git_remote_url, git_auth_kind, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (selErr) throw selErr;
+      if (!existing) return null;
+
+      const permission = await this.resolveAppCallerPermissionForApp(existing);
+      if (!permission || permission.level === "view") return null;
+
+      if (!existing.git_remote_url) return null;
+      // An imported app has a remote this deployment holds no credential for;
+      // minting a Gitea key for it would 404 on a repo that does not exist.
+      if (existing.git_auth_kind !== GITEA_AUTH_KIND) return null;
+      if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
+
+      const jit = await issueJitDeployKey(gitea, appId, permission.callerMemberId);
+      return {
+        remoteUrl: existing.git_remote_url,
+        authKind: "deploy_key" as const,
+        ...jit,
+      };
+    },
+
+    async getAppGitHead(appId: string) {
+      const { data: existing, error: selErr } = await supabase
+        .from("apps")
+        .select("id, git_auth_kind")
+        .eq("id", appId)
+        .maybeSingle();
+      if (selErr) throw selErr;
+      if (!existing) return null;
+      if (existing.git_auth_kind !== GITEA_AUTH_KIND) return null;
+      if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
+      return gitea.getRepoHead(appId);
+    },
+
+    async getAppMembership(appId: string) {
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const userId = userData?.user?.id;
+      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+      // Bypass apps RLS: membership is team-scoped, not visibility-scoped. A
+      // logged-in user checking access to a deployed app may not pass
+      // apps_select_if_visible yet still need a truthful member/non-member answer.
+      const admin = await serviceRoleClient("read app team for membership check");
+      const { data: row, error } = await admin
+        .from("apps")
+        .select("id, team_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!row) return null;
+      const resolved = await this.resolveCurrentMemberActor(row.team_id, userId);
+      return { member: Boolean(resolved?.id) };
+    },
+
+    /**
+     * Creator or `admin` grant on this app — required to list/set/remove access.
+     * Returns null when the app is not visible or the caller lacks manage rights
+     * (routes surface 404 to avoid leaking app existence).
+     */
+    async resolveAppAccessManager(appId: string): Promise<{ callerMemberId: string } | null> {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select("id, team_id, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      if (!permission || permission.level !== "admin") return null;
+      return { callerMemberId: permission.callerMemberId };
+    },
+
+    async listAppAccess(appId: string) {
+      const manager = await this.resolveAppAccessManager(appId);
+      if (!manager) return null;
+      // RLS only exposes all rows to the creator; admin grantees see self only.
+      // After the manage gate, read the full grant list with service role.
+      const admin = await serviceRoleClient("list app member access");
+      const { data, error } = await admin
+        .from("app_member_access")
+        .select("member_id, permission_level, granted_by_member_id, created_at")
+        .eq("app_id", appId)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return (data ?? []).map(mapAppAccessRow);
+    },
+
+    async setAppAccess(appId: string, memberId: string, permissionLevel: string) {
+      const level = parseAppPermissionLevel(permissionLevel);
+      const manager = await this.resolveAppAccessManager(appId);
+      if (!manager) return null;
+      // RLS manage policy is creator-only; admin grantees write via service role.
+      const admin = await serviceRoleClient("manage app member access");
+      const { data: priorAccess, error: priorErr } = await admin
+        .from("app_member_access")
+        .select("permission_level")
+        .eq("app_id", appId)
+        .eq("member_id", memberId)
+        .maybeSingle();
+      if (priorErr) throw priorErr;
+      const now = new Date().toISOString();
+      const { data, error } = await admin
+        .from("app_member_access")
+        .upsert(
+          {
+            app_id: appId,
+            member_id: memberId,
+            permission_level: level,
+            granted_by_member_id: manager.callerMemberId,
+            updated_at: now,
+          },
+          { onConflict: "app_id,member_id" },
+        )
+        .select("member_id, permission_level, granted_by_member_id, created_at")
+        .single();
+      if (error) throw error;
+      const priorLevel = priorAccess?.permission_level;
+      if (
+        level === "view" &&
+        (priorLevel === "prompt" || priorLevel === "admin")
+      ) {
+        await revokeAppMemberDeployKeysIfGitea(appId, memberId);
+      }
+      return mapAppAccessRow(data);
+    },
+
+    async removeAppAccess(appId: string, memberId: string) {
+      const manager = await this.resolveAppAccessManager(appId);
+      if (!manager) return null;
+      const admin = await serviceRoleClient("manage app member access");
+      const { error } = await admin
+        .from("app_member_access")
+        .delete()
+        .eq("app_id", appId)
+        .eq("member_id", memberId);
+      if (error) throw error;
+      await revokeAppMemberDeployKeysIfGitea(appId, memberId);
+      return true;
+    },
+
+    async deleteApp(appId: string) {
+      const { data: existing, error: selErr } = await supabase
+        .from("apps")
+        .select(
+          "id, team_id, workspace_id, slug, name, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, created_by_actor_id",
+        )
+        .eq("id", appId)
+        .maybeSingle();
+      if (selErr) throw selErr;
+      if (!existing) return false;
+
+      const permission = await this.resolveAppCallerPermissionForApp(existing);
+      if (!permission || permission.level !== "admin") return false;
+
+      const admin = await serviceRoleClient("delete app and archive workspace");
+      const teardownInput = {
+        appId,
+        fcFunctionName: existing.fc_function_name,
+        authMode: existing.auth_mode,
+        oauthClientId: existing.oauth_client_id,
+        gitAuthKind: existing.git_auth_kind,
+        gitRemoteUrl: existing.git_remote_url,
+      };
+      const teardown: TeardownAppDeps = {
+        ...(teardownDeps ?? {}),
+        gotrue,
+        gitea,
+        deleteSecret: (kind) => deleteAppSecretSupabase(admin, appId, kind),
+      };
+      const { archivedRepoUrl } = await teardownAppResources(teardown, teardownInput);
+
+      if (existing.workspace_id) {
+        const now = new Date().toISOString();
+        const { error: wsErr } = await admin
+          .from("workspaces")
+          .update({
+            archived: true,
+            path: archivedRepoUrl ?? existing.git_remote_url,
+            updated_at: now,
+          })
+          .eq("id", existing.workspace_id);
+        if (wsErr) throw wsErr;
+        await archiveSessionsForWorkspace(admin, existing.workspace_id);
+      }
+
+      const { error: delErr } = await admin.from("apps").delete().eq("id", appId);
+      if (delErr) throw delErr;
+      return true;
     },
 
     // ─── Team skills registry ────────────────────────────────────────────────

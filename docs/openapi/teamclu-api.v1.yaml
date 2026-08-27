@@ -5168,6 +5168,12 @@ paths:
                 deployError:
                   type: string
                   description: "Reason stored alongside `fcStatus: deploy_error`."
+                authMode:
+                  $ref: "#/components/schemas/AppAuthMode"
+                  description: >-
+                    How the deployed app authenticates end users. Side effects
+                    (GoTrue OAuth client registration, secrets) are applied in
+                    Task 7; the field is accepted here for PATCH updates.
       responses:
         "200":
           description: The updated app.
@@ -5178,18 +5184,60 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
-  /v1/apps/{appId}/deploy:
-    post:
-      operationId: deployApp
-      summary: Start a deploy — mint the artifact upload handle (creator only)
+    delete:
+      operationId: deleteApp
+      summary: Delete an app (admin required)
       description: |
-        Requires `provisionStatus: ready`. Moves `fcStatus` to `awaiting_build`
-        and returns a short-lived presigned OSS PUT URL. The caller then kicks
-        its local daemon to build the app and upload the artifact there, and
-        calls `/deploy/finalize` once the upload succeeds.
+        Requires `admin` permission (the creator is treated as admin). Tears down
+        the FC function, HTTP trigger, OSS artifact, and GoTrue OAuth client;
+        revokes Gitea deploy keys and archives the repo under a `deleted-` prefix.
+        Postgres schema, local workdirs, and linked sessions (app_id nulled) are
+        kept. The orphaned workspace row is archived with the archived repo URL.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: App deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/deploy:
+    post:
+      operationId: deployApp
+      summary: Start a deploy — mint the artifact upload handle (admin required)
+      description: |
+        Requires `provisionStatus: ready` and `admin` permission on the app
+        (the creator is treated as admin). Members with `prompt` or `view`
+        receive 404. Moves `fcStatus` to `awaiting_build` and returns a
+        short-lived presigned OSS PUT URL. The caller then kicks its local
+        daemon to build the app and upload the artifact there, and calls
+        `/deploy/finalize` once the upload succeeds.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                gitCommitSha:
+                  type: string
+                  pattern: "^[0-9a-f]{7,40}$"
+                  description: >-
+                    Git commit SHA (7–40 hex) being deployed. Required for an
+                    app whose `gitAuthKind` is `gitea_deploy_key`; omitted for
+                    one imported from an external remote, whose deploy builds
+                    the local checkout as it sits and has no forge commit to
+                    pin itself to.
       responses:
         "202":
           description: Deploy started.
@@ -5199,12 +5247,21 @@ paths:
                 allOf:
                   - $ref: "#/components/schemas/App"
                   - type: object
-                    required: [ossObjectName, presignedPut]
+                    required: [ossObjectName, presignedPut, deployToken]
                     properties:
                       ossObjectName: { type: string }
                       presignedPut:
                         type: string
                         description: Short-lived presigned PUT URL for the build artifact. Secret — never log it.
+                      deployToken:
+                        type: string
+                        format: uuid
+                        description: Short-lived bearer required by `/deploy/finalize`. Secret — never log it.
+                      gitCommitSha:
+                        type: [string, "null"]
+                        description: >-
+                          Echo of the requested commit SHA for this deploy
+                          attempt; null when none was supplied.
         "404":
           $ref: "#/components/responses/Error"
         "409":
@@ -5218,14 +5275,34 @@ paths:
       operationId: finalizeAppDeploy
       summary: Finish a deploy — provision the schema, publish the code, return the live URL
       description: |
-        Provisions (idempotently) the app's Postgres schema and scoped role,
-        points the FC function at the uploaded artifact with a matching
-        `DATABASE_URL`, ensures the HTTP trigger, and stores `fcEndpoint` with
-        `fcStatus: live`. Failures land on `deploy_error` with the reason in
-        `provisionError`; retry by calling `/deploy` again.
+        Requires `admin` permission on the app (the creator is treated as
+        admin); members with `prompt` or `view` receive 404. Provisions
+        (idempotently) the app's Postgres schema and scoped role, points the
+        FC function at the uploaded artifact with a matching `DATABASE_URL`,
+        ensures the HTTP trigger, and stores `fcEndpoint` with `fcStatus: live`.
+        Failures land on `deploy_error` with the reason in `provisionError`;
+        retry by calling `/deploy` again.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deployToken]
+              properties:
+                gitCommitSha:
+                  type: string
+                  pattern: "^[0-9a-f]{7,40}$"
+                  description: >-
+                    Git commit SHA of the uploaded artifact. Omitted for an app
+                    with no forge repo — see the same field on `/deploy`.
+                deployToken:
+                  type: string
+                  format: uuid
+                  description: Bearer returned by `/deploy` for this attempt. Secret — never log it.
       responses:
         "200":
           description: The app, now live.
@@ -5271,6 +5348,364 @@ paths:
                         updatedAt: { type: string, format: date-time }
         "400":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/git-credential:
+    get:
+      operationId: getAppGitCredential
+      summary: Mint a short-lived Gitea deploy key for the app repo
+      description: |
+        Generates an ed25519 deploy key, registers the public half on the app's
+        Gitea repo (`tc-app-{appId}`), and returns the private key for one-time
+        use by the local daemon. Requires `prompt` or `admin` permission on the
+        app (the creator is treated as admin); `view` receives 404. The private
+        key is never persisted, and is in OpenSSH format (`BEGIN OPENSSH PRIVATE
+        KEY`) — OpenSSH cannot load an ed25519 key from a PKCS#8 block. Secret
+        — never log the response body.
+
+        Each call also revokes the keys it minted more than 15 minutes ago, so
+        `expiresAt` bounds how long a handed-out credential stays usable.
+
+        404 when the app is not Gitea-managed (`gitAuthKind` is null): there is
+        no repo of ours to register a key on.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: JIT deploy-key credential for git push/pull.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppGitCredential" }
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/git-head:
+    get:
+      operationId: getAppGitHead
+      summary: Default-branch HEAD commit on the app's Gitea repo
+      description: |
+        Reads the default branch SHA via the server-side Gitea bot token.
+        Visible to the same callers as `getApp`. 404 when the app is not
+        Gitea-managed (`gitAuthKind` is null).
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Default branch HEAD.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppGitHead" }
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/membership:
+    get:
+      operationId: getAppMembership
+      summary: Whether the caller is a member of the app's team
+      description: |
+        Used by deployed apps with `authMode: platform` to gate login: the app
+        holds the end-user's bearer token (not a service role) and asks whether
+        that user belongs to the team that owns this app. Returns `{ member:
+        boolean }` only — no team metadata. Route handler is implemented in
+        Task 8; this documents the contract.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Membership verdict for the authenticated user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppMembership" }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/access:
+    get:
+      operationId: listAppAccess
+      summary: List per-member access grants for an app
+      description: |
+        Returns all rows in `app_member_access` for the app. Only the app
+        creator or a member with `admin` permission may call this; others
+        receive 404 (same as other app mutations — do not leak existence).
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Access grants for team members on this app.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppMemberAccessRow"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/access/{memberId}:
+    put:
+      operationId: setAppAccess
+      summary: Grant or update a member's app permission
+      description: |
+        Upserts `app_member_access` for `(appId, memberId)`. `permissionLevel`
+        must be `view`, `prompt`, or `admin`. Only the app creator or a member
+        with existing `admin` on this app may call; others receive 404.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppAccessMemberId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissionLevel]
+              properties:
+                permissionLevel:
+                  $ref: "#/components/schemas/AppPermissionLevel"
+      responses:
+        "200":
+          description: The upserted access row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppMemberAccessRow"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: removeAppAccess
+      summary: Revoke a member's app permission
+      description: |
+        Deletes the `app_member_access` row for `(appId, memberId)`. Only the
+        app creator or a member with `admin` on this app may call; others
+        receive 404.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppAccessMemberId"
+      responses:
+        "200":
+          description: Row removed (or was already absent).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/data/tables:
+    get:
+      operationId: listAppDataTables
+      summary: List the tables in this app's own database
+      description: |
+        Introspects the app's Postgres schema and returns every base table with
+        its columns and primary key. Requires `prompt` or `admin` on the app;
+        `view` (and non-members) receive 404 so the tier does not learn the
+        feature exists.
+
+        An empty `items` is the normal state right after the first deploy: the
+        provisioner creates the schema, the application creates its tables the
+        first time it is requested. It is not an error.
+
+        Only `data_app`-shaped apps have a database at all, and only after a
+        successful deploy. Both exclusions answer 409 with distinguishable
+        codes (`app_has_no_database`, `app_not_deployed`) rather than 404,
+        because the control panel shows a different explanation for each.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Tables in the app's schema.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppDataTable"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/data/tables/{table}/rows:
+    get:
+      operationId: readAppDataRows
+      summary: Read a page of rows from one table
+      description: |
+        Keyset pagination over the table's primary key — never `OFFSET`, which
+        on a production table means reading every row that was skipped. Pass the
+        previous page's `nextCursor` as `after`; a null `nextCursor` means this
+        was the last page.
+
+        There is deliberately no total row count: `count(*)` is a full scan on a
+        large table and would hit the 5s statement timeout before answering.
+
+        `limit` is capped server-side at 100 regardless of what is requested.
+        Tables with no primary key fall back to offset paging and are read-only.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppDataTable"
+        - name: after
+          in: query
+          required: false
+          description: Opaque cursor from the previous page's `nextCursor`.
+          schema: { type: string }
+        - name: direction
+          in: query
+          required: false
+          description: Order along the primary key. Sorting by an arbitrary column is not offered — it would make the cursor unsound.
+          schema: { type: string, enum: [asc, desc], default: asc }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: filterColumn
+          in: query
+          required: false
+          description: Column to filter on. Must exist in the table; validated against the catalog, never interpolated.
+          schema: { type: string }
+        - name: filterOp
+          in: query
+          required: false
+          schema: { type: string, enum: [eq, contains, isNull, notNull] }
+        - name: filterValue
+          in: query
+          required: false
+          description: Bound as a parameter. Ignored by `isNull` / `notNull`.
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of rows.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppDataRowsPage"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "504":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/data/tables/{table}/rows/{rowKey}:
+    patch:
+      operationId: updateAppDataRow
+      summary: Update one row
+      description: |
+        Requires `admin` on the app; `prompt` receives 403. Updates exactly one
+        row, addressed only by its primary key — never by any other column the
+        caller can see. A statement that matches anything other than one row
+        aborts the transaction.
+
+        The response carries the row **re-read after the write**, so triggers
+        and column defaults that rewrote the submitted value are visible.
+        Primary-key columns cannot be edited here: the read-back is by key, so
+        changing it would report the row as having vanished.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppDataTable"
+        - $ref: "#/components/parameters/AppDataRowKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patch]
+              properties:
+                patch:
+                  type: object
+                  additionalProperties: true
+                  description: Column name → new value. Every name is checked against the table's catalog entry.
+      responses:
+        "200":
+          description: The row as the database stored it.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [row]
+                properties:
+                  row:
+                    type: object
+                    additionalProperties: true
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAppDataRow
+      summary: Delete one row
+      description: |
+        Requires `admin`. Deletes exactly one row by primary key; a statement
+        matching zero or several rows aborts the transaction. There is no bulk
+        delete — this is production data and a table UI makes multi-select
+        mistakes too easy.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppDataTable"
+        - $ref: "#/components/parameters/AppDataRowKey"
+      responses:
+        "200":
+          description: Row deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -5328,6 +5763,34 @@ components:
       schema:
         type: string
         format: uuid
+    AppAccessMemberId:
+      name: memberId
+      in: path
+      required: true
+      description: Team member actor id receiving the grant.
+      schema:
+        type: string
+        format: uuid
+    AppDataTable:
+      name: table
+      in: path
+      required: true
+      description: >-
+        Table name. Resolved against the app schema's `information_schema`
+        before any statement is built; a name that is not there is a 404, and
+        the catalog's own string — not this one — is what reaches the SQL.
+      schema:
+        type: string
+    AppDataRowKey:
+      name: rowKey
+      in: path
+      required: true
+      description: >-
+        Opaque base64url form of the row's primary-key values, in the order
+        `primaryKey` lists them. Opaque rather than the raw value so a composite
+        key, and a value containing a slash, survive a path segment.
+      schema:
+        type: string
     ConfigBrand:
       name: brand
       in: query
@@ -5602,6 +6065,22 @@ components:
         Deploy lifecycle, orthogonal to `provisionStatus` (which tracks the repo
         and its seeding). `null` means the app has never been deployed.
       enum: [not_deployed, awaiting_build, building, deploying, live, deploy_error]
+    AppRuntime:
+      type: string
+      description: |
+        FC runtime for the deployed artifact. Phase 1 supports `node` only;
+        `container` is reserved for bring-your-own-image deploys.
+      enum: [node, container]
+      default: node
+    AppAuthMode:
+      type: string
+      description: |
+        How the deployed app authenticates end users. `none` means the live URL
+        is reachable without login; `platform` uses TeamClu SSO (GoTrue OAuth
+        client per app); `third` uses the app's own OAuth client id stored on
+        this row (secret in `app_secrets`, never returned here).
+      enum: [none, platform, third]
+      default: none
     App:
       type: object
       required: [id, teamId, name, slug, type, visibility, provisionStatus, createdAt, updatedAt]
@@ -5624,8 +6103,43 @@ components:
         gitRemoteUrl:
           type: [string, "null"]
           description: >-
-            The repository this app was imported from, or null for an app seeded
-            from a starter template. Set at creation and not editable.
+            The app's git remote: the Gitea repo provisioned for it (an SSH URL
+            — the deploy key we issue cannot authenticate over HTTPS), or the
+            repository it was imported from. Set at creation and not editable.
+        gitAuthKind:
+          type: [string, "null"]
+          enum: [gitea_deploy_key, null]
+          description: >-
+            `gitea_deploy_key` when this deployment provisioned the app's repo
+            and holds a deploy key for it — `/git-head` and `/git-credential`
+            answer only for those. Null for an app imported from a remote we
+            have no credential for; those deploy the local checkout instead.
+        gitCommitSha:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{7,40}$"
+          description: >-
+            HEAD commit SHA on the app's Gitea repo at last successful deploy;
+            null before the first deploy completes.
+        runtime:
+          $ref: "#/components/schemas/AppRuntime"
+        authMode:
+          $ref: "#/components/schemas/AppAuthMode"
+        authModePendingRedeploy:
+          type: boolean
+          description: >-
+            `authMode` was changed after the app went live, so the running
+            function still enforces the mode it was deployed with — the OAuth
+            env is injected at finalize, not on the PATCH. True until the next
+            successful deploy. Clients MUST surface this: an app switched to
+            `platform` reads as protected while its site is still public.
+            Server-derived from `fc_status` and the deployed mode; false for an
+            app that has never been live.
+        oauthClientId:
+          type: [string, "null"]
+          description: >-
+            Public OAuth client id when `authMode` is `third`, or the GoTrue
+            client id when `authMode` is `platform`. Never includes the matching
+            secret.
         provisionStatus:
           type: string
           enum: [pending, repo_created, seeding, ready, error]
@@ -5650,6 +6164,127 @@ components:
         fcRegion: { type: [string, "null"] }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    AppGitCredential:
+      type: object
+      required: [remoteUrl, authKind, privateKeyPem, deployKeyId, expiresAt]
+      description: >-
+        One-time deploy-key credential for the app's Gitea repo. Secret — never log.
+      properties:
+        remoteUrl: { type: string }
+        authKind: { type: string, enum: [deploy_key] }
+        privateKeyPem:
+          type: string
+          description: PKCS#8 PEM private key for git over SSH.
+        deployKeyId:
+          type: integer
+          description: Gitea deploy key id (for optional cleanup after push).
+        expiresAt:
+          type: string
+          format: date-time
+          description: Informational TTL (~15m); the key remains until deleted on Gitea.
+    AppGitHead:
+      type: object
+      required: [sha]
+      properties:
+        sha:
+          type: string
+          description: Default-branch HEAD commit id on the app's Gitea repo.
+    AppMembership:
+      type: object
+      required: [member]
+      description: >-
+        Whether the authenticated user is a member of the team that owns the
+        app. Used by deployed apps to gate platform SSO without a service role.
+      properties:
+        member:
+          type: boolean
+          description: >-
+            True when the caller has a member actor in the app's `teamId`;
+            false otherwise (including when the app is personal and the caller
+            is not the creator).
+    AppPermissionLevel:
+      type: string
+      enum: [view, prompt, admin]
+      description: >-
+        Per-member app capability. `view` — see metadata only; `prompt` — git
+        write (clone/push) but no deploy or grant management; `admin` — full
+        control including deploy and access management.
+    AppMemberAccessRow:
+      type: object
+      required: [memberId, permissionLevel, createdAt]
+      properties:
+        memberId:
+          type: string
+          format: uuid
+          description: Granted team member actor id.
+        permissionLevel:
+          $ref: "#/components/schemas/AppPermissionLevel"
+        grantedByMemberId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Member who last wrote this grant.
+        createdAt:
+          type: string
+          format: date-time
+    AppDataColumn:
+      type: object
+      required: [name, dataType, nullable]
+      properties:
+        name:
+          type: string
+        dataType:
+          type: string
+          description: Postgres `information_schema.columns.data_type`.
+        nullable:
+          type: boolean
+    AppDataTable:
+      type: object
+      required: [name, columns, primaryKey, editable]
+      properties:
+        name:
+          type: string
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppDataColumn"
+        primaryKey:
+          type: array
+          items: { type: string }
+          description: Ordered primary-key columns; empty when the table has none.
+        editable:
+          type: boolean
+          description: >-
+            False when there is no primary key. Without one there is no safe
+            "this row" — `update … where title = 'x'` can match several — so the
+            table stays browsable and row actions are disabled.
+    AppDataRowsPage:
+      type: object
+      required: [table, columns, primaryKey, editable, rows, nextCursor]
+      properties:
+        table:
+          type: string
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppDataColumn"
+        primaryKey:
+          type: array
+          items: { type: string }
+        editable:
+          type: boolean
+        rows:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: >-
+            Values are returned in full. Truncating long text belongs in the UI
+            — a server-side truncation would mean the value someone copies out
+            is silently not the value in the database.
+        nextCursor:
+          type: [string, "null"]
+          description: Pass as `after` for the next page. Null on the last page.
     BootstrapConfig:
       type: object
       description: >-

@@ -7,8 +7,9 @@ import {
   composeProject,
 } from "../harness/docker.mjs";
 
-test("contentRootPath maps to global team dir", () => {
-  assert.equal(contentRootPath("team-x"), "/root/.amuxd/teams/team-x/teamclu-team");
+test("contentRootPath maps to the v2 shared sync root", () => {
+  // knowledge/ lives directly under shared/ (not shared/teamclu-team/).
+  assert.equal(contentRootPath("team-x"), "/root/.amuxd/teams/team-x/shared");
 });
 test("syncStatePath maps to per-team state", () => {
   assert.equal(syncStatePath("team-x"), "/root/.amuxd/teams/team-x/sync/state.json");

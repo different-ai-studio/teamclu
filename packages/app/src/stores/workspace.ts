@@ -585,11 +585,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   // Panel actions
-  openPanel: (tab?: RightPanelTab) =>
+  openPanel: (tab?: RightPanelTab) => {
+    void import("./ui").then(({ useUIStore }) => {
+      useUIStore.getState().closeAppControlPanel();
+    });
     set({
       isPanelOpen: true,
       ...(tab ? { activeTab: tab } : {}),
-    }),
+    });
+  },
   closePanel: () => {
     set({ isPanelOpen: false })
   },

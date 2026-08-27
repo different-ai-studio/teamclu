@@ -86,6 +86,10 @@ const DYNAMIC_PREFIXES = [
   'settings.daemonOnboarding.steps.',
   'settings.daemonOnboarding.slowHint.',
   'settings.daemonOnboarding.recovery.',
+  // Keyed by AppAuthMode / permission level in the app control panel
+  // (AppControlPanel.tsx — t(`…${mode}`) / t(`…${level}`)).
+  'apps.controlPanel.authModeOption.',
+  'apps.controlPanel.permission.',
 ]
 // i18next plural/context suffixes resolve from the base key at runtime.
 const PLURAL_SUFFIX = /_(plural|one|two|few|many|other|zero|\d+)$/

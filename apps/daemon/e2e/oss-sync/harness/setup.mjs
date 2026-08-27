@@ -13,7 +13,13 @@ function env(name, fallback) {
   return v;
 }
 
-export async function provisionTwoNodeTeam({ threeNode = false } = {}) {
+/**
+ * Spin up 2 (or 3) amuxd nodes on one throwaway cloud team.
+ *
+ * Knowledge sync is plaintext now (ADR-0008): a team secret is NOT required.
+ * Pass `{ withSecret: true }` only when a scenario explicitly needs one.
+ */
+export async function provisionTwoNodeTeam({ threeNode = false, withSecret = false } = {}) {
   const base = env("CLOUD_API_URL", "https://api.teamclu-dev.ucar.cc");
   // cloud FC enforces "first-team onboarding only" (one team per account), so each
   // provision signs up a FRESH throwaway owner account — its first team is allowed.
@@ -30,7 +36,7 @@ export async function provisionTwoNodeTeam({ threeNode = false } = {}) {
 
   await composeUp(threeNode ? ["three-node"] : []);
 
-  const secret = genTeamSecret();
+  const secret = withSecret ? genTeamSecret() : null;
   const nodes = {};
   for (const svc of services) {
     const invite = await fc.createAgentInvite(base, ownerToken, teamId, svc);
@@ -44,8 +50,10 @@ export async function provisionTwoNodeTeam({ threeNode = false } = {}) {
     await dc.injectHttp(node);
     await dc.start(node);
     await dc.exchange(node);
-    await dc.setSecret(node, secret);
+    if (secret) await dc.setSecret(node, secret);
     await dc.link(node);
+    // Deterministic sync timeline for conflict scenarios (see disableAutoSync).
+    await dc.disableAutoSync(node);
     nodes[svc.replace("node-", "")] = node; // a / b / c
   }
 

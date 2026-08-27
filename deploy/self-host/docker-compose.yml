@@ -132,16 +132,13 @@ services:
           echo "litellm-init: created _litellm"
         fi
 
-  # Creates the teamclaw_apps database — the shared home for per-app Postgres
-  # schemas (one schema + one scoped login role per "数据操作" app), kept apart
-  # from the control-plane database. Same one-shot pattern and reasoning as
-  # litellm-init above: an already-deployed stack would never run a
-  # docker-entrypoint-initdb.d script, and CREATE DATABASE takes no IF NOT
-  # EXISTS and cannot run inside a transaction.
+  # Ensures the legacy `teamclaw_apps` database exists (pre per-org DBs). New
+  # data_app deploys create `tc_org_<orgId>` on demand via APPS_DB_ADMIN_URL
+  # (superuser connection to the compose `db` service) and do not need it.
   #
-  # Runs unconditionally: an empty unused database costs nothing, whereas the
-  # alternative is app deploys failing at connect time with a Postgres error
-  # that names no cause. Point APPS_DB_ADMIN_URL at it to enable them.
+  # Same one-shot pattern as litellm-init: CREATE DATABASE has no IF NOT EXISTS
+  # and cannot run inside a transaction; docker-entrypoint-initdb.d never re-runs
+  # on an already-initialized volume.
   apps-db-init:
     image: postgres:15-alpine
     restart: "no"
@@ -159,14 +156,14 @@ services:
       - -c
       - |
         set -e
-        # Name not renamed with the rebrand: the database already exists on the
-        # live box as teamclaw_apps. Renaming it here would leave that one in
-        # place and create a second, empty one alongside it.
+        # Legacy shared DB from before per-org databases. Kept so any early
+        # data_app rows that still point at it keep working; new deploys create
+        # tc_org_<orgId> instead and do not need this database.
         if [ "$$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='teamclaw_apps'")" = "1" ]; then
-          echo "apps-db-init: teamclaw_apps already exists"
+          echo "apps-db-init: teamclaw_apps already exists (legacy)"
         else
           psql -c 'CREATE DATABASE "teamclaw_apps"'
-          echo "apps-db-init: created teamclaw_apps"
+          echo "apps-db-init: created teamclaw_apps (legacy; new deploys use tc_org_*)"
         fi
 
   # AI gateway. FC provisions per-team budgets and virtual keys against the admin
@@ -212,6 +209,50 @@ services:
       timeout: 5s
       retries: 12
       start_period: 60s
+
+  gitea:
+    # Per-app private git repos for the Apps module. HTTP is fronted by Caddy on
+    # GITEA_DOMAIN; SSH is published to the host on GITEA_SSH_PORT so developer
+    # laptops and the daemon can push/fetch — not only containers on this network.
+    # NOTE: the ECS security group must also allow inbound TCP on GITEA_SSH_PORT.
+    image: gitea/gitea:1.22
+    restart: unless-stopped
+    ports:
+      - "${GITEA_SSH_PORT:-2222}:22"
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      # Public URL in clone links and the web UI. GITEA_ROOT_URL overrides; else
+      # GITEA_URL when operators point FC at the Caddy-proxied HTTPS URL; else
+      # https://${GITEA_DOMAIN}. When FC uses in-network http://gitea:3000, set
+      # GITEA_ROOT_URL explicitly so ssh_url / web links stay public-facing.
+      GITEA__server__ROOT_URL: "${GITEA_ROOT_URL:-${GITEA_URL:-https://${GITEA_DOMAIN}}}"
+      GITEA__server__DOMAIN: "${GITEA_DOMAIN}"
+      # ssh_url in the API must name the host and port laptops dial — the
+      # published host mapping, not the container's internal :22 listener.
+      GITEA__server__SSH_DOMAIN: "${GITEA_DOMAIN}"
+      GITEA__server__SSH_PORT: "${GITEA_SSH_PORT:-2222}"
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__server__DISABLE_SSH: "false"
+      GITEA__database__DB_TYPE: "sqlite3"
+      # Skip the first-run web wizard. Without this Gitea boots into the install
+      # form and every /api/v1 route is inert, so bootstrapping cannot proceed —
+      # and Gitea has no install REST endpoint to drive the wizard with. With it
+      # set, the container comes up configured and `gitea admin user create`
+      # (see init/gitea-bootstrap.sh) makes the first admin.
+      GITEA__security__INSTALL_LOCK: "true"
+      # Nobody signs up on this instance: accounts are the bot plus whatever an
+      # operator creates. Leaving registration open would expose a public
+      # sign-up form on GITEA_DOMAIN.
+      GITEA__service__DISABLE_REGISTRATION: "true"
+    volumes:
+      - gitea_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   fc:
     build:
@@ -312,10 +353,11 @@ services:
       CODEUP_ORG_ID: "${CODEUP_ORG_ID:-}"
       CODEUP_PAT: "${CODEUP_PAT:-}"
       CODEUP_BOT_USERNAME: "${CODEUP_BOT_USERNAME:-teamclu}"
-      # Admin connection to the shared per-app database (teamclaw_apps) — same
-      # RDS instance as the control plane, different database. Blank disables
-      # app deploys (they return 503 rather than half-provisioning).
-      APPS_DB_ADMIN_URL: "${APPS_DB_ADMIN_URL:-}"
+      # Superuser / CREATEDB URL for per-org databases (tc_org_<orgId>) +
+      # per-app schemas. Self-host defaults to the compose Postgres maintenance
+      # DB. Blank → data_app finalize fails naming APPS_DB_ADMIN_URL; static
+      # apps still deploy.
+      APPS_DB_ADMIN_URL: "${APPS_DB_ADMIN_URL:-postgres://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-db}:${POSTGRES_PORT:-5432}/postgres}"
       # The FC 3.0 data-plane host is account-scoped
       # (<accountId>.<region>.fc.aliyuncs.com) and is NOT the OSS ENDPOINT.
       # Set APPS_FC_ENDPOINT, or ALIYUN_ACCOUNT_ID to have it composed.
@@ -343,6 +385,16 @@ services:
       # Function Compute trigger URL and Caddy never asks about a certificate.
       # Requires a wildcard A record for *.<this> pointing at this box.
       APPS_PUBLIC_DOMAIN: "${APPS_PUBLIC_DOMAIN:-}"
+      # Per-app git repos on Gitea. Blank disables repo provisioning (503
+      # gitea_unavailable naming the empty variable). May be the Caddy-proxied
+      # public HTTPS URL (https://${GITEA_DOMAIN}) or the in-network address
+      # (http://gitea:3000) — both work from this container.
+      GITEA_URL: "${GITEA_URL:-}"
+      GITEA_TOKEN: "${GITEA_TOKEN:-}"
+      GITEA_OWNER: "${GITEA_OWNER:-}"
+      # 32-byte base64 AES-GCM key for app_secrets at rest. Blank disables
+      # secret storage until encrypt/decrypt is wired.
+      APP_SECRETS_ENCRYPTION_KEY: "${APP_SECRETS_ENCRYPTION_KEY:-}"
       # Optional partner-integration features, all off unless set here. This
       # `environment:` map is an explicit allowlist — a var absent from it never
       # reaches the container, no matter what the box's .env says.
@@ -516,6 +568,9 @@ services:
       # Parent of every deployed app's hostname. Same never-empty rule as
       # S3_DOMAIN above — `*.` with nothing after it is a nameless block.
       APPS_DOMAIN: "${APPS_PUBLIC_DOMAIN:-apps.localhost}"
+      # Gitea web UI + REST API. Same never-empty rule as S3_DOMAIN — a nameless
+      # block is read as global configuration and Caddy refuses to start.
+      GITEA_DOMAIN: "${GITEA_DOMAIN:-gitea.localhost}"
       ACME_EMAIL: "${ACME_EMAIL}"
       CADDY_GLOBAL_TLS: "${CADDY_GLOBAL_TLS:-}"
       CADDY_SITE_TLS: "${CADDY_SITE_TLS:-}"
@@ -528,6 +583,7 @@ services:
       - fc
       - kong
       - emqx
+      - gitea
 
   # ── opt-in: scheduled cron (docker compose --profile cron up) ──
   cron:
@@ -608,6 +664,7 @@ services:
 
 volumes:
   emqx_data:
+  gitea_data:
   minio_data:
   caddy_data:
   caddy_config:
