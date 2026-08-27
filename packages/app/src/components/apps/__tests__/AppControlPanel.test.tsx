@@ -7,6 +7,9 @@ import type { AppRow } from '@/lib/backend/types'
 
 const backendMocks = vi.hoisted(() => ({
   listAppAccess: vi.fn(),
+  // The data section lives in this panel now; without a stub it takes its own
+  // error path and buries the panel's own failures in console noise.
+  listAppDataTables: vi.fn(async () => ({ status: 'not_deployed' })),
   setAppAccess: vi.fn(),
   removeAppAccess: vi.fn(),
   updateAppAuthMode: vi.fn(),
@@ -31,6 +34,7 @@ vi.mock('@/lib/backend', () => ({
   getBackend: () => ({
     apps: {
       listAppAccess: backendMocks.listAppAccess,
+      listAppDataTables: backendMocks.listAppDataTables,
       setAppAccess: backendMocks.setAppAccess,
       removeAppAccess: backendMocks.removeAppAccess,
       updateAppAuthMode: backendMocks.updateAppAuthMode,

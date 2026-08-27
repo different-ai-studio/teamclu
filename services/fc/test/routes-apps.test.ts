@@ -251,3 +251,112 @@ test("DELETE /v1/apps/:id 404s when repo returns false", async () => {
     (e) => (e as { statusCode?: number }).statusCode === 404,
   );
 });
+
+// --- App data browser routes ------------------------------------------------
+
+test("GET /v1/apps/:id/data/tables forwards the app id and 404s on null", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/data/tables")[2];
+  const res = await handler({
+    params: { appId: "app-1" },
+    query: new URLSearchParams(""),
+    repository: { listAppDataTables: async (id: string) => ({ items: [{ name: `t-${id}` }] }) },
+  });
+  assert.deepEqual(res.body, { items: [{ name: "t-app-1" }] });
+
+  await assert.rejects(
+    () => handler({
+      params: { appId: "x" },
+      query: new URLSearchParams(""),
+      repository: { listAppDataTables: async () => null },
+    }),
+    (e: any) => e?.statusCode === 404,
+  );
+});
+
+test("GET .../rows forwards paging and filter params", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/data/tables/:table/rows")[2];
+  let seen: any;
+  await handler({
+    params: { appId: "app-1", table: "items" },
+    query: new URLSearchParams(
+      "after=CURSOR&direction=desc&limit=25&filterColumn=note&filterOp=eq&filterValue=keep",
+    ),
+    repository: {
+      readAppDataRows: async (appId: string, table: string, query: any) => {
+        seen = { appId, table, query };
+        return { rows: [] };
+      },
+    },
+  });
+  assert.equal(seen.appId, "app-1");
+  assert.equal(seen.table, "items");
+  assert.deepEqual(seen.query, {
+    after: "CURSOR",
+    direction: "desc",
+    limit: "25",
+    filterColumn: "note",
+    filterOp: "eq",
+    filterValue: "keep",
+  });
+});
+
+test("GET .../rows decodes a table name that needed escaping", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/data/tables/:table/rows")[2];
+  let seenTable = "";
+  await handler({
+    params: { appId: "app-1", table: "my%20table" },
+    query: new URLSearchParams(""),
+    repository: { readAppDataRows: async (_a: string, table: string) => { seenTable = table; return { rows: [] }; } },
+  });
+  assert.equal(seenTable, "my table");
+});
+
+test("PATCH .../rows/:rowKey forwards the opaque key and body", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find(
+    (r) => r[0] === "PATCH" && r[1] === "/v1/apps/:appId/data/tables/:table/rows/:rowKey",
+  )[2];
+  let seen: any;
+  const res = await handler({
+    params: { appId: "app-1", table: "items", rowKey: "WzJd" },
+    json: { patch: { title: "x" } },
+    repository: {
+      updateAppDataRow: async (appId: string, table: string, rowKey: string, body: any) => {
+        seen = { appId, table, rowKey, body };
+        return { row: { id: 2 } };
+      },
+    },
+  });
+  assert.deepEqual(seen, {
+    appId: "app-1", table: "items", rowKey: "WzJd", body: { patch: { title: "x" } },
+  });
+  assert.deepEqual(res.body, { row: { id: 2 } });
+});
+
+test("DELETE .../rows/:rowKey 404s when the repo says the app is invisible", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find(
+    (r) => r[0] === "DELETE" && r[1] === "/v1/apps/:appId/data/tables/:table/rows/:rowKey",
+  )[2];
+  const ok = await handler({
+    params: { appId: "app-1", table: "items", rowKey: "WzJd" },
+    repository: { deleteAppDataRow: async () => ({ ok: true }) },
+  });
+  assert.deepEqual(ok.body, { ok: true });
+
+  await assert.rejects(
+    () => handler({
+      params: { appId: "app-1", table: "items", rowKey: "WzJd" },
+      repository: { deleteAppDataRow: async () => null },
+    }),
+    (e: any) => e?.statusCode === 404,
+  );
+});

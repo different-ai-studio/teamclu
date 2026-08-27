@@ -40,7 +40,8 @@ import {
   readEnvelope as readTeamEnvEnvelope,
 } from "./pg-repo/team-env-secrets.js";
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
-import { appOssObjectName, deployUnavailable, parseOptionalGitCommitSha, parseDeployToken, assertDeployAllowed, checkDeployInProgress } from "./provisioning/app-deploy.js";
+import { appOssObjectName, deployUnavailable, parseOptionalGitCommitSha, parseDeployToken, assertDeployAllowed, checkDeployInProgress, needsDatabase } from "./provisioning/app-deploy.js";
+import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
 import { giteaUnavailable, GITEA_AUTH_KIND } from "./provisioning/gitea.js";
 import { issueJitDeployKey, revokeActorDeployKeys } from "./provisioning/deploy-key.js";
@@ -298,6 +299,47 @@ function mapAppAccessRow(r: any) {
   };
 }
 
+/**
+ * Turn a driver error into an ApiError without letting the query or the row
+ * values escape.
+ *
+ * Postgres error objects carry `query`, `parameters`, and frequently a fragment
+ * of the offending value in `detail`. Rethrowing one as-is puts the user's
+ * business data into an HTTP body and, worse, into whatever logs the error.
+ */
+async function runAppData<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e: any) {
+    if (e instanceof ApiError) throw e;
+    const { sqlstate } = describeDbError(e);
+    if (sqlstate === "57014") {
+      throw new ApiError(504, "query_timeout", "the query took too long and was cancelled");
+    }
+    // 22P02 invalid_text_representation: the filter value cannot be coerced to
+    // the column's type ("abc" against an integer column). That is the caller's
+    // input being wrong, not the database failing.
+    if (sqlstate === "22P02" || sqlstate === "22007") {
+      throw new ApiError(400, "invalid_filter_value", "the filter value does not match the column's type");
+    }
+    console.warn(`[apps] app data query failed (sqlstate ${sqlstate ?? "unknown"})`);
+    throw new ApiError(502, "app_data_query_failed", `the app database rejected the query${sqlstate ? ` (${sqlstate})` : ""}`);
+  }
+}
+
+const APP_DATA_FILTER_OPS: readonly FilterOp[] = ["eq", "contains", "isNull", "notNull"];
+
+/** `filterColumn` + `filterOp` (+ `filterValue`), or nothing. */
+function parseAppDataFilter(query: any): { column: string; op: FilterOp; value?: unknown } | null {
+  const column = query?.filterColumn;
+  if (typeof column !== "string" || !column) return null;
+  const op = query?.filterOp;
+  if (!APP_DATA_FILTER_OPS.includes(op)) {
+    throw new ApiError(400, "validation_failed", `filterOp must be one of ${APP_DATA_FILTER_OPS.join(", ")}`);
+  }
+  return { column, op, value: query?.filterValue };
+}
+
 export function createSupabaseBusinessRepository(options) {
   const {
     supabaseUrl,
@@ -321,6 +363,11 @@ export function createSupabaseBusinessRepository(options) {
     gotrue,
     gotrueUnavailableReason,
     teardownDeps,
+    // The app-data browser's four operations, with the admin connection bound
+    // (see makeAppDataOps). Absent when APPS_DB_ADMIN_URL is unset — the
+    // reason names the variable so the 503 is actionable.
+    appData,
+    appDataUnavailableReason,
     // Injectable for tests; defaults to querying the LiteLLM RDS directly.
     queryLiteLlmUsage = (litellmTeamId, range) => queryTeamUsage(getLiteLlmSql(), litellmTeamId, range),
     // Injectable for tests; defaults to the shared LiteLLM HTTP client.
@@ -3244,7 +3291,7 @@ export function createSupabaseBusinessRepository(options) {
       // visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, team_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token")
+        .select("id, slug, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -3275,10 +3322,17 @@ export function createSupabaseBusinessRepository(options) {
             { appId, slug: existing.slug, oauthClientId: existing.oauth_client_id ?? null },
           );
         }
+        // Which database this app's data lives in is a fact decided once, at
+        // the first successful finalize — not a property re-derived from the
+        // team's CURRENT org. `teams.oid` is nullable and nothing guards it, so
+        // re-deriving after it changes would provision a brand-new empty schema
+        // in a different database and take the app live with no data. Deploy
+        // where the data already is.
+        const orgId = existing.org_id ?? (await this.resolveTeamOrgId(existing.team_id));
         const r = await finalizeDeploy({
           appId,
           slug: existing.slug,
-          orgId: await this.resolveTeamOrgId(existing.team_id),
+          orgId,
           appType: existing.type,
           fcFunctionName: existing.fc_function_name,
           ossObjectName: appOssObjectName(appId),
@@ -3295,6 +3349,10 @@ export function createSupabaseBusinessRepository(options) {
             // and what makes the pending state a property of the row rather
             // than of one desktop's memory.
             deployed_auth_mode: existing.auth_mode ?? "none",
+            // Pin the org on the first success; a no-op on every later one.
+            // Static apps have no schema anywhere, so they get no ledger entry
+            // — a non-null org_id on one would claim data exists that does not.
+            ...(orgId && needsDatabase(existing.type) ? { org_id: orgId } : {}),
             provision_error: null,
             deploy_token: null,
             deploy_started_at: null,
@@ -3320,6 +3378,115 @@ export function createSupabaseBusinessRepository(options) {
           .eq("id", appId);
         throw new ApiError(502, "finalize_failed", String(e?.message ?? e));
       }
+    },
+
+    /**
+     * Resolve an app for the data browser: visibility, permission tier, whether
+     * it has a database at all, and which one.
+     *
+     * Returns null for "the caller cannot see this app" so the route 404s —
+     * indistinguishable, on purpose, from the app not existing.
+     */
+    async resolveAppDataTarget(
+      appId: string,
+      required: "prompt" | "admin",
+    ): Promise<{ target: AppDataTarget } | null> {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select("id, slug, team_id, org_id, type, fc_endpoint, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      // `view` is not "read-only access to the data" — design §6 hides the
+      // feature from that tier entirely, so it must not learn the app has one.
+      if (!permission || permission.level === "view") return null;
+      if (required === "admin" && permission.level !== "admin") {
+        throw new ApiError(403, "forbidden", "editing this app's data requires admin access");
+      }
+
+      // Two distinct 409s, not one 404: the control panel shows a different
+      // sentence for each, and "not found" would be a third, wrong story.
+      if (!needsDatabase(app.type)) {
+        throw new ApiError(409, "app_has_no_database", "this app type has no database");
+      }
+      if (!app.fc_endpoint) {
+        throw new ApiError(409, "app_not_deployed", "the database is created by the first deploy");
+      }
+
+      let orgId = app.org_id ?? null;
+      if (!orgId) {
+        // A row that predates apps.org_id. Deriving is the best we can do and
+        // it is the one case where we may be pointed at the wrong database
+        // (design §3.1) — so it goes in the log, without any of the data.
+        orgId = await this.resolveTeamOrgId(app.team_id);
+        console.warn(`[apps] app ${appId} has no org_id; deriving it from the team`);
+      }
+      if (!orgId) {
+        throw new ApiError(409, "app_org_unknown", "this app is not associated with an org database");
+      }
+
+      return { target: { orgId, appId: app.id, slug: app.slug } };
+    },
+
+    /** Shared guard: the ops facade is only present when FC has an admin URL. */
+    requireAppData() {
+      if (!appData) {
+        throw new ApiError(
+          503,
+          "app_data_unavailable",
+          appDataUnavailableReason
+            ? `app data browsing is not configured: ${appDataUnavailableReason}`
+            : "app data browsing is not configured",
+        );
+      }
+      return appData;
+    },
+
+    async listAppDataTables(appId: string) {
+      const resolved = await this.resolveAppDataTarget(appId, "prompt");
+      if (!resolved) return null;
+      const ops = this.requireAppData();
+      return { items: await runAppData(() => ops.listTables(resolved.target)) };
+    },
+
+    async readAppDataRows(appId: string, table: string, query: any = {}) {
+      const resolved = await this.resolveAppDataTarget(appId, "prompt");
+      if (!resolved) return null;
+      const ops = this.requireAppData();
+      return runAppData(() =>
+        ops.readRows(resolved.target, {
+          table,
+          after: typeof query.after === "string" ? query.after : null,
+          direction: query.direction === "desc" ? "desc" : "asc",
+          filter: parseAppDataFilter(query),
+          limit: parsePageLimit(query.limit),
+        }),
+      );
+    },
+
+    async updateAppDataRow(appId: string, table: string, rowKey: string, body: any = {}) {
+      const resolved = await this.resolveAppDataTarget(appId, "admin");
+      if (!resolved) return null;
+      const ops = this.requireAppData();
+      const patch = body?.patch;
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+        throw new ApiError(400, "validation_failed", "patch must be an object of column values");
+      }
+      const row = await runAppData(() =>
+        ops.updateRow(resolved.target, { table, key: decodeRowKey(rowKey), patch }),
+      );
+      return { row };
+    },
+
+    async deleteAppDataRow(appId: string, table: string, rowKey: string) {
+      const resolved = await this.resolveAppDataTarget(appId, "admin");
+      if (!resolved) return null;
+      const ops = this.requireAppData();
+      await runAppData(() => ops.deleteRow(resolved.target, { table, key: decodeRowKey(rowKey) }));
+      return { ok: true };
     },
 
     async listAppSessions(appId: string) {

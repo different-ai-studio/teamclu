@@ -5513,6 +5513,199 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/data/tables:
+    get:
+      operationId: listAppDataTables
+      summary: List the tables in this app's own database
+      description: |
+        Introspects the app's Postgres schema and returns every base table with
+        its columns and primary key. Requires `prompt` or `admin` on the app;
+        `view` (and non-members) receive 404 so the tier does not learn the
+        feature exists.
+
+        An empty `items` is the normal state right after the first deploy: the
+        provisioner creates the schema, the application creates its tables the
+        first time it is requested. It is not an error.
+
+        Only `data_app`-shaped apps have a database at all, and only after a
+        successful deploy. Both exclusions answer 409 with distinguishable
+        codes (`app_has_no_database`, `app_not_deployed`) rather than 404,
+        because the control panel shows a different explanation for each.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Tables in the app's schema.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppDataTable"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/data/tables/{table}/rows:
+    get:
+      operationId: readAppDataRows
+      summary: Read a page of rows from one table
+      description: |
+        Keyset pagination over the table's primary key — never `OFFSET`, which
+        on a production table means reading every row that was skipped. Pass the
+        previous page's `nextCursor` as `after`; a null `nextCursor` means this
+        was the last page.
+
+        There is deliberately no total row count: `count(*)` is a full scan on a
+        large table and would hit the 5s statement timeout before answering.
+
+        `limit` is capped server-side at 100 regardless of what is requested.
+        Tables with no primary key fall back to offset paging and are read-only.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppDataTable"
+        - name: after
+          in: query
+          required: false
+          description: Opaque cursor from the previous page's `nextCursor`.
+          schema: { type: string }
+        - name: direction
+          in: query
+          required: false
+          description: Order along the primary key. Sorting by an arbitrary column is not offered — it would make the cursor unsound.
+          schema: { type: string, enum: [asc, desc], default: asc }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: filterColumn
+          in: query
+          required: false
+          description: Column to filter on. Must exist in the table; validated against the catalog, never interpolated.
+          schema: { type: string }
+        - name: filterOp
+          in: query
+          required: false
+          schema: { type: string, enum: [eq, contains, isNull, notNull] }
+        - name: filterValue
+          in: query
+          required: false
+          description: Bound as a parameter. Ignored by `isNull` / `notNull`.
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of rows.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppDataRowsPage"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "504":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/data/tables/{table}/rows/{rowKey}:
+    patch:
+      operationId: updateAppDataRow
+      summary: Update one row
+      description: |
+        Requires `admin` on the app; `prompt` receives 403. Updates exactly one
+        row, addressed only by its primary key — never by any other column the
+        caller can see. A statement that matches anything other than one row
+        aborts the transaction.
+
+        The response carries the row **re-read after the write**, so triggers
+        and column defaults that rewrote the submitted value are visible.
+        Primary-key columns cannot be edited here: the read-back is by key, so
+        changing it would report the row as having vanished.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppDataTable"
+        - $ref: "#/components/parameters/AppDataRowKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patch]
+              properties:
+                patch:
+                  type: object
+                  additionalProperties: true
+                  description: Column name → new value. Every name is checked against the table's catalog entry.
+      responses:
+        "200":
+          description: The row as the database stored it.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [row]
+                properties:
+                  row:
+                    type: object
+                    additionalProperties: true
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAppDataRow
+      summary: Delete one row
+      description: |
+        Requires `admin`. Deletes exactly one row by primary key; a statement
+        matching zero or several rows aborts the transaction. There is no bulk
+        delete — this is production data and a table UI makes multi-select
+        mistakes too easy.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppDataTable"
+        - $ref: "#/components/parameters/AppDataRowKey"
+      responses:
+        "200":
+          description: Row deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -5578,6 +5771,26 @@ components:
       schema:
         type: string
         format: uuid
+    AppDataTable:
+      name: table
+      in: path
+      required: true
+      description: >-
+        Table name. Resolved against the app schema's `information_schema`
+        before any statement is built; a name that is not there is a 404, and
+        the catalog's own string — not this one — is what reaches the SQL.
+      schema:
+        type: string
+    AppDataRowKey:
+      name: rowKey
+      in: path
+      required: true
+      description: >-
+        Opaque base64url form of the row's primary-key values, in the order
+        `primaryKey` lists them. Opaque rather than the raw value so a composite
+        key, and a value containing a slash, survive a path segment.
+      schema:
+        type: string
     ConfigBrand:
       name: brand
       in: query
@@ -6014,6 +6227,64 @@ components:
         createdAt:
           type: string
           format: date-time
+    AppDataColumn:
+      type: object
+      required: [name, dataType, nullable]
+      properties:
+        name:
+          type: string
+        dataType:
+          type: string
+          description: Postgres `information_schema.columns.data_type`.
+        nullable:
+          type: boolean
+    AppDataTable:
+      type: object
+      required: [name, columns, primaryKey, editable]
+      properties:
+        name:
+          type: string
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppDataColumn"
+        primaryKey:
+          type: array
+          items: { type: string }
+          description: Ordered primary-key columns; empty when the table has none.
+        editable:
+          type: boolean
+          description: >-
+            False when there is no primary key. Without one there is no safe
+            "this row" — `update … where title = 'x'` can match several — so the
+            table stays browsable and row actions are disabled.
+    AppDataRowsPage:
+      type: object
+      required: [table, columns, primaryKey, editable, rows, nextCursor]
+      properties:
+        table:
+          type: string
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppDataColumn"
+        primaryKey:
+          type: array
+          items: { type: string }
+        editable:
+          type: boolean
+        rows:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: >-
+            Values are returned in full. Truncating long text belongs in the UI
+            — a server-side truncation would mean the value someone copies out
+            is silently not the value in the database.
+        nextCursor:
+          type: [string, "null"]
+          description: Pass as `after` for the next page. Null on the last page.
     BootstrapConfig:
       type: object
       description: >-

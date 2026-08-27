@@ -18,6 +18,8 @@ import { verifyAccessToken } from "./auth/verify.js";
 import { ApiError } from "./lib/http-utils.js";
 import { getFcClient, makeFcOps, resolveFcEndpoint } from "./lib/provisioning/fc-client.js";
 import { startDeploy as startDeployImpl, finalizeDeploy as finalizeDeployImpl } from "./lib/provisioning/app-deploy.js";
+import { readAppsAdminUrl } from "./lib/provisioning/app-postgres.js";
+import { makeAppDataOps, type AppDataOps } from "./lib/provisioning/app-data-db.js";
 import { makeTeardownAppDeps, type TeardownAppDeps } from "./lib/provisioning/app-delete.js";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -127,6 +129,20 @@ function makeDeployDeps() {
  * artifact in place. The site stayed reachable while the dialog said it had
  * been taken down.
  */
+/**
+ * Deps for browsing an app's own Postgres from the control panel.
+ *
+ * Separate from makeDeployDeps even though both need APPS_DB_ADMIN_URL: deploy
+ * is unavailable without OSS *and* FC, while browsing needs neither. Folding
+ * this into that function would make a missing FC endpoint hide the data
+ * browser too.
+ */
+function makeAppDataDeps(): { appData?: AppDataOps; appDataUnavailableReason?: string } {
+  const adminUrl = readAppsAdminUrl();
+  if (!adminUrl) return { appDataUnavailableReason: "APPS_DB_ADMIN_URL is not set" };
+  return { appData: makeAppDataOps(adminUrl) };
+}
+
 function makeTeardownDeps(): { teardownDeps?: TeardownAppDeps } {
   const resolved = resolveAppsOss();
   if (resolved.error) return {};
@@ -226,6 +242,8 @@ export function makeBusinessRepoFactory(
         dispatchPush: async (record) => { await dispatchPush(record, pgPushDeps()); },
         ...makeDeployDeps(),
         ...makeTeardownDeps(),
+      ...makeAppDataDeps(),
+        ...makeAppDataDeps(),
         ...makeGiteaDeps(),
         ...makeGotrueOAuthDeps(),
         publishReadEvent: async ({ userId, sessionId }) => {
@@ -245,6 +263,7 @@ export function makeBusinessRepoFactory(
       accessToken,
       ...makeDeployDeps(),
       ...makeTeardownDeps(),
+      ...makeAppDataDeps(),
       ...makeGiteaDeps(),
       ...makeGotrueOAuthDeps(),
     });

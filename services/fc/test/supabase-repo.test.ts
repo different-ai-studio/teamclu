@@ -1712,6 +1712,9 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
     workspaces: [...(seed.workspaces ?? [])],
     sessions: [...(seed.sessions ?? [])],
     app_member_access: [...(seed.app_member_access ?? [])],
+    // resolveTeamOrgId reads this; unseeded it yields no row, i.e. "team has
+    // no org", which is what most apps tests want.
+    teams: [...(seed.teams ?? [])],
   };
   return {
     auth: appsAuth(),
@@ -2705,6 +2708,92 @@ test("apps: finalizeDeploy on awaiting_build app returns live + fcEndpoint", asy
   assert.equal(result.gitCommitSha, APP_SHA);
 });
 
+test("apps: finalizeDeploy pins apps.org_id on the first success", async () => {
+  const calls: any[] = [];
+  const seen: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({
+      seed: { apps: [{ ...APP_ROW, provision_status: "ready" }], teams: [{ id: "team-1", oid: "org-old" }] },
+      calls,
+    }),
+    {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
+      finalizeDeploy: async (input: any) => {
+        seen.push(input);
+        return { fcEndpoint: "https://x.fcapp.run" };
+      },
+    },
+  );
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+
+  assert.equal(seen[0].orgId, "org-old", "first finalize derives the org from the team");
+  const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
+  assert.equal(upd.length, 1);
+  assert.equal(upd[0].row.org_id, "org-old", "the derived org is written back to the row");
+});
+
+test("apps: finalizeDeploy deploys to the stored org even after teams.oid changes", async () => {
+  // The whole point of the column. Re-deriving here would provision a fresh
+  // empty schema in tc_org_<new> and take the app live with no data, while the
+  // real data sits untouched in tc_org_<old>.
+  const seen: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({
+      seed: {
+        apps: [{ ...APP_ROW, provision_status: "ready", org_id: "org-old" }],
+        teams: [{ id: "team-1", oid: "org-new" }],
+      },
+    }),
+    {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
+      finalizeDeploy: async (input: any) => {
+        seen.push(input);
+        return { fcEndpoint: "https://x.fcapp.run" };
+      },
+    },
+  );
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].orgId, "org-old", "provision must target the database the data is already in");
+});
+
+test("apps: finalizeDeploy leaves org_id null for a static app", async () => {
+  // static_web has no schema in any database, so claiming one would be a lie
+  // the data browser would later act on.
+  const calls: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({
+      seed: {
+        apps: [{ ...APP_ROW, type: "static_web", provision_status: "ready" }],
+        teams: [{ id: "team-1", oid: "org-old" }],
+      },
+      calls,
+    }),
+    {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
+      finalizeDeploy: async () => ({ fcEndpoint: "https://x.fcapp.run" }),
+    },
+  );
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+
+  const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
+  assert.equal(upd.length, 1);
+  assert.equal("org_id" in upd[0].row, false);
+});
+
 test("apps: finalizeDeploy wraps finalize failure as 502", async () => {
   const repo = appsRepo(
     appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }),
@@ -2946,4 +3035,192 @@ test("createSession returns 403 when the caller is not a member of the team", as
     () => repo.createSession({ id: "sess-x", teamId: "team-1", title: "Nope" }),
     (err: any) => err?.statusCode === 403,
   );
+});
+
+// --- App data browser -------------------------------------------------------
+
+const DEPLOYED_DATA_APP = {
+  ...APP_ROW,
+  provision_status: "ready",
+  fc_status: "live",
+  fc_endpoint: "https://x.fcapp.run",
+  org_id: "org-1",
+};
+
+function fakeAppData(over: Record<string, unknown> = {}) {
+  return {
+    listTables: async () => [{ name: "items", columns: [], primaryKey: ["id"], editable: true }],
+    readRows: async () => ({ table: "items", columns: [], primaryKey: ["id"], editable: true, rows: [], nextCursor: null }),
+    updateRow: async () => ({ id: 1, title: "stored" }),
+    deleteRow: async () => {},
+    ...over,
+  };
+}
+
+function dataRepo(appRow: any, { level, actorId = "actor-app-1", appData = fakeAppData() }: any = {}) {
+  const access = level && actorId !== "actor-app-1"
+    ? [{ app_id: "app-1", member_id: actorId, permission_level: level, granted_by_member_id: "actor-app-1" }]
+    : [];
+  return appsRepo(
+    appsSupabase({
+      seed: { apps: [appRow], app_member_access: access, teams: [{ id: "team-1", oid: "org-derived" }] },
+      actorRow: { id: actorId },
+    }),
+    { appData },
+  );
+}
+
+test("app data: the creator (admin) can read and write", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP);
+  assert.deepEqual(((await repo.listAppDataTables("app-1")) as any).items[0].name, "items");
+  assert.deepEqual(await repo.readAppDataRows("app-1", "items", {}), {
+    table: "items", columns: [], primaryKey: ["id"], editable: true, rows: [], nextCursor: null,
+  });
+  assert.deepEqual(await repo.updateAppDataRow("app-1", "items", "WzFd", { patch: { title: "x" } }), {
+    row: { id: 1, title: "stored" },
+  });
+  assert.deepEqual(await repo.deleteAppDataRow("app-1", "items", "WzFd"), { ok: true });
+});
+
+test("app data: prompt reads, but PATCH and DELETE are 403", async () => {
+  // §6: a member who can direct an agent at the code but cannot see the data
+  // debugs by adding a console.log to production. Read-only is the safer answer.
+  const repo = dataRepo(DEPLOYED_DATA_APP, { level: "prompt", actorId: "member-other" });
+  assert.equal(((await repo.listAppDataTables("app-1")) as any).items.length, 1);
+  await assert.rejects(
+    () => repo.updateAppDataRow("app-1", "items", "WzFd", { patch: { title: "x" } }),
+    (e: any) => e?.statusCode === 403,
+  );
+  await assert.rejects(
+    () => repo.deleteAppDataRow("app-1", "items", "WzFd"),
+    (e: any) => e?.statusCode === 403,
+  );
+});
+
+test("app data: view tier cannot see the feature at all", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, { level: "view", actorId: "member-other" });
+  assert.equal(await repo.listAppDataTables("app-1"), null);
+  assert.equal(await repo.readAppDataRows("app-1", "items", {}), null);
+  assert.equal(await repo.updateAppDataRow("app-1", "items", "WzFd", { patch: { t: 1 } }), null);
+});
+
+test("app data: a non-member gets nothing", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, { actorId: "member-other" });
+  assert.equal(await repo.listAppDataTables("app-1"), null);
+});
+
+test("app data: static and undeployed apps give distinguishable 409s", async () => {
+  // The control panel shows a different sentence for each; a shared 404 would
+  // make both read as "something is broken".
+  const staticApp = dataRepo({ ...DEPLOYED_DATA_APP, type: "static_web" });
+  await assert.rejects(
+    () => staticApp.listAppDataTables("app-1"),
+    (e: any) => e?.statusCode === 409 && e?.code === "app_has_no_database",
+  );
+
+  const undeployed = dataRepo({ ...DEPLOYED_DATA_APP, fc_status: null, fc_endpoint: null });
+  await assert.rejects(
+    () => undeployed.listAppDataTables("app-1"),
+    (e: any) => e?.statusCode === 409 && e?.code === "app_not_deployed",
+  );
+});
+
+test("app data: targets apps.org_id, not the team's current org", async () => {
+  // Same fact as the finalize test, from the read side: teams.oid has moved on,
+  // and following it would report "no tables" for an app whose data is fine.
+  let seen: any;
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({ listTables: async (t: any) => { seen = t; return []; } }),
+  });
+  await repo.listAppDataTables("app-1");
+  assert.deepEqual(seen, { orgId: "org-1", appId: "app-1", slug: "my-app" });
+});
+
+test("app data: a row from before apps.org_id falls back to deriving it", async () => {
+  let seen: any;
+  const repo = dataRepo({ ...DEPLOYED_DATA_APP, org_id: null }, {
+    appData: fakeAppData({ listTables: async (t: any) => { seen = t; return []; } }),
+  });
+  await repo.listAppDataTables("app-1");
+  assert.equal(seen.orgId, "org-derived");
+});
+
+test("app data: an app with no org at all is a 409, not a wrong database", async () => {
+  const repo = appsRepo(
+    appsSupabase({
+      seed: { apps: [{ ...DEPLOYED_DATA_APP, org_id: null }], teams: [] },
+      actorRow: { id: "actor-app-1" },
+    }),
+    { appData: fakeAppData() },
+  );
+  await assert.rejects(
+    () => repo.listAppDataTables("app-1"),
+    (e: any) => e?.statusCode === 409 && e?.code === "app_org_unknown",
+  );
+});
+
+test("app data: 503 names the missing variable when FC has no admin URL", async () => {
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [DEPLOYED_DATA_APP] } }),
+    { appDataUnavailableReason: "APPS_DB_ADMIN_URL is not set" },
+  );
+  await assert.rejects(
+    () => repo.listAppDataTables("app-1"),
+    (e: any) => e?.statusCode === 503 && /APPS_DB_ADMIN_URL/.test(e?.message ?? ""),
+  );
+});
+
+test("app data: a driver error never carries the SQL or the row values out", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({
+      readRows: async () => {
+        throw Object.assign(new Error('duplicate key value violates unique constraint'), {
+          code: "23505",
+          query: "select * from app_x.customers where email = $1",
+          parameters: ["ceo@example.com"],
+          detail: "Key (email)=(ceo@example.com) already exists.",
+        });
+      },
+    }),
+  });
+  await assert.rejects(
+    () => repo.readAppDataRows("app-1", "items", {}),
+    (e: any) =>
+      e?.statusCode === 502 &&
+      !/customers|ceo@example\.com|select \*/.test(`${e?.message} ${JSON.stringify(e?.details ?? {})}`),
+  );
+});
+
+test("app data: a cancelled statement is a 504, not a generic failure", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({
+      readRows: async () => { throw Object.assign(new Error("canceling statement"), { code: "57014" }); },
+    }),
+  });
+  await assert.rejects(
+    () => repo.readAppDataRows("app-1", "items", {}),
+    (e: any) => e?.statusCode === 504 && e?.code === "query_timeout",
+  );
+});
+
+test("app data: the filter is validated before it reaches the database", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({ readRows: async () => { throw new Error("must not be called"); } }),
+  });
+  await assert.rejects(
+    () => repo.readAppDataRows("app-1", "items", { filterColumn: "note", filterOp: "; drop table items" }),
+    (e: any) => e?.statusCode === 400,
+  );
+});
+
+test("app data: PATCH requires a patch object", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({ updateRow: async () => { throw new Error("must not be called"); } }),
+  });
+  for (const body of [{}, { patch: "title=x" }, { patch: ["title"] }]) {
+    await assert.rejects(
+      () => repo.updateAppDataRow("app-1", "items", "WzFd", body),
+      (e: any) => e?.statusCode === 400,
+    );
+  }
 });

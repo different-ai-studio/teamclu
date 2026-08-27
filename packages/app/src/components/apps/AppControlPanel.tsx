@@ -37,6 +37,7 @@ import { appStatusMeta, canReseed } from '@/lib/app-list-helpers'
 import { daemonAppWorkdir, moveDaemonAppWorkdir } from '@/lib/daemon-local-client'
 import { isTauri } from '@/lib/utils'
 import { useAppsStore } from '@/stores/apps-store'
+import { AppDataSection } from './AppDataSection'
 import type { AppAuthMode, AppMemberAccessRow, AppPermissionLevel, AppRow } from '@/lib/backend/types'
 
 const AUTH_MODES: AppAuthMode[] = ['none', 'platform', 'third']
@@ -512,6 +513,13 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
               )}
             </p>
           )}
+        </SectionCard>
+
+        <SectionCard title={t('apps.data.section', '线上数据')}>
+          {/* `canManageAccess` is the same signal the grants block uses: the
+              access list is readable only by the creator or an app admin, which
+              is exactly the tier design §6 lets edit data. */}
+          <AppDataSection app={app} canEdit={canManageAccess} />
         </SectionCard>
 
         <SectionCard title={t('apps.controlPanel.authMode', '登录方式')}>

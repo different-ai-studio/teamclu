@@ -530,5 +530,27 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
     async deleteApp(_appId: string) {
       throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-apps-first-class plan)");
     },
+
+    // App data browser — supabase-only (2026-08-27-app-data-browser plan). The
+    // work these do lives entirely in the app's OWN Postgres, not in this
+    // repository's database, so a Drizzle implementation would be a copy of the
+    // supabase one with a different way of reading `apps.org_id`. Explicit 501
+    // stubs so BACKEND_KIND=postgres answers cleanly instead of 500-ing on
+    // `undefined is not a function` (see pg-repo-parity.test.ts).
+    async listAppDataTables(_appId: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-app-data-browser plan)");
+    },
+
+    async readAppDataRows(_appId: string, _table: string, _query?: unknown) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-app-data-browser plan)");
+    },
+
+    async updateAppDataRow(_appId: string, _table: string, _rowKey: string, _body?: unknown) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-app-data-browser plan)");
+    },
+
+    async deleteAppDataRow(_appId: string, _table: string, _rowKey: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-app-data-browser plan)");
+    },
   };
 }

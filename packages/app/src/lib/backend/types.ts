@@ -1025,6 +1025,59 @@ export interface AppSessionRow {
   updatedAt: string;
 }
 
+/** One column of an app table, as `information_schema` describes it. */
+export interface AppDataColumn {
+  name: string;
+  /** Postgres `data_type` — drives how the cell is rendered (json, bytea, …). */
+  dataType: string;
+  nullable: boolean;
+}
+
+export interface AppDataTable {
+  name: string;
+  columns: AppDataColumn[];
+  /** Ordered primary-key columns; empty when the table has none. */
+  primaryKey: string[];
+  /** False when there is no primary key: no safe way to address a single row,
+   *  so the table is browsable but its row actions are disabled. */
+  editable: boolean;
+}
+
+export interface AppDataRowsPage {
+  table: string;
+  columns: AppDataColumn[];
+  primaryKey: string[];
+  editable: boolean;
+  rows: Array<Record<string, unknown>>;
+  /** Pass back as `after`. Null means this was the last page. There is no total
+   *  count — `count(*)` is a full scan on a production table. */
+  nextCursor: string | null;
+}
+
+/**
+ * Why the data browser has nothing to show.
+ *
+ * A union rather than an error because the three "nothing here" cases need
+ * three different sentences, and the difference between them is the whole
+ * point: "this type has no database" is permanent, "not deployed yet" is a
+ * next step, and an empty table list is the normal state of a freshly deployed
+ * app nobody has visited yet.
+ */
+export type AppDataTablesResult =
+  | { status: "ok"; tables: AppDataTable[] }
+  | { status: "no_database" }
+  | { status: "not_deployed" }
+  | { status: "unavailable"; reason: string };
+
+export type AppDataFilterOp = "eq" | "contains" | "isNull" | "notNull";
+
+export interface AppDataRowsQuery {
+  after?: string | null;
+  direction?: "asc" | "desc";
+  limit?: number;
+  filter?: { column: string; op: AppDataFilterOp; value?: string } | null;
+}
+
 export interface AppsBackend {
   listApps(teamId: string): Promise<AppRow[]>;
   createApp(input: {
@@ -1072,6 +1125,25 @@ export interface AppsBackend {
   deleteApp(appId: string): Promise<boolean>;
   /** Change auth mode (creator only). Returns null on 404. */
   updateAppAuthMode(appId: string, authMode: AppAuthMode): Promise<AppRow | null>;
+
+  // --- Data browser (design 2026-08-27-app-data-browser) ---
+  // `prompt` may read, `admin` may also edit; `view` gets null, same as a
+  // non-member, so the tier never learns the feature exists.
+
+  /** Tables in the app's own database, or why there are none. Null on 404. */
+  listAppDataTables(appId: string): Promise<AppDataTablesResult | null>;
+  /** One page of rows, keyset-paged over the primary key. */
+  readAppDataRows(appId: string, table: string, query?: AppDataRowsQuery): Promise<AppDataRowsPage>;
+  /** Update one row by key; returns the row **re-read after the write**, so
+   *  triggers and defaults that rewrote the submitted value are visible. */
+  updateAppDataRow(
+    appId: string,
+    table: string,
+    rowKey: string,
+    patch: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
+  /** Delete one row by key. */
+  deleteAppDataRow(appId: string, table: string, rowKey: string): Promise<void>;
 }
 
 export interface ActorDirectorySyncRow {
