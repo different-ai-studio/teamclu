@@ -50,12 +50,14 @@ test("concurrent edit: B's unsynced edit is preserved as a conflict sidecar (rem
   const bContent = treeB["knowledge/x.md"] && Buffer.from(treeB["knowledge/x.md"], "base64").toString();
   assert.equal(bContent, "A-edit\n", `B's x.md should hold remote (A-edit), got ${JSON.stringify(bContent)}`);
 
+  // Conflicts API: `path` is the original document; `sidecar` is the .conflicts/ copy.
   const cs = await conflicts(nodes.b);
-  const sidecars = cs.filter((c) => c.kind === "oss-sidecar" && isSidecar(c.path));
+  const sidecars = cs.filter((c) => c.kind === "oss-sidecar" && isSidecar(c.sidecar));
   assert.ok(sidecars.length >= 1, `expected a sidecar preserving B's edit, got ${JSON.stringify(cs)}`);
 
   // The sidecar must contain B's lost edit.
-  const sidecarBuf = await readFile("node-b", `${root}/${sidecars[0].path}`);
-  assert.ok(sidecarBuf, `sidecar file ${sidecars[0].path} should be readable`);
+  const sidecarRel = sidecars[0].sidecar;
+  const sidecarBuf = await readFile("node-b", `${root}/${sidecarRel}`);
+  assert.ok(sidecarBuf, `sidecar file ${sidecarRel} should be readable`);
   assert.equal(sidecarBuf.toString(), "B-edit\n", "sidecar must preserve B's original edit (no data loss)");
 });
