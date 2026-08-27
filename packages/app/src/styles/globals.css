@@ -628,6 +628,31 @@ input,
     overflow: visible;
 }
 
+/* Session list — Radix scrollbar: thin at rest, expands on hover (macOS-like). */
+.session-list-scroll-area [data-slot=scroll-area-scrollbar] {
+    width: 4px;
+    padding: 0;
+    border: none !important;
+    background: transparent;
+    transition: width 160ms ease, background-color 160ms ease;
+}
+.session-list-scroll-area [data-slot=scroll-area-scrollbar]:hover {
+    width: 10px;
+}
+.session-list-scroll-area [data-slot=scroll-area-thumb] {
+    background: rgba(26, 26, 20, 0.14);
+    transition: background-color 160ms ease;
+}
+.session-list-scroll-area [data-slot=scroll-area-scrollbar]:hover [data-slot=scroll-area-thumb] {
+    background: rgba(26, 26, 20, 0.22);
+}
+.dark .session-list-scroll-area [data-slot=scroll-area-thumb] {
+    background: rgba(255, 255, 255, 0.12);
+}
+.dark .session-list-scroll-area [data-slot=scroll-area-scrollbar]:hover [data-slot=scroll-area-thumb] {
+    background: rgba(255, 255, 255, 0.20);
+}
+
 /* Agent highlight styles — decorations for agent-modified text */
 .agent-highlight {
     background-color: rgba(74, 222, 128, 0.3);

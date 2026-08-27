@@ -109,6 +109,12 @@ export const ChatMessage = React.memo(function ChatMessage({
   const [processHydrating, setProcessHydrating] = React.useState(false);
   const replyAuthorResolved = useActorDisplayName(replyToMessage?.senderActorId);
   const myActorId = useCurrentTeamStore((s) => s.currentMember?.id);
+  const isSelfUser = Boolean(
+    isUser &&
+      myActorId &&
+      message.senderActorId &&
+      message.senderActorId === myActorId,
+  );
   const replyAuthorName = React.useMemo(() => {
     if (!replyToMessage) return "";
     if (
@@ -352,6 +358,9 @@ export const ChatMessage = React.memo(function ChatMessage({
         senderActorId={message.senderActorId}
         modelOverride={message.modelID}
         isUser={isUser}
+        nameOverride={
+          isSelfUser ? t("chat.you", "你") : undefined
+        }
       />
       {!isUser && replyToMessage ? (
         <AgentReplyQuote
@@ -435,11 +444,17 @@ export const ChatMessage = React.memo(function ChatMessage({
 
       {/* User message — Message itself is `flex justify-end`; render the
           status dot as its first child so the dot sits to the LEFT of the
-          bubble while MessageContent's `max-w-[85%]` keeps the bubble
-          properly sized (wrapping the Message in another flex container
-          collapsed it to min-content and made each character wrap). */}
+          bubble while MessageContent width cap keeps the bubble properly
+          sized (self: max-w-[85%], other: max-w-[65%]).
+          Wrapping the Message in another flex container collapsed it to
+          min-content and made each character wrap). */}
       {isUser && (
-        <Message from="user" basePath={basePath} className="items-end gap-1.5">
+        <Message
+          from="user"
+          basePath={basePath}
+          userBubble={isSelfUser ? "self" : "other"}
+          className="items-end gap-1.5"
+        >
           <MessageStatusDot messageId={message.id} />
           <MessageContent>
             <UserMessageWithMentions
@@ -447,6 +462,7 @@ export const ChatMessage = React.memo(function ChatMessage({
               basePath={basePath}
               leadingMentionActorIds={latestMessage.mentionActorIds}
               mentionDeliverySnapshot={latestMessage.mentionDeliverySnapshot}
+              userBubble={isSelfUser ? "self" : "other"}
             />
           </MessageContent>
         </Message>

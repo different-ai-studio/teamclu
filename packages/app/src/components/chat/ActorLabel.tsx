@@ -9,18 +9,22 @@ export function ActorLabel({
   senderActorId,
   modelOverride,
   isUser,
+  nameOverride,
 }: {
   senderActorId: string | undefined;
   modelOverride?: string | undefined;
   isUser: boolean;
+  /** Display-only label override (e.g. localized "你"). */
+  nameOverride?: string;
 }) {
   const name = useActorDisplayName(senderActorId);
+  const displayName = nameOverride ?? name;
   // Prefer the model captured on the message itself (historically accurate);
   // fall back to the runtime's live currentModel when the message predates
   // the model column or wasn't stamped.
   const liveModel = useAgentModelByActor(isUser ? null : senderActorId);
   const model = modelOverride || liveModel;
-  if (!senderActorId || !name) return null;
+  if (!senderActorId || !displayName) return null;
   return (
     <div
       className={cn(
@@ -28,7 +32,7 @@ export function ActorLabel({
         isUser ? "justify-end" : "justify-start",
       )}
     >
-      <span className="shrink-0">{name}</span>
+      <span className="shrink-0">{displayName}</span>
       {!isUser && model ? (
         <span
           className={cn(

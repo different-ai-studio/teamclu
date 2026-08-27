@@ -56,10 +56,12 @@ async function downloadImage(dataUrl: string, filename: string) {
 }
 
 type MessageFrom = "user" | "assistant"
+type UserBubbleKind = "self" | "other"
 
 interface MessageContextValue {
   from: MessageFrom
   basePath?: string  // Base path for resolving relative image paths
+  userBubble?: UserBubbleKind
 }
 
 const MessageContext = React.createContext<MessageContextValue | null>(null)
@@ -132,12 +134,18 @@ function useMessageContext() {
 export function Message({
   from,
   basePath,
+  userBubble = "other",
   children,
   className,
   ...props
-}: React.ComponentProps<"div"> & { from: MessageFrom; basePath?: string }) {
+}: React.ComponentProps<"div"> & {
+  from: MessageFrom
+  basePath?: string
+  /** User-message bubble skin only — does not affect layout or routing. */
+  userBubble?: UserBubbleKind
+}) {
   return (
-    <MessageContext.Provider value={{ from, basePath }}>
+    <MessageContext.Provider value={{ from, basePath, userBubble }}>
       <div
         className={cn("flex", from === "user" ? "justify-end" : "justify-start", className)}
         {...props}
@@ -148,20 +156,31 @@ export function Message({
   )
 }
 
+const USER_BUBBLE_SELF =
+  "user-bubble-self max-w-[85%] overflow-x-hidden rounded-2xl rounded-br-[6px] px-4 py-3 bg-[#e8edf2] text-foreground dark:border dark:border-white/16 dark:bg-white/[0.20] dark:text-foreground dark:backdrop-blur-sm"
+
+/** Dark: solid paper card (not translucent) so it reads clearly against self glass. */
+const USER_BUBBLE_OTHER =
+  "user-bubble-other max-w-[65%] overflow-x-hidden rounded-2xl rounded-br-[6px] px-[14px] py-[10px] bg-paper border border-border text-ink-2 dark:border-white/20 dark:bg-paper dark:text-ink-2 dark:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)]"
+
 export function MessageContent({
   className,
   children,
   ...props
 }: React.ComponentProps<"div">) {
-  const { from } = useMessageContext()
+  const { from, userBubble } = useMessageContext()
   return (
     <div
+      data-user-bubble={from === "user" ? userBubble : undefined}
       className={cn(
         // Chat message base — user bubble + assistant note share 13.5px / 1.5.
-        "text-[13.5px] leading-[1.5] break-words [overflow-wrap:anywhere] min-w-0",
+        "text-[13.5px] leading-[1.6] break-words [overflow-wrap:anywhere] min-w-0",
         from === "user"
-          ? "max-w-[85%] overflow-x-hidden rounded-2xl rounded-br-[6px] px-4 py-3 bg-[#e8edf2] text-foreground dark:border dark:border-white/8 dark:bg-white/10 dark:backdrop-blur-sm"
-          : "overflow-hidden w-full",
+          ? cn(
+              userBubble === "self" ? USER_BUBBLE_SELF : USER_BUBBLE_OTHER,
+              userBubble === "self" ? "leading-[1.5]" : "leading-[1.6]",
+            )
+          : "overflow-hidden w-full leading-[1.5]",
         className
       )}
       {...props}

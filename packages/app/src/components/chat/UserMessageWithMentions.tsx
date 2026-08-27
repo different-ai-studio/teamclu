@@ -357,11 +357,14 @@ export function UserMessageWithMentions({
   basePath,
   leadingMentionActorIds = [],
   mentionDeliverySnapshot,
+  userBubble = "other",
 }: {
   content: string;
   basePath?: string;
   leadingMentionActorIds?: string[];
   mentionDeliverySnapshot?: Record<string, "ready" | "offline" | "stale">;
+  /** Matches parent MessageContent skin — collapse fade only. */
+  userBubble?: "self" | "other";
 }) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = React.useState(false);
@@ -696,6 +699,11 @@ export function UserMessageWithMentions({
 
   const isCollapsed = needsCollapse && !isExpanded;
 
+  const isSelfBubble = userBubble === "self";
+  const collapseFadeClass = isSelfBubble
+    ? "from-[#e8edf2] dark:from-white/[0.20]"
+    : "from-paper dark:from-paper";
+
   return (
     <div>
       {/* Content container with optional max-height clipping */}
@@ -713,7 +721,10 @@ export function UserMessageWithMentions({
         {/* Gradient fade overlay when collapsed — matches the bubble bg color */}
         {isCollapsed && (
           <div
-            className="absolute bottom-0 left-0 right-0 h-16 pointer-events-none bg-gradient-to-t from-[#e8edf2] to-transparent dark:from-[#ffffff1a]"
+            className={cn(
+              "absolute bottom-0 left-0 right-0 h-16 pointer-events-none bg-gradient-to-t to-transparent",
+              collapseFadeClass,
+            )}
           />
         )}
       </div>
