@@ -12,7 +12,10 @@
 //!
 //! The bridge owns a second session identifier (`sessionKey`) because the SDK's
 //! own `session_id` only exists after `system/init` arrives, while events start
-//! flowing immediately. `session_keys` maps one to the other.
+//! The bridge owns a second session identifier (`sessionKey`) because the SDK's
+//! own `session_id` only exists after `system/init` arrives, while events start
+//! flowing immediately. `session_routes` maps `(bridge_id, sessionKey)` to the
+//! TeamClu ACP session id.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,10 +37,12 @@ use crate::runtime::sidecar::mcp;
 mod events;
 pub mod permission;
 pub mod process;
+mod types;
 pub mod translate;
 
 use permission::PendingPermission;
 use process::ClaudeProcessPool;
+use types::{BridgeInstanceId, BridgeRouteKey};
 
 pub const SESSION_ID_PREFIX: &str = "claude:";
 
@@ -58,6 +63,10 @@ pub(crate) struct Route {
     pub(crate) event_tx: mpsc::Sender<AcpEventFrame>,
     pub(crate) permission: PermissionPolicy,
     pub(crate) worktree: String,
+    pub(crate) bridge_id: BridgeInstanceId,
+    pub(crate) route_key: BridgeRouteKey,
+    /// False after the owning bridge process exits or is respawned.
+    pub(crate) connected: bool,
     /// Bridge-side handle used to address `send` / `cancel` / `set_model`.
     pub(crate) session_key: String,
     pub(crate) turn_active: bool,
@@ -70,10 +79,8 @@ pub(crate) struct Shared {
     pub(crate) pool: ClaudeProcessPool,
     pub(crate) routes: parking_lot::Mutex<HashMap<String, Route>>,
     pub(crate) permissions: parking_lot::Mutex<HashMap<String, PendingPermission>>,
-    /// bridge sessionKey → acp session id.
-    pub(crate) session_keys: parking_lot::Mutex<HashMap<String, String>>,
-    /// bridge sessionKey → canonical worktree (to find the owning process).
-    pub(crate) session_worktrees: parking_lot::Mutex<HashMap<String, String>>,
+    /// Encoded [`BridgeRouteKey`] → ACP session id.
+    pub(crate) session_routes: parking_lot::Mutex<HashMap<String, String>>,
 }
 
 impl Shared {
@@ -82,8 +89,7 @@ impl Shared {
             pool: ClaudeProcessPool::new(),
             routes: parking_lot::Mutex::new(HashMap::new()),
             permissions: parking_lot::Mutex::new(HashMap::new()),
-            session_keys: parking_lot::Mutex::new(HashMap::new()),
-            session_worktrees: parking_lot::Mutex::new(HashMap::new()),
+            session_routes: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 }
@@ -202,6 +208,7 @@ async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMeta
         .pool
         .ensure(shared, &worktree)
         .map_err(|e| e.to_string())?;
+    let bridge_id = proc.bridge_id.clone();
 
     // The catalog needs a live session, so it is only populated once one
     // exists; an empty list on the very first attach is expected, not an error.
@@ -285,20 +292,20 @@ async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMeta
         .or_else(|| initial_flat.clone())
         .unwrap_or_default();
 
+    let route_key = BridgeRouteKey::new(bridge_id.clone(), session_key.clone());
     shared
-        .session_keys
+        .session_routes
         .lock()
-        .insert(session_key.clone(), acp_session_id.clone());
-    shared
-        .session_worktrees
-        .lock()
-        .insert(session_key.clone(), worktree.clone());
+        .insert(route_key.encode(), acp_session_id.clone());
     shared.routes.lock().insert(
         acp_session_id.clone(),
         Route {
             event_tx: args.event_tx,
             permission: args.permission,
             worktree: worktree.clone(),
+            bridge_id,
+            route_key,
+            connected: true,
             session_key,
             // startSession opens a visible turn only when it carried an
             // initial prompt. With an empty prompt the bridge runs a hidden
@@ -350,21 +357,52 @@ async fn do_prompt(
     let reply_to = reply_to_message_id.filter(|id| !id.is_empty());
     let resolved =
         crate::runtime::prompt_attachments::resolve_all(&attachment_urls, session_id).await;
-    let (event_tx, worktree, session_key, model) = {
+    let prompt_target = {
         let mut routes = shared.routes.lock();
         let Some(route) = routes.get_mut(session_id) else {
             warn!(session_id, "prompt for unknown claude session");
             return;
         };
-        route.turn_active = true;
-        route.turn_reply_to = reply_to.clone();
-        route.turn_requester = requester_actor_id.filter(|id| !id.is_empty());
-        (
-            route.event_tx.clone(),
-            route.worktree.clone(),
-            route.session_key.clone(),
-            route.model.clone(),
+        if !route.connected {
+            Some((
+                route.event_tx.clone(),
+                route.turn_reply_to.clone(),
+                None::<(String, String, BridgeInstanceId, String)>,
+            ))
+        } else {
+            route.turn_active = true;
+            route.turn_reply_to = reply_to.clone();
+            route.turn_requester = requester_actor_id.filter(|id| !id.is_empty());
+            Some((
+                route.event_tx.clone(),
+                route.turn_reply_to.clone(),
+                Some((
+                    route.worktree.clone(),
+                    route.session_key.clone(),
+                    route.bridge_id.clone(),
+                    route.model.clone(),
+                )),
+            ))
+        }
+    };
+    let Some((event_tx, reply_to_frame, send_target)) = prompt_target else {
+        return;
+    };
+    let Some((worktree, session_key, bridge_id, model)) = send_target else {
+        emit_frame(
+            &event_tx,
+            session_id,
+            amux::AcpEvent {
+                event: Some(amux::acp_event::Event::Error(amux::AcpError {
+                    message: "claude session disconnected".into(),
+                    details: "re-attach to continue".into(),
+                })),
+                model: String::new(),
+            },
+            reply_to_frame,
         )
+        .await;
+        return;
     };
 
     crate::runtime::agent_trace::log_prompt_begin(session_id, &text, attachment_urls.len());
@@ -381,7 +419,7 @@ async fn do_prompt(
     crate::runtime::prompt_attachments::append_unreferenced(&mut message, &resolved, true);
 
     let result = match shared.pool.ensure(shared, &worktree) {
-        Ok(proc) => {
+        Ok(proc) if proc.bridge_id == bridge_id => {
             let mut params = serde_json::json!({
                 "sessionKey": session_key,
                 "text": message,
@@ -391,6 +429,9 @@ async fn do_prompt(
             }
             proc.client.request("send", params).await
         }
+        Ok(_) => Err(crate::error::AmuxError::Agent(
+            "claude bridge generation changed; re-attach to continue".into(),
+        )),
         Err(e) => Err(e),
     };
 
@@ -428,11 +469,19 @@ async fn do_prompt(
     }
 }
 
-/// Look up a route's (worktree, sessionKey) pair for a bridge call.
-fn target_for(shared: &Arc<Shared>, session_id: &str) -> Option<(String, String)> {
+/// Look up a route's (worktree, sessionKey, bridge_id, connected) for a bridge call.
+fn target_for(
+    shared: &Arc<Shared>,
+    session_id: &str,
+) -> Option<(String, String, BridgeInstanceId, bool)> {
     let routes = shared.routes.lock();
     let route = routes.get(session_id)?;
-    Some((route.worktree.clone(), route.session_key.clone()))
+    Some((
+        route.worktree.clone(),
+        route.session_key.clone(),
+        route.bridge_id.clone(),
+        route.connected,
+    ))
 }
 
 async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand>) {
@@ -487,12 +536,21 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                 .await;
             }
             AcpCommand::Cancel { acp_session_id } => {
-                if let Some((worktree, session_key)) = target_for(&shared, &acp_session_id) {
-                    if let Ok(proc) = shared.pool.ensure(&shared, &worktree) {
-                        let _ = proc
-                            .client
-                            .request("cancel", serde_json::json!({ "sessionKey": session_key }))
-                            .await;
+                if let Some((worktree, session_key, bridge_id, connected)) =
+                    target_for(&shared, &acp_session_id)
+                {
+                    if connected {
+                        if let Ok(proc) = shared.pool.ensure(&shared, &worktree) {
+                            if proc.bridge_id == bridge_id {
+                                let _ = proc
+                                    .client
+                                    .request(
+                                        "cancel",
+                                        serde_json::json!({ "sessionKey": session_key }),
+                                    )
+                                    .await;
+                            }
+                        }
                     }
                 }
                 // interrupt() does not always produce a terminal result
@@ -509,17 +567,32 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                 model_id,
             } => {
                 let target = {
-                    let mut routes = shared.routes.lock();
-                    routes.get_mut(&acp_session_id).map(|route| {
-                        route.model = flat_model_id(&model_id);
-                        (route.worktree.clone(), route.session_key.clone())
+                    let routes = shared.routes.lock();
+                    routes.get(&acp_session_id).map(|route| {
+                        (
+                            route.worktree.clone(),
+                            route.session_key.clone(),
+                            route.bridge_id.clone(),
+                            route.connected,
+                            route.model.clone(),
+                        )
                     })
                 };
-                let Some((worktree, session_key)) = target else {
+                let Some((worktree, session_key, bridge_id, connected, previous_model)) = target
+                else {
                     warn!(acp_session_id, "set_model for unknown claude session");
                     continue;
                 };
+                if !connected {
+                    warn!(acp_session_id, "set_model for disconnected claude session");
+                    continue;
+                }
+                let desired = flat_model_id(&model_id);
                 if let Ok(proc) = shared.pool.ensure(&shared, &worktree) {
+                    if proc.bridge_id != bridge_id {
+                        warn!(acp_session_id, "set_model for stale claude bridge generation");
+                        continue;
+                    }
                     match proc
                         .client
                         .request(
@@ -531,8 +604,18 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                         )
                         .await
                     {
-                        Ok(_) => info!(acp_session_id, model_id = %model_id, "claude model set"),
-                        Err(e) => warn!(acp_session_id, error = %e, "claude set_model failed"),
+                        Ok(_) => {
+                            if let Some(route) = shared.routes.lock().get_mut(&acp_session_id) {
+                                route.model = desired;
+                            }
+                            info!(acp_session_id, model_id = %model_id, "claude model set");
+                        }
+                        Err(e) => warn!(
+                            acp_session_id,
+                            previous_model = %previous_model,
+                            error = %e,
+                            "claude set_model failed; route model unchanged"
+                        ),
                     }
                 }
             }
@@ -542,12 +625,14 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
             } => {
                 let removed = shared.routes.lock().remove(&acp_session_id);
                 if let Some(route) = removed {
-                    shared.session_keys.lock().remove(&route.session_key);
-                    shared.session_worktrees.lock().remove(&route.session_key);
                     shared
-                        .permissions
+                        .session_routes
                         .lock()
-                        .retain(|_, p| p.session_key != route.session_key);
+                        .remove(&route.route_key.encode());
+                    shared.permissions.lock().retain(|_, pending| {
+                        pending.route_key.bridge_id != route.bridge_id
+                            || pending.route_key.session_key != route.session_key
+                    });
                     if let Ok(proc) = shared.pool.ensure(&shared, &route.worktree) {
                         let _ = proc
                             .client

@@ -9,16 +9,19 @@
 use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
 use crate::runtime::sidecar::client::SidecarClient;
 
+use super::types::{BridgeInstanceId, BridgeRouteKey};
 use super::{permission, translate, Shared};
 
 pub(super) fn spawn_reader(
     shared: Arc<Shared>,
+    bridge_id: BridgeInstanceId,
     worktree: String,
     stdout: tokio::process::ChildStdout,
     client: SidecarClient,
@@ -32,7 +35,7 @@ pub(super) fn spawn_reader(
                 Ok(0) => break,
                 Ok(_) => {}
                 Err(e) => {
-                    warn!(worktree, error = %e, "claude stdout read error");
+                    warn!(worktree, bridge_id = bridge_id.as_str(), error = %e, "claude stdout read error");
                     break;
                 }
             }
@@ -52,31 +55,83 @@ pub(super) fn spawn_reader(
                 continue;
             }
             if json.get("event").is_some() {
-                handle_event(&shared, &json).await;
+                handle_event(&shared, &bridge_id, &json).await;
             }
         }
-        close_all_turns_for_worktree(&shared, &worktree).await;
+        invalidate_bridge(&shared, &bridge_id, &worktree).await;
         client.fail_all_pending();
-        info!(worktree, "claude bridge stdout closed");
+        info!(worktree, bridge_id = bridge_id.as_str(), "claude bridge stdout closed");
     });
 }
 
-async fn close_all_turns_for_worktree(shared: &Arc<Shared>, worktree: &str) {
-    let session_ids: Vec<String> = shared
+/// Drop routing state for every session bound to a dead bridge generation.
+pub(super) async fn invalidate_bridge(
+    shared: &Arc<Shared>,
+    bridge_id: &BridgeInstanceId,
+    worktree: &str,
+) {
+    let affected: Vec<(String, mpsc::Sender<AcpEventFrame>, Option<String>)> = {
+        let mut routes = shared.routes.lock();
+        routes
+            .iter_mut()
+            .filter(|(_, route)| route.bridge_id == *bridge_id)
+            .map(|(session_id, route)| {
+                route.connected = false;
+                (
+                    session_id.clone(),
+                    route.event_tx.clone(),
+                    route.turn_reply_to.clone(),
+                )
+            })
+            .collect()
+    };
+
+    for (session_id, event_tx, reply_to) in affected {
+        let ev = amux::AcpEvent {
+            event: Some(amux::acp_event::Event::Error(amux::AcpError {
+                message: "claude bridge disconnected".into(),
+                details: format!(
+                    "bridge {} for worktree {worktree} exited; re-attach to continue",
+                    bridge_id.as_str()
+                ),
+            })),
+            model: String::new(),
+        };
+        crate::runtime::agent_trace::log_acp_event(&session_id, &ev);
+        let _ = event_tx
+            .send(AcpEventFrame::new(session_id.clone(), ev).with_reply_to(reply_to.clone()))
+            .await;
+        close_turn(shared, &session_id).await;
+    }
+
+    let route_keys: Vec<String> = shared
         .routes
         .lock()
         .iter()
-        .filter(|(_, r)| r.worktree == worktree && r.turn_active)
-        .map(|(id, _)| id.clone())
+        .filter(|(_, route)| route.bridge_id == *bridge_id)
+        .map(|(_, route)| route.route_key.encode())
         .collect();
-    for session_id in session_ids {
-        close_turn(shared, &session_id).await;
+    {
+        let mut session_routes = shared.session_routes.lock();
+        for key in route_keys {
+            session_routes.remove(&key);
+        }
     }
+
+    shared
+        .permissions
+        .lock()
+        .retain(|_, pending| pending.route_key.bridge_id != *bridge_id);
 }
 
 /// The bridge keys events by its own session handle; map it to our acp id.
-fn acp_session_for(shared: &Arc<Shared>, session_key: &str) -> Option<String> {
-    shared.session_keys.lock().get(session_key).cloned()
+fn acp_session_for(
+    shared: &Arc<Shared>,
+    bridge_id: &BridgeInstanceId,
+    session_key: &str,
+) -> Option<String> {
+    let encoded = BridgeRouteKey::new(bridge_id.clone(), session_key).encode();
+    shared.session_routes.lock().get(&encoded).cloned()
 }
 
 async fn emit_slash_commands(shared: &Arc<Shared>, session_id: &str, event: &serde_json::Value) {
@@ -116,6 +171,9 @@ async fn emit_slash_commands(shared: &Arc<Shared>, session_id: &str, event: &ser
         let Some(route) = routes.get(session_id) else {
             return;
         };
+        if !route.connected {
+            return;
+        }
         route.event_tx.clone()
     };
 
@@ -131,7 +189,11 @@ async fn emit_slash_commands(shared: &Arc<Shared>, session_id: &str, event: &ser
         .await;
 }
 
-async fn handle_event(shared: &Arc<Shared>, event: &serde_json::Value) {
+async fn handle_event(
+    shared: &Arc<Shared>,
+    bridge_id: &BridgeInstanceId,
+    event: &serde_json::Value,
+) {
     let event_name = event.get("event").and_then(|v| v.as_str()).unwrap_or("");
     let session_key = event
         .get("sessionId")
@@ -140,16 +202,33 @@ async fn handle_event(shared: &Arc<Shared>, event: &serde_json::Value) {
     if session_key.is_empty() {
         return;
     }
-    let Some(session_id) = acp_session_for(shared, session_key) else {
+    let Some(session_id) = acp_session_for(shared, bridge_id, session_key) else {
         debug!(
             session_key,
-            event_name, "claude event before session was routed; dropped"
+            bridge_id = bridge_id.as_str(),
+            event_name,
+            "claude event before session was routed; dropped"
         );
         return;
     };
 
+    {
+        let routes = shared.routes.lock();
+        let Some(route) = routes.get(&session_id) else {
+            return;
+        };
+        if route.bridge_id != *bridge_id || !route.connected {
+            debug!(
+                session_id,
+                event_name,
+                "claude event for stale bridge generation dropped"
+            );
+            return;
+        }
+    }
+
     if event_name == "permission_request" {
-        permission::handle_request(shared, &session_id, session_key, event).await;
+        permission::handle_request(shared, &session_id, bridge_id, session_key, event).await;
         return;
     }
 
@@ -171,6 +250,9 @@ async fn handle_event(shared: &Arc<Shared>, event: &serde_json::Value) {
             );
             return;
         };
+        if route.bridge_id != *bridge_id || !route.connected {
+            return;
+        }
         if event_name == "turn_start" {
             route.turn_active = true;
         }

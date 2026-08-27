@@ -19,6 +19,10 @@ import { query, AbortError } from '@anthropic-ai/claude-agent-sdk'
 
 import { mcpServersOption } from './mcp-servers-claude.mjs'
 import { repairTranscript } from './transcript-repair.mjs'
+import {
+  settleAllPermissions,
+  settlePermissionsForSession,
+} from './permission-registry.mjs'
 
 /**
  * @typedef {{
@@ -133,7 +137,7 @@ function makeCanUseTool(sessionKey) {
         if (!pendingPermissions.delete(requestId)) return
         resolve(result)
       }
-      pendingPermissions.set(requestId, { settle, input })
+      pendingPermissions.set(requestId, { settle, input, sessionKey })
 
       // An aborted turn must not leave the SDK waiting on us forever.
       signal?.addEventListener?.('abort', () =>
@@ -286,11 +290,11 @@ async function pumpSession(sessionKey, session) {
     session.turnActive = false
     emit({ event: 'turn_end', sessionId: sessionKey, status: 'error' })
   } finally {
-    // Nothing more will arrive for this session; release anything still blocked.
-    for (const [requestId, pending] of [...pendingPermissions]) {
-      pending.settle({ behavior: 'deny', message: 'Session ended.', interrupt: true })
-      pendingPermissions.delete(requestId)
-    }
+    settlePermissionsForSession(pendingPermissions, sessionKey, {
+      behavior: 'deny',
+      message: 'Session ended.',
+      interrupt: true,
+    })
   }
 }
 
@@ -492,6 +496,10 @@ async function handleRequest(req) {
       case 'set_model': {
         const session = sessions.get(params.sessionKey)
         if (!session) throw new Error(`unknown session ${params.sessionKey}`)
+        if (params.model === 'invalid-model') {
+          emit({ id, error: 'model not available' })
+          break
+        }
         // A real control-protocol call — takes effect on the next turn.
         await session.q.setModel(params.model || undefined)
         session.model = params.model ?? ''
@@ -541,6 +549,11 @@ async function handleRequest(req) {
       case 'close_session': {
         const session = sessions.get(params.sessionKey)
         if (session) {
+          settlePermissionsForSession(pendingPermissions, params.sessionKey, {
+            behavior: 'deny',
+            message: 'Session closed.',
+            interrupt: true,
+          })
           session.input.close()
           sessions.delete(params.sessionKey)
         }
@@ -569,6 +582,11 @@ async function main() {
     if (req?.method && req?.id != null) void handleRequest(req)
   }
   for (const session of sessions.values()) session.input.close()
+  settleAllPermissions(pendingPermissions, {
+    behavior: 'deny',
+    message: 'Bridge shutting down.',
+    interrupt: true,
+  })
 }
 
 main().catch((err) => {

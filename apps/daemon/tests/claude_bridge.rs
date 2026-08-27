@@ -140,6 +140,32 @@ impl Harness {
         }
         text
     }
+
+    async fn next_error_for(&mut self, session_id: &str) -> String {
+        let frame = self
+            .next_for(session_id, |ev| {
+                matches!(
+                    ev.event,
+                    Some(proto::amux::acp_event::Event::Error(_))
+                )
+            })
+            .await;
+        match frame.event.event {
+            Some(proto::amux::acp_event::Event::Error(err)) => err.message,
+            _ => String::new(),
+        }
+    }
+
+    async fn wait_until_idle(&mut self, session_id: &str) {
+        self.next_for(session_id, |ev| {
+            matches!(
+                ev.event,
+                Some(proto::amux::acp_event::Event::StatusChange(ref sc))
+                    if sc.new_status == proto::amux::AgentStatus::Idle as i32
+            )
+        })
+        .await;
+    }
 }
 
 fn permission_request_id(ev: &proto::amux::AcpEvent) -> Option<String> {
@@ -306,7 +332,6 @@ async fn fake_bridge_set_model_success() {
         })
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
     cmd_tx
         .send(AcpCommand::Prompt {
             acp_session_id: session.clone(),
@@ -319,6 +344,36 @@ async fn fake_bridge_set_model_success() {
         .unwrap();
     let text = h.collect_output_until_idle(&session).await;
     assert!(text.contains("echo:ok"));
+}
+
+#[tokio::test]
+async fn fake_bridge_set_model_failure_keeps_previous_model() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let mut h = Harness::new().await;
+    let wt = h.worktree_path.clone();
+    let (cmd_tx, session) = h.attach(&wt, "model-fail").await;
+    cmd_tx
+        .send(AcpCommand::SetModel {
+            acp_session_id: session.clone(),
+            model_id: "claude/invalid-model".into(),
+        })
+        .await
+        .unwrap();
+    cmd_tx
+        .send(AcpCommand::Prompt {
+            acp_session_id: session.clone(),
+            text: "still-ok".into(),
+            attachment_urls: vec![],
+            requester_actor_id: None,
+            reply_to_message_id: None,
+        })
+        .await
+        .unwrap();
+    let text = h.collect_output_until_idle(&session).await;
+    assert!(text.contains("echo:still-ok"), "{text}");
 }
 
 #[tokio::test]
@@ -340,23 +395,53 @@ async fn fake_bridge_crash_allows_fresh_attach() {
         })
         .await
         .unwrap();
-    h.next_for(&session, |ev| {
-        matches!(
-            ev.event,
-            Some(proto::amux::acp_event::Event::StatusChange(ref sc))
-                if sc.new_status == proto::amux::AgentStatus::Idle as i32
-        )
-    })
-    .await;
+    h.wait_until_idle(&session).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     let (_cmd2, session2) = h.attach(&wt, "crash-2").await;
     assert_ne!(session, session2);
 }
 
-/// Each bridge process resets session keys to `sess-1`. Requires P0 `bridge_id`
-/// routing so identical local keys on different worktrees do not collide.
 #[tokio::test]
-#[ignore = "requires bridge_id namespace (P0 routing); enable after P0 lands"]
+async fn fake_bridge_crash_marks_old_session_disconnected() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let mut h = Harness::new().await;
+    let wt = h.worktree_path.clone();
+    let (cmd_tx, session) = h.attach(&wt, "crash-old").await;
+    cmd_tx
+        .send(AcpCommand::Prompt {
+            acp_session_id: session.clone(),
+            text: "__crash_bridge__".into(),
+            attachment_urls: vec![],
+            requester_actor_id: None,
+            reply_to_message_id: None,
+        })
+        .await
+        .unwrap();
+    h.wait_until_idle(&session).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    cmd_tx
+        .send(AcpCommand::Prompt {
+            acp_session_id: session.clone(),
+            text: "after-crash".into(),
+            attachment_urls: vec![],
+            requester_actor_id: None,
+            reply_to_message_id: None,
+        })
+        .await
+        .unwrap();
+    let err = h.next_error_for(&session).await;
+    assert!(
+        err.contains("disconnected"),
+        "expected disconnected error, got {err}"
+    );
+}
+
+/// Each bridge process resets session keys to `sess-1`. Composite `(bridge_id,
+/// session_key)` routing keeps worktrees isolated.
+#[tokio::test]
 async fn fake_bridge_two_worktrees_same_local_session_key_stay_isolated() {
     if !node_available() {
         return;
