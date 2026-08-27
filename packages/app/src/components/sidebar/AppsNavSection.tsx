@@ -4,25 +4,16 @@ import {
   AppWindow,
   ChevronDown,
   ChevronRight,
-  ExternalLink,
-  FolderOpen,
   Loader2,
   Plus,
-  Rocket,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useUIStore } from '@/stores/ui'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { CreateAppDialog } from '@/components/apps/CreateAppDialog'
-import { revealInFinder } from '@/components/workspace/file-tree-operations'
 import { resolveAppType } from '@/lib/app-types'
-import { appWorkdirPath } from '@/lib/app-session'
-import {
-  appStatusMeta,
-  deployDisabledReason,
-  showsPublicBadge,
-} from '@/lib/app-list-helpers'
+import { appStatusMeta, showsPublicBadge } from '@/lib/app-list-helpers'
 import type { AppRow } from '@/lib/backend/types'
 
 const APPS_EXPANDED_STORAGE_KEY = 'teamclu.nav.appsExpanded'
@@ -52,33 +43,21 @@ interface AppNavRowProps {
   onSelect: () => void
 }
 
+/**
+ * A name and a status line — no actions.
+ *
+ * Deploy / open / reveal used to live here as a hover strip, which cost the row
+ * a 64px right gutter permanently. At this column's width that truncated most
+ * app names to a few characters to make room for buttons that were invisible
+ * until hover. They now live in the second column's header, where there is room
+ * for labels and where the app they act on is unambiguous.
+ */
 function AppNavRow({ app, selected, rowRef, onSelect }: AppNavRowProps) {
   const { t } = useTranslation()
   const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
   const meta = appStatusMeta(app, deploying)
   const appTypeMeta = resolveAppType(app.type)
-  const isLive = app.fcStatus === 'live' && !!app.fcEndpoint
-  const deployBlocked = deployDisabledReason(app)
   const publicLive = showsPublicBadge(app)
-  const shareUrl = app.publicUrl ?? app.fcEndpoint
-
-  const handleReveal = React.useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    const path = await appWorkdirPath(app.id, app.teamId)
-    if (path) await revealInFinder(path)
-  }, [app.id, app.teamId])
-
-  const handleOpenUrl = React.useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!shareUrl) return
-    const { open } = await import('@tauri-apps/plugin-shell')
-    await open(shareUrl)
-  }, [shareUrl])
-
-  const handleDeploy = React.useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
-    void useAppsStore.getState().deploy(app.id)
-  }, [app.id])
 
   return (
     <div className="group relative flex items-stretch pl-3">
@@ -88,7 +67,7 @@ function AppNavRow({ app, selected, rowRef, onSelect }: AppNavRowProps) {
         onClick={onSelect}
         data-active={selected ? 'true' : 'false'}
         className={cn(
-          'flex min-w-0 flex-1 items-center gap-2 rounded-lg py-[6px] pl-[9px] pr-16 text-left text-[12.5px] transition-colors',
+          'flex min-w-0 flex-1 items-center gap-2 rounded-lg py-[6px] pl-[9px] pr-2 text-left text-[12.5px] transition-colors',
           selected
             ? 'bg-paper font-semibold text-foreground shadow-[0_1px_2px_rgba(28,27,25,0.04)] ring-1 ring-black/[0.05]'
             : 'font-normal text-ink-2 hover:bg-black/[0.04]',
@@ -125,45 +104,6 @@ function AppNavRow({ app, selected, rowRef, onSelect }: AppNavRowProps) {
           </span>
         </span>
       </button>
-      <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-        <button
-          type="button"
-          aria-label={t('apps.deploy', '部署')}
-          disabled={deploying || app.provisionStatus !== 'ready' || !!deployBlocked}
-          title={
-            deployBlocked
-              ? t(
-                  deployBlocked,
-                  deployBlocked === 'apps.deployDisabledThird'
-                    ? '第三方登录尚未支持部署'
-                    : '容器运行时暂不支持部署',
-                )
-              : t('apps.deploy', '部署')
-          }
-          onClick={handleDeploy}
-          className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-black/[0.06] hover:text-foreground disabled:opacity-40"
-        >
-          <Rocket className="h-3.5 w-3.5" />
-        </button>
-        {isLive && shareUrl && (
-          <button
-            type="button"
-            aria-label={t('apps.openUrl', '打开部署地址')}
-            onClick={handleOpenUrl}
-            className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-black/[0.06] hover:text-foreground"
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-          </button>
-        )}
-        <button
-          type="button"
-          aria-label={t('apps.revealInFinder', '在 Finder 打开目录')}
-          onClick={handleReveal}
-          className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-black/[0.06] hover:text-foreground"
-        >
-          <FolderOpen className="h-3.5 w-3.5" />
-        </button>
-      </div>
     </div>
   )
 }

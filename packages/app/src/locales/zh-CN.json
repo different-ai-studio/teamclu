@@ -1206,6 +1206,7 @@
     "openUrl": "打开部署地址",
     "copyUrl": "复制部署地址",
     "revealInFinder": "在 Finder 打开目录",
+    "moreActions": "更多操作",
     "rename": "重命名",
     "delete": "删除",
     "create": "新建",

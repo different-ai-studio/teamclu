@@ -1206,6 +1206,7 @@
     "openUrl": "Open deployed URL",
     "copyUrl": "Copy deployed URL",
     "revealInFinder": "Reveal folder in Finder",
+    "moreActions": "More actions",
     "rename": "Rename",
     "delete": "Delete",
     "create": "New",

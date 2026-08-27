@@ -1,15 +1,32 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AppWindow, Loader2, MessageSquare, Plus } from 'lucide-react'
+import {
+  AppWindow,
+  ExternalLink,
+  FolderOpen,
+  Loader2,
+  MessageSquare,
+  MoreHorizontal,
+  Plus,
+  Rocket,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
 import { useUIStore } from '@/stores/ui'
 import { useAppsStore } from '@/stores/apps-store'
 import { useSessionSelectionStore } from '@/stores/session-selection-store'
 import { getBackend } from '@/lib/backend'
-import { createAppSessionShell, openAppSession } from '@/lib/app-session'
+import { revealInFinder } from '@/components/workspace/file-tree-operations'
+import { createAppSessionShell, openAppSession, appWorkdirPath } from '@/lib/app-session'
+import { deployDisabledReason } from '@/lib/app-list-helpers'
 import { formatRelativeTime } from '@/lib/date-format'
 import type { AppRow, AppSessionRow } from '@/lib/backend/types'
 
@@ -42,6 +59,89 @@ function SessionRow({
         )}
       </span>
     </button>
+  )
+}
+
+/**
+ * The selected app's own actions, collapsed into one menu.
+ *
+ * Collapsed rather than laid out as icons because this header is 280px wide and
+ * already carries the app name plus the new-session button. Three more icon
+ * buttons would push the name back to the few truncated characters that moving
+ * them out of the list rows was meant to fix.
+ *
+ * A menu buys something the hover strip could not have: every entry gets a
+ * label, so "why can't I deploy this" is answerable in place instead of living
+ * in a tooltip on a disabled icon.
+ */
+export function AppHeaderActions({ app }: { app: AppRow }) {
+  const { t } = useTranslation()
+  const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
+  const shareUrl = app.publicUrl ?? app.fcEndpoint
+  const isLive = app.fcStatus === 'live' && !!shareUrl
+  const deployBlocked = deployDisabledReason(app)
+  const deployDisabled = deploying || app.provisionStatus !== 'ready' || !!deployBlocked
+
+  const handleDeploy = React.useCallback(() => {
+    void useAppsStore.getState().deploy(app.id)
+  }, [app.id])
+
+  const handleOpenUrl = React.useCallback(async () => {
+    if (!shareUrl) return
+    const { open } = await import('@tauri-apps/plugin-shell')
+    await open(shareUrl)
+  }, [shareUrl])
+
+  const handleReveal = React.useCallback(async () => {
+    const path = await appWorkdirPath(app.id, app.teamId)
+    if (path) await revealInFinder(path)
+  }, [app.id, app.teamId])
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          title={t('apps.moreActions', '更多操作')}
+          aria-label={t('apps.moreActions', '更多操作')}
+          data-testid="app-header-actions"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-selected/40 hover:text-foreground"
+        >
+          {deploying ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <MoreHorizontal className="h-4 w-4" />
+          )}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-52">
+        <DropdownMenuItem disabled={deployDisabled} onSelect={handleDeploy}>
+          <Rocket className="mr-2 h-3.5 w-3.5" />
+          {deploying ? t('apps.deploying', '部署中…') : t('apps.deploy', '部署')}
+        </DropdownMenuItem>
+        {/* Not hidden when blocked — a missing entry reads as "this app cannot
+            be deployed at all"; a disabled one with the reason underneath says
+            which setting to change. */}
+        {deployBlocked && (
+          <div className="px-2 py-1 text-[11px] leading-snug text-faint">
+            {t(
+              deployBlocked,
+              deployBlocked === 'apps.deployDisabledThird'
+                ? '第三方登录尚未支持部署'
+                : '容器运行时暂不支持部署',
+            )}
+          </div>
+        )}
+        <DropdownMenuItem disabled={!isLive} onSelect={() => void handleOpenUrl()}>
+          <ExternalLink className="mr-2 h-3.5 w-3.5" />
+          {t('apps.openUrl', '打开部署地址')}
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => void handleReveal()}>
+          <FolderOpen className="mr-2 h-3.5 w-3.5" />
+          {t('apps.revealInFinder', '在 Finder 打开目录')}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -165,16 +265,19 @@ export function AppSessionsColumn() {
             <span className="font-mono text-[11px] font-normal text-faint"> · {sessions.length}</span>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => void handleCreateSession()}
-          disabled={creating}
-          title={t('apps.newSession', '新建会话')}
-          aria-label={t('apps.newSession', '新建会话')}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-selected/40 hover:text-foreground disabled:opacity-40"
-        >
-          {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-        </button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => void handleCreateSession()}
+            disabled={creating}
+            title={t('apps.newSession', '新建会话')}
+            aria-label={t('apps.newSession', '新建会话')}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-selected/40 hover:text-foreground disabled:opacity-40"
+          >
+            {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          </button>
+          <AppHeaderActions app={app} />
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">

@@ -79,6 +79,18 @@ describe('AppsNavSection', () => {
     expect(screen.getByText('Alpha')).toBeInTheDocument()
   })
 
+  it('carries no action buttons — they live in the second column header now', () => {
+    // The hover strip cost every row a fixed 64px right gutter, which is what
+    // truncated the names in the screenshot that prompted the move.
+    localStorage.setItem('teamclu.nav.appsExpanded', 'true')
+    render(<AppsNavSection />)
+    for (const label of [/部署/, /打开部署地址/, /在 Finder/]) {
+      expect(screen.queryByRole('button', { name: label })).not.toBeInTheDocument()
+    }
+    const row = screen.getByRole('button', { name: /^Alpha/ })
+    expect(row.className).not.toMatch(/\bpr-16\b/)
+  })
+
   it('clicking an app selects it without opening a session', () => {
     const switchToSession = vi.spyOn(useUIStore.getState(), 'switchToSession').mockResolvedValue(undefined)
     localStorage.setItem('teamclu.nav.appsExpanded', 'true')
