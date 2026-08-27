@@ -194,6 +194,7 @@ export function makeBusinessRepoFactory(
       supabasePublicUrl: SUPABASE_PUBLIC_URL_FN(),
       publishableKey: SUPABASE_PUBLISHABLE_KEY(),
       accessToken,
+      dispatchPush: async (record) => { await dispatchPush(record, pushDeps()); },
       ...makeDeployDeps(),
     });
 }
