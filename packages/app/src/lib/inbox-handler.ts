@@ -148,15 +148,22 @@ export function handleInboxEnvelope(
 
   // type === "message" or absent (legacy) — mark session unread unless viewing.
   const found = store.rows.some((r) => r.id === payload.session_id);
+  const isActiveView = !shouldMarkSessionUnread(payload.session_id);
   if (found) {
-    if (shouldMarkSessionUnread(payload.session_id)) {
+    if (isActiveView) {
+      // Persist read marker first, then reload — avoids loadFirstPage racing
+      // ahead of markSessionViewed and re-applying hasUnread from the server.
+      scheduleMarkActiveSessionRead(payload.session_id, null, {
+        afterMarkRead: () => void store.loadFirstPage(),
+      });
+    } else {
       // Instant unread dot; preview + last_message_at come from debounced reload.
       store.patchRow(payload.session_id, { has_unread: true });
-    } else {
-      scheduleMarkActiveSessionRead(payload.session_id);
     }
   }
 
   options?.onMessagePing?.(payload.session_id);
-  scheduleSessionListRefresh(() => store.loadFirstPage());
+  if (!found || !isActiveView) {
+    scheduleSessionListRefresh(() => store.loadFirstPage());
+  }
 }

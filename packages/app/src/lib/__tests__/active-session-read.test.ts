@@ -94,4 +94,14 @@ describe("active-session-read", () => {
     vi.advanceTimersByTime(MARK_ACTIVE_SESSION_READ_MS);
     expect(markSessionViewed).not.toHaveBeenCalled();
   });
+
+  it("runs afterMarkRead once mark-viewed completes", async () => {
+    selectionState.activeSessionId = "s1";
+    const afterMarkRead = vi.fn();
+    scheduleMarkActiveSessionRead("s1", "msg-1", { afterMarkRead });
+    vi.advanceTimersByTime(MARK_ACTIVE_SESSION_READ_MS);
+    await Promise.resolve();
+    expect(markSessionViewed).toHaveBeenCalledWith("s1", "msg-1");
+    expect(afterMarkRead).toHaveBeenCalledOnce();
+  });
 });

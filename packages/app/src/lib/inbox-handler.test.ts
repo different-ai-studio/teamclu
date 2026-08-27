@@ -194,7 +194,14 @@ describe("handleInboxEnvelope", () => {
       store,
     );
     expect(store.patchRow).not.toHaveBeenCalled();
-    expect(scheduleMarkActiveSessionReadMock).toHaveBeenCalledWith("s1");
+    expect(scheduleMarkActiveSessionReadMock).toHaveBeenCalledWith(
+      "s1",
+      null,
+      expect.objectContaining({ afterMarkRead: expect.any(Function) }),
+    );
+    expect(store.loadFirstPage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
+    expect(store.loadFirstPage).not.toHaveBeenCalled();
   });
 });
 

@@ -33,6 +33,7 @@ const pendingBySession = new Map<string, PendingRead>();
 export function scheduleMarkActiveSessionRead(
   sessionId: string,
   lastReadMessageId?: string | null,
+  opts?: { afterMarkRead?: () => void },
 ): void {
   const scheduledWhileActive = isSessionActivelyViewed(sessionId);
   if (!scheduledWhileActive) return;
@@ -54,7 +55,10 @@ export function scheduleMarkActiveSessionRead(
       pendingBySession.delete(sessionId);
       void useSessionListStore
         .getState()
-        .markSessionViewed(sessionId, lastReadMessageIdNorm);
+        .markSessionViewed(sessionId, lastReadMessageIdNorm)
+        .then(() => {
+          opts?.afterMarkRead?.();
+        });
     }, MARK_ACTIVE_SESSION_READ_MS),
   });
 }
