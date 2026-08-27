@@ -1,6 +1,6 @@
+import { shouldMarkSessionUnread } from "@/lib/active-session-read";
 import { MessageKind } from "@/lib/proto/teamclu_pb";
 import { useSessionListStore } from "@/stores/session-list-store";
-import { useSessionSelectionStore } from "@/stores/session-selection-store";
 
 /** Matches DB trigger `LEFT(content, 140)` on sessions.last_message_preview. */
 export const SESSION_LIST_PREVIEW_MAX_LEN = 140;
@@ -27,9 +27,8 @@ export function bumpSessionListLastMessage(
   const preview = truncateSessionListPreview(content ?? "");
   if (!preview) return;
 
-  const activeSessionId = useSessionSelectionStore.getState().activeSessionId;
   const markUnread =
-    options?.markUnread ?? activeSessionId !== sessionId;
+    options?.markUnread ?? shouldMarkSessionUnread(sessionId);
 
   useSessionListStore.getState().bumpLastMessage(sessionId, {
     last_message_preview: preview,

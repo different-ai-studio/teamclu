@@ -38,6 +38,7 @@ import { handleSessionEventPermissionResolved } from "@/lib/teamclu/handle-sessi
 import { tryBindChildFromPermission } from "@/lib/teamclu/subagent-acp-binding";
 import { routeSubagentAcpEvent } from "@/lib/teamclu/subagent-acp-route";
 import { resolveOrphanSubagentParentToolId, shouldBufferUnboundChildAcpEvent, shouldRouteOrphanSubagentEvent } from "@/lib/teamclu/subagent-acp-routing";
+import { scheduleMarkActiveSessionRead } from "@/lib/active-session-read";
 import {
   ensureInboxSubscribed,
   handleInboxEnvelope,
@@ -759,6 +760,7 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
                     ? unixTimestampSecondsToIso(createdAtSec)
                     : undefined,
                 });
+                scheduleMarkActiveSessionRead(sid, decoded.message.messageId);
               }
             }
             return;
@@ -959,6 +961,7 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
                     ? unixTimestampSecondsToIso(createdAtSec)
                     : undefined,
                 });
+                scheduleMarkActiveSessionRead(sid, decoded.message.messageId);
               } else {
                 // Invited to a new session: bump is a no-op until the row exists.
                 scheduleSessionListRefresh(() => listStore.loadFirstPage());

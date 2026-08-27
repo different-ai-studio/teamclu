@@ -7,6 +7,10 @@
 // For message pings the client patches unread optimistically, then debounces
 // a list reload to sync preview text and sort order.
 
+import {
+  scheduleMarkActiveSessionRead,
+  shouldMarkSessionUnread,
+} from "@/lib/active-session-read";
 import { mqttSubscribe } from "@/lib/mqtt-bridge";
 
 export interface InboxPing {
@@ -142,11 +146,15 @@ export function handleInboxEnvelope(
     return;
   }
 
-  // type === "message" or absent (legacy) — mark session unread.
+  // type === "message" or absent (legacy) — mark session unread unless viewing.
   const found = store.rows.some((r) => r.id === payload.session_id);
   if (found) {
-    // Instant unread dot; preview + last_message_at come from debounced reload.
-    store.patchRow(payload.session_id, { has_unread: true });
+    if (shouldMarkSessionUnread(payload.session_id)) {
+      // Instant unread dot; preview + last_message_at come from debounced reload.
+      store.patchRow(payload.session_id, { has_unread: true });
+    } else {
+      scheduleMarkActiveSessionRead(payload.session_id);
+    }
   }
 
   options?.onMessagePing?.(payload.session_id);

@@ -1,4 +1,5 @@
 import type { Message as TeamcluMessage } from "@/lib/proto/teamclu_pb";
+import { scheduleMarkActiveSessionRead } from "@/lib/active-session-read";
 import { logInterruptMsgDiag } from "@/lib/interrupt-msg-diag-core";
 import { summarizePersistRelease } from "@/lib/interrupt-msg-diag";
 import { bumpSessionListLastMessage } from "@/lib/session-list-preview";
@@ -105,6 +106,7 @@ export function bumpPreviewFromAgentReply(
   bumpSessionListLastMessage(sessionId, preview, {
     at: createdAtSec > 0n ? unixTimestampSecondsToIso(createdAtSec) : undefined,
   });
+  scheduleMarkActiveSessionRead(sessionId, reply.messageId);
 }
 
 /** Shared post-persist commit: store, cache, release stream, session preview.

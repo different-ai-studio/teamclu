@@ -559,7 +559,10 @@ export function useChatSend({
             notePendingAgentReplyTo(sid, agentRuntimeIdsForSend, messageId);
           }
 
-          bumpSessionListLastMessage(sid, outgoing, { at: new Date().toISOString() });
+          bumpSessionListLastMessage(sid, outgoing, {
+            at: new Date().toISOString(),
+            markUnread: false,
+          });
 
           const noticeText = buildPostSendSessionNotice(engagedUiEntries, t);
           if (noticeText) {
