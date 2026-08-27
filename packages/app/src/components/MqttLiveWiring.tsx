@@ -13,7 +13,7 @@
  * entire tree on traffic that changes nothing visible.
  */
 import { useTranslation } from "react-i18next";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { markStartup } from "@/lib/startup-perf";
 import { classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, localizeAgentTurnErrorMessage } from "@/lib/agent-turn-error";
 import { getDispatcher } from "@/hooks/useDesktopNotifications";
@@ -23,7 +23,7 @@ import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
 import { useAuthStore } from "@/stores/auth-store";
-import { mqttSubscribe, listenForEnvelopes } from "@/lib/mqtt-bridge";
+import { listenForEnvelopes } from "@/lib/mqtt-bridge";
 import { connectMqttWithFreshAuth } from "@/lib/mqtt-connect-with-fresh-auth";
 import { mqttConnectionKey } from "@/lib/mqtt-connection-key";
 import { describeJwt, recordMqttDiag } from "@/lib/mqtt-diagnostics";
@@ -38,7 +38,12 @@ import { handleSessionEventPermissionResolved } from "@/lib/teamclu/handle-sessi
 import { tryBindChildFromPermission } from "@/lib/teamclu/subagent-acp-binding";
 import { routeSubagentAcpEvent } from "@/lib/teamclu/subagent-acp-route";
 import { resolveOrphanSubagentParentToolId, shouldBufferUnboundChildAcpEvent, shouldRouteOrphanSubagentEvent } from "@/lib/teamclu/subagent-acp-routing";
-import { handleInboxEnvelope, scheduleSessionListRefresh } from "@/lib/inbox-handler";
+import {
+  ensureInboxSubscribed,
+  handleInboxEnvelope,
+  resetInboxSubscriptionState,
+  scheduleSessionListRefresh,
+} from "@/lib/inbox-handler";
 import { bumpSessionListLastMessage, messageKindUpdatesSessionPreview } from "@/lib/session-list-preview";
 import { executeAgentTurnFlush } from "@/lib/agent-turn-flush";
 import { unixTimestampSecondsToIso } from "@/lib/message-timestamp";
@@ -69,16 +74,19 @@ import { useCurrentTeamStore } from "@/stores/current-team";
 import { resolveCurrentMemberActorId } from "@/lib/current-actor";
 import { isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
 import {
-  ensureSessionLiveSubscribed,
-  ensureTeamSessionLiveSubscribed,
-  hasTeamSessionLiveSubscription,
+  collectSessionsNeedingLiveInterest,
+  isSessionLiveInterest,
+  mergeSessionLiveInterestIds,
+  noteInboxOpenedSession,
+  pruneIdleInboxSessions,
+  resetInboxIdleInterestState,
   resetSessionLiveSubscriptionState,
+  resubscribeSessionLiveInterest,
+  startInboxIdleSweep,
+  stopInboxIdleSweep,
+  syncSessionLiveInterest,
+  touchLiveEventActivity,
 } from "@/lib/session-live-subscriptions";
-
-/** How many most-recent sessions get auto-subscribed on boot / list reload.
- * Older sessions subscribe lazily when the user opens them (see the
- * activeSessionId effect below). */
-const RECENT_SESSION_SUBSCRIBE_CAP = 10;
 
 export interface MqttLiveWiringProps {
   /** Signed-in user id, or null while auth is still resolving. */
@@ -109,6 +117,24 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
     {},
   );
   const seenLiveEventIdsRef = useRef<Set<string>>(new Set());
+  const [inboxIdleRevision, setInboxIdleRevision] = useState(0);
+  const liveInterestSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onInboxMessagePingRef = useRef<(sessionId: string) => void>(() => {});
+
+  const scheduleLiveInterestSync = () => {
+    if (liveInterestSyncTimerRef.current) clearTimeout(liveInterestSyncTimerRef.current);
+    liveInterestSyncTimerRef.current = setTimeout(() => {
+      liveInterestSyncTimerRef.current = null;
+      setInboxIdleRevision((n) => n + 1);
+    }, 100);
+  };
+  const scheduleLiveInterestSyncRef = useRef(scheduleLiveInterestSync);
+  scheduleLiveInterestSyncRef.current = scheduleLiveInterestSync;
+
+  onInboxMessagePingRef.current = (sessionId: string) => {
+    noteInboxOpenedSession(sessionId);
+    scheduleLiveInterestSync();
+  };
 
   function clearTurnAgentReplyParking(streamKey: string) {
     delete pendingStreamRepliesRef.current[streamKey];
@@ -606,6 +632,9 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
             recordMqttDiag("app-mqtt", "connect:after", { wiringId, clientId });
             markStartup("mqtt:connected");
             resetSessionLiveSubscriptionState();
+            resetInboxSubscriptionState();
+            await resubscribeSessionLiveInterest();
+            await ensureInboxSubscribed(userId);
           } catch (e) {
             // Keep going: the local SSE path below does not need the broker.
             brokerUsable = false;
@@ -655,7 +684,7 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
         if (brokerUsable) {
           try {
             recordMqttDiag("app-mqtt", "inbox:subscribe-before", { wiringId, topic: `inbox/${userId}` });
-            await mqttSubscribe(`inbox/${userId}`);
+            await ensureInboxSubscribed(userId);
             recordMqttDiag("app-mqtt", "inbox:subscribe-ok", { wiringId, topic: `inbox/${userId}` });
           } catch (e) {
             console.warn("[inbox] subscribe failed", e);
@@ -674,12 +703,22 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
         recordMqttDiag("app-mqtt", "listen:before", { wiringId });
         unlisten = await listenForEnvelopes((env) => {
           if (env.topic.startsWith("inbox/")) {
-            handleInboxEnvelope(env, userId, useSessionListStore.getState());
+            handleInboxEnvelope(env, userId, useSessionListStore.getState(), console, {
+              onMessagePing: (sessionId) => onInboxMessagePingRef.current(sessionId),
+            });
             return;
           }
           const decoded = decodeLiveEvent(new Uint8Array(env.bytes));
           if (!decoded) return;
           const sid = sessionIdFromLiveEvent(decoded, env.topic) ?? "";
+
+          if (
+            sid &&
+            env.topic.includes("/session/") &&
+            env.topic.endsWith("/live")
+          ) {
+            touchLiveEventActivity(sid);
+          }
 
           if (
             sid &&
@@ -693,6 +732,35 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
             // Second copy of a dual-path event (local daemon SSE fast-path +
             // MQTT deliver the same eventId) or an MQTT redelivery.
             bumpLiveDuplicateDropped();
+            return;
+          }
+
+          if (
+            sid &&
+            env.topic.includes("/session/") &&
+            env.topic.endsWith("/live") &&
+            !isSessionLiveInterest(sid)
+          ) {
+            // Background list maintenance only — inbox is the primary path, but
+            // still pull unknown sessions when a message.created slips through.
+            if (
+              decoded.envelope.eventType === "message.created" &&
+              decoded.message &&
+              messageKindUpdatesSessionPreview(decoded.message.kind)
+            ) {
+              const listStore = useSessionListStore.getState();
+              const row = listStore.rows.find((r) => r.id === sid);
+              if (!row) {
+                scheduleSessionListRefresh(() => listStore.loadFirstPage());
+              } else {
+                const createdAtSec = decoded.message.createdAt;
+                bumpSessionListLastMessage(sid, decoded.message.content, {
+                  at: createdAtSec > 0n
+                    ? unixTimestampSecondsToIso(createdAtSec)
+                    : undefined,
+                });
+              }
+            }
             return;
           }
 
@@ -1502,36 +1570,6 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
           return;
         }
 
-        const recentAtBoot = useSessionListStore.getState().rows.slice(0, RECENT_SESSION_SUBSCRIBE_CAP);
-        try {
-          recordMqttDiag("app-mqtt", "session-live-wildcard:subscribe-before", {
-            wiringId,
-            topic: `amux/${mqttTeamId}/session/+/live`,
-          });
-          await ensureTeamSessionLiveSubscribed(mqttTeamId);
-          console.log('[MQTT] receiver wired: subscribed to team session/live wildcard');
-          recordMqttDiag("app-mqtt", "session-live-wildcard:subscribe-ok", {
-            wiringId,
-            topic: `amux/${mqttTeamId}/session/+/live`,
-          });
-        } catch (e) {
-          console.warn('[MQTT] team session/live wildcard subscribe failed; falling back to recent sessions', e);
-          recordMqttDiag("app-mqtt", "session-live-wildcard:subscribe-error", {
-            wiringId,
-            topic: `amux/${mqttTeamId}/session/+/live`,
-            error: e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : String(e),
-            fallbackCount: recentAtBoot.length,
-          });
-          await Promise.all(
-            recentAtBoot.map((r) =>
-              ensureSessionLiveSubscribed(r.team_id, r.id).catch((err) => {
-                console.warn('[MQTT] subscribe failed', `amux/${r.team_id}/session/${r.id}/live`, err);
-              }),
-            ),
-          );
-          console.log('[MQTT] receiver wired: subscribed to', recentAtBoot.length, 'recent session/live topics');
-        }
-
         if (cancelled) {
           recordMqttDiag("app-mqtt", "wiring:cancelled-before-modules", { wiringId });
           return;
@@ -1603,64 +1641,83 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
     };
   }, [mqttAuthKey, userId, mqttTeamId, mqttAccessToken, mqttReconnectNonce]);
 
-  // Keep session/live subscriptions in sync with the user's most-recent
-  // sessions. Rows are sorted by last_message_at DESC, so we slice the top
-  // RECENT_SESSION_SUBSCRIBE_CAP and subscribe any not-yet-subscribed.
-  // When a new session is created and pushed into rows (newest first),
-  // it's auto-included here. Older sessions stay un-subscribed until the
-  // user activates one (see the activeSessionId effect below).
-  //
-  // Subscribe to a digest of the slice rather than to `rows` itself: `rows` is
-  // replaced on every list mutation — including the `last_message_at` bump and
-  // re-sort that each arriving message causes — and this is the root component,
-  // so subscribing to the array re-rendered the entire app on every message.
-  // The digest only changes when the membership of the top slice changes, which
-  // is the only thing this effect reacts to. Rows are read from the store when
-  // the effect runs.
-  const recentSessionSubscribeKey = useSessionListStore((s) =>
-    s.rows
-      .slice(0, RECENT_SESSION_SUBSCRIBE_CAP)
-      .map((r) => `${r.team_id}/${r.id}`)
-      .join(','),
-  );
-  useEffect(() => {
-    if (!userId || !mqttTeamId) return;
-    if (hasTeamSessionLiveSubscription(mqttTeamId)) return;
-    let cancelled = false;
-    const recent = useSessionListStore
-      .getState()
-      .rows.slice(0, RECENT_SESSION_SUBSCRIBE_CAP);
-    void (async () => {
-      for (const r of recent) {
-        if (cancelled) return;
-        await ensureSessionLiveSubscribed(r.team_id, r.id).catch((e) => {
-          console.warn('[MQTT] subscribe failed', `amux/${r.team_id}/session/${r.id}/live`, e);
-        });
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [recentSessionSubscribeKey, userId, mqttTeamId]);
-
-  // Lazy-subscribe on session activation. When the user opens a session
-  // that's outside the most-recent slice, subscribe to its live topic so
-  // any incoming streaming arrives. Idempotent via the shared dedup set.
-  // Reactive on the row's team_id (selector) so this also fires once the
-  // session list finishes loading — otherwise a freshly-activated session
-  // can race against rows hydration and stay un-subscribed.
+  // Foreground session/live: active TeamClu session + background streaming/approval.
   const activeSessionIdForSubscribe = useSessionSelectionStore((s) => s.activeSessionId);
+  const liveInterestExtrasKey = useV2StreamingStore((s) =>
+    collectSessionsNeedingLiveInterest(s.byKey).sort().join(","),
+  );
   const activeSessionTeamId = useSessionListStore((s) =>
     activeSessionIdForSubscribe
       ? s.rows.find((r) => r.id === activeSessionIdForSubscribe)?.team_id ?? null
       : null,
   );
   useEffect(() => {
-    if (!activeSessionIdForSubscribe || !userId || !mqttTeamId) return;
-    if (!activeSessionTeamId) return;
-    void ensureSessionLiveSubscribed(
-      activeSessionTeamId,
-      activeSessionIdForSubscribe,
-    );
-  }, [activeSessionIdForSubscribe, activeSessionTeamId, userId, mqttTeamId]);
+    if (!userId || !mqttTeamId) {
+      resetInboxIdleInterestState();
+      void syncSessionLiveInterest(null, []);
+      return;
+    }
+    let cancelled = false;
+
+    void (async () => {
+      const stream = useV2StreamingStore.getState();
+      const backgroundIds = collectSessionsNeedingLiveInterest(stream.byKey);
+      const interestIds = mergeSessionLiveInterestIds(
+        activeSessionIdForSubscribe,
+        backgroundIds,
+      );
+      if (interestIds.length === 0) {
+        await syncSessionLiveInterest(null, []);
+        return;
+      }
+      const teamId = activeSessionTeamId ?? mqttTeamId;
+      if (cancelled) return;
+      await syncSessionLiveInterest(teamId, interestIds).catch((e) => {
+        console.warn("[MQTT] sync session/live interest failed", e);
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeSessionIdForSubscribe,
+    activeSessionTeamId,
+    liveInterestExtrasKey,
+    inboxIdleRevision,
+    mqttTeamId,
+    mqttReconnectNonce,
+    userId,
+  ]);
+
+  useEffect(() => {
+    if (!userId || !mqttTeamId) {
+      stopInboxIdleSweep();
+      return;
+    }
+    startInboxIdleSweep(() => {
+      const stream = useV2StreamingStore.getState();
+      const active = useSessionSelectionStore.getState().activeSessionId;
+      const pinned = new Set([
+        ...(active?.trim() ? [active.trim()] : []),
+        ...collectSessionsNeedingLiveInterest(stream.byKey),
+      ]);
+      if (pruneIdleInboxSessions(pinned)) {
+        scheduleLiveInterestSyncRef.current();
+      }
+    });
+    return () => stopInboxIdleSweep();
+  }, [userId, mqttTeamId]);
+
+  useEffect(() => {
+    return () => {
+      if (liveInterestSyncTimerRef.current) {
+        clearTimeout(liveInterestSyncTimerRef.current);
+      }
+      resetInboxIdleInterestState();
+      void syncSessionLiveInterest(null, []);
+    };
+  }, []);
 
   return null;
 }

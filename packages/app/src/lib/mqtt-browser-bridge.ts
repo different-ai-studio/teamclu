@@ -234,9 +234,22 @@ export async function mqttSubscribe(topic: string): Promise<void> {
 }
 
 export async function mqttUnsubscribe(topic: string): Promise<void> {
-  // mqtt 客户端 unsubscribe 经 adapter 暂未暴露；记录态即可，重连按订阅集恢复。
   subscribedTopics.delete(topic)
-  recordMqttDiag('mqtt-bridge', 'unsubscribe:record-only', { topic })
+  if (!connected) {
+    recordMqttDiag('mqtt-bridge', 'unsubscribe:local-only-not-connected', { topic })
+    return
+  }
+  recordMqttDiag('mqtt-bridge', 'unsubscribe:begin', { topic })
+  try {
+    await ensureAdapter().unsubscribe(topic)
+    recordMqttDiag('mqtt-bridge', 'unsubscribe:ok', { topic })
+  } catch (error) {
+    recordMqttDiag('mqtt-bridge', 'unsubscribe:error', {
+      topic,
+      error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+    })
+    throw error
+  }
 }
 
 export async function mqttPublish(topic: string, bytes: Uint8Array, retain = false): Promise<void> {

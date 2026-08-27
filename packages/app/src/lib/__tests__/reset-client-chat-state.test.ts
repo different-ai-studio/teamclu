@@ -19,7 +19,6 @@ describe("resetClientChatState", () => {
       activeSessionId: "session-a",
       currentSessionId: "session-a",
       viewingArchivedSessionId: null,
-      viewingChildSessionId: null,
     });
     useSessionMessageStore.setState({
       messages: {

@@ -173,6 +173,37 @@ describe('mqtt-browser-bridge', () => {
     expect((await mod.mqttStatus()).connected).toBe(false)
   })
 
+  it('mqttUnsubscribe sends broker UNSUB when connected', async () => {
+    const subscribe = vi.fn().mockResolvedValue(undefined)
+    const unsubscribe = vi.fn().mockResolvedValue(undefined)
+    const mod = await import('./mqtt-browser-bridge')
+    mod.__resetBrowserMqttForTest({
+      adapter: {
+        connect: vi.fn().mockResolvedValue(undefined),
+        subscribe,
+        unsubscribe,
+        publish: vi.fn(),
+        disconnect: vi.fn(),
+        onMessage: () => () => {},
+        onConnectionState: () => () => {},
+      },
+    })
+    await mod.mqttConnect({
+      brokerHost: 'b',
+      brokerPort: 443,
+      username: 'u',
+      password: 'p',
+      clientId: 'c',
+      teamId: 't',
+      useTls: true,
+    })
+    await mod.mqttSubscribe('amux/t/session/s1/live')
+    await mod.mqttUnsubscribe('amux/t/session/s1/live')
+
+    expect(unsubscribe).toHaveBeenCalledWith('amux/t/session/s1/live')
+    expect((await mod.mqttStatus()).subscribedTopics).toEqual([])
+  })
+
   it('listenForEnvelopes forwards adapter messages as IncomingEnvelope', async () => {
     let msgCb: ((m: { topic: string; payload: Uint8Array }) => void) | null = null
     const mod = await import('./mqtt-browser-bridge')

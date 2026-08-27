@@ -72,8 +72,6 @@ vi.mock('@/stores/session', () => ({
       getState: () => ({
         activeSessionId: mockActiveSessionId,
         setActiveSession: mockSetActiveSession,
-        viewingChildSessionId: null,
-        setViewingChildSession: vi.fn(),
       }),
     },
   ),

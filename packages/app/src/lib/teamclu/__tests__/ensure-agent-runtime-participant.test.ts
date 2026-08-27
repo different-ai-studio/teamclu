@@ -32,7 +32,6 @@ vi.mock('@/lib/backend', () => ({
 }))
 vi.mock('@/lib/session-live-subscriptions', () => ({
   ensureSessionLiveSubscribed: vi.fn(async () => {}),
-  ensureTeamSessionLiveSubscribed: vi.fn(async () => {}),
 }))
 vi.mock('@/lib/teamclu/resolve-runtime-start-workspace', () => ({
   resolveSessionWorkspaceHintForRuntimeStart: (...a: unknown[]) =>

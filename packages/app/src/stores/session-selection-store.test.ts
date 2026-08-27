@@ -7,7 +7,6 @@ beforeEach(() => {
     activeSessionId: null,
     currentSessionId: null,
     viewingArchivedSessionId: null,
-    viewingChildSessionId: null,
   });
   useSessionListStore.setState({
     rows: [],
@@ -42,11 +41,9 @@ describe("session-selection-store", () => {
     expect(useSessionSelectionStore.getState().currentSessionId).toBeNull();
   });
 
-  it("tracks child and archived view selection separately", () => {
-    useSessionSelectionStore.getState().setViewingChildSession("child-1");
+  it("tracks archived view selection separately from active session", () => {
     useSessionSelectionStore.getState().setViewingArchivedSession("archived-1");
 
-    expect(useSessionSelectionStore.getState().viewingChildSessionId).toBe("child-1");
     expect(useSessionSelectionStore.getState().viewingArchivedSessionId).toBe("archived-1");
   });
 });
