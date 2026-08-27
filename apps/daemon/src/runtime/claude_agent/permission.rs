@@ -21,11 +21,14 @@ use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
 use crate::runtime::opencode_http::translate::permission_options;
 
+use super::types::{BridgeInstanceId, BridgeRouteKey};
 use super::Shared;
 
 pub(crate) struct PendingPermission {
-    /// Bridge-side session handle, needed to address the reply.
-    pub(crate) session_key: String,
+    pub(crate) route_key: BridgeRouteKey,
+    /// Bridge-local request id (`perm-N`) used when replying over JSONL RPC.
+    pub(crate) bridge_request_id: String,
+    pub(crate) worktree: String,
     /// The SDK's own "always allow" rule suggestions, echoed back verbatim on
     /// an `always` grant so the persisted rule matches the real tool call.
     pub(crate) suggestions: Value,
@@ -74,15 +77,16 @@ fn options_for(can_always: bool) -> Vec<amux::AcpPermissionOption> {
 pub(super) async fn handle_request(
     shared: &Arc<Shared>,
     session_id: &str,
+    bridge_id: &BridgeInstanceId,
     session_key: &str,
     event: &Value,
 ) {
-    let request_id = event
+    let bridge_request_id = event
         .get("requestId")
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    if request_id.is_empty() {
+    if bridge_request_id.is_empty() {
         return;
     }
     let tool_name = event
@@ -106,27 +110,42 @@ pub(super) async fn handle_request(
             route.event_tx.clone(),
             route.turn_requester.clone(),
             route.turn_reply_to.clone(),
+            route.worktree.clone(),
+            route.connected,
         )
     });
-    let Some((event_tx, requester, reply_to)) = snapshot else {
+    let Some((event_tx, requester, reply_to, worktree, connected)) = snapshot else {
         warn!(
             session_id,
-            request_id, "claude permission for unknown session; denying"
+            bridge_request_id, "claude permission for unknown session; denying"
         );
-        deny_unrouted(shared, session_key, &request_id).await;
+        deny_unrouted(shared, bridge_id, session_key, &bridge_request_id).await;
         return;
     };
+    if !connected {
+        warn!(
+            session_id,
+            bridge_request_id, "claude permission for disconnected session; denying"
+        );
+        deny_unrouted(shared, bridge_id, session_key, &bridge_request_id).await;
+        return;
+    }
+
+    let route_key = BridgeRouteKey::new(bridge_id.clone(), session_key);
+    let public_request_id = route_key.public_permission_id(&bridge_request_id);
 
     let mut params = params_from_input(&input);
-    params.insert("request_id".to_string(), request_id.clone());
+    params.insert("request_id".to_string(), public_request_id.clone());
     if let Some(actor) = requester {
         params.insert("requester_actor_id".to_string(), actor);
     }
 
     shared.permissions.lock().insert(
-        request_id.clone(),
+        public_request_id.clone(),
         PendingPermission {
-            session_key: session_key.to_string(),
+            route_key: route_key.clone(),
+            bridge_request_id: bridge_request_id.clone(),
+            worktree: worktree.clone(),
             suggestions: event
                 .get("suggestions")
                 .cloned()
@@ -138,7 +157,7 @@ pub(super) async fn handle_request(
     let ev = amux::AcpEvent {
         event: Some(amux::acp_event::Event::PermissionRequest(
             amux::AcpPermissionRequest {
-                request_id: request_id.clone(),
+                request_id: public_request_id,
                 tool_name: tool_name.clone(),
                 description: describe(&tool_name, &input),
                 params,
@@ -153,22 +172,28 @@ pub(super) async fn handle_request(
         .await
         .is_err()
     {
-        shared.permissions.lock().remove(&request_id);
+        shared.permissions.lock().remove(&route_key.public_permission_id(&bridge_request_id));
         warn!(
             session_id,
             "claude permission: event channel closed; denying"
         );
-        deny_unrouted(shared, session_key, &request_id).await;
+        deny_unrouted(shared, bridge_id, session_key, &bridge_request_id).await;
     }
 }
 
-async fn deny_unrouted(shared: &Arc<Shared>, session_key: &str, request_id: &str) {
+async fn deny_unrouted(
+    shared: &Arc<Shared>,
+    bridge_id: &BridgeInstanceId,
+    session_key: &str,
+    bridge_request_id: &str,
+) {
     reply(
         shared,
+        bridge_id,
         session_key,
-        request_id,
+        bridge_request_id,
         serde_json::json!({
-            "requestId": request_id,
+            "requestId": bridge_request_id,
             "granted": false,
             "message": "TeamClu could not route this approval request.",
             "interrupt": true,
@@ -177,19 +202,34 @@ async fn deny_unrouted(shared: &Arc<Shared>, session_key: &str, request_id: &str
     .await;
 }
 
-async fn reply(shared: &Arc<Shared>, session_key: &str, request_id: &str, params: Value) {
+async fn reply(
+    shared: &Arc<Shared>,
+    bridge_id: &BridgeInstanceId,
+    session_key: &str,
+    bridge_request_id: &str,
+    params: Value,
+) {
     let worktree = shared
-        .session_worktrees
+        .routes
         .lock()
-        .get(session_key)
-        .cloned()
+        .values()
+        .find(|route| route.bridge_id == *bridge_id && route.session_key == session_key)
+        .map(|route| route.worktree.clone())
         .unwrap_or_default();
     let Some(proc) = shared.pool.get(&worktree) else {
-        warn!(request_id, worktree, "claude permission reply: bridge gone");
+        warn!(bridge_request_id, worktree, "claude permission reply: bridge gone");
         return;
     };
+    if proc.bridge_id != *bridge_id {
+        warn!(
+            bridge_request_id,
+            worktree,
+            "claude permission reply: stale bridge generation"
+        );
+        return;
+    }
     if let Err(e) = proc.client.request("resolve_permission", params).await {
-        warn!(request_id, error = %e, "claude permission reply failed");
+        warn!(bridge_request_id, error = %e, "claude permission reply failed");
     }
 }
 
@@ -207,14 +247,14 @@ pub(crate) async fn resolve(
     let always = granted && option_id == Some("always") && pending.can_always;
     let params = if granted {
         serde_json::json!({
-            "requestId": request_id,
+            "requestId": pending.bridge_request_id,
             "granted": true,
             "always": always,
             "suggestions": pending.suggestions,
         })
     } else {
         serde_json::json!({
-            "requestId": request_id,
+            "requestId": pending.bridge_request_id,
             "granted": false,
             "message": "The user rejected this tool call. Pick another approach or ask what to do instead.",
             // A bare rejection with no guidance should stop the turn rather
@@ -222,7 +262,14 @@ pub(crate) async fn resolve(
             "interrupt": true,
         })
     };
-    reply(shared, &pending.session_key, request_id, params).await;
+    reply(
+        shared,
+        &pending.route_key.bridge_id,
+        &pending.route_key.session_key,
+        &pending.bridge_request_id,
+        params,
+    )
+    .await;
 }
 
 #[cfg(test)]

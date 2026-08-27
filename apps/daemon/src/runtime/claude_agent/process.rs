@@ -17,10 +17,11 @@ use crate::process_util::CommandNoWindow;
 use crate::runtime::sidecar::bridge_path::default_claude_bridge_main;
 use crate::runtime::sidecar::client::SidecarClient;
 
-use super::{events, Shared};
+use super::{events, types::BridgeInstanceId, Shared};
 
 pub(crate) struct ClaudeProcess {
     pub(crate) client: SidecarClient,
+    pub(crate) bridge_id: BridgeInstanceId,
     child: parking_lot::Mutex<tokio::process::Child>,
     env_fingerprint: String,
 }
@@ -157,8 +158,14 @@ impl ClaudeProcessPool {
                 return Ok(p);
             }
             info!(worktree, "claude bridge env changed; respawning");
+            let stale_bridge = p.bridge_id.clone();
             p.kill();
             self.procs.lock().remove(worktree);
+            let shared = Arc::clone(shared);
+            let wt = worktree.to_string();
+            tokio::spawn(async move {
+                events::invalidate_bridge(&shared, &stale_bridge, &wt).await;
+            });
         }
         let proc = self.spawn(shared, worktree)?;
         self.procs
@@ -255,8 +262,10 @@ impl ClaudeProcessPool {
         }
 
         let client = SidecarClient::new(stdin);
+        let bridge_id = BridgeInstanceId::new_unique();
         events::spawn_reader(
             Arc::clone(shared),
+            bridge_id.clone(),
             worktree.to_string(),
             stdout,
             client.clone(),
@@ -264,6 +273,7 @@ impl ClaudeProcessPool {
 
         Ok(Arc::new(ClaudeProcess {
             client,
+            bridge_id,
             child: parking_lot::Mutex::new(child),
             env_fingerprint: self.env_fingerprint(),
         }))
