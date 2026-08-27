@@ -67,16 +67,17 @@ type ToolCallEvent = {
   toolCallId: string;
   input: Record<string, unknown>;
 };
-type ExtensionContext = {
+type TeamcluExtensionUIContext = {
   sessionId?: string;
-  ui: {
-    confirm(title: string, message?: string, options?: { timeout?: number }): Promise<boolean>;
-    select(
-      title: string,
-      options: string[],
-      opts?: { timeout?: number; signal?: AbortSignal },
-    ): Promise<string | undefined>;
-  };
+  confirm(title: string, message?: string, options?: { timeout?: number }): Promise<boolean>;
+  select(
+    title: string,
+    options: string[],
+    opts?: { timeout?: number; signal?: AbortSignal },
+  ): Promise<string | undefined>;
+};
+type ExtensionContext = {
+  ui: TeamcluExtensionUIContext;
 };
 type ExtensionAPI = {
   on(
@@ -114,9 +115,23 @@ const SESSION_SCOPED_TOOLS = new Set([
   "archive_session",
 ]);
 
+function normalizeSessionScopedToolName(name: string): string {
+  const raw = name.trim();
+  if (!raw) return "";
+  if (raw.startsWith("mcp__")) {
+    const parts = raw.split("__");
+    const last = parts[parts.length - 1]?.trim();
+    if (last) return last;
+  }
+  return raw.split("/").pop()?.trim() ?? raw;
+}
+
 function isSessionScopedTool(name: string): boolean {
-  const base = name.split("/").pop()?.trim() ?? name;
-  return SESSION_SCOPED_TOOLS.has(base);
+  return SESSION_SCOPED_TOOLS.has(normalizeSessionScopedToolName(name));
+}
+
+function backendSessionIdFromContext(ctx?: ExtensionContext): string | undefined {
+  return ctx?.ui?.sessionId?.trim() || undefined;
 }
 
 async function resolveTeamcluSessionId(backendSessionId: string): Promise<string> {
@@ -968,7 +983,11 @@ function registerBridgeTools(
         }
         let callParams = params ?? {};
         try {
-          callParams = await injectSessionIdForTool(tool.name, callParams, ctx?.sessionId);
+          callParams = await injectSessionIdForTool(
+            tool.name,
+            callParams,
+            backendSessionIdFromContext(ctx),
+          );
         } catch {
           return sessionContextUnavailableResult();
         }

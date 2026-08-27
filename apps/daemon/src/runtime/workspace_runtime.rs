@@ -8,6 +8,7 @@ use crate::proto::amux;
 pub const INSTRUCTION_PLUGIN_REL: &str = ".opencode/plugins/teamclu-instruction.mjs";
 pub const INSTRUCTION_PLUGIN_CONFIG_ENTRY: &str = "./.opencode/plugins/teamclu-instruction.mjs";
 pub const SESSION_CONTEXT_PLUGIN_REL: &str = ".opencode/plugins/teamclu-session-context.mjs";
+pub const SESSION_CONTEXT_CLIENT_REL: &str = ".opencode/plugins/teamclu-session-context-client.mjs";
 pub const SESSION_CONTEXT_PLUGIN_CONFIG_ENTRY: &str =
     "./.opencode/plugins/teamclu-session-context.mjs";
 

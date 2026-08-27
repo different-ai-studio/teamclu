@@ -348,4 +348,60 @@ mod tests {
             json!("https://example.invalid/mcp")
         );
     }
+
+    #[test]
+    fn stamp_managed_session_context_sets_teamclu_introspect_env() {
+        let mut servers = Map::new();
+        servers.insert(
+            "teamclu-introspect".into(),
+            json!({
+                "type": "stdio",
+                "command": "teamclu-introspect",
+                "args": []
+            }),
+        );
+        stamp_managed_session_context(&mut servers, "sess-abc");
+        let env = servers["teamclu-introspect"]["env"].as_object().unwrap();
+        assert_eq!(env["TEAMCLU_SESSION_ID"], "sess-abc");
+        assert_eq!(env["TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID"], "1");
+    }
+
+    #[test]
+    fn stamp_managed_session_context_preserves_existing_env_and_legacy_name() {
+        let mut servers = Map::new();
+        servers.insert(
+            "teamclaw-introspect".into(),
+            json!({
+                "type": "stdio",
+                "command": "teamclu-introspect",
+                "env": { "FOO": "bar" }
+            }),
+        );
+        stamp_managed_session_context(&mut servers, "sess-legacy");
+        let env = servers["teamclaw-introspect"]["env"].as_object().unwrap();
+        assert_eq!(env["FOO"], "bar");
+        assert_eq!(env["TEAMCLU_SESSION_ID"], "sess-legacy");
+    }
+
+    #[test]
+    fn stamp_managed_session_context_creates_env_object_when_missing() {
+        let mut servers = Map::new();
+        servers.insert(
+            "teamclu-introspect".into(),
+            json!({
+                "type": "stdio",
+                "command": "teamclu-introspect"
+            }),
+        );
+        stamp_managed_session_context(&mut servers, "sess-new");
+        assert!(servers["teamclu-introspect"]["env"].is_object());
+    }
+
+    #[test]
+    fn stamp_managed_session_context_skips_non_object_server_entries() {
+        let mut servers = Map::new();
+        servers.insert("teamclu-introspect".into(), json!("not-an-object"));
+        stamp_managed_session_context(&mut servers, "sess-x");
+        assert_eq!(servers["teamclu-introspect"], "not-an-object");
+    }
 }

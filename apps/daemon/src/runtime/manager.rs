@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::agent_runtime_state::PerAgentRuntimeState;
-use super::backend::{agent_type_for_local_agent, create_backend, AgentBackend};
+use super::backend::{agent_type_for_local_agent, create_backend, AcpCommand, AcpStartupMetadata, AgentBackend};
 use super::builtin_commands::builtin_commands;
 use super::execution_context::{ExecutionContext, IsolationDomainKey, ProcessEnvRevision};
 use super::handle::RuntimeHandle;
@@ -535,6 +535,96 @@ impl RuntimeManager {
         self.aggregators.get(agent_id)
     }
 
+    fn uses_deferred_initial_prompt(agent_type: amux::AgentType) -> bool {
+        matches!(
+            agent_type,
+            amux::AgentType::Opencode | amux::AgentType::Pi
+        )
+    }
+
+    fn validate_managed_session_metadata(
+        agent_type: amux::AgentType,
+        startup: &AcpStartupMetadata,
+        teamclu_session_id: &str,
+    ) -> crate::error::Result<()> {
+        if !Self::uses_deferred_initial_prompt(agent_type) {
+            return Ok(());
+        }
+        if startup.host_generation_id.trim().is_empty()
+            || startup.acp_session_id.trim().is_empty()
+            || teamclu_session_id.trim().is_empty()
+        {
+            return Err(crate::error::AmuxError::Agent(
+                "session context metadata incomplete for managed runtime".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn register_attached_session_context(
+        &self,
+        agent_type: amux::AgentType,
+        startup: &AcpStartupMetadata,
+        teamclu_session_id: &str,
+        runtime_id: &str,
+    ) {
+        if let Some(service) = self.context_service.as_ref() {
+            service.register_attached_session(
+                agent_type,
+                &startup.host_generation_id,
+                &startup.acp_session_id,
+                teamclu_session_id,
+                runtime_id,
+            );
+        }
+    }
+
+    async fn send_deferred_initial_prompt(
+        &self,
+        agent_type: amux::AgentType,
+        cmd_tx: &mpsc::Sender<AcpCommand>,
+        startup: &AcpStartupMetadata,
+        prompt: &str,
+    ) -> crate::error::Result<()> {
+        if !Self::uses_deferred_initial_prompt(agent_type) || prompt.is_empty() {
+            return Ok(());
+        }
+        cmd_tx
+            .send(AcpCommand::Prompt {
+                acp_session_id: startup.acp_session_id.clone(),
+                text: prompt.to_string(),
+                attachment_urls: Vec::new(),
+                requester_actor_id: None,
+                reply_to_message_id: None,
+            })
+            .await
+            .map_err(|_| {
+                if let Some(service) = self.context_service.as_ref() {
+                    service.unregister_backend_session(
+                        agent_type,
+                        &startup.host_generation_id,
+                        &startup.acp_session_id,
+                    );
+                }
+                crate::error::AmuxError::Agent("failed to enqueue initial prompt".into())
+            })
+    }
+
+    async fn finalize_attached_session(
+        &self,
+        agent_type: amux::AgentType,
+        startup: &AcpStartupMetadata,
+        teamclu_session_id: &str,
+        runtime_id: &str,
+        cmd_tx: &mpsc::Sender<AcpCommand>,
+        prompt: &str,
+    ) -> crate::error::Result<()> {
+        Self::validate_managed_session_metadata(agent_type, startup, teamclu_session_id)?;
+        self.register_attached_session_context(agent_type, startup, teamclu_session_id, runtime_id);
+        self.send_deferred_initial_prompt(agent_type, cmd_tx, startup, prompt)
+            .await
+    }
+
     #[allow(dead_code)]
     pub async fn start_runtime(
         &mut self,
@@ -640,6 +730,11 @@ impl RuntimeManager {
 
         let launch = self.launch_config_for(agent_type);
         let resume_requested = resume_acp_session_id.is_some();
+        let attach_prompt = if Self::uses_deferred_initial_prompt(agent_type) {
+            String::new()
+        } else {
+            prompt.to_string()
+        };
         let (cmd_tx, mut startup) = self
             .agent_backend
             .lock()
@@ -658,13 +753,23 @@ impl RuntimeManager {
                 // No device MRU: every entry point pins a model when it is
                 // created, so attach has nothing left to infer from (ADR-0007).
                 Vec::new(),
-                prompt.to_string(),
+                attach_prompt,
                 handle.event_tx.clone(),
                 permission,
                 forbid_new_session_fallback,
                 session_id.to_string(),
             )
             .await?;
+
+        self.finalize_attached_session(
+            agent_type,
+            &startup,
+            session_id,
+            &agent_id,
+            &cmd_tx,
+            prompt,
+        )
+        .await?;
 
         handle.cmd_tx = Some(cmd_tx);
         handle.host_generation_id = startup.host_generation_id.clone();
@@ -698,16 +803,6 @@ impl RuntimeManager {
         }
         if let Some(model_id) = startup.initial_model {
             self.set_current_model(&agent_id, &model_id);
-        }
-
-        if let Some(service) = self.context_service.as_ref() {
-            service.register_attached_session(
-                agent_type,
-                &startup.host_generation_id,
-                &startup.acp_session_id,
-                session_id,
-                &agent_id,
-            );
         }
 
         self.seed_cursor_from_prior_runtime(&agent_id, Some(session_id))
@@ -810,6 +905,11 @@ impl RuntimeManager {
         handle.is_gateway = is_gateway;
 
         let launch = self.launch_config_for(agent_type);
+        let attach_prompt = if Self::uses_deferred_initial_prompt(agent_type) {
+            String::new()
+        } else {
+            prompt.to_string()
+        };
         let (cmd_tx, mut startup) = self
             .agent_backend
             .lock()
@@ -828,13 +928,23 @@ impl RuntimeManager {
                 // No device MRU: every entry point pins a model when it is
                 // created, so attach has nothing left to infer from (ADR-0007).
                 Vec::new(),
-                prompt.to_string(),
+                attach_prompt,
                 handle.event_tx.clone(),
                 permission,
                 forbid_new_session_fallback,
                 session_id.to_string(),
             )
             .await?;
+
+        self.finalize_attached_session(
+            agent_type,
+            &startup,
+            session_id,
+            session_id,
+            &cmd_tx,
+            prompt,
+        )
+        .await?;
 
         handle.cmd_tx = Some(cmd_tx);
         handle.host_generation_id = startup.host_generation_id.clone();
@@ -859,16 +969,6 @@ impl RuntimeManager {
         }
         if let Some(model_id) = startup.initial_model {
             self.set_current_model(session_id, &model_id);
-        }
-
-        if let Some(service) = self.context_service.as_ref() {
-            service.register_attached_session(
-                agent_type,
-                &startup.host_generation_id,
-                &new_acp_sid,
-                session_id,
-                session_id,
-            );
         }
 
         self.seed_cursor_from_prior_runtime(session_id, Some(session_id))

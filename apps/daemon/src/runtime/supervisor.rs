@@ -34,6 +34,7 @@ const INSTRUCTION_PLUGIN_TEMPLATE: &str = include_str!(
 const SESSION_CONTEXT_PLUGIN_TEMPLATE: &str = include_str!(
     "../../../../packages/app/src/lib/opencode/templates/teamclu-session-context-plugin.mjs.txt"
 );
+const SESSION_CONTEXT_CLIENT_TEMPLATE: &str = include_str!("../../shared/session-context-client.mjs");
 
 use crate::config::workspace_control::{
     ApplyOutcome, EnvActivationBlocker, EnvActivationDiagnostics, RuntimeStatus,
@@ -749,21 +750,28 @@ fn install_instruction_plugin_file(workspace_path: &Path) -> Result<(), Workspac
 }
 
 fn install_session_context_plugin_file(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
-    use crate::runtime::workspace_runtime::SESSION_CONTEXT_PLUGIN_REL;
+    use crate::runtime::workspace_runtime::{SESSION_CONTEXT_CLIENT_REL, SESSION_CONTEXT_PLUGIN_REL};
 
     let plugin_path = workspace_path.join(SESSION_CONTEXT_PLUGIN_REL);
+    let client_path = workspace_path.join(SESSION_CONTEXT_CLIENT_REL);
     if let Some(parent) = plugin_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
     }
 
-    let should_write = match std::fs::read_to_string(&plugin_path) {
-        Ok(existing) => existing != SESSION_CONTEXT_PLUGIN_TEMPLATE,
-        Err(_) => true,
-    };
-    if should_write {
-        std::fs::write(&plugin_path, SESSION_CONTEXT_PLUGIN_TEMPLATE)
-            .map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-    }
+    let write_if_changed =
+        |path: &Path, template: &str| -> Result<(), WorkspaceControlError> {
+            let should_write = match std::fs::read_to_string(path) {
+                Ok(existing) => existing != template,
+                Err(_) => true,
+            };
+            if should_write {
+                std::fs::write(path, template).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
+            }
+            Ok(())
+        };
+
+    write_if_changed(&client_path, SESSION_CONTEXT_CLIENT_TEMPLATE)?;
+    write_if_changed(&plugin_path, SESSION_CONTEXT_PLUGIN_TEMPLATE)?;
     Ok(())
 }
 
