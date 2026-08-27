@@ -87,6 +87,17 @@
 	reverse_proxy emqx:18083
 }
 
+# Gitea — per-app private git repos (Apps module). SSH is NOT proxied here;
+# clients dial GITEA_DOMAIN:GITEA_SSH_PORT directly (see docker-compose.yml).
+#
+# GITEA_DOMAIN falls back to gitea.localhost (internal CA, no ACME) on a box
+# that has not set one, for the same reason S3_DOMAIN does: a nameless block is
+# read as global configuration and Caddy refuses to start.
+{$CADDY_SITE_SCHEME}{$GITEA_DOMAIN} {
+	{$CADDY_SITE_TLS}
+	reverse_proxy gitea:3000
+}
+
 # Deployed apps: <slug>-<id8>.{$APPS_DOMAIN}
 #
 # The wildcard sits one level DOWN, on its own `apps.` label, and never on the

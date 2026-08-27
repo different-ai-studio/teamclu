@@ -45,6 +45,12 @@ export interface ChannelFeatureFlags {
 export interface FeatureFlags {
   auth?: AuthFeatureFlags;
   channels?: ChannelFeatureFlags;
+  /**
+   * Nav entry only (`NavRail`, sidebar apps column). Off hides the UI surface
+   * for creating or browsing apps; existing app sessions, workspaces, and
+   * already-deployed sites keep working — this is not a data or runtime kill
+   * switch.
+   */
   apps?: boolean;
   /**
    * Locks a build out of changing or leaving the team LLM config. Kept at

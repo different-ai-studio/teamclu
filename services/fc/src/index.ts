@@ -19,6 +19,7 @@ import { ApiError } from "./lib/http-utils.js";
 import { getAppsAdminExecutor } from "./lib/provisioning/app-postgres.js";
 import { getFcClient, makeFcOps, resolveFcEndpoint } from "./lib/provisioning/fc-client.js";
 import { startDeploy as startDeployImpl, finalizeDeploy as finalizeDeployImpl } from "./lib/provisioning/app-deploy.js";
+import { makeTeardownAppDeps, type TeardownAppDeps } from "./lib/provisioning/app-delete.js";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { resolveAppsOss, getAppsS3Client } from "./lib/provisioning/apps-oss.js";
@@ -116,6 +117,31 @@ function makeDeployDeps() {
   };
 }
 
+/**
+ * Deps for reclaiming an app's cloud resources on delete.
+ *
+ * Returned under a `teardownDeps` key, NOT spread flat: both repo factories
+ * destructure `teardownDeps` and pass it on as a unit. Returning the bare
+ * `{ fcOps, deleteOssObject }` made the spread land those two at the top
+ * level, where nothing reads them — so `teardownDeps` was `undefined` on every
+ * real request and deleting an app left its FC function, HTTP trigger and OSS
+ * artifact in place. The site stayed reachable while the dialog said it had
+ * been taken down.
+ */
+function makeTeardownDeps(): { teardownDeps?: TeardownAppDeps } {
+  const resolved = resolveAppsOss();
+  if (resolved.error) return {};
+  const profile = resolved.profile;
+  if (!resolveFcEndpoint()) return {};
+  const fcOps = makeFcOps(getFcClient(profile), {
+    bucket: profile.bucket,
+    role: process.env.ROLE_ARN,
+    region: profile.region,
+  });
+  const s3 = getAppsS3Client(profile);
+  return { teardownDeps: makeTeardownAppDeps({ bucket: profile.bucket, s3, fcOps }) };
+}
+
 // Gitea repo provisioning deps. Returns `giteaUnavailableReason` when any of
 // GITEA_URL / GITEA_TOKEN / GITEA_OWNER is empty so createApp surfaces a 503
 // that names the missing variable rather than half-provisioning a row.
@@ -200,6 +226,7 @@ export function makeBusinessRepoFactory(
         // by Drizzle queries via buildPgPushDeps() — no Supabase service-role.
         dispatchPush: async (record) => { await dispatchPush(record, pgPushDeps()); },
         ...makeDeployDeps(),
+        ...makeTeardownDeps(),
         ...makeGiteaDeps(),
         ...makeGotrueOAuthDeps(),
         publishReadEvent: async ({ userId, sessionId }) => {
@@ -218,6 +245,7 @@ export function makeBusinessRepoFactory(
       publishableKey: SUPABASE_PUBLISHABLE_KEY(),
       accessToken,
       ...makeDeployDeps(),
+      ...makeTeardownDeps(),
       ...makeGiteaDeps(),
       ...makeGotrueOAuthDeps(),
     });

@@ -468,8 +468,9 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
     async getAppGitCredential(appId: string) {
       const existing = await loadVisibleApp(appId);
       if (!existing) return null;
+      let callerActorId: string | null = null;
       if (ctx.userId) {
-        const callerActorId = await resolveActorForTeam(db, ctx.userId, existing.teamId);
+        callerActorId = await resolveActorForTeam(db, ctx.userId, existing.teamId);
         if (!callerActorId || existing.createdByActorId !== callerActorId) return null;
       }
       if (!existing.gitRemoteUrl) return null;
@@ -478,7 +479,8 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
       if (existing.gitAuthKind !== GITEA_AUTH_KIND) return null;
       if (!deps.gitea) throw giteaUnavailable(deps.giteaUnavailableReason);
 
-      const jit = await issueJitDeployKey(deps.gitea, appId);
+      const actorId = callerActorId ?? existing.createdByActorId ?? "unknown";
+      const jit = await issueJitDeployKey(deps.gitea, appId, actorId);
       return {
         remoteUrl: existing.gitRemoteUrl,
         authKind: "deploy_key" as const,
@@ -504,6 +506,22 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
       if (!row) return null;
       const actor = await resolveActorForTeam(db, ctx.userId, row.teamId);
       return { member: Boolean(actor) };
+    },
+
+    async listAppAccess(_appId: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-apps-first-class plan)");
+    },
+
+    async setAppAccess(_appId: string, _memberId: string, _permissionLevel: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-apps-first-class plan)");
+    },
+
+    async removeAppAccess(_appId: string, _memberId: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-apps-first-class plan)");
+    },
+
+    async deleteApp(_appId: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-apps-first-class plan)");
     },
   };
 }

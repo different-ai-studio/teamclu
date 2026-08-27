@@ -14,6 +14,8 @@ use crate::sync::app_templates::{write_template, TemplateVars};
 pub struct SeedGitPush<'a> {
     pub remote_url: &'a str,
     pub deploy_key_pem: &'a str,
+    pub git_user_name: Option<&'a str>,
+    pub git_user_email: Option<&'a str>,
 }
 
 /// Outcome of seeding — `git_commit_sha` is set when a push succeeded.
@@ -46,6 +48,8 @@ pub fn seed_app_repo(
         push.remote_url,
         push.deploy_key_pem,
         "Initial app seed",
+        push.git_user_name,
+        push.git_user_email,
     )?;
     Ok(SeedOutcome {
         git_commit_sha: Some(sha),

@@ -1,8 +1,20 @@
 import { create, type StoreApi } from "zustand";
 import { getBackend } from "@/lib/backend";
-import { publicDeployConfirm } from "@/lib/app-deploy-confirm";
-import { seedDaemonApp, buildDaemonApp, type SeedAppResult } from "@/lib/daemon-local-client";
-import type { AppRow } from "@/lib/backend/types";
+import {
+  ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE,
+  PUBLIC_DEPLOY_CONFIRM_MESSAGE,
+  publicDeployConfirm,
+} from "@/lib/app-deploy-confirm";
+import {
+  seedDaemonApp,
+  buildDaemonApp,
+  cloneDaemonApp,
+  daemonAppWorkdir,
+  getDaemonEnvActivationDiagnostics,
+  type SeedAppResult,
+} from "@/lib/daemon-local-client";
+import { isTauri } from "@/lib/utils";
+import type { AppRow, AppAuthMode } from "@/lib/backend/types";
 
 interface AppsState {
   items: AppRow[];
@@ -12,11 +24,14 @@ interface AppsState {
   teamId: string | null;
   /** App ids with a deploy in flight — drives per-row spinner / disabled state. */
   deployingIds: string[];
-  /** Session each app was last opened into — lets the list mark the row whose
-   *  session is currently active. Sessions are resolved lazily on open, so this
-   *  fills in as apps are opened rather than up front. */
+  /** Last session opened for each app — a hint for re-open, not a 1:1 binding. */
   sessionIdByAppId: Record<string, string>;
+  /** Reverse map for control-panel app resolution (session → app). */
+  appIdBySessionId: Record<string, string>;
+  /** App highlighted in column 1; drives column 2 session list when filter is apps. */
+  selectedAppId: string | null;
   recordAppSession: (appId: string, sessionId: string) => void;
+  selectApp: (appId: string | null) => void;
   load: (teamId: string, opts?: { force?: boolean }) => Promise<void>;
   create: (input: {
     teamId: string;
@@ -31,6 +46,8 @@ interface AppsState {
   /** Full FC deploy: startDeploy → daemon build+upload → finalize. */
   deploy: (appId: string) => Promise<void>;
   rename: (appId: string, name: string) => Promise<void>;
+  updateAuthMode: (appId: string, authMode: AppAuthMode) => Promise<void>;
+  deleteApp: (appId: string) => Promise<boolean>;
 }
 
 type SetState = StoreApi<AppsState>["setState"];
@@ -215,6 +232,67 @@ async function runSeed(set: SetState, app: AppRow): Promise<void> {
   // unreachable → no status change; reseed remains available.
 }
 
+/** True when the daemon workdir already has a checkout (non-empty directory). */
+async function localWorkdirHasCheckout(workdir: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    const { exists, readDir } = await import("@tauri-apps/plugin-fs");
+    if (!(await exists(workdir))) return false;
+    const entries = await readDir(workdir);
+    return entries.length > 0;
+  } catch (e) {
+    console.warn("could not inspect app workdir (non-fatal)", e);
+    return false;
+  }
+}
+
+/**
+ * On-demand clone for collaborators (design §5.4): when this machine has no
+ * local checkout yet, fetch the repo with a prompt+ deploy key and bind the
+ * workdir. Skips when the directory already has files; dirty trees are left
+ * alone (deploy/build reuse ERR_DIRTY — we never clone over them).
+ */
+export async function ensureAppCheckout(app: AppRow): Promise<void> {
+  if (!isTauri()) return;
+  if (app.provisionStatus !== "ready") return;
+
+  const workdirInfo = await daemonAppWorkdir(app.id, app.teamId);
+  if (!workdirInfo) return;
+  const workdir = workdirInfo.workdir;
+  if (await localWorkdirHasCheckout(workdir)) return;
+
+  let gitRemoteUrl: string | null = app.gitRemoteUrl?.trim() || null;
+  let deployKeyPem: string | null = null;
+
+  if (isGiteaManaged(app)) {
+    try {
+      const cred = await getBackend().apps.getGitCredential(app.id);
+      if (!cred?.privateKeyPem || !cred.remoteUrl) return;
+      gitRemoteUrl = cred.remoteUrl;
+      deployKeyPem = cred.privateKeyPem;
+    } catch (e) {
+      console.warn("getGitCredential failed during checkout (non-fatal)", e);
+      return;
+    }
+  } else if (!gitRemoteUrl) {
+    return;
+  }
+
+  let result: SeedAppResult = { outcome: "unreachable", workdir: null, error: null };
+  try {
+    result = await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem);
+  } catch (e) {
+    console.warn("app clone kick failed (non-fatal)", e);
+  }
+
+  if (result.outcome === "seeded" && result.workdir) {
+    const { bindAppWorkdir } = await import("@/lib/app-session");
+    await bindAppWorkdir(app, result.workdir);
+  } else if (result.outcome === "failed") {
+    await toastError("仓库克隆失败", result.error ?? undefined);
+  }
+}
+
 export const useAppsStore = create<AppsState>((set, get) => ({
   items: [],
   loaded: false,
@@ -223,12 +301,25 @@ export const useAppsStore = create<AppsState>((set, get) => ({
   teamId: null,
   deployingIds: [],
   sessionIdByAppId: {},
+  appIdBySessionId: {},
+  selectedAppId: null,
   recordAppSession: (appId, sessionId) => {
-    set((s) =>
-      s.sessionIdByAppId[appId] === sessionId
-        ? s
-        : { sessionIdByAppId: { ...s.sessionIdByAppId, [appId]: sessionId } },
-    );
+    set((s) => {
+      const sessionChanged = s.sessionIdByAppId[appId] !== sessionId;
+      const appChanged = s.appIdBySessionId[sessionId] !== appId;
+      if (!sessionChanged && !appChanged) return s;
+      return {
+        sessionIdByAppId: sessionChanged
+          ? { ...s.sessionIdByAppId, [appId]: sessionId }
+          : s.sessionIdByAppId,
+        appIdBySessionId: appChanged
+          ? { ...s.appIdBySessionId, [sessionId]: appId }
+          : s.appIdBySessionId,
+      };
+    });
+  },
+  selectApp: (appId) => {
+    set((s) => (s.selectedAppId === appId ? s : { selectedAppId: appId }));
   },
   load: async (teamId, opts) => {
     const s = get();
@@ -271,10 +362,16 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       return;
     }
 
+    if (app.workspaceId) {
+      const envDiag = await getDaemonEnvActivationDiagnostics(app.workspaceId, app.teamId);
+      if (envDiag?.workspace_has_active_turn) {
+        const accepted = publicDeployConfirm.run(ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE);
+        if (!accepted) return;
+      }
+    }
+
     if (app.authMode === "none") {
-      const accepted = publicDeployConfirm.run(
-        "此应用未启用登录保护，任何拿到链接的人都能访问。\n\n确定继续部署吗？",
-      );
+      const accepted = publicDeployConfirm.run(PUBLIC_DEPLOY_CONFIRM_MESSAGE);
       if (!accepted) return;
     }
 
@@ -336,6 +433,9 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         ...(gitCommitSha ? { gitCommitSha } : {}),
         deployToken: started.deployToken,
       });
+      // The merged row carries `authModePendingRedeploy` straight from the
+       // server, so a successful finalize clears the warning on its own — there
+       // is no local flag left to reset here.
       mergeRow(set, finalized);
     } catch (e) {
       const reason = mapCloudDeployError(e);
@@ -353,6 +453,42 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       if (updated) mergeRow(set, updated);
     } catch (e) {
       await toastError("重命名失败", e instanceof Error ? e.message : String(e));
+    }
+  },
+  updateAuthMode: async (appId, authMode) => {
+    try {
+      const updated = await getBackend().apps.updateAppAuthMode(appId, authMode);
+      if (!updated) {
+        await toastError("更新登录方式失败", "应用不存在或无权修改");
+        return;
+      }
+      // `authModePendingRedeploy` is derived server-side from fc_status and the
+      // deployed mode, so the row returned by this PATCH already reports the
+      // pending state — and keeps reporting it after a reload, on another
+      // device, and for a second admin, which a local id list never did.
+      mergeRow(set, updated);
+    } catch (e) {
+      await toastError("更新登录方式失败", e instanceof Error ? e.message : String(e));
+    }
+  },
+  deleteApp: async (appId) => {
+    try {
+      const ok = await getBackend().apps.deleteApp(appId);
+      if (!ok) {
+        await toastError("删除失败", "应用不存在或无权删除");
+        return false;
+      }
+      set((s) => ({
+        items: s.items.filter((a) => a.id !== appId),
+        selectedAppId: s.selectedAppId === appId ? null : s.selectedAppId,
+        deployingIds: s.deployingIds.filter((id) => id !== appId),
+      }));
+      const { toast } = await import("sonner");
+      toast.success("应用已删除");
+      return true;
+    } catch (e) {
+      await toastError("删除失败", e instanceof Error ? e.message : String(e));
+      return false;
     }
   },
 }));

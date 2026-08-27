@@ -1707,7 +1707,12 @@ function appsAuth(userId = "user-app-1") {
 // Select filters (eq / is / in) are applied so workspace upsert dedup lookups
 // can find seeded rows the same way PostgREST would.
 function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] }: any = {}) {
-  const state: any = { apps: [...(seed.apps ?? [])], workspaces: [...(seed.workspaces ?? [])], sessions: [...(seed.sessions ?? [])] };
+  const state: any = {
+    apps: [...(seed.apps ?? [])],
+    workspaces: [...(seed.workspaces ?? [])],
+    sessions: [...(seed.sessions ?? [])],
+    app_member_access: [...(seed.app_member_access ?? [])],
+  };
   return {
     auth: appsAuth(),
     from(table: string) {
@@ -1749,12 +1754,30 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
         upsert(row: any, options?: any) {
           ctx.op = "upsert";
           calls.push({ table, op: "upsert", row, options });
-          const upserted = { ...row, id: row.id ?? `${table}-id-1` };
+          const upserted = { ...row, id: row.id ?? `${table}-id-${(state[table]?.length ?? 0) + 1}` };
+          if (!upserted.created_at) upserted.created_at = new Date().toISOString();
+          if (!upserted.updated_at) upserted.updated_at = new Date().toISOString();
           if (!state[table]) state[table] = [];
-          const idx = state[table].findIndex((r: any) => r.id === upserted.id);
+          let idx = -1;
+          if (table === "app_member_access" && options?.onConflict === "app_id,member_id") {
+            idx = state[table].findIndex(
+              (r: any) => r.app_id === upserted.app_id && r.member_id === upserted.member_id,
+            );
+          } else {
+            idx = state[table].findIndex((r: any) => r.id === upserted.id);
+          }
           if (idx >= 0) state[table][idx] = { ...state[table][idx], ...upserted };
           else state[table].push(upserted);
-          ctx.inserted = state[table].find((r: any) => r.id === upserted.id);
+          ctx.inserted = state[table].find(
+            (r: any) => (table === "app_member_access" && options?.onConflict === "app_id,member_id")
+              ? r.app_id === upserted.app_id && r.member_id === upserted.member_id
+              : r.id === upserted.id,
+          );
+          return builder;
+        },
+        delete() {
+          ctx.op = "delete";
+          calls.push({ table, op: "delete" });
           return builder;
         },
         eq(column: string, value: any) {
@@ -1801,6 +1824,11 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
         },
         maybeSingle() {
           if (table === "actors") return Promise.resolve({ data: actorRow, error: null });
+          if (ctx.op === "delete") {
+            const matched = matchRows();
+            state[table] = (state[table] ?? []).filter((r: any) => !matched.includes(r));
+            return Promise.resolve({ data: null, error: null });
+          }
           if (ctx.op === "update") {
             const matched = matchRows();
             const base = matched[0];
@@ -1831,6 +1859,9 @@ function fakeGitea(over: Record<string, unknown> = {}) {
     createDeployKey: async () => ({ id: 1 }),
     listDeployKeys: async () => [],
     deleteDeployKey: async () => {},
+    archiveAndRenameAppRepo: async (appId: string) => ({
+      sshUrl: `git@gitea.example:teamclaw-apps/deleted-tc-app-${appId}.git`,
+    }),
     getRepoHead: async () => ({ sha: "abc123" }),
     ...over,
   };
@@ -1850,6 +1881,7 @@ function appsRepo(supabase: any, extra: any = {}) {
 const APP_ROW = {
   id: "app-1",
   team_id: "team-1",
+  created_by_actor_id: "actor-app-1",
   name: "My App",
   slug: "my-app",
   type: "fullstack_tanstack_postgres",
@@ -1866,12 +1898,21 @@ const APP_ROW = {
   updated_at: "2026-06-13T00:00:00Z",
 };
 
+const GITEA_MANAGED_APP = {
+  ...APP_ROW,
+  created_by_actor_id: "actor-app-1",
+  provision_status: "ready",
+  git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git",
+  git_auth_kind: "gitea_deploy_key",
+};
+
 test("apps: mapApp exposes exactly the canonical keys", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }));
   const items = await repo.listApps({ teamId: "team-1", limit: 100 });
   assert.equal(items.length, 1);
   assert.deepEqual(Object.keys(items[0]).sort(), [
-    "authMode", "createdAt", "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
+    "authMode", "authModePendingRedeploy", "createdAt", "fcStatus", "fcEndpoint",
+    "fcFunctionName", "fcRegion",
     "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "name", "oauthClientId",
     "provisionStatus", "publicUrl",
     "runtime", "slug", "teamId", "type", "updatedAt", "visibility", "workspaceId",
@@ -1885,6 +1926,27 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   assert.equal(items[0].teamId, "team-1");
   assert.equal(items[0].workspaceId, "ws-1");
   assert.equal(items[0].provisionStatus, "pending");
+});
+
+test("apps: authModePendingRedeploy is derived from the deployed mode", async () => {
+  // Changing authMode does nothing to the running function until the next
+  // deploy (the OAuth env is injected at finalize), so the row has to say so —
+  // design §7.4 treats a silent one as a security expectation failure.
+  const live = { ...APP_ROW, fc_status: "live", auth_mode: "platform" };
+
+  const pending = appsRepo(appsSupabase({ seed: { apps: [{ ...live, deployed_auth_mode: "none" }] } }));
+  assert.equal((await pending.listApps({ teamId: "team-1" }))[0].authModePendingRedeploy, true);
+
+  const settled = appsRepo(appsSupabase({ seed: { apps: [{ ...live, deployed_auth_mode: "platform" }] } }));
+  assert.equal((await settled.listApps({ teamId: "team-1" }))[0].authModePendingRedeploy, false);
+
+  // Never deployed → nothing is live to be out of date with.
+  const notLive = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, auth_mode: "platform" }] } }));
+  assert.equal((await notLive.listApps({ teamId: "team-1" }))[0].authModePendingRedeploy, false);
+
+  // A live row from before the column exists must not light the warning up.
+  const legacy = appsRepo(appsSupabase({ seed: { apps: [{ ...live, deployed_auth_mode: null }] } }));
+  assert.equal((await legacy.listApps({ teamId: "team-1" }))[0].authModePendingRedeploy, false);
 });
 
 test("apps: listApps filters by team_id, orders created_at desc, limits", async () => {
@@ -1922,6 +1984,227 @@ test("apps: getAppMembership returns null when app is missing", async () => {
     createServiceRoleClient: () => admin,
   });
   assert.equal(await repo.getAppMembership("missing"), null);
+});
+
+test("apps: listAppAccess returns rows for creator", async () => {
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: "member-2",
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  const items = await repo.listAppAccess("app-1");
+  assert.deepEqual(items, [{
+    memberId: "member-2",
+    permissionLevel: "prompt",
+    grantedByMemberId: "actor-app-1",
+    createdAt: "2026-08-27T00:00:00.000Z",
+  }]);
+});
+
+test("apps: listAppAccess returns null for non-creator without admin", async () => {
+  const otherActor = { id: "actor-other" };
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [APP_ROW] }, actorRow: otherActor }),
+    { createServiceRoleClient: () => admin },
+  );
+  assert.equal(await repo.listAppAccess("app-1"), null);
+});
+
+test("apps: listAppAccess returns null when app is not visible", async () => {
+  const admin = appsSupabase({ seed: { apps: [] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  assert.equal(await repo.listAppAccess("missing"), null);
+});
+
+test("apps: setAppAccess upserts for creator", async () => {
+  const calls: any[] = [];
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] }, calls });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] }, calls }), {
+    createServiceRoleClient: () => admin,
+  });
+  const row = await repo.setAppAccess("app-1", "member-2", "admin");
+  assert.equal(row?.memberId, "member-2");
+  assert.equal(row?.permissionLevel, "admin");
+  assert.equal(row?.grantedByMemberId, "actor-app-1");
+  const upsert = calls.find((c) => c.table === "app_member_access" && c.op === "upsert");
+  assert.equal(upsert?.row.app_id, "app-1");
+  assert.equal(upsert?.row.member_id, "member-2");
+  assert.equal(upsert?.row.permission_level, "admin");
+  assert.equal(upsert?.row.granted_by_member_id, "actor-app-1");
+});
+
+test("apps: setAppAccess returns null for non-creator without admin", async () => {
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [APP_ROW] }, actorRow: { id: "actor-other" } }),
+    { createServiceRoleClient: () => admin },
+  );
+  assert.equal(await repo.setAppAccess("app-1", "member-2", "prompt"), null);
+});
+
+test("apps: setAppAccess allows admin member who is not creator", async () => {
+  const adminMember = { id: "admin-member" };
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: "admin-member",
+    permission_level: "admin",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows } });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows }, actorRow: adminMember }),
+    { createServiceRoleClient: () => admin },
+  );
+  const row = await repo.setAppAccess("app-1", "member-2", "view");
+  assert.equal(row?.permissionLevel, "view");
+  assert.equal(row?.grantedByMemberId, "admin-member");
+});
+
+test("apps: setAppAccess rejects invalid permissionLevel", async () => {
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  await assert.rejects(
+    () => repo.setAppAccess("app-1", "member-2", "superuser"),
+    (e: any) => e?.statusCode === 400,
+  );
+});
+
+test("apps: removeAppAccess deletes row for creator", async () => {
+  const accessRows = [{
+    id: "access-1",
+    app_id: "app-1",
+    member_id: "member-2",
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const calls: any[] = [];
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: [...accessRows] }, calls });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  assert.equal(await repo.removeAppAccess("app-1", "member-2"), true);
+  const del = calls.find((c) => c.table === "app_member_access" && c.op === "delete");
+  assert.ok(del);
+});
+
+test("apps: removeAppAccess returns null for non-creator without admin", async () => {
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [APP_ROW] }, actorRow: { id: "actor-other" } }),
+    { createServiceRoleClient: () => admin },
+  );
+  assert.equal(await repo.removeAppAccess("app-1", "member-2"), null);
+});
+
+test("apps: removeAppAccess revokes Gitea deploy keys for the member", async () => {
+  const now = 1_700_000_000_000;
+  const memberId = "member-2";
+  const accessRows = [{
+    id: "access-1",
+    app_id: "app-1",
+    member_id: memberId,
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const deleted: number[] = [];
+  const gitea = fakeGitea({
+    listDeployKeys: async () => [
+      { id: 10, title: `jit-${memberId}-${now}-aaaa` },
+      { id: 11, title: `jit-other-${now}-bbbb` },
+    ],
+    deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
+  });
+  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: [...accessRows] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), {
+    createServiceRoleClient: () => admin,
+    gitea,
+  });
+  assert.equal(await repo.removeAppAccess("app-1", memberId), true);
+  assert.deepEqual(deleted, [10]);
+});
+
+test("apps: setAppAccess downgrade to view revokes Gitea deploy keys", async () => {
+  const now = 1_700_000_000_000;
+  const memberId = "member-2";
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: memberId,
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const deleted: number[] = [];
+  const gitea = fakeGitea({
+    listDeployKeys: async () => [
+      { id: 20, title: `jit-${memberId}-${now}-aaaa` },
+      { id: 21, title: `jit-${memberId}-${now + 1}-bbbb` },
+    ],
+    deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
+  });
+  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), {
+    createServiceRoleClient: () => admin,
+    gitea,
+  });
+  const row = await repo.setAppAccess("app-1", memberId, "view");
+  assert.equal(row?.permissionLevel, "view");
+  assert.deepEqual(deleted.sort(), [20, 21]);
+});
+
+test("apps: setAppAccess prompt to admin does not revoke deploy keys", async () => {
+  const memberId = "member-2";
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: memberId,
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  let listCalled = false;
+  const gitea = fakeGitea({
+    listDeployKeys: async () => { listCalled = true; return []; },
+  });
+  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), {
+    createServiceRoleClient: () => admin,
+    gitea,
+  });
+  await repo.setAppAccess("app-1", memberId, "admin");
+  assert.equal(listCalled, false);
+});
+
+test("apps: deauth skips deploy key revoke for non-Gitea apps", async () => {
+  const memberId = "member-2";
+  const imported = {
+    ...APP_ROW,
+    git_remote_url: "https://github.com/owner/repo.git",
+    git_auth_kind: null,
+  };
+  let listCalled = false;
+  const gitea = fakeGitea({
+    listDeployKeys: async () => { listCalled = true; return []; },
+  });
+  const admin = appsSupabase({ seed: { apps: [imported] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [imported] } }), {
+    createServiceRoleClient: () => admin,
+    gitea,
+  });
+  await repo.removeAppAccess("app-1", memberId);
+  assert.equal(listCalled, false);
 });
 
 test("apps: createApp inserts workspace + app and resolves caller actor", async () => {
@@ -2023,6 +2306,66 @@ test("apps: a non-creator's authMode change destroys nothing before the 404", as
   assert.deepEqual(disabled, [], "the OAuth client must survive a 404'd PATCH");
 });
 
+test("apps: deleteApp tears down resources, archives workspace, and removes the row", async () => {
+  const deletedKeys: number[] = [];
+  const fcDeleted: string[] = [];
+  const ossDeleted: string[] = [];
+  const oauthDisabled: string[] = [];
+  let archivedRepo = false;
+  const calls: any[] = [];
+  const admin = appsSupabase({
+    calls,
+    seed: {
+      apps: [{
+        ...GITEA_MANAGED_APP,
+        workspace_id: "ws-1",
+        fc_function_name: "tc-app-app-1",
+        fc_status: "live",
+        auth_mode: "platform",
+        oauth_client_id: "oauth-cid",
+      }],
+      workspaces: [{ id: "ws-1", team_id: "team-1", name: "app-ws", path: null, archived: false }],
+    },
+  });
+  const repo = appsRepo(admin, {
+    createServiceRoleClient: () => admin,
+    gitea: fakeGitea({
+      listDeployKeys: async () => [{ id: 9, title: "jit-x" }],
+      deleteDeployKey: async (_appId: string, id: number) => { deletedKeys.push(id); },
+      archiveAndRenameAppRepo: async () => {
+        archivedRepo = true;
+        return { sshUrl: "git@gitea.example:teamclaw-apps/deleted-tc-app-app-1.git" };
+      },
+    }),
+    gotrue: {
+      disableOAuthClient: async (id: string) => { oauthDisabled.push(id); },
+    },
+    teardownDeps: {
+      fcOps: {
+        deleteHttpTrigger: async (name: string) => { fcDeleted.push(`trigger:${name}`); },
+        deleteFunction: async (name: string) => { fcDeleted.push(`fn:${name}`); },
+      },
+      deleteOssObject: async (key: string) => { ossDeleted.push(key); },
+    },
+  });
+  assert.equal(await repo.deleteApp("app-1"), true);
+  assert.deepEqual(deletedKeys, [9]);
+  assert.ok(archivedRepo);
+  assert.deepEqual(oauthDisabled, ["oauth-cid"]);
+  assert.ok(fcDeleted.includes("fn:tc-app-app-1"));
+  assert.deepEqual(ossDeleted, ["apps/app-1/code.zip"]);
+  const wsUpdate = calls.find((c) => c.table === "workspaces" && c.op === "update");
+  assert.equal(wsUpdate?.row.archived, true);
+  assert.equal(wsUpdate?.row.path, "git@gitea.example:teamclaw-apps/deleted-tc-app-app-1.git");
+  const appDelete = calls.find((c) => c.table === "apps" && c.op === "delete");
+  assert.ok(appDelete);
+});
+
+test("apps: deleteApp returns false for view permission", async () => {
+  const repo = appAccessRepo("view");
+  assert.equal(await repo.deleteApp("app-1"), false);
+});
+
 test("apps: git-credential and git-head are null for an imported app", async () => {
   // An imported app has no tc-app-<id> repo on Gitea; asking for one 404s, and
   // routing deploy through Gitea unconditionally made these apps undeployable.
@@ -2053,6 +2396,62 @@ test("apps: a Gitea-managed app gets an OpenSSH credential and its repo head", a
   assert.equal(cred?.remoteUrl, managed.git_remote_url);
   assert.match(cred!.privateKeyPem, /BEGIN OPENSSH PRIVATE KEY/);
   assert.deepEqual(await repo.getAppGitHead("app-1"), { sha: "abc123" });
+});
+
+function appAccessRepo(permissionLevel: string, actorId = "member-other", extra: Record<string, unknown> = {}) {
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: actorId,
+    permission_level: permissionLevel,
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  return appsRepo(
+    appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows }, actorRow: { id: actorId } }),
+    extra,
+  );
+}
+
+test("apps: getAppGitCredential returns null for view permission", async () => {
+  const gitea = fakeGitea({
+    createDeployKey: async () => { throw new Error("must not be called"); },
+  });
+  const repo = appAccessRepo("view");
+  assert.equal(await repo.getAppGitCredential("app-1"), null);
+});
+
+test("apps: getAppGitCredential mints a write deploy key for prompt permission", async () => {
+  let deployKeyCalled = false;
+  const gitea = fakeGitea({
+    createDeployKey: async () => { deployKeyCalled = true; return { id: 1 }; },
+  });
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: "member-other",
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows }, actorRow: { id: "member-other" } }),
+    { gitea },
+  );
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.ok(deployKeyCalled, "prompt grant must register a write deploy key");
+  assert.equal(cred?.remoteUrl, GITEA_MANAGED_APP.git_remote_url);
+  assert.match(cred!.privateKeyPem, /BEGIN OPENSSH PRIVATE KEY/);
+});
+
+test("apps: getAppGitCredential mints a deploy key for admin permission", async () => {
+  let deployKeyCalled = false;
+  const gitea = fakeGitea({
+    createDeployKey: async () => { deployKeyCalled = true; return { id: 2 }; },
+  });
+  const repo = appAccessRepo("admin", "member-other", { gitea });
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.ok(deployKeyCalled, "admin grant must register a deploy key");
+  assert.equal(cred?.remoteUrl, GITEA_MANAGED_APP.git_remote_url);
+  assert.match(cred!.privateKeyPem, /BEGIN OPENSSH PRIVATE KEY/);
 });
 
 test("apps: createApp inserts a pending app when importing an external repo", async () => {
@@ -2152,6 +2551,28 @@ test("apps: the 503 names the missing configuration when one is given", async ()
       err?.statusCode === 503 &&
       /APPS_OSS_BUCKET/.test(err?.message ?? ""),
   );
+});
+
+test("apps: deployApp returns null for prompt member", async () => {
+  const repo = appAccessRepo("prompt", "prompt-member");
+  assert.equal(await repo.deployApp("app-1", APP_DEPLOY), null);
+});
+
+test("apps: deployApp succeeds for admin member who is not creator", async () => {
+  const repo = appAccessRepo("admin", "admin-member", {
+    startDeploy: async ({ appId }: any) => {
+      assert.equal(appId, "app-1");
+      return {
+        fcFunctionName: "app-my-app",
+        fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/build.zip",
+        presignedPut: "https://oss/put?sig=x",
+      };
+    },
+  });
+  const result = await repo.deployApp("app-1", APP_DEPLOY);
+  assert.equal(result?.fcStatus, "awaiting_build");
+  assert.equal(result?.ossObjectName, "apps/app-1/build.zip");
 });
 
 test("apps: deployApp on ready app returns awaiting_build + ossObjectName", async () => {

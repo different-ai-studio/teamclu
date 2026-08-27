@@ -86,7 +86,9 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
         const sessionId = await startAppFirstSession(app)
         if (sessionId) {
           useAppsStore.getState().recordAppSession(app.id, sessionId)
+          useAppsStore.getState().selectApp(app.id)
           const { useUIStore } = await import('@/stores/ui')
+          useUIStore.getState().setSidebarFilter({ kind: 'apps' })
           await useUIStore.getState().switchToSession(sessionId, { keepSidebarFilter: true })
         }
       }

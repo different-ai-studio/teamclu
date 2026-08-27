@@ -43,6 +43,11 @@ export function appRepoName(appId: string): string {
   return `tc-app-${appId}`;
 }
 
+/** Archived repos are renamed so ops can tell deleted apps apart in Gitea. */
+export function deletedAppRepoName(appId: string): string {
+  return `deleted-${appRepoName(appId)}`;
+}
+
 /**
  * `apps.git_auth_kind` for a repo this deployment provisioned on Gitea and
  * holds a deploy key for. Null means the app was imported from a remote we
@@ -138,6 +143,23 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
         `/api/v1/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(repo)}/keys/${keyId}`,
         { method: "DELETE" },
       );
+    },
+
+    /** Revoke write access and mark the repo read-only with a deleted- prefix (§7.2). */
+    async archiveAndRenameAppRepo(appId: string): Promise<{ sshUrl: string | null }> {
+      const repo = appRepoName(appId);
+      const res = await giteaFetch(
+        `/api/v1/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(repo)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            archived: true,
+            name: deletedAppRepoName(appId),
+          }),
+        },
+      );
+      const data = (await res.json()) as { ssh_url?: string; clone_url?: string };
+      return { sshUrl: data.ssh_url?.trim() || data.clone_url?.trim() || null };
     },
 
     /** Default-branch HEAD commit on the app repo (bot token). */

@@ -8,6 +8,8 @@ function makeRouter() {
     get: (p, h) => routes.push(["GET", p, h]),
     post: (p, h) => routes.push(["POST", p, h]),
     patch: (p, h) => routes.push(["PATCH", p, h]),
+    put: (p, h) => routes.push(["PUT", p, h]),
+    delete: (p, h) => routes.push(["DELETE", p, h]),
   };
   return { router, routes };
 }
@@ -181,6 +183,71 @@ test("GET /v1/apps/:id/membership 404s when repo returns null", async () => {
   const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/membership")[2];
   await assert.rejects(
     () => handler({ params: { appId: "missing" }, repository: { getAppMembership: async () => null } }),
+    (e) => (e as { statusCode?: number }).statusCode === 404,
+  );
+});
+
+test("PUT /v1/apps/:id/access/:memberId 404s when repo returns null (non-admin)", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "PUT" && r[1] === "/v1/apps/:appId/access/:memberId")[2];
+  await assert.rejects(
+    () => handler({
+      params: { appId: "app-1", memberId: "member-2" },
+      json: { permissionLevel: "prompt" },
+      repository: { setAppAccess: async () => null },
+    }),
+    (e) => (e as { statusCode?: number }).statusCode === 404,
+  );
+});
+
+test("GET /v1/apps/:id/access returns access rows", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/access")[2];
+  const items = [{
+    memberId: "member-2",
+    permissionLevel: "prompt",
+    grantedByMemberId: "actor-app-1",
+    createdAt: "2026-08-27T00:00:00.000Z",
+  }];
+  const res = await handler({
+    params: { appId: "app-1" },
+    repository: { listAppAccess: async () => items },
+  });
+  assert.deepEqual(res.body, { items });
+});
+
+test("DELETE /v1/apps/:id/access/:memberId returns ok", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "DELETE" && r[1] === "/v1/apps/:appId/access/:memberId")[2];
+  const res = await handler({
+    params: { appId: "app-1", memberId: "member-2" },
+    repository: { removeAppAccess: async () => true },
+  });
+  assert.deepEqual(res.body, { ok: true });
+});
+
+test("DELETE /v1/apps/:id returns ok when repo deletes", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "DELETE" && r[1] === "/v1/apps/:appId")[2];
+  let seenId: string | undefined;
+  const res = await handler({
+    params: { appId: "app-1" },
+    repository: { deleteApp: async (id) => { seenId = id; return true; } },
+  });
+  assert.deepEqual(res.body, { ok: true });
+  assert.equal(seenId, "app-1");
+});
+
+test("DELETE /v1/apps/:id 404s when repo returns false", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "DELETE" && r[1] === "/v1/apps/:appId")[2];
+  await assert.rejects(
+    () => handler({ params: { appId: "missing" }, repository: { deleteApp: async () => false } }),
     (e) => (e as { statusCode?: number }).statusCode === 404,
   );
 });

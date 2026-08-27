@@ -120,6 +120,10 @@ pub fn build(state: HttpState) -> Router {
         // matched the path `/v1/apps/%7Bapp_id%7D/workdir` and answered 404 for
         // every real app — which is exactly what it did, from the day it landed.
         .route("/v1/apps/:app_id/workdir", get(apps::app_workdir))
+        .route(
+            "/v1/apps/:app_id/move-workdir",
+            post(apps::move_app_workdir),
+        )
         // Device-level provider config (#742). Credentials are per-machine, not
         // per-workspace, so these need no workspace id — which is what lets
         // first-run onboarding configure a model before a project is chosen.

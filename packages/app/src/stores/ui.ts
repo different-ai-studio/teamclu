@@ -83,6 +83,8 @@ interface UIState {
   localDaemonSheetOpen: boolean
   /** Standalone automation panel (CronSection) without opening full Settings. */
   automationPanelOpen: boolean
+  /** App control panel (design §2.4) — mutually exclusive with workspace RightPanel. */
+  appControlPanelOpen: boolean
   draftIdeaId: string | null
   /** Modal "新会话" dialog (NavRail ▾ menu + intercepted send-with-no-session). */
   newSessionDialogOpen: boolean
@@ -102,6 +104,9 @@ interface UIState {
   openAutomationPanel: () => void
   closeAutomationPanel: () => void
   setAutomationPanelOpen: (open: boolean) => void
+  openAppControlPanel: () => void
+  closeAppControlPanel: () => void
+  toggleAppControlPanel: () => void
   setDraftIdeaId: (ideaId: string) => void
   clearDraftIdeaId: () => void
   setView: (view: View) => void
@@ -156,6 +161,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   localDaemonExpanded: false,
   localDaemonSheetOpen: false,
   automationPanelOpen: false,
+  appControlPanelOpen: false,
   draftIdeaId: null,
   newSessionDialogOpen: false,
   newSessionDialogInitialMessage: null,
@@ -413,6 +419,20 @@ export const useUIStore = create<UIState>((set, get) => ({
   openAutomationPanel: () => set({ automationPanelOpen: true }),
   closeAutomationPanel: () => set({ automationPanelOpen: false }),
   setAutomationPanelOpen: (open) => set({ automationPanelOpen: open }),
+
+  openAppControlPanel: () => {
+    useWorkspaceStore.getState().closePanel()
+    set({ appControlPanelOpen: true })
+  },
+  closeAppControlPanel: () => set({ appControlPanelOpen: false }),
+  toggleAppControlPanel: () => {
+    const next = !get().appControlPanelOpen
+    if (next) {
+      useWorkspaceStore.getState().closePanel()
+    }
+    set({ appControlPanelOpen: next })
+  },
+
   setDraftIdeaId: (ideaId) => set({ draftIdeaId: ideaId }),
   clearDraftIdeaId: () => set({ draftIdeaId: null }),
 

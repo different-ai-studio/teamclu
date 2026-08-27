@@ -116,8 +116,10 @@ fn apps_root_for_team(team_id: &str) -> PathBuf {
 /// Resolve the checkout directory for an app.
 ///
 /// If `workdir` is present and non-empty, use it verbatim (legacy explicit
-/// path). Otherwise `teams/<teamId>/apps/<appId>`, with one back-compat step:
-/// an app that already has a checkout under the *active* team's root keeps it.
+/// path). Otherwise consult the per-machine override in
+/// `teams/<teamId>/state/app-workdir-overrides.json`, then
+/// `teams/<teamId>/apps/<appId>`, with one back-compat step: an app that
+/// already has a checkout under the *active* team's root keeps it.
 /// Before this, the root came from the active team alone, so an app created
 /// while the daemon was claimed by another team is sitting there — and moving
 /// it silently is how a user's work goes missing. Both answers are stable, so
@@ -129,6 +131,24 @@ fn resolve_workdir(workdir: &str, app_id: &str, team_id: &str) -> Result<PathBuf
     if !workdir.is_empty() {
         return Ok(PathBuf::from(workdir));
     }
+    let app_id = app_id.trim();
+    if app_id.is_empty() {
+        return Err(HttpError::validation(
+            "appId must not be empty when workdir is omitted",
+        ));
+    }
+    if let Some(override_path) = crate::sync::app_workdir::read_override(team_id, app_id) {
+        return Ok(override_path);
+    }
+    Ok(resolve_workdir_in(
+        &apps_root_for_team(team_id),
+        &apps_data_root(),
+        app_id,
+    ))
+}
+
+/// Derived checkout path without consulting overrides — for move/update logic.
+fn derived_workdir(app_id: &str, team_id: &str) -> Result<PathBuf, HttpError> {
     let app_id = app_id.trim();
     if app_id.is_empty() {
         return Err(HttpError::validation(
@@ -195,6 +215,18 @@ pub struct SeedAppBody {
     /// resolves `<amuxd home>/apps/<appId>`.
     #[serde(default)]
     pub workdir: Option<String>,
+    /// Git commit author name for repo-local `.git/config`. Falls back to the
+    /// daemon default when omitted.
+    #[serde(default)]
+    pub git_user_name: Option<String>,
+    /// Git commit author email for repo-local `.git/config`. Falls back to the
+    /// daemon default when omitted.
+    #[serde(default)]
+    pub git_user_email: Option<String>,
+    /// When true with `gitRemoteUrl` + `deployKeyPem`, clone the remote into an
+    /// empty workdir instead of seeding a starter template and pushing.
+    #[serde(default)]
+    pub clone_only: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -216,6 +248,8 @@ pub struct SeedAppResponse {
 #[serde(rename_all = "camelCase")]
 pub struct AppWorkdirResponse {
     pub workdir: String,
+    /// Human-friendly label for this machine (from daemon.toml `[actor].name`).
+    pub device_name: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -240,10 +274,18 @@ pub async fn app_workdir(
     axum::extract::Query(query): axum::extract::Query<AppWorkdirQuery>,
 ) -> Result<Json<AppWorkdirResponse>, HttpError> {
     require_scope(&principal, "workspace:read")?;
-    let path = resolve_workdir("", &app_id, query.team_id.as_deref().unwrap_or(""))?;
+    let team_id = query.team_id.as_deref().unwrap_or("");
+    let path = resolve_workdir("", &app_id, team_id)?;
     Ok(Json(AppWorkdirResponse {
         workdir: path.to_string_lossy().into_owned(),
+        device_name: daemon_device_name(),
     }))
+}
+
+fn daemon_device_name() -> String {
+    crate::config::DaemonConfig::load(&crate::config::DaemonConfig::default_path())
+        .map(|c| c.actor.name)
+        .unwrap_or_else(|_| crate::config::BOOTSTRAP_ACTOR_NAME.to_string())
 }
 
 /// `POST /v1/apps/seed` — put the app's files in place.
@@ -293,6 +335,18 @@ pub async fn seed_app(
         .map(str::trim)
         .filter(|k| !k.is_empty())
         .map(str::to_string);
+    let git_user_name = body
+        .git_user_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string);
+    let git_user_email = body
+        .git_user_email
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_string);
 
     let seed_result = tokio::task::spawn_blocking(move || {
         let vars = crate::sync::app_templates::TemplateVars {
@@ -300,11 +354,24 @@ pub async fn seed_app(
             app_name: &app_name,
             app_type,
         };
+        let clone_only = body.clone_only.unwrap_or(false);
         match (git_remote_url.as_deref(), deploy_key_pem.as_deref()) {
+            (Some(url), Some(key)) if clone_only => {
+                crate::sync::app_clone::clone_app_repo_with_deploy_key(
+                    url,
+                    &workdir_path,
+                    key,
+                    git_user_name.as_deref(),
+                    git_user_email.as_deref(),
+                )?;
+                Ok(("ready", None))
+            }
             (Some(url), Some(key)) => {
                 let push = crate::sync::app_seed::SeedGitPush {
                     remote_url: url,
                     deploy_key_pem: key,
+                    git_user_name: git_user_name.as_deref(),
+                    git_user_email: git_user_email.as_deref(),
                 };
                 let out = crate::sync::app_seed::seed_app_repo(&workdir_path, &vars, Some(&push))?;
                 Ok(("seeded", out.git_commit_sha))
@@ -469,6 +536,107 @@ pub async fn build_app(
     Ok(Json(BuildAppResponse { status: "built" }))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveAppWorkdirBody {
+    /// The app's team — names the override file and derived root.
+    #[serde(default)]
+    pub team_id: String,
+    /// Absolute destination path for the checkout.
+    pub dest_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveAppWorkdirResponse {
+    pub workdir: String,
+}
+
+/// `POST /v1/apps/:appId/move-workdir` — relocate this app's checkout on disk.
+///
+/// Moves the entire directory (`.git`, `node_modules`, …). Same filesystem uses
+/// `rename`; cross-filesystem uses copy + verify + delete. On failure the
+/// original directory and override pointer are left unchanged.
+pub async fn move_app_workdir(
+    principal: Principal,
+    State(_state): State<HttpState>,
+    axum::extract::Path(app_id): axum::extract::Path<String>,
+    Json(body): Json<MoveAppWorkdirBody>,
+) -> Result<Json<MoveAppWorkdirResponse>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+
+    let dest = body.dest_path.trim();
+    if dest.is_empty() {
+        return Err(HttpError::validation("destPath must not be empty"));
+    }
+    let dest_path = PathBuf::from(dest);
+    if !dest_path.is_absolute() {
+        return Err(HttpError::validation("destPath must be an absolute path"));
+    }
+
+    let team_id = body.team_id.clone();
+    let app_id = app_id.trim().to_string();
+    if app_id.is_empty() {
+        return Err(HttpError::validation("appId must not be empty"));
+    }
+
+    let from_path = resolve_workdir("", &app_id, &team_id)?;
+    if from_path == dest_path {
+        return Ok(Json(MoveAppWorkdirResponse {
+            workdir: dest_path.to_string_lossy().into_owned(),
+        }));
+    }
+
+    let derived = derived_workdir(&app_id, &team_id)?;
+    let moved_to = dest_path.to_string_lossy().into_owned();
+
+    tokio::task::spawn_blocking(move || {
+        // Pointer first, then the tree, and roll the pointer back if the move
+        // fails. Moving first meant a failed override write left the tree at
+        // the new path while `resolve_workdir` still answered the old one —
+        // an empty directory — which is exactly what the handler's contract
+        // promises cannot happen. The override file is a small tmp+rename
+        // write, so it is both the cheaper and the reversible half.
+        let previous = crate::sync::app_workdir::read_override(&team_id, &app_id);
+        let point_at = |target: Option<&std::path::Path>| -> std::io::Result<()> {
+            match target {
+                Some(path) if path != derived => {
+                    crate::sync::app_workdir::set_override(&team_id, &app_id, path)
+                }
+                _ => crate::sync::app_workdir::clear_override(&team_id, &app_id),
+            }
+        };
+
+        point_at(Some(dest_path.as_path()))?;
+        if let Err(e) = crate::sync::app_workdir::move_directory(&from_path, &dest_path) {
+            if let Err(restore) = point_at(previous.as_deref()) {
+                tracing::error!(
+                    error = %restore,
+                    app_id = %app_id,
+                    "apps: could not restore the workdir override after a failed move"
+                );
+            }
+            return Err(e);
+        }
+        Ok::<_, std::io::Error>(())
+    })
+    .await
+    .map_err(|e| HttpError::internal(format!("move task panicked: {e}")))?
+    .map_err(map_move_error)?;
+
+    Ok(Json(MoveAppWorkdirResponse { workdir: moved_to }))
+}
+
+fn map_move_error(err: std::io::Error) -> HttpError {
+    match err.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::AlreadyExists => {
+            HttpError::validation(err.to_string())
+        }
+        std::io::ErrorKind::InvalidInput => HttpError::validation(err.to_string()),
+        _ => HttpError::internal(format!("app workdir move failed: {err}")),
+    }
+}
+
 fn map_build_error(err: anyhow::Error) -> HttpError {
     let msg = format!("{err}");
     let validation_markers = [
@@ -588,6 +756,22 @@ mod tests {
             resolve_workdir_in(&team_root, &active_root, "app-1"),
             team_root.join("app-1"),
         );
+    }
+
+    #[test]
+    fn seed_body_carries_git_user_identity() {
+        let body: SeedAppBody = serde_json::from_value(serde_json::json!({
+            "appId": "app-1",
+            "gitUserName": "Alice",
+            "gitUserEmail": "alice@example.com"
+        }))
+        .unwrap();
+        assert_eq!(body.git_user_name.as_deref(), Some("Alice"));
+        assert_eq!(body.git_user_email.as_deref(), Some("alice@example.com"));
+        let body: SeedAppBody =
+            serde_json::from_value(serde_json::json!({"appId": "app-1"})).unwrap();
+        assert!(body.git_user_name.is_none());
+        assert!(body.git_user_email.is_none());
     }
 
     #[test]
@@ -738,5 +922,17 @@ mod tests {
         let err = resolve_workdir("", "  ", "").unwrap_err();
         let msg = format!("{err:?}");
         assert!(msg.contains("appId"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn resolve_workdir_prefers_override_over_derived_path() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+
+        let custom = home.path().join("custom").join("app-1");
+        crate::sync::app_workdir::set_override("team-a", "app-1", &custom).unwrap();
+
+        let p = resolve_workdir("", "app-1", "team-a").unwrap();
+        assert_eq!(p, custom);
     }
 }

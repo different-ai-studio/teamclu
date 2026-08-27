@@ -24,6 +24,9 @@ function fakeGitea(over: Partial<GiteaClient> = {}): GiteaClient {
     createDeployKey: async () => ({ id: 1 }),
     listDeployKeys: async () => [],
     deleteDeployKey: async () => {},
+    archiveAndRenameAppRepo: async (appId: string) => ({
+      sshUrl: `git@gitea.example:teamclaw-apps/deleted-tc-app-${appId}.git`,
+    }),
     getRepoHead: async () => ({ sha: "abc123" }),
     ...over,
   };

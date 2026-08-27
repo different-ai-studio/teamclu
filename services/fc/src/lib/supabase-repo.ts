@@ -41,8 +41,9 @@ import {
 } from "./pg-repo/team-env-secrets.js";
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
 import { appOssObjectName, deployUnavailable, parseOptionalGitCommitSha, parseDeployToken, assertDeployAllowed, checkDeployInProgress } from "./provisioning/app-deploy.js";
+import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
 import { giteaUnavailable, GITEA_AUTH_KIND } from "./provisioning/gitea.js";
-import { issueJitDeployKey } from "./provisioning/deploy-key.js";
+import { issueJitDeployKey, revokeActorDeployKeys } from "./provisioning/deploy-key.js";
 import {
   applyAuthModeChange,
   buildPlatformOAuthEnv,
@@ -279,6 +280,24 @@ async function archiveSessionsForWorkspace(supabase, workspaceId) {
   });
 }
 
+const APP_PERMISSION_LEVELS = new Set(["view", "prompt", "admin"]);
+
+function parseAppPermissionLevel(raw: string): string {
+  if (!APP_PERMISSION_LEVELS.has(raw)) {
+    throw new ApiError(400, "validation_failed", "permissionLevel must be view, prompt, or admin");
+  }
+  return raw;
+}
+
+function mapAppAccessRow(r: any) {
+  return {
+    memberId: r.member_id,
+    permissionLevel: r.permission_level,
+    grantedByMemberId: r.granted_by_member_id ?? null,
+    createdAt: appIso(r.created_at)!,
+  };
+}
+
 export function createSupabaseBusinessRepository(options) {
   const {
     supabaseUrl,
@@ -301,6 +320,7 @@ export function createSupabaseBusinessRepository(options) {
     giteaUnavailableReason,
     gotrue,
     gotrueUnavailableReason,
+    teardownDeps,
     // Injectable for tests; defaults to querying the LiteLLM RDS directly.
     queryLiteLlmUsage = (litellmTeamId, range) => queryTeamUsage(getLiteLlmSql(), litellmTeamId, range),
     // Injectable for tests; defaults to the shared LiteLLM HTTP client.
@@ -449,6 +469,33 @@ export function createSupabaseBusinessRepository(options) {
     }
     const { createServiceRoleClient } = await import("./supabase.js");
     return createServiceRoleClient();
+  }
+
+  /**
+   * Revoke JIT deploy keys when access is removed or downgraded to view-only.
+   *
+   * Best-effort throughout, like the `revokeActorDeployKeys` it wraps. This
+   * runs *after* the grant row is already gone, so throwing here reported a
+   * completed revoke as a 500 — the caller then retries against a grant that
+   * no longer exists. A deployment with no service-role key, or a transient
+   * PostgREST error, must not turn "access removed" into "request failed".
+   * The keys that survive are still bounded by the expiry sweep.
+   */
+  async function revokeAppMemberDeployKeysIfGitea(appId: string, memberId: string): Promise<void> {
+    if (!gitea) return;
+    try {
+      const admin = await serviceRoleClient("revoke deploy keys on deauth");
+      const { data: app, error } = await admin
+        .from("apps")
+        .select("id, git_auth_kind")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app || app.git_auth_kind !== GITEA_AUTH_KIND) return;
+      await revokeActorDeployKeys(gitea, appId, memberId);
+    } catch (e) {
+      console.warn("[apps] deploy key revoke failed after deauth (non-fatal)", e);
+    }
   }
 
 
@@ -3009,6 +3056,31 @@ export function createSupabaseBusinessRepository(options) {
         )
         .eq("id", appId)
         .maybeSingle();
+      // Authorize BEFORE any side effect, not after.
+      //
+      // `apps_select_if_visible` lets any teammate read a team-visible app,
+      // while `apps_update_if_creator` gates the write. Running the auth-mode
+      // change first meant a non-creator's PATCH deleted the app's GoTrue
+      // client (a hard DELETE) and its sealed secret with a service-role
+      // client, and only then matched zero rows and answered 404 — the live
+      // app's login destroyed by a request the API called "not found".
+      //
+      // The gate is `admin`, not creator: design §5.2 gives admin grantees
+      // authMode plus deploy, and a grantee who can deploy must also be able to
+      // write `fc_status` back — otherwise their own deploy is stranded at
+      // `awaiting_build` forever with nothing able to report the failure.
+      // Not visible to the caller under `apps_select_if_visible` → 404, and
+      // emphatically no escalation: a row we cannot read is not one we may
+      // write with a service-role client.
+      if (!cur) return null;
+      const callerPermission = await this.resolveAppCallerPermissionForApp({
+        id: appId,
+        team_id: cur.team_id,
+        created_by_actor_id: cur.created_by_actor_id,
+      });
+      if (callerPermission?.level !== "admin") return null;
+      const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
+
       const set: any = { updated_at: new Date().toISOString() };
       if (typeof patch.name === "string" && patch.name.length > 0) set.name = patch.name;
       if (patch.visibility === "team" || patch.visibility === "personal") {
@@ -3019,16 +3091,6 @@ export function createSupabaseBusinessRepository(options) {
       if (nextAuthMode !== undefined && cur) {
         const fromAuthMode = (cur.auth_mode ?? "none") as AuthMode;
         if (nextAuthMode !== fromAuthMode) {
-          // Check creatorship BEFORE the side effects, not after.
-          //
-          // `apps_select_if_visible` lets any teammate read a team-visible app,
-          // while `apps_update_if_creator` gates the write. Running the auth-mode
-          // change first meant a non-creator's PATCH deleted the app's GoTrue
-          // client (a hard DELETE) and its sealed secret with a service-role
-          // client, and only then matched zero rows and answered 404 — the live
-          // app's login destroyed by a request the API called "not found".
-          // pg-repo gates on the creator first; this is the same order.
-          if (!(await this.isAppCreator(cur.team_id, cur.created_by_actor_id))) return null;
           const admin = await serviceRoleClient("store app secrets");
           const oauth = await applyAuthModeChange(
             {
@@ -3079,7 +3141,14 @@ export function createSupabaseBusinessRepository(options) {
             : "deploy failed";
         }
       }
-      const { data, error } = await supabase
+      // The creator writes with their own token so RLS stays a second gate.
+      // An `admin` grantee cannot: `apps_update_if_creator` is creator-only, so
+      // their UPDATE would match zero rows and 404 despite being authorized.
+      // Same escalation the sibling grant write uses (see setAppAccess).
+      const writer = callerIsCreator
+        ? supabase
+        : await serviceRoleClient("apply an app update authorized by an admin grant");
+      const { data, error } = await writer
         .from("apps")
         .update(set)
         .eq("id", appId)
@@ -3096,11 +3165,13 @@ export function createSupabaseBusinessRepository(options) {
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, provision_status, runtime, auth_mode, fc_status, deploy_started_at")
+        .select("id, slug, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, deploy_started_at")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
       if (!existing) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(existing);
+      if (!permission || permission.level !== "admin") return null;
       if (existing.provision_status !== "ready") {
         throw new ApiError(409, "app_not_ready", "app must be seeded (provision_status=ready) before deploy");
       }
@@ -3173,11 +3244,13 @@ export function createSupabaseBusinessRepository(options) {
       // visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token")
+        .select("id, slug, team_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
       if (!existing) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(existing);
+      if (!permission || permission.level !== "admin") return null;
       if (!existing.deploy_token || existing.deploy_token !== deployToken) {
         throw new ApiError(409, "deploy_token_mismatch", "deployToken does not match the in-progress deploy");
       }
@@ -3216,6 +3289,11 @@ export function createSupabaseBusinessRepository(options) {
             fc_status: "live",
             fc_endpoint: r.fcEndpoint,
             ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
+            // The function that just went live carries this auth_mode's env.
+            // Recording it here is what lets `authModePendingRedeploy` clear —
+            // and what makes the pending state a property of the row rather
+            // than of one desktop's memory.
+            deployed_auth_mode: existing.auth_mode ?? "none",
             provision_error: null,
             deploy_token: null,
             deploy_started_at: null,
@@ -3278,6 +3356,41 @@ export function createSupabaseBusinessRepository(options) {
       return Boolean(resolved?.id) && createdByActorId === resolved!.id;
     },
 
+    /**
+     * Effective per-app permission for the caller. Creator → admin; no access row
+     * and not creator → null. Used for git credentials and deploy gates.
+     */
+    async resolveAppCallerPermissionForApp(app: {
+      id: string;
+      team_id: string;
+      created_by_actor_id: string | null;
+    }): Promise<{ level: "view" | "prompt" | "admin"; callerMemberId: string } | null> {
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const userId = userData?.user?.id;
+      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+
+      const resolved = await this.resolveCurrentMemberActor(app.team_id, userId);
+      if (!resolved?.id) return null;
+
+      if (await this.isAppCreator(app.team_id, app.created_by_actor_id)) {
+        return { level: "admin", callerMemberId: resolved.id };
+      }
+
+      const { data: access, error: accErr } = await supabase
+        .from("app_member_access")
+        .select("permission_level")
+        .eq("app_id", app.id)
+        .eq("member_id", resolved.id)
+        .maybeSingle();
+      if (accErr) throw accErr;
+      const level = access?.permission_level;
+      if (level === "view" || level === "prompt" || level === "admin") {
+        return { level, callerMemberId: resolved.id };
+      }
+      return null;
+    },
+
     async getAppGitCredential(appId: string) {
       const { data: existing, error: selErr } = await supabase
         .from("apps")
@@ -3286,7 +3399,9 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (selErr) throw selErr;
       if (!existing) return null;
-      if (!(await this.isAppCreator(existing.team_id, existing.created_by_actor_id))) return null;
+
+      const permission = await this.resolveAppCallerPermissionForApp(existing);
+      if (!permission || permission.level === "view") return null;
 
       if (!existing.git_remote_url) return null;
       // An imported app has a remote this deployment holds no credential for;
@@ -3294,7 +3409,7 @@ export function createSupabaseBusinessRepository(options) {
       if (existing.git_auth_kind !== GITEA_AUTH_KIND) return null;
       if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
 
-      const jit = await issueJitDeployKey(gitea, appId);
+      const jit = await issueJitDeployKey(gitea, appId, permission.callerMemberId);
       return {
         remoteUrl: existing.git_remote_url,
         authKind: "deploy_key" as const,
@@ -3333,6 +3448,143 @@ export function createSupabaseBusinessRepository(options) {
       if (!row) return null;
       const resolved = await this.resolveCurrentMemberActor(row.team_id, userId);
       return { member: Boolean(resolved?.id) };
+    },
+
+    /**
+     * Creator or `admin` grant on this app — required to list/set/remove access.
+     * Returns null when the app is not visible or the caller lacks manage rights
+     * (routes surface 404 to avoid leaking app existence).
+     */
+    async resolveAppAccessManager(appId: string): Promise<{ callerMemberId: string } | null> {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select("id, team_id, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      if (!permission || permission.level !== "admin") return null;
+      return { callerMemberId: permission.callerMemberId };
+    },
+
+    async listAppAccess(appId: string) {
+      const manager = await this.resolveAppAccessManager(appId);
+      if (!manager) return null;
+      // RLS only exposes all rows to the creator; admin grantees see self only.
+      // After the manage gate, read the full grant list with service role.
+      const admin = await serviceRoleClient("list app member access");
+      const { data, error } = await admin
+        .from("app_member_access")
+        .select("member_id, permission_level, granted_by_member_id, created_at")
+        .eq("app_id", appId)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return (data ?? []).map(mapAppAccessRow);
+    },
+
+    async setAppAccess(appId: string, memberId: string, permissionLevel: string) {
+      const level = parseAppPermissionLevel(permissionLevel);
+      const manager = await this.resolveAppAccessManager(appId);
+      if (!manager) return null;
+      // RLS manage policy is creator-only; admin grantees write via service role.
+      const admin = await serviceRoleClient("manage app member access");
+      const { data: priorAccess, error: priorErr } = await admin
+        .from("app_member_access")
+        .select("permission_level")
+        .eq("app_id", appId)
+        .eq("member_id", memberId)
+        .maybeSingle();
+      if (priorErr) throw priorErr;
+      const now = new Date().toISOString();
+      const { data, error } = await admin
+        .from("app_member_access")
+        .upsert(
+          {
+            app_id: appId,
+            member_id: memberId,
+            permission_level: level,
+            granted_by_member_id: manager.callerMemberId,
+            updated_at: now,
+          },
+          { onConflict: "app_id,member_id" },
+        )
+        .select("member_id, permission_level, granted_by_member_id, created_at")
+        .single();
+      if (error) throw error;
+      const priorLevel = priorAccess?.permission_level;
+      if (
+        level === "view" &&
+        (priorLevel === "prompt" || priorLevel === "admin")
+      ) {
+        await revokeAppMemberDeployKeysIfGitea(appId, memberId);
+      }
+      return mapAppAccessRow(data);
+    },
+
+    async removeAppAccess(appId: string, memberId: string) {
+      const manager = await this.resolveAppAccessManager(appId);
+      if (!manager) return null;
+      const admin = await serviceRoleClient("manage app member access");
+      const { error } = await admin
+        .from("app_member_access")
+        .delete()
+        .eq("app_id", appId)
+        .eq("member_id", memberId);
+      if (error) throw error;
+      await revokeAppMemberDeployKeysIfGitea(appId, memberId);
+      return true;
+    },
+
+    async deleteApp(appId: string) {
+      const { data: existing, error: selErr } = await supabase
+        .from("apps")
+        .select(
+          "id, team_id, workspace_id, slug, name, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, created_by_actor_id",
+        )
+        .eq("id", appId)
+        .maybeSingle();
+      if (selErr) throw selErr;
+      if (!existing) return false;
+
+      const permission = await this.resolveAppCallerPermissionForApp(existing);
+      if (!permission || permission.level !== "admin") return false;
+
+      const admin = await serviceRoleClient("delete app and archive workspace");
+      const teardownInput = {
+        appId,
+        fcFunctionName: existing.fc_function_name,
+        authMode: existing.auth_mode,
+        oauthClientId: existing.oauth_client_id,
+        gitAuthKind: existing.git_auth_kind,
+        gitRemoteUrl: existing.git_remote_url,
+      };
+      const teardown: TeardownAppDeps = {
+        ...(teardownDeps ?? {}),
+        gotrue,
+        gitea,
+        deleteSecret: (kind) => deleteAppSecretSupabase(admin, appId, kind),
+      };
+      const { archivedRepoUrl } = await teardownAppResources(teardown, teardownInput);
+
+      if (existing.workspace_id) {
+        const now = new Date().toISOString();
+        const { error: wsErr } = await admin
+          .from("workspaces")
+          .update({
+            archived: true,
+            path: archivedRepoUrl ?? existing.git_remote_url,
+            updated_at: now,
+          })
+          .eq("id", existing.workspace_id);
+        if (wsErr) throw wsErr;
+        await archiveSessionsForWorkspace(admin, existing.workspace_id);
+      }
+
+      const { error: delErr } = await admin.from("apps").delete().eq("id", appId);
+      if (delErr) throw delErr;
+      return true;
     },
 
     // ─── Team skills registry ────────────────────────────────────────────────

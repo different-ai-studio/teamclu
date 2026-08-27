@@ -150,6 +150,20 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         }),
       }));
     },
+    async deleteFunction(functionName: string): Promise<void> {
+      try {
+        await client.deleteFunction(functionName);
+      } catch (e) {
+        if (!isNotFound(e)) throw e;
+      }
+    },
+    async deleteHttpTrigger(functionName: string): Promise<void> {
+      try {
+        await client.deleteTrigger(functionName, "http");
+      } catch (e) {
+        if (!isNotFound(e)) throw e;
+      }
+    },
     async ensureHttpTrigger(functionName: string): Promise<string> {
       // A method missing from this list is refused by the trigger with a 403
       // that never reaches the app. The original four left OPTIONS out, which

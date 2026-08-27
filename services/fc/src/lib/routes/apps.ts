@@ -64,6 +64,13 @@ export function registerApps(router) {
     return { body: out };
   });
 
+  router.delete("/v1/apps/:appId", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const ok = await ctx.repository.deleteApp(appId);
+    if (!ok) throw new ApiError(404, "not_found", "app not found");
+    return { body: { ok: true } };
+  });
+
   router.post("/v1/apps/:appId/deploy", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const body = ctx.json ?? {};
@@ -106,6 +113,31 @@ export function registerApps(router) {
     const out = await ctx.repository.getAppMembership(appId);
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
+  });
+
+  router.get("/v1/apps/:appId/access", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const items = await ctx.repository.listAppAccess(appId);
+    if (items === null) throw new ApiError(404, "not_found", "app not found");
+    return { body: { items } };
+  });
+
+  router.put("/v1/apps/:appId/access/:memberId", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const memberId = decodeURIComponent(ctx.params.memberId);
+    const body = ctx.json ?? {};
+    requireString(body.permissionLevel, "permissionLevel");
+    const out = await ctx.repository.setAppAccess(appId, memberId, body.permissionLevel);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.delete("/v1/apps/:appId/access/:memberId", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const memberId = decodeURIComponent(ctx.params.memberId);
+    const ok = await ctx.repository.removeAppAccess(appId, memberId);
+    if (!ok) throw new ApiError(404, "not_found", "app not found");
+    return { body: { ok: true } };
   });
 
 }

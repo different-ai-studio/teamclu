@@ -224,21 +224,35 @@ pub fn add_all(dir: &Path) -> anyhow::Result<()> {
     ensure_success(&out, "git add")
 }
 
+/// Write repo-local `user.name` / `user.email` into `.git/config`.
+///
+/// Empty or missing values fall back to [`GIT_USER_NAME`] / [`GIT_USER_EMAIL`]
+/// so seed commits still work when the desktop omits identity fields.
+pub fn set_repo_user_identity(
+    dir: &Path,
+    name: Option<&str>,
+    email: Option<&str>,
+) -> anyhow::Result<()> {
+    let name = name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(GIT_USER_NAME);
+    let email = email
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(GIT_USER_EMAIL);
+    let out = run_git(dir, None, &["config", "user.name", name])?;
+    ensure_success(&out, "git config user.name")?;
+    let out = run_git(dir, None, &["config", "user.email", email])?;
+    ensure_success(&out, "git config user.email")?;
+    Ok(())
+}
+
 /// Create a commit when there are staged changes; no-op when the tree is clean.
+///
+/// Expects repo-local identity to already be set (see [`set_repo_user_identity`]).
 pub fn commit_if_needed(dir: &Path, message: &str) -> anyhow::Result<bool> {
-    let out = run_git(
-        dir,
-        None,
-        &[
-            "-c",
-            &format!("user.email={GIT_USER_EMAIL}"),
-            "-c",
-            &format!("user.name={GIT_USER_NAME}"),
-            "commit",
-            "-m",
-            message,
-        ],
-    )?;
+    let out = run_git(dir, None, &["commit", "-m", message])?;
     if out.status.success() {
         return Ok(true);
     }
@@ -475,9 +489,12 @@ pub fn init_commit_push(
     remote_url: &str,
     deploy_key_pem: &str,
     commit_message: &str,
+    git_user_name: Option<&str>,
+    git_user_email: Option<&str>,
 ) -> anyhow::Result<String> {
     let ssh = SshEnv::from_deploy_key_pem(deploy_key_pem)?;
     init_if_needed(dir)?;
+    set_repo_user_identity(dir, git_user_name, git_user_email)?;
     set_remote_origin(dir, remote_url, Some(&ssh))?;
     ensure_on_branch(dir)?;
     add_all(dir)?;
@@ -559,6 +576,10 @@ mod tests {
         Some(origin)
     }
 
+    fn ensure_test_identity(dir: &Path) {
+        set_repo_user_identity(dir, None, None).unwrap();
+    }
+
     fn set_remote_test(dir: &Path, url: &str) -> anyhow::Result<()> {
         let git = git_bin();
         let has_origin = Command::new(&git)
@@ -596,6 +617,7 @@ mod tests {
 
         let url = bare.to_string_lossy().to_string();
         init_if_needed(&work).unwrap();
+        ensure_test_identity(&work);
         set_remote_test(&work, &url).unwrap();
         add_all(&work).unwrap();
         commit_if_needed(&work, "seed").unwrap();
@@ -620,6 +642,7 @@ mod tests {
         std::fs::write(work.join("README.md"), b"x").unwrap();
         let url = bare.to_string_lossy().to_string();
         init_if_needed(&work).unwrap();
+        ensure_test_identity(&work);
         set_remote_test(&work, &url).unwrap();
         add_all(&work).unwrap();
         commit_if_needed(&work, "seed").unwrap();
@@ -651,9 +674,68 @@ mod tests {
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("README.md"), b"seed").unwrap();
         init_if_needed(&work).unwrap();
+        ensure_test_identity(&work);
         add_all(&work).unwrap();
         assert!(commit_if_needed(&work, "seed").unwrap());
         assert!(!commit_if_needed(&work, "seed again").unwrap());
+    }
+
+    #[test]
+    fn set_repo_user_identity_persists_for_later_commits() {
+        let tmp = tempfile::tempdir().unwrap();
+        if local_origin(tmp.path()).is_none() {
+            eprintln!("git not usable; skipping");
+            return;
+        }
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("README.md"), b"seed").unwrap();
+        init_if_needed(&work).unwrap();
+        set_repo_user_identity(&work, Some("Alice"), Some("alice@example.com")).unwrap();
+
+        let out = run_git(&work, None, &["config", "user.name"]).unwrap();
+        ensure_success(&out, "git config user.name").unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "Alice");
+
+        add_all(&work).unwrap();
+        assert!(commit_if_needed(&work, "first").unwrap());
+        let out = run_git(&work, None, &["log", "-1", "--format=%an <%ae>"]).unwrap();
+        ensure_success(&out, "git log").unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "Alice <alice@example.com>"
+        );
+
+        std::fs::write(work.join("README.md"), b"edit").unwrap();
+        add_all(&work).unwrap();
+        assert!(commit_if_needed(&work, "second").unwrap());
+        let out = run_git(&work, None, &["log", "-1", "--format=%an <%ae>"]).unwrap();
+        ensure_success(&out, "git log").unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "Alice <alice@example.com>"
+        );
+    }
+
+    #[test]
+    fn set_repo_user_identity_falls_back_to_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        if local_origin(tmp.path()).is_none() {
+            eprintln!("git not usable; skipping");
+            return;
+        }
+        let work = tmp.path().join("app");
+        init_if_needed(&work).unwrap();
+        set_repo_user_identity(&work, Some("  "), Some("")).unwrap();
+        let out = run_git(&work, None, &["config", "user.name"]).unwrap();
+        ensure_success(&out, "git config user.name").unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "TeamClu");
+        let out = run_git(&work, None, &["config", "user.email"]).unwrap();
+        ensure_success(&out, "git config user.email").unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "apps@teamclu.local"
+        );
     }
 
     #[test]
@@ -672,6 +754,7 @@ mod tests {
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("README.md"), b"seed").unwrap();
         init_if_needed(&work).unwrap();
+        ensure_test_identity(&work);
         set_remote_test(&work, &url).unwrap();
         add_all(&work).unwrap();
         commit_if_needed(&work, "seed").unwrap();
@@ -716,6 +799,7 @@ mod tests {
         std::fs::write(work.join("README.md"), b"seed").unwrap();
         let url = bare.to_string_lossy().to_string();
         init_if_needed(&work).unwrap();
+        ensure_test_identity(&work);
         set_remote_test(&work, &url).unwrap();
         add_all(&work).unwrap();
         commit_if_needed(&work, "seed").unwrap();

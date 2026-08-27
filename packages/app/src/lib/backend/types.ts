@@ -957,6 +957,11 @@ export interface AppRow {
   gitCommitSha: string | null;
   runtime: AppRuntime;
   authMode: AppAuthMode;
+  /** `authMode` was changed after the live deploy, so the running function still
+   *  enforces the OLD gate (the OAuth env is injected at finalize). Server-derived
+   *  from `fc_status` + `deployed_auth_mode` so it survives a reload and agrees
+   *  across devices — see design §7.4. */
+  authModePendingRedeploy: boolean;
   /** Public OAuth client id for `third` or GoTrue client id for `platform`. */
   oauthClientId: string | null;
   provisionStatus: string;
@@ -997,6 +1002,17 @@ export interface AppGitHead {
 /** `GET /v1/apps/:id/membership` — whether the caller belongs to the app's team. */
 export interface AppMembership {
   member: boolean;
+}
+
+/** Per-member app permission (`view` | `prompt` | `admin`). */
+export type AppPermissionLevel = "view" | "prompt" | "admin";
+
+/** Row from `GET /v1/apps/:id/access` or `PUT …/access/:memberId`. */
+export interface AppMemberAccessRow {
+  memberId: string;
+  permissionLevel: AppPermissionLevel;
+  grantedByMemberId: string | null;
+  createdAt: string;
 }
 
 export interface AppSessionRow {
@@ -1042,6 +1058,20 @@ export interface AppsBackend {
   getGitHead(appId: string): Promise<AppGitHead | null>;
   /** Whether the caller is a member of the app's team (platform-auth templates). */
   getAppMembership(appId: string): Promise<AppMembership | null>;
+  /** List per-member grants (creator or app admin only). Null on 404. */
+  listAppAccess(appId: string): Promise<AppMemberAccessRow[] | null>;
+  /** Upsert a member grant (creator or app admin only). Null on 404. */
+  setAppAccess(
+    appId: string,
+    memberId: string,
+    permissionLevel: AppPermissionLevel,
+  ): Promise<AppMemberAccessRow | null>;
+  /** Revoke a member grant (creator or app admin only). False on 404. */
+  removeAppAccess(appId: string, memberId: string): Promise<boolean>;
+  /** Delete an app (admin required). False on 404. */
+  deleteApp(appId: string): Promise<boolean>;
+  /** Change auth mode (creator only). Returns null on 404. */
+  updateAppAuthMode(appId: string, authMode: AppAuthMode): Promise<AppRow | null>;
 }
 
 export interface ActorDirectorySyncRow {

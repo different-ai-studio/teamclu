@@ -104,6 +104,13 @@ pub fn team_state_dir(team_id: &str) -> PathBuf {
     team_dir(team_id).join("state")
 }
 
+/// `teams/<id>/state/app-workdir-overrides.json` — per-app checkout path
+/// overrides for this machine. The daemon resolves workdirs here before the
+/// derived `teams/<id>/apps/<appId>` path; see `sync::app_workdir`.
+pub fn app_workdir_overrides_file(team_id: &str) -> PathBuf {
+    team_state_dir(team_id).join("app-workdir-overrides.json")
+}
+
 /// `teams/<id>/workspace` — the writable default worktree for spawns that carry
 /// no workspace of their own.
 pub fn team_workspace_dir(team_id: &str) -> PathBuf {

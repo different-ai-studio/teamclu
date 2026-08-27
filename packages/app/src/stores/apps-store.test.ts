@@ -11,9 +11,14 @@ const mocks = vi.hoisted(() => ({
   getGitCredential: vi.fn(),
   getGitHead: vi.fn(),
   seedDaemonApp: vi.fn(),
+  cloneDaemonApp: vi.fn(),
+  daemonAppWorkdir: vi.fn(),
   buildDaemonApp: vi.fn(),
   bindAppWorkdir: vi.fn(),
+  getDaemonEnvActivationDiagnostics: vi.fn(),
   toastError: vi.fn(),
+  workdirExists: vi.fn(),
+  readDir: vi.fn(),
 }));
 
 vi.mock("@/lib/backend", () => ({
@@ -33,7 +38,19 @@ vi.mock("@/lib/backend", () => ({
 
 vi.mock("@/lib/daemon-local-client", () => ({
   seedDaemonApp: mocks.seedDaemonApp,
+  cloneDaemonApp: mocks.cloneDaemonApp,
+  daemonAppWorkdir: mocks.daemonAppWorkdir,
   buildDaemonApp: mocks.buildDaemonApp,
+  getDaemonEnvActivationDiagnostics: mocks.getDaemonEnvActivationDiagnostics,
+}));
+
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  exists: mocks.workdirExists,
+  readDir: mocks.readDir,
+}));
+
+vi.mock("@/lib/utils", () => ({
+  isTauri: () => true,
 }));
 
 vi.mock("sonner", () => ({ toast: { error: mocks.toastError, success: vi.fn() } }));
@@ -42,6 +59,10 @@ vi.mock("@/lib/app-session", () => ({ bindAppWorkdir: mocks.bindAppWorkdir }));
 
 vi.mock("@/lib/app-deploy-confirm", () => ({
   publicDeployConfirm: { run: vi.fn(() => true) },
+  PUBLIC_DEPLOY_CONFIRM_MESSAGE:
+    "此应用未启用登录保护，任何拿到链接的人都能访问。\n\n确定继续部署吗？",
+  ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE:
+    "此应用的工作区有 AI 正在运行。现在部署可能把未完成的改动打包上线。\n\n确定继续部署吗？",
 }));
 
 /** What the daemon client returns: an outcome plus where it wrote. */
@@ -92,6 +113,13 @@ describe("apps-store", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mocks.seedDaemonApp.mockResolvedValue(seedResult("unreachable"));
+    mocks.cloneDaemonApp.mockResolvedValue(seedResult("unreachable"));
+    mocks.daemonAppWorkdir.mockResolvedValue({
+      workdir: "/home/.amuxd/teams/team-1/apps/app-1",
+      deviceName: "test-host",
+    });
+    mocks.workdirExists.mockResolvedValue(false);
+    mocks.readDir.mockResolvedValue([]);
     mocks.getGitCredential.mockResolvedValue(gitCred);
     const { useAppsStore } = await import("./apps-store");
     useAppsStore.setState({
@@ -403,6 +431,99 @@ describe("apps-store", () => {
   });
 });
 
+describe("ensureAppCheckout", () => {
+  const readyGitea = (over = {}) =>
+    appRow({
+      provisionStatus: "ready",
+      gitRemoteUrl: "git@gitea:team/app-1.git",
+      gitAuthKind: "gitea_deploy_key",
+      teamId: "team-1",
+      ...over,
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.daemonAppWorkdir.mockResolvedValue({
+      workdir: "/home/.amuxd/teams/team-1/apps/app-1",
+      deviceName: "test-host",
+    });
+    mocks.workdirExists.mockResolvedValue(false);
+    mocks.readDir.mockResolvedValue([]);
+    mocks.getGitCredential.mockResolvedValue(gitCred);
+    mocks.cloneDaemonApp.mockResolvedValue(
+      seedResult("seeded", { workdir: "/home/.amuxd/teams/team-1/apps/app-1" }),
+    );
+  });
+
+  it("skips clone when the local workdir already has files", async () => {
+    mocks.workdirExists.mockResolvedValueOnce(true);
+    mocks.readDir.mockResolvedValueOnce([{ name: "AGENTS.md" }]);
+    const { ensureAppCheckout } = await import("./apps-store");
+    await ensureAppCheckout(readyGitea());
+    expect(mocks.cloneDaemonApp).not.toHaveBeenCalled();
+    expect(mocks.getGitCredential).not.toHaveBeenCalled();
+  });
+
+  it("clones with a deploy key when the workdir is empty (Gitea-managed)", async () => {
+    const { ensureAppCheckout } = await import("./apps-store");
+    await ensureAppCheckout(readyGitea());
+    expect(mocks.getGitCredential).toHaveBeenCalledWith("app-1");
+    expect(mocks.cloneDaemonApp).toHaveBeenCalledWith(
+      "app-1",
+      "team-1",
+      gitCred.remoteUrl,
+      gitCred.privateKeyPem,
+    );
+    expect(mocks.bindAppWorkdir).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "app-1" }),
+      "/home/.amuxd/teams/team-1/apps/app-1",
+    );
+  });
+
+  it("does not clone when getGitCredential is denied (view-only)", async () => {
+    mocks.getGitCredential.mockResolvedValueOnce(null);
+    const { ensureAppCheckout } = await import("./apps-store");
+    await ensureAppCheckout(readyGitea());
+    expect(mocks.cloneDaemonApp).not.toHaveBeenCalled();
+  });
+
+  it("clones an imported app from gitRemoteUrl without a deploy key", async () => {
+    const { ensureAppCheckout } = await import("./apps-store");
+    await ensureAppCheckout(
+      readyGitea({
+        gitRemoteUrl: "https://github.com/owner/site.git",
+        gitAuthKind: null,
+      }),
+    );
+    expect(mocks.getGitCredential).not.toHaveBeenCalled();
+    expect(mocks.cloneDaemonApp).toHaveBeenCalledWith(
+      "app-1",
+      "team-1",
+      "https://github.com/owner/site.git",
+      null,
+    );
+  });
+
+  it("toasts when clone fails", async () => {
+    mocks.cloneDaemonApp.mockResolvedValueOnce(
+      seedResult("failed", { error: "git clone failed: repository not found" }),
+    );
+    const { ensureAppCheckout } = await import("./apps-store");
+    await ensureAppCheckout(readyGitea());
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "仓库克隆失败",
+      { description: "git clone failed: repository not found" },
+    );
+    expect(mocks.bindAppWorkdir).not.toHaveBeenCalled();
+  });
+
+  it("skips checkout for apps that are not ready yet", async () => {
+    const { ensureAppCheckout } = await import("./apps-store");
+    await ensureAppCheckout(readyGitea({ provisionStatus: "pending" }));
+    expect(mocks.daemonAppWorkdir).not.toHaveBeenCalled();
+  });
+});
+
 describe("apps-store deploy", () => {
   const readyApp = (over = {}) =>
     appRow({
@@ -419,6 +540,9 @@ describe("apps-store deploy", () => {
     vi.clearAllMocks();
     mocks.getGitHead.mockResolvedValue({ sha: "abc1234567890" });
     mocks.getGitCredential.mockResolvedValue(gitCred);
+    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
+      workspace_has_active_turn: false,
+    });
     vi.mocked(publicDeployConfirm.run).mockReturnValue(true);
     const mod = await import("./apps-store");
     mod.useAppsStore.setState({
@@ -508,6 +632,56 @@ describe("apps-store deploy", () => {
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
     expect(vi.mocked(publicDeployConfirm.run)).not.toHaveBeenCalled();
+  });
+
+  it("active turn prompts for deploy confirmation", async () => {
+    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValueOnce({
+      workspace_has_active_turn: true,
+    });
+    mocks.deployApp.mockResolvedValueOnce({
+      ...readyApp({ authMode: "platform" }),
+      fcStatus: "awaiting_build",
+      presignedPut: "https://oss/put?sig=x",
+      deployToken: "tok-1",
+    });
+    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built"));
+    mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp({ authMode: "platform" }), fcStatus: "live" });
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().deploy("app-1");
+
+    expect(mocks.getDaemonEnvActivationDiagnostics).toHaveBeenCalledWith("ws-1", "team-1");
+    expect(vi.mocked(publicDeployConfirm.run)).toHaveBeenCalledTimes(1);
+    expect(mocks.deployApp).toHaveBeenCalled();
+  });
+
+  it("active turn: declined confirm aborts deploy", async () => {
+    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValueOnce({
+      workspace_has_active_turn: true,
+    });
+    vi.mocked(publicDeployConfirm.run).mockReturnValue(false);
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().deploy("app-1");
+
+    expect(vi.mocked(publicDeployConfirm.run)).toHaveBeenCalledTimes(1);
+    expect(mocks.getGitHead).not.toHaveBeenCalled();
+    expect(mocks.deployApp).not.toHaveBeenCalled();
+  });
+
+  it("unreachable env-diagnostics does not block deploy", async () => {
+    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValueOnce(null);
+    mocks.deployApp.mockResolvedValueOnce({
+      ...readyApp({ authMode: "platform" }),
+      fcStatus: "awaiting_build",
+      presignedPut: "https://oss/put?sig=x",
+      deployToken: "tok-1",
+    });
+    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built"));
+    mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp({ authMode: "platform" }), fcStatus: "live" });
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().deploy("app-1");
+
+    expect(vi.mocked(publicDeployConfirm.run)).not.toHaveBeenCalled();
+    expect(mocks.deployApp).toHaveBeenCalled();
   });
 
   it("a daemon build that never finishes is reported as deploy_error", async () => {

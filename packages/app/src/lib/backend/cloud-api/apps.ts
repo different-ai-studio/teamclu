@@ -5,6 +5,8 @@ import type {
   AppGitCredential,
   AppGitHead,
   AppMembership,
+  AppMemberAccessRow,
+  AppPermissionLevel,
   DeployAppResult,
 } from "../types";
 import { CloudApiError, type CloudApiClient } from "./http";
@@ -82,6 +84,56 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
     async getAppMembership(appId) {
       try {
         return await client.get<AppMembership>(`/v1/apps/${encodeURIComponent(appId)}/membership`);
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+    async listAppAccess(appId) {
+      try {
+        const page = await client.get<Page<AppMemberAccessRow>>(
+          `/v1/apps/${encodeURIComponent(appId)}/access`,
+        );
+        return page.items;
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+    async setAppAccess(appId, memberId, permissionLevel: AppPermissionLevel) {
+      try {
+        return await client.put<AppMemberAccessRow>(
+          `/v1/apps/${encodeURIComponent(appId)}/access/${encodeURIComponent(memberId)}`,
+          { permissionLevel },
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+    async removeAppAccess(appId, memberId) {
+      try {
+        await client.delete<{ ok: true }>(
+          `/v1/apps/${encodeURIComponent(appId)}/access/${encodeURIComponent(memberId)}`,
+        );
+        return true;
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return false;
+        throw e;
+      }
+    },
+    async deleteApp(appId) {
+      try {
+        await client.delete<{ ok: true }>(`/v1/apps/${encodeURIComponent(appId)}`);
+        return true;
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return false;
+        throw e;
+      }
+    },
+    async updateAppAuthMode(appId, authMode) {
+      try {
+        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { authMode });
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;

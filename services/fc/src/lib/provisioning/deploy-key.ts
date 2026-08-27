@@ -141,13 +141,33 @@ export const JIT_DEPLOY_KEY_TTL_MS = 15 * 60 * 1000;
 const JIT_TITLE_PREFIX = "jit-";
 
 /**
- * Title for a freshly minted JIT key: prefix, mint time, and a nonce.
+ * Title for a freshly minted JIT key: prefix, actor, mint time, and a nonce.
  *
  * The nonce is what keeps two credential requests in the same millisecond from
  * colliding on Gitea's unique-title constraint.
  */
-export function jitDeployKeyTitle(now = Date.now(), nonce = randomUUID().slice(0, 8)): string {
-  return `${JIT_TITLE_PREFIX}${now}-${nonce}`;
+export function jitDeployKeyTitle(
+  actorId: string,
+  now = Date.now(),
+  nonce = randomUUID().slice(0, 8),
+): string {
+  return `${JIT_TITLE_PREFIX}${actorId}-${now}-${nonce}`;
+}
+
+/** Extract mint timestamp from a JIT title, or null if unparseable. */
+function jitTitleMintedAt(title: string): number | null {
+  if (!title.startsWith(JIT_TITLE_PREFIX)) return null;
+  const rest = title.slice(JIT_TITLE_PREFIX.length);
+  if (/^\d+$/.test(rest)) return Number.parseInt(rest, 10);
+
+  const lastDash = rest.lastIndexOf("-");
+  if (lastDash <= 0) return null;
+  const beforeNonce = rest.slice(0, lastDash);
+  const secondLastDash = beforeNonce.lastIndexOf("-");
+  const msStr = secondLastDash < 0 ? beforeNonce : beforeNonce.slice(secondLastDash + 1);
+  if (!/^\d+$/.test(msStr)) return null;
+  const mintedAt = Number.parseInt(msStr, 10);
+  return Number.isFinite(mintedAt) ? mintedAt : null;
 }
 
 /** ids of JIT keys minted longer than `ttlMs` ago. Foreign titles are left alone. */
@@ -158,9 +178,8 @@ export function expiredJitDeployKeyIds(
 ): number[] {
   return keys
     .filter((k) => {
-      if (!k.title.startsWith(JIT_TITLE_PREFIX)) return false;
-      const mintedAt = Number.parseInt(k.title.slice(JIT_TITLE_PREFIX.length).split("-")[0], 10);
-      if (!Number.isFinite(mintedAt)) return false;
+      const mintedAt = jitTitleMintedAt(k.title);
+      if (mintedAt === null) return false;
       return now - mintedAt > ttlMs;
     })
     .map((k) => k.id);
@@ -195,15 +214,86 @@ export async function sweepExpiredDeployKeys(
   return removed;
 }
 
+/** Prefix for JIT deploy keys belonging to one actor (`jit-${actorId}-…`). */
+function jitActorKeyPrefix(actorId: string): string {
+  return `${JIT_TITLE_PREFIX}${actorId}-`;
+}
+
+/** ids of JIT keys whose title belongs to `actorId`. Foreign titles are left alone. */
+export function actorJitDeployKeyIds(
+  keys: { id: number; title: string }[],
+  actorId: string,
+): number[] {
+  const prefix = jitActorKeyPrefix(actorId);
+  return keys.filter((k) => k.title.startsWith(prefix)).map((k) => k.id);
+}
+
+/**
+ * Revoke every deploy key on an app's repo (§7.2 delete).
+ *
+ * Best effort throughout — a missing repo or a stubborn key must not block delete.
+ */
+export async function revokeAllDeployKeys(
+  gitea: GiteaClient,
+  appId: string,
+): Promise<number> {
+  let keys: { id: number; title: string }[];
+  try {
+    keys = await gitea.listDeployKeys(appId);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const { id } of keys) {
+    try {
+      await gitea.deleteDeployKey(appId, id);
+      removed += 1;
+    } catch {
+      // Another request may have removed it already.
+    }
+  }
+  return removed;
+}
+
+/**
+ * Revoke all JIT deploy keys for an actor on an app's repo.
+ *
+ * Best effort throughout: a repo we cannot list, or a key we cannot delete, is
+ * not a reason to fail the deauth the caller actually made.
+ */
+export async function revokeActorDeployKeys(
+  gitea: GiteaClient,
+  appId: string,
+  actorId: string,
+): Promise<number> {
+  let keys: { id: number; title: string }[];
+  try {
+    keys = await gitea.listDeployKeys(appId);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const id of actorJitDeployKeyIds(keys, actorId)) {
+    try {
+      await gitea.deleteDeployKey(appId, id);
+      removed += 1;
+    } catch {
+      // Another request may have removed it already.
+    }
+  }
+  return removed;
+}
+
 /** Sweep expired keys, then register a fresh one and return its private half. */
 export async function issueJitDeployKey(
   gitea: GiteaClient,
   appId: string,
+  actorId: string,
   now = Date.now(),
 ): Promise<{ privateKeyPem: string; deployKeyId: number; expiresAt: string }> {
   await sweepExpiredDeployKeys(gitea, appId, now);
   const { publicKeyOpenSSH, privateKeyPem } = generateDeployKeyPair();
-  const { id } = await gitea.createDeployKey(appId, jitDeployKeyTitle(now), publicKeyOpenSSH);
+  const { id } = await gitea.createDeployKey(appId, jitDeployKeyTitle(actorId, now), publicKeyOpenSSH);
   return {
     privateKeyPem,
     deployKeyId: id,

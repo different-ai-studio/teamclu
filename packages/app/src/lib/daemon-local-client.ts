@@ -11,6 +11,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { normalizeDaemonEnvActivationDiagnostics } from '@/lib/env-diagnostics'
+import { useAuthStore } from '@/stores/auth-store'
 import { isTauri } from '@/lib/utils'
 
 // ─── Workspace ID encoding ────────────────────────────────────────────────────
@@ -1144,6 +1145,55 @@ export interface SeedAppResult {
   error: string | null
 }
 
+function resolveSeedGitUserIdentity(): { gitUserName?: string; gitUserEmail?: string } {
+  const session = useAuthStore.getState().session
+  if (!session) return {}
+  const meta = session.user.userMetadata ?? undefined
+  const email = session.user.email?.trim() || ''
+  const name =
+    (typeof meta?.full_name === 'string' && meta.full_name.trim()) ||
+    (typeof meta?.name === 'string' && meta.name.trim()) ||
+    (email ? email.split('@')[0] : '') ||
+    ''
+  return {
+    ...(name ? { gitUserName: name } : {}),
+    ...(email ? { gitUserEmail: email } : {}),
+  }
+}
+
+export async function cloneDaemonApp(
+  appId: string,
+  teamId: string,
+  gitRemoteUrl: string,
+  deployKeyPem?: string | null,
+): Promise<SeedAppResult> {
+  try {
+    const result = await daemonFetch<{ status: string; workdir?: string }>('/v1/apps/seed', {
+      method: 'POST',
+      body: JSON.stringify({
+        appId,
+        teamId,
+        gitRemoteUrl: gitRemoteUrl.trim(),
+        cloneOnly: true,
+        ...(deployKeyPem?.trim() ? { deployKeyPem: deployKeyPem.trim() } : {}),
+        ...resolveSeedGitUserIdentity(),
+      }),
+    })
+    if (result.ok) {
+      return { outcome: "seeded", workdir: result.data.workdir?.trim() || null, error: null }
+    }
+    if (result.status === 0) {
+      console.warn('[daemon-local-client] app clone unreachable (non-fatal):', result.error)
+      return { outcome: "unreachable", workdir: null, error: null }
+    }
+    console.warn('[daemon-local-client] app clone failed:', result.error)
+    return { outcome: "failed", workdir: null, error: result.error ?? null }
+  } catch (err) {
+    console.warn('[daemon-local-client] app clone unavailable (non-fatal):', err)
+    return { outcome: "unreachable", workdir: null, error: null }
+  }
+}
+
 export async function seedDaemonApp(
   appId: string,
   teamId: string,
@@ -1162,6 +1212,7 @@ export async function seedDaemonApp(
         appType,
         ...(gitRemoteUrl?.trim() ? { gitRemoteUrl: gitRemoteUrl.trim() } : {}),
         ...(deployKeyPem?.trim() ? { deployKeyPem: deployKeyPem.trim() } : {}),
+        ...resolveSeedGitUserIdentity(),
       }),
     })
     if (result.ok) {
@@ -1226,23 +1277,70 @@ export interface BuildDaemonAppInput {
  * Returns null when the daemon is unreachable or too old to answer, so callers
  * degrade to "no local path" instead of guessing a wrong one.
  */
+export interface DaemonAppWorkdirInfo {
+  workdir: string
+  deviceName: string
+}
+
 export async function daemonAppWorkdir(
   appId: string,
   teamId?: string | null,
-): Promise<string | null> {
+): Promise<DaemonAppWorkdirInfo | null> {
   try {
     const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
-    const result = await daemonFetch<{ workdir: string }>(
+    const result = await daemonFetch<{ workdir: string; deviceName?: string }>(
       `/v1/apps/${encodeURIComponent(appId)}/workdir${query}`,
     )
     if (!result.ok) {
       console.warn('[daemon-local-client] app workdir unavailable (non-fatal):', result.error)
       return null
     }
-    return result.data.workdir?.trim() || null
+    const workdir = result.data.workdir?.trim()
+    if (!workdir) return null
+    return {
+      workdir,
+      deviceName: result.data.deviceName?.trim() || 'Local daemon',
+    }
   } catch (err) {
     console.warn('[daemon-local-client] app workdir unavailable:', err)
     return null
+  }
+}
+
+export type MoveAppWorkdirResult =
+  | { outcome: 'moved'; workdir: string; error: null }
+  | { outcome: 'unreachable'; workdir: null; error: null }
+  | { outcome: 'failed'; workdir: null; error: string }
+
+/** Relocate this app's checkout on the local daemon (entire tree, including `.git`). */
+export async function moveDaemonAppWorkdir(
+  appId: string,
+  teamId: string,
+  destPath: string,
+): Promise<MoveAppWorkdirResult> {
+  try {
+    const result = await daemonFetch<{ workdir: string }>(
+      `/v1/apps/${encodeURIComponent(appId)}/move-workdir`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          appId,
+          teamId,
+          destPath: destPath.trim(),
+        }),
+      },
+    )
+    if (result.ok) {
+      const workdir = result.data.workdir?.trim() || destPath.trim()
+      return { outcome: 'moved', workdir, error: null }
+    }
+    if (result.status === 0) {
+      return { outcome: 'unreachable', workdir: null, error: null }
+    }
+    return { outcome: 'failed', workdir: null, error: result.error ?? null }
+  } catch (err) {
+    console.warn('[daemon-local-client] app workdir move unavailable:', err)
+    return { outcome: 'unreachable', workdir: null, error: null }
   }
 }
 

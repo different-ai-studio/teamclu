@@ -5184,15 +5184,41 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteApp
+      summary: Delete an app (admin required)
+      description: |
+        Requires `admin` permission (the creator is treated as admin). Tears down
+        the FC function, HTTP trigger, OSS artifact, and GoTrue OAuth client;
+        revokes Gitea deploy keys and archives the repo under a `deleted-` prefix.
+        Postgres schema, local workdirs, and linked sessions (app_id nulled) are
+        kept. The orphaned workspace row is archived with the archived repo URL.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: App deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/apps/{appId}/deploy:
     post:
       operationId: deployApp
-      summary: Start a deploy — mint the artifact upload handle (creator only)
+      summary: Start a deploy — mint the artifact upload handle (admin required)
       description: |
-        Requires `provisionStatus: ready`. Moves `fcStatus` to `awaiting_build`
-        and returns a short-lived presigned OSS PUT URL. The caller then kicks
-        its local daemon to build the app and upload the artifact there, and
-        calls `/deploy/finalize` once the upload succeeds.
+        Requires `provisionStatus: ready` and `admin` permission on the app
+        (the creator is treated as admin). Members with `prompt` or `view`
+        receive 404. Moves `fcStatus` to `awaiting_build` and returns a
+        short-lived presigned OSS PUT URL. The caller then kicks its local
+        daemon to build the app and upload the artifact there, and calls
+        `/deploy/finalize` once the upload succeeds.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
@@ -5249,11 +5275,13 @@ paths:
       operationId: finalizeAppDeploy
       summary: Finish a deploy — provision the schema, publish the code, return the live URL
       description: |
-        Provisions (idempotently) the app's Postgres schema and scoped role,
-        points the FC function at the uploaded artifact with a matching
-        `DATABASE_URL`, ensures the HTTP trigger, and stores `fcEndpoint` with
-        `fcStatus: live`. Failures land on `deploy_error` with the reason in
-        `provisionError`; retry by calling `/deploy` again.
+        Requires `admin` permission on the app (the creator is treated as
+        admin); members with `prompt` or `view` receive 404. Provisions
+        (idempotently) the app's Postgres schema and scoped role, points the
+        FC function at the uploaded artifact with a matching `DATABASE_URL`,
+        ensures the HTTP trigger, and stores `fcEndpoint` with `fcStatus: live`.
+        Failures land on `deploy_error` with the reason in `provisionError`;
+        retry by calling `/deploy` again.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
@@ -5323,13 +5351,15 @@ paths:
   /v1/apps/{appId}/git-credential:
     get:
       operationId: getAppGitCredential
-      summary: Mint a short-lived Gitea deploy key for the app repo (creator only)
+      summary: Mint a short-lived Gitea deploy key for the app repo
       description: |
         Generates an ed25519 deploy key, registers the public half on the app's
         Gitea repo (`tc-app-{appId}`), and returns the private key for one-time
-        use by the local daemon. The private key is never persisted, and is in
-        OpenSSH format (`BEGIN OPENSSH PRIVATE KEY`) — OpenSSH cannot load an
-        ed25519 key from a PKCS#8 block. Secret — never log the response body.
+        use by the local daemon. Requires `prompt` or `admin` permission on the
+        app (the creator is treated as admin); `view` receives 404. The private
+        key is never persisted, and is in OpenSSH format (`BEGIN OPENSSH PRIVATE
+        KEY`) — OpenSSH cannot load an ed25519 key from a PKCS#8 block. Secret
+        — never log the response body.
 
         Each call also revokes the keys it minted more than 15 minutes ago, so
         `expiresAt` bounds how long a handed-out credential stays usable.
@@ -5393,6 +5423,96 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/access:
+    get:
+      operationId: listAppAccess
+      summary: List per-member access grants for an app
+      description: |
+        Returns all rows in `app_member_access` for the app. Only the app
+        creator or a member with `admin` permission may call this; others
+        receive 404 (same as other app mutations — do not leak existence).
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Access grants for team members on this app.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppMemberAccessRow"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/access/{memberId}:
+    put:
+      operationId: setAppAccess
+      summary: Grant or update a member's app permission
+      description: |
+        Upserts `app_member_access` for `(appId, memberId)`. `permissionLevel`
+        must be `view`, `prompt`, or `admin`. Only the app creator or a member
+        with existing `admin` on this app may call; others receive 404.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppAccessMemberId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissionLevel]
+              properties:
+                permissionLevel:
+                  $ref: "#/components/schemas/AppPermissionLevel"
+      responses:
+        "200":
+          description: The upserted access row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppMemberAccessRow"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: removeAppAccess
+      summary: Revoke a member's app permission
+      description: |
+        Deletes the `app_member_access` row for `(appId, memberId)`. Only the
+        app creator or a member with `admin` on this app may call; others
+        receive 404.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppAccessMemberId"
+      responses:
+        "200":
+          description: Row removed (or was already absent).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
     bearerAuth:
@@ -5447,6 +5567,14 @@ components:
       name: appId
       in: path
       required: true
+      schema:
+        type: string
+        format: uuid
+    AppAccessMemberId:
+      name: memberId
+      in: path
+      required: true
+      description: Team member actor id receiving the grant.
       schema:
         type: string
         format: uuid
@@ -5783,6 +5911,16 @@ components:
           $ref: "#/components/schemas/AppRuntime"
         authMode:
           $ref: "#/components/schemas/AppAuthMode"
+        authModePendingRedeploy:
+          type: boolean
+          description: >-
+            `authMode` was changed after the app went live, so the running
+            function still enforces the mode it was deployed with — the OAuth
+            env is injected at finalize, not on the PATCH. True until the next
+            successful deploy. Clients MUST surface this: an app switched to
+            `platform` reads as protected while its site is still public.
+            Server-derived from `fc_status` and the deployed mode; false for an
+            app that has never been live.
         oauthClientId:
           type: [string, "null"]
           description: >-
@@ -5851,6 +5989,31 @@ components:
             True when the caller has a member actor in the app's `teamId`;
             false otherwise (including when the app is personal and the caller
             is not the creator).
+    AppPermissionLevel:
+      type: string
+      enum: [view, prompt, admin]
+      description: >-
+        Per-member app capability. `view` — see metadata only; `prompt` — git
+        write (clone/push) but no deploy or grant management; `admin` — full
+        control including deploy and access management.
+    AppMemberAccessRow:
+      type: object
+      required: [memberId, permissionLevel, createdAt]
+      properties:
+        memberId:
+          type: string
+          format: uuid
+          description: Granted team member actor id.
+        permissionLevel:
+          $ref: "#/components/schemas/AppPermissionLevel"
+        grantedByMemberId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Member who last wrote this grant.
+        createdAt:
+          type: string
+          format: date-time
     BootstrapConfig:
       type: object
       description: >-
