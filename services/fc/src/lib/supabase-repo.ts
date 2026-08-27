@@ -289,6 +289,9 @@ export function createSupabaseBusinessRepository(options) {
     // Injectable for tests; defaults to the shared LiteLLM HTTP client.
     litellmFetch: litellmFetchOpt,
     trustedExternalJwtSecret = process.env.TRUSTED_EXTERNAL_JWT_SECRET,
+    // Optional push hook — called after every successful message INSERT. Best-effort:
+    // errors are logged and swallowed so insert outcome is never affected.
+    dispatchPush,
   } = options;
 
   if (!supabaseUrl) throw new Error("SUPABASE_URL is required");
@@ -1199,6 +1202,20 @@ export function createSupabaseBusinessRepository(options) {
         .select(MESSAGE_COLUMNS)
         .single();
       if (error) throw error;
+
+      if (dispatchPush) {
+        dispatchPush({
+          id: data.id,
+          session_id: data.session_id,
+          team_id: data.team_id,
+          sender_actor_id: data.sender_actor_id ?? null,
+          kind: data.kind ?? "text",
+          content: data.content ?? "",
+        }).catch((err: unknown) => {
+          console.error("[push] dispatchPush failed (swallowed):", err);
+        });
+      }
+
       return mapMessage(data);
     },
 
