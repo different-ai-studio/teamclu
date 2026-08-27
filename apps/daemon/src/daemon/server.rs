@@ -1111,7 +1111,8 @@ impl DaemonServer {
                 crate::runtime::RuntimeSupervisor::new(self.agents.clone())
             };
             supervisor_for_prewarm = Some(runtime_supervisor.clone());
-            runtime_supervisor.clone().start_refresh_auto_applier();
+            // Capability refresh is deferred to the next runtime start; do not
+            // auto-reload running workspaces on pending coordinator state.
             let refresh_coordinator = runtime_supervisor.refresh_coordinator();
             self.refresh_coordinator = Some(refresh_coordinator.clone());
             {

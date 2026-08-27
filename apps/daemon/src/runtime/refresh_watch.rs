@@ -277,7 +277,7 @@ fn watch_roots(workspaces: &[WatchedWorkspace], home: Option<&Path>) -> Vec<Watc
 
 async fn record_classified_changes(
     refresh: &RuntimeRefreshCoordinator,
-    supervisor: Option<&RuntimeSupervisor>,
+    _supervisor: Option<&RuntimeSupervisor>,
     debounce: &mut RefreshDebounce,
     workspaces: &[WatchedWorkspace],
     home: Option<&Path>,
@@ -307,19 +307,6 @@ async fn record_classified_changes(
                 error = %error,
                 "failed to record filesystem refresh change"
             );
-            continue;
-        }
-
-        // OpenCode caches its discovered skill catalog for the lifetime of the
-        // serve process. Draining the workspace generation preserves existing
-        // sessions while guaranteeing that the next session discovers the new
-        // on-disk skill content.
-        if change.kind == RefreshChangeKind::Skills {
-            if let Some(supervisor) = supervisor {
-                supervisor
-                    .request_workspace_host_refresh(&change.workspace_id, &change.workspace_path)
-                    .await;
-            }
         }
     }
 }
@@ -691,7 +678,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skill_change_drains_current_host_and_next_session_gets_fresh_generation() {
+    async fn skill_change_records_pending_without_host_invalidation() {
         let dir = tempfile::tempdir().unwrap();
         let workspace_id = workspace_runtime_id(dir.path());
         let domain = IsolationDomainKey::Workspace(workspace_id.clone());
@@ -731,10 +718,15 @@ mod tests {
         )
         .await;
 
-        // Invalidation requests a rolling replacement; the old host stays
-        // ready until the next acquire actually publishes that replacement.
         assert_eq!(old.generation.lifecycle(), HostLifecycle::Ready);
-        let fresh = pool
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "pending");
+        assert_eq!(dto.recommended_action, "none");
+
+        let same = pool
             .acquire(
                 domain,
                 revision,
@@ -743,9 +735,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(fresh.generation.generation_id, old_generation_id);
-        assert_eq!(fresh.generation.lifecycle(), HostLifecycle::Ready);
-        assert_eq!(old.generation.lifecycle(), HostLifecycle::Draining);
+        assert_eq!(same.generation.generation_id, old_generation_id);
+        assert_eq!(old.generation.lifecycle(), HostLifecycle::Ready);
     }
 
     #[tokio::test]

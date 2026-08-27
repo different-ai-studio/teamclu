@@ -29,5 +29,5 @@ export function formatRuntimeRefreshChangeKinds(kinds: string[]): string {
 export function runtimeRefreshNeedsBanner(
   status: DaemonRuntimeRefreshStatus | null | undefined,
 ): boolean {
-  return status === 'pending' || status === 'failed' || status === 'applying'
+  return status === 'pending' || status === 'failed'
 }

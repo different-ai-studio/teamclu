@@ -63,6 +63,7 @@ import { resolveSkillPermission } from '@/lib/opencode/config'
 import type { SkillSource } from '@/lib/skills/types'
 import { INHERENT_SKILL_NAMES } from '@/lib/skills/types'
 import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
+import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 import { ClawHubMarketplace } from './ClawHubMarketplace'
 import { SkillsDiagnosticsDialog } from './SkillsDiagnosticsDialog'
 
@@ -136,7 +137,6 @@ export const SkillsSection = React.memo(function SkillsSection({
   const [searchQuery, setSearchQuery] = React.useState('')
   const [skillPermissions, setSkillPermissions] = React.useState<SkillPermissionMap>({})
   const [hasChanges, setHasChanges] = React.useState(false)
-  const [hasSkillRuntimeChanges, setHasSkillRuntimeChanges] = React.useState(false)
   const [isRestarting, setIsRestarting] = React.useState(false)
   const [restartError, setRestartError] = React.useState<string | null>(null)
   const [isViewMode, setIsViewMode] = React.useState(false)
@@ -277,7 +277,7 @@ export const SkillsSection = React.memo(function SkillsSection({
   React.useEffect(() => {
     const onTeamSynced = () => loadSkills()
     const onSkillsChanged = () => {
-      setHasSkillRuntimeChanges(true)
+      useWorkspaceRuntimeRefreshStore.getState().noteLocalRefresh(['skills'])
       void loadSkills()
     }
     window.addEventListener(TEAM_SYNCED_EVENT, onTeamSynced)
@@ -337,8 +337,7 @@ export const SkillsSection = React.memo(function SkillsSection({
       await ensureAgentsSkillsPaths(workspacePath)
       await loadSkills()
       onDataChange?.()
-      await restartOpenCodeInstance()
-      setDialogOpen(false)
+      useWorkspaceRuntimeRefreshStore.getState().noteLocalRefresh(['skills'])
       setSkillDialogMode('create')
       setImportZipPath(null)
       setImportZipLabel(null)
@@ -398,7 +397,7 @@ ${skillContent.trim()}`
       await ensureAgentsSkillsPaths(workspacePath)
       await loadSkills()
       onDataChange?.()
-      setHasSkillRuntimeChanges(true)
+      useWorkspaceRuntimeRefreshStore.getState().noteLocalRefresh(['skills'])
       window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
 
       setDialogOpen(false)
@@ -458,7 +457,7 @@ ${skillContent.trim()}`
       }, SKILL_DELETE_EXIT_DURATION_MS)
 
       onDataChange?.()
-      setHasSkillRuntimeChanges(true)
+      useWorkspaceRuntimeRefreshStore.getState().noteLocalRefresh(['skills'])
       window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
     } catch (err) {
       console.error('Failed to delete skill:', err)
@@ -568,7 +567,6 @@ ${skillContent.trim()}`
     setRestartError(null)
     try {
       await restartOpenCodeInstance()
-      setHasSkillRuntimeChanges(false)
     } catch (err) {
       console.error('[SkillsSection] Failed to restart OpenCode:', err)
       setRestartError(err instanceof Error ? err.message : String(err))
@@ -807,7 +805,7 @@ ${skillContent.trim()}`
             onInstalled={async () => {
               await loadSkills()
               onDataChange?.()
-              setHasSkillRuntimeChanges(true)
+              useWorkspaceRuntimeRefreshStore.getState().noteLocalRefresh(['skills'])
               window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
             }}
           />
@@ -855,48 +853,6 @@ ${skillContent.trim()}`
                 <>
                   <RefreshCw className="h-3 w-3" />
                   {t('common.restart', 'Restart')}
-                </>
-              )}
-            </Button>
-          </div>
-        </SettingCard>
-      )}
-
-      {!embeddedConsole && hasSkillRuntimeChanges && (
-        <SettingCard className="bg-gradient-to-br from-sky-50 to-cyan-50 dark:from-sky-950/30 dark:to-cyan-950/30 border-sky-200 dark:border-sky-800">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="h-5 w-5 text-sky-600 dark:text-sky-400 mt-0.5" />
-            <div className="flex-1">
-              <p className="font-medium text-sky-900 dark:text-sky-100">
-                {t('settings.skills.runtimeChanged', 'Detected Skill Changes')}
-              </p>
-              <p className="text-[13px] text-sky-700 dark:text-sky-300 mt-1">
-                {t(
-                  'settings.skills.restartToLoadNewSkills',
-                  'New or updated skills were detected. Apply changes to refresh the current session (takes effect on the next message). New sessions pick them up automatically.',
-                )}
-              </p>
-              {restartError && (
-                <p className="text-[13px] text-red-600 dark:text-red-400 mt-2">
-                  {t('common.error', 'Error')}: {restartError}
-                </p>
-              )}
-            </div>
-            <Button
-              size="sm"
-              onClick={handleRestartOpenCode}
-              disabled={isRestarting || !workspacePath}
-              className="gap-2"
-            >
-              {isRestarting ? (
-                <>
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  {t('workspace.runtimeRefresh.applyingTitle', 'Applying workspace changes…')}
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="h-3 w-3" />
-                  {t('workspace.runtimeRefresh.apply', 'Apply changes')}
                 </>
               )}
             </Button>

@@ -132,6 +132,31 @@ pub enum RefreshRecommendedAction {
     ApplyChanges,
 }
 
+/// When a recorded refresh change takes effect for running vs future runtimes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshActivationPolicy {
+    /// Informational pending only; next runtime spawn reads latest workspace files.
+    NextRuntimeStart,
+    /// Writer/cache invalidation applies immediately; no runtime reload.
+    Live,
+    /// Provider-auth and other security-sensitive paths (handled outside auto-apply).
+    SecurityImmediate,
+}
+
+pub fn activation_policy(kind: RefreshChangeKind) -> RefreshActivationPolicy {
+    match kind {
+        RefreshChangeKind::Skills
+        | RefreshChangeKind::Mcp
+        | RefreshChangeKind::OpencodeJson
+        | RefreshChangeKind::TeamcluConfig
+        | RefreshChangeKind::EnvVars => RefreshActivationPolicy::NextRuntimeStart,
+        RefreshChangeKind::ProviderCatalog | RefreshChangeKind::Permissions => {
+            RefreshActivationPolicy::Live
+        }
+        RefreshChangeKind::ProviderAuth => RefreshActivationPolicy::SecurityImmediate,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceRefreshStatus {
@@ -270,7 +295,7 @@ impl RuntimeRefreshCoordinator {
                 workspace_path: workspace_path.display().to_string(),
                 status: WorkspaceRefreshStatus::Pending,
                 strongest_impact: impact_for_kind(kind),
-                recommended_action: RefreshRecommendedAction::ApplyChanges,
+                recommended_action: RefreshRecommendedAction::None,
                 change_kinds: BTreeSet::new(),
                 sources: BTreeSet::new(),
                 auto_apply_blocked_by_active_runtime: false,
@@ -286,7 +311,8 @@ impl RuntimeRefreshCoordinator {
         entry.change_kinds.insert(kind);
         entry.sources.insert(source);
         entry.strongest_impact = strongest_impact(entry.change_kinds.iter().copied());
-        entry.recommended_action = recommended_action_for(entry.strongest_impact);
+        entry.recommended_action = recommended_action_for_kinds(&entry.change_kinds);
+        entry.auto_apply_blocked_by_active_runtime = false;
         entry.revision += 1;
         entry.last_detected_at = now;
         entry.last_error = None;
@@ -496,12 +522,22 @@ fn strongest_impact(kinds: impl Iterator<Item = RefreshChangeKind>) -> RefreshIm
         .unwrap_or(RefreshImpact::AppliedLive)
 }
 
-fn recommended_action_for(impact: RefreshImpact) -> RefreshRecommendedAction {
-    match impact {
-        RefreshImpact::AppliedLive => RefreshRecommendedAction::None,
-        RefreshImpact::IdleReload
-        | RefreshImpact::IdleRestart
-        | RefreshImpact::UserApplyRequired => RefreshRecommendedAction::ApplyChanges,
+fn recommended_action_for_kinds(kinds: &BTreeSet<RefreshChangeKind>) -> RefreshRecommendedAction {
+    if kinds.is_empty() {
+        return RefreshRecommendedAction::None;
+    }
+    if kinds
+        .iter()
+        .any(|kind| activation_policy(*kind) == RefreshActivationPolicy::NextRuntimeStart)
+    {
+        RefreshRecommendedAction::None
+    } else if kinds
+        .iter()
+        .all(|kind| activation_policy(*kind) == RefreshActivationPolicy::Live)
+    {
+        RefreshRecommendedAction::None
+    } else {
+        RefreshRecommendedAction::ApplyChanges
     }
 }
 
@@ -589,10 +625,7 @@ mod tests {
 
         let state = coordinator.workspace_state("ws-1").await.unwrap();
         assert_eq!(state.status, WorkspaceRefreshStatus::Pending);
-        assert_eq!(
-            state.recommended_action,
-            RefreshRecommendedAction::ApplyChanges
-        );
+        assert_eq!(state.recommended_action, RefreshRecommendedAction::None);
         assert_eq!(state.strongest_impact, RefreshImpact::IdleRestart);
         assert!(state.change_kinds.contains(&RefreshChangeKind::Skills));
         assert!(state.change_kinds.contains(&RefreshChangeKind::Mcp));
@@ -688,7 +721,7 @@ mod tests {
 
         let dto = coordinator.runtime_refresh_dto("ws-3").await;
         assert_eq!(dto.status, "pending");
-        assert_eq!(dto.recommended_action, "apply_changes");
+        assert_eq!(dto.recommended_action, "none");
         assert_eq!(dto.change_kinds, vec!["skills".to_string()]);
         assert_eq!(dto.last_error, None);
     }

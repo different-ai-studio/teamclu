@@ -14,7 +14,7 @@ describe('workspace-runtime-refresh-labels', () => {
   it('detects banner-worthy statuses', () => {
     expect(runtimeRefreshNeedsBanner('pending')).toBe(true)
     expect(runtimeRefreshNeedsBanner('failed')).toBe(true)
-    expect(runtimeRefreshNeedsBanner('applying')).toBe(true)
+    expect(runtimeRefreshNeedsBanner('applying')).toBe(false)
     expect(runtimeRefreshNeedsBanner('clean')).toBe(false)
     expect(runtimeRefreshNeedsBanner(null)).toBe(false)
   })

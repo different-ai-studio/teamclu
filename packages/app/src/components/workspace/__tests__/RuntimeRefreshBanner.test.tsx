@@ -25,26 +25,27 @@ describe('RuntimeRefreshWorkspaceBanner', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('shows apply action for pending refresh', async () => {
-    const applyChanges = vi.fn()
+  it('shows informational pending banner without apply action', async () => {
+    const dismissBanner = vi.fn()
     useWorkspaceRuntimeRefreshStore.setState({
       refresh: {
         status: 'pending',
         change_kinds: ['skills', 'mcp'],
-        recommended_action: 'apply_changes',
-        auto_apply_blocked_by_active_runtime: true,
-        last_detected_at: null,
+        recommended_action: 'none',
+        auto_apply_blocked_by_active_runtime: false,
+        last_detected_at: '2026-06-03T00:00:00Z',
         last_error: null,
       },
-      applyChanges,
+      dismissBanner,
     })
 
     render(<RuntimeRefreshWorkspaceBanner />)
 
     expect(screen.getByTestId('runtime-refresh-workspace-banner')).toBeInTheDocument()
-    expect(screen.getByText(/Pending: skills, MCP/i)).toBeInTheDocument()
+    expect(screen.getByText(/Updated: skills, MCP/i)).toBeInTheDocument()
+    expect(screen.queryByTestId('runtime-refresh-apply')).not.toBeInTheDocument()
 
-    await userEvent.click(screen.getByTestId('runtime-refresh-apply'))
-    expect(applyChanges).toHaveBeenCalled()
+    await userEvent.click(screen.getByTestId('runtime-refresh-dismiss'))
+    expect(dismissBanner).toHaveBeenCalled()
   })
 })

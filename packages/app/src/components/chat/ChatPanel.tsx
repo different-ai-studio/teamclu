@@ -5,7 +5,6 @@ import {
   cn,
   isTauri,
 } from "@/lib/utils";
-import { RuntimeRefreshSessionHint } from "@/components/chat/RuntimeRefreshSessionHint";
 import { useSessionStore } from "@/stores/session";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
@@ -1458,11 +1457,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
           />
         ) : activeSessionId || draftPreselectedActor ? (
           <>
-            {activeSessionId ? (
-              <div className="shrink-0 px-3 pt-2">
-                <RuntimeRefreshSessionHint />
-              </div>
-            ) : null}
             <ChatInputArea
             activeSessionId={activeSessionId}
             compact={compact}

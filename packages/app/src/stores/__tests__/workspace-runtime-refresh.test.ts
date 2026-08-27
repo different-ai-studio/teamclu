@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   getDaemonRuntime: vi.fn(),
-  reloadDaemonRuntime: vi.fn(),
   isTauri: vi.fn(() => true),
 }))
 
@@ -16,7 +15,6 @@ vi.mock('@/lib/daemon-local-client', async (importOriginal) => {
     ...actual,
     encodeWorkspaceId: (path: string) => `id:${path}`,
     getDaemonRuntime: mocks.getDaemonRuntime,
-    reloadDaemonRuntime: mocks.reloadDaemonRuntime,
   }
 })
 
@@ -25,7 +23,6 @@ import { useWorkspaceRuntimeRefreshStore } from '../workspace-runtime-refresh'
 describe('workspace-runtime-refresh store', () => {
   beforeEach(() => {
     mocks.getDaemonRuntime.mockReset()
-    mocks.reloadDaemonRuntime.mockReset()
     mocks.isTauri.mockReturnValue(true)
     useWorkspaceRuntimeRefreshStore.getState().stopPolling()
   })
@@ -39,7 +36,7 @@ describe('workspace-runtime-refresh store', () => {
       refresh: {
         status: 'pending',
         change_kinds: ['skills'],
-        recommended_action: 'apply_changes',
+        recommended_action: 'none',
         auto_apply_blocked_by_active_runtime: false,
         last_detected_at: '2026-06-03T00:00:00Z',
         last_error: null,
@@ -59,48 +56,31 @@ describe('workspace-runtime-refresh store', () => {
     useWorkspaceRuntimeRefreshStore.getState().noteLocalRefresh(['skills'])
     expect(useWorkspaceRuntimeRefreshStore.getState().refresh?.status).toBe('pending')
     expect(useWorkspaceRuntimeRefreshStore.getState().refresh?.change_kinds).toEqual(['skills'])
+    expect(useWorkspaceRuntimeRefreshStore.getState().refresh?.recommended_action).toBe('none')
   })
 
-  it('applyChanges calls runtime reload and refreshes status', async () => {
-    mocks.getDaemonRuntime
-      .mockResolvedValueOnce({
-        workspace_id: 'id:/tmp/ws',
-        ready: true,
-        backend: 'opencode',
-        current_model: null,
-        refresh: {
-          status: 'pending',
-          change_kinds: ['skills'],
-          recommended_action: 'apply_changes',
-          auto_apply_blocked_by_active_runtime: false,
-          last_detected_at: null,
-          last_error: null,
-        },
-      })
-      .mockResolvedValueOnce({
-        workspace_id: 'id:/tmp/ws',
-        ready: true,
-        backend: 'opencode',
-        current_model: null,
-        refresh: {
-          status: 'clean',
-          change_kinds: [],
-          recommended_action: 'none',
-          auto_apply_blocked_by_active_runtime: false,
-          last_detected_at: null,
-          last_error: null,
-        },
-      })
-    mocks.reloadDaemonRuntime.mockResolvedValue('reload_required')
+  it('dismissBanner hides pending until a newer change is detected', async () => {
+    mocks.getDaemonRuntime.mockResolvedValue({
+      workspace_id: 'id:/tmp/ws',
+      ready: true,
+      backend: 'opencode',
+      current_model: null,
+      refresh: {
+        status: 'pending',
+        change_kinds: ['skills'],
+        recommended_action: 'none',
+        auto_apply_blocked_by_active_runtime: false,
+        last_detected_at: '2026-06-03T00:00:00Z',
+        last_error: null,
+      },
+    })
 
     useWorkspaceRuntimeRefreshStore.getState().startPolling('/tmp/ws')
     await vi.waitFor(() => {
       expect(useWorkspaceRuntimeRefreshStore.getState().refresh?.status).toBe('pending')
     })
 
-    await useWorkspaceRuntimeRefreshStore.getState().applyChanges()
-
-    expect(mocks.reloadDaemonRuntime).toHaveBeenCalledWith('id:/tmp/ws')
-    expect(useWorkspaceRuntimeRefreshStore.getState().refresh?.status).toBe('clean')
+    useWorkspaceRuntimeRefreshStore.getState().dismissBanner()
+    expect(useWorkspaceRuntimeRefreshStore.getState().dismissedAt).toBe('2026-06-03T00:00:00Z')
   })
 })
