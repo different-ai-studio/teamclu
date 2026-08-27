@@ -132,16 +132,13 @@ services:
           echo "litellm-init: created _litellm"
         fi
 
-  # Creates the teamclaw_apps database — the shared home for per-app Postgres
-  # schemas (one schema + one scoped login role per "数据操作" app), kept apart
-  # from the control-plane database. Same one-shot pattern and reasoning as
-  # litellm-init above: an already-deployed stack would never run a
-  # docker-entrypoint-initdb.d script, and CREATE DATABASE takes no IF NOT
-  # EXISTS and cannot run inside a transaction.
+  # Ensures the legacy `teamclaw_apps` database exists (pre per-org DBs). New
+  # data_app deploys create `tc_org_<orgId>` on demand via APPS_DB_ADMIN_URL
+  # (superuser connection to the compose `db` service) and do not need it.
   #
-  # Runs unconditionally: an empty unused database costs nothing, whereas the
-  # alternative is app deploys failing at connect time with a Postgres error
-  # that names no cause. Point APPS_DB_ADMIN_URL at it to enable them.
+  # Same one-shot pattern as litellm-init: CREATE DATABASE has no IF NOT EXISTS
+  # and cannot run inside a transaction; docker-entrypoint-initdb.d never re-runs
+  # on an already-initialized volume.
   apps-db-init:
     image: postgres:15-alpine
     restart: "no"
@@ -159,14 +156,14 @@ services:
       - -c
       - |
         set -e
-        # Name not renamed with the rebrand: the database already exists on the
-        # live box as teamclaw_apps. Renaming it here would leave that one in
-        # place and create a second, empty one alongside it.
+        # Legacy shared DB from before per-org databases. Kept so any early
+        # data_app rows that still point at it keep working; new deploys create
+        # tc_org_<orgId> instead and do not need this database.
         if [ "$$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='teamclaw_apps'")" = "1" ]; then
-          echo "apps-db-init: teamclaw_apps already exists"
+          echo "apps-db-init: teamclaw_apps already exists (legacy)"
         else
           psql -c 'CREATE DATABASE "teamclaw_apps"'
-          echo "apps-db-init: created teamclaw_apps"
+          echo "apps-db-init: created teamclaw_apps (legacy; new deploys use tc_org_*)"
         fi
 
   # AI gateway. FC provisions per-team budgets and virtual keys against the admin
@@ -353,10 +350,11 @@ services:
       CODEUP_ORG_ID: "${CODEUP_ORG_ID:-}"
       CODEUP_PAT: "${CODEUP_PAT:-}"
       CODEUP_BOT_USERNAME: "${CODEUP_BOT_USERNAME:-teamclu}"
-      # Admin connection to the shared per-app database (teamclaw_apps) — same
-      # RDS instance as the control plane, different database. Blank disables
-      # app deploys (they return 503 rather than half-provisioning).
-      APPS_DB_ADMIN_URL: "${APPS_DB_ADMIN_URL:-}"
+      # Superuser / CREATEDB URL for per-org databases (tc_org_<orgId>) +
+      # per-app schemas. Self-host defaults to the compose Postgres maintenance
+      # DB. Blank → data_app finalize fails naming APPS_DB_ADMIN_URL; static
+      # apps still deploy.
+      APPS_DB_ADMIN_URL: "${APPS_DB_ADMIN_URL:-postgres://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-db}:${POSTGRES_PORT:-5432}/postgres}"
       # The FC 3.0 data-plane host is account-scoped
       # (<accountId>.<region>.fc.aliyuncs.com) and is NOT the OSS ENDPOINT.
       # Set APPS_FC_ENDPOINT, or ALIYUN_ACCOUNT_ID to have it composed.

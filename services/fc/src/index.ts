@@ -16,7 +16,6 @@ import { dispatchPush } from "./lib/push-dispatch.js";
 import { pushDeps, pgPushDeps } from "./lib/admin-handlers.js";
 import { verifyAccessToken } from "./auth/verify.js";
 import { ApiError } from "./lib/http-utils.js";
-import { getAppsAdminExecutor } from "./lib/provisioning/app-postgres.js";
 import { getFcClient, makeFcOps, resolveFcEndpoint } from "./lib/provisioning/fc-client.js";
 import { startDeploy as startDeployImpl, finalizeDeploy as finalizeDeployImpl } from "./lib/provisioning/app-deploy.js";
 import { makeTeardownAppDeps, type TeardownAppDeps } from "./lib/provisioning/app-delete.js";
@@ -93,8 +92,7 @@ function makeDeployDeps() {
     // from — a layer ARN is region-scoped.
     region: profile.region,
   });
-  const appsBaseUrl = process.env.APPS_DB_ADMIN_URL;
-  const adminExec = appsBaseUrl ? getAppsAdminExecutor() : undefined;
+  const appsAdminUrl = process.env.APPS_DB_ADMIN_URL?.trim() || undefined;
   const s3 = getAppsS3Client(profile);
   // 30 min: the daemon runs `pnpm install && pnpm build` between minting this
   // URL and using it, and a cold install on a modest laptop outlasts 15.
@@ -109,11 +107,12 @@ function makeDeployDeps() {
     finalizeDeploy: (a: {
       appId: string;
       slug: string;
+      orgId?: string | null;
       appType: string;
       fcFunctionName: string;
       ossObjectName: string;
       platformOAuthEnv?: Record<string, string>;
-    }) => finalizeDeployImpl({ adminExec, fcOps, appsBaseUrl }, a),
+    }) => finalizeDeployImpl({ appsAdminUrl, fcOps }, a),
   };
 }
 

@@ -8,7 +8,7 @@
 
 import { eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { apps, workspaces, sessions } from "../../db/schema/index.js";
+import { apps, workspaces, sessions, teams } from "../../db/schema/index.js";
 import { requireActorForTeam, resolveActorForTeam } from "./authz.js";
 import { isLegalStatusTransition } from "./app-status.js";
 import { isLegalFcTransition } from "../provisioning/app-fc-status.js";
@@ -85,6 +85,7 @@ export type AppsRepoDeps = {
   finalizeDeploy?: (a: {
     appId: string;
     slug: string;
+    orgId?: string | null;
     appType: string;
     fcFunctionName: string;
     ossObjectName: string;
@@ -410,9 +411,15 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
             { appId, slug: existing.slug, oauthClientId: existing.oauthClientId ?? null },
           );
         }
+        const [team] = await db
+          .select({ oid: teams.oid })
+          .from(teams)
+          .where(eq(teams.id, existing.teamId))
+          .limit(1);
         const r = await deps.finalizeDeploy({
           appId,
           slug: existing.slug,
+          orgId: team?.oid ?? null,
           appType: existing.type,
           fcFunctionName: existing.fcFunctionName,
           ossObjectName: appOssObjectName(appId),

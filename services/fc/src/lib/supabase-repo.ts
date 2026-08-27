@@ -3278,6 +3278,7 @@ export function createSupabaseBusinessRepository(options) {
         const r = await finalizeDeploy({
           appId,
           slug: existing.slug,
+          orgId: await this.resolveTeamOrgId(existing.team_id),
           appType: existing.type,
           fcFunctionName: existing.fc_function_name,
           ossObjectName: appOssObjectName(appId),
@@ -3354,6 +3355,22 @@ export function createSupabaseBusinessRepository(options) {
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
       const resolved = await this.resolveCurrentMemberActor(teamId, userId);
       return Boolean(resolved?.id) && createdByActorId === resolved!.id;
+    },
+
+    /**
+     * `public.orgs.id` for a team (`amux.teams.oid`). Null when the team has
+     * no org — data_app finalize then fails with a clear error rather than
+     * inventing a shared database.
+     */
+    async resolveTeamOrgId(teamId: string): Promise<string | null> {
+      const { data, error } = await supabase
+        .from("teams")
+        .select("oid")
+        .eq("id", teamId)
+        .maybeSingle();
+      if (error) throw error;
+      const oid = data?.oid;
+      return typeof oid === "string" && oid.trim() ? oid.trim() : null;
     },
 
     /**

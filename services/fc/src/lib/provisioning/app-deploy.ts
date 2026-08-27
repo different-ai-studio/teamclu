@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { ensureAppSchema } from "./app-postgres.js";
+import { provisionAppPostgres, readAppsAdminUrl } from "./app-postgres.js";
 import { appPublicUrl } from "../apps-public-host.js";
 import { ApiError } from "../http-utils.js";
 
@@ -183,19 +183,25 @@ export async function startDeploy(deps: StartDeployDeps, input: StartDeployInput
 }
 
 export interface FinalizeDeps {
-  /** Absent when apps Postgres is unconfigured — only `data_app` needs it. */
-  adminExec?: (sql: string) => Promise<void>;
+  /**
+   * Superuser / CREATEDB connection URL (typically `…/postgres` on self-host).
+   * Absent → only static apps can finalize; data apps fail naming APPS_DB_ADMIN_URL.
+   */
+  appsAdminUrl?: string;
+  /** Optional override of {@link provisionAppPostgres} for tests. */
+  provisionDb?: typeof provisionAppPostgres;
   fcOps: {
     ensureFunction: (name: string, a: { ossObjectName: string; env: Record<string, string> }) => Promise<void>;
     ensureHttpTrigger: (name: string) => Promise<string>;
   };
-  appsBaseUrl?: string;
   genPassword?: () => string;
   extraEnv?: (input: FinalizeInput) => Record<string, string>;
 }
 export interface FinalizeInput {
   appId: string;
   slug: string;
+  /** `public.orgs.id` — required when the app needs a database. */
+  orgId?: string | null;
   /** `static_web` / `slides` / `data_app`. Unknown values mean `data_app` —
    *  that is what every app created before types existed actually is. */
   appType: string;
@@ -215,15 +221,24 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
   const env: Record<string, string> = { PORT: "9000", NODE_ENV: "production" };
 
   if (needsDatabase(input.appType)) {
-    if (!deps.adminExec || !deps.appsBaseUrl) {
+    const appsAdminUrl = deps.appsAdminUrl ?? readAppsAdminUrl();
+    if (!appsAdminUrl) {
       throw new Error("apps database is not configured (APPS_DB_ADMIN_URL)");
     }
-    // ensureAppSchema rotates the role password on every call, so the
-    // connection string it returns is only valid if we write it into the
+    const orgId = input.orgId?.trim();
+    if (!orgId) {
+      throw new Error("data_app deploy requires the team's org (public.orgs.id)");
+    }
+    // provisionAppPostgres creates tc_org_<orgId> if needed, then a schema +
+    // login role inside it. The password is only valid if we write it into the
     // function env in the same breath — which is what ensureFunction does.
     const password = (deps.genPassword ?? (() => randomBytes(18).toString("base64url")))();
-    const conn = await ensureAppSchema(deps.adminExec, {
-      appId: input.appId, slug: input.slug, password, baseUrl: deps.appsBaseUrl,
+    const provision = deps.provisionDb ?? provisionAppPostgres;
+    const conn = await provision(appsAdminUrl, {
+      orgId,
+      appId: input.appId,
+      slug: input.slug,
+      password,
     });
     env.DATABASE_URL = conn.connectionString;
   }

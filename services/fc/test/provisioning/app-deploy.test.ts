@@ -32,21 +32,31 @@ test("startDeploy does NOT touch FC — the code object does not exist yet", asy
   assert.equal(mintCalls, 1);
 });
 
-test("finalizeDeploy provisions the schema, then sets code + env together", async () => {
+test("finalizeDeploy provisions the org DB + schema, then sets code + env together", async () => {
   const calls: any[] = [];
+  const orgId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   const out = await finalizeDeploy(
     {
-      adminExec: async (sql: string) => { calls.push(["sql", sql]); },
+      appsAdminUrl: "postgres://host:5432/postgres",
+      provisionDb: async (adminUrl, params) => {
+        calls.push(["provisionDb", adminUrl, params]);
+        return {
+          schema: "app_demo",
+          role: "app_role",
+          database: "tc_org_aaaaaaaabbbb4ccc8dddeeeeeeeeeeee",
+          connectionString: `postgres://app_role:pw-fixed@host:5432/tc_org_aaaaaaaabbbb4ccc8dddeeeeeeeeeeee?options=-c%20search_path%3Dapp_demo`,
+        };
+      },
       fcOps: {
         ensureFunction: async (n: string, a: any) => { calls.push(["ensureFunction", n, a]); },
         ensureHttpTrigger: async (n: string) => { calls.push(["trigger", n]); return "https://fn.example.fcapp.run"; },
       },
-      appsBaseUrl: "postgres://host:5432/teamclu_apps",
       genPassword: () => "pw-fixed",
     },
     {
       appId: "3f1c9a2e-0000-4000-8000-000000000abc",
       slug: "Demo App",
+      orgId,
       appType: "data_app",
       fcFunctionName: "tc-app-3f1c9a2e-0000-4000-8000-000000000abc",
       ossObjectName: "apps/3f1c9a2e-0000-4000-8000-000000000abc/code.zip",
@@ -54,19 +64,35 @@ test("finalizeDeploy provisions the schema, then sets code + env together", asyn
   );
   assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
 
-  // Schema DDL runs before the function is pointed at the new code.
-  assert.equal(calls[0][0], "sql");
+  assert.equal(calls[0][0], "provisionDb");
+  assert.equal(calls[0][1], "postgres://host:5432/postgres");
+  assert.equal(calls[0][2].orgId, orgId);
   const ensure = calls.find((c) => c[0] === "ensureFunction");
   assert.ok(ensure, "ensureFunction was called");
   const [, name, args] = ensure;
   assert.equal(name, "tc-app-3f1c9a2e-0000-4000-8000-000000000abc");
   assert.equal(args.ossObjectName, "apps/3f1c9a2e-0000-4000-8000-000000000abc/code.zip");
   assert.equal(args.env.PORT, "9000");
-  // The env carries the password that was just applied to the role — the two
-  // must be written in the same step or a redeploy locks the app out of its DB.
-  assert.match(args.env.DATABASE_URL, /app_3f1c9a2e/);
+  assert.match(args.env.DATABASE_URL, /tc_org_/);
   assert.match(args.env.DATABASE_URL, /pw-fixed/);
   assert.equal(calls.at(-1)[0], "trigger");
+});
+
+test("a data app without orgId fails before provisioning", async () => {
+  await assert.rejects(
+    () => finalizeDeploy(
+      {
+        appsAdminUrl: "postgres://host:5432/postgres",
+        provisionDb: async () => { throw new Error("must not be called"); },
+        fcOps: {
+          ensureFunction: async () => { throw new Error("must not be called"); },
+          ensureHttpTrigger: async () => "unused",
+        },
+      },
+      { appId: "app-1", slug: "demo", appType: "data_app", fcFunctionName: "tc-app-1", ossObjectName: "k" },
+    ),
+    /org/,
+  );
 });
 
 test("a static app deploys with no database at all", async () => {

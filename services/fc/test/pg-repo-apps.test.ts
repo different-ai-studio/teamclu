@@ -415,6 +415,7 @@ test("finalizeDeploy hands the provisioner the app's slug (it provisions the sch
   await repo.finalizeDeploy(app.id, { gitCommitSha: SHA, deployToken: started.deployToken });
   assert.equal(seen.slug, "demo-app");
   assert.equal(seen.appId, app.id);
+  assert.equal(seen.orgId, team.oid ?? null);
 });
 
 test("second deploy while awaiting_build returns 409", async () => {
