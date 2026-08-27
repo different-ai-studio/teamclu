@@ -73,6 +73,7 @@ describe("session live subscriptions", () => {
     );
 
     const syncPromise = syncSessionLiveInterest("team-1", ["session-1"]);
+    await Promise.resolve();
     expect(isSessionLiveInterest("session-1")).toBe(true);
 
     resolveSubscribe();
@@ -133,21 +134,43 @@ describe("session live subscriptions", () => {
     expect(ids.sort()).toEqual(["session-a", "session-b"].sort());
   });
 
-  it("syncSessionLiveInterest ignores stale run that finishes after a newer sync", async () => {
+  it("syncSessionLiveInterest serializes runs so a newer sync replaces the prior interest set", async () => {
     let resolveFirst!: () => void;
     subscribeMock.mockImplementationOnce(
       () => new Promise<void>((resolve) => { resolveFirst = resolve; }),
     );
     subscribeMock.mockResolvedValue(undefined);
 
-    const stale = syncSessionLiveInterest("team-1", ["session-old"]);
-    await syncSessionLiveInterest("team-1", ["session-new"]);
+    const first = syncSessionLiveInterest("team-1", ["session-old"]);
+    await Promise.resolve();
+    expect(isSessionLiveInterest("session-old")).toBe(true);
 
+    const second = syncSessionLiveInterest("team-1", ["session-new"]);
     resolveFirst();
-    await stale;
+    await first;
+    await second;
 
     expect(isSessionLiveInterest("session-new")).toBe(true);
     expect(isSessionLiveInterest("session-old")).toBe(false);
+  });
+
+  it("slow release cannot clear state after a newer sync has subscribed", async () => {
+    await syncSessionLiveInterest("team-1", ["session-1"]);
+    let resolveUnsub!: () => void;
+    unsubscribeMock.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { resolveUnsub = resolve; }),
+    );
+
+    const clearing = syncSessionLiveInterest(null, []);
+    await Promise.resolve();
+    const subscribed = syncSessionLiveInterest("team-1", ["session-2"]);
+    resolveUnsub();
+    await clearing;
+    await subscribed;
+
+    expect(isSessionLiveInterest("session-2")).toBe(true);
+    expect(isSessionLiveInterest("session-1")).toBe(false);
+    expect(subscribeMock).toHaveBeenCalledWith("amux/team-1/session/session-2/live");
   });
 });
 

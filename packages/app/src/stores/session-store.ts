@@ -54,8 +54,6 @@ type CompatExplicit = {
   sessionDiff: Compat[];
   pendingQuestionIdsBySession: Record<string, Compat>;
   sessionStatuses: Record<string, Compat>;
-  isLoadingChildMessages: Record<string, boolean>;
-  childSessionStreaming: Record<string, Compat>;
   todos: Compat[];
 };
 
@@ -100,8 +98,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   errorSessionId: null,
   inactivityWarning: null,
   isConnected: true,
-  isLoadingChildMessages: {},
-  childSessionStreaming: {},
   viewingArchivedSessionId: null,
   draftInput: "",
   messageQueue: [],

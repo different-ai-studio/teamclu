@@ -71,9 +71,6 @@ export function resetInboxSubscriptionState(): void {
   pendingInboxSubscribe = null;
 }
 
-/** @deprecated Use resetInboxSubscriptionState */
-export const resetInboxSubscriptionForTests = resetInboxSubscriptionState;
-
 /** Test hook — clears pending debounced refresh. */
 export function resetSessionListRefreshForTests(): void {
   if (sessionListRefreshTimer) {

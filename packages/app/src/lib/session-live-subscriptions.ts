@@ -2,14 +2,22 @@ import { mqttSubscribe, mqttUnsubscribe } from "@/lib/mqtt-bridge";
 
 export const subscribedSessionTopics = new Set<string>();
 
-const subscribedTeamSessionTopics = new Set<string>();
 const pendingSessionSubscriptions = new Map<string, Promise<void>>();
-const pendingTeamSessionSubscriptions = new Map<string, Promise<void>>();
 let subscriptionEpoch = 0;
 
 let interestTeamId: string | null = null;
 let interestSessionIds = new Set<string>();
 let syncInterestEpoch = 0;
+/** Serializes sync runs so a slow release cannot interleave with a newer sync. */
+let syncInterestChain: Promise<void> = Promise.resolve();
+
+function sessionLiveTopic(teamId: string, sessionId: string): string {
+  return `amux/${teamId}/session/${sessionId}/live`;
+}
+
+function isSyncEpochCurrent(epoch: number): boolean {
+  return syncInterestEpoch === epoch;
+}
 
 /** TeamClu cloud session ids that must keep session/live SUB (streaming or pending approval). */
 export function collectSessionsNeedingLiveInterest(
@@ -27,47 +35,6 @@ export function collectSessionsNeedingLiveInterest(
     }
   }
   return [...ids].filter(Boolean);
-}
-
-function teamSessionLiveTopic(teamId: string): string {
-  return `amux/${teamId}/session/+/live`;
-}
-
-function sessionLiveTopic(teamId: string, sessionId: string): string {
-  return `amux/${teamId}/session/${sessionId}/live`;
-}
-
-/** @deprecated Phase B removes broker wildcard; desktop no longer calls this. */
-export function hasTeamSessionLiveSubscription(teamId: string): boolean {
-  return subscribedTeamSessionTopics.has(teamSessionLiveTopic(teamId));
-}
-
-/** @deprecated Phase B removes broker wildcard; desktop no longer calls this. */
-export async function ensureTeamSessionLiveSubscribed(teamId: string): Promise<void> {
-  const topic = teamSessionLiveTopic(teamId);
-  while (true) {
-    if (subscribedTeamSessionTopics.has(topic)) return;
-    const pending = pendingTeamSessionSubscriptions.get(topic);
-    if (pending) {
-      await pending;
-      continue;
-    }
-
-    const epoch = subscriptionEpoch;
-    const subscription = mqttSubscribe(topic);
-    pendingTeamSessionSubscriptions.set(topic, subscription);
-    try {
-      await subscription;
-    } finally {
-      if (pendingTeamSessionSubscriptions.get(topic) === subscription) {
-        pendingTeamSessionSubscriptions.delete(topic);
-      }
-    }
-    if (subscriptionEpoch === epoch) {
-      subscribedTeamSessionTopics.add(topic);
-      return;
-    }
-  }
 }
 
 /** Mark session as live-interest before SUB so handlers accept events immediately. */
@@ -116,34 +83,11 @@ export async function ensureSessionLiveSubscribed(
   }
 }
 
-export async function releaseSessionLiveSubscribed(
-  teamId: string,
-  sessionId: string,
-): Promise<void> {
-  const topic = sessionLiveTopic(teamId, sessionId.trim());
-  if (!subscribedSessionTopics.has(topic)) return;
-  try {
-    await mqttUnsubscribe(topic);
-  } catch (error) {
-    console.warn("[MQTT] unsubscribe session/live topic failed", { topic, error });
-  } finally {
-    subscribedSessionTopics.delete(topic);
-  }
-}
-
 export function isSessionLiveInterest(sessionId: string): boolean {
   return interestSessionIds.has(sessionId);
 }
 
-export function getSessionLiveInterest(): {
-  teamId: string | null;
-  sessionIds: ReadonlySet<string>;
-} {
-  return { teamId: interestTeamId, sessionIds: interestSessionIds };
-}
-
-/** Keep MQTT session/live SUB aligned with foreground + background TeamClu sessions. */
-export async function syncSessionLiveInterest(
+async function runSyncSessionLiveInterest(
   teamId: string | null,
   sessionIds: readonly string[],
 ): Promise<void> {
@@ -151,19 +95,18 @@ export async function syncSessionLiveInterest(
   const nextIds = new Set(sessionIds.map((id) => id.trim()).filter(Boolean));
 
   if (!teamId || nextIds.size === 0) {
-    if (interestTeamId) {
-      await Promise.all(
-        [...subscribedSessionTopics].map(async (topic) => {
-          try {
-            await mqttUnsubscribe(topic);
-          } catch (error) {
-            console.warn("[MQTT] unsubscribe session/live topic failed", { topic, error });
-          }
-        }),
-      );
-      subscribedSessionTopics.clear();
+    const topicsToRelease = interestTeamId ? [...subscribedSessionTopics] : [];
+    for (const topic of topicsToRelease) {
+      if (!isSyncEpochCurrent(epoch)) return;
+      try {
+        await mqttUnsubscribe(topic);
+      } catch (error) {
+        console.warn("[MQTT] unsubscribe session/live topic failed", { topic, error });
+      }
+      if (!isSyncEpochCurrent(epoch)) return;
+      subscribedSessionTopics.delete(topic);
     }
-    if (syncInterestEpoch !== epoch) return;
+    if (!isSyncEpochCurrent(epoch)) return;
     interestTeamId = null;
     interestSessionIds.clear();
     return;
@@ -175,17 +118,17 @@ export async function syncSessionLiveInterest(
 
   for (const topic of [...subscribedSessionTopics]) {
     if (desiredTopics.has(topic)) continue;
-    if (syncInterestEpoch !== epoch) return;
+    if (!isSyncEpochCurrent(epoch)) return;
     try {
       await mqttUnsubscribe(topic);
     } catch (error) {
       console.warn("[MQTT] unsubscribe session/live topic failed", { topic, error });
-    } finally {
-      subscribedSessionTopics.delete(topic);
     }
+    if (!isSyncEpochCurrent(epoch)) return;
+    subscribedSessionTopics.delete(topic);
   }
 
-  if (syncInterestEpoch !== epoch) return;
+  if (!isSyncEpochCurrent(epoch)) return;
 
   // Update before SUB so MqttLiveWiring accepts live events (incl. local SSE)
   // while subscriptions are still in flight.
@@ -195,6 +138,19 @@ export async function syncSessionLiveInterest(
   await Promise.all(
     [...nextIds].map((sessionId) => ensureSessionLiveSubscribed(teamId, sessionId)),
   );
+}
+
+/** Keep MQTT session/live SUB aligned with foreground + background TeamClu sessions. */
+export async function syncSessionLiveInterest(
+  teamId: string | null,
+  sessionIds: readonly string[],
+): Promise<void> {
+  syncInterestChain = syncInterestChain
+    .then(() => runSyncSessionLiveInterest(teamId, sessionIds))
+    .catch((error) => {
+      console.warn("[MQTT] sync session/live interest failed", error);
+    });
+  await syncInterestChain;
 }
 
 /** After {@link resetSessionLiveSubscriptionState} on reconnect, re-SUB the interest set. */
@@ -210,9 +166,7 @@ export async function resubscribeSessionLiveInterest(): Promise<void> {
 export function resetSessionLiveSubscriptionState(): void {
   subscriptionEpoch += 1;
   subscribedSessionTopics.clear();
-  subscribedTeamSessionTopics.clear();
   pendingSessionSubscriptions.clear();
-  pendingTeamSessionSubscriptions.clear();
 }
 
 export const resetSessionLiveSubscriptionStateForTests = resetSessionLiveSubscriptionState;
@@ -221,6 +175,7 @@ export function resetSessionLiveInterestForTests(): void {
   syncInterestEpoch += 1;
   interestTeamId = null;
   interestSessionIds.clear();
+  syncInterestChain = Promise.resolve();
 }
 
 /** 1h without session/live activity → inbox-triggered SUB may be released. */
