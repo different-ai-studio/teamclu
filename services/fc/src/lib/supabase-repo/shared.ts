@@ -99,8 +99,12 @@ export function mapDefaultAgentError(error: any) {
 
 // --- Apps helpers (mirror pg-repo/apps.ts) ---
 
+// `org_id` is selected but intentionally NOT mapped: it is the server's
+// deployment ledger (which database the schema was created in), not part of
+// the client contract. Selecting it keeps finalizeDeploy and the data browser
+// from needing a second round trip.
 export const APP_COLUMNS =
-  "id, team_id, name, slug, type, visibility, workspace_id, git_remote_url, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
+  "id, team_id, org_id, name, slug, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, auth_mode, deployed_auth_mode, oauth_client_id, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
 
 export function slugify(name: string): string {
   return (
@@ -126,6 +130,28 @@ export function mapApp(r: any) {
     visibility: r.visibility,
     workspaceId: r.workspace_id ?? null,
     gitRemoteUrl: r.git_remote_url ?? null,
+    // `gitea_deploy_key` marks an app whose repo this deployment provisioned
+    // and holds a credential for; null marks one imported from a remote we have
+    // no access to. The client needs the distinction to know whether deploy can
+    // go through Gitea at all.
+    gitAuthKind: r.git_auth_kind ?? null,
+    gitCommitSha: r.git_commit_sha ?? null,
+    runtime: r.runtime ?? "node",
+    authMode: r.auth_mode ?? "none",
+    // Derived here, not in the client, so every client agrees on the rule.
+    //
+    // The OAuth env is baked in at finalizeDeploy, so an authMode change does
+    // nothing to the running function until the next deploy. Saying so is a
+    // security requirement (design §7.4): a user who just switched an app to
+    // "requires login" would otherwise believe it is already protected while
+    // the site is still fully public. `deployed_auth_mode` is NULL on rows that
+    // predate the column, and NULL only matters once something is live.
+    authModePendingRedeploy:
+      r.fc_status === "live" &&
+      (r.deployed_auth_mode ?? null) !== null &&
+      (r.deployed_auth_mode ?? "none") !== (r.auth_mode ?? "none"),
+    // Public client id only — never the secret (stored in app_secrets).
+    oauthClientId: r.oauth_client_id ?? null,
     provisionStatus: r.provision_status,
     fcStatus: r.fc_status ?? null,
     fcEndpoint: r.fc_endpoint ?? null,

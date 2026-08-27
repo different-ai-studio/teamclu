@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { canReseed, appStatusMeta } from '../AppsListColumn'
+import { canReseed, appStatusMeta, deployDisabledReason, showsPublicBadge } from '@/lib/app-list-helpers'
 import { pickMostRecentSession, firstPromptForApp } from '@/lib/app-session'
 import type { AppSessionRow } from '@/lib/backend/types'
 
@@ -40,9 +40,7 @@ describe('pickMostRecentSession', () => {
 
   test('lastMessageAt takes precedence over createdAt within a row', () => {
     const rows = [
-      // newer createdAt but older lastMessageAt
       row({ id: 'a', createdAt: '2026-06-20T00:00:00.000Z', lastMessageAt: '2026-06-01T00:00:00.000Z' }),
-      // older createdAt but newer lastMessageAt
       row({ id: 'b', createdAt: '2026-06-02T00:00:00.000Z', lastMessageAt: '2026-06-15T00:00:00.000Z' }),
     ]
     expect(pickMostRecentSession(rows)?.id).toBe('b')
@@ -55,10 +53,8 @@ describe('pickMostRecentSession', () => {
 
 describe('canReseed', () => {
   test('allows reseed while the files are missing or the seed failed', () => {
-    // `pending` is where a freshly created app now sits: the cloud only
-    // inserted the row, the local daemon still has to write the template.
     expect(canReseed('pending')).toBe(true)
-    expect(canReseed('repo_created')).toBe(true) // legacy rows
+    expect(canReseed('repo_created')).toBe(true)
     expect(canReseed('error')).toBe(true)
   })
 
@@ -84,7 +80,6 @@ describe('appStatusMeta', () => {
 
   test('live requires both fcStatus and an endpoint', () => {
     expect(appStatusMeta(app({ fcStatus: 'live', fcEndpoint: 'https://x' }), false).dot).toBe('live')
-    // live without an endpoint is not something the user can open — fall through
     expect(appStatusMeta(app({ fcStatus: 'live', fcEndpoint: null }), false).key).toBe('apps.ready')
   })
 
@@ -104,6 +99,22 @@ describe('appStatusMeta', () => {
     expect(appStatusMeta(app({ provisionStatus: 'ready' }), false).key).toBe('apps.ready')
     expect(appStatusMeta(app({ provisionStatus: 'error' }), false).key).toBe('apps.error')
     expect(appStatusMeta(app({ provisionStatus: 'repo_created' }), false).key).toBe('apps.provisioning')
+  })
+})
+
+describe('deployDisabledReason', () => {
+  test('blocks third-party auth and container runtime', () => {
+    expect(deployDisabledReason({ authMode: 'third', runtime: 'node' })).toBe('apps.deployDisabledThird')
+    expect(deployDisabledReason({ authMode: 'none', runtime: 'container' })).toBe('apps.deployDisabledContainer')
+    expect(deployDisabledReason({ authMode: 'none', runtime: 'node' })).toBeNull()
+  })
+})
+
+describe('showsPublicBadge', () => {
+  test('only when live with no auth gate', () => {
+    expect(showsPublicBadge({ authMode: 'none', fcStatus: 'live' })).toBe(true)
+    expect(showsPublicBadge({ authMode: 'none', fcStatus: 'deploy_error' })).toBe(false)
+    expect(showsPublicBadge({ authMode: 'platform', fcStatus: 'live' })).toBe(false)
   })
 })
 

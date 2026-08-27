@@ -1,10 +1,10 @@
 /**
- * The session an app is worked on in.
+ * Sessions linked to an app.
  *
- * An app has exactly one session for now. Creating an app opens that session
- * with an opening message already sent, so the user lands in a conversation
- * that is already underway rather than an empty box; opening an app later
- * returns to the same session.
+ * An app may have many sessions; the user creates each one explicitly except
+ * the first session opened by {@link startAppFirstSession} during app creation.
+ * {@link ensureAppSession} reopens the most recent existing session only —
+ * it never creates one. Use {@link createAppSessionShell} for an empty session.
  */
 import { getBackend } from '@/lib/backend'
 import { createSessionShell, createSessionWithFirstMessage } from '@/lib/session-create'
@@ -31,7 +31,8 @@ export async function appWorkdirPath(
 ): Promise<string | null> {
   if (!isTauri()) return null
   const { daemonAppWorkdir } = await import('@/lib/daemon-local-client')
-  return daemonAppWorkdir(appId, teamId)
+  const info = await daemonAppWorkdir(appId, teamId)
+  return info?.workdir ?? null
 }
 
 /**
@@ -236,36 +237,65 @@ async function bindAppWorkspace(
   return workspaceId ?? app.workspaceId ?? null
 }
 
+async function seatDaemonAndBind(
+  app: AppRow,
+  sessionId: string,
+  ctx: AppSessionContext,
+): Promise<void> {
+  if (ctx.localDaemonActorId) {
+    try {
+      await getBackend().sessionMembers.addParticipant(sessionId, ctx.localDaemonActorId)
+    } catch (e) {
+      console.warn('[app-session] could not seat the local daemon (non-fatal):', e)
+    }
+  }
+  await bindAppWorkspace(app, sessionId, ctx)
+}
+
 /**
- * The session for an app: its most recent one, or a fresh one linked to it.
+ * Open an existing app session: seat the daemon and bind the checkout.
+ */
+export async function openAppSession(app: AppRow, sessionId: string): Promise<void> {
+  const ctx = await loadContext(app)
+  const { ensureAppCheckout } = await import('@/stores/apps-store')
+  await ensureAppCheckout(app)
+  await seatDaemonAndBind(app, sessionId, ctx)
+}
+
+/**
+ * The app's most recent session, if one exists. Never creates a session.
  *
- * The local daemon is seated as a participant either way. It has to be: the
- * cloud API serves `GET /v1/sessions/:id` through participant-scoped RLS, so a
- * daemon with no seat cannot read the session it is asked to run and
- * runtimeStart fails with "session not found".
+ * The local daemon is seated when a session is found — the cloud API serves
+ * `GET /v1/sessions/:id` through participant-scoped RLS, so a daemon with no
+ * seat cannot read the session it is asked to run.
  */
 export async function ensureAppSession(app: AppRow): Promise<string | null> {
   const ctx = await loadContext(app)
 
+  const { ensureAppCheckout } = await import('@/stores/apps-store')
+  await ensureAppCheckout(app)
+
   const sessions = await getBackend().apps.listAppSessions(app.id)
   const recent = pickMostRecentSession(sessions)
+  if (!recent) return null
 
-  if (recent) {
-    if (ctx.localDaemonActorId) {
-      try {
-        await getBackend().sessionMembers.addParticipant(recent.id, ctx.localDaemonActorId)
-      } catch (e) {
-        console.warn('[app-session] could not seat the local daemon (non-fatal):', e)
-      }
-    }
-    await bindAppWorkspace(app, recent.id, ctx)
-    return recent.id
-  }
+  await seatDaemonAndBind(app, recent.id, ctx)
+  return recent.id
+}
 
+/**
+ * Create an empty session linked to the app (no opening message).
+ */
+export async function createAppSessionShell(app: AppRow): Promise<string | null> {
+  const ctx = await loadContext(app)
   if (!ctx.creatorActorId) {
     console.error('[app-session] cannot create a session: no current actor')
     return null
   }
+
+  const { ensureAppCheckout } = await import('@/stores/apps-store')
+  await ensureAppCheckout(app)
+
   const { sessionId } = await createSessionShell({
     teamId: ctx.teamId,
     creatorActorId: ctx.creatorActorId,
@@ -273,7 +303,7 @@ export async function ensureAppSession(app: AppRow): Promise<string | null> {
     additionalActorIds: ctx.localDaemonActorId ? [ctx.localDaemonActorId] : [],
     appId: app.id,
   })
-  await bindAppWorkspace(app, sessionId, ctx)
+  await seatDaemonAndBind(app, sessionId, ctx)
   return sessionId
 }
 

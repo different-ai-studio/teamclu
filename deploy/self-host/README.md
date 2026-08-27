@@ -390,6 +390,7 @@ docker compose exec fc printenv MQTT_BROKER_URL
 | `bootstrap/gen-secrets.sh` | 从 `JWT_SECRET` 派生 `ANON_KEY` / `SERVICE_ROLE_KEY` / `MQTT_SERVICE_TOKEN`；校验 `POSTGRES_PASSWORD`；根据 `CADDY_TLS_MODE` 写入 Caddy 变量；创建 `volumes` → `supabase/volumes` 软链 |
 | `bootstrap/link-volumes.sh` | 单独创建 volumes 软链（`gen-secrets.sh` 已自动调用） |
 | `bootstrap/up.sh` | 检测 Docker/Podman；应用 `docker-compose.podman.yml`；清理残留容器；按序等待 db → migrate → fc → caddy |
+| `init/gitea-bootstrap.sh` | Gitea 首次安装：建 org（`GITEA_OWNER`）、bot 用户、API token；幂等，可重复执行 |
 
 ---
 
@@ -448,6 +449,7 @@ docker volume rm teamclaw-self-host_caddy_config   # 保留 caddy_data 可留证
 | `fc` | built from `services/fc` | TeamClu Cloud API (Node.js); the only app-level backend |
 | `caddy` | `caddy:2` | Reverse proxy + automatic TLS; **only service with host ports** |
 | `cron` _(opt-in)_ | `curlimages/curl` | Polls FC cron endpoints every 15 min |
+| `gitea` | `gitea/gitea:1.22` | Per-app private git repos (Apps module); HTTP via Caddy, SSH on host `GITEA_SSH_PORT` |
 | `postgres` _(opt-in)_ | `postgres:15-alpine` | Standalone Postgres backend for FC when `BACKEND_KIND=postgres` |
 
 **Host ports（因运行时而异）：**
@@ -457,7 +459,77 @@ docker volume rm teamclaw-self-host_caddy_config   # 保留 caddy_data 可留证
 | Docker Desktop | Caddy `80`/`443`；EMQX `1883` |
 | Podman rootless | Caddy `8080`→80、`8443`→443；FC `9000`；EMQX `1883` |
 
+Gitea SSH（Apps 模块 git push/fetch）另映射 **`GITEA_SSH_PORT`（默认 `2222`）→ 容器 `:22`**。生产 ECS 安全组须放行该端口，否则笔记本/daemon 无法 push。
+
 其余服务仅在 `teamclaw-self-host_default` 内部网络通信。
+
+---
+
+## Gitea（Apps 模块 git）
+
+Gitea 为每个 app 提供私有 git 仓（`tc-app-{appId}`）。HTTP/HTTPS 经 Caddy 反代；**SSH 不经过 Caddy**，客户端直连 `GITEA_DOMAIN:GITEA_SSH_PORT`（默认 `2222`）。
+
+### 1. `.env` 变量
+
+| 变量 | 说明 |
+|------|------|
+| `GITEA_DOMAIN` | Caddy 虚拟主机 + `ssh_url` 里的主机名 |
+| `GITEA_SSH_PORT` | 宿主机 SSH 映射（默认 `2222`） |
+| `GITEA_URL` | FC 调 Gitea REST API 的 base URL（无尾斜杠）。生产用 `https://<GITEA_DOMAIN>`；compose 内也可用 `http://gitea:3000` |
+| `GITEA_OWNER` | 拥有所有 app 仓的 org（如 `teamclaw-apps`） |
+| `GITEA_TOKEN` | bot 用户的 API token（bootstrap 脚本生成） |
+| `GITEA_ADMIN_*` / `GITEA_BOT_*` | 首次 bootstrap 用；见 `.env.example` |
+
+三者 `GITEA_URL` + `GITEA_TOKEN` + `GITEA_OWNER` 缺一，建 app 会 503 `gitea_unavailable` 并点名空变量。
+
+### 2. 首次部署（生产 / ECS）
+
+```bash
+cd deploy/self-host
+# .env 中设置 GITEA_DOMAIN、GITEA_SSH_PORT、GITEA_ADMIN_PASSWORD、GITEA_BOT_PASSWORD …
+./bootstrap/gen-secrets.sh
+./bootstrap/up.sh
+
+# 等 gitea healthy 后一次性 bootstrap
+./init/gitea-bootstrap.sh
+# 输出 GITEA_TOKEN=… → 写入 .env
+docker compose up -d fc
+```
+
+**安全组：** 除 80/443/1883 外，ECS 须允许入站 **TCP `GITEA_SSH_PORT`**（默认 2222），否则开发者笔记本无法 `git push`。
+
+DNS：为 `GITEA_DOMAIN` 添加 A 记录指向本机（与 api/supabase 等同级）。
+
+### 3. 本地开发
+
+`.env.local.example` 已含 `GITEA_DOMAIN=gitea.example.com`、`GITEA_SSH_PORT=2222`、`GITEA_URL=http://gitea:3000`。Caddy 在 `:8080` 反代 HTTP：
+
+```bash
+curl -s http://127.0.0.1:8080/api/healthz -H 'Host: gitea.example.com'
+# ok
+
+# SSH（映射到宿主机 2222）
+ssh -p 2222 git@127.0.0.1
+```
+
+本地 bootstrap 同上：`./init/gitea-bootstrap.sh`。
+
+### 4. 验收清单（Task 0 / 设计 §9.4 第一层）
+
+手动步骤（本 session 不跑 ECS E2E）：
+
+- [ ] `docker compose ps gitea` → healthy
+- [ ] `curl https://<GITEA_DOMAIN>/api/healthz`（或本地 Host 头）→ `ok`
+- [ ] `./init/gitea-bootstrap.sh` → org + bot + `GITEA_TOKEN`
+- [ ] FC 容器 `printenv GITEA_URL GITEA_OWNER` 非空；`GITEA_TOKEN` 已设置
+- [ ] 从笔记本：`ssh -p $GITEA_SSH_PORT -T git@$GITEA_DOMAIN`（Gitea 会回复 shell 不可用 — 说明 SSH 可达）
+- [ ] （后续 Task）建 app → seed push → `git-head` → deploy — 需真实桌面 + daemon
+
+`services/fc` 守卫：
+
+```bash
+cd services/fc && npx tsx --test test/deploy-env-parity.test.ts
+```
 
 ---
 
@@ -810,6 +882,11 @@ All variables live in `.env` (copied from `.env.example`).
 | `MQTT_DOMAIN` | **yes** | Public domain for MQTT WebSocket |
 | `STUDIO_DOMAIN` | **yes** | Public domain for Supabase Studio |
 | `EMQX_DASHBOARD_DOMAIN` | **yes** | Public domain for EMQX dashboard |
+| `GITEA_DOMAIN` | for apps | Public domain for Gitea web/API (Caddy) |
+| `GITEA_SSH_PORT` | no | Host SSH port for git push/fetch (default `2222`) |
+| `GITEA_URL` | for apps | FC → Gitea REST API base URL |
+| `GITEA_TOKEN` | for apps | Bot API token (bootstrap mints) |
+| `GITEA_OWNER` | for apps | Org owning app repos |
 | `CADDY_TLS_MODE` | no | `acme` (default) / `internal` / `off` |
 | `CADDY_GLOBAL_TLS` | auto | Derived by `gen-secrets.sh` |
 | `CADDY_SITE_TLS` | auto | Derived by `gen-secrets.sh` |
@@ -829,7 +906,7 @@ All variables live in `.env` (copied from `.env.example`).
 | `REGION` | no | OSS region (default: `cn-shenzhen`) |
 | `ENDPOINT` | no | OSS endpoint URL |
 | `CODEUP_ORG_ID` / `CODEUP_PAT` / `CODEUP_BOT_USERNAME` | for apps | Managed-git org + PAT used to create each app's repo. Missing → `POST /v1/apps` fails at the repo step |
-| `APPS_DB_ADMIN_URL` | for apps | Admin connection to the shared `teamclaw_apps` database (same RDS instance, different database). Missing → app deploy returns 503 `deploy_unavailable` |
+| `APPS_DB_ADMIN_URL` | for apps | Superuser / CREATEDB URL on the compose Postgres (defaults to `postgres://postgres:$POSTGRES_PASSWORD@db:5432/postgres`). Used to create per-org DBs `tc_org_<orgId>` and per-app schemas. Blank with no compose default → data_app finalize fails naming this var |
 | `APPS_FC_ENDPOINT` / `ALIYUN_ACCOUNT_ID` | for apps | Account-scoped FC 3.0 data-plane host (`<accountId>.<region>.fc.aliyuncs.com`). Not the OSS `ENDPOINT`; set one of the two |
 | `LITELLM_URL` | no | 留空即用内置网关（compose 默认 `http://litellm:4000`）。仅在改用**外部**网关时才设置 |
 | `LITELLM_MASTER_KEY` | auto | `gen-secrets.sh` 生成（`sk-` 前缀）；LiteLLM 管理凭证,同时交给 FC |

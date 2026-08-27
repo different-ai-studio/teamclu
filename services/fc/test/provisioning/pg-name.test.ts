@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appSchemaName, appRoleName } from "../../src/lib/provisioning/pg-name.js";
+import { appSchemaName, appRoleName, orgDatabaseName } from "../../src/lib/provisioning/pg-name.js";
 
 test("appSchemaName includes a sanitized slug and the full appId hex suffix", () => {
   const appId = "3f1c9a2e-0000-4000-8000-000000000abc";
@@ -27,4 +27,15 @@ test("appRoleName derives from the appId uuid with underscores", () => {
     appRoleName("3f1c9a2e-0000-4000-8000-000000000abc"),
     "app_3f1c9a2e_0000_4000_8000_000000000abc",
   );
+});
+
+test("orgDatabaseName is tc_org_ + org id hex", () => {
+  const orgId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  assert.equal(orgDatabaseName(orgId), `tc_org_${orgId.replace(/-/g, "")}`);
+  assert.match(orgDatabaseName(orgId), /^[a-z0-9_]+$/);
+  assert.ok(orgDatabaseName(orgId).length <= 63);
+});
+
+test("orgDatabaseName rejects an empty id", () => {
+  assert.throws(() => orgDatabaseName("---"), /hex/);
 });

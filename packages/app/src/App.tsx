@@ -30,6 +30,7 @@ import {
   AppWindow,
   Users,
   TerminalSquare,
+  SlidersHorizontal,
 } from "lucide-react";
 import { FileContentViewer } from "@/components/FileEditor";
 import {
@@ -64,6 +65,8 @@ import { TeamSkillAutoFollow } from "@/components/TeamSkillAutoFollow";
 import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
 import { UpdateDialogContainer } from "@/components/updater/UpdateDialog";
 import { RightPanel } from "@/components/panel";
+import { AppControlPanel } from "@/components/apps/AppControlPanel";
+import { resolveControlPanelAppId } from "@/lib/app-control-panel";
 import { ExtensionSettings, Settings } from "@/components/settings";
 import { FeedbackDialog } from "@/components/settings/FeedbackDialog";
 import { AutomationPanelDialog } from "@/components/settings/AutomationPanelDialog";
@@ -121,6 +124,7 @@ import {
   stashPendingSessionDeeplink,
 } from "@/lib/open-session-deeplink";
 import { useCurrentTeamStore } from "@/stores/current-team";
+import { useAppsStore } from "@/stores/apps-store";
 import { E2E_BUILD, isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
 import { TrafficLights } from "@/components/ui/traffic-lights";
 import {
@@ -639,6 +643,28 @@ function AppContent() {
   const openPanel = useWorkspaceStore((s) => s.openPanel);
   const closePanel = useWorkspaceStore((s) => s.closePanel);
 
+  const appControlPanelOpen = useUIStore((s) => s.appControlPanelOpen);
+  const toggleAppControlPanel = useUIStore((s) => s.toggleAppControlPanel);
+  const closeAppControlPanel = useUIStore((s) => s.closeAppControlPanel);
+  const selectedAppId = useAppsStore((s) => s.selectedAppId);
+  const appIdBySessionId = useAppsStore((s) => s.appIdBySessionId);
+  const appItems = useAppsStore((s) => s.items);
+  const activeSessionId = useSessionSelectionStore((s) => s.currentSessionId);
+
+  const controlPanelAppId = React.useMemo(
+    () =>
+      resolveControlPanelAppId({
+        selectedAppId,
+        activeSessionId,
+        appIdBySessionId,
+      }),
+    [selectedAppId, activeSessionId, appIdBySessionId],
+  );
+  const controlPanelApp = React.useMemo(
+    () => (controlPanelAppId ? appItems.find((a) => a.id === controlPanelAppId) ?? null : null),
+    [appItems, controlPanelAppId],
+  );
+
   const breakpoint = useLayoutBreakpoint();
 
   // UI store - individual selectors
@@ -671,7 +697,9 @@ function AppContent() {
   const leftDockActive =
     isPanelOpen &&
     activeTab === "shortcuts";
-  const showRightWorkspacePanel = isPanelOpen && !leftDockActive;
+  const showAppControlPanel = appControlPanelOpen && !!controlPanelApp;
+  const showRightWorkspacePanel = isPanelOpen && !leftDockActive && !showAppControlPanel;
+  const showRightSidePanel = showRightWorkspacePanel || showAppControlPanel;
   const settingsOpen = currentView === "settings";
   /** Extension welcome has its own empty state — skip duplicate "New Chat" header. */
   const showChatSessionHeader = !(embedMode && !activeSession);
@@ -696,6 +724,12 @@ function AppContent() {
   useEffect(() => {
     void loadCurrentTeam();
   }, [authSession?.user.id, authLoading, loadCurrentTeam]);
+
+  useEffect(() => {
+    if (!controlPanelAppId && appControlPanelOpen) {
+      closeAppControlPanel();
+    }
+  }, [controlPanelAppId, appControlPanelOpen, closeAppControlPanel]);
 
   // In workspace mode, SessionListColumn always sits to the left of SidebarInset
   // and renders its own traffic-light + collapse strip when the sidebar is
@@ -1160,10 +1194,21 @@ function AppContent() {
                   onClick={() => isPanelOpen && activeTab === "diff" ? closePanel() : openPanel("diff")}
                 />
               )}
-              {showRightWorkspacePanel && (
+              {controlPanelApp && (
+                <HeaderPanelTab
+                  icon={SlidersHorizontal}
+                  label={t("apps.controlPanel.title", "应用设置")}
+                  isActive={showAppControlPanel}
+                  onClick={() => toggleAppControlPanel()}
+                />
+              )}
+              {showRightSidePanel && (
                 <button
                   className="ml-1 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  onClick={closePanel}
+                  onClick={() => {
+                    if (showAppControlPanel) closeAppControlPanel();
+                    else closePanel();
+                  }}
                   title={t("navigation.collapsePanel", "Collapse panel")}
                 >
                   <PanelRightClose className="h-4 w-4" />
@@ -1182,11 +1227,11 @@ function AppContent() {
           </>
         </div>
 
-        {/* Right Panel - full height */}
+        {/* Right Panel - full height (RightPanel or AppControlPanel, mutually exclusive) */}
         <div
           className={cn(
             "shrink-0 overflow-hidden border-l border-border bg-background transition-[width,opacity,transform] duration-500 ease-out",
-            showRightWorkspacePanel
+            showRightSidePanel
               ? "w-72 translate-x-0 opacity-100"
               : "pointer-events-none w-0 translate-x-4 border-l-0 opacity-0",
           )}
@@ -1194,6 +1239,9 @@ function AppContent() {
           <div className="h-full w-72">
             {showRightWorkspacePanel && (
               <RightPanel diff={sessionDiff} />
+            )}
+            {showAppControlPanel && controlPanelApp && (
+              <AppControlPanel app={controlPanelApp} />
             )}
           </div>
         </div>

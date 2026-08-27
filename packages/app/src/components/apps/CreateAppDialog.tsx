@@ -86,7 +86,9 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
         const sessionId = await startAppFirstSession(app)
         if (sessionId) {
           useAppsStore.getState().recordAppSession(app.id, sessionId)
+          useAppsStore.getState().selectApp(app.id)
           const { useUIStore } = await import('@/stores/ui')
+          useUIStore.getState().setSidebarFilter({ kind: 'apps' })
           await useUIStore.getState().switchToSession(sessionId, { keepSidebarFilter: true })
         }
       }
@@ -234,6 +236,12 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
                 </label>
               ))}
             </div>
+            <span className="text-[11.5px] text-faint">
+              {t(
+                'apps.visibilityHint',
+                '可见性只控制团队内谁能看到此应用；上线后若未启用登录，任何拿到链接的人均可访问。',
+              )}
+            </span>
           </div>
 
           {error && (

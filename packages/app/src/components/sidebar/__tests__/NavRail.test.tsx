@@ -31,6 +31,12 @@ vi.mock('@/hooks/use-quick-chat-readiness', () => ({
     target: { agentId: 'a1', displayName: 'Bot', source: 'local' },
   }),
 }))
+vi.mock('@/lib/remote-features', () => ({
+  useFeatures: () => ({ apps: true }),
+}))
+vi.mock('@/components/sidebar/AppsNavSection', () => ({
+  AppsNavSection: () => <div data-testid="apps-nav-section" />,
+}))
 vi.mock('sonner', () => ({
   toast: vi.fn(),
 }))
@@ -128,5 +134,18 @@ describe('NavRail', () => {
     expect(screen.queryByRole('button', { name: /Ideas|想法/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /快捷方式|Shortcuts/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /会话|Sessions/ })).toBeInTheDocument()
+  })
+
+  it('renders AppsNavSection inside 更多 when apps feature is on', () => {
+    render(<NavRail />)
+    expandMore()
+    expect(screen.getByTestId('apps-nav-section')).toBeInTheDocument()
+  })
+
+  it('auto-expands 更多 when apps filter is active', () => {
+    useUIStore.setState({ sidebarFilter: { kind: 'apps' } })
+    render(<NavRail />)
+    expect(screen.getByTestId('apps-nav-section')).toBeInTheDocument()
+    expect(useUIStore.getState().moreNavExpanded).toBe(true)
   })
 })

@@ -1782,7 +1782,15 @@ function appsAuth(userId = "user-app-1") {
 // Select filters (eq / is / in) are applied so workspace upsert dedup lookups
 // can find seeded rows the same way PostgREST would.
 function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] }: any = {}) {
-  const state: any = { apps: [...(seed.apps ?? [])], workspaces: [...(seed.workspaces ?? [])], sessions: [...(seed.sessions ?? [])] };
+  const state: any = {
+    apps: [...(seed.apps ?? [])],
+    workspaces: [...(seed.workspaces ?? [])],
+    sessions: [...(seed.sessions ?? [])],
+    app_member_access: [...(seed.app_member_access ?? [])],
+    // resolveTeamOrgId reads this; unseeded it yields no row, i.e. "team has
+    // no org", which is what most apps tests want.
+    teams: [...(seed.teams ?? [])],
+  };
   return {
     auth: appsAuth(),
     from(table: string) {
@@ -1824,12 +1832,30 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
         upsert(row: any, options?: any) {
           ctx.op = "upsert";
           calls.push({ table, op: "upsert", row, options });
-          const upserted = { ...row, id: row.id ?? `${table}-id-1` };
+          const upserted = { ...row, id: row.id ?? `${table}-id-${(state[table]?.length ?? 0) + 1}` };
+          if (!upserted.created_at) upserted.created_at = new Date().toISOString();
+          if (!upserted.updated_at) upserted.updated_at = new Date().toISOString();
           if (!state[table]) state[table] = [];
-          const idx = state[table].findIndex((r: any) => r.id === upserted.id);
+          let idx = -1;
+          if (table === "app_member_access" && options?.onConflict === "app_id,member_id") {
+            idx = state[table].findIndex(
+              (r: any) => r.app_id === upserted.app_id && r.member_id === upserted.member_id,
+            );
+          } else {
+            idx = state[table].findIndex((r: any) => r.id === upserted.id);
+          }
           if (idx >= 0) state[table][idx] = { ...state[table][idx], ...upserted };
           else state[table].push(upserted);
-          ctx.inserted = state[table].find((r: any) => r.id === upserted.id);
+          ctx.inserted = state[table].find(
+            (r: any) => (table === "app_member_access" && options?.onConflict === "app_id,member_id")
+              ? r.app_id === upserted.app_id && r.member_id === upserted.member_id
+              : r.id === upserted.id,
+          );
+          return builder;
+        },
+        delete() {
+          ctx.op = "delete";
+          calls.push({ table, op: "delete" });
           return builder;
         },
         eq(column: string, value: any) {
@@ -1876,6 +1902,11 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
         },
         maybeSingle() {
           if (table === "actors") return Promise.resolve({ data: actorRow, error: null });
+          if (ctx.op === "delete") {
+            const matched = matchRows();
+            state[table] = (state[table] ?? []).filter((r: any) => !matched.includes(r));
+            return Promise.resolve({ data: null, error: null });
+          }
           if (ctx.op === "update") {
             const matched = matchRows();
             const base = matched[0];
@@ -1897,12 +1928,30 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
   };
 }
 
+function fakeGitea(over: Record<string, unknown> = {}) {
+  return {
+    createAppRepo: async (appId: string) => ({
+      cloneUrl: `https://gitea.example/teamclaw-apps/tc-app-${appId}.git`,
+      sshUrl: `git@gitea.example:teamclaw-apps/tc-app-${appId}.git`,
+    }),
+    createDeployKey: async () => ({ id: 1 }),
+    listDeployKeys: async () => [],
+    deleteDeployKey: async () => {},
+    archiveAndRenameAppRepo: async (appId: string) => ({
+      sshUrl: `git@gitea.example:teamclaw-apps/deleted-tc-app-${appId}.git`,
+    }),
+    getRepoHead: async () => ({ sha: "abc123" }),
+    ...over,
+  };
+}
+
 function appsRepo(supabase: any, extra: any = {}) {
   return createSupabaseBusinessRepository({
     supabaseUrl: "https://example.supabase.co",
     publishableKey: "publishable-key",
     accessToken: "caller-token",
     createClient: () => supabase,
+    gitea: fakeGitea(),
     ...extra,
   });
 }
@@ -1910,16 +1959,29 @@ function appsRepo(supabase: any, extra: any = {}) {
 const APP_ROW = {
   id: "app-1",
   team_id: "team-1",
+  created_by_actor_id: "actor-app-1",
   name: "My App",
   slug: "my-app",
   type: "fullstack_tanstack_postgres",
   visibility: "team",
   workspace_id: "ws-1",
   git_remote_url: null,
+  git_commit_sha: null,
+  runtime: "node",
+  auth_mode: "none",
+  oauth_client_id: null,
   provision_status: "pending",
   fc_status: null,
   created_at: "2026-06-13T00:00:00Z",
   updated_at: "2026-06-13T00:00:00Z",
+};
+
+const GITEA_MANAGED_APP = {
+  ...APP_ROW,
+  created_by_actor_id: "actor-app-1",
+  provision_status: "ready",
+  git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git",
+  git_auth_kind: "gitea_deploy_key",
 };
 
 test("apps: mapApp exposes exactly the canonical keys", async () => {
@@ -1927,15 +1989,42 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   const items = await repo.listApps({ teamId: "team-1", limit: 100 });
   assert.equal(items.length, 1);
   assert.deepEqual(Object.keys(items[0]).sort(), [
-    "createdAt", "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
-    "gitRemoteUrl", "id", "name", "provisionStatus", "publicUrl",
-    "slug", "teamId", "type", "updatedAt", "visibility", "workspaceId",
+    "authMode", "authModePendingRedeploy", "createdAt", "fcStatus", "fcEndpoint",
+    "fcFunctionName", "fcRegion",
+    "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "name", "oauthClientId",
+    "provisionStatus", "publicUrl",
+    "runtime", "slug", "teamId", "type", "updatedAt", "visibility", "workspaceId",
   ].sort());
+  assert.equal(items[0].authMode, "none");
+  assert.equal(items[0].runtime, "node");
+  assert.equal(items[0].gitCommitSha, null);
+  assert.equal(items[0].oauthClientId, null);
   // Null unless the deployment sets an apps domain — this suite sets none.
   assert.equal(items[0].publicUrl, null);
   assert.equal(items[0].teamId, "team-1");
   assert.equal(items[0].workspaceId, "ws-1");
   assert.equal(items[0].provisionStatus, "pending");
+});
+
+test("apps: authModePendingRedeploy is derived from the deployed mode", async () => {
+  // Changing authMode does nothing to the running function until the next
+  // deploy (the OAuth env is injected at finalize), so the row has to say so —
+  // design §7.4 treats a silent one as a security expectation failure.
+  const live = { ...APP_ROW, fc_status: "live", auth_mode: "platform" };
+
+  const pending = appsRepo(appsSupabase({ seed: { apps: [{ ...live, deployed_auth_mode: "none" }] } }));
+  assert.equal((await pending.listApps({ teamId: "team-1" }))[0].authModePendingRedeploy, true);
+
+  const settled = appsRepo(appsSupabase({ seed: { apps: [{ ...live, deployed_auth_mode: "platform" }] } }));
+  assert.equal((await settled.listApps({ teamId: "team-1" }))[0].authModePendingRedeploy, false);
+
+  // Never deployed → nothing is live to be out of date with.
+  const notLive = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, auth_mode: "platform" }] } }));
+  assert.equal((await notLive.listApps({ teamId: "team-1" }))[0].authModePendingRedeploy, false);
+
+  // A live row from before the column exists must not light the warning up.
+  const legacy = appsRepo(appsSupabase({ seed: { apps: [{ ...live, deployed_auth_mode: null }] } }));
+  assert.equal((await legacy.listApps({ teamId: "team-1" }))[0].authModePendingRedeploy, false);
 });
 
 test("apps: listApps filters by team_id, orders created_at desc, limits", async () => {
@@ -1949,6 +2038,251 @@ test("apps: listApps filters by team_id, orders created_at desc, limits", async 
 test("apps: getApp returns null when RLS hides the row", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [] } }));
   assert.equal(await repo.getApp("missing"), null);
+});
+
+test("apps: getAppMembership returns member true for team member", async () => {
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  assert.deepEqual(await repo.getAppMembership("app-1"), { member: true });
+});
+
+test("apps: getAppMembership returns member false for authenticated outsider", async () => {
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [] }, actorRow: null }), {
+    createServiceRoleClient: () => admin,
+  });
+  assert.deepEqual(await repo.getAppMembership("app-1"), { member: false });
+});
+
+test("apps: getAppMembership returns null when app is missing", async () => {
+  const admin = appsSupabase({ seed: { apps: [] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  assert.equal(await repo.getAppMembership("missing"), null);
+});
+
+test("apps: listAppAccess returns rows for creator", async () => {
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: "member-2",
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  const items = await repo.listAppAccess("app-1");
+  assert.deepEqual(items, [{
+    memberId: "member-2",
+    permissionLevel: "prompt",
+    grantedByMemberId: "actor-app-1",
+    createdAt: "2026-08-27T00:00:00.000Z",
+  }]);
+});
+
+test("apps: listAppAccess returns null for non-creator without admin", async () => {
+  const otherActor = { id: "actor-other" };
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [APP_ROW] }, actorRow: otherActor }),
+    { createServiceRoleClient: () => admin },
+  );
+  assert.equal(await repo.listAppAccess("app-1"), null);
+});
+
+test("apps: listAppAccess returns null when app is not visible", async () => {
+  const admin = appsSupabase({ seed: { apps: [] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  assert.equal(await repo.listAppAccess("missing"), null);
+});
+
+test("apps: setAppAccess upserts for creator", async () => {
+  const calls: any[] = [];
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] }, calls });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] }, calls }), {
+    createServiceRoleClient: () => admin,
+  });
+  const row = await repo.setAppAccess("app-1", "member-2", "admin");
+  assert.equal(row?.memberId, "member-2");
+  assert.equal(row?.permissionLevel, "admin");
+  assert.equal(row?.grantedByMemberId, "actor-app-1");
+  const upsert = calls.find((c) => c.table === "app_member_access" && c.op === "upsert");
+  assert.equal(upsert?.row.app_id, "app-1");
+  assert.equal(upsert?.row.member_id, "member-2");
+  assert.equal(upsert?.row.permission_level, "admin");
+  assert.equal(upsert?.row.granted_by_member_id, "actor-app-1");
+});
+
+test("apps: setAppAccess returns null for non-creator without admin", async () => {
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [APP_ROW] }, actorRow: { id: "actor-other" } }),
+    { createServiceRoleClient: () => admin },
+  );
+  assert.equal(await repo.setAppAccess("app-1", "member-2", "prompt"), null);
+});
+
+test("apps: setAppAccess allows admin member who is not creator", async () => {
+  const adminMember = { id: "admin-member" };
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: "admin-member",
+    permission_level: "admin",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows } });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows }, actorRow: adminMember }),
+    { createServiceRoleClient: () => admin },
+  );
+  const row = await repo.setAppAccess("app-1", "member-2", "view");
+  assert.equal(row?.permissionLevel, "view");
+  assert.equal(row?.grantedByMemberId, "admin-member");
+});
+
+test("apps: setAppAccess rejects invalid permissionLevel", async () => {
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  await assert.rejects(
+    () => repo.setAppAccess("app-1", "member-2", "superuser"),
+    (e: any) => e?.statusCode === 400,
+  );
+});
+
+test("apps: removeAppAccess deletes row for creator", async () => {
+  const accessRows = [{
+    id: "access-1",
+    app_id: "app-1",
+    member_id: "member-2",
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const calls: any[] = [];
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: [...accessRows] }, calls });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), {
+    createServiceRoleClient: () => admin,
+  });
+  assert.equal(await repo.removeAppAccess("app-1", "member-2"), true);
+  const del = calls.find((c) => c.table === "app_member_access" && c.op === "delete");
+  assert.ok(del);
+});
+
+test("apps: removeAppAccess returns null for non-creator without admin", async () => {
+  const admin = appsSupabase({ seed: { apps: [APP_ROW] } });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [APP_ROW] }, actorRow: { id: "actor-other" } }),
+    { createServiceRoleClient: () => admin },
+  );
+  assert.equal(await repo.removeAppAccess("app-1", "member-2"), null);
+});
+
+test("apps: removeAppAccess revokes Gitea deploy keys for the member", async () => {
+  const now = 1_700_000_000_000;
+  const memberId = "member-2";
+  const accessRows = [{
+    id: "access-1",
+    app_id: "app-1",
+    member_id: memberId,
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const deleted: number[] = [];
+  const gitea = fakeGitea({
+    listDeployKeys: async () => [
+      { id: 10, title: `jit-${memberId}-${now}-aaaa` },
+      { id: 11, title: `jit-other-${now}-bbbb` },
+    ],
+    deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
+  });
+  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: [...accessRows] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), {
+    createServiceRoleClient: () => admin,
+    gitea,
+  });
+  assert.equal(await repo.removeAppAccess("app-1", memberId), true);
+  assert.deepEqual(deleted, [10]);
+});
+
+test("apps: setAppAccess downgrade to view revokes Gitea deploy keys", async () => {
+  const now = 1_700_000_000_000;
+  const memberId = "member-2";
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: memberId,
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const deleted: number[] = [];
+  const gitea = fakeGitea({
+    listDeployKeys: async () => [
+      { id: 20, title: `jit-${memberId}-${now}-aaaa` },
+      { id: 21, title: `jit-${memberId}-${now + 1}-bbbb` },
+    ],
+    deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
+  });
+  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), {
+    createServiceRoleClient: () => admin,
+    gitea,
+  });
+  const row = await repo.setAppAccess("app-1", memberId, "view");
+  assert.equal(row?.permissionLevel, "view");
+  assert.deepEqual(deleted.sort(), [20, 21]);
+});
+
+test("apps: setAppAccess prompt to admin does not revoke deploy keys", async () => {
+  const memberId = "member-2";
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: memberId,
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  let listCalled = false;
+  const gitea = fakeGitea({
+    listDeployKeys: async () => { listCalled = true; return []; },
+  });
+  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), {
+    createServiceRoleClient: () => admin,
+    gitea,
+  });
+  await repo.setAppAccess("app-1", memberId, "admin");
+  assert.equal(listCalled, false);
+});
+
+test("apps: deauth skips deploy key revoke for non-Gitea apps", async () => {
+  const memberId = "member-2";
+  const imported = {
+    ...APP_ROW,
+    git_remote_url: "https://github.com/owner/repo.git",
+    git_auth_kind: null,
+  };
+  let listCalled = false;
+  const gitea = fakeGitea({
+    listDeployKeys: async () => { listCalled = true; return []; },
+  });
+  const admin = appsSupabase({ seed: { apps: [imported] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [imported] } }), {
+    createServiceRoleClient: () => admin,
+    gitea,
+  });
+  await repo.removeAppAccess("app-1", memberId);
+  assert.equal(listCalled, false);
 });
 
 test("apps: createApp inserts workspace + app and resolves caller actor", async () => {
@@ -1970,16 +2304,244 @@ test("apps: createApp inserts workspace + app and resolves caller actor", async 
   assert.equal(appInsert?.row.provision_status, "pending");
   assert.equal(appInsert?.row.slug, "my-app");
   assert.equal(appInsert?.row.visibility, "team");
-  // no provisioner injected → returns the pending app
-  assert.equal(app.provisionStatus, "pending");
+  // Gitea provisioning updates the row after insert
+  assert.equal(app.provisionStatus, "repo_created");
+  assert.match(app.gitRemoteUrl ?? "", /tc-app-/);
   assert.equal(app.teamId, "team-1");
+  const appUpdate = calls.find((c) => c.table === "apps" && c.op === "update");
+  assert.equal(appUpdate?.row.git_auth_kind, "gitea_deploy_key");
+  assert.equal(appUpdate?.row.provision_status, "repo_created");
 });
 
-test("apps: createApp inserts a pending app with no repo", async () => {
-  // An app's source lives only in the local checkout the daemon seeds, so
-  // creation provisions nothing — the desktop drives the seed and writes back.
+test("apps: createApp without Gitea configured throws gitea_unavailable before insert", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ calls }), {
+    gitea: undefined,
+    giteaUnavailableReason: "GITEA_URL is empty",
+  });
+  await assert.rejects(
+    () => repo.createApp({ teamId: "team-1", name: "NoGitea", type: "static_web" }),
+    (err: any) => err?.code === "gitea_unavailable" && err?.statusCode === 503,
+  );
+  const appInsert = calls.find((c) => c.table === "apps" && c.op === "insert");
+  assert.equal(appInsert, undefined, "no orphan app row when Gitea is unavailable");
+});
+
+test("apps: createApp marks the row error when Gitea provisioning fails", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ calls }), {
+    gitea: fakeGitea({
+      createAppRepo: async () => {
+        throw new Error("gitea down");
+      },
+    }),
+  });
+  await assert.rejects(
+    () => repo.createApp({ teamId: "team-1", name: "Fail", type: "static_web" }),
+    (err: any) => err?.code === "gitea_provision_failed" && err?.statusCode === 502,
+  );
+  const errUpdate = calls.find(
+    (c) => c.table === "apps" && c.op === "update" && c.row.provision_status === "error",
+  );
+  assert.ok(errUpdate, "expected error update");
+  assert.match(errUpdate.row.provision_error, /gitea down/);
+});
+
+test("apps: a non-creator's authMode change destroys nothing before the 404", async () => {
+  // apps_select_if_visible lets any teammate READ a team-visible app, while
+  // apps_update_if_creator gates the write. Running applyAuthModeChange first
+  // meant a teammate's PATCH deleted the live app's GoTrue client (a hard
+  // DELETE) and its sealed secret with a service-role client, and only then
+  // matched zero rows and answered 404.
+  const disabled: string[] = [];
+  const admin = appsSupabase({ seed: { apps: [] } });
+  const repo = appsRepo(
+    appsSupabase({
+      seed: {
+        apps: [
+          {
+            ...APP_ROW,
+            auth_mode: "platform",
+            oauth_client_id: "cid",
+            created_by_actor_id: "someone-else",
+          },
+        ],
+      },
+      // The caller has an actor in the team — just not the app's creator.
+      actorRow: { id: "actor-app-1" },
+    }),
+    {
+      createServiceRoleClient: () => admin,
+      gotrue: {
+        createOAuthClient: async () => { throw new Error("must not be called"); },
+        updateOAuthClient: async () => { throw new Error("must not be called"); },
+        disableOAuthClient: async (id: string) => { disabled.push(id); },
+      },
+    },
+  );
+
+  assert.equal(await repo.updateApp("app-1", { authMode: "none" }), null);
+  assert.deepEqual(disabled, [], "the OAuth client must survive a 404'd PATCH");
+});
+
+test("apps: deleteApp tears down resources, archives workspace, and removes the row", async () => {
+  const deletedKeys: number[] = [];
+  const fcDeleted: string[] = [];
+  const ossDeleted: string[] = [];
+  const oauthDisabled: string[] = [];
+  let archivedRepo = false;
+  const calls: any[] = [];
+  const admin = appsSupabase({
+    calls,
+    seed: {
+      apps: [{
+        ...GITEA_MANAGED_APP,
+        workspace_id: "ws-1",
+        fc_function_name: "tc-app-app-1",
+        fc_status: "live",
+        auth_mode: "platform",
+        oauth_client_id: "oauth-cid",
+      }],
+      workspaces: [{ id: "ws-1", team_id: "team-1", name: "app-ws", path: null, archived: false }],
+    },
+  });
+  const repo = appsRepo(admin, {
+    createServiceRoleClient: () => admin,
+    gitea: fakeGitea({
+      listDeployKeys: async () => [{ id: 9, title: "jit-x" }],
+      deleteDeployKey: async (_appId: string, id: number) => { deletedKeys.push(id); },
+      archiveAndRenameAppRepo: async () => {
+        archivedRepo = true;
+        return { sshUrl: "git@gitea.example:teamclaw-apps/deleted-tc-app-app-1.git" };
+      },
+    }),
+    gotrue: {
+      disableOAuthClient: async (id: string) => { oauthDisabled.push(id); },
+    },
+    teardownDeps: {
+      fcOps: {
+        deleteHttpTrigger: async (name: string) => { fcDeleted.push(`trigger:${name}`); },
+        deleteFunction: async (name: string) => { fcDeleted.push(`fn:${name}`); },
+      },
+      deleteOssObject: async (key: string) => { ossDeleted.push(key); },
+    },
+  });
+  assert.equal(await repo.deleteApp("app-1"), true);
+  assert.deepEqual(deletedKeys, [9]);
+  assert.ok(archivedRepo);
+  assert.deepEqual(oauthDisabled, ["oauth-cid"]);
+  assert.ok(fcDeleted.includes("fn:tc-app-app-1"));
+  assert.deepEqual(ossDeleted, ["apps/app-1/code.zip"]);
+  const wsUpdate = calls.find((c) => c.table === "workspaces" && c.op === "update");
+  assert.equal(wsUpdate?.row.archived, true);
+  assert.equal(wsUpdate?.row.path, "git@gitea.example:teamclaw-apps/deleted-tc-app-app-1.git");
+  const appDelete = calls.find((c) => c.table === "apps" && c.op === "delete");
+  assert.ok(appDelete);
+});
+
+test("apps: deleteApp returns false for view permission", async () => {
+  const repo = appAccessRepo("view");
+  assert.equal(await repo.deleteApp("app-1"), false);
+});
+
+test("apps: git-credential and git-head are null for an imported app", async () => {
+  // An imported app has no tc-app-<id> repo on Gitea; asking for one 404s, and
+  // routing deploy through Gitea unconditionally made these apps undeployable.
+  const gitea = fakeGitea({
+    createDeployKey: async () => { throw new Error("must not be called"); },
+    getRepoHead: async () => { throw new Error("must not be called"); },
+  });
+  const imported = {
+    ...APP_ROW,
+    created_by_actor_id: "actor-app-1",
+    git_remote_url: "https://github.com/owner/repo.git",
+    git_auth_kind: null,
+  };
+  const repo = appsRepo(appsSupabase({ seed: { apps: [imported] } }), { gitea });
+  assert.equal(await repo.getAppGitCredential("app-1"), null);
+  assert.equal(await repo.getAppGitHead("app-1"), null);
+});
+
+test("apps: a Gitea-managed app gets an OpenSSH credential and its repo head", async () => {
+  const managed = {
+    ...APP_ROW,
+    created_by_actor_id: "actor-app-1",
+    git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git",
+    git_auth_kind: "gitea_deploy_key",
+  };
+  const repo = appsRepo(appsSupabase({ seed: { apps: [managed] } }));
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.equal(cred?.remoteUrl, managed.git_remote_url);
+  assert.match(cred!.privateKeyPem, /BEGIN OPENSSH PRIVATE KEY/);
+  assert.deepEqual(await repo.getAppGitHead("app-1"), { sha: "abc123" });
+});
+
+function appAccessRepo(permissionLevel: string, actorId = "member-other", extra: Record<string, unknown> = {}) {
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: actorId,
+    permission_level: permissionLevel,
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  return appsRepo(
+    appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows }, actorRow: { id: actorId } }),
+    extra,
+  );
+}
+
+test("apps: getAppGitCredential returns null for view permission", async () => {
+  const gitea = fakeGitea({
+    createDeployKey: async () => { throw new Error("must not be called"); },
+  });
+  const repo = appAccessRepo("view");
+  assert.equal(await repo.getAppGitCredential("app-1"), null);
+});
+
+test("apps: getAppGitCredential mints a write deploy key for prompt permission", async () => {
+  let deployKeyCalled = false;
+  const gitea = fakeGitea({
+    createDeployKey: async () => { deployKeyCalled = true; return { id: 1 }; },
+  });
+  const accessRows = [{
+    app_id: "app-1",
+    member_id: "member-other",
+    permission_level: "prompt",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-27T00:00:00.000Z",
+  }];
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows }, actorRow: { id: "member-other" } }),
+    { gitea },
+  );
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.ok(deployKeyCalled, "prompt grant must register a write deploy key");
+  assert.equal(cred?.remoteUrl, GITEA_MANAGED_APP.git_remote_url);
+  assert.match(cred!.privateKeyPem, /BEGIN OPENSSH PRIVATE KEY/);
+});
+
+test("apps: getAppGitCredential mints a deploy key for admin permission", async () => {
+  let deployKeyCalled = false;
+  const gitea = fakeGitea({
+    createDeployKey: async () => { deployKeyCalled = true; return { id: 2 }; },
+  });
+  const repo = appAccessRepo("admin", "member-other", { gitea });
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.ok(deployKeyCalled, "admin grant must register a deploy key");
+  assert.equal(cred?.remoteUrl, GITEA_MANAGED_APP.git_remote_url);
+  assert.match(cred!.privateKeyPem, /BEGIN OPENSSH PRIVATE KEY/);
+});
+
+test("apps: createApp inserts a pending app when importing an external repo", async () => {
+  // External import skips Gitea — the desktop seeds from the supplied remote.
   const repo = appsRepo(appsSupabase({}));
-  const app = await repo.createApp({ teamId: "team-1", name: "My App", type: "slides", visibility: "personal" });
+  const app = await repo.createApp({
+    teamId: "team-1",
+    name: "My App",
+    type: "slides",
+    visibility: "personal",
+    gitRemoteUrl: "https://github.com/owner/repo.git",
+  });
   assert.equal(app.provisionStatus, "pending");
 });
 
@@ -2016,6 +2578,9 @@ test("apps: updateApp rejects an illegal provisionStatus jump", async () => {
   );
 });
 
+const APP_SHA = "abc1234";
+const APP_DEPLOY = { gitCommitSha: APP_SHA };
+
 test("apps: deployApp method is present", async () => {
   const repo = appsRepo(appsSupabase({}));
   assert.equal(typeof repo.deployApp, "function");
@@ -2025,7 +2590,7 @@ test("apps: deployApp returns null when RLS hides the app", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [] } }), {
     startDeploy: async () => { throw new Error("should not be called"); },
   });
-  assert.equal(await repo.deployApp("app-1"), null);
+  assert.equal(await repo.deployApp("app-1", APP_DEPLOY), null);
 });
 
 test("apps: deployApp rejects 409 when app not ready", async () => {
@@ -2034,7 +2599,7 @@ test("apps: deployApp rejects 409 when app not ready", async () => {
     { startDeploy: async () => { throw new Error("should not be called"); } },
   );
   await assert.rejects(
-    () => repo.deployApp("app-1"),
+    () => repo.deployApp("app-1", APP_DEPLOY),
     (err: any) => err?.code === "app_not_ready" && err?.statusCode === 409,
   );
 });
@@ -2044,7 +2609,7 @@ test("apps: deployApp rejects 503 when startDeploy dep missing", async () => {
     appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }),
   );
   await assert.rejects(
-    () => repo.deployApp("app-1"),
+    () => repo.deployApp("app-1", APP_DEPLOY),
     (err: any) => err?.code === "deploy_unavailable" && err?.statusCode === 503,
   );
 });
@@ -2058,12 +2623,34 @@ test("apps: the 503 names the missing configuration when one is given", async ()
     { deployUnavailableReason: "APPS_ACCESS_KEY_ID is set but APPS_OSS_BUCKET is empty" },
   );
   await assert.rejects(
-    () => repo.deployApp("app-1"),
+    () => repo.deployApp("app-1", APP_DEPLOY),
     (err: any) =>
       err?.code === "deploy_unavailable" &&
       err?.statusCode === 503 &&
       /APPS_OSS_BUCKET/.test(err?.message ?? ""),
   );
+});
+
+test("apps: deployApp returns null for prompt member", async () => {
+  const repo = appAccessRepo("prompt", "prompt-member");
+  assert.equal(await repo.deployApp("app-1", APP_DEPLOY), null);
+});
+
+test("apps: deployApp succeeds for admin member who is not creator", async () => {
+  const repo = appAccessRepo("admin", "admin-member", {
+    startDeploy: async ({ appId }: any) => {
+      assert.equal(appId, "app-1");
+      return {
+        fcFunctionName: "app-my-app",
+        fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/build.zip",
+        presignedPut: "https://oss/put?sig=x",
+      };
+    },
+  });
+  const result = await repo.deployApp("app-1", APP_DEPLOY);
+  assert.equal(result?.fcStatus, "awaiting_build");
+  assert.equal(result?.ossObjectName, "apps/app-1/build.zip");
 });
 
 test("apps: deployApp on ready app returns awaiting_build + ossObjectName", async () => {
@@ -2083,12 +2670,14 @@ test("apps: deployApp on ready app returns awaiting_build + ossObjectName", asyn
       },
     },
   );
-  const result = await repo.deployApp("app-1");
+  const result = await repo.deployApp("app-1", APP_DEPLOY);
   assert.equal(result.fcStatus, "awaiting_build");
   assert.equal(result.fcFunctionName, "app-my-app");
   assert.equal(result.fcRegion, "cn-hangzhou");
   assert.equal(result.ossObjectName, "apps/app-1/build.zip");
   assert.equal(result.presignedPut, "https://oss/put?sig=x");
+  assert.equal(result.gitCommitSha, APP_SHA);
+  assert.match(result.deployToken, /^[0-9a-f-]{36}$/i);
 });
 
 test("apps: deployApp wraps startDeploy failure as 502", async () => {
@@ -2097,8 +2686,23 @@ test("apps: deployApp wraps startDeploy failure as 502", async () => {
     { startDeploy: async () => { throw new Error("fc boom"); } },
   );
   await assert.rejects(
-    () => repo.deployApp("app-1"),
+    () => repo.deployApp("app-1", APP_DEPLOY),
     (err: any) => err?.code === "deploy_failed" && err?.statusCode === 502,
+  );
+});
+
+test("apps: second deploy while awaiting_build returns 409", async () => {
+  const sb = appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } });
+  const repo = appsRepo(sb, {
+    startDeploy: async () => ({
+      fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+      ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+    }),
+  });
+  await repo.deployApp("app-1", APP_DEPLOY);
+  await assert.rejects(
+    () => repo.deployApp("app-1", APP_DEPLOY),
+    (err: any) => err?.code === "deploy_in_progress" && err?.statusCode === 409,
   );
 });
 
@@ -2111,45 +2715,60 @@ test("apps: finalizeDeploy returns null when RLS hides the app", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [] } }), {
     finalizeDeploy: async () => { throw new Error("should not be called"); },
   });
-  assert.equal(await repo.finalizeDeploy("app-1"), null);
+  assert.equal(await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }), null);
 });
 
 test("apps: finalizeDeploy rejects 409 when app has no function", async () => {
   const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: null, fc_status: null }] } }),
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: null, fc_status: null, deploy_token: "tok" }] } }),
     { finalizeDeploy: async () => { throw new Error("should not be called"); } },
   );
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1"),
+    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }),
     (err: any) => err?.code === "not_deploying" && err?.statusCode === 409,
   );
 });
 
 test("apps: finalizeDeploy rejects 409 on illegal fc_status transition", async () => {
   const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "live" }] } }),
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "live", deploy_token: "tok" }] } }),
     { finalizeDeploy: async () => { throw new Error("should not be called"); } },
   );
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1"),
+    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }),
     (err: any) => err?.code === "invalid_deploy_state" && err?.statusCode === 409,
+  );
+});
+
+test("apps: finalizeDeploy rejects 409 when deployToken mismatches", async () => {
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "awaiting_build", deploy_token: "good" }] } }),
+    { finalizeDeploy: async () => { throw new Error("should not be called"); } },
+  );
+  await assert.rejects(
+    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "bad" }),
+    (err: any) => err?.code === "deploy_token_mismatch" && err?.statusCode === 409,
   );
 });
 
 test("apps: finalizeDeploy rejects 503 when finalizeDeploy dep missing", async () => {
   const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "awaiting_build" }] } }),
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "awaiting_build", deploy_token: "tok" }] } }),
   );
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1"),
+    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }),
     (err: any) => err?.code === "deploy_unavailable" && err?.statusCode === 503,
   );
 });
 
 test("apps: finalizeDeploy on awaiting_build app returns live + fcEndpoint", async () => {
   const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "awaiting_build" }] } }),
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }),
     {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
       finalizeDeploy: async ({ fcFunctionName, ossObjectName }: any) => {
         assert.equal(fcFunctionName, "tc-app-1");
         assert.equal(ossObjectName, "apps/app-1/code.zip");
@@ -2157,18 +2776,113 @@ test("apps: finalizeDeploy on awaiting_build app returns live + fcEndpoint", asy
       },
     },
   );
-  const result = await repo.finalizeDeploy("app-1");
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const result = await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
   assert.equal(result.fcStatus, "live");
   assert.equal(result.fcEndpoint, "https://x.fcapp.run");
+  assert.equal(result.gitCommitSha, APP_SHA);
+});
+
+test("apps: finalizeDeploy pins apps.org_id on the first success", async () => {
+  const calls: any[] = [];
+  const seen: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({
+      seed: { apps: [{ ...APP_ROW, provision_status: "ready" }], teams: [{ id: "team-1", oid: "org-old" }] },
+      calls,
+    }),
+    {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
+      finalizeDeploy: async (input: any) => {
+        seen.push(input);
+        return { fcEndpoint: "https://x.fcapp.run" };
+      },
+    },
+  );
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+
+  assert.equal(seen[0].orgId, "org-old", "first finalize derives the org from the team");
+  const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
+  assert.equal(upd.length, 1);
+  assert.equal(upd[0].row.org_id, "org-old", "the derived org is written back to the row");
+});
+
+test("apps: finalizeDeploy deploys to the stored org even after teams.oid changes", async () => {
+  // The whole point of the column. Re-deriving here would provision a fresh
+  // empty schema in tc_org_<new> and take the app live with no data, while the
+  // real data sits untouched in tc_org_<old>.
+  const seen: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({
+      seed: {
+        apps: [{ ...APP_ROW, provision_status: "ready", org_id: "org-old" }],
+        teams: [{ id: "team-1", oid: "org-new" }],
+      },
+    }),
+    {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
+      finalizeDeploy: async (input: any) => {
+        seen.push(input);
+        return { fcEndpoint: "https://x.fcapp.run" };
+      },
+    },
+  );
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].orgId, "org-old", "provision must target the database the data is already in");
+});
+
+test("apps: finalizeDeploy leaves org_id null for a static app", async () => {
+  // static_web has no schema in any database, so claiming one would be a lie
+  // the data browser would later act on.
+  const calls: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({
+      seed: {
+        apps: [{ ...APP_ROW, type: "static_web", provision_status: "ready" }],
+        teams: [{ id: "team-1", oid: "org-old" }],
+      },
+      calls,
+    }),
+    {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
+      finalizeDeploy: async () => ({ fcEndpoint: "https://x.fcapp.run" }),
+    },
+  );
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+
+  const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
+  assert.equal(upd.length, 1);
+  assert.equal("org_id" in upd[0].row, false);
 });
 
 test("apps: finalizeDeploy wraps finalize failure as 502", async () => {
   const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "awaiting_build" }] } }),
-    { finalizeDeploy: async () => { throw new Error("fc boom"); } },
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }),
+    {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
+      finalizeDeploy: async () => { throw new Error("fc boom"); },
+    },
   );
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1"),
+    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken }),
     (err: any) => err?.code === "finalize_failed" && err?.statusCode === 502,
   );
 });
@@ -2396,4 +3110,192 @@ test("createSession returns 403 when the caller is not a member of the team", as
     () => repo.createSession({ id: "sess-x", teamId: "team-1", title: "Nope" }),
     (err: any) => err?.statusCode === 403,
   );
+});
+
+// --- App data browser -------------------------------------------------------
+
+const DEPLOYED_DATA_APP = {
+  ...APP_ROW,
+  provision_status: "ready",
+  fc_status: "live",
+  fc_endpoint: "https://x.fcapp.run",
+  org_id: "org-1",
+};
+
+function fakeAppData(over: Record<string, unknown> = {}) {
+  return {
+    listTables: async () => [{ name: "items", columns: [], primaryKey: ["id"], editable: true }],
+    readRows: async () => ({ table: "items", columns: [], primaryKey: ["id"], editable: true, rows: [], nextCursor: null }),
+    updateRow: async () => ({ id: 1, title: "stored" }),
+    deleteRow: async () => {},
+    ...over,
+  };
+}
+
+function dataRepo(appRow: any, { level, actorId = "actor-app-1", appData = fakeAppData() }: any = {}) {
+  const access = level && actorId !== "actor-app-1"
+    ? [{ app_id: "app-1", member_id: actorId, permission_level: level, granted_by_member_id: "actor-app-1" }]
+    : [];
+  return appsRepo(
+    appsSupabase({
+      seed: { apps: [appRow], app_member_access: access, teams: [{ id: "team-1", oid: "org-derived" }] },
+      actorRow: { id: actorId },
+    }),
+    { appData },
+  );
+}
+
+test("app data: the creator (admin) can read and write", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP);
+  assert.deepEqual(((await repo.listAppDataTables("app-1")) as any).items[0].name, "items");
+  assert.deepEqual(await repo.readAppDataRows("app-1", "items", {}), {
+    table: "items", columns: [], primaryKey: ["id"], editable: true, rows: [], nextCursor: null,
+  });
+  assert.deepEqual(await repo.updateAppDataRow("app-1", "items", "WzFd", { patch: { title: "x" } }), {
+    row: { id: 1, title: "stored" },
+  });
+  assert.deepEqual(await repo.deleteAppDataRow("app-1", "items", "WzFd"), { ok: true });
+});
+
+test("app data: prompt reads, but PATCH and DELETE are 403", async () => {
+  // §6: a member who can direct an agent at the code but cannot see the data
+  // debugs by adding a console.log to production. Read-only is the safer answer.
+  const repo = dataRepo(DEPLOYED_DATA_APP, { level: "prompt", actorId: "member-other" });
+  assert.equal(((await repo.listAppDataTables("app-1")) as any).items.length, 1);
+  await assert.rejects(
+    () => repo.updateAppDataRow("app-1", "items", "WzFd", { patch: { title: "x" } }),
+    (e: any) => e?.statusCode === 403,
+  );
+  await assert.rejects(
+    () => repo.deleteAppDataRow("app-1", "items", "WzFd"),
+    (e: any) => e?.statusCode === 403,
+  );
+});
+
+test("app data: view tier cannot see the feature at all", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, { level: "view", actorId: "member-other" });
+  assert.equal(await repo.listAppDataTables("app-1"), null);
+  assert.equal(await repo.readAppDataRows("app-1", "items", {}), null);
+  assert.equal(await repo.updateAppDataRow("app-1", "items", "WzFd", { patch: { t: 1 } }), null);
+});
+
+test("app data: a non-member gets nothing", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, { actorId: "member-other" });
+  assert.equal(await repo.listAppDataTables("app-1"), null);
+});
+
+test("app data: static and undeployed apps give distinguishable 409s", async () => {
+  // The control panel shows a different sentence for each; a shared 404 would
+  // make both read as "something is broken".
+  const staticApp = dataRepo({ ...DEPLOYED_DATA_APP, type: "static_web" });
+  await assert.rejects(
+    () => staticApp.listAppDataTables("app-1"),
+    (e: any) => e?.statusCode === 409 && e?.code === "app_has_no_database",
+  );
+
+  const undeployed = dataRepo({ ...DEPLOYED_DATA_APP, fc_status: null, fc_endpoint: null });
+  await assert.rejects(
+    () => undeployed.listAppDataTables("app-1"),
+    (e: any) => e?.statusCode === 409 && e?.code === "app_not_deployed",
+  );
+});
+
+test("app data: targets apps.org_id, not the team's current org", async () => {
+  // Same fact as the finalize test, from the read side: teams.oid has moved on,
+  // and following it would report "no tables" for an app whose data is fine.
+  let seen: any;
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({ listTables: async (t: any) => { seen = t; return []; } }),
+  });
+  await repo.listAppDataTables("app-1");
+  assert.deepEqual(seen, { orgId: "org-1", appId: "app-1", slug: "my-app" });
+});
+
+test("app data: a row from before apps.org_id falls back to deriving it", async () => {
+  let seen: any;
+  const repo = dataRepo({ ...DEPLOYED_DATA_APP, org_id: null }, {
+    appData: fakeAppData({ listTables: async (t: any) => { seen = t; return []; } }),
+  });
+  await repo.listAppDataTables("app-1");
+  assert.equal(seen.orgId, "org-derived");
+});
+
+test("app data: an app with no org at all is a 409, not a wrong database", async () => {
+  const repo = appsRepo(
+    appsSupabase({
+      seed: { apps: [{ ...DEPLOYED_DATA_APP, org_id: null }], teams: [] },
+      actorRow: { id: "actor-app-1" },
+    }),
+    { appData: fakeAppData() },
+  );
+  await assert.rejects(
+    () => repo.listAppDataTables("app-1"),
+    (e: any) => e?.statusCode === 409 && e?.code === "app_org_unknown",
+  );
+});
+
+test("app data: 503 names the missing variable when FC has no admin URL", async () => {
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [DEPLOYED_DATA_APP] } }),
+    { appDataUnavailableReason: "APPS_DB_ADMIN_URL is not set" },
+  );
+  await assert.rejects(
+    () => repo.listAppDataTables("app-1"),
+    (e: any) => e?.statusCode === 503 && /APPS_DB_ADMIN_URL/.test(e?.message ?? ""),
+  );
+});
+
+test("app data: a driver error never carries the SQL or the row values out", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({
+      readRows: async () => {
+        throw Object.assign(new Error('duplicate key value violates unique constraint'), {
+          code: "23505",
+          query: "select * from app_x.customers where email = $1",
+          parameters: ["ceo@example.com"],
+          detail: "Key (email)=(ceo@example.com) already exists.",
+        });
+      },
+    }),
+  });
+  await assert.rejects(
+    () => repo.readAppDataRows("app-1", "items", {}),
+    (e: any) =>
+      e?.statusCode === 502 &&
+      !/customers|ceo@example\.com|select \*/.test(`${e?.message} ${JSON.stringify(e?.details ?? {})}`),
+  );
+});
+
+test("app data: a cancelled statement is a 504, not a generic failure", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({
+      readRows: async () => { throw Object.assign(new Error("canceling statement"), { code: "57014" }); },
+    }),
+  });
+  await assert.rejects(
+    () => repo.readAppDataRows("app-1", "items", {}),
+    (e: any) => e?.statusCode === 504 && e?.code === "query_timeout",
+  );
+});
+
+test("app data: the filter is validated before it reaches the database", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({ readRows: async () => { throw new Error("must not be called"); } }),
+  });
+  await assert.rejects(
+    () => repo.readAppDataRows("app-1", "items", { filterColumn: "note", filterOp: "; drop table items" }),
+    (e: any) => e?.statusCode === 400,
+  );
+});
+
+test("app data: PATCH requires a patch object", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({ updateRow: async () => { throw new Error("must not be called"); } }),
+  });
+  for (const body of [{}, { patch: "title=x" }, { patch: ["title"] }]) {
+    await assert.rejects(
+      () => repo.updateAppDataRow("app-1", "items", "WzFd", body),
+      (e: any) => e?.statusCode === 400,
+    );
+  }
 });

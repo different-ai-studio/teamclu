@@ -19,6 +19,14 @@ vi.mock('../SessionListColumn', () => ({
   SessionListColumn: () => <div data-testid="session-list-column" />,
 }))
 
+vi.mock('../AppSessionsColumn', () => ({
+  AppSessionsColumn: () => <div data-testid="app-sessions-column" />,
+}))
+
+vi.mock('@/lib/remote-features', () => ({
+  useFeatures: () => ({ apps: true }),
+}))
+
 vi.mock('@/components/panel', () => ({
   IdeasView: () => <div data-testid="ideas-list-column" />,
   ActorsView: () => <div data-testid="actors-list-column" />,
@@ -131,5 +139,12 @@ describe('SidebarSecondColumn', () => {
     useUIStore.setState({ embedMode: true, sidebarFilter: { kind: 'ideas' } })
     renderWithSidebar()
     expect(screen.getAllByTestId('session-list-column').length).toBeGreaterThan(0)
+  })
+
+  it('renders AppSessionsColumn for apps filter (not the app list)', () => {
+    useUIStore.setState({ sidebarFilter: { kind: 'apps' } })
+    renderWithSidebar()
+    expect(screen.getByTestId('app-sessions-column')).toBeInTheDocument()
+    expect(screen.queryByTestId('session-list-column')).not.toBeInTheDocument()
   })
 })

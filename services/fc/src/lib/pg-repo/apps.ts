@@ -7,13 +7,24 @@
  */
 
 import { eq, sql } from "drizzle-orm";
-import { apps, workspaces, sessions } from "../../db/schema/index.js";
+import { randomUUID } from "node:crypto";
+import { apps, workspaces, sessions, teams } from "../../db/schema/index.js";
 import { requireActorForTeam, resolveActorForTeam } from "./authz.js";
 import { isLegalStatusTransition } from "./app-status.js";
 import { isLegalFcTransition } from "../provisioning/app-fc-status.js";
-import { appOssObjectName, deployUnavailable } from "../provisioning/app-deploy.js";
+import { appOssObjectName, deployUnavailable, parseOptionalGitCommitSha, parseDeployToken, assertDeployAllowed, checkDeployInProgress } from "../provisioning/app-deploy.js";
+import { giteaUnavailable, GITEA_AUTH_KIND, type GiteaClient } from "../provisioning/gitea.js";
+import { issueJitDeployKey } from "../provisioning/deploy-key.js";
 import { appPublicUrl } from "../apps-public-host.js";
 import { ApiError } from "../http-utils.js";
+import {
+  applyAuthModeChange,
+  buildPlatformOAuthEnvPg,
+  parseAuthMode,
+  type AuthMode,
+} from "../provisioning/app-auth-mode.js";
+import { deleteAppSecret, putAppSecret } from "../provisioning/app-secrets.js";
+import { type GotrueOAuthClient } from "../provisioning/gotrue-oauth.js";
 
 type AppsCtx = { userId?: string };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -45,6 +56,16 @@ function mapApp(r: any) {
     visibility: r.visibility,
     workspaceId: r.workspaceId ?? null,
     gitRemoteUrl: r.gitRemoteUrl ?? null,
+    // `gitea_deploy_key` marks an app whose repo this deployment provisioned
+    // and holds a credential for; null marks one imported from a remote we have
+    // no access to. The client needs the distinction to know whether deploy can
+    // go through Gitea at all.
+    gitAuthKind: r.gitAuthKind ?? null,
+    gitCommitSha: r.gitCommitSha ?? null,
+    runtime: r.runtime ?? "node",
+    authMode: r.authMode ?? "none",
+    // Public client id only — never the secret (stored in app_secrets).
+    oauthClientId: r.oauthClientId ?? null,
     provisionStatus: r.provisionStatus,
     fcStatus: r.fcStatus ?? null,
     fcEndpoint: r.fcEndpoint ?? null,
@@ -64,9 +85,11 @@ export type AppsRepoDeps = {
   finalizeDeploy?: (a: {
     appId: string;
     slug: string;
+    orgId?: string | null;
     appType: string;
     fcFunctionName: string;
     ossObjectName: string;
+    platformOAuthEnv?: Record<string, string>;
   }) => Promise<{ fcEndpoint: string }>;
   /**
    * Why deploy provisioning is unavailable, when it is. Named variables beat
@@ -74,6 +97,13 @@ export type AppsRepoDeps = {
    * toast and told nobody which of five environment variables was empty.
    */
   deployUnavailableReason?: string;
+  /** Gitea client for provisioning per-app repos. Absent → createApp 503. */
+  gitea?: GiteaClient;
+  /** Set when GITEA_* is empty — surfaced as gitea_unavailable on createApp. */
+  giteaUnavailableReason?: string;
+  /** GoTrue admin client for platform authMode. Absent → 503 oauth_unavailable. */
+  gotrue?: GotrueOAuthClient;
+  gotrueUnavailableReason?: string;
 };
 
 export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps = {}) {
@@ -108,6 +138,8 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
       if (!ctx.userId) throw new Error("unauthenticated");
       const createdByActorId = await requireActorForTeam(db, ctx.userId, input.teamId);
       const slug = slugify(input.name);
+      const importUrl = input.gitRemoteUrl?.trim() || null;
+      if (!importUrl && !deps.gitea) throw giteaUnavailable(deps.giteaUnavailableReason);
 
       const [ws] = await db
         .insert(workspaces)
@@ -128,17 +160,49 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
           type: input.type,
           visibility: input.visibility === "team" ? "team" : "personal",
           workspaceId: ws.id,
-          gitRemoteUrl: input.gitRemoteUrl?.trim() || null,
+          gitRemoteUrl: importUrl,
           provisionStatus: "pending",
         })
         .returning();
 
-      // No repo provisioning here either way: an app's source lives only in the
-      // local checkout the daemon writes (docs/specs/2026-07-28-app-types-design.md
-      // §5) — from the starter template, or cloned from `gitRemoteUrl` when the
-      // user gave one. The row is returned `pending`; the desktop kicks the
-      // local seed and writes back `ready` or `error`.
-      return mapApp(row);
+      // External import: the caller supplied a remote; seed clones from it.
+      if (importUrl) return mapApp(row);
+
+      try {
+        // The SSH URL, not `clone_url`: the deploy key is the only credential
+        // we hand out for this repo, and it is useless over HTTPS.
+        const { sshUrl } = await deps.gitea!.createAppRepo(row.id);
+        const [updated] = await db
+          .update(apps)
+          .set({
+            gitRemoteUrl: sshUrl,
+            gitAuthKind: GITEA_AUTH_KIND,
+            provisionStatus: "repo_created",
+            provisionError: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(apps.id, row.id))
+          .returning();
+        return mapApp(updated);
+      } catch (e: unknown) {
+        const msg = e instanceof ApiError ? e.message : String((e as Error)?.message ?? e);
+        const [updated] = await db
+          .update(apps)
+          .set({
+            provisionStatus: "error",
+            provisionError: msg,
+            updatedAt: new Date(),
+          })
+          .where(eq(apps.id, row.id))
+          .returning();
+        if (e instanceof ApiError) throw e;
+        // `details`, not a bare 4th-argument object: ApiError's constructor
+        // only reads `options.details` and `options.cause`, so the errored row
+        // the client needs to render the failed state was being dropped.
+        throw new ApiError(502, "gitea_provision_failed", msg, {
+          details: { app: mapApp(updated) },
+        });
+      }
     },
 
     async getApp(appId: string) {
@@ -155,6 +219,9 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
       const rows = await (db as any).execute(sql`
         SELECT id, team_id AS "teamId", name, slug, type, visibility,
                workspace_id AS "workspaceId", git_remote_url AS "gitRemoteUrl",
+               git_auth_kind AS "gitAuthKind",
+               git_commit_sha AS "gitCommitSha", runtime, auth_mode AS "authMode",
+               oauth_client_id AS "oauthClientId",
                provision_status AS "provisionStatus", fc_status AS "fcStatus",
                fc_endpoint AS "fcEndpoint", fc_function_name AS "fcFunctionName", fc_region AS "fcRegion",
                created_at AS "createdAt", updated_at AS "updatedAt"
@@ -177,7 +244,14 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
 
     async updateApp(
       appId: string,
-      patch: { name?: string; visibility?: string; provisionStatus?: string; fcStatus?: string; deployError?: string },
+      patch: {
+        name?: string;
+        visibility?: string;
+        provisionStatus?: string;
+        fcStatus?: string;
+        deployError?: string;
+        authMode?: string;
+      },
     ) {
       // Authz: only the creator may mutate the app. Load the row (gated by
       // visibility), then require the caller to be its creator. Returning null
@@ -194,6 +268,36 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
       const set: any = { updatedAt: new Date() };
       if (typeof patch.name === "string" && patch.name.length > 0) set.name = patch.name;
       if (patch.visibility === "team" || patch.visibility === "personal") set.visibility = patch.visibility;
+
+      const nextAuthMode = parseAuthMode(patch.authMode);
+      if (nextAuthMode !== undefined) {
+        const fromAuthMode = (existing.authMode ?? "none") as AuthMode;
+        if (nextAuthMode !== fromAuthMode) {
+          const oauth = await applyAuthModeChange(
+            {
+              gotrue: deps.gotrue,
+              gotrueUnavailableReason: deps.gotrueUnavailableReason,
+              secrets: {
+                putSecret: (kind, plaintext) => putAppSecret(db, appId, kind, plaintext),
+                deleteSecret: (kind) => deleteAppSecret(db, appId, kind),
+              },
+            },
+            {
+              appId,
+              name: existing.name,
+              slug: existing.slug,
+              from: fromAuthMode,
+              to: nextAuthMode,
+              oauthClientId: existing.oauthClientId ?? null,
+              oauthAppId: existing.oauthAppId ?? null,
+            },
+          );
+          set.authMode = nextAuthMode;
+          set.oauthClientId = oauth.oauthClientId;
+          set.oauthAppId = oauth.oauthAppId;
+        }
+      }
+
       if (typeof patch.provisionStatus === "string") {
         if (isLegalStatusTransition(existing.provisionStatus, patch.provisionStatus)) {
           set.provisionStatus = patch.provisionStatus;
@@ -224,7 +328,9 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
       return mapApp(row);
     },
 
-    async deployApp(appId: string) {
+    async deployApp(appId: string, input: { gitCommitSha?: string }) {
+      // Optional: only a Gitea-managed app pins its deploy to a forge commit.
+      const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
       const existing = await loadVisibleApp(appId);
       if (!existing) return null;
       if (ctx.userId) {
@@ -234,30 +340,63 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
       if (existing.provisionStatus !== "ready") {
         throw new ApiError(409, "app_not_ready", "app must be seeded (provision_status=ready) before deploy");
       }
+      assertDeployAllowed(existing);
+      const progress = checkDeployInProgress(existing);
+      if (progress === "blocked") {
+        throw new ApiError(409, "deploy_in_progress", "a deploy is already in progress");
+      }
+      if (progress === "stale") {
+        await db.update(apps).set({
+          fcStatus: "deploy_error",
+          provisionError: "previous deploy timed out",
+          deployToken: null,
+          deployStartedAt: null,
+          updatedAt: new Date(),
+        }).where(eq(apps.id, appId));
+      }
       if (!deps.startDeploy) throw deployUnavailable(deps.deployUnavailableReason);
+      const deployToken = randomUUID();
+      const deployStartedAt = new Date();
       try {
         const r = await deps.startDeploy({ appId, region: process.env.REGION || "cn-hangzhou" });
         const [row] = await db.update(apps).set({
           fcFunctionName: r.fcFunctionName, fcRegion: r.fcRegion,
-          fcStatus: "awaiting_build", provisionError: null, updatedAt: new Date(),
+          fcStatus: "awaiting_build", provisionError: null,
+          deployToken, deployStartedAt,
+          ...(gitCommitSha ? { gitCommitSha } : {}),
+          updatedAt: deployStartedAt,
         }).where(eq(apps.id, appId)).returning();
-        return { ...mapApp(row), ossObjectName: r.ossObjectName, presignedPut: r.presignedPut };
+        return {
+          ...mapApp(row),
+          ossObjectName: r.ossObjectName,
+          presignedPut: r.presignedPut,
+          deployToken,
+          gitCommitSha,
+        };
       } catch (e: any) {
         if (e instanceof ApiError) throw e;
         await db.update(apps).set({
-          fcStatus: "deploy_error", provisionError: String(e?.message ?? e), updatedAt: new Date(),
+          fcStatus: "deploy_error", provisionError: String(e?.message ?? e),
+          deployToken: null, deployStartedAt: null,
+          updatedAt: new Date(),
         }).where(eq(apps.id, appId));
         throw new ApiError(502, "deploy_failed", String(e?.message ?? e));
       }
     },
 
-    async finalizeDeploy(appId: string) {
+    async finalizeDeploy(appId: string, input: { gitCommitSha?: string; deployToken: string }) {
+      const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
+      const deployToken = parseDeployToken(input?.deployToken);
       const existing = await loadVisibleApp(appId);
       if (!existing) return null;
       if (ctx.userId) {
         const a = await resolveActorForTeam(db, ctx.userId, existing.teamId);
         if (!a || existing.createdByActorId !== a) return null;
       }
+      if (!existing.deployToken || existing.deployToken !== deployToken) {
+        throw new ApiError(409, "deploy_token_mismatch", "deployToken does not match the in-progress deploy");
+      }
+      assertDeployAllowed(existing);
       if (!existing.fcFunctionName) throw new ApiError(409, "not_deploying", "app has no function; call deploy first");
       if (!isLegalFcTransition(existing.fcStatus, "deploying")) {
         throw new ApiError(409, "invalid_deploy_state", `cannot finalize from fc_status ${existing.fcStatus}`);
@@ -265,20 +404,41 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
       if (!deps.finalizeDeploy) throw deployUnavailable(deps.deployUnavailableReason);
       await db.update(apps).set({ fcStatus: "deploying", updatedAt: new Date() }).where(eq(apps.id, appId));
       try {
+        let platformOAuthEnv: Record<string, string> | undefined;
+        if ((existing.authMode ?? "none") === "platform") {
+          platformOAuthEnv = await buildPlatformOAuthEnvPg(
+            { db, gotrue: deps.gotrue, gotrueUnavailableReason: deps.gotrueUnavailableReason },
+            { appId, slug: existing.slug, oauthClientId: existing.oauthClientId ?? null },
+          );
+        }
+        const [team] = await db
+          .select({ oid: teams.oid })
+          .from(teams)
+          .where(eq(teams.id, existing.teamId))
+          .limit(1);
         const r = await deps.finalizeDeploy({
           appId,
           slug: existing.slug,
+          orgId: team?.oid ?? null,
           appType: existing.type,
           fcFunctionName: existing.fcFunctionName,
           ossObjectName: appOssObjectName(appId),
+          platformOAuthEnv,
         });
         const [row] = await db.update(apps).set({
-          fcStatus: "live", fcEndpoint: r.fcEndpoint, provisionError: null, updatedAt: new Date(),
+          fcStatus: "live", fcEndpoint: r.fcEndpoint,
+          ...(gitCommitSha ? { gitCommitSha } : {}),
+          provisionError: null, deployToken: null, deployStartedAt: null,
+          updatedAt: new Date(),
         }).where(eq(apps.id, appId)).returning();
         return mapApp(row);
       } catch (e: any) {
         if (e instanceof ApiError) throw e;
-        await db.update(apps).set({ fcStatus: "deploy_error", provisionError: String(e?.message ?? e), updatedAt: new Date() }).where(eq(apps.id, appId));
+        await db.update(apps).set({
+          fcStatus: "deploy_error", provisionError: String(e?.message ?? e),
+          deployToken: null, deployStartedAt: null,
+          updatedAt: new Date(),
+        }).where(eq(apps.id, appId));
         throw new ApiError(502, "finalize_failed", String(e?.message ?? e));
       }
     },
@@ -310,6 +470,87 @@ export function makeAppsRepo(db: DbLike, ctx: AppsCtx = {}, deps: AppsRepoDeps =
         createdAt: iso(r.createdAt)!,
         updatedAt: iso(r.updatedAt)!,
       }));
+    },
+
+    async getAppGitCredential(appId: string) {
+      const existing = await loadVisibleApp(appId);
+      if (!existing) return null;
+      let callerActorId: string | null = null;
+      if (ctx.userId) {
+        callerActorId = await resolveActorForTeam(db, ctx.userId, existing.teamId);
+        if (!callerActorId || existing.createdByActorId !== callerActorId) return null;
+      }
+      if (!existing.gitRemoteUrl) return null;
+      // An imported app has a remote this deployment holds no credential for;
+      // minting a Gitea key for it would 404 on a repo that does not exist.
+      if (existing.gitAuthKind !== GITEA_AUTH_KIND) return null;
+      if (!deps.gitea) throw giteaUnavailable(deps.giteaUnavailableReason);
+
+      const actorId = callerActorId ?? existing.createdByActorId ?? "unknown";
+      const jit = await issueJitDeployKey(deps.gitea, appId, actorId);
+      return {
+        remoteUrl: existing.gitRemoteUrl,
+        authKind: "deploy_key" as const,
+        ...jit,
+      };
+    },
+
+    async getAppGitHead(appId: string) {
+      const existing = await loadVisibleApp(appId);
+      if (!existing) return null;
+      if (existing.gitAuthKind !== GITEA_AUTH_KIND) return null;
+      if (!deps.gitea) throw giteaUnavailable(deps.giteaUnavailableReason);
+      return deps.gitea.getRepoHead(appId);
+    },
+
+    async getAppMembership(appId: string) {
+      if (!ctx.userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+      const [row] = await db
+        .select({ teamId: apps.teamId })
+        .from(apps)
+        .where(eq(apps.id, appId))
+        .limit(1);
+      if (!row) return null;
+      const actor = await resolveActorForTeam(db, ctx.userId, row.teamId);
+      return { member: Boolean(actor) };
+    },
+
+    async listAppAccess(_appId: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-apps-first-class plan)");
+    },
+
+    async setAppAccess(_appId: string, _memberId: string, _permissionLevel: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-apps-first-class plan)");
+    },
+
+    async removeAppAccess(_appId: string, _memberId: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-apps-first-class plan)");
+    },
+
+    async deleteApp(_appId: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-apps-first-class plan)");
+    },
+
+    // App data browser — supabase-only (2026-08-27-app-data-browser plan). The
+    // work these do lives entirely in the app's OWN Postgres, not in this
+    // repository's database, so a Drizzle implementation would be a copy of the
+    // supabase one with a different way of reading `apps.org_id`. Explicit 501
+    // stubs so BACKEND_KIND=postgres answers cleanly instead of 500-ing on
+    // `undefined is not a function` (see pg-repo-parity.test.ts).
+    async listAppDataTables(_appId: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-app-data-browser plan)");
+    },
+
+    async readAppDataRows(_appId: string, _table: string, _query?: unknown) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-app-data-browser plan)");
+    },
+
+    async updateAppDataRow(_appId: string, _table: string, _rowKey: string, _body?: unknown) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-app-data-browser plan)");
+    },
+
+    async deleteAppDataRow(_appId: string, _table: string, _rowKey: string) {
+      throw new ApiError(501, "not_implemented", "supabase-only (2026-08-27-app-data-browser plan)");
     },
   };
 }

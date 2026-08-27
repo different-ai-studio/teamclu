@@ -45,6 +45,12 @@ export interface ChannelFeatureFlags {
 export interface FeatureFlags {
   auth?: AuthFeatureFlags;
   channels?: ChannelFeatureFlags;
+  /**
+   * Nav entry only (`NavRail`, sidebar apps column). Off hides the UI surface
+   * for creating or browsing apps; existing app sessions, workspaces, and
+   * already-deployed sites keep working — this is not a data or runtime kill
+   * switch.
+   */
   apps?: boolean;
   /**
    * Locks a build out of changing or leaving the team LLM config. Kept at
@@ -123,9 +129,10 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   "self-host": {
     auth: { google: true, wechat: false, phone: false, password: false, webSSO: false },
     channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, seatalk: true },
-    // Entry point only. The deploy chain behind it needs ACCESS_KEY_ID +
-    // APPS_FC_ENDPOINT (see makeDeployDeps in src/index.ts); with those unset
-    // this box answers 503 for deploys while listing and creating still work.
+    // Entry point only. Creating an app needs GITEA_* (see makeGiteaDeps in
+    // src/index.ts); deploy needs ACCESS_KEY_ID + APPS_FC_ENDPOINT (see
+    // makeDeployDeps). With those unset this box answers 503 naming the empty
+    // variable while listing still works.
     apps: true,
     lockLlmConfig: false,
     allowNewOrg: true,
