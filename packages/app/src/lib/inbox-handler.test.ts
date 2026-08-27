@@ -1,8 +1,17 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+
+const subscribeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/mqtt-bridge", () => ({
+  mqttSubscribe: subscribeMock,
+}));
+
 import {
+  ensureInboxSubscribed,
   handleInboxEnvelope,
   INBOX_LIST_REFRESH_MS,
   resetInboxListRefreshForTests,
+  resetInboxSubscriptionState,
   scheduleSessionListRefresh,
   SESSION_LIST_REFRESH_MS,
   type InboxStore,
@@ -140,5 +149,66 @@ describe("handleInboxEnvelope", () => {
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
     expect(store.loadFirstPage).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it("calls onMessagePing for message pings but not read pings", () => {
+    const store = makeStore(["s1"]);
+    const onMessagePing = vi.fn();
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { session_id: "s1", type: "message" }),
+      "u1",
+      store,
+      console,
+      { onMessagePing },
+    );
+    expect(onMessagePing).toHaveBeenCalledWith("s1");
+
+    onMessagePing.mockClear();
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { session_id: "s1", type: "read" }),
+      "u1",
+      store,
+      console,
+      { onMessagePing },
+    );
+    expect(onMessagePing).not.toHaveBeenCalled();
+  });
+});
+
+describe("ensureInboxSubscribed", () => {
+  beforeEach(() => {
+    subscribeMock.mockReset();
+    subscribeMock.mockResolvedValue(undefined);
+    resetInboxSubscriptionState();
+  });
+
+  it("re-subscribes after resetInboxSubscriptionState (broker reconnect)", async () => {
+    await ensureInboxSubscribed("user-1");
+    expect(subscribeMock).toHaveBeenCalledTimes(1);
+    subscribeMock.mockClear();
+
+    resetInboxSubscriptionState();
+    await ensureInboxSubscribed("user-1");
+
+    expect(subscribeMock).toHaveBeenCalledTimes(1);
+    expect(subscribeMock).toHaveBeenCalledWith("inbox/user-1");
+  });
+
+  it("ignores stale subscribe that completes after reset", async () => {
+    let resolveStale!: () => void;
+    subscribeMock.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { resolveStale = resolve; }),
+    );
+    subscribeMock.mockResolvedValue(undefined);
+
+    const stale = ensureInboxSubscribed("user-1");
+    resetInboxSubscriptionState();
+    await ensureInboxSubscribed("user-1");
+
+    resolveStale();
+    await stale;
+
+    expect(subscribeMock).toHaveBeenCalledTimes(2);
+    expect(subscribeMock).toHaveBeenNthCalledWith(2, "inbox/user-1");
   });
 });

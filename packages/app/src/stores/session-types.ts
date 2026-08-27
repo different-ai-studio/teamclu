@@ -291,11 +291,6 @@ export interface SessionState {
   // Draft input text (preserved when navigating away from chat)
   draftInput: string;
 
-  // Child session viewing - browse sub-agent conversations without changing SSE subscription
-  viewingChildSessionId: string | null;
-  childSessionMessages: Record<string, Message[]>;
-  isLoadingChildMessages: boolean;
-
   // Archived session viewing - separate from active session navigation
   archivedSessions: Session[];
   isLoadingArchivedSessions: boolean;
@@ -376,10 +371,6 @@ export interface SessionState {
   refreshSessionDiff: () => Promise<void>;
   handleSessionError: (event: SessionErrorEvent) => void;
   clearSessionError: () => void;
-
-  // Actions - Child session viewing
-  setViewingChildSession: (sessionId: string | null) => void;
-  loadChildSessionMessages: (sessionId: string) => Promise<void>;
 
   // Actions - Dashboard batch loading
   dashboardLoading: boolean;

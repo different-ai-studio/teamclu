@@ -90,6 +90,7 @@ export function createWorkerMqttAdapter(createWorker: () => MqttWorkerLike): Bro
   return {
     connect: (args) => call({ op: 'connect', url: args.url, options: args.options }),
     subscribe: (topic) => call({ op: 'subscribe', topic }),
+    unsubscribe: (topic) => call({ op: 'unsubscribe', topic }),
     publish: (topic, payload, retain = false) =>
       call({ op: 'publish', topic, payload, retain }, [payload.buffer]),
     disconnect: () => call({ op: 'disconnect' }),

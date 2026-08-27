@@ -4,7 +4,7 @@ import {
   resolveAgentDevicePresence,
   type AgentDevicePresence,
 } from "@/lib/agent-device-reachability";
-import { ensureSessionLiveSubscribed, ensureTeamSessionLiveSubscribed } from "@/lib/session-live-subscriptions";
+import { ensureSessionLiveSubscribed } from "@/lib/session-live-subscriptions";
 import {
   startAgentRuntimesAsync,
   type RuntimeStartFailure,
@@ -438,7 +438,6 @@ export async function ensureAgentRuntimesForSession(args: EnsureAgentRuntimeArgs
       // Live subscriptions ride MQTT; a local-only run has no broker to
       // subscribe on and must not be blocked waiting for one.
       if (!allLocal) {
-        await ensureTeamSessionLiveSubscribed(args.teamId);
         await ensureSessionLiveSubscribed(args.teamId, args.sessionId);
       }
     } catch (error) {

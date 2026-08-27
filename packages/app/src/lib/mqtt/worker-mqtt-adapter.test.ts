@@ -65,6 +65,15 @@ describe('createWorkerMqttAdapter', () => {
     expect(errors).toEqual(['not authorized'])
   })
 
+  it('forwards unsubscribe over RPC and resolves on ok result', async () => {
+    const fake = makeFakeWorker()
+    const adapter = createWorkerMqttAdapter(() => fake.worker)
+    const p = adapter.unsubscribe('amux/t/session/s1/live')
+    expect(fake.sent).toEqual([{ id: 1, op: 'unsubscribe', topic: 'amux/t/session/s1/live' }])
+    fake.emit({ kind: 'result', id: 1, ok: true })
+    await expect(p).resolves.toBeUndefined()
+  })
+
   it('fails pending calls and reports disconnected on worker crash', async () => {
     const fake = makeFakeWorker()
     const adapter = createWorkerMqttAdapter(() => fake.worker)

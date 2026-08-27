@@ -7,6 +7,28 @@ const pendingSessionSubscriptions = new Map<string, Promise<void>>();
 const pendingTeamSessionSubscriptions = new Map<string, Promise<void>>();
 let subscriptionEpoch = 0;
 
+let interestTeamId: string | null = null;
+let interestSessionIds = new Set<string>();
+let syncInterestEpoch = 0;
+
+/** TeamClu cloud session ids that must keep session/live SUB (streaming or pending approval). */
+export function collectSessionsNeedingLiveInterest(
+  byKey: Record<string, {
+    sessionId: string;
+    active: boolean;
+    pendingPermissionsByRequestId: Record<string, unknown>;
+  }>,
+): string[] {
+  const ids = new Set<string>();
+  for (const entry of Object.values(byKey)) {
+    if (!entry.sessionId.trim()) continue;
+    if (entry.active || Object.keys(entry.pendingPermissionsByRequestId).length > 0) {
+      ids.add(entry.sessionId.trim());
+    }
+  }
+  return [...ids].filter(Boolean);
+}
+
 function teamSessionLiveTopic(teamId: string): string {
   return `amux/${teamId}/session/+/live`;
 }
@@ -15,14 +37,12 @@ function sessionLiveTopic(teamId: string, sessionId: string): string {
   return `amux/${teamId}/session/${sessionId}/live`;
 }
 
-function isSessionLiveTopicForTeam(topic: string, teamId: string): boolean {
-  return topic.startsWith(`amux/${teamId}/session/`) && topic.endsWith("/live");
-}
-
+/** @deprecated Phase B removes broker wildcard; desktop no longer calls this. */
 export function hasTeamSessionLiveSubscription(teamId: string): boolean {
   return subscribedTeamSessionTopics.has(teamSessionLiveTopic(teamId));
 }
 
+/** @deprecated Phase B removes broker wildcard; desktop no longer calls this. */
 export async function ensureTeamSessionLiveSubscribed(teamId: string): Promise<void> {
   const topic = teamSessionLiveTopic(teamId);
   while (true) {
@@ -45,37 +65,33 @@ export async function ensureTeamSessionLiveSubscribed(teamId: string): Promise<v
     }
     if (subscriptionEpoch === epoch) {
       subscribedTeamSessionTopics.add(topic);
-      const overlapping = [...subscribedSessionTopics].filter((sessionTopic) =>
-        isSessionLiveTopicForTeam(sessionTopic, teamId),
-      );
-      await Promise.all(
-        overlapping.map(async (sessionTopic) => {
-          try {
-            await mqttUnsubscribe(sessionTopic);
-          } catch (error) {
-            console.warn("[MQTT] unsubscribe overlapping session/live topic failed", {
-              topic: sessionTopic,
-              error,
-            });
-          } finally {
-            subscribedSessionTopics.delete(sessionTopic);
-          }
-        }),
-      );
       return;
     }
   }
+}
+
+/** Mark session as live-interest before SUB so handlers accept events immediately. */
+function noteSessionLiveInterest(teamId: string, sessionId: string): void {
+  const trimmed = sessionId.trim();
+  if (!trimmed) return;
+  if (interestTeamId !== null && interestTeamId !== teamId) return;
+  interestTeamId = teamId;
+  interestSessionIds.add(trimmed);
 }
 
 export async function ensureSessionLiveSubscribed(
   teamId: string,
   sessionId: string,
 ): Promise<void> {
-  if (hasTeamSessionLiveSubscription(teamId)) return;
+  const trimmed = sessionId.trim();
+  if (!trimmed) return;
 
-  const topic = sessionLiveTopic(teamId, sessionId);
+  // Same ordering as syncSessionLiveInterest — accept events (incl. local SSE)
+  // while the broker SUB is still in flight.
+  noteSessionLiveInterest(teamId, trimmed);
+
+  const topic = sessionLiveTopic(teamId, trimmed);
   while (true) {
-    if (hasTeamSessionLiveSubscription(teamId)) return;
     if (subscribedSessionTopics.has(topic)) return;
     const pending = pendingSessionSubscriptions.get(topic);
     if (pending) {
@@ -100,6 +116,97 @@ export async function ensureSessionLiveSubscribed(
   }
 }
 
+export async function releaseSessionLiveSubscribed(
+  teamId: string,
+  sessionId: string,
+): Promise<void> {
+  const topic = sessionLiveTopic(teamId, sessionId.trim());
+  if (!subscribedSessionTopics.has(topic)) return;
+  try {
+    await mqttUnsubscribe(topic);
+  } catch (error) {
+    console.warn("[MQTT] unsubscribe session/live topic failed", { topic, error });
+  } finally {
+    subscribedSessionTopics.delete(topic);
+  }
+}
+
+export function isSessionLiveInterest(sessionId: string): boolean {
+  return interestSessionIds.has(sessionId);
+}
+
+export function getSessionLiveInterest(): {
+  teamId: string | null;
+  sessionIds: ReadonlySet<string>;
+} {
+  return { teamId: interestTeamId, sessionIds: interestSessionIds };
+}
+
+/** Keep MQTT session/live SUB aligned with foreground + background TeamClu sessions. */
+export async function syncSessionLiveInterest(
+  teamId: string | null,
+  sessionIds: readonly string[],
+): Promise<void> {
+  const epoch = ++syncInterestEpoch;
+  const nextIds = new Set(sessionIds.map((id) => id.trim()).filter(Boolean));
+
+  if (!teamId || nextIds.size === 0) {
+    if (interestTeamId) {
+      await Promise.all(
+        [...subscribedSessionTopics].map(async (topic) => {
+          try {
+            await mqttUnsubscribe(topic);
+          } catch (error) {
+            console.warn("[MQTT] unsubscribe session/live topic failed", { topic, error });
+          }
+        }),
+      );
+      subscribedSessionTopics.clear();
+    }
+    if (syncInterestEpoch !== epoch) return;
+    interestTeamId = null;
+    interestSessionIds.clear();
+    return;
+  }
+
+  const desiredTopics = new Set(
+    [...nextIds].map((sessionId) => sessionLiveTopic(teamId, sessionId)),
+  );
+
+  for (const topic of [...subscribedSessionTopics]) {
+    if (desiredTopics.has(topic)) continue;
+    if (syncInterestEpoch !== epoch) return;
+    try {
+      await mqttUnsubscribe(topic);
+    } catch (error) {
+      console.warn("[MQTT] unsubscribe session/live topic failed", { topic, error });
+    } finally {
+      subscribedSessionTopics.delete(topic);
+    }
+  }
+
+  if (syncInterestEpoch !== epoch) return;
+
+  // Update before SUB so MqttLiveWiring accepts live events (incl. local SSE)
+  // while subscriptions are still in flight.
+  interestTeamId = teamId;
+  interestSessionIds = nextIds;
+
+  await Promise.all(
+    [...nextIds].map((sessionId) => ensureSessionLiveSubscribed(teamId, sessionId)),
+  );
+}
+
+/** After {@link resetSessionLiveSubscriptionState} on reconnect, re-SUB the interest set. */
+export async function resubscribeSessionLiveInterest(): Promise<void> {
+  const teamId = interestTeamId;
+  const sessionIds = [...interestSessionIds];
+  if (!teamId || sessionIds.length === 0) return;
+  await Promise.all(
+    sessionIds.map((sessionId) => ensureSessionLiveSubscribed(teamId, sessionId)),
+  );
+}
+
 export function resetSessionLiveSubscriptionState(): void {
   subscriptionEpoch += 1;
   subscribedSessionTopics.clear();
@@ -109,3 +216,107 @@ export function resetSessionLiveSubscriptionState(): void {
 }
 
 export const resetSessionLiveSubscriptionStateForTests = resetSessionLiveSubscriptionState;
+
+export function resetSessionLiveInterestForTests(): void {
+  syncInterestEpoch += 1;
+  interestTeamId = null;
+  interestSessionIds.clear();
+}
+
+/** 1h without session/live activity → inbox-triggered SUB may be released. */
+export const SESSION_LIVE_IDLE_UNSUB_MS = 60 * 60 * 1000;
+/** Periodic sweep for expired inbox-triggered interest. */
+export const SESSION_LIVE_IDLE_SWEEP_MS = 5 * 60 * 1000;
+
+const inboxOpenedAt = new Map<string, number>();
+const lastLiveEventAt = new Map<string, number>();
+let inboxIdleSweepTimer: ReturnType<typeof setInterval> | null = null;
+
+function lastInboxSessionActivityAt(sessionId: string): number {
+  return lastLiveEventAt.get(sessionId) ?? inboxOpenedAt.get(sessionId) ?? 0;
+}
+
+/** Inbox message ping → SUB session/live; clock starts at open until first live event. */
+export function noteInboxOpenedSession(sessionId: string, now = Date.now()): boolean {
+  const sid = sessionId.trim();
+  if (!sid) return false;
+  const isNew = !inboxOpenedAt.has(sid);
+  if (isNew) inboxOpenedAt.set(sid, now);
+  return isNew;
+}
+
+/** Renew idle deadline when a subscribed session receives session/live traffic. */
+export function touchLiveEventActivity(sessionId: string, now = Date.now()): void {
+  const sid = sessionId.trim();
+  if (!sid || !inboxOpenedAt.has(sid)) return;
+  lastLiveEventAt.set(sid, now);
+}
+
+/** Inbox-opened sessions still within the idle window (excluding pinned). */
+export function collectInboxIdleInterestSessionIds(
+  pinnedIds: ReadonlySet<string>,
+  now = Date.now(),
+): string[] {
+  const out: string[] = [];
+  for (const sid of inboxOpenedAt.keys()) {
+    if (pinnedIds.has(sid)) continue;
+    if (now - lastInboxSessionActivityAt(sid) <= SESSION_LIVE_IDLE_UNSUB_MS) {
+      out.push(sid);
+    }
+  }
+  return out;
+}
+
+/** Drop expired inbox-opened sessions; returns true when the interest set may have shrunk. */
+export function pruneIdleInboxSessions(
+  pinnedIds: ReadonlySet<string>,
+  now = Date.now(),
+): boolean {
+  let changed = false;
+  for (const sid of [...inboxOpenedAt.keys()]) {
+    if (pinnedIds.has(sid)) continue;
+    if (now - lastInboxSessionActivityAt(sid) > SESSION_LIVE_IDLE_UNSUB_MS) {
+      inboxOpenedAt.delete(sid);
+      lastLiveEventAt.delete(sid);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/** Foreground + streaming/approval + non-idle inbox-opened sessions. */
+export function mergeSessionLiveInterestIds(
+  activeSessionId: string | null,
+  backgroundIds: readonly string[],
+  now = Date.now(),
+): string[] {
+  const pinned = new Set<string>();
+  const trimmedActive = activeSessionId?.trim();
+  if (trimmedActive) pinned.add(trimmedActive);
+  for (const id of backgroundIds) {
+    const trimmed = id.trim();
+    if (trimmed) pinned.add(trimmed);
+  }
+  const inboxIdle = collectInboxIdleInterestSessionIds(pinned, now);
+  return [...new Set([...pinned, ...inboxIdle])];
+}
+
+export function startInboxIdleSweep(onSweep: () => void): void {
+  stopInboxIdleSweep();
+  inboxIdleSweepTimer = setInterval(onSweep, SESSION_LIVE_IDLE_SWEEP_MS);
+}
+
+export function stopInboxIdleSweep(): void {
+  if (inboxIdleSweepTimer) {
+    clearInterval(inboxIdleSweepTimer);
+    inboxIdleSweepTimer = null;
+  }
+}
+
+export function resetInboxIdleInterestState(): void {
+  stopInboxIdleSweep();
+  inboxOpenedAt.clear();
+  lastLiveEventAt.clear();
+}
+
+export const resetInboxIdleInterestForTests = resetInboxIdleInterestState;

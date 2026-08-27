@@ -7,6 +7,8 @@
 // For message pings the client patches unread optimistically, then debounces
 // a list reload to sync preview text and sort order.
 
+import { mqttSubscribe } from "@/lib/mqtt-bridge";
+
 export interface InboxPing {
   session_id: string;
   type?: "message" | "read";
@@ -26,6 +28,51 @@ export const SESSION_LIST_REFRESH_MS = 300;
 export const INBOX_LIST_REFRESH_MS = SESSION_LIST_REFRESH_MS;
 
 let sessionListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let subscribedInboxUserId: string | null = null;
+let pendingInboxSubscribe: Promise<void> | null = null;
+let inboxSubscribeEpoch = 0;
+
+export function inboxTopicForUser(userId: string): string {
+  return `inbox/${userId.trim()}`;
+}
+
+/** Idempotent SUB to the per-user inbox topic (FC push fan-out). */
+export async function ensureInboxSubscribed(userId: string): Promise<void> {
+  const trimmed = userId.trim();
+  if (!trimmed) return;
+  while (true) {
+    if (subscribedInboxUserId === trimmed) return;
+    const pending = pendingInboxSubscribe;
+    if (pending) {
+      await pending;
+      continue;
+    }
+    const epoch = inboxSubscribeEpoch;
+    const topic = inboxTopicForUser(trimmed);
+    const subscription = mqttSubscribe(topic);
+    pendingInboxSubscribe = subscription;
+    try {
+      await subscription;
+    } finally {
+      if (pendingInboxSubscribe === subscription) {
+        pendingInboxSubscribe = null;
+      }
+    }
+    if (inboxSubscribeEpoch !== epoch) continue;
+    subscribedInboxUserId = trimmed;
+    return;
+  }
+}
+
+/** Clears inbox SUB bookkeeping (e.g. after mqtt_connect wipes broker subscriptions). */
+export function resetInboxSubscriptionState(): void {
+  inboxSubscribeEpoch += 1;
+  subscribedInboxUserId = null;
+  pendingInboxSubscribe = null;
+}
+
+/** @deprecated Use resetInboxSubscriptionState */
+export const resetInboxSubscriptionForTests = resetInboxSubscriptionState;
 
 /** Test hook — clears pending debounced refresh. */
 export function resetSessionListRefreshForTests(): void {
@@ -33,6 +80,7 @@ export function resetSessionListRefreshForTests(): void {
     clearTimeout(sessionListRefreshTimer);
     sessionListRefreshTimer = null;
   }
+  resetInboxSubscriptionState();
 }
 
 /** @deprecated Use resetSessionListRefreshForTests */
@@ -58,11 +106,17 @@ export interface InboxStore {
   loadFirstPage: () => Promise<void>;
 }
 
+export interface HandleInboxEnvelopeOptions {
+  /** Called for message pings (not read); used to SUB session/live on inbox activity. */
+  onMessagePing?: (sessionId: string) => void;
+}
+
 export function handleInboxEnvelope(
   env: InboxEnvelope,
   expectedUserId: string,
   store: InboxStore,
   logger: Pick<Console, "warn"> = console,
+  options?: HandleInboxEnvelopeOptions,
 ): void {
   const prefix = "inbox/";
   if (!env.topic.startsWith(prefix)) return; // not for us, silently skip
@@ -98,5 +152,6 @@ export function handleInboxEnvelope(
     store.patchRow(payload.session_id, { has_unread: true });
   }
 
+  options?.onMessagePing?.(payload.session_id);
   scheduleSessionListRefresh(() => store.loadFirstPage());
 }

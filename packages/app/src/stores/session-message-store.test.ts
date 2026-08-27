@@ -9,7 +9,6 @@ beforeEach(() => {
     activeSessionId: null,
     currentSessionId: null,
     viewingArchivedSessionId: null,
-    viewingChildSessionId: null,
   });
   useSessionMessageStore.setState({
     messages: {},

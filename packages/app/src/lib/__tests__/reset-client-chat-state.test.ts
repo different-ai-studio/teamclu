@@ -18,9 +18,8 @@ describe("resetClientChatState", () => {
     useSessionSelectionStore.setState({
       activeSessionId: "session-a",
       currentSessionId: "session-a",
-      viewingArchivedSessionId: null,
-      viewingChildSessionId: null,
-    });
+    viewingArchivedSessionId: null,
+  });
     useSessionMessageStore.setState({
       messages: {
         "session-a": [

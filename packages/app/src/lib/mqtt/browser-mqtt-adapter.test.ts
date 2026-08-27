@@ -10,6 +10,7 @@ function makeFakeClient() {
       handlers[e] = (handlers[e] ?? []).filter((x) => x !== h); return this
     },
     subscribe(_t: string, _opts: { qos: number }, cb: (e?: Error | null) => void) { cb(null) },
+    unsubscribe(_t: string, cb: (e?: Error | null) => void) { cb(null) },
     publish(_t: string, _p: unknown, _o: unknown, cb: (e?: Error | null) => void) { cb(null) },
     end(_f: boolean, _o: unknown, cb: () => void) { cb() },
     emit(e: string, ...a: unknown[]) { (handlers[e] ?? []).forEach((h) => h(...a)) },
@@ -81,5 +82,21 @@ describe('createBrowserMqttAdapter', () => {
     // Auth refusal during an automatic reconnect attempt.
     fake.emit('error', new Error('Connection refused: Bad User Name or Password'))
     expect(errors).toEqual(['Connection refused: Bad User Name or Password'])
+  })
+
+  it('unsubscribes from a topic when connected', async () => {
+    const fake = makeFakeClient()
+    const unsubCalls: string[] = []
+    fake.unsubscribe = (topic: string, cb: (e?: Error | null) => void) => {
+      unsubCalls.push(topic)
+      cb(null)
+    }
+    const adapter = createBrowserMqttAdapter({ createClient: () => fake as never })
+    const p = adapter.connect({ url: 'ws://b:8083' })
+    fake.emit('connect')
+    await p
+
+    await adapter.unsubscribe('amux/team-1/session/session-1/live')
+    expect(unsubCalls).toEqual(['amux/team-1/session/session-1/live'])
   })
 })

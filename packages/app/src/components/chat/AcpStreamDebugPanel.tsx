@@ -25,7 +25,7 @@ export function AcpStreamDebugPanel({ sessionId }: { sessionId: string | null })
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
   const sessionLines = React.useMemo(() => {
-    if (!sessionId) return allLines;
+    if (!sessionId) return [];
     return allLines.filter((l) => l.sessionId === sessionId);
   }, [allLines, sessionId]);
 
@@ -44,7 +44,7 @@ export function AcpStreamDebugPanel({ sessionId }: { sessionId: string | null })
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [lines.length, collapsed]);
 
-  if (!isAcpDebugPanelVisible() || !enabled) return null;
+  if (!isAcpDebugPanelVisible() || !enabled || !sessionId) return null;
 
   const copyAll = async () => {
     const text = sessionLines.map((l) => formatAcpDebugFileBlock(l).trimEnd()).join("\n\n---\n\n");
@@ -55,12 +55,10 @@ export function AcpStreamDebugPanel({ sessionId }: { sessionId: string | null })
     }
   };
 
-  const logFileHint = sessionId
-    ? t("chat.acpDebug.logFileSession", "{{dir}}/{{sessionId}}.log + _all.log", {
-        dir: logDir ?? "…",
-        sessionId: sessionId.slice(0, 8),
-      })
-    : t("chat.acpDebug.logFileAll", "{{dir}}/_all.log", { dir: logDir ?? "…" });
+  const logFileHint = t("chat.acpDebug.logFileSession", "{{dir}}/{{sessionId}}.log + _all.log", {
+    dir: logDir ?? "…",
+    sessionId: sessionId.slice(0, 8),
+  });
 
   return (
     <div
@@ -76,9 +74,7 @@ export function AcpStreamDebugPanel({ sessionId }: { sessionId: string | null })
             shown: lines.length,
             total: sessionLines.length,
           })}
-          {sessionId
-            ? ` · ${t("chat.acpDebug.scopeCurrentSession", "当前会话")}`
-            : ` · ${t("chat.acpDebug.scopeAll", "全部")}`}
+          {` · ${t("chat.acpDebug.scopeCurrentSession", "当前会话")}`}
         </span>
         <div className="ml-auto flex items-center gap-1">
           {isTauri() ? (
