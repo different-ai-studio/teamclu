@@ -53,11 +53,15 @@ describe('AppsNavSection', () => {
     })
   })
 
-  it('title row selects apps filter without toggling the list', () => {
-    localStorage.setItem('teamclu.nav.appsExpanded', 'false')
+  it('defaults to a collapsed app list', () => {
     render(<AppsNavSection />)
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /演示及 APP/ }))
+  })
+
+  it('title row selects apps filter without toggling the list', () => {
+    render(<AppsNavSection />)
+    expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /应用/ }))
     expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'apps' })
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
   })

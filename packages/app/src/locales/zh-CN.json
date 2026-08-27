@@ -1034,7 +1034,7 @@
     }
   },
   "sidebar": {
-    "apps": "演示及 APP",
+    "apps": "应用",
     "newWorkspace": "新建工作区",
     "workspacesLoading": "正在加载工作区…",
     "noWorkspaces": "暂无工作区",

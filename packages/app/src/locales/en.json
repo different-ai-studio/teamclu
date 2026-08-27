@@ -1034,7 +1034,7 @@
     }
   },
   "sidebar": {
-    "apps": "Decks & Apps",
+    "apps": "Apps",
     "newWorkspace": "New workspace",
     "workspacesLoading": "Loading workspaces…",
     "noWorkspaces": "No workspaces yet",

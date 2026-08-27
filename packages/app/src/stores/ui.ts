@@ -75,7 +75,7 @@ interface UIState {
   draftPreselectedActor: DraftActor | null
   sidebarFilter: SidebarFilter
   ideasSectionCollapsed: boolean
-  /** 更多 nav group (想法 / 演示及 App / 快捷方式 / MCP / 环境变量) is expanded. */
+  /** 更多 nav group (想法 / 应用 / 快捷方式 / MCP / 环境变量) is expanded. */
   moreNavExpanded: boolean
   /** Workspace list expanded (「管理 Workspace 列表」). */
   localDaemonExpanded: boolean

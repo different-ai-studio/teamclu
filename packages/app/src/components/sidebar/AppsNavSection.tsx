@@ -30,9 +30,10 @@ const APPS_LIST_MAX_HEIGHT = 'max-h-[min(240px,40vh)]'
 
 function readStoredAppsExpanded(): boolean {
   try {
-    return localStorage.getItem(APPS_EXPANDED_STORAGE_KEY) !== 'false'
+    // Default collapsed — only expand when the user (or selection auto-expand) wrote 'true'.
+    return localStorage.getItem(APPS_EXPANDED_STORAGE_KEY) === 'true'
   } catch {
-    return true
+    return false
   }
 }
 
@@ -244,7 +245,7 @@ export function AppsNavSection() {
                 sectionActive ? 'text-foreground' : 'text-muted-foreground',
               )}
             />
-            <span className="min-w-0 flex-1 truncate">{t('sidebar.apps', '演示及 APP')}</span>
+            <span className="min-w-0 flex-1 truncate">{t('sidebar.apps', '应用')}</span>
             <span className="text-[10.5px] font-mono tabular-nums text-faint">· {items.length}</span>
           </button>
           <button
