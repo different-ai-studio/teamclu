@@ -23,6 +23,7 @@ import { SessionSearchDialog } from '@/components/sidebar/session-search-dialog'
 import { SessionDetailDialog, type SessionDetailListHints } from '@/components/sidebar/SessionDetailDialog'
 import { SessionLiquidGlass } from '@/components/sidebar/SessionLiquidGlass'
 import { SidebarMenu, SidebarMenuItem } from '@/components/ui/sidebar'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1125,7 +1126,11 @@ export function SessionListColumn({
         </div>
       ) : null}
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2">
+      <ScrollArea
+        className="session-list-scroll-area min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block"
+        viewportRef={scrollRef}
+        viewportClassName="overflow-x-hidden px-2"
+      >
         {filter.kind === 'actor' && actorLoading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -1207,7 +1212,7 @@ export function SessionListColumn({
             </Button>
           </div>
         )}
-      </div>
+      </ScrollArea>
 
       {batchSelecting ? (
         <div

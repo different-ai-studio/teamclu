@@ -92,14 +92,6 @@ const KNOWN_GAPS = {
 const INTENTIONAL_COMPOSE_ONLY = {
   PORT: "container listens on a port; FC invokes a handler instead",
   HOST: "container bind address; not a thing under FC",
-  // Self-host may point its FC container at a separately hosted Supabase
-  // project. The Alibaba FC deployment already consumes SUPABASE_URL directly,
-  // so this compose-only selector must not become a second cloud URL setting.
-  FC_SUPABASE_URL: "self-host alias that selects the container SUPABASE_URL",
-  // Only the self-host external-Supabase bridge accepts JWTs issued by that
-  // separately hosted GoTrue instance. Alibaba FC keeps using its own GoTrue
-  // project and therefore must not receive this cross-project trust secret.
-  TRUSTED_EXTERNAL_JWT_SECRET: "self-host external Supabase JWT bridge only",
 };
 
 function readVars() {

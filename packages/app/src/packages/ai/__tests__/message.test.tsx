@@ -96,6 +96,30 @@ describe('Message', () => {
     expect(messageDiv?.className).toContain('justify-end')
   })
 
+  it('renders self user bubble with legacy gray skin', async () => {
+    const { Message, MessageContent } = await import('@/packages/ai/message')
+    const { container } = render(
+      React.createElement(Message, { from: 'user', userBubble: 'self' },
+        React.createElement(MessageContent, null, 'Hello')
+      )
+    )
+    const bubble = container.querySelector('[data-user-bubble="self"]')
+    expect(bubble?.className).toContain('user-bubble-self')
+    expect(bubble?.className).toContain('bg-[#e8edf2]')
+  })
+
+  it('renders other user bubble with paper skin', async () => {
+    const { Message, MessageContent } = await import('@/packages/ai/message')
+    const { container } = render(
+      React.createElement(Message, { from: 'user', userBubble: 'other' },
+        React.createElement(MessageContent, null, 'Hello')
+      )
+    )
+    const bubble = container.querySelector('[data-user-bubble="other"]')
+    expect(bubble?.className).toContain('user-bubble-other')
+    expect(bubble?.className).toContain('bg-paper')
+  })
+
   it('renders assistant message with justify-start', async () => {
     const { Message, MessageContent } = await import('@/packages/ai/message')
     const { container } = render(

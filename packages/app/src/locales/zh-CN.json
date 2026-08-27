@@ -95,6 +95,7 @@
     "skillRetiredKeptBody": "因为你改过它，本地这份保留了下来，现在是你自己的技能，不再跟随团队更新。",
     "skillNotInstalledBody": "安装后才能在本地查看和编辑包内容。",
     "skillOnRemoteAgentBody": "这个 Skill 装在所选 Agent 的机器上，远程暂不支持查看和编辑内容。",
+    "skillSyncingBody": "正在同步到 v{{v}}，完成后即可查看和编辑文件。",
     "skillVersions": "版本",
     "skillOwner": "负责人 · {{name}}",
     "skillUpdated": "更新于 {{date}}",

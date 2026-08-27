@@ -95,6 +95,7 @@
     "skillRetiredKeptBody": "You had edited it, so this copy stayed. It is your own skill now and no longer follows the team.",
     "skillNotInstalledBody": "Install this skill to read and edit its package contents on disk.",
     "skillOnRemoteAgentBody": "This skill lives on the selected Agent's machine. Its contents cannot be read or edited remotely.",
+    "skillSyncingBody": "Syncing to v{{v}}. You can view and edit files once it completes.",
     "skillVersions": "Versions",
     "skillOwner": "Owner · {{name}}",
     "skillUpdated": "Updated {{date}}",

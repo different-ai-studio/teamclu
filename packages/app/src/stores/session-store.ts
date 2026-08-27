@@ -197,6 +197,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       requestId: pending.questionId,
       answers: ordered,
     });
+    // Pi (and some backends) never emit question_replied — dismiss locally once
+    // the command succeeds, same as skipQuestion.
+    get().resolveQuestion(pending.questionId);
   },
   skipQuestion: async (questionId?: string) => {
     const pending = get().pendingQuestions.find(

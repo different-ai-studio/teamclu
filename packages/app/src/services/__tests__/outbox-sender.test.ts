@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   cachedSessionWorkspaceForLocalDaemon: vi.fn(
     async () => null as { workspaceId: string; workspacePath: string } | null,
   ),
+  bumpSessionListLastMessage: vi.fn(),
+  markSessionViewed: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/mqtt-bridge', () => ({
@@ -28,6 +30,18 @@ vi.mock('@/lib/mqtt-bridge', () => ({
 
 vi.mock('@/lib/session-auto-title', () => ({
   maybeAutoTitleSessionFromFirstMessage: mocks.maybeAutoTitleSessionFromFirstMessage,
+}))
+
+vi.mock('@/lib/session-list-preview', () => ({
+  bumpSessionListLastMessage: mocks.bumpSessionListLastMessage,
+}))
+
+vi.mock('@/stores/session-list-store', () => ({
+  useSessionListStore: {
+    getState: () => ({
+      markSessionViewed: mocks.markSessionViewed,
+    }),
+  },
 }))
 
 vi.mock('@/lib/utils', () => ({
@@ -173,6 +187,12 @@ describe('outbox sender', () => {
       'sess-1',
       'hello daemon',
     )
+    expect(mocks.bumpSessionListLastMessage).toHaveBeenCalledWith(
+      'sess-1',
+      'hello daemon',
+      expect.objectContaining({ markUnread: false }),
+    )
+    expect(mocks.markSessionViewed).toHaveBeenCalledWith('sess-1', 'msg-1')
 
     const publishBytes = mocks.mqttPublish.mock.calls[0][1] as Uint8Array
     const live = fromBinary(LiveEventEnvelopeSchema, publishBytes)

@@ -6,6 +6,14 @@ vi.mock("@/lib/mqtt-bridge", () => ({
   mqttSubscribe: subscribeMock,
 }));
 
+const shouldMarkSessionUnreadMock = vi.hoisted(() => vi.fn(() => true));
+const scheduleMarkActiveSessionReadMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/active-session-read", () => ({
+  shouldMarkSessionUnread: shouldMarkSessionUnreadMock,
+  scheduleMarkActiveSessionRead: scheduleMarkActiveSessionReadMock,
+}));
+
 import {
   ensureInboxSubscribed,
   handleInboxEnvelope,
@@ -37,6 +45,9 @@ describe("handleInboxEnvelope", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     resetInboxListRefreshForTests();
+    shouldMarkSessionUnreadMock.mockReset();
+    shouldMarkSessionUnreadMock.mockReturnValue(true);
+    scheduleMarkActiveSessionReadMock.mockReset();
   });
 
   afterEach(() => {
@@ -172,6 +183,25 @@ describe("handleInboxEnvelope", () => {
       { onMessagePing },
     );
     expect(onMessagePing).not.toHaveBeenCalled();
+  });
+
+  it("marks active session read instead of patching unread on message ping", () => {
+    shouldMarkSessionUnreadMock.mockReturnValue(false);
+    const store = makeStore(["s1"]);
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { session_id: "s1", type: "message" }),
+      "u1",
+      store,
+    );
+    expect(store.patchRow).not.toHaveBeenCalled();
+    expect(scheduleMarkActiveSessionReadMock).toHaveBeenCalledWith(
+      "s1",
+      null,
+      expect.objectContaining({ afterMarkRead: expect.any(Function) }),
+    );
+    expect(store.loadFirstPage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
+    expect(store.loadFirstPage).not.toHaveBeenCalled();
   });
 });
 
