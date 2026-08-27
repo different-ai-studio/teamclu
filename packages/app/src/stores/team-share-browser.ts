@@ -435,6 +435,11 @@ async function listTeamKnowledge(knowledgeDir: string): Promise<TeamKnowledgeIte
 
 type OnDisk = { content: string; dirPath: string; invocationName: string; source: SkillSource }
 
+/** Whether a team pack row should borrow on-disk paths from the local scan. */
+export function teamPackOnDisk(slug: string, onDisk: Map<string, OnDisk>): boolean {
+  return onDisk.has(slug)
+}
+
 function registryItem(
   skill: TeamSkill,
   onDisk: Map<string, OnDisk>,
@@ -585,9 +590,15 @@ async function listTeamSkills(
     const items = result.skills.map((inventory): TeamSkillItem => {
       const skill = bySlug.get(inventory.id)
       if (inventory.teamItem && skill) {
+        // Sync health (`installed` vs `drift`) is about version parity, not
+        // whether a pack exists locally. While v1→v2 is in flight the Agent
+        // inventory reports `drift`, but the member should still browse and edit
+        // what is already on disk — withholding `dirPath` until health goes
+        // green made the folder tree appear only after a restart.
+        const packOnDisk = teamPackOnDisk(skill.slug, onDisk)
         return {
-          ...registryItem(skill, onDisk, 'team-installed', inventory.health === 'installed'),
-          installed: inventory.health === 'installed',
+          ...registryItem(skill, onDisk, 'team-installed', packOnDisk),
+          installed: true,
           installedVersion: Number(inventory.version) || null,
           hasUpdate: inventory.health !== 'installed',
         }
@@ -1133,6 +1144,11 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       version,
       timeoutMs: AGENT_MUTATION_TIMEOUT_MS,
     })
+    // The RPC reconciles into the daemon's cloud root; the skills pane reads
+    // paths from `~/.agents/skills` via auto-follow. Materialize here so the
+    // folder tree is populated in the same action instead of on the next tick
+    // (or only after restart).
+    await get().reconcileSkills().catch(() => {})
     await get().loadSection('skills', { force: true })
   },
 
@@ -1630,6 +1646,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // never able to see.
     const onDisk = await listInstalledPacks().catch(() => listed)
     const plan = planReconcile(desired, onDisk, blocked, teamId, stillWantedByMember)
+    let diskChanged = false
 
     for (const { slug, version } of plan.install) {
       try {
@@ -1639,6 +1656,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         if (archivedPath) archived[slug] = archivedPath
         states[slug] = await inspectSkill(slug, version, teamId)
         delete errors[slug]
+        diskChanged = true
       } catch (e) {
         // A pack that turned dirty between the inspect and the install; the
         // backstop in the installer caught it.
@@ -1668,6 +1686,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         uninstalled.add(slug)
         delete states[slug]
         delete errors[slug]
+        diskChanged = true
       } catch {
         // Retried next tick.
       }
@@ -1715,6 +1734,10 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     set({ skillSyncErrors: errors, skillArchived: archived, skillRetired: retired })
 
     set({ skillLocalState: states })
+
+    if (diskChanged) {
+      await get().loadSection('skills', { force: true }).catch(() => {})
+    }
   },
 
   discardLocalSkill: async (slug) => {
