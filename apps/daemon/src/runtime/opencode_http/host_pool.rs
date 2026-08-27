@@ -35,6 +35,7 @@ pub struct HostGeneration {
     pub(crate) sse_tasks: parking_lot::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     pub(crate) reconcile_tasks: parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     pub(crate) sse_transport: parking_lot::Mutex<HashMap<String, SseTransportState>>,
+    context_service: parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
     lifecycle: parking_lot::RwLock<HostLifecycle>,
     route_count: AtomicUsize,
     idle_since: parking_lot::Mutex<Option<Instant>>,
@@ -47,6 +48,7 @@ impl HostGeneration {
         domain: IsolationDomainKey,
         process_env_revision: ProcessEnvRevision,
         serve: Arc<ServeSupervisor>,
+        context_service: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
     ) -> Self {
         Self {
             generation_id,
@@ -59,6 +61,7 @@ impl HostGeneration {
             sse_tasks: parking_lot::Mutex::new(HashMap::new()),
             reconcile_tasks: parking_lot::Mutex::new(Vec::new()),
             sse_transport: parking_lot::Mutex::new(HashMap::new()),
+            context_service: parking_lot::RwLock::new(context_service),
             lifecycle: parking_lot::RwLock::new(HostLifecycle::Ready),
             route_count: AtomicUsize::new(0),
             idle_since: parking_lot::Mutex::new(Some(Instant::now())),
@@ -68,6 +71,10 @@ impl HostGeneration {
 
     pub fn lifecycle(&self) -> HostLifecycle {
         *self.lifecycle.read()
+    }
+
+    pub(crate) fn context_service(&self) -> Option<Arc<crate::runtime::context_service::RuntimeContextService>> {
+        self.context_service.read().clone()
     }
 
     pub fn route_count(&self) -> usize {
@@ -123,6 +130,7 @@ impl HostGeneration {
             domain,
             process_env_revision,
             serve,
+            None,
         ))
     }
 
@@ -260,6 +268,7 @@ pub trait GenerationFactory: Send + Sync {
 pub struct SupervisorGenerationFactory {
     registry: Arc<ServeProcessRegistry>,
     binary_hint: parking_lot::RwLock<Option<String>>,
+    context_service: parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
 }
 
 impl SupervisorGenerationFactory {
@@ -267,7 +276,15 @@ impl SupervisorGenerationFactory {
         Self {
             registry,
             binary_hint: parking_lot::RwLock::new(None),
+            context_service: parking_lot::RwLock::new(None),
         }
+    }
+
+    pub fn attach_context_service(
+        &self,
+        service: Arc<crate::runtime::context_service::RuntimeContextService>,
+    ) {
+        *self.context_service.write() = Some(service);
     }
 
     pub fn set_binary_hint(&self, binary: &str) {
@@ -284,8 +301,11 @@ impl GenerationFactory for SupervisorGenerationFactory {
         generation_id: String,
         _domain: IsolationDomainKey,
         revision: ProcessEnvRevision,
-        env: HashMap<String, String>,
+        mut env: HashMap<String, String>,
     ) -> Result<Arc<ServeSupervisor>, String> {
+        if let Some(service) = self.context_service.read().as_ref() {
+            env.extend(service.env_for_generation(crate::proto::amux::AgentType::Opencode, &generation_id));
+        }
         let serve = Arc::new(ServeSupervisor::new(
             generation_id,
             Arc::clone(&self.registry),
@@ -385,6 +405,7 @@ impl Drop for QueueTicket<'_> {
 
 pub struct OpenCodeHostPool {
     factory: Arc<dyn GenerationFactory>,
+    context_service: parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
     domains: parking_lot::Mutex<HashMap<IsolationDomainKey, Arc<DomainSlot>>>,
     capacity: parking_lot::Mutex<CapacityState>,
     capacity_changed: tokio::sync::Notify,
@@ -395,11 +416,19 @@ impl OpenCodeHostPool {
     pub fn new(factory: Arc<dyn GenerationFactory>) -> Arc<Self> {
         Arc::new_cyclic(|self_weak| Self {
             factory,
+            context_service: parking_lot::RwLock::new(None),
             domains: parking_lot::Mutex::new(HashMap::new()),
             capacity: parking_lot::Mutex::new(CapacityState::default()),
             capacity_changed: tokio::sync::Notify::new(),
             self_weak: self_weak.clone(),
         })
+    }
+
+    pub fn attach_context_service(
+        &self,
+        service: Arc<crate::runtime::context_service::RuntimeContextService>,
+    ) {
+        *self.context_service.write() = Some(service);
     }
 
     fn slot_for(&self, domain: &IsolationDomainKey) -> Arc<DomainSlot> {
@@ -495,7 +524,14 @@ impl OpenCodeHostPool {
                 return Err(HostPoolError::Spawn(error));
             }
         };
-        let generation = Arc::new(HostGeneration::new(generation_id, domain, revision, serve));
+        let context_service = self.context_service.read().clone();
+        let generation = Arc::new(HostGeneration::new(
+            generation_id,
+            domain,
+            revision,
+            serve,
+            context_service,
+        ));
 
         let displaced_without_routes = {
             let mut state = slot.state.lock();
@@ -684,6 +720,9 @@ impl OpenCodeHostPool {
         *generation.lifecycle.write() = HostLifecycle::Stopped;
         let sse_directories = generation.abort_sse_tasks();
         generation.abort_reconcile_tasks();
+        if let Some(service) = generation.context_service() {
+            service.clear_generation(crate::proto::amux::AgentType::Opencode, &generation.generation_id);
+        }
         match self.factory.stop(generation) {
             ShutdownOutcome::Idle | ShutdownOutcome::Stopped => {
                 self.release_capacity();

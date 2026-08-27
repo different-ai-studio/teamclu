@@ -33,6 +33,10 @@ pub fn build(state: HttpState) -> Router {
     Router::new()
         .route("/v1/healthz", healthz_route())
         .route("/v1/info", info_route())
+        .route(
+            "/internal/runtime-context/resolve",
+            post(crate::http::runtime_context::resolve_runtime_context),
+        )
         .route("/v1/mqtt/recover", post(mqtt_recover))
         // Embedded protocol console. Static zero-dependency HTML inlined into
         // the binary; it drives this same daemon's /v1/sessions API over fetch

@@ -194,6 +194,7 @@ pub struct DaemonServer {
     remote_tool_turn_contexts: Arc<AsyncMutex<crate::remote_tools::RemoteToolTurnContextStore>>,
     rpc_client: Arc<AsyncMutex<crate::teamclu::rpc::RpcClient>>,
     team_skill_reconciler: Arc<crate::runtime::team_skills::TeamSkillReconciler>,
+    runtime_context: Arc<crate::runtime::RuntimeContextService>,
     /// Answered capability-management requests, keyed on the authorized
     /// (requester, request_id) pair. Shared rather than owned so the handler
     /// can run on its own task instead of on the message pump.
@@ -715,6 +716,12 @@ impl DaemonServer {
             launch_configs,
             Some(backend.clone()),
         )));
+        let runtime_context = Arc::new(crate::runtime::RuntimeContextService::new());
+        {
+            let mut manager = agents.lock().await;
+            manager.attach_context_service(Arc::clone(&runtime_context));
+        }
+        agents.lock().await.wire_context_service_to_backend().await;
 
         let (mqtt_publisher, mqtt_command_rx) = MqttPublisher::channel();
         let (mqtt_recovery_handle, mqtt_recovery_rx) = crate::mqtt::MqttRecoveryHandle::channel();
@@ -807,6 +814,7 @@ impl DaemonServer {
             )),
             rpc_client,
             team_skill_reconciler,
+            runtime_context,
             agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
             cron_turn_done_tx,
             cron_turn_done_rx: Some(cron_turn_done_rx),
@@ -1160,11 +1168,23 @@ impl DaemonServer {
                 Some(local_rpc_tx),
                 Some(local_live_ingest_tx),
                 Some(team_skill_reconciler.clone()),
+                Some(self.runtime_context.clone()),
             )
             .await
             {
                 Ok(h) => {
                     info!(addr = %h.local_addr, "http listener bound");
+                    if let Err(err) = self
+                        .runtime_context
+                        .validate_managed_setup(&self.config.agents.local_agent)
+                    {
+                        warn!(
+                            error = %err,
+                            "runtime context service validation failed; session-scoped MCP tools may fail closed"
+                        );
+                    } else {
+                        info!("runtime context service ready for managed session resolution");
+                    }
                     Some(h)
                 }
                 Err(e) => {
@@ -3779,6 +3799,7 @@ pub(crate) mod tests {
                 team_skill_reconciler: Arc::new(
                     crate::runtime::team_skills::TeamSkillReconciler::new(backend),
                 ),
+                runtime_context: Arc::new(crate::runtime::RuntimeContextService::new()),
                 agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
                 cron_turn_done_tx,
                 cron_turn_done_rx: Some(cron_turn_done_rx),

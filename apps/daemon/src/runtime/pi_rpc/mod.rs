@@ -1389,6 +1389,13 @@ impl Default for PiRpcBackend {
 
 #[async_trait]
 impl AgentBackend for PiRpcBackend {
+    fn attach_context_service(
+        &mut self,
+        service: std::sync::Arc<crate::runtime::context_service::RuntimeContextService>,
+    ) {
+        self.shared.pool.attach_context_service(service);
+    }
+
     async fn attach_session(
         &mut self,
         _agent_type: amux::AgentType,
@@ -1406,6 +1413,7 @@ impl AgentBackend for PiRpcBackend {
         event_tx: mpsc::Sender<AcpEventFrame>,
         permission: PermissionPolicy,
         forbid_new_session_fallback: bool,
+        _teamclu_session_id: String,
     ) -> crate::error::Result<(mpsc::Sender<AcpCommand>, AcpStartupMetadata)> {
         // NOTE: `launch` is `launch_config_for(agent_type)` for whatever agent
         // type the session carries (possibly a stored claude/codex/opencode

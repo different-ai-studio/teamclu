@@ -180,6 +180,8 @@ pub struct HttpState {
     /// local twin of publishing to `session/{id}/live`. `None` in focused
     /// tests / when no actor loop is attached; the route then returns 503.
     pub local_live_ingest_tx: Option<LocalLiveIngestTx>,
+    /// Backend session → TeamClu session registry for managed MCP adapters.
+    pub runtime_context: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
 }
 
 impl HttpState {
@@ -224,7 +226,16 @@ impl HttpState {
             onboarding: None,
             local_rpc_tx: None,
             local_live_ingest_tx: None,
+            runtime_context: None,
         }
+    }
+
+    pub fn with_runtime_context(
+        mut self,
+        service: Arc<crate::runtime::context_service::RuntimeContextService>,
+    ) -> Self {
+        self.runtime_context = Some(service);
+        self
     }
 
     /// Attach the daemon-level config surface (`/v1/config/*`, `/v1/setup/*`).

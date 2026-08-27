@@ -305,7 +305,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "get_session_deeplink",
-            "description": "Export a shareable deep link that opens a TeamClu session in the desktop or mobile app. Returns a URL like teamclu://session/<uuid>. When session_id is omitted, uses the current TeamClu session (TEAMCLU_SESSION_ID env or workspace .teamclu/active-session-id).",
+            "description": "Export a shareable deep link that opens a TeamClu session in the desktop or mobile app. Returns a URL like teamclu://session/<uuid>. When session_id is omitted, daemon-managed agent runtimes inject the current session automatically; standalone CLI may use TEAMCLU_SESSION_ID (legacy workspace active-session-id fallback is deprecated).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -322,7 +322,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_participants",
-            "description": "Read the roster of a TeamClu session, and pull people into it or take them out. Requires the desktop app to be running and the user to be signed in. When session_id is omitted, acts on the current TeamClu session (TEAMCLU_SESSION_ID env or workspace .teamclu/active-session-id). Actions: 'list' (the full roster, people and agents), 'list_candidates' (people who can be added, excluding those already present), 'add', 'remove'. add/remove handle HUMAN MEMBERS ONLY — agents are joined from the app's session member sheet, which also starts their runtime; asking for one here is refused rather than half-done. Adding someone makes the session, including its history, visible to them, so the target is never guessed: pass actor_id, or a name that matches exactly one person. A name matching none or several comes back as the candidate list instead of a write.",
+            "description": "Read the roster of a TeamClu session, and pull people into it or take them out. Requires the desktop app to be running and the user to be signed in. When session_id is omitted, daemon-managed agent runtimes inject the current session automatically; standalone CLI may use TEAMCLU_SESSION_ID (legacy workspace active-session-id fallback is deprecated). Actions: 'list' (the full roster, people and agents), 'list_candidates' (people who can be added, excluding those already present), 'add', 'remove'. add/remove handle HUMAN MEMBERS ONLY — agents are joined from the app's session member sheet, which also starts their runtime; asking for one here is refused rather than half-done. Adding someone makes the session, including its history, visible to them, so the target is never guessed: pass actor_id, or a name that matches exactly one person. A name matching none or several comes back as the candidate list instead of a write.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -362,7 +362,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "archive_session",
-            "description": "Archive a TeamClu cloud session (soft-hide from the active session list). Requires the desktop app to be running and the user to be signed in. When session_id is omitted, archives the current TeamClu session (TEAMCLU_SESSION_ID env or workspace .teamclu/active-session-id).",
+            "description": "Archive a TeamClu cloud session (soft-hide from the active session list). Requires the desktop app to be running and the user to be signed in. When session_id is omitted, daemon-managed agent runtimes inject the current session automatically; standalone CLI may use TEAMCLU_SESSION_ID (legacy workspace active-session-id fallback is deprecated).",
             "inputSchema": {
                 "type": "object",
                 "properties": {

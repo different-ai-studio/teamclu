@@ -356,6 +356,14 @@ impl OpencodeHost {
         Arc::clone(&self.pool)
     }
 
+    pub fn attach_context_service(
+        &self,
+        service: Arc<crate::runtime::context_service::RuntimeContextService>,
+    ) {
+        self.factory.attach_context_service(Arc::clone(&service));
+        self.pool.attach_context_service(service);
+    }
+
     /// Number of live backend processes (0 or 1: the global serve instance).
     pub fn host_count(&self) -> usize {
         self.pool.host_count()
@@ -515,6 +523,7 @@ impl OpencodeHost {
         event_tx: mpsc::Sender<AcpEventFrame>,
         permission: PermissionPolicy,
         forbid_new_session_fallback: bool,
+        _teamclu_session_id: String,
     ) -> crate::error::Result<(mpsc::Sender<AcpCommand>, AcpStartupMetadata)> {
         if agent_type != amux::AgentType::Opencode {
             warn!(
@@ -1618,6 +1627,7 @@ async fn command_loop(shared: Arc<HostGeneration>, mut cmd_rx: mpsc::Receiver<Ac
                 startup_tx,
                 permission,
                 forbid_new_session_fallback,
+                teamclu_session_id: _,
             } => {
                 let result = attach(
                     &shared,
@@ -1746,6 +1756,7 @@ pub fn start_standalone_runtime(
         },
         revision,
         serve,
+        None,
     ));
     let cmd_tx = command_sender_for_generation(generation);
     let attach_tx = cmd_tx.clone();
@@ -1762,6 +1773,7 @@ pub fn start_standalone_runtime(
                 startup_tx,
                 permission: PermissionPolicy::Ask,
                 forbid_new_session_fallback: false,
+                teamclu_session_id: String::new(),
             })
             .await;
     });

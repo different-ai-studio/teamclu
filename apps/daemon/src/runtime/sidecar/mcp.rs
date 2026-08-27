@@ -182,6 +182,39 @@ pub fn assemble(worktree: &str, mcp_config_path: Option<&Path>) -> McpServers {
     out
 }
 
+/// Stamp session-scoped TeamClu MCP tools with an explicit cloud session id for
+/// this query/agent. Used by Claude/Cursor bridges where each SDK session gets
+/// its own `mcpServers` config.
+pub fn stamp_managed_session_context(servers: &mut McpServers, teamclu_session_id: &str) {
+    let id = teamclu_session_id.trim();
+    if id.is_empty() {
+        return;
+    }
+    for name in ["teamclu-introspect", "teamclaw-introspect"] {
+        let Some(server) = servers.get_mut(name) else {
+            continue;
+        };
+        let Some(obj) = server.as_object_mut() else {
+            continue;
+        };
+        let env = obj
+            .entry("env")
+            .or_insert_with(|| json!({}))
+            .as_object_mut();
+        let Some(env) = env else {
+            continue;
+        };
+        env.insert(
+            teamclu_runtime_env::TEAMCLU_SESSION_ID_ENV.to_string(),
+            json!(id),
+        );
+        env.insert(
+            teamclu_runtime_env::TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID_ENV.to_string(),
+            json!("1"),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
