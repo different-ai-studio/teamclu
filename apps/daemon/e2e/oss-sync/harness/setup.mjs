@@ -52,6 +52,8 @@ export async function provisionTwoNodeTeam({ threeNode = false, withSecret = fal
     await dc.exchange(node);
     if (secret) await dc.setSecret(node, secret);
     await dc.link(node);
+    // Deterministic sync timeline for conflict scenarios (see disableAutoSync).
+    await dc.disableAutoSync(node);
     nodes[svc.replace("node-", "")] = node; // a / b / c
   }
 

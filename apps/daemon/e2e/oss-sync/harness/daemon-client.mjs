@@ -126,6 +126,35 @@ export const setSecret = (node, ossTeamSecret) =>
 export const link = (node, path = "/root/workspace") =>
   postJson(`${node.baseUrl}/v1/team/link`, { path }, node.session);
 
+/**
+ * Turn off MQTT / fs-watch / 300s timer sync for this team.
+ *
+ * Conflict scenarios need a deterministic "only sync when the test calls
+ * sync()" timeline. With auto_sync on, a settle() window lets B pull A's
+ * edit in the background, so B's later local edit is just a push — no
+ * pull-phase conflict sidecar.
+ */
+export async function disableAutoSync(node) {
+  if (!node.teamId) throw new Error(`disableAutoSync(${node.service}): missing teamId`);
+  const path = `/root/.amuxd/teams/${node.teamId}/state/team.toml`;
+  const { stdout: existing } = await execSh(
+    node.service,
+    `cat ${path} 2>/dev/null || true`,
+  );
+  const next = withAutoSyncDisabled(existing);
+  const b64 = Buffer.from(next, "utf8").toString("base64");
+  await execSh(node.service, `mkdir -p $(dirname ${path}) && printf '%s' '${b64}' | base64 -d > ${path}`);
+}
+
+/** Pure: ensure `[team_share] auto_sync = false` is the only auto_sync setting. */
+export function withAutoSyncDisabled(teamToml) {
+  const stripped = String(teamToml).replace(
+    /(?:^|\n)\[team_share\][^\n]*(?:\n(?!\[[^\]]+\])[^\n]*)*/g,
+    "\n",
+  );
+  return `${stripped.trimEnd()}\n\n[team_share]\nauto_sync = false\n`;
+}
+
 // Transient conditions the daemon surfaces in status.lastError when talking to a
 // shared/rate-limited prod FC: rate limiting (429/503), and flaky network blips
 // (reqwest "error sending request", connection resets/timeouts, provider errors,
@@ -137,10 +166,17 @@ const TRANSIENT_RE =
  * Trigger a sync. The daemon returns HTTP 200 even when its FC calls hit a
  * transient error (it surfaces them in status.lastError), so retry with backoff
  * while lastError looks transient.
+ *
+ * Always sends `forceSync: true` so this still runs when the e2e harness has
+ * disabled team_share.auto_sync (see disableAutoSync).
  */
 export async function sync(node, workspacePath = "/root/workspace", { retries = 6 } = {}) {
   for (let attempt = 0; ; attempt++) {
-    const st = await postJson(`${node.baseUrl}/v1/team/sync`, { workspacePath }, node.session);
+    const st = await postJson(
+      `${node.baseUrl}/v1/team/sync`,
+      { workspacePath, forceSync: true },
+      node.session,
+    );
     const err = st?.lastError ?? "";
     if (err && TRANSIENT_RE.test(err) && attempt < retries) {
       await sleep(Math.min(3000 * 2 ** attempt, 24000));

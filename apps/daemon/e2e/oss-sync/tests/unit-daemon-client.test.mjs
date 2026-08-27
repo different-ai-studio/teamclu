@@ -5,6 +5,7 @@ import {
   parseActiveTeam,
   parseBackendIdentity,
   rewriteHttpSection,
+  withAutoSyncDisabled,
 } from "../harness/daemon-client.mjs";
 
 test("backendTomlPath maps to per-team state/backend.toml (v2 layout)", () => {
@@ -62,4 +63,14 @@ test("rewriteHttpSection inserts [http] when missing", () => {
   const out = rewriteHttpSection(before);
   assert.equal((out.match(/\[http\]/g) || []).length, 1);
   assert.match(out, /bind = "0\.0\.0\.0:8787"/);
+});
+
+test("withAutoSyncDisabled replaces any existing [team_share] table", () => {
+  const before = `display_name = "node-a"\n\n[team_share]\nauto_sync = true\n\n[channels]\n`;
+  const out = withAutoSyncDisabled(before);
+  assert.equal((out.match(/\[team_share\]/g) || []).length, 1);
+  assert.match(out, /auto_sync = false/);
+  assert.doesNotMatch(out, /auto_sync = true/);
+  assert.match(out, /display_name = "node-a"/);
+  assert.match(out, /\[channels\]/);
 });

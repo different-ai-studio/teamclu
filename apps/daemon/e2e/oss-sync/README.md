@@ -51,4 +51,5 @@ sync，每次 sync 内含 manifest/upload/download 多次调用）。
 ## 已知风险 / 注意
 - 真打生产 FC + 真 OSS：有真实写入与少量成本，故非默认 CI，仅手动/按需（`.github/workflows/oss-e2e.yml` 手动触发）。
 - Knowledge 同步是**明文**（ADR-0008）：team secret 不是前置条件。`provisionTwoNodeTeam` 默认不设 secret；需要时传 `{ withSecret: true }`。场景 18 断言「无 secret 也能收敛」。
+- Harness 默认关掉 `team_share.auto_sync`，显式 `sync()` 带 `forceSync: true`。否则 MQTT/fs-watch 会在 `settle()` 窗口里先把远端拉到 B，冲突场景退化成「B 在已同步基础上再推」，断言永远红。
 - 场景 03（并发改）/05（远端删除）是 daemon 两个 bug 修复的回归守卫，断言"修复后正确行为"（改动保留为 sidecar / 删除传播）。
