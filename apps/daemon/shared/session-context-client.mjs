@@ -10,12 +10,20 @@ const SESSION_SCOPED_TOOLS = new Set([
   "archive_session",
 ]);
 
+/** Extract the bare tool name from OpenCode / MCP namespaced identifiers. */
+export function normalizeSessionScopedToolName(name) {
+  const raw = String(name ?? "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("mcp__")) {
+    const parts = raw.split("__");
+    const last = parts[parts.length - 1]?.trim();
+    if (last) return last;
+  }
+  return raw.split("/").pop()?.trim() ?? raw;
+}
+
 export function isSessionScopedTool(name) {
-  const base = String(name ?? "")
-    .split("/")
-    .pop()
-    .trim();
-  return SESSION_SCOPED_TOOLS.has(base);
+  return SESSION_SCOPED_TOOLS.has(normalizeSessionScopedToolName(name));
 }
 
 function runtimeContextUrl() {
@@ -24,16 +32,17 @@ function runtimeContextUrl() {
   return null;
 }
 
-export async function resolveTeamcluSessionId(backendSessionId) {
-  const baseUrl = runtimeContextUrl();
-  const token = process.env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim();
-  const generationId = process.env.TEAMCLU_HOST_GENERATION_ID?.trim();
-  const backendKind = process.env.TEAMCLU_AGENT_BACKEND?.trim();
+export async function resolveTeamcluSessionId(backendSessionId, deps = {}) {
+  const fetchFn = deps.fetch ?? globalThis.fetch;
+  const baseUrl = deps.baseUrl ?? runtimeContextUrl();
+  const token = deps.token ?? process.env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim();
+  const generationId = deps.generationId ?? process.env.TEAMCLU_HOST_GENERATION_ID?.trim();
+  const backendKind = deps.backendKind ?? process.env.TEAMCLU_AGENT_BACKEND?.trim();
   const sessionId = String(backendSessionId ?? "").trim();
   if (!baseUrl || !token || !generationId || !backendKind || !sessionId) {
     throw new Error("session_context_unavailable");
   }
-  const resp = await fetch(`${baseUrl}/internal/runtime-context/resolve`, {
+  const resp = await fetchFn(`${baseUrl}/internal/runtime-context/resolve`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -56,7 +65,7 @@ export async function resolveTeamcluSessionId(backendSessionId) {
   return teamcluSessionId;
 }
 
-export async function injectSessionIdForTool(toolName, args, backendSessionId) {
+export async function injectSessionIdForTool(toolName, args, backendSessionId, deps = {}) {
   if (!isSessionScopedTool(toolName)) {
     return args ?? {};
   }
@@ -65,8 +74,30 @@ export async function injectSessionIdForTool(toolName, args, backendSessionId) {
   if (explicit) {
     return next;
   }
-  next.session_id = await resolveTeamcluSessionId(backendSessionId);
+  const resolve = deps.resolveTeamcluSessionId ?? resolveTeamcluSessionId;
+  next.session_id = await resolve(backendSessionId, deps);
   return next;
+}
+
+/**
+ * OpenCode 1.18.x `tool.execute.before` hook handler.
+ *
+ * Contract: input.tool (string), input.sessionID (string), output.args (mutable).
+ */
+export async function handleToolExecuteBefore(input, output, deps = {}) {
+  if (!input || typeof input !== "object" || !output || typeof output !== "object") {
+    throw new Error("session_context_unavailable");
+  }
+  const toolName = input.tool;
+  if (!isSessionScopedTool(toolName)) {
+    return;
+  }
+  const backendSessionId = input.sessionID;
+  if (!backendSessionId || !String(backendSessionId).trim()) {
+    throw new Error("session_context_unavailable");
+  }
+  const inject = deps.injectSessionIdForTool ?? injectSessionIdForTool;
+  output.args = await inject(toolName, output.args ?? {}, String(backendSessionId).trim(), deps);
 }
 
 export function sessionContextUnavailableResult() {

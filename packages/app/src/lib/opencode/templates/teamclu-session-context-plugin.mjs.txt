@@ -1,80 +1,10 @@
 // managed-plugin: teamclu-session-context
-// version: 1
+// version: 2
 
-const SESSION_SCOPED_TOOLS = new Set([
-  "get_session_deeplink",
-  "manage_participants",
-  "archive_session",
-])
+import { handleToolExecuteBefore } from "./teamclu-session-context-client.mjs";
 
-function isSessionScopedTool(name) {
-  const base = String(name ?? "")
-    .split("/")
-    .pop()
-    .trim()
-  return SESSION_SCOPED_TOOLS.has(base)
-}
+export const TeamcluSessionContextPlugin = async () => ({
+  "tool.execute.before": handleToolExecuteBefore,
+});
 
-async function resolveTeamcluSessionId(backendSessionId) {
-  const baseUrl = process.env.TEAMCLU_RUNTIME_CONTEXT_URL?.trim()?.replace(/\/$/, "")
-  const token = process.env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim()
-  const generationId = process.env.TEAMCLU_HOST_GENERATION_ID?.trim()
-  const backendKind = process.env.TEAMCLU_AGENT_BACKEND?.trim()
-  const sessionId = String(backendSessionId ?? "").trim()
-  if (!baseUrl || !token || !generationId || !backendKind || !sessionId) {
-    throw new Error("session_context_unavailable")
-  }
-  const resp = await fetch(`${baseUrl}/internal/runtime-context/resolve`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      backendSessionId: sessionId,
-      hostGenerationId: generationId,
-      backendKind,
-    }),
-  })
-  if (!resp.ok) {
-    throw new Error("session_context_unavailable")
-  }
-  const body = await resp.json()
-  const teamcluSessionId = String(body?.teamcluSessionId ?? "").trim()
-  if (!teamcluSessionId) {
-    throw new Error("session_context_unavailable")
-  }
-  return teamcluSessionId
-}
-
-async function injectSessionIdForTool(toolName, args, backendSessionId) {
-  if (!isSessionScopedTool(toolName)) {
-    return args ?? {}
-  }
-  const next = { ...(args ?? {}) }
-  const explicit = String(next.session_id ?? next.sessionId ?? "").trim()
-  if (explicit) {
-    return next
-  }
-  next.session_id = await resolveTeamcluSessionId(backendSessionId)
-  return next
-}
-
-export const TeamcluSessionContextPlugin = async () => {
-  return {
-    "tool.execute.before": async (input, output) => {
-      const toolName = output?.tool?.name ?? input?.tool?.name ?? input?.name
-      if (!isSessionScopedTool(toolName)) {
-        return
-      }
-      const sessionId = input?.sessionID ?? input?.sessionId ?? output?.session?.id
-      if (!sessionId) {
-        throw new Error("session_context_unavailable")
-      }
-      const args = output?.arguments ?? input?.arguments ?? {}
-      output.arguments = await injectSessionIdForTool(toolName, args, sessionId)
-    },
-  }
-}
-
-export default TeamcluSessionContextPlugin
+export default TeamcluSessionContextPlugin;

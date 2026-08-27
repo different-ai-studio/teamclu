@@ -54,6 +54,25 @@ impl Drop for HttpHandle {
     }
 }
 
+/// Loopback URL adapters use to reach `/internal/runtime-context/resolve`.
+/// The public listener may bind `0.0.0.0` or `[::]`; resolver clients must
+/// always target an explicit loopback address.
+pub(crate) fn loopback_runtime_context_url(requested_bind: SocketAddr, bound: SocketAddr) -> String {
+    let port = bound.port();
+    match requested_bind.ip() {
+        std::net::IpAddr::V4(v4) if v4.is_unspecified() => format!("http://127.0.0.1:{port}"),
+        std::net::IpAddr::V6(v6) if v6.is_unspecified() => format!("http://[::1]:{port}"),
+        ip if ip.is_loopback() => {
+            if ip.is_ipv6() {
+                format!("http://[::1]:{port}")
+            } else {
+                format!("http://127.0.0.1:{port}")
+            }
+        }
+        _ => format!("http://127.0.0.1:{port}"),
+    }
+}
+
 /// Spawn the HTTP listener. Errors surface as `anyhow::Result` because
 /// the daemon's startup path uses that as the lingua franca for early
 /// bring-up failures.
@@ -109,7 +128,7 @@ pub async fn spawn(
     let local_addr = listener.local_addr()?;
     tokens::write_port_file(&port_path, local_addr.port());
     if let Some(service) = runtime_context.as_ref() {
-        service.set_base_url(format!("http://{local_addr}"));
+        service.set_base_url(loopback_runtime_context_url(addr, local_addr));
     }
 
     tracing::info!(
@@ -1125,6 +1144,108 @@ mod tests {
             backend.state().team_skill_installs,
             vec![(team_id.to_string(), "managed-skill".to_string(), 2)]
         );
+
+        handle.shutdown().await;
+    }
+
+    #[test]
+    fn loopback_runtime_context_url_normalizes_bind_addresses() {
+        let bound_v4: SocketAddr = "127.0.0.1:8787".parse().unwrap();
+        assert_eq!(
+            loopback_runtime_context_url("127.0.0.1:0".parse().unwrap(), bound_v4),
+            "http://127.0.0.1:8787"
+        );
+        assert_eq!(
+            loopback_runtime_context_url("0.0.0.0:0".parse().unwrap(), bound_v4),
+            "http://127.0.0.1:8787"
+        );
+        let bound_v6: SocketAddr = "[::1]:8787".parse().unwrap();
+        assert_eq!(
+            loopback_runtime_context_url("[::1]:0".parse().unwrap(), bound_v6),
+            "http://[::1]:8787"
+        );
+        assert_eq!(
+            loopback_runtime_context_url("[::]:0".parse().unwrap(), bound_v6),
+            "http://[::1]:8787"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_context_resolve_loopback_only() {
+        use crate::proto::amux;
+        use crate::runtime::context_registry::ResolveRuntimeContextRequest;
+        use crate::runtime::context_service::RuntimeContextService;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = HttpConfig {
+            bind: "127.0.0.1:0".into(),
+            token_file: Some(dir.path().join("token")),
+            port_file: Some(dir.path().join("port")),
+            ..HttpConfig::default()
+        };
+        let service = Arc::new(RuntimeContextService::new());
+        service.register_attached_session(
+            amux::AgentType::Opencode,
+            "gen-test",
+            "backend-a",
+            "teamclu-a",
+            "runtime-a",
+        );
+        let env = service.env_for_generation(amux::AgentType::Opencode, "gen-test");
+        let token = env
+            .get("TEAMCLU_RUNTIME_CONTEXT_TOKEN")
+            .cloned()
+            .expect("token");
+        let meta = metadata("actor-test".into(), "test");
+        let runtime = crate::http::runtime_adapter::StubRuntimeAdapter::new(256);
+        let handle = spawn(
+            cfg,
+            meta,
+            runtime,
+            None,
+            None,
+            None,
+            test_dispatcher(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(service),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", handle.local_addr);
+        let client = reqwest::Client::new();
+        let body = ResolveRuntimeContextRequest {
+            backend_session_id: "backend-a".into(),
+            host_generation_id: "gen-test".into(),
+            backend_kind: "opencode".into(),
+        };
+        let ok: serde_json::Value = client
+            .post(format!("{base}/internal/runtime-context/resolve"))
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(ok["teamcluSessionId"], "teamclu-a");
+
+        let bad_token = client
+            .post(format!("{base}/internal/runtime-context/resolve"))
+            .bearer_auth("rtctx_invalid")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad_token.status().as_u16(), 401);
 
         handle.shutdown().await;
     }

@@ -1409,7 +1409,7 @@ impl AgentBackend for PiRpcBackend {
         mcp_config_path: Option<PathBuf>,
         initial_model_override: Option<String>,
         model_mru: Vec<String>,
-        initial_prompt: String,
+        _initial_prompt: String,
         event_tx: mpsc::Sender<AcpEventFrame>,
         permission: PermissionPolicy,
         forbid_new_session_fallback: bool,
@@ -1442,17 +1442,6 @@ impl AgentBackend for PiRpcBackend {
         )
         .await
         .map_err(crate::error::AmuxError::Agent)?;
-        if !initial_prompt.is_empty() {
-            let _ = cmd_tx
-                .send(AcpCommand::Prompt {
-                    acp_session_id: startup.acp_session_id.clone(),
-                    text: initial_prompt,
-                    attachment_urls: Vec::new(),
-                    requester_actor_id: None,
-                    reply_to_message_id: None,
-                })
-                .await;
-        }
         Ok((cmd_tx, startup))
     }
 
