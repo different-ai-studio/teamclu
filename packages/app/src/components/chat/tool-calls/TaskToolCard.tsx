@@ -32,7 +32,8 @@ export function ManageSkillsToolCard({ toolCall }: { toolCall: ToolCall }) {
     const claudeBlocked =
       parsed?.warnings?.includes("claude_local_override") ||
       parsed?.warnings?.includes("claude_bridge_reconcile_failed");
-    if (!claudeBlocked) {
+    const refreshFailed = parsed?.warnings?.includes("skill_refresh_failed");
+    if (!claudeBlocked && !refreshFailed) {
       footnotes.push(
         t(
           "chat.toolCall.manageSkills.nextStartClaude",
@@ -40,6 +41,14 @@ export function ManageSkillsToolCard({ toolCall }: { toolCall: ToolCall }) {
         ),
       );
     }
+  }
+  if (parsed?.warnings?.includes("skill_refresh_failed")) {
+    footnotes.push(
+      t(
+        "chat.toolCall.manageSkills.skillRefreshFailed",
+        "The skill was saved, but TeamClu inventory refresh did not complete. Retry discovery or refresh the picker — do not create it again.",
+      ),
+    );
   }
   if (parsed?.warnings?.includes("claude_local_override")) {
     footnotes.push(

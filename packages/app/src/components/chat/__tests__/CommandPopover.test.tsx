@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { CommandPopover } from '../CommandPopover'
+import { SKILLS_CHANGED_EVENT } from '@/hooks/useAppInit'
+import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 
 const mocks = vi.hoisted(() => ({
   runtimeRows: [] as Array<{ runtime_id: string | null; backend_type: string | null; current_model: string | null }>,
@@ -66,6 +68,11 @@ vi.mock('@/lib/teamclu-config', () => ({
 describe('CommandPopover', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    useWorkspaceRuntimeRefreshStore.setState({
+      workspacePath: null,
+      refresh: null,
+      dismissedAt: null,
+    })
     mocks.runtimeRows = []
     mocks.runtimeStates = {}
     mocks.loadRolesSkillsWorkspaceState.mockResolvedValue({
@@ -259,5 +266,63 @@ describe('CommandPopover', () => {
       expect(screen.getByText('chat.commandPopover.skills:1')).toBeInTheDocument()
     })
     expect(screen.getAllByText('accounting-error-investigator')).toHaveLength(1)
+  })
+
+  it('reloads skills once when daemon refresh timestamp changes without noteLocalRefresh', async () => {
+    const noteLocalRefresh = vi.spyOn(
+      useWorkspaceRuntimeRefreshStore.getState(),
+      'noteLocalRefresh',
+    )
+
+    render(
+      <CommandPopover
+        open={true}
+        activeSessionId={null}
+        onOpenChange={vi.fn()}
+        searchQuery=""
+        onSelect={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(mocks.loadRolesSkillsWorkspaceState).toHaveBeenCalledTimes(1)
+    })
+
+    useWorkspaceRuntimeRefreshStore.setState({
+      refresh: {
+        status: 'pending',
+        change_kinds: ['skills'],
+        recommended_action: 'none',
+        auto_apply_blocked_by_active_runtime: false,
+        last_detected_at: '2026-08-28T07:00:00Z',
+        last_error: null,
+      },
+    })
+
+    await waitFor(() => {
+      expect(mocks.loadRolesSkillsWorkspaceState).toHaveBeenCalledTimes(2)
+    })
+    expect(noteLocalRefresh).not.toHaveBeenCalled()
+  })
+
+  it('reloads skills when SKILLS_CHANGED_EVENT fires from the filesystem path', async () => {
+    render(
+      <CommandPopover
+        open={true}
+        activeSessionId={null}
+        onOpenChange={vi.fn()}
+        searchQuery=""
+        onSelect={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(mocks.loadRolesSkillsWorkspaceState).toHaveBeenCalledTimes(1)
+    })
+
+    window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
+    await waitFor(() => {
+      expect(mocks.loadRolesSkillsWorkspaceState).toHaveBeenCalledTimes(2)
+    })
   })
 })

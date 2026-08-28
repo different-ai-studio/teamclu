@@ -105,11 +105,11 @@ pub fn ensure_claude_team_skills(workspace_path: &Path) -> Result<(), WorkspaceC
             }
             Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => continue,
             Ok(meta) if meta.file_type().is_symlink() => {
-                let broken = !link.exists();
-                if is_team_managed_symlink(&link, &team_roots) || (broken && desired_slugs.contains(slug)) {
+                if is_team_managed_symlink(&link, &team_roots) {
                     std::fs::remove_file(&link).map_err(io_err)?;
                 } else {
-                    // User-owned symlink — do not overwrite.
+                    // User-owned symlink — preserve even when broken; ownership
+                    // cannot be inferred from `desired_slugs` alone.
                     continue;
                 }
             }
@@ -215,6 +215,9 @@ fn resolve_symlink_target(link: &Path) -> Option<PathBuf> {
     } else {
         link.parent()?.join(dest)
     };
+    if !resolved.exists() {
+        return None;
+    }
     Some(std::fs::canonicalize(&resolved).unwrap_or(resolved))
 }
 
@@ -476,6 +479,109 @@ mod tests {
             assert_eq!(warnings, vec![WARNING_CLAUDE_LOCAL_OVERRIDE.to_string()]);
             assert!(is_symlink(&local));
         }
+    }
+
+    #[test]
+    fn reconcile_preserves_broken_user_owned_symlink() {
+        let (_lock, home, ws, _team_skills) = workspace_with_team_root();
+        let pack_root = home.path().join(".agents/skills");
+        write_skill(&pack_root, "demo");
+
+        let canonical = pack_root.join("demo");
+        let local = ws.path().join(".claude/skills/demo");
+        std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            let external = ws.path().join("temporarily-unmounted/demo");
+            std::os::unix::fs::symlink(&external, &local).unwrap();
+            assert!(!local.exists());
+            let link_target_before = std::fs::read_link(&local).unwrap();
+
+            let warnings =
+                reconcile_after_managed_mutation(ws.path(), "demo", &canonical).unwrap();
+            assert_eq!(warnings, vec![WARNING_CLAUDE_LOCAL_OVERRIDE.to_string()]);
+            assert!(is_symlink(&local));
+            assert_eq!(std::fs::read_link(&local).unwrap(), link_target_before);
+            assert!(!symlink_points_to(&local, &canonical));
+        }
+    }
+
+    #[test]
+    fn managed_create_resolves_identical_pack_across_opencode_pi_claude() {
+        use crate::config::{
+            create_pack, team_skill_roots, ClaimedTeamContext, CreatePackRequest,
+        };
+        use crate::runtime::supervisor::prepare_workspace;
+
+        let (_lock, home, ws, _team_skills) = workspace_with_team_root();
+        let agents_root = home.path().join(".agents/skills");
+        std::fs::create_dir_all(&agents_root).unwrap();
+        std::fs::write(
+            ws.path().join("opencode.json"),
+            format!(
+                r#"{{"skills":{{"paths":["{}"]}}}}"#,
+                agents_root.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let body = "---\nname: cross-runtime\ndescription: Shared.\n---\n\n# Shared body\n";
+        let req = CreatePackRequest {
+            slug: "cross-runtime".into(),
+            content: body.into(),
+            files: vec![],
+        };
+        let resp = create_pack(
+            ws.path(),
+            home.path(),
+            &req,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+        let canonical = std::path::PathBuf::from(&resp.path);
+        let expected_digest = resp.digest.clone();
+
+        reconcile_after_managed_mutation(ws.path(), "cross-runtime", &canonical).unwrap();
+        prepare_workspace(ws.path()).unwrap();
+
+        let pi_pack = agents_root.join("cross-runtime");
+        assert_eq!(
+            std::fs::canonicalize(&pi_pack).unwrap(),
+            std::fs::canonicalize(&canonical).unwrap()
+        );
+
+        let mut opencode_found = false;
+        for root in team_skill_roots(ws.path()) {
+            let candidate = root.join("cross-runtime");
+            if candidate.join("SKILL.md").is_file() {
+                assert_eq!(
+                    std::fs::canonicalize(&candidate).unwrap(),
+                    std::fs::canonicalize(&canonical).unwrap()
+                );
+                opencode_found = true;
+            }
+        }
+        assert!(opencode_found, "OpenCode skills.paths should resolve the pack");
+
+        let claude_link = ws.path().join(".claude/skills/cross-runtime");
+        assert!(symlink_points_to(&claude_link, &canonical));
+        let claude_resolved = resolve_symlink_target(&claude_link).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&claude_resolved).unwrap(),
+            std::fs::canonicalize(&canonical).unwrap()
+        );
+
+        let canonical_body = std::fs::read_to_string(canonical.join("SKILL.md")).unwrap();
+        assert!(canonical_body.contains("# Shared body"));
+        assert_eq!(
+            std::fs::read_to_string(pi_pack.join("SKILL.md")).unwrap(),
+            canonical_body
+        );
+        assert_eq!(
+            std::fs::read_to_string(claude_resolved.join("SKILL.md")).unwrap(),
+            canonical_body
+        );
+        assert!(!expected_digest.is_empty());
     }
 
     #[test]

@@ -646,7 +646,8 @@
         "nextStartStorage": "Saved to ~/.agents/skills. New OpenCode and Pi runtimes will pick it up on their next start.",
         "nextStartClaude": "Claude Code will also load this skill on its next start.",
         "claudeLocalOverride": "Claude Code will keep using the workspace-local .claude/skills copy for this slug.",
-        "claudeBridgeReconcileFailed": "Claude Code bridge setup did not complete; Claude may not discover this skill on the next start."
+        "claudeBridgeReconcileFailed": "Claude Code bridge setup did not complete; Claude may not discover this skill on the next start.",
+        "skillRefreshFailed": "The skill was saved, but TeamClu inventory refresh did not complete. Retry discovery or refresh the picker — do not create it again."
       },
       "roleSkill": {
         "title": "Role skill",
