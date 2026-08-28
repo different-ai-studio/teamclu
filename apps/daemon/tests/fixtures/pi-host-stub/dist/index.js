@@ -21,6 +21,33 @@ export const VERSION = "0.0.0-stub";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function parseFrontmatterField(text, field) {
+  const match = text.match(new RegExp(`^${field}:\\s*(.+)$`, "m"));
+  return match ? match[1].trim() : null;
+}
+
+function loadSkillsFromAgentsDir() {
+  const root = process.env.TEAMCLU_PI_STUB_SKILLS_ROOT;
+  if (!root) return [];
+  if (!fs.existsSync(root)) return [];
+  const skills = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const skillMd = path.join(root, entry.name, "SKILL.md");
+    if (!fs.existsSync(skillMd)) continue;
+    const text = fs.readFileSync(skillMd, "utf8");
+    skills.push({
+      name: parseFrontmatterField(text, "name") ?? entry.name,
+      description: parseFrontmatterField(text, "description") ?? "",
+    });
+  }
+  return skills;
+}
+
+function stubSkillsFallback() {
+  return [{ name: "stub-skill", description: "A stub skill" }];
+}
+
 export class SessionManager {
   constructor(cwd, file, entries = []) {
     this.cwd = cwd;
@@ -75,7 +102,12 @@ export async function createAgentSessionServices(options) {
       getHttpIdleTimeoutMs: () => 0,
     },
     resourceLoader: {
-      getSkills: () => ({ skills: [{ name: "stub-skill", description: "A stub skill" }] }),
+      getSkills: () => {
+        const scanned = loadSkillsFromAgentsDir();
+        return {
+          skills: scanned.length > 0 ? scanned : stubSkillsFallback(),
+        };
+      },
     },
     diagnostics: [],
   };
