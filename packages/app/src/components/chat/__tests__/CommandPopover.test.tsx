@@ -1,7 +1,8 @@
+import * as React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { CommandPopover } from '../CommandPopover'
-import { SKILLS_CHANGED_EVENT } from '@/hooks/useAppInit'
+import { SKILLS_CHANGED_EVENT, useWorkspaceRuntimeRefreshPoll } from '@/hooks/useAppInit'
 import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 
 const mocks = vi.hoisted(() => ({
@@ -10,7 +11,15 @@ const mocks = vi.hoisted(() => ({
   loadRolesSkillsWorkspaceState: vi.fn(),
   loadAllRoles: vi.fn(),
   getDaemonPermissions: vi.fn(),
+  getDaemonRuntime: vi.fn(),
 }))
+
+function PickerRefreshHarness(
+  props: React.ComponentProps<typeof CommandPopover>,
+) {
+  useWorkspaceRuntimeRefreshPoll()
+  return <CommandPopover {...props} />
+}
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -31,10 +40,12 @@ vi.mock('@/lib/utils', async () => {
   }
 })
 
-vi.mock('@/stores/workspace', () => ({
-  useWorkspaceStore: (selector: (s: { workspacePath: string | null }) => unknown) =>
-    selector({ workspacePath: '/workspace/demo' }),
-}))
+vi.mock('@/stores/workspace', () => {
+  const state = { workspacePath: '/workspace/demo', daemonHttpReady: true }
+  const useWorkspaceStore = (selector: (s: typeof state) => unknown) => selector(state)
+  useWorkspaceStore.getState = () => state
+  return { useWorkspaceStore }
+})
 
 vi.mock('@/stores/runtime-state-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/stores/runtime-state-store')>()
@@ -53,6 +64,7 @@ vi.mock('@/lib/daemon-local-client', async (importOriginal) => {
   return {
     ...actual,
     getDaemonPermissions: (...args: unknown[]) => mocks.getDaemonPermissions(...args),
+    getDaemonRuntime: (...args: unknown[]) => mocks.getDaemonRuntime(...args),
   }
 })
 
@@ -68,10 +80,21 @@ vi.mock('@/lib/teamclu-config', () => ({
 describe('CommandPopover', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    useWorkspaceRuntimeRefreshStore.getState().stopPolling()
     useWorkspaceRuntimeRefreshStore.setState({
       workspacePath: null,
       refresh: null,
       dismissedAt: null,
+    })
+    mocks.getDaemonRuntime.mockResolvedValue({
+      refresh: {
+        status: 'clean',
+        change_kinds: [],
+        recommended_action: 'none',
+        auto_apply_blocked_by_active_runtime: false,
+        last_detected_at: '2026-08-28T08:00:00Z',
+        last_error: null,
+      },
     })
     mocks.runtimeRows = []
     mocks.runtimeStates = {}
@@ -323,6 +346,65 @@ describe('CommandPopover', () => {
     window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
     await waitFor(() => {
       expect(mocks.loadRolesSkillsWorkspaceState).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('runs the global refresh hook and picker together without recursive refresh requests', async () => {
+    const noteLocalRefresh = vi.spyOn(
+      useWorkspaceRuntimeRefreshStore.getState(),
+      'noteLocalRefresh',
+    )
+    const refreshNow = vi.spyOn(
+      useWorkspaceRuntimeRefreshStore.getState(),
+      'refreshNow',
+    )
+
+    render(
+      <PickerRefreshHarness
+        open={true}
+        activeSessionId={null}
+        onOpenChange={vi.fn()}
+        searchQuery=""
+        onSelect={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(mocks.loadRolesSkillsWorkspaceState.mock.calls.length).toBeGreaterThan(0)
+    })
+    await waitFor(() => {
+      expect(refreshNow.mock.calls.length).toBeGreaterThan(0)
+    })
+
+    const baselineLoads = mocks.loadRolesSkillsWorkspaceState.mock.calls.length
+    noteLocalRefresh.mockClear()
+    refreshNow.mockClear()
+
+    useWorkspaceRuntimeRefreshStore.setState({
+      refresh: {
+        status: 'pending',
+        change_kinds: ['skills'],
+        recommended_action: 'none',
+        auto_apply_blocked_by_active_runtime: false,
+        last_detected_at: '2026-08-28T08:05:00Z',
+        last_error: null,
+      },
+    })
+
+    await waitFor(() => {
+      expect(mocks.loadRolesSkillsWorkspaceState.mock.calls.length).toBeGreaterThan(baselineLoads)
+    })
+    expect(noteLocalRefresh).not.toHaveBeenCalled()
+    expect(refreshNow).not.toHaveBeenCalled()
+
+    const loadsAfterDaemon = mocks.loadRolesSkillsWorkspaceState.mock.calls.length
+    window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
+    await waitFor(() => {
+      expect(noteLocalRefresh).toHaveBeenCalledTimes(1)
+      expect(refreshNow).toHaveBeenCalledTimes(1)
+    })
+    await waitFor(() => {
+      expect(mocks.loadRolesSkillsWorkspaceState.mock.calls.length).toBeGreaterThan(loadsAfterDaemon)
     })
   })
 })
