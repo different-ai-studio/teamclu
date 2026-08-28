@@ -646,7 +646,8 @@
         "nextStartStorage": "已保存至 ~/.agents/skills。新的 OpenCode 与 Pi 运行时将在下次启动时生效。",
         "nextStartClaude": "Claude Code 也将在下次启动时加载此技能。",
         "claudeLocalOverride": "Claude Code 将继续使用工作区内 .claude/skills 下的同名本地副本。",
-        "claudeBridgeReconcileFailed": "Claude Code 桥接未完成；Claude 可能在下次启动时无法发现此技能。"
+        "claudeBridgeReconcileFailed": "Claude Code 桥接未完成；Claude 可能在下次启动时无法发现此技能。",
+        "skillRefreshFailed": "技能已保存，但 TeamClu 清单刷新未完成。请重试发现或刷新选择器，请勿重复创建。"
       },
       "roleSkill": {
         "title": "角色技能",
