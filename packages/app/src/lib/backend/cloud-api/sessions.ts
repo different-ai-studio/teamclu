@@ -162,9 +162,15 @@ export function createSessionsModule(client: CloudApiClient): SessionsBackend {
         lastProcessedMessageId: row.lastProcessedMessageId ?? null,
       }));
     },
-    async getSession(sessionId) {
+    async getSession(sessionId, teamId) {
       try {
-        const out = await client.get<CloudSessionDetail>(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+        const teamQuery =
+          typeof teamId === "string" && teamId.length > 0
+            ? `?teamId=${encodeURIComponent(teamId)}`
+            : "";
+        const out = await client.get<CloudSessionDetail>(
+          `/v1/sessions/${encodeURIComponent(sessionId)}${teamQuery}`,
+        );
         return mapSessionDetail(out);
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;

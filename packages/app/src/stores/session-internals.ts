@@ -1,7 +1,6 @@
-import type { PermissionAskedEvent } from './session-types';
 import type { SessionState } from './session-types';
 import type { StreamingState } from './streaming';
-import { sessionLookupCache, getSessionById, updateSessionCache } from './session-cache';
+import { updateSessionCache } from './session-cache';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { StoreApi } from 'zustand';
 
@@ -34,57 +33,6 @@ export const externalReloadingSessions = new Set<string>();
 // Set of session IDs where the AI is actively responding (session.status: busy).
 // Used after external reload to resume streaming if the AI is still generating.
 export const busySessions = new Set<string>();
-
-// --- Permission buffer (race condition handling) ---
-
-// Buffer for permissions that arrive before their matching tool call (SSE race condition).
-// Keyed by callID. Drained in handleToolExecuting when the tool call is created.
-export const pendingPermissionBuffer = new Map<string, PermissionAskedEvent>();
-
-/**
- * Attach a PermissionAskedEvent to a tool call within the active session.
- * Returns true if the tool call was found and updated, false otherwise.
- */
-export function attachPermissionToToolCall(
-  event: PermissionAskedEvent,
-): boolean {
-  const targetSessionId = event.sessionID;
-  if (!targetSessionId || !event.tool?.callID) return false;
-
-  const session = getSessionById(targetSessionId);
-  if (!session) return false;
-
-  let found = false;
-  const newMessages = session.messages.map((m) => {
-    const tcIdx = m.toolCalls?.findIndex((tc) => tc.id === event.tool!.callID);
-    if (tcIdx === undefined || tcIdx === -1) return m;
-    found = true;
-    const newToolCalls = [...(m.toolCalls || [])];
-    newToolCalls[tcIdx] = {
-      ...newToolCalls[tcIdx],
-      permission: {
-        id: event.id,
-        permission: event.permission,
-        patterns: event.patterns,
-        metadata: event.metadata,
-        always: event.always,
-        decision: "pending",
-      },
-    };
-    return { ...m, toolCalls: newToolCalls };
-  });
-
-  if (!found) return false;
-
-  const newSession = { ...session, messages: newMessages };
-  sessionLookupCache.set(targetSessionId, newSession);
-  sessionStoreRef!.setState((s) => ({
-    sessions: s.sessions.map((ss) =>
-      ss.id === targetSessionId ? newSession : ss,
-    ),
-  }));
-  return true;
-}
 
 // --- Debounce timers ---
 

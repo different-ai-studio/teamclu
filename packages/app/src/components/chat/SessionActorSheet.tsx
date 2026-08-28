@@ -15,6 +15,10 @@ import {
 } from '@/components/ui/alert-dialog'
 import { getBackend } from '@/lib/backend'
 import { loadActorsForTeam, loadActorsByIds, loadSessionParticipants } from '@/lib/local-cache'
+import {
+  getSessionCreatedByActorId,
+  resolveSessionCreatedByActorId,
+} from '@/lib/session-created-by-cache'
 import { syncActorsForTeam } from '@/lib/sync/actor-sync'
 import { syncParticipantsForSession } from '@/lib/sync/session-participant-sync'
 import { cn } from '@/lib/utils'
@@ -34,6 +38,9 @@ import {
   resolveAgentRuntimeWorkspaceId,
   runtimeStartWorkspaceArgs,
 } from '@/lib/teamclu/resolve-runtime-start-workspace'
+
+/** Temporarily disabled — re-enable when session kick/remove is ready to ship. */
+const SESSION_REMOVE_PARTICIPANT_ENABLED = false
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -233,11 +240,13 @@ function ActorRowView({
   actor,
   runtimeInfo,
   canRemove,
+  showOwnerLabel,
   onRemove,
 }: {
   actor: Row
   runtimeInfo?: RuntimeInfo
   canRemove: boolean
+  showOwnerLabel: boolean
   onRemove: () => void
 }) {
   const { t } = useTranslation()
@@ -307,9 +316,9 @@ function ActorRowView({
         >
           <X className="h-4 w-4" />
         </button>
-      ) : (
+      ) : showOwnerLabel ? (
         <span className="shrink-0 text-[11px] text-faint">{t('chat.actorSheet.ownerLabel', '所有者')}</span>
-      )}
+      ) : null}
     </div>
   )
 }
@@ -394,6 +403,9 @@ export function SessionActorPanel({ sessionId, teamId }: SessionActorPanelProps)
   const [error, setError] = React.useState(false)
   const [rows, setRows] = React.useState<Row[]>([])
   const [myActorId, setMyActorId] = React.useState<string | null>(null)
+  const [createdByActorId, setCreatedByActorId] = React.useState<string | null>(
+    () => (sessionId ? getSessionCreatedByActorId(sessionId) : null),
+  )
   const [pendingRemove, setPendingRemove] = React.useState<Row | null>(null)
   const [candidateActors, setCandidateActors] = React.useState<CandidateActor[]>([])
   const [addingActorId, setAddingActorId] = React.useState<string | null>(null)
@@ -408,6 +420,7 @@ export function SessionActorPanel({ sessionId, teamId }: SessionActorPanelProps)
     // session is null/empty).
     setRows([])
     setMyActorId(null)
+    setCreatedByActorId(sessionId ? getSessionCreatedByActorId(sessionId) : null)
     setError(false)
     setCandidateActors([])
     setAddingActorId(null)
@@ -484,11 +497,13 @@ export function SessionActorPanel({ sessionId, teamId }: SessionActorPanelProps)
       // ────────────────────────────────────────────────────────────────
       // Phase 1: instant render from local libsql cache
       // ────────────────────────────────────────────────────────────────
-      const [cachedParticipants, cachedTeamActors] = await Promise.all([
+      const [cachedParticipants, cachedTeamActors, creatorActorId] = await Promise.all([
         loadSessionParticipants(sessionId),
         teamId ? loadActorsForTeam(teamId) : Promise.resolve([]),
+        resolveSessionCreatedByActorId(sessionId, teamId),
       ])
       if (cancelled) return
+      setCreatedByActorId(creatorActorId)
 
       const cachedActorIds = cachedParticipants.map(p => p.actorId)
       const cachedPresentSet = new Set(cachedActorIds)
@@ -824,7 +839,8 @@ export function SessionActorPanel({ sessionId, teamId }: SessionActorPanelProps)
                         key={a.id}
                         actor={a}
                         runtimeInfo={info}
-                        canRemove={!!myActorId}
+                        canRemove={SESSION_REMOVE_PARTICIPANT_ENABLED && !!myActorId}
+                        showOwnerLabel={!!createdByActorId && a.id === createdByActorId}
                         onRemove={() => setPendingRemove(a)}
                       />
                       )
@@ -840,7 +856,8 @@ export function SessionActorPanel({ sessionId, teamId }: SessionActorPanelProps)
                       <ActorRowView
                         key={m.id}
                         actor={m}
-                        canRemove={!!myActorId && m.id !== myActorId}
+                        canRemove={SESSION_REMOVE_PARTICIPANT_ENABLED && !!myActorId && m.id !== myActorId}
+                        showOwnerLabel={!!createdByActorId && m.id === createdByActorId}
                         onRemove={() => setPendingRemove(m)}
                       />
                     ))}
@@ -859,6 +876,7 @@ export function SessionActorPanel({ sessionId, teamId }: SessionActorPanelProps)
                         // They joined by writing to the bot; removing them here
                         // would be undone by their next message.
                         canRemove={false}
+                        showOwnerLabel={false}
                         onRemove={() => {}}
                       />
                     ))}

@@ -21,7 +21,7 @@ import {
 } from '@/components/icons/agent-brand-icons'
 import { open } from '@tauri-apps/plugin-dialog'
 import { toast } from 'sonner'
-import type { ActorRow as ActorRowData } from '@/components/panel/ActorsView'
+import type { ActorRow } from '@/stores/actor-directory-store'
 import {
   listDaemonWorkspaces,
   createDaemonWorkspace,
@@ -42,12 +42,12 @@ import { workspacePathsMatch } from '@/stores/session-utils'
 import { cn } from '@/lib/utils'
 
 interface Props {
-  actor: ActorRowData | null
+  actor: ActorRow | null
   runtimeStatus: LocalDaemonRuntimeStatus
   isDefault?: boolean
-  onViewDetail: (actor: ActorRowData) => void
-  onCopyName: (actor: ActorRowData) => void
-  onCopyId: (actor: ActorRowData) => void
+  onViewDetail: (actor: ActorRow) => void
+  onCopyName: (actor: ActorRow) => void
+  onCopyId: (actor: ActorRow) => void
 }
 
 function workspaceNameFromPath(path: string): string {
@@ -96,7 +96,7 @@ function RuntimeStatusDot({
  * ever populate `agent_types` (what the daemon actually advertises), so that
  * array is the primary signal and `default_agent_type` is just a tie-breaker.
  */
-function resolveActorAgentType(actor: Pick<ActorRowData, 'default_agent_type' | 'agent_types'>) {
+function resolveActorAgentType(actor: Pick<ActorRow, 'default_agent_type' | 'agent_types'>) {
   return (
     amuxAgentTypeFromBackend(actor.default_agent_type) ??
     actor.agent_types?.map((t) => amuxAgentTypeFromBackend(t)).find((t): t is NonNullable<typeof t> => !!t) ??

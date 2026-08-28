@@ -3,12 +3,11 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useTabsStore, Tab } from "@/stores/tabs";
 import { cn } from "@/lib/utils";
-import { X, Code, Globe, LayoutDashboard, FileText, Image, Sparkles, Plug, Box, History, User as UserIcon } from "lucide-react";
+import { X, Code, Globe, LayoutDashboard, FileText, Image, Sparkles, Plug, Box, History } from "lucide-react";
 import {
   decodeTeamShareTarget,
   decodeVersionHistoryTarget,
 } from "@/lib/tabs/teamshare-target";
-import { decodeActorTarget } from "@/lib/tabs/actor-target";
 
 function getTabIcon(tab: Tab) {
   if (tab.type === "webview") return Globe;
@@ -25,7 +24,6 @@ function getTabIcon(tab: Tab) {
       return LayoutDashboard;
     }
     if (decodeVersionHistoryTarget(tab.target) !== undefined) return History;
-    if (decodeActorTarget(tab.target)) return UserIcon;
     return LayoutDashboard;
   }
   const ext = tab.target.split(".").pop()?.toLowerCase() || "";

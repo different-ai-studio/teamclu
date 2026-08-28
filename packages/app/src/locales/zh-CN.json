@@ -3006,7 +3006,8 @@
     "memberCount_other": "{{count}} 人"
   },
   "actors": {
-    "allTitle": "所有成员",
+    "contactsTitle": "联系人",
+    "detailEmpty": "选择联系人查看资料",
     "loading": "正在加载成员...",
     "empty": "团队暂无成员",
     "error": "加载成员失败",

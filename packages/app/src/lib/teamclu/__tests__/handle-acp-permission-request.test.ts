@@ -4,6 +4,30 @@ const mocks = vi.hoisted(() => ({
   shouldAutoAllow: vi.fn(() => false),
   replyAcpPermission: vi.fn(() => Promise.resolve()),
   setPermissionRequest: vi.fn(),
+  notificationSend: vi.fn(() => Promise.resolve("sent" as const)),
+}));
+
+vi.mock("@/lib/notification-service", () => ({
+  notificationService: { send: mocks.notificationSend },
+}));
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    setFocus: vi.fn(),
+    unminimize: vi.fn(),
+  }),
+}));
+
+vi.mock("@/stores/session-list-store", () => ({
+  useSessionListStore: {
+    getState: () => ({ rows: [{ id: "sess-1", title: "Test session" }] }),
+  },
+}));
+
+vi.mock("@/stores/session-selection-store", () => ({
+  useSessionSelectionStore: {
+    getState: () => ({ setActiveSession: vi.fn(async () => {}) }),
+  },
 }));
 
 vi.mock("@/lib/session-permission-mode", () => ({
@@ -64,6 +88,7 @@ describe("handleAcpPermissionRequest", () => {
       sampleRequest,
     );
     expect(mocks.replyAcpPermission).not.toHaveBeenCalled();
+    expect(mocks.notificationSend).toHaveBeenCalledOnce();
   });
 
   it("auto-replies without writing store in fullAccess mode", async () => {
@@ -82,6 +107,7 @@ describe("handleAcpPermissionRequest", () => {
       decision: "allow",
     });
     expect(mocks.setPermissionRequest).not.toHaveBeenCalled();
+    expect(mocks.notificationSend).not.toHaveBeenCalled();
   });
 
   it("falls back to pending on auto-reply failure", async () => {
@@ -99,6 +125,7 @@ describe("handleAcpPermissionRequest", () => {
       "agent-1",
       sampleRequest,
     );
+    expect(mocks.notificationSend).toHaveBeenCalledOnce();
   });
 
   it("ignores empty requestId", async () => {
@@ -113,6 +140,39 @@ describe("handleAcpPermissionRequest", () => {
     expect(mocks.setPermissionRequest).not.toHaveBeenCalled();
     expect(mocks.replyAcpPermission).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it("dedupes OS banner after successful send", async () => {
+    await handleAcpPermissionRequest({
+      sessionId: "sess-1",
+      agentActorId: "agent-1",
+      request: sampleRequest,
+    });
+    await handleAcpPermissionRequest({
+      sessionId: "sess-1",
+      agentActorId: "agent-1",
+      request: sampleRequest,
+    });
+
+    expect(mocks.notificationSend).toHaveBeenCalledOnce();
+  });
+
+  it("retries OS banner when first send was suppressed", async () => {
+    mocks.notificationSend.mockResolvedValueOnce("skipped");
+    mocks.notificationSend.mockResolvedValueOnce("sent");
+
+    await handleAcpPermissionRequest({
+      sessionId: "sess-1",
+      agentActorId: "agent-1",
+      request: sampleRequest,
+    });
+    await handleAcpPermissionRequest({
+      sessionId: "sess-1",
+      agentActorId: "agent-1",
+      request: sampleRequest,
+    });
+
+    expect(mocks.notificationSend).toHaveBeenCalledTimes(2);
   });
 
   it("dedupes in-flight requestId", async () => {

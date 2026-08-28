@@ -396,7 +396,10 @@ export const GeneralSection = React.memo(function GeneralSection() {
               {t('settings.general.notifications', 'Notifications')}
             </label>
             <p className="text-xs text-muted-foreground">
-              {t('settings.general.notificationsDesc', 'Control when desktop notifications are sent')}
+              {t(
+                'settings.general.notificationsDesc',
+                'Background permission alerts and other system banners (chat uses Dock bounce only)',
+              )}
             </p>
             <Select value={notificationLevel} onValueChange={setNotificationLevel}>
               <SelectTrigger className="h-11" data-testid="notification-level-select">

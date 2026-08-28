@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronRight, MessageSquare } from 'lucide-react'
+import { ChevronRight, MessageSquare, Users } from 'lucide-react'
 import { getBackend } from '@/lib/backend'
 import { formatRelativeTime } from '@/lib/date-format'
 import { loadSessionIdsForActor } from '@/lib/session-by-actor'
@@ -12,13 +12,14 @@ import {
 } from '@/stores/actor-directory-store'
 import { useSessionListStore } from '@/stores/session-list-store'
 import { useUIStore } from '@/stores/ui'
+import { useActorDetailStore } from '@/stores/actor-detail-store'
 
 interface Props {
   actorId: string
 }
 
 /**
- * Actor profile in the main column, opened as a tab from the actors list.
+ * Actor profile in the main column, opened from the Contacts list.
  *
  * Clicking a row used to jump straight into a new draft session addressed to
  * that actor — which was wrong for an external gateway contact (nothing on our
@@ -175,6 +176,24 @@ function ActorSessionsSection({ actorId, teamId }: { actorId: string; teamId: st
           ))}
         </ul>
       )}
+    </div>
+  )
+}
+
+/** The Contacts section's main-content column: the selected profile, or a quiet hint. */
+export function ActorsDetailColumn() {
+  const { t } = useTranslation()
+  const actorId = useActorDetailStore((s) => s.actorId)
+  if (actorId) return <ActorDetailPane key={actorId} actorId={actorId} />
+  return (
+    <div
+      className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground"
+      data-tauri-drag-region
+    >
+      <Users className="h-8 w-8" />
+      <span className="text-sm">
+        {t('actors.detailEmpty', 'Select a contact to view their profile')}
+      </span>
     </div>
   )
 }

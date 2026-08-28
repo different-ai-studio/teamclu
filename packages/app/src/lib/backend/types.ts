@@ -211,7 +211,7 @@ export interface SessionsBackend {
   updateSessionTitle(sessionId: string, title: string): Promise<void>;
   archiveSession(sessionId: string, archivedAt: string): Promise<void>;
   getSessionParticipants(sessionId: string): Promise<SessionParticipant[]>;
-  getSession(sessionId: string): Promise<SessionDetailRow | null>;
+  getSession(sessionId: string, teamId?: string | null): Promise<SessionDetailRow | null>;
   joinSession(sessionId: string): Promise<SessionDetailRow>;
   listSessionsForTeamSince(teamId: string, updatedAfter: string): Promise<SessionSyncRow[]>;
   listSessionDisplayRows(teamId: string, sessionIds: string[]): Promise<SessionDisplayRow[]>;

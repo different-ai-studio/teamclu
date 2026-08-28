@@ -8,6 +8,7 @@
 import { getBackend } from "@/lib/backend";
 import type { SessionSyncRow } from "@/lib/backend/types";
 import * as cache from "@/lib/local-cache";
+import { seedSessionCreatedByFromRows } from "@/lib/session-created-by-cache";
 import { isTauri } from "@/lib/utils";
 
 // Supabase `sessions` columns: id, team_id, created_by_actor_id, primary_agent_id,
@@ -62,6 +63,7 @@ export async function syncSessionsForTeam(
   }
   const rows = data.filter((row) => row.archived_at == null).map(mapRow);
   if (rows.length > 0) {
+    seedSessionCreatedByFromRows(rows);
     await cache.upsertSessionsBatch(rows);
     const maxUpdated = rows.reduce(
       (acc, row) => (row.updatedAt > acc ? row.updatedAt : acc),

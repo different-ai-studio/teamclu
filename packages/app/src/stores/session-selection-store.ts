@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { preloadSessionCreatedByActorId } from "@/lib/session-created-by-cache";
+import { useCurrentTeamStore } from "./current-team";
 import { useSessionListStore } from "./session-list-store";
 
 type SessionSelectionState = {
@@ -25,6 +27,9 @@ export const useSessionSelectionStore = create<SessionSelectionState>((set) => (
       viewingArchivedSessionId: null,
     });
     if (sessionId) {
+      const listRow = useSessionListStore.getState().rows.find((r) => r.id === sessionId);
+      const teamId = listRow?.team_id ?? useCurrentTeamStore.getState().team?.id ?? null;
+      preloadSessionCreatedByActorId(sessionId, teamId);
       await useSessionListStore.getState().markSessionViewed(sessionId);
     }
   },

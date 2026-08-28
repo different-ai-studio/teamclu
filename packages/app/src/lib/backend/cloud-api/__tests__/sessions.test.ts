@@ -99,19 +99,21 @@ describe("sessions module", () => {
     expect("appId" in bodies[1]).toBe(false);
   });
 
-  it("getSession calls /v1/sessions/:id and maps detail fields", async () => {
+  it("getSession calls /v1/sessions/:id with teamId and maps detail fields", async () => {
     const client = mockClient({
-      "GET /v1/sessions/session-1": {
+      "GET /v1/sessions/session-1?teamId=team-1": {
         ...cloudSession,
         primaryAgentId: "agent-1",
+        createdByActorId: "actor-1",
         summary: "planning",
         acpSessionId: "acp-1",
         binding: "bind-1",
       },
     });
     const mod = createSessionsModule(client);
-    const out = await mod.getSession("session-1");
+    const out = await mod.getSession("session-1", "team-1");
     expect(out?.primary_agent_id).toBe("agent-1");
+    expect(out?.created_by_actor_id).toBe("actor-1");
     expect(out?.summary).toBe("planning");
     expect(out?.acp_session_id).toBe("acp-1");
   });

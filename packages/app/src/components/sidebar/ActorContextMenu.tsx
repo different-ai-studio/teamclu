@@ -8,20 +8,20 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
 } from '@/components/ui/context-menu'
-import type { ActorRow as ActorRowData } from '@/components/panel/ActorsView'
+import type { ActorRow } from '@/stores/actor-directory-store'
 import { cn } from '@/lib/utils'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { canRemoveTeamActor, useTeamPermissions } from '@/lib/team-permissions'
 
 interface Props {
-  actor: ActorRowData
+  actor: ActorRow
   /** True when this actor is the current user's default agent. */
   isDefault?: boolean
-  onViewDetail: (actor: ActorRowData) => void
-  onCopyName: (actor: ActorRowData) => void
-  onCopyId: (actor: ActorRowData) => void
-  onRequestRemove: (actor: ActorRowData) => void
+  onViewDetail: (actor: ActorRow) => void
+  onCopyName: (actor: ActorRow) => void
+  onCopyId: (actor: ActorRow) => void
+  onRequestRemove: (actor: ActorRow) => void
   /**
    * Extra menu items rendered (with a leading separator) just before the
    * destructive "Remove from team" item. Used by the local-daemon row to add a
