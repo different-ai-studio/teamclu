@@ -33,8 +33,8 @@ pub use provider_auth::{
     ProviderAuthMethodType, ProviderAuthMethodsResponse,
 };
 pub use managed_skill_writer::{
-    create_pack, get_pack, update_pack, CreatePackRequest, ManageSkillResponse, ManagedSkillError,
-    ManagedSkillErrorCode, PackFileInput, RuntimeActivation, UpdatePackRequest,
+    create_pack, get_pack, update_pack, ClaimedTeamContext, CreatePackRequest, ManageSkillResponse,
+    ManagedSkillError, ManagedSkillErrorCode, PackFileInput, RuntimeActivation, UpdatePackRequest,
 };
 pub use skill_creation_policy::{
     append_policy_to_prompt, materialize_policy_file, SKILL_CREATION_POLICY,

@@ -5,7 +5,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 
 async function loadSystemPrompt(workspaceDir) {
-  const configPath = path.join(workspaceDir, ".teamclu", "teamclu.json")
+  const configPath = path.join(workspaceDir, "__WORKSPACE_META_DIR__", "__WORKSPACE_CONFIG_FILE__")
   try {
     const raw = await fs.readFile(configPath, "utf8")
     const cfg = JSON.parse(raw)
@@ -16,7 +16,7 @@ async function loadSystemPrompt(workspaceDir) {
 }
 
 async function loadSkillCreationPolicy(workspaceDir) {
-  const policyPath = path.join(workspaceDir, ".teamclu", "instructions", "skill-creation-policy.txt")
+  const policyPath = path.join(workspaceDir, "__WORKSPACE_META_DIR__", "instructions", "skill-creation-policy.txt")
   try {
     return String(await fs.readFile(policyPath, "utf8")).trim()
   } catch {

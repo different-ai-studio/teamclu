@@ -730,6 +730,19 @@ fn ensure_inherent_skills_in_dir(skills_dir: &Path) -> Result<(), WorkspaceContr
     Ok(())
 }
 
+fn render_instruction_plugin_template() -> String {
+    let brand = teamclu_runtime_env::brand_short_name_from_env();
+    INSTRUCTION_PLUGIN_TEMPLATE
+        .replace(
+            "__WORKSPACE_META_DIR__",
+            &teamclu_runtime_env::workspace_meta_dir_name(&brand),
+        )
+        .replace(
+            "__WORKSPACE_CONFIG_FILE__",
+            &teamclu_runtime_env::workspace_config_file_name(&brand),
+        )
+}
+
 fn install_instruction_plugin_file(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
     use crate::runtime::workspace_runtime::INSTRUCTION_PLUGIN_REL;
 
@@ -738,12 +751,13 @@ fn install_instruction_plugin_file(workspace_path: &Path) -> Result<(), Workspac
         std::fs::create_dir_all(parent).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
     }
 
+    let rendered = render_instruction_plugin_template();
     let should_write = match std::fs::read_to_string(&plugin_path) {
-        Ok(existing) => existing != INSTRUCTION_PLUGIN_TEMPLATE,
+        Ok(existing) => existing != rendered,
         Err(_) => true,
     };
     if should_write {
-        std::fs::write(&plugin_path, INSTRUCTION_PLUGIN_TEMPLATE)
+        std::fs::write(&plugin_path, rendered)
             .map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
     }
     Ok(())
@@ -2696,6 +2710,23 @@ mod tests {
                 .map(|value| value.contains("teamclu-session-context"))
                 .unwrap_or(false)
         }));
+    }
+
+    #[test]
+    fn instruction_plugin_white_label_reads_brand_policy_path() {
+        let _guard = crate::test_brand_env::BrandEnvGuard::set("copilot361");
+        let dir = tempfile::tempdir().unwrap();
+        ensure_instruction_plugin(dir.path()).unwrap();
+
+        let plugin = std::fs::read_to_string(
+            dir.path()
+                .join(crate::runtime::workspace_runtime::INSTRUCTION_PLUGIN_REL),
+        )
+        .unwrap();
+        assert!(plugin.contains(".copilot361"));
+        assert!(plugin.contains("skill-creation-policy.txt"));
+        assert!(!plugin.contains("__WORKSPACE_META_DIR__"));
+        assert!(!plugin.contains(r#"".teamclu", "instructions", "skill-creation-policy.txt""#));
     }
 
     #[test]

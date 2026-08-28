@@ -34,6 +34,7 @@ pub enum ManagedSkillErrorCode {
     SkillNotFound,
     SkillPackTooLarge,
     SkillWriteFailed,
+    SkillOwnershipUnavailable,
 }
 
 impl ManagedSkillErrorCode {
@@ -49,6 +50,7 @@ impl ManagedSkillErrorCode {
             Self::SkillNotFound => "skill_not_found",
             Self::SkillPackTooLarge => "skill_pack_too_large",
             Self::SkillWriteFailed => "skill_write_failed",
+            Self::SkillOwnershipUnavailable => "skill_ownership_unavailable",
         }
     }
 }
@@ -96,6 +98,9 @@ pub struct UpdatePackRequest {
     pub files: Vec<PackFileInput>,
     #[serde(default)]
     pub expected_digest: Option<String>,
+    /// Relative paths under the skill root to remove explicitly.
+    #[serde(default)]
+    pub delete_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -120,6 +125,32 @@ pub struct ManageSkillResponse {
 
 pub fn global_skills_root(home: &Path) -> PathBuf {
     home.join(GLOBAL_SKILLS_REL)
+}
+
+/// Result of querying which team registry slugs are installed for this agent.
+#[derive(Debug, Clone)]
+pub enum ClaimedTeamContext {
+    /// Daemon is unclaimed or has no team id — only builtin protection applies.
+    NoTeam,
+    Known(BTreeSet<String>),
+    /// Backend query failed; callers must fail closed when mutating existing packs.
+    Unavailable,
+}
+
+impl ClaimedTeamContext {
+    pub fn check_update(&self, slug: &str) -> Result<(), ManagedSkillError> {
+        match self {
+            Self::Unavailable => Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::SkillOwnershipUnavailable,
+                "team skill ownership could not be verified; update refused",
+            )),
+            Self::Known(claimed) if claimed.contains(slug) => Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::TeamSkillReadOnly,
+                "team-managed skills are read-only here",
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 pub fn pack_digest(dir: &Path) -> Result<String, ManagedSkillError> {
@@ -215,31 +246,33 @@ fn normalize_pack_rel_path(raw: &str) -> Result<PathBuf, ManagedSkillError> {
             "pack file paths must use forward slashes",
         ));
     }
-    if trimmed.starts_with('/') || trimmed.starts_with("..") || trimmed.contains("/../") {
-        return Err(ManagedSkillError::new(
-            ManagedSkillErrorCode::InvalidSkillFilePath,
-            format!("unsafe pack path {raw:?}"),
-        ));
-    }
-    if trimmed == SKILL_MD {
-        return Err(ManagedSkillError::new(
-            ManagedSkillErrorCode::InvalidSkillFilePath,
-            "pack files must not overwrite SKILL.md; pass it as content",
-        ));
-    }
     let path = Path::new(trimmed);
+    let mut normalized = PathBuf::new();
     for comp in path.components() {
         match comp {
+            Component::CurDir => {}
+            Component::Normal(seg) => normalized.push(seg),
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 return Err(ManagedSkillError::new(
                     ManagedSkillErrorCode::InvalidSkillFilePath,
                     format!("unsafe pack path {raw:?}"),
                 ));
             }
-            _ => {}
         }
     }
-    Ok(path.to_path_buf())
+    if normalized.as_os_str().is_empty() {
+        return Err(ManagedSkillError::new(
+            ManagedSkillErrorCode::InvalidSkillFilePath,
+            "pack file path must not be empty",
+        ));
+    }
+    if normalized == Path::new(SKILL_MD) {
+        return Err(ManagedSkillError::new(
+            ManagedSkillErrorCode::InvalidSkillFilePath,
+            "pack files must not overwrite SKILL.md; pass it as content",
+        ));
+    }
+    Ok(normalized)
 }
 
 fn decode_pack_file(input: &PackFileInput) -> Result<Vec<u8>, ManagedSkillError> {
@@ -321,6 +354,12 @@ fn build_pack_inputs(
     }
     for file in extra {
         let rel = normalize_pack_rel_path(&file.path)?;
+        if files.iter().any(|(existing, _)| existing == &rel) {
+            return Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::InvalidSkillFilePath,
+                format!("duplicate pack file path {}", rel.display()),
+            ));
+        }
         let bytes = decode_pack_file(file)?;
         if bytes.len() > MAX_SINGLE_FILE_BYTES {
             return Err(ManagedSkillError::new(
@@ -361,9 +400,97 @@ fn write_temp_pack(root: &Path, build: &PackBuild) -> Result<(), ManagedSkillErr
     Ok(())
 }
 
+struct TempPackGuard(PathBuf);
+
+impl TempPackGuard {
+    fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn disarm(mut self) {
+        self.0 = PathBuf::new();
+    }
+}
+
+impl Drop for TempPackGuard {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+fn copy_pack_tree(src: &Path, dst: &Path) -> Result<(), ManagedSkillError> {
+    reject_symlink(src)?;
+    for entry in walkdir::WalkDir::new(src)
+        .follow_links(false)
+        .into_iter()
+    {
+        let entry = entry.map_err(|e| io_managed(std::io::Error::other(e.to_string())))?;
+        let rel = entry
+            .path()
+            .strip_prefix(src)
+            .map_err(|_| io_managed(std::io::Error::other("strip pack prefix")))?;
+        if rel.as_os_str().is_empty() {
+            fs::create_dir_all(dst).map_err(io_managed)?;
+            continue;
+        }
+        reject_symlink(entry.path())?;
+        let target_path = dst.join(rel);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target_path).map_err(io_managed)?;
+        } else if entry.file_type().is_file() {
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent).map_err(io_managed)?;
+            }
+            fs::copy(entry.path(), &target_path).map_err(io_managed)?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_final_skill_md(root: &Path, slug: &str) -> Result<(), ManagedSkillError> {
+    let content = fs::read_to_string(root.join(SKILL_MD)).map_err(io_managed)?;
+    validate_strict_frontmatter(&content, slug)
+}
+
+fn apply_patch_files(root: &Path, files: &[(PathBuf, Vec<u8>)]) -> Result<(), ManagedSkillError> {
+    for (rel, bytes) in files {
+        let dest = root.join(rel);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(io_managed)?;
+        }
+        fs::write(&dest, bytes).map_err(io_managed)?;
+    }
+    Ok(())
+}
+
+fn apply_delete_files(root: &Path, delete_files: &[String]) -> Result<(), ManagedSkillError> {
+    for raw in delete_files {
+        let rel = normalize_pack_rel_path(raw)?;
+        let path = root.join(&rel);
+        if !path.starts_with(root) {
+            return Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::InvalidSkillFilePath,
+                format!("delete path escapes skill root: {raw:?}"),
+            ));
+        }
+        if path.is_dir() {
+            fs::remove_dir_all(&path).map_err(io_managed)?;
+        } else if path.is_file() {
+            fs::remove_file(&path).map_err(io_managed)?;
+        }
+    }
+    Ok(())
+}
+
 fn classify_existing_target(
     target: &Path,
-    claimed_team_slugs: &BTreeSet<String>,
+    ownership: &ClaimedTeamContext,
 ) -> Result<(), ManagedSkillError> {
     if !target.exists() {
         return Ok(());
@@ -379,11 +506,19 @@ fn classify_existing_target(
             format!("built-in skill {slug} cannot be overwritten"),
         ));
     }
-    if claimed_team_slugs.contains(slug) {
+    if matches!(ownership, ClaimedTeamContext::Unavailable) {
         return Err(ManagedSkillError::new(
-            ManagedSkillErrorCode::TeamSkillReadOnly,
-            format!("team-managed skill {slug} cannot be overwritten"),
+            ManagedSkillErrorCode::SkillOwnershipUnavailable,
+            "team skill ownership could not be verified; create refused for existing skill",
         ));
+    }
+    if let ClaimedTeamContext::Known(claimed) = ownership {
+        if claimed.contains(slug) {
+            return Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::TeamSkillReadOnly,
+                format!("team-managed skill {slug} cannot be overwritten"),
+            ));
+        }
     }
     Err(ManagedSkillError::new(
         ManagedSkillErrorCode::SkillAlreadyExists,
@@ -406,18 +541,20 @@ pub fn create_pack(
     _workspace_path: &Path,
     home: &Path,
     req: &CreatePackRequest,
-    claimed_team_slugs: &BTreeSet<String>,
+    ownership: &ClaimedTeamContext,
 ) -> Result<ManageSkillResponse, ManagedSkillError> {
     let build = build_pack_inputs(&req.slug, &req.content, &req.files)?;
     let skills_root = global_skills_root(home);
     fs::create_dir_all(&skills_root).map_err(io_managed)?;
     let target = skills_root.join(&req.slug);
-    classify_existing_target(&target, claimed_team_slugs)?;
+    classify_existing_target(&target, ownership)?;
 
-    let temp = skills_root.join(format!(".teamclu-create-{}", Uuid::new_v4()));
-    write_temp_pack(&temp, &build)?;
-    let digest = pack_digest(&temp)?;
-    publish_temp_dir(&temp, &target)?;
+    let temp = TempPackGuard::new(skills_root.join(format!(".teamclu-create-{}", Uuid::new_v4())));
+    write_temp_pack(temp.path(), &build)?;
+    verify_final_skill_md(temp.path(), &req.slug)?;
+    let digest = pack_digest(temp.path())?;
+    publish_temp_dir(temp.path(), &target)?;
+    temp.disarm();
 
     Ok(ManageSkillResponse {
         slug: req.slug.clone(),
@@ -438,9 +575,43 @@ pub fn update_pack(
     _workspace_path: &Path,
     home: &Path,
     req: &UpdatePackRequest,
-    claimed_team_slugs: &BTreeSet<String>,
+    ownership: &ClaimedTeamContext,
 ) -> Result<ManageSkillResponse, ManagedSkillError> {
-    let build = build_pack_inputs(&req.slug, &req.content, &req.files)?;
+    if !is_valid_slug(&req.slug) {
+        return Err(ManagedSkillError::new(
+            ManagedSkillErrorCode::InvalidSkillSlug,
+            format!("invalid slug {:?}", req.slug),
+        ));
+    }
+    validate_strict_frontmatter(&req.content, &req.slug)?;
+
+    let mut patch_files = Vec::new();
+    let mut total_bytes = req.content.len();
+    for file in &req.files {
+        let rel = normalize_pack_rel_path(&file.path)?;
+        if patch_files.iter().any(|(existing, _)| existing == &rel) {
+            return Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::InvalidSkillFilePath,
+                format!("duplicate pack file path {}", rel.display()),
+            ));
+        }
+        let bytes = decode_pack_file(file)?;
+        if bytes.len() > MAX_SINGLE_FILE_BYTES {
+            return Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::SkillPackTooLarge,
+                format!("file {} exceeds size limit", rel.display()),
+            ));
+        }
+        total_bytes += bytes.len();
+        if total_bytes > MAX_PACK_TOTAL_BYTES {
+            return Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::SkillPackTooLarge,
+                "skill pack exceeds total size limit",
+            ));
+        }
+        patch_files.push((rel, bytes));
+    }
+
     let skills_root = global_skills_root(home);
     let target = skills_root.join(&req.slug);
     if !target.is_dir() {
@@ -456,12 +627,7 @@ pub fn update_pack(
             "built-in skills are read-only",
         ));
     }
-    if claimed_team_slugs.contains(&req.slug) {
-        return Err(ManagedSkillError::new(
-            ManagedSkillErrorCode::TeamSkillReadOnly,
-            "team-managed skills are read-only here",
-        ));
-    }
+    ownership.check_update(&req.slug)?;
     if let Some(expected) = req.expected_digest.as_deref().filter(|v| !v.is_empty()) {
         let current = pack_digest(&target)?;
         if current != expected {
@@ -472,15 +638,21 @@ pub fn update_pack(
         }
     }
 
-    let temp = skills_root.join(format!(".teamclu-update-{}", Uuid::new_v4()));
-    write_temp_pack(&temp, &build)?;
-    let digest = pack_digest(&temp)?;
+    let temp = TempPackGuard::new(skills_root.join(format!(".teamclu-update-{}", Uuid::new_v4())));
+    copy_pack_tree(&target, temp.path())?;
+    fs::write(temp.path().join(SKILL_MD), req.content.as_bytes()).map_err(io_managed)?;
+    apply_patch_files(temp.path(), &patch_files)?;
+    apply_delete_files(temp.path(), &req.delete_files)?;
+    verify_final_skill_md(temp.path(), &req.slug)?;
+    verify_tree_confined(temp.path())?;
+    let digest = pack_digest(temp.path())?;
     let backup = skills_root.join(format!(".teamclu-backup-{}", Uuid::new_v4()));
     fs::rename(&target, &backup).map_err(io_managed)?;
-    if let Err(e) = publish_temp_dir(&temp, &target) {
+    if let Err(e) = publish_temp_dir(temp.path(), &target) {
         let _ = fs::rename(&backup, &target);
         return Err(e);
     }
+    temp.disarm();
     let _ = fs::remove_dir_all(&backup);
 
     Ok(ManageSkillResponse {
@@ -524,6 +696,18 @@ pub fn get_pack(home: &Path, slug: &str) -> Result<ManageSkillResponse, ManagedS
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn update_request_deserializes_delete_files_camel_case() {
+        let payload = serde_json::json!({
+            "slug": "demo",
+            "content": "---\nname: demo\ndescription: Demo.\n---\n",
+            "deleteFiles": ["references/old.md"]
+        });
+        let req: UpdatePackRequest = serde_json::from_value(payload).unwrap();
+        assert_eq!(req.delete_files, vec!["references/old.md".to_string()]);
+    }
 
     #[test]
     fn slug_validation_accepts_and_rejects() {
@@ -551,7 +735,13 @@ mod tests {
                 encoding: None,
             }],
         };
-        let resp = create_pack(ws.path(), home.path(), &req, &BTreeSet::new()).unwrap();
+        let resp = create_pack(
+            ws.path(),
+            home.path(),
+            &req,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
         assert!(resp.created);
         assert!(home
             .path()
@@ -570,8 +760,335 @@ mod tests {
             content: "---\nname: dup\ndescription: One.\n---\n".into(),
             files: vec![],
         };
-        create_pack(ws.path(), home.path(), &req, &BTreeSet::new()).unwrap();
-        let err = create_pack(ws.path(), home.path(), &req, &BTreeSet::new()).unwrap_err();
+        create_pack(
+            ws.path(),
+            home.path(),
+            &req,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+        let err = create_pack(
+            ws.path(),
+            home.path(),
+            &req,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap_err();
         assert_eq!(err.code, ManagedSkillErrorCode::SkillAlreadyExists);
+    }
+
+    #[test]
+    fn rejects_dot_slash_skill_md_in_pack_files() {
+        for raw in [
+            "SKILL.md",
+            "./SKILL.md",
+            "foo/../SKILL.md",
+            "../SKILL.md",
+            "/absolute/SKILL.md",
+        ] {
+            let err = normalize_pack_rel_path(raw).unwrap_err();
+            assert_eq!(
+                err.code,
+                ManagedSkillErrorCode::InvalidSkillFilePath,
+                "expected rejection for {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_rejects_invalid_pack_path_without_publishing() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let req = CreatePackRequest {
+            slug: "bad-path".into(),
+            content: "---\nname: bad-path\ndescription: One.\n---\n".into(),
+            files: vec![PackFileInput {
+                path: "./SKILL.md".into(),
+                content: "no frontmatter".into(),
+                encoding: None,
+            }],
+        };
+        let err = create_pack(
+            ws.path(),
+            home.path(),
+            &req,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ManagedSkillErrorCode::InvalidSkillFilePath);
+        assert!(!home.path().join(".agents/skills/bad-path").exists());
+    }
+
+    #[test]
+    fn update_rejects_team_skill_read_only() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let skill_root = home.path().join(".agents/skills/deploy-check");
+        fs::create_dir_all(&skill_root).unwrap();
+        fs::write(
+            skill_root.join("SKILL.md"),
+            "---\nname: deploy-check\ndescription: Team.\n---\n",
+        )
+        .unwrap();
+        fs::create_dir_all(skill_root.join("scripts")).unwrap();
+        fs::write(skill_root.join("scripts/check.sh"), "#!/bin/sh\n").unwrap();
+
+        let update = UpdatePackRequest {
+            slug: "deploy-check".into(),
+            content: "---\nname: deploy-check\ndescription: Nope.\n---\n".into(),
+            files: vec![],
+            expected_digest: None,
+            delete_files: vec![],
+        };
+        let mut claimed = BTreeSet::new();
+        claimed.insert("deploy-check".into());
+        let err = update_pack(
+            ws.path(),
+            home.path(),
+            &update,
+            &ClaimedTeamContext::Known(claimed),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ManagedSkillErrorCode::TeamSkillReadOnly);
+        let skill_md = fs::read_to_string(skill_root.join("SKILL.md")).unwrap();
+        assert!(skill_md.contains("Team."));
+        assert!(skill_root.join("scripts/check.sh").is_file());
+    }
+
+    #[test]
+    fn update_patches_single_resource_file() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let create = CreatePackRequest {
+            slug: "api-review".into(),
+            content: "---\nname: api-review\ndescription: Demo.\n---\n\n# Demo\n".into(),
+            files: vec![
+                PackFileInput {
+                    path: "scripts/check.sh".into(),
+                    content: "v1\n".into(),
+                    encoding: None,
+                },
+                PackFileInput {
+                    path: "references/checklist.md".into(),
+                    content: "unchanged\n".into(),
+                    encoding: None,
+                },
+            ],
+        };
+        create_pack(
+            ws.path(),
+            home.path(),
+            &create,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let update = UpdatePackRequest {
+            slug: "api-review".into(),
+            content: "---\nname: api-review\ndescription: Demo.\n---\n\n# Demo\n".into(),
+            files: vec![PackFileInput {
+                path: "scripts/check.sh".into(),
+                content: "v2\n".into(),
+                encoding: None,
+            }],
+            expected_digest: None,
+            delete_files: vec![],
+        };
+        update_pack(
+            ws.path(),
+            home.path(),
+            &update,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let root = home.path().join(".agents/skills/api-review");
+        assert_eq!(fs::read_to_string(root.join("scripts/check.sh")).unwrap(), "v2\n");
+        assert_eq!(
+            fs::read_to_string(root.join("references/checklist.md")).unwrap(),
+            "unchanged\n"
+        );
+    }
+
+    #[test]
+    fn update_delete_files_removes_only_requested() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let create = CreatePackRequest {
+            slug: "api-review".into(),
+            content: "---\nname: api-review\ndescription: Demo.\n---\n\n# Demo\n".into(),
+            files: vec![
+                PackFileInput {
+                    path: "scripts/check.sh".into(),
+                    content: "#!/bin/sh\n".into(),
+                    encoding: None,
+                },
+                PackFileInput {
+                    path: "references/checklist.md".into(),
+                    content: "# Checklist\n".into(),
+                    encoding: None,
+                },
+                PackFileInput {
+                    path: "assets/template.json".into(),
+                    content: "{}\n".into(),
+                    encoding: None,
+                },
+            ],
+        };
+        create_pack(
+            ws.path(),
+            home.path(),
+            &create,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let update = UpdatePackRequest {
+            slug: "api-review".into(),
+            content: "---\nname: api-review\ndescription: Updated.\n---\n\n# Updated\n".into(),
+            files: vec![],
+            expected_digest: None,
+            delete_files: vec!["references/checklist.md".into()],
+        };
+        update_pack(
+            ws.path(),
+            home.path(),
+            &update,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let root = home.path().join(".agents/skills/api-review");
+        assert!(root.join("scripts/check.sh").is_file());
+        assert!(!root.join("references/checklist.md").exists());
+        assert!(root.join("assets/template.json").is_file());
+    }
+
+    #[test]
+    fn update_preserves_unmentioned_resource_files() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let create = CreatePackRequest {
+            slug: "api-review".into(),
+            content: "---\nname: api-review\ndescription: Demo.\n---\n\n# Demo\n".into(),
+            files: vec![
+                PackFileInput {
+                    path: "scripts/check.sh".into(),
+                    content: "#!/bin/sh\n".into(),
+                    encoding: None,
+                },
+                PackFileInput {
+                    path: "references/checklist.md".into(),
+                    content: "# Checklist\n".into(),
+                    encoding: None,
+                },
+            ],
+        };
+        create_pack(
+            ws.path(),
+            home.path(),
+            &create,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let update = UpdatePackRequest {
+            slug: "api-review".into(),
+            content: "---\nname: api-review\ndescription: Updated.\n---\n\n# Updated\n".into(),
+            files: vec![],
+            expected_digest: None,
+            delete_files: vec![],
+        };
+        update_pack(
+            ws.path(),
+            home.path(),
+            &update,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let root = home.path().join(".agents/skills/api-review");
+        assert!(root.join("scripts/check.sh").is_file());
+        assert!(root.join("references/checklist.md").is_file());
+        let skill_md = fs::read_to_string(root.join("SKILL.md")).unwrap();
+        assert!(skill_md.contains("Updated."));
+    }
+
+    #[test]
+    fn update_refuses_when_team_ownership_unavailable() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let create = CreatePackRequest {
+            slug: "deploy-check".into(),
+            content: "---\nname: deploy-check\ndescription: One.\n---\n".into(),
+            files: vec![],
+        };
+        create_pack(
+            ws.path(),
+            home.path(),
+            &create,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+        let original = fs::read_to_string(
+            home.path()
+                .join(".agents/skills/deploy-check/SKILL.md"),
+        )
+        .unwrap();
+
+        let update = UpdatePackRequest {
+            slug: "deploy-check".into(),
+            content: "---\nname: deploy-check\ndescription: Nope.\n---\n".into(),
+            files: vec![],
+            expected_digest: None,
+            delete_files: vec![],
+        };
+        let err = update_pack(
+            ws.path(),
+            home.path(),
+            &update,
+            &ClaimedTeamContext::Unavailable,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ManagedSkillErrorCode::SkillOwnershipUnavailable);
+        let after = fs::read_to_string(
+            home.path()
+                .join(".agents/skills/deploy-check/SKILL.md"),
+        )
+        .unwrap();
+        assert_eq!(after, original);
+    }
+
+    #[test]
+    fn create_existing_refuses_when_team_ownership_unavailable() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let req = CreatePackRequest {
+            slug: "existing".into(),
+            content: "---\nname: existing\ndescription: One.\n---\n".into(),
+            files: vec![],
+        };
+        create_pack(
+            ws.path(),
+            home.path(),
+            &req,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+        let err = create_pack(
+            ws.path(),
+            home.path(),
+            &req,
+            &ClaimedTeamContext::Unavailable,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ManagedSkillErrorCode::SkillOwnershipUnavailable);
     }
 }

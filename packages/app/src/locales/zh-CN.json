@@ -2593,7 +2593,7 @@
       },
       "title": "技能",
       "description": "工作区的自定义 AI 技能",
-      "descriptionDetail": "AI skills installed under ~/.agents/skills (shared with OpenCode, Claude Code, and Pi)",
+      "descriptionDetail": "安装于 ~/.agents/skills/ 的 AI 技能（与 OpenCode、Claude Code、Pi 共享）",
       "selectWorkspace": "请先选择工作区目录",
       "addSkill": "添加技能",
       "viewLabel": "视图",

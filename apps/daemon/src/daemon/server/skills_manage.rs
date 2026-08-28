@@ -1,13 +1,12 @@
 //! Control-socket handler for agent-managed personal skill packs.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use crate::config::{
-    create_pack, get_pack, update_pack, CreatePackRequest, ManagedSkillError,
+    create_pack, get_pack, update_pack, ClaimedTeamContext, CreatePackRequest, ManagedSkillError,
     ManagedSkillErrorCode, UpdatePackRequest,
 };
 use crate::runtime::refresh::{RefreshChangeKind, RefreshSource};
@@ -27,18 +26,27 @@ fn sock_ok(result: Value) -> String {
     json!({ "ok": true, "result": result }).to_string()
 }
 
-async fn claimed_team_slugs(server: &DaemonServer) -> BTreeSet<String> {
+async fn load_team_ownership(server: &DaemonServer) -> ClaimedTeamContext {
     let team_id = server.backend.team_id();
     if team_id.trim().is_empty() {
-        return BTreeSet::new();
+        return ClaimedTeamContext::NoTeam;
     }
-    let Ok(rows) = server.backend.team_skills(team_id).await else {
-        return BTreeSet::new();
-    };
-    rows.into_iter()
-        .filter(|row| row.installed)
-        .map(|row| row.slug)
-        .collect()
+    match server.backend.team_skills(team_id).await {
+        Ok(rows) => ClaimedTeamContext::Known(
+            rows.into_iter()
+                .filter(|row| row.installed)
+                .map(|row| row.slug)
+                .collect(),
+        ),
+        Err(error) => {
+            tracing::warn!(
+                team_id = %team_id,
+                error = %error,
+                "team skill ownership lookup failed; managed skill mutations will fail closed"
+            );
+            ClaimedTeamContext::Unavailable
+        }
+    }
 }
 
 async fn record_skills_refresh(server: &DaemonServer, workspace_path: &Path) {
@@ -109,7 +117,7 @@ impl DaemonServer {
                 );
             }
         };
-        let claimed = claimed_team_slugs(self).await;
+        let ownership = load_team_ownership(self).await;
 
         match action {
             "create" => {
@@ -122,7 +130,7 @@ impl DaemonServer {
                         );
                     }
                 };
-                match create_pack(workspace, &home, &req, &claimed) {
+                match create_pack(workspace, &home, &req, &ownership) {
                     Ok(resp) => {
                         record_skills_refresh(self, workspace).await;
                         sock_ok(serde_json::to_value(resp).unwrap_or(json!({})))
@@ -140,7 +148,7 @@ impl DaemonServer {
                         );
                     }
                 };
-                match update_pack(workspace, &home, &req, &claimed) {
+                match update_pack(workspace, &home, &req, &ownership) {
                     Ok(resp) => {
                         record_skills_refresh(self, workspace).await;
                         sock_ok(serde_json::to_value(resp).unwrap_or(json!({})))
