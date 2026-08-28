@@ -26,11 +26,12 @@ P1    amuxd /v1/ai 代理 + tc_gateway_token + 按团队灰度改 llm_base_url
 
 这三件事的结论会改设计，**必须在动手写网关之前拿到**。
 
-### 0.1 上游在 `stream_options.include_usage` 下是否真回 usage
+### 0.1 上游 usage 行为 — ✅ 已完成（2026-08-28）
 
-- [ ] 直接 curl DeepSeek 的 `/chat/completions`，`stream: true` + `stream_options: {include_usage: true}`，看末帧有没有 `usage`。
-- [ ] 记录：不带该字段时是否完全没有 usage（决定 §4.4「无 usage → estimated」这条分支有多常走）。
-- [ ] 若上游根本不支持该字段：设计稿 §6.6 第 3 条要改写，estimated 变成主路径而非兜底，§4.6 的预留额度也要相应放大。
+- [x] DeepSeek **无条件返回 usage**，带不带 `stream_options` 都回，且挂在最后一个正常 chunk（带 `finish_reason`）上，**不是独立帧**。
+- [x] 结论已回写设计稿 §4.4.0.1：catalog 的 provider 上声明 `usage_mode: always | needs_stream_options`，DeepSeek 用前者、OpenAI 用后者。
+- [x] 顺带测出：未知参数被容忍（`drop_params` 替代降级为防御性）；`reasoning_tokens` 计入 `completion_tokens`，且 reasoning 会吃光 `max_tokens`（预留要按「输出全是 reasoning」估）。
+- [x] 实测 prompt 缓存同前缀命中率 99.4%、命中价约为未命中 1/30；峰谷价差 2 倍。**自主定价后这两条都不影响计费**，但要记进 `ai_usage_logs.cached_input_tokens` 供毛利分析。
 
 ### 0.2 GoTrue `/auth/v1/user` 的延迟与限流
 
@@ -38,11 +39,11 @@ P1    amuxd /v1/ai 代理 + tc_gateway_token + 按团队灰度改 llm_base_url
 - [ ] 结论决定 §6.2.1 的 60 秒缓存是否够用，或者要不要退回 JWKS 本地验签。
 - [ ] 顺带确认：token 被吊销后该接口多久开始拒绝（缓存 TTL 的安全上界）。
 
-### 0.3 真实价目表
+### 0.3 三档定价 — ⚠️ 不阻塞 Phase 0
 
-- [ ] 拿到 DeepSeek（及任何要接的上游）**当前**的每 1M token 单价。
-- [ ] 按 §4.4.1 换算成 credits（元/1M × 1,000,000）填进 catalog。
-- [ ] `deploy/self-host/ai/catalog.example.yaml` 里现在全是**占位数字**，别当真。
+- [x] 上游模型 id 已确认为真：`deepseek-v4-flash` / `deepseek-v4-pro`（另有 `deepseek-v4-flash-vision-exp`）。
+- [ ] **三档的实际定价数值是产品决策**（设计稿附录 F），不锚定上游成本。唯一的工程约束见 §4.4.1：单价要让一次典型请求 ≥ 数千 credits。
+- [ ] Phase 0/1 **只记账不扣费**，所以真正需要这个数字的时间点是 Phase 2 —— 不阻塞开工。catalog 里现在是满足该约束的占位值。
 
 ---
 
@@ -85,7 +86,7 @@ P1    amuxd /v1/ai 代理 + tc_gateway_token + 按团队灰度改 llm_base_url
 ### 5. 转发与四处改写
 
 - [ ] `POST /v1/teams/:teamId/chat/completions`、`GET /v1/teams/:teamId/models`、`GET /healthz`。
-- [ ] `GET /models` 的每档带上 `estimatedPricing`（取该档**最高价**路由，与 §4.4 预留口径一致）。Phase 2 的账单页要用它算积分↔token 换算表（§12.3）——**现在顺手加，免得 Phase 2 再回来改网关**。
+- [ ] `GET /models` 的每档带上 `pricing`（直接来自 `public_models.*.pricing`）。Phase 2 的账单页要用它算积分↔token 换算表（§12.3）——**现在顺手加，免得 Phase 2 再回来改网关**。
 - [ ] 四处必做改写（§6.6）：`body.model` 换成 upstream 名、按 `supported_params` 过滤未知参数、注入 `stream_options.include_usage`、替换鉴权头。
 - [ ] **客户端原本没要 usage 时，要把末尾那个只含 usage 的 chunk 吃掉**，别让 agent runtime 收到预期外的帧。
 - [ ] SSE 逐 chunk 直通、不 buffer；旁路 tee 出末帧 usage。

@@ -2,46 +2,42 @@
 # Mount read-only into ai-gateway container as /app/catalog.yaml
 #
 # Three layers:
-#   providers      — connection (api_base + api_key_env)
-#   backend_models — upstream model id + credits pricing
-#   public_models  — customer-facing id + 1:n routes
+#   providers      — how to reach an upstream (api_base + key + usage quirks)
+#   backend_models — which upstream model to call. NO PRICING.
+#   public_models  — the customer-facing tier: 1:n routes + THE PRICE
+#
+# Pricing is OURS, set on the three tiers, not derived from upstream cost.
+# See §4.4 of docs/specs/2026-08-28-team-ai-gateway-design.md for why that
+# collapses four layers of complexity (peak/off-peak spreads, prompt-cache
+# split billing, mixed-route price uncertainty, FX drift).
 #
 # This file is PER DEPLOYMENT, not a single source of truth in the repo: each
-# deploy target runs its own gateway against its own database (see §3.1 of
-# docs/specs/2026-08-28-team-ai-gateway-design.md).
-#
-# ⚠️ public_models must stay a SUPERSET of the ids LiteLLM exposes today
-# (default / pro / max / deepseek-v4-flash / deepseek-v4-pro). Those ids are
-# already stored in every team's team_workspace_config.llm_models — dropping one
-# silently invalidates the model those teams have selected. New ids (auto) may
-# be added; retiring an old id needs a separate UPDATE on llm_models.
+# deploy target runs its own gateway against its own database (§3.1).
 
 providers:
   deepseek:
     api_base: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
+    # How this provider reports token usage on a STREAMING response.
+    #   always               — usage arrives unprompted, riding the last normal
+    #                          chunk (the one carrying finish_reason).
+    #   needs_stream_options — must inject stream_options.include_usage; the
+    #                          provider then emits an EXTRA usage-only frame
+    #                          with empty choices, which the gateway swallows
+    #                          when the client did not ask for it.
+    # Verified against the live API on 2026-08-28 (§4.4.0.1).
+    usage_mode: always
   openai:
     api_base: https://api.openai.com/v1
     api_key_env: OPENAI_API_KEY
+    usage_mode: needs_stream_options
 
-# ── credits pricing unit ─────────────────────────────────────────────
-# 1 credit = 0.000001 CNY of UPSTREAM COST, so a number here is simply
-#   <price in CNY per 1M tokens> * 1_000_000
-# The unit is deliberately this fine: at a coarser one, ceil() over-charges a
-# typical 5k-token agent request by ~10x, and agents are made of small requests.
-# See §4.4.1 of docs/specs/2026-08-28-team-ai-gateway-design.md.
+# Body keys forwarded upstream. Everything else is dropped with a debug log.
+# Replaces LiteLLM's `litellm_settings.drop_params: true`.
 #
-# Credits are anchored to COST, not to sale price — the markup lives in the one
-# CNY→credits conversion at top-up, so this file stays a straight transcription
-# of the provider's price list.
-#
-# ⚠️ Write plain digits. YAML 1.2 parsers read 1_000_000 as a STRING, not an int.
-# ⚠️ The numbers below are PLACEHOLDERS — replace with the real price list.
-
-# Body keys forwarded upstream. Everything else is dropped with a debug log —
-# this replaces LiteLLM's `litellm_settings.drop_params: true`, which existed
-# because agent runtimes (opencode / pi) send a SUPERSET of OpenAI params and
-# upstreams 400 on keys they don't know. Overridable per backend_model.
+# DeepSeek was measured to TOLERATE unknown params (a bogus key still returned
+# 200), so this is defensive rather than required — it earns its keep the day
+# we add a stricter provider. Not a Phase 0 blocker.
 default_supported_params:
   - model
   - messages
@@ -62,80 +58,101 @@ default_supported_params:
   - user
 
 backend_models:
+  # No pricing here — what a tier costs the customer is decided in
+  # public_models below. The optional `cost` block would feed margin reporting
+  # only and is never used to charge anyone; omitting it changes nothing.
   ds-v4-pro:
     provider: deepseek
     upstream_model: deepseek-v4-pro
-    # Used to size the pre-flight reservation when the request omits max_tokens,
-    # and as the conservative settle amount when the upstream returns no usage.
+    # Sizes the pre-flight reservation when the request omits max_tokens.
+    # Keep it generous: reasoning tokens count toward completion_tokens and can
+    # consume the entire output budget on their own (§4.4.0.1).
     default_max_output_tokens: 16000
-    pricing:
-      input_per_1m_credits: 2000000     # 2.00 CNY / 1M tokens
-      output_per_1m_credits: 4000000    # 4.00 CNY / 1M tokens
 
   ds-v4-flash:
     provider: deepseek
     upstream_model: deepseek-v4-flash
     default_max_output_tokens: 16000
-    pricing:
-      input_per_1m_credits: 500000      # 0.50 CNY / 1M tokens
-      output_per_1m_credits: 1000000    # 1.00 CNY / 1M tokens
 
   gpt-4o:
     provider: openai
     upstream_model: gpt-4o
     default_max_output_tokens: 16000
-    pricing:
-      input_per_1m_credits: 18000000    # 18.00 CNY / 1M tokens
-      output_per_1m_credits: 72000000   # 72.00 CNY / 1M tokens
 
 public_models:
-  # ── THE public contract: exactly three tiers ─────────────────────────
-  # The desktop hardcodes these three ids (design §4.3.1). They are STABLE
-  # NAMES — what changes is which backend they point at, and that mapping
-  # lives right here on the server. Re-point a tier, adjust weights, or swap
-  # vendors with no client release.
+  # ── THE public contract: exactly three tiers, and their prices ───────
+  # The desktop hardcodes these three ids (§4.3.1). They are STABLE NAMES —
+  # what changes is which backend they point at, and that mapping lives right
+  # here. Re-point a tier, adjust weights, or swap vendors with no client
+  # release and no price change.
   #
-  # Adding a FOURTH tier requires shipping a client. That is deliberate:
-  # adding a tier is a product decision, not a config tweak.
+  # Adding a FOURTH tier requires shipping a client. Deliberate: adding a tier
+  # is a product decision, not a config tweak.
+  #
+  # ⚠️ PRICES BELOW ARE PLACEHOLDERS — the real numbers are a pricing decision
+  # (design 附录 F). The one ENGINEERING constraint on whatever gets chosen:
+  # a typical request must cost at least a few thousand credits, or ceil()
+  # rounding swallows small requests — and agent traffic is all small requests
+  # (§4.4.1). These placeholders satisfy it by making 1 credit ≈ 1 input token
+  # on the `default` tier.
+  #
+  # ⚠️ Write plain digits. YAML 1.2 reads 1_000_000 as a STRING, not an int.
 
   default:
     name: 标准
     routing: priority
+    pricing:
+      input_per_1m_credits: 1000000
+      output_per_1m_credits: 4000000
     routes:
       - backend: ds-v4-flash
 
   pro:
     name: 高级
     routing: priority
+    pricing:
+      input_per_1m_credits: 4000000
+      output_per_1m_credits: 16000000
     routes:
       - backend: ds-v4-pro
 
-  # Mixed routing is exactly why pricing lives on backend_models: this tier
-  # bills gpt-4o on some calls and ds-v4-pro on others.
+  # Failover across two backends whose upstream costs differ by an order of
+  # magnitude — and the customer pays the same either way. That is the whole
+  # point of pricing the tier instead of the backend.
   max:
     name: 旗舰
     routing: failover
+    pricing:
+      input_per_1m_credits: 20000000
+      output_per_1m_credits: 80000000
     routes:
       - backend: gpt-4o
       - backend: ds-v4-pro
 
   # ── transition aliases — REMOVE IN PHASE 3 ───────────────────────────
   # Old clients still send these vendor ids, and they are still sitting in
-  # team_workspace_config.llm_models. Keep them serving until those clients
-  # are gone (same gate as deleting LiteLLM), then drop both these entries
-  # and the dead llm_models rows. See design §4.3.2.
+  # team_workspace_config.llm_models. Keep them serving until those clients are
+  # gone (same gate as deleting LiteLLM), then drop both these entries and the
+  # dead llm_models rows. See §4.3.2. Priced identically to the tier they
+  # shadow, so the migration never changes anyone's bill.
   #
   # Unknown model ids get 403 model_not_allowed — never a silent fallback to
-  # `default`, which would leave a mis-configured client on the wrong tier
-  # with no signal.
+  # `default`, which would leave a mis-configured client on the wrong tier with
+  # no signal.
   deepseek-v4-flash:
     name: DeepSeek V4 Flash
     routing: priority
+    pricing:
+      input_per_1m_credits: 1000000
+      output_per_1m_credits: 4000000
     routes:
       - backend: ds-v4-flash
 
   deepseek-v4-pro:
     name: DeepSeek V4 Pro
     routing: priority
+    pricing:
+      input_per_1m_credits: 4000000
+      output_per_1m_credits: 16000000
     routes:
       - backend: ds-v4-pro

@@ -270,40 +270,40 @@
       <!-- 积分能买多少 token -->
       <section class="card">
         <p class="card-title">积分能买多少 token</p>
-        <p class="card-sub">换算取决于档位，以及输入还是输出 —— 没有单一比值。</p>
+        <p class="card-sub">三档各一个固定单价。落到哪个上游都不改变金额。</p>
         <div class="tbl-wrap">
           <table>
             <thead>
               <tr>
                 <th>档位</th>
-                <th class="num">1 积分 ≈ 输入 token</th>
-                <th class="num">1 积分 ≈ 输出 token</th>
-                <th class="num">当前余额 ≈ 输入 token</th>
+                <th class="num">1 积分 = 输入 token</th>
+                <th class="num">1 积分 = 输出 token</th>
+                <th class="num">当前余额 = 输入 token</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td><span class="tier">标准</span><span class="tier-id">default</span></td>
-                <td class="num">20,000</td>
                 <td class="num">10,000</td>
-                <td class="num">5,760 万</td>
+                <td class="num">2,500</td>
+                <td class="num">2,880 万</td>
               </tr>
               <tr>
                 <td><span class="tier">高级</span><span class="tier-id">pro</span></td>
-                <td class="num">5,000</td>
                 <td class="num">2,500</td>
-                <td class="num">1,440 万</td>
+                <td class="num">625</td>
+                <td class="num">720 万</td>
               </tr>
               <tr>
                 <td><span class="tier">旗舰</span><span class="tier-id">max</span></td>
-                <td class="num">550</td>
-                <td class="num">138</td>
-                <td class="num">158 万</td>
+                <td class="num">500</td>
+                <td class="num">125</td>
+                <td class="num">144 万</td>
               </tr>
             </tbody>
           </table>
         </div>
-        <p class="foot">按当前价目表估算，实际以出账为准。旗舰档会在多个上游之间切换，这里按其中最贵的一条算。</p>
+        <p class="foot">价格由我们自己定，不随上游成本浮动。旗舰档会在多个上游之间切换，用户付的仍是同一个价。调价只影响之后的消费，不追溯已发生的用量。</p>
       </section>
 
       <!-- 本周期用量 -->
@@ -311,7 +311,7 @@
         <div class="card-head">
           <div>
             <p class="card-title">本周期用量</p>
-            <p class="card-sub">共 4,750 万 tokens · 8,540 次请求</p>
+            <p class="card-sub">共 2,346 万 tokens · 8,540 次请求</p>
           </div>
           <button class="btn" type="button">查看明细</button>
         </div>
@@ -329,21 +329,21 @@
             <tbody>
               <tr>
                 <td><span class="tier">标准</span><span class="tier-id">default</span></td>
-                <td class="num">4,200 万</td>
+                <td class="num">2,100 万</td>
                 <td class="num">2,400</td>
                 <td class="num">58.8%</td>
                 <td><div class="bar"><i style="width:58.8%"></i></div></td>
               </tr>
               <tr>
                 <td><span class="tier">高级</span><span class="tier-id">pro</span></td>
-                <td class="num">525 万</td>
+                <td class="num">225 万</td>
                 <td class="num">1,200</td>
                 <td class="num">29.4%</td>
                 <td><div class="bar"><i style="width:29.4%"></i></div></td>
               </tr>
               <tr>
                 <td><span class="tier">旗舰</span><span class="tier-id">max</span></td>
-                <td class="num">24.7 万</td>
+                <td class="num">21 万</td>
                 <td class="num">480</td>
                 <td class="num">11.8%</td>
                 <td><div class="bar"><i style="width:11.8%"></i></div></td>
@@ -472,7 +472,7 @@
 
       <section class="card">
         <p class="card-title">本周期用量</p>
-        <p class="card-sub">共 1.16 亿 tokens · 21,043 次请求</p>
+        <p class="card-sub">共 5,665 万 tokens · 21,043 次请求</p>
         <div class="tbl-wrap">
           <table>
             <thead>
@@ -487,21 +487,21 @@
             <tbody>
               <tr>
                 <td><span class="tier">标准</span><span class="tier-id">default</span></td>
-                <td class="num">1.02 亿</td>
+                <td class="num">5,050 万</td>
                 <td class="num">5,800</td>
                 <td class="num">58.0%</td>
                 <td><div class="bar"><i style="width:58%"></i></div></td>
               </tr>
               <tr>
                 <td><span class="tier">高级</span><span class="tier-id">pro</span></td>
-                <td class="num">1,320 万</td>
+                <td class="num">562 万</td>
                 <td class="num">3,000</td>
                 <td class="num">30.0%</td>
                 <td><div class="bar"><i style="width:30%"></i></div></td>
               </tr>
               <tr>
                 <td><span class="tier">旗舰</span><span class="tier-id">max</span></td>
-                <td class="num">61.5 万</td>
+                <td class="num">52.5 万</td>
                 <td class="num">1,200</td>
                 <td class="num">12.0%</td>
                 <td><div class="bar"><i style="width:12%"></i></div></td>
@@ -566,11 +566,11 @@
           </div>
           <div class="metric sm">
             <span class="k">输入 tokens</span>
-            <span class="v">4,074 万</span>
+            <span class="v">2,220 万</span>
           </div>
           <div class="metric sm">
             <span class="k">输出 tokens</span>
-            <span class="v">676 万</span>
+            <span class="v">126 万</span>
           </div>
           <div class="metric sm">
             <span class="k">请求数</span>
@@ -592,10 +592,10 @@
               </tr>
             </thead>
             <tbody>
-              <tr><td>周金亮</td><td class="num">2,666 万</td><td class="num">2,290</td><td class="num">4,793</td></tr>
-              <tr><td>海港</td><td class="num">1,281 万</td><td class="num">1,100</td><td class="num">2,303</td></tr>
-              <tr><td>weigan</td><td class="num">582 万</td><td class="num">500</td><td class="num">1,046</td></tr>
-              <tr><td>Mac-mini 值守 Agent <span class="pill" style="margin-left:6px">Agent</span></td><td class="num">221 万</td><td class="num">190</td><td class="num">398</td></tr>
+              <tr><td>周金亮</td><td class="num">1,317 万</td><td class="num">2,290</td><td class="num">4,793</td></tr>
+              <tr><td>海港</td><td class="num">633 万</td><td class="num">1,100</td><td class="num">2,303</td></tr>
+              <tr><td>weigan</td><td class="num">287 万</td><td class="num">500</td><td class="num">1,046</td></tr>
+              <tr><td>Mac-mini 值守 Agent <span class="pill" style="margin-left:6px">Agent</span></td><td class="num">109 万</td><td class="num">190</td><td class="num">398</td></tr>
             </tbody>
           </table>
         </div>
@@ -748,11 +748,11 @@
   <div class="spec">
     <h4>规格</h4>
     <ul>
-      <li><strong>发现一处 schema 与 UI 的错配：</strong><code>member_credit_quota</code> 把 <code>period</code> 放在<em>每个成员</em>的行上，但这一屏按团队统一设置。成员各用各的周期会让「本周期已用」这一列不可比，报表也讲不通。建议把 <code>period</code> 提到团队级列；若保留现状，UI 必须强制向所有行写同一个值。<span class="ph">§5.2</span></li>
+      <li><strong>周期是团队级的。</strong> 这一屏画出来时发现 DDL 把 <code>period</code> 放在每个成员行上 —— 成员各用各的周期会让「本周期已用」不可比。已改：<code>period</code> 与「新成员默认」落在新表 <code>team_credit_settings</code>，<code>member_credit_quota</code> 只存每人的 <code>limit_credits</code>。<span class="ph">§4.5 / §5.2</span></li>
       <li><strong><code>quota_exceeded</code> 与 <code>insufficient_credits</code> 要分开呈现。</strong> 前者只拦一个人、解法是调限额；后者全员停、解法是充值。两者混成一句「额度不足」会把人引向错误的操作。<span class="ph">§4.2</span></li>
       <li><strong>把限额调到低于已用量时要提示。</strong> 该成员会立刻停到周期结束 —— 这是合法操作，但必须让所有者知道自己按下去会发生什么。</li>
       <li><strong>Agent actor 无显式限额行时跳过 quota 检查</strong>，只受团队余额约束。给 Agent 设限额要二次确认。<span class="ph">§6.2.2</span></li>
-      <li><strong>「新成员默认」是附录 F 仅剩的两条未决之一。</strong> 现在按「不限」画；等有真实用量分布后再定，改的是数据不是结构。</li>
+      <li><strong>「新成员默认」的结构已落位</strong>（<code>team_credit_settings.default_limit_credits</code>），设成多少等有真实用量分布后再定 —— 改的是数据不是结构。</li>
       <li>周期口径与用量报表共用同一套 CST 换算，不要各写一份。<span class="ph">附录 A</span></li>
       <li class="ph">编辑限额的弹层记得传 container —— 设置页是模态 dialog，默认 portal 到 body 会永远打不开。§12.7</li>
     </ul>

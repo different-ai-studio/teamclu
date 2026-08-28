@@ -143,14 +143,14 @@
               │
               ▼
 ┌─────────────────────────┐
-│  public_models.max       │  对外 catalog（三档 tier，§4.3.1）        
+│  public_models.max       │  对外 catalog + **定价**（§4.4）          
 │  routes[] (1:n)          │
 └───────────┬─────────────┘
             │ 路由策略 pick 一条
             ▼
 ┌─────────────────────────┐
-│  backend_models.gpt-4o  │  实际上游：provider + upstream_model + pricing
-│  → openai/gpt-4o
+│  backend_models.gpt-4o  │  实际上游：provider + upstream_model（无定价）
+│  → openai/gpt-4o        │  cost 可选，仅供毛利报表
 └─────────────────────────┘
             │
             ▼
@@ -196,14 +196,42 @@ Tauri 端不再从云端拉团队的模型列表：`provider.team` 的形状与�
 
 网关对**未知 model id** 一律 403 `model_not_allowed`，不要静默回落到 `default` —— 静默回落会让一个发错 id 的客户端永远拿到错误档位却毫无征兆。
 
-### 4.4 Credits 折算（按实际上游 model 定价）
+### 4.4 Credits 折算（按三档 tier 自主定价）
 
-**定价只挂在 `backend_models.*.pricing`**，不挂在 public model 上。原因：`max` 一次走 gpt-4o、一次 failover 到 ds-v4-pro，二者价格差一个数量级，必须按 **本次实际命中的 backend** 扣费。
+**定价挂在 `public_models.*.pricing`（default / pro / max），不挂在 backend 上。** 我们自己定价，不锚定上游成本。
 
 ```
 credits = ceil(input_tokens  × input_per_1m_credits  / 1_000_000)
         + ceil(output_tokens × output_per_1m_credits / 1_000_000)
 ```
+
+三档各一组 `(input_per_1m_credits, output_per_1m_credits)`，就这么多。
+
+#### 4.4.0 自主定价换掉了什么
+
+早期草案把 credits 锚定在上游成本、定价挂在 `backend_models` 上。实测上游之后那条路会背上三层复杂度，而自主定价把它们**全部消掉**：
+
+| 锚定上游会带来的问题 | 自主定价后 |
+|---|---|
+| **峰谷价差 2 倍**（DeepSeek 谷时价是峰时一半，峰时为 UTC 周一至周五 01:00–04:00 与 06:00–10:00） | 消失。这是我们的成本波动，不是用户的价格波动，由毛利吸收 |
+| **prompt 缓存命中价约为未命中的 1/30**，实测同前缀命中率 99.4%（`hit=3456 / miss=20`），不拆分计价就等于按 30 倍收费 | 消失。缓存省下来的是**我们的毛利**，用户看到的是稳定单价 |
+| **混合路由的档位单价不确定**（`max` 会 failover 到差一个数量级的两个 backend），预留只能按最高价估 | 消失。`max` 无论落到哪个 backend，用户付的都是同一个价 |
+| 上游价目表是美元，需要 FX 换算且会漂 | 消失。credits 是我们自己的单位 |
+
+**但仍然要记录成本侧的明细。** `ai_usage_logs` 保留 `cached_input_tokens` 与实际命中的 `backend_model_id` —— **计费不看它们，毛利分析看**。缓存命中率掉下来、或某档路由成本翻倍，只有这两列能提前告诉我们。**计费简单，记录详细**，这是两件事。
+
+`backend_models.*.cost` 是**可选**字段，纯给毛利报表用，不参与任何扣费；不维护也不影响系统运行。
+
+#### 4.4.0.1 一条仍然躲不掉的上游适配
+
+定价与上游脱钩了，但 **usage 的取法仍是 per-provider 的协议差异**：
+
+- **DeepSeek**：无条件返回 usage，挂在**最后一个正常 chunk**（带 `finish_reason`）上，不是独立帧。
+- **OpenAI**：需要注入 `stream_options.include_usage`，且会额外发一个 `choices` 为空的独立 usage 帧 —— 客户端原本没要的话，网关要把这一帧吞掉。
+
+所以 catalog 的 provider 上要声明 `usage_mode: always | needs_stream_options`，§6.6 按它分支。
+
+另两条实测结论：**未知参数被容忍**（`some_bogus_param` 照样 200），§1.3 的 `drop_params` 替代降级为防御性、不阻塞 Phase 0；**`reasoning_tokens` 已计入 `completion_tokens`**（实测 24 = 24），输出不用单独加，但 reasoning 会吃光 `max_tokens`（实测 24 token 全被 reasoning 用掉、`content` 为空），§4.6 的预留要按「输出全是 reasoning」估。
 
 #### 4.4.1 credit 单位：必须细到 `ceil` 落进噪声
 
@@ -216,36 +244,36 @@ flash 输入 20 credits/1M token，一次 5,000 token 的请求：
 
 agent 一次会话有几十次这种小请求，所以这是常态而不是边缘情况。
 
-**决定：1 credit = 0.000001 元的「上游成本」。**
+**约束：单价要定得让「一次典型请求 ≥ 数千 credits」。** 具体数值是产品定价决策（附录 F），但无论定多少都必须满足这条，否则 `ceil` 会吃掉小请求。
+
+满足该约束的一个量纲示例：`default` 档输入定为 `1,000,000 credits / 1M token`（即 1 credit ≈ 1 个输入 token），其余档按倍数展开。
 
 | 项 | 取值 |
 |---|---|
-| catalog 里的数值 | 上游每 1M token 单价（元）× 1,000,000 |
+| catalog 里的数值 | 每 1M token 收多少 credits，由我们自己定 |
 | 典型请求量级 | 5,000 input token ≈ 5,000 credits，`ceil` 误差 0.02% |
 | `bigint` 上限 | 9.2e18 credits = 9.2e12 元，不可能溢出 |
-| UI 显示 | 「积分」= `credits / 10_000`（1 积分 = 0.01 元成本） |
+| UI 显示 | 「积分」= `credits / 10_000` |
 
 **UI 只展示余额与聚合，不展示单次请求成本。** 余额（万级积分）和单次成本（0.0x 积分）差 5 个数量级，任何单一显示单位都会在一端难看；单次成本只出现在会话/日聚合里。
 
-**credits 锚定成本，不锚定售价。** 这是本节的关键取舍：
-
-- catalog 成为供应商价目表的**直接抄写**，可审计、改价即改一行，不需要重算加价。
-- 加价只发生在充值那**一次**换算里（例如按 2 倍成本卖：充 100 元 → 记 50,000,000 credits）。
-- **因此售价不阻塞本设计** —— 它是充值那一侧的运营参数，不是网关的常量。
+**credits 是我们自己的定价单位，与上游成本无关。** 上游涨价、换供应商、缓存命中率变化都不改变用户看到的单价 —— 变的是毛利。充值时的元↔积分换算是另一个独立的运营参数。
 
 | 阶段 | 做法 |
 |------|------|
-| 请求前（预留） | 用该 public model **所有候选路由里最高价** × 预估 token 数，见 §4.6 |
-| 请求后（结算） | 按 **实际** `backend_model` 的 pricing + 上游 `usage` 精确扣费，冲销预留 |
+| 请求前（预留） | 该档的单价 × 预估 token 数（输入按字节估、输出按 `max_tokens` 上限），见 §4.6 |
+| 请求后（结算） | 按**该档单价** + 上游 usage 的 token 数精确扣费，冲销预留。落哪个 backend 不影响金额 |
 | 无 usage | 按 `max_tokens`（缺省时按该 backend 的 `default_max_output_tokens`）上限保守扣，并在 `ai_usage_logs.usage_source` 记 `estimated` |
 
-**用量日志**同时记 `public_model_id`（客户请求的）和 `backend_model_id`（实际路由的）。
+**用量日志**同时记 `public_model_id`（计费依据）与 `backend_model_id` + `cached_input_tokens`（成本/毛利依据，不参与计费）。
 
 **Credit ↔ 货币**：见 §4.4.1。网关内部只认 credits，不做任何汇率换算；元 → credits 的换算（含加价）发生在 FC 的充值入口，货币金额由支付侧自己留痕在 `credit_ledger.note`。
 
 ### 4.5 成员限额配置
 
-Team owner 可设 `period`（`week` | `month`）、`limit_credits`（null = 不限）。管理 API 在 FC；enforcement 在 gateway。周期口径见附录 A。
+Team owner 可设 `limit_credits`（null = 不限）。管理 API 在 FC；enforcement 在 gateway。周期口径见附录 A。
+
+**`period` 是团队级的，不是成员级。** 画限额界面时发现的错配：如果成员各用各的周期，「本周期已用」这一列就不可比，报表也讲不通。所以 `period` 落在 `team_credit_settings` 上，`member_credit_quota` 只存每人的 `limit_credits`。
 
 ### 4.6 并发与超发（一期就要有解）
 
@@ -472,10 +500,20 @@ CREATE INDEX credit_reservation_expiry_idx
   WHERE state = 'held';
 
 -- 成员周期限额。
+-- 团队级的限额设置。period 放这里而不是放在每个成员行上：成员各用各的
+-- 周期会让「本周期已用」不可比（§4.5）。default_limit_credits 是新成员的
+-- 缺省值，null = 不限。
+CREATE TABLE amux.team_credit_settings (
+  team_id               uuid PRIMARY KEY REFERENCES amux.teams(id) ON DELETE CASCADE,
+  period                text NOT NULL DEFAULT 'month' CHECK (period IN ('week','month')),
+  default_limit_credits bigint CHECK (default_limit_credits IS NULL OR default_limit_credits >= 0),
+  low_balance_credits   bigint,   -- 低水位告警阈值，null = 不告警
+  updated_at            timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE amux.member_credit_quota (
   team_id       uuid NOT NULL REFERENCES amux.teams(id) ON DELETE CASCADE,
   actor_id      uuid NOT NULL REFERENCES amux.actors(id) ON DELETE CASCADE,
-  period        text NOT NULL CHECK (period IN ('week','month')),
   limit_credits bigint CHECK (limit_credits IS NULL OR limit_credits >= 0),
   updated_at    timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (team_id, actor_id)
@@ -489,8 +527,13 @@ CREATE TABLE amux.ai_usage_logs (
   public_model_id   text NOT NULL,       -- 客户请求的
   backend_model_id  text NOT NULL,       -- 实际路由到的
   provider_id       text NOT NULL,
-  input_tokens      bigint NOT NULL DEFAULT 0,
+  -- 输入拆两段：缓存命中的单价约为未命中的 1/30（§4.4.0 ①）。
+  -- 合成一个 input_tokens 会让账单无法复核。
+  cached_input_tokens bigint NOT NULL DEFAULT 0,
+  input_tokens      bigint NOT NULL DEFAULT 0,   -- cache miss 部分
   output_tokens     bigint NOT NULL DEFAULT 0,
+  -- 结算时套用的峰谷系数（§4.4.0 ②），留档以便复核账单。
+  peak_factor       numeric(4,2) NOT NULL DEFAULT 1,
   credits           bigint NOT NULL DEFAULT 0,
   -- 'upstream' = 上游回了 usage；'estimated' = 按 max_tokens 保守扣（§4.4）
   usage_source      text NOT NULL DEFAULT 'upstream'
@@ -513,8 +556,8 @@ GRANT USAGE ON SCHEMA amux TO ai_gateway;
 GRANT SELECT, INSERT, UPDATE ON amux.team_credit_balance,
       amux.credit_reservation TO ai_gateway;
 GRANT SELECT, INSERT ON amux.credit_ledger, amux.ai_usage_logs TO ai_gateway;
-GRANT SELECT ON amux.member_credit_quota, amux.actors, amux.teams,
-      amux.team_workspace_config TO ai_gateway;
+GRANT SELECT ON amux.member_credit_quota, amux.team_credit_settings,
+      amux.actors, amux.teams, amux.team_workspace_config TO ai_gateway;
 ```
 
 ### 5.3 保留与对账
@@ -895,23 +938,22 @@ UPDATE amux.team_workspace_config
 
 ### 12.3 「1 积分 = 多少 token」不是一个数
 
-这是本节最容易做错的地方。credits 锚定的是**上游成本**（§4.4.1），所以积分到 token 的换算**取决于用哪一档、以及输入还是输出**——不存在单一比值。UI 上写「1 积分 = N tokens」就是在撒谎。
+积分到 token 的换算**取决于用哪一档、以及输入还是输出**——不存在单一比值。UI 上写「1 积分 = N tokens」就是在撒谎。
 
-正确做法是一张按档的小表，输入/输出分列：
+好消息是自主定价（§4.4）让这张表变成**精确值而非估算**：三档各一个固定单价，落到哪个上游都不改变金额。按档的小表，输入/输出分列：
 
-| 档位 | 1 积分 ≈ 输入 token | 1 积分 ≈ 输出 token |
+| 档位 | 1 积分 = 输入 token | 1 积分 = 输出 token |
 |---|---|---|
-| 标准 default | ~20,000 | ~10,000 |
-| 高级 pro | ~5,000 | ~2,500 |
-| 旗舰 max | ~550 | ~140 |
+| 标准 default | 10,000 | 2,500 |
+| 高级 pro | 2,500 | 625 |
+| 旗舰 max | 500 | 125 |
 
-（按 `catalog.example.yaml` 的**占位价**算出来的示意；1 积分 = 10,000 credits，credits 数由 catalog 给。真实数字随价目表变。）
+（按 `catalog.example.yaml` 的**占位价**算出来的示意；1 积分 = 10,000 credits。真实数字待定价决策，见附录 F。）
 
-三条硬要求：
+两条硬要求：
 
-1. **必须标注是估算**，并说明「实际以出账为准」——价目表会变，混合路由的档位每次命中的成本也不同。
-2. **混合路由的档位取该档所有路由里最高价那条**（`max` 会 failover 到差一个数量级的两个 backend）。这与 §4.4 预留用的口径一致，且对用户是保守估计，不会让人以为能用更多。
-3. 数据来自 `GET /models` 新增的 `estimatedPricing` 字段（§12.5），**不要在客户端硬编码价格**——那会在调价当天变成错误信息。
+1. **数据来自 `GET /models` 的 `pricing` 字段**（§12.5），**不要在客户端硬编码价格** —— 那会在调价当天变成错误信息。
+2. 不需要标注「估算」，但要说明**调价会影响后续消费、不追溯已发生的用量**。
 
 ### 12.4 现有 Token 用量页的迁移
 
@@ -940,7 +982,7 @@ UPDATE amux.team_workspace_config
 | `GET` | `/v1/teams/:teamId/credits/ledger` | 充值历史。**只返回 `kind IN (top_up, grant, adjustment, refund)`**，排除 `usage` 行（那是每请求一行，量级完全不同） |
 | `GET` | `/v1/teams/:teamId/credits/usage` | 加 `groupBy=actor\|model` 参数，供排行榜与分档表复用同一端点 |
 
-`GET /v1/teams/:teamId/models`（网关）响应加 `estimatedPricing: { inputPer1mCredits, outputPer1mCredits }`，取该档最高价路由（§12.3 第 2 条）。仍然**不暴露 upstream 名**。
+`GET /v1/teams/:teamId/models`（网关）响应加 `pricing: { inputPer1mCredits, outputPer1mCredits }`，直接来自该档的 `public_models.*.pricing`。仍然**不暴露 upstream 名**。
 
 ### 12.6 权限
 
@@ -982,12 +1024,16 @@ UPDATE amux.team_workspace_config
 | 账单与用量分两页，共用一批端点 | 账单答「还剩多少、怎么充」，用量答「花在哪了」；避免两处聚合逻辑（§12.1） |
 | 积分↔token 按档分列展示，不给单一比值 | credits 锚成本，换算随档位与输入/输出而变，单一比值是错误信息（§12.3） |
 | 换算价格由 `GET /models` 下发，不在客户端硬编码 | 调价当天硬编码就变成错误信息（§12.3） |
+| 积分↔token 是精确值不是估算 | 自主定价后三档单价固定，落到哪个上游都不改金额（§4.4） |
 | 周期早于统计起始日时显示说明而非 0 | 显示 0 会被读成「那段时间没人用」（§12.4） |
-| 1 credit = 1e-6 元上游成本 | 单位取粗会让 `ceil` 对小请求系统性高估 10 倍；agent 全是小请求（§4.4.1） |
-| credits 锚成本而非售价 | catalog 变成价目表的直接抄写；加价集中在充值一次换算，售价因此不阻塞本设计 |
+| credit 单位要细到一次请求 ≥ 数千 credits | 单位取粗会让 `ceil` 对小请求系统性高估；agent 全是小请求（§4.4.1） |
 | 余额耗尽硬停 402，不降级不透支 | 静默降级让 agent 继续产出低质量结果且无人察觉，定时任务尤其危险；负余额需要整套追缴逻辑（§4.2） |
 | 建团队一次性 grant 10 元额度，不按人头 | 去掉 onboarding 门槛同时封住上限；按人头可靠拉人无限刷（§4.8） |
 | 不做 BI 只读副本 | 两个索引够用；下一步是月度 rollup 而非副本（§5.3） |
+| **自主定价，挂在 default/pro/max 三档上** | 一举消掉峰谷价、缓存分段、混合路由单价不定、FX 四层复杂度（§4.4.0） |
+| 计费简单、记录详细 | `cached_input_tokens` 与 `backend_model_id` 只进日志不进账单，供毛利分析（§4.4.0） |
+| `usage_mode` 按 provider 声明 | DeepSeek 无条件回 usage，OpenAI 需 include_usage 且发独立帧（§4.4.0 ③） |
+| `period` 提到团队级 | 成员各用各的周期会让「本周期已用」不可比（§4.5） |
 | Stripe 放 FC，网关仍是账本唯一写入者 | 支付是业务面；单写者让 webhook 在 FC 内不需要任何新权限（§4.9.1） |
 | 幂等键用 Checkout Session id 而非 event id | 同一 Session 的两个事件有不同 evt_ id，按 event 键会重复入账（§4.9.4） |
 | credits 换算表放 Stripe Price metadata | 额度锚死在下单那一刻的商品上；加价集中一处；币种变得无关（§4.9.3） |
@@ -1050,9 +1096,9 @@ UPDATE amux.team_workspace_config
   （上游报错：原样透传，不结算，预留置 expired）
 ```
 
-## 附录 E：pricing 不在 public model 上
+## 附录 E：pricing 就在 public model 上
 
-`max` 这类混路由 tier 每次命中的成本不同；调价改 `backend_models`，三档 public id 只是稳定的产品包装（§4.3.1）。
+三档 tier 是我们**自主定价**的单位。`max` 落到哪个 backend 不改变用户付多少 —— 那是成本波动，由毛利吸收。调价只改 `public_models.*.pricing` 一处；`backend_models` 只描述「怎么打到上游」，其 `cost` 字段可选且不参与扣费（§4.4.0）。
 
 ## 附录 F：已拍板与仍未决
 
@@ -1060,8 +1106,8 @@ UPDATE amux.team_workspace_config
 
 | 问题 | 结论 | 位置 |
 |------|------|------|
-| credit 对货币的量纲 | 1 credit = 1e-6 元上游成本；UI 积分 = credits/10,000 | §4.4.1 |
-| 售价（用户花多少买 1 积分） | **不阻塞本设计** —— 锚的是成本，加价在充值那一次换算里，属运营参数 | §4.4.1 |
+| 定价是否锚定上游成本 | **否，自主定价**，挂三档 tier | §4.4 |
+| UI 量纲 | 积分 = credits / 10,000；单价须满足 §4.4.1 的 ceil 约束 | §4.4.1 |
 | 默认赠送额度 | 建团队一次性 grant 10 元额度（10,000,000 credits），不按人头 | §4.8 |
 | 余额耗尽的行为 | 402 硬停；不降级、不透支；靠低水位告警兜 | §4.2 |
 | 支付渠道 | **Stripe**（Phase 4）。幂等键让 Phase 0–3 完全不受影响 | §4.9 |
@@ -1069,5 +1115,6 @@ UPDATE amux.team_workspace_config
 
 ### 仍未决（不阻塞 Phase 0）
 
+0. **三档的实际定价数值** —— 机制已定（`public_models.*.pricing`，§4.4），填多少是产品决策。唯一的工程约束见 §4.4.1。Phase 0/1 不扣费，真正需要它的时间点是 Phase 2。
 1. **低水位告警的阈值与通道** —— 余额硬停既然是设计选择，告警就是它的配套。阈值（剩余额度 or 预计可用天数）和通道（设置页 / 企微 / 邮件）留到 Phase 2 做设置页时一并定。
-2. **成员 quota 的默认值** —— 目前设计是「缺省不限，仅受团队余额约束」。是否要给新成员一个默认周期上限，等有真实用量分布后再看，改的是数据不是结构。
+2. **成员 quota 的默认值** —— 结构上已落位（`team_credit_settings.default_limit_credits`，见 §5.2），设成多少等有真实用量分布后再定，**改的是数据不是结构**，不阻塞任何一期。
