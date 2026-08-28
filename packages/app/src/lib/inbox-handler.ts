@@ -12,7 +12,6 @@ import {
   shouldMarkSessionUnread,
 } from "@/lib/active-session-read";
 import { mqttSubscribe } from "@/lib/mqtt-bridge";
-import { notificationService } from "@/lib/notification-service";
 
 export interface InboxPing {
   session_id: string;
@@ -164,7 +163,6 @@ export function handleInboxEnvelope(
   }
 
   options?.onMessagePing?.(payload.session_id);
-  void notificationService.requestDockAttention();
   if (!found || !isActiveView) {
     scheduleSessionListRefresh(() => store.loadFirstPage());
   }

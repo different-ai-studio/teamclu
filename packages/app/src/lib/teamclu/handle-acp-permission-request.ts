@@ -38,7 +38,6 @@ function sendAcpPermissionOsBanner(
 ): void {
   const requestId = request.requestId?.trim();
   if (!requestId || osNotifiedRequestIds.has(requestId)) return;
-  osNotifiedRequestIds.add(requestId);
 
   const sessionTitle =
     useSessionListStore.getState().rows.find((r) => r.id === sessionId)?.title ||
@@ -64,8 +63,12 @@ function sendAcpPermissionOsBanner(
         }
       },
     )
+    .then((result) => {
+      if (result === "sent") {
+        osNotifiedRequestIds.add(requestId);
+      }
+    })
     .catch((err) => {
-      osNotifiedRequestIds.delete(requestId);
       console.warn("[notify-diag] acp-permission:os-notify-failed", err);
     });
 }

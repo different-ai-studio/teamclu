@@ -14,6 +14,8 @@ import { useSessionSelectionStore } from "@/stores/session-selection-store";
 /** OS banner types still exposed in settings; only action_required is sent today. */
 export type NotificationType = "action_required" | "task_completed" | "info";
 
+export type NotificationSendResult = "sent" | "skipped";
+
 export type NotificationLevel = "all" | "important" | "mute";
 
 export const NOTIFICATION_LEVEL_KEY = `${appStoragePrefix}-notification-level`;
@@ -103,8 +105,10 @@ class NotificationService {
 
   /**
    * Send a desktop OS banner (permission prompts, etc.).
-   * Chat messages use Dock bounce via inbox MQTT — see inbox-handler +
-   * mqtt/dock_attention.rs.
+   * Inbox message pings use Dock bounce in Rust — see mqtt/dock_attention.rs.
+   *
+   * Returns `sent` only when a banner was actually shown; `skipped` otherwise
+   * (suppress, level filter, permission denied, etc.).
    */
   async send(
     type: NotificationType,
@@ -112,7 +116,7 @@ class NotificationService {
     body: string,
     sessionId: string,
     onClick?: () => void,
-  ): Promise<void> {
+  ): Promise<NotificationSendResult> {
     const activeSessionId = useSessionSelectionStore.getState().activeSessionId;
     const focused = await this.isWindowFocused();
     const visibility =
@@ -139,13 +143,13 @@ class NotificationService {
         focused,
         visibility,
       });
-      return;
+      return "skipped";
     }
 
     const level = this.getLevel();
     if (!LEVEL_ALLOWS[level].has(type)) {
       diag("send:skipped", { reason: "level_filter", type, level });
-      return;
+      return "skipped";
     }
 
     try {
@@ -155,7 +159,7 @@ class NotificationService {
         const policy = getPermissionPolicy();
         if (policy === "bypass" || policy === "batch") {
           diag("send:skipped", { reason: "permission_policy", policy });
-          return;
+          return "skipped";
         }
         const permission = await requestPermission();
         granted = permission === "granted";
@@ -163,11 +167,11 @@ class NotificationService {
       }
       if (!granted) {
         diag("send:skipped", { reason: "os_permission_denied" });
-        return;
+        return "skipped";
       }
     } catch (err) {
       console.warn(DIAG, "send:permission-check-failed", err);
-      return;
+      return "skipped";
     }
 
     const truncatedBody = truncateBody(body);
@@ -190,8 +194,9 @@ class NotificationService {
       } catch (err) {
         notificationClickHandlers.clear();
         console.warn(DIAG, "send:tauri-sendNotification-failed", err);
+        return "skipped";
       }
-      return;
+      return "sent";
     }
 
     try {
@@ -211,8 +216,10 @@ class NotificationService {
         };
       }
       diag("send:web-notification-ok");
+      return "sent";
     } catch (err) {
       console.warn(DIAG, "send:web-notification-failed", err);
+      return "skipped";
     }
   }
 

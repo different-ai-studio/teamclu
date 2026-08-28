@@ -77,7 +77,8 @@ describe('notification-service', () => {
 
   it('send uses Tauri sendNotification when level allows', async () => {
     store[`${appShortName}-notification-level`] = 'important'
-    await notificationService.send('action_required', 'Auth Required', 'Please approve', 'sess-3')
+    const result = await notificationService.send('action_required', 'Auth Required', 'Please approve', 'sess-3')
+    expect(result).toBe('sent')
     expect(sendNotificationMock).toHaveBeenCalledOnce()
     expect(sendNotificationMock.mock.calls[0][0]).toMatchObject({
       title: 'Auth Required',
@@ -88,7 +89,8 @@ describe('notification-service', () => {
 
   it('send does not create notification for info at important level', async () => {
     store[`${appShortName}-notification-level`] = 'important'
-    await notificationService.send('info', 'FYI', 'Just letting you know', 'sess-5')
+    const result = await notificationService.send('info', 'FYI', 'Just letting you know', 'sess-5')
+    expect(result).toBe('skipped')
     expect(sendNotificationMock).not.toHaveBeenCalled()
   })
 
@@ -96,7 +98,8 @@ describe('notification-service', () => {
     store[`${appShortName}-notification-level`] = 'important'
     isFocusedMock.mockResolvedValue(true)
     selectionState.activeSessionId = 'sess-7'
-    await notificationService.send('action_required', 'Auth Required', 'Please approve', 'sess-7')
+    const result = await notificationService.send('action_required', 'Auth Required', 'Please approve', 'sess-7')
+    expect(result).toBe('skipped')
     expect(sendNotificationMock).not.toHaveBeenCalled()
   })
 

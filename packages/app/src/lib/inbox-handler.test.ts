@@ -14,14 +14,6 @@ vi.mock("@/lib/active-session-read", () => ({
   scheduleMarkActiveSessionRead: scheduleMarkActiveSessionReadMock,
 }));
 
-const requestDockAttentionMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
-
-vi.mock("@/lib/notification-service", () => ({
-  notificationService: {
-    requestDockAttention: requestDockAttentionMock,
-  },
-}));
-
 import {
   ensureInboxSubscribed,
   handleInboxEnvelope,
@@ -56,7 +48,6 @@ describe("handleInboxEnvelope", () => {
     shouldMarkSessionUnreadMock.mockReset();
     shouldMarkSessionUnreadMock.mockReturnValue(true);
     scheduleMarkActiveSessionReadMock.mockReset();
-    requestDockAttentionMock.mockClear();
   });
 
   afterEach(() => {
@@ -182,10 +173,8 @@ describe("handleInboxEnvelope", () => {
       { onMessagePing },
     );
     expect(onMessagePing).toHaveBeenCalledWith("s1");
-    expect(requestDockAttentionMock).toHaveBeenCalledOnce();
 
     onMessagePing.mockClear();
-    requestDockAttentionMock.mockClear();
     handleInboxEnvelope(
       makeEnv("inbox/u1", { session_id: "s1", type: "read" }),
       "u1",
@@ -194,7 +183,6 @@ describe("handleInboxEnvelope", () => {
       { onMessagePing },
     );
     expect(onMessagePing).not.toHaveBeenCalled();
-    expect(requestDockAttentionMock).not.toHaveBeenCalled();
   });
 
   it("marks active session read instead of patching unread on message ping", () => {
