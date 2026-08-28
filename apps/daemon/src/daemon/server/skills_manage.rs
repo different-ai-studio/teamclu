@@ -12,7 +12,6 @@ use crate::config::{
 };
 use crate::runtime::claude_skills::{
     reconcile_after_managed_mutation, WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED,
-    WARNING_CLAUDE_LOCAL_OVERRIDE,
 };
 use crate::runtime::refresh::{RefreshChangeKind, RefreshSource};
 
@@ -22,7 +21,7 @@ pub(crate) const WARNING_SKILL_REFRESH_FAILED: &str = "skill_refresh_failed";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PartialFailure {
+pub(crate) struct PartialFailure {
     error_code: String,
     message: String,
 }
