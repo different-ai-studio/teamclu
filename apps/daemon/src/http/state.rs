@@ -121,6 +121,11 @@ pub struct HttpState {
     pub session_index: Arc<SessionOwnerIndex>,
     pub idempotency: Arc<IdempotencyCache>,
     pub limiter: Arc<RateLimiter>,
+    /// Shared outbound HTTP client for `/v1/ai/*`. One per state rather than
+    /// one per request: a fresh `reqwest::Client` builds its own connection
+    /// pool and TLS session cache, so per-request construction would add a
+    /// full handshake to every completion.
+    pub http_client: reqwest::Client,
     /// Workspace configuration control (providers, permissions, allowlist).
     /// `None` when the HTTP server is started without a workspace control
     /// store (e.g. in focused unit tests). Workspace routes return 404 in
@@ -210,6 +215,11 @@ impl HttpState {
             session_index: SessionOwnerIndex::new(),
             idempotency: IdempotencyCache::new(),
             limiter: RateLimiter::new(),
+            // No global timeout: a long completion legitimately streams for
+            // minutes, and the client hanging up is what cancels it.
+            http_client: reqwest::Client::builder()
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             workspace_control,
             runtime_supervisor,
             runtime_refresh,

@@ -307,8 +307,15 @@ mod tests {
         // scoped to the active team and written once, globally.
         let global = std::fs::read_to_string(global_team_config()).unwrap();
         assert!(
-            global.contains("cron-model"),
+            global.contains("\"team\""),
             "the managed provider belongs in the active team's global opencode.json"
+        );
+        // The tier list is pinned client-side, so the cloud's model name is not
+        // what proves the provider landed -- the provider entry itself is.
+        assert!(global.contains("\"default\""), "pinned tiers materialized");
+        assert!(
+            !global.contains("cron-model"),
+            "cloud model list is not used"
         );
         assert!(
             !materialized.contains("cron-model"),

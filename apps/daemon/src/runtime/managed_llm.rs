@@ -213,11 +213,15 @@ mod tests {
         ids
     }
 
-    /// The bug: an admin swapping the team's models left members on the old list
-    /// because `provider.team` was only ever written while assembling a spawn
-    /// env. Reconciling has to replace the list on disk, not union into it.
+    /// The model list is pinned client-side (`TEAM_MODEL_TIERS`), so a cloud
+    /// change to it is deliberately ignored: which upstream a tier resolves to
+    /// is the gateway's business, and a member's menu should not depend on a
+    /// round-trip returning the right thing.
+    ///
+    /// What reconcile still exists for is `base_url` — that is the per-team
+    /// cutover lever (design §11.1), so a change to it MUST land on disk.
     #[tokio::test]
-    async fn reconcile_replaces_the_team_model_list_from_cloud() {
+    async fn reconcile_pins_the_tier_list_but_still_follows_the_cloud_base_url() {
         let (_global, _home) = isolated_global_config();
         let mock = MockBackend::with_identity("team-x", "actor-x");
         mock.state()
@@ -227,10 +231,14 @@ mod tests {
         let resolver = ManagedLlmResolver::new(backend);
 
         resolver.reconcile_global("team-x").await;
-        assert_eq!(team_model_ids(), vec!["model-a".to_string()]);
+        assert_eq!(
+            team_model_ids(),
+            vec!["default".to_string(), "max".to_string(), "pro".to_string()],
+            "the cloud's model list must not reach the runtime"
+        );
 
-        // Admin swaps the team onto a new set. The TTL cache would otherwise
-        // hold the old answer, so drop it the way a 60s expiry would.
+        // Admin swaps the team onto a different set. The TTL cache would
+        // otherwise hold the old answer, so drop it the way a 60s expiry would.
         mock.state().managed_llm_configs.insert(
             "team-x".to_string(),
             config_with_models(&["model-b", "model-c"]),
@@ -240,8 +248,8 @@ mod tests {
         resolver.reconcile_global("team-x").await;
         assert_eq!(
             team_model_ids(),
-            vec!["model-b".to_string(), "model-c".to_string()],
-            "the dropped model must not survive the reconcile"
+            vec!["default".to_string(), "max".to_string(), "pro".to_string()],
+            "still the three pinned tiers, unchanged by the cloud"
         );
     }
 

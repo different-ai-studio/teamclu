@@ -6,6 +6,20 @@ use crate::opencode_config::OpencodeConfigStore;
 use crate::storage_namespace::{brand_short_name_from_env, resolve_workspace_config_path};
 use crate::DEFAULT_TEAM_REPO_DIR;
 
+/// The three capability tiers the team gateway exposes, pinned client-side.
+///
+/// These ids are the whole public contract. What changes is which upstream each
+/// one resolves to, and that mapping lives in the gateway's catalog — so the
+/// backend, the price, and the vendor can all move without shipping a client.
+/// Adding a fourth tier does need a release, which is the intended trade: a new
+/// tier is a product decision, not a config tweak.
+///
+/// Sourcing this list from the cloud instead (which is what it used to do) made
+/// every member's model menu depend on a network round-trip that could return
+/// stale or empty, for a list that has not changed in the product's lifetime.
+pub const TEAM_MODEL_TIERS: [(&str, &str); 3] =
+    [("default", "标准"), ("pro", "高级"), ("max", "旗舰")];
+
 /// One model exposed by the team's managed LLM gateway.
 #[derive(Debug, Clone)]
 pub struct ManagedLlmModel {
@@ -95,16 +109,13 @@ pub fn mutate_team_provider(
 
     match state {
         ManagedLlmState::Enabled(provider) => {
+            // Pinned, not read from `provider.models` (see TEAM_MODEL_TIERS).
             let mut models_out = serde_json::Map::new();
-            for m in &provider.models {
-                if m.id.is_empty() {
-                    continue;
-                }
-                let mname = if m.name.is_empty() { &m.id } else { &m.name };
+            for (id, label) in TEAM_MODEL_TIERS {
                 models_out.insert(
-                    m.id.clone(),
+                    id.to_string(),
                     serde_json::json!({
-                        "name": mname,
+                        "name": label,
                         "limit": { "context": 256000, "output": 16000 }
                     }),
                 );
@@ -355,6 +366,40 @@ mod tests {
         home.path()
             .join("teams/team-test/state")
             .join(crate::opencode_config::OPENCODE_JSON)
+    }
+
+    #[test]
+    fn materializes_exactly_the_three_pinned_tiers_ignoring_the_cloud_list() {
+        // The cloud used to drive this list. It no longer does: whatever the
+        // backend reports, the client writes default/pro/max. Which upstream a
+        // tier resolves to is the gateway's business, and changing it must not
+        // require a client release.
+        let state = ManagedLlmState::Enabled(ManagedLlmProvider {
+            name: "Team".into(),
+            base_url: "https://gw.example/v1/teams/t1".into(),
+            models: vec![ManagedLlmModel {
+                id: "some-cloud-model".into(),
+                name: "Cloud Model".into(),
+            }],
+        });
+        let mut config = serde_json::json!({});
+        assert!(mutate_team_provider(&mut config, &state).unwrap());
+
+        let models = config["provider"]["team"]["models"].as_object().unwrap();
+        assert_eq!(models.len(), 3);
+        for (id, label) in TEAM_MODEL_TIERS {
+            assert_eq!(models[id]["name"].as_str(), Some(label), "tier {id}");
+        }
+        assert!(
+            !models.contains_key("some-cloud-model"),
+            "a model advertised by the cloud must not reach the runtime"
+        );
+        // The base URL still comes from the cloud -- that is the cutover lever
+        // (design §11.1), and pinning it would remove the rollback path.
+        assert_eq!(
+            config["provider"]["team"]["options"]["baseURL"].as_str(),
+            Some("https://gw.example/v1/teams/t1")
+        );
     }
 
     #[test]

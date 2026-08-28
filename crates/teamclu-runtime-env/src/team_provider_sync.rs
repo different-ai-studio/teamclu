@@ -265,10 +265,18 @@ mod tests {
         assert!(!global.contains("${tc_api_key}"));
         assert!(!on_disk.contains("${API_TOKEN}"));
         assert!(dir.path().join(".teamclu/opencode.runtime.json").exists());
+        // The model list is pinned client-side (TEAM_MODEL_TIERS), so the
+        // cloud's `model-a` must NOT appear -- what the gateway routes each
+        // tier to is a server-side concern the client never sees.
         let parsed: serde_json::Value = serde_json::from_str(&global).unwrap();
-        assert_eq!(
-            parsed["provider"]["team"]["models"]["model-a"]["name"].as_str(),
-            Some("Model A")
+        let models = parsed["provider"]["team"]["models"].as_object().unwrap();
+        assert_eq!(models.len(), 3, "exactly the three tiers");
+        for (id, label) in crate::team_provider::TEAM_MODEL_TIERS {
+            assert_eq!(models[id]["name"].as_str(), Some(label), "tier {id}");
+        }
+        assert!(
+            !models.contains_key("model-a"),
+            "cloud model list is not used"
         );
     }
 }

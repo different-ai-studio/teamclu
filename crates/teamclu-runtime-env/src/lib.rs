@@ -1,5 +1,4 @@
 pub mod active_session;
-pub mod session_context;
 pub mod amuxd_layout;
 pub mod atomic_write;
 pub mod env_activation;
@@ -10,6 +9,7 @@ pub mod opencode_config;
 pub mod opencode_db;
 pub mod personal_secrets;
 pub mod resolved_env;
+pub mod session_context;
 pub mod storage_namespace;
 pub mod team_crypto;
 pub mod team_provider;
@@ -31,12 +31,6 @@ pub use active_session::{
     clear_active_session_id_if_matches, read_active_session_id, write_active_session_id,
     ACTIVE_SESSION_ID_FILE, TEAMCLU_SESSION_ID_ENV,
 };
-pub use session_context::{
-    is_session_scoped_mcp_tool, require_explicit_session_id_from_env,
-    SESSION_SCOPED_MCP_TOOLS, TEAMCLU_AGENT_BACKEND_ENV, TEAMCLU_HOST_GENERATION_ID_ENV,
-    TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID_ENV, TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV,
-    TEAMCLU_RUNTIME_CONTEXT_URL_ENV,
-};
 pub use env_activation::{
     analyze_env_activation, find_unresolved_config_placeholders, EnvActivationAnalysis,
     EnvActivationInput, EnvKeyActivationStatus, UnresolvedConfigPlaceholder,
@@ -44,14 +38,19 @@ pub use env_activation::{
 pub use merge::{host_shadowed_env_keys, secrets_for_team_provider, tc_api_key_for_actor};
 pub use personal_secrets::{
     count_user_personal_env_keys, diagnose_personal_env_store,
-    diagnose_personal_env_store_for_brand, is_internal_personal_blob_key,
-    merge_personal_env_index, personal_env_index_path_for_brand,
-    read_personal_env_index_for_brand, write_personal_env_index_for_brand,
-    PersonalEnvIndexEntry, PersonalEnvStoreDiagnostics,
+    diagnose_personal_env_store_for_brand, is_internal_personal_blob_key, merge_personal_env_index,
+    personal_env_index_path_for_brand, read_personal_env_index_for_brand,
+    write_personal_env_index_for_brand, PersonalEnvIndexEntry, PersonalEnvStoreDiagnostics,
 };
 pub use resolved_env::{
     resolve_runtime_env, EnvOverride, EnvOverrideKind, EnvProvenance, EnvScope, EnvSource,
     ResolvedEnvSnapshot, UnresolvedEnv, UnresolvedReason,
+};
+pub use session_context::{
+    is_session_scoped_mcp_tool, require_explicit_session_id_from_env, SESSION_SCOPED_MCP_TOOLS,
+    TEAMCLU_AGENT_BACKEND_ENV, TEAMCLU_HOST_GENERATION_ID_ENV,
+    TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID_ENV, TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV,
+    TEAMCLU_RUNTIME_CONTEXT_URL_ENV,
 };
 pub use team_provider::{
     managed_llm_provider_from_disk_team, read_global_team_provider,
@@ -64,9 +63,6 @@ pub use team_provider_sync::{
 };
 
 pub use amuxd_layout::{active_team as active_amuxd_team, team_state_dir as amuxd_team_state_dir};
-pub use workspace_instructions::{
-    claude_md_block_present, load_system_prompt, sync_teamclu_claude_md,
-};
 pub use storage_namespace::{
     amuxd_home_for_brand, amuxd_home_from_env, brand_home_dir, brand_short_name_from_env,
     is_official_brand, resolve_amuxd_dir_name, resolve_storage_dir_name,
@@ -81,6 +77,9 @@ pub use storage_namespace::{
     OFFICIAL_STORAGE_DIR, REBRAND_NAMESPACE_MIGRATION_MARKER, ROOT_ALLOWLIST,
     STORAGE_NAMESPACE_MIGRATION_MARKER, TEAM_SHARED_DIR_NAME, WORKSPACE_CONFIG_FILE,
     WORKSPACE_META_DIR,
+};
+pub use workspace_instructions::{
+    claude_md_block_present, load_system_prompt, sync_teamclu_claude_md,
 };
 
 /// Same as [`OFFICIAL_STORAGE_DIR`] — kept for existing call sites.
@@ -181,7 +180,10 @@ mod tests {
         )
         .unwrap();
         assert!(raw.contains("sk-tc-spawn-actor"));
-        assert!(raw.contains("model-a"));
+        // The tier list is pinned client-side (team_provider::TEAM_MODEL_TIERS),
+        // so a model name coming back from the cloud is deliberately ignored.
+        assert!(raw.contains("\"default\""), "pinned tiers are materialized");
+        assert!(!raw.contains("model-a"), "cloud model list is not used");
         let workspace_raw = std::fs::read_to_string(dir.path().join("opencode.json")).unwrap();
         assert!(!workspace_raw.contains("\"team\""));
         assert!(bundle.opencode_json_original.is_none());

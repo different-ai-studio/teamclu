@@ -157,6 +157,20 @@ pub struct HttpConfig {
     /// Hard cap on POST body size in bytes (applies to /prompt etc.).
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
+    /// Separate cap for `/v1/ai/*`. The general cap is sized for control-plane
+    /// JSON; a completion request carries the whole conversation, and at the
+    /// 256k-token context `provider.team` advertises that is comfortably past
+    /// it — the request would 413 before reaching the model.
+    #[serde(default = "default_ai_max_body_bytes")]
+    pub ai_max_body_bytes: usize,
+    /// Rate limit for `/v1/ai/*`, kept apart from the control-plane bucket.
+    /// An agent turn fans out into parallel tool calls, so AI traffic bursts in
+    /// a way the control plane never does; sharing one bucket means a busy
+    /// agent throttles the UI that is watching it.
+    #[serde(default = "default_ai_rate_limit_rps")]
+    pub ai_rate_limit_rps: u32,
+    #[serde(default = "default_ai_rate_limit_burst")]
+    pub ai_rate_limit_burst: u32,
     /// Root-token file. Mode 0600. Auto-generated if missing on startup.
     #[serde(default)]
     pub token_file: Option<PathBuf>,
@@ -199,6 +213,9 @@ impl Default for HttpConfig {
             rate_limit_burst: default_rate_limit_burst(),
             max_sse_per_token: default_max_sse_per_token(),
             max_body_bytes: default_max_body_bytes(),
+            ai_max_body_bytes: default_ai_max_body_bytes(),
+            ai_rate_limit_rps: default_ai_rate_limit_rps(),
+            ai_rate_limit_burst: default_ai_rate_limit_burst(),
             token_file: None,
             port_file: None,
             default_scopes: default_scopes(),
@@ -232,6 +249,15 @@ fn default_max_sse_per_token() -> u32 {
 }
 fn default_max_body_bytes() -> usize {
     1024 * 1024
+}
+fn default_ai_max_body_bytes() -> usize {
+    32 * 1024 * 1024
+}
+fn default_ai_rate_limit_rps() -> u32 {
+    200
+}
+fn default_ai_rate_limit_burst() -> u32 {
+    400
 }
 fn default_scopes() -> Vec<String> {
     // Least privilege: a token minted without an explicit `scopes` list can read
