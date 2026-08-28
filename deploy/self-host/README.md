@@ -907,6 +907,8 @@ All variables live in `.env` (copied from `.env.example`).
 | `ENDPOINT` | no | OSS endpoint URL |
 | `CODEUP_ORG_ID` / `CODEUP_PAT` / `CODEUP_BOT_USERNAME` | for apps | Managed-git org + PAT used to create each app's repo. Missing → `POST /v1/apps` fails at the repo step |
 | `APPS_DB_ADMIN_URL` | for apps | Superuser / CREATEDB URL on the compose Postgres (defaults to `postgres://postgres:$POSTGRES_PASSWORD@db:5432/postgres`). Used to create per-org DBs `tc_org_<orgId>` and per-app schemas. Blank with no compose default → data_app finalize fails naming this var |
+| `APPS_DB_APP_URL` | for data_app on FC | Postgres URL whose **host** is injected into each deployed app's `DATABASE_URL`. Required when `APPS_DB_ADMIN_URL` uses compose-internal `db` — deployed functions run on external Alibaba FC and cannot resolve that hostname. Use a VPC-reachable private IP, RDS URL, etc. |
+| `APPS_FC_VPC_ID` / `APPS_FC_VSWITCH_ID` / `APPS_FC_SECURITY_GROUP_ID` | for data_app on FC | VPC attachment for deployed app functions. Required when `APPS_DB_APP_URL` is set — without it the function cannot reach an internal RDS host. Use a dedicated security group (not the RDS-managed one) |
 | `APPS_FC_ENDPOINT` / `ALIYUN_ACCOUNT_ID` | for apps | Account-scoped FC 3.0 data-plane host (`<accountId>.<region>.fc.aliyuncs.com`). Not the OSS `ENDPOINT`; set one of the two |
 | `LITELLM_URL` | no | 留空即用内置网关（compose 默认 `http://litellm:4000`）。仅在改用**外部**网关时才设置 |
 | `LITELLM_MASTER_KEY` | auto | `gen-secrets.sh` 生成（`sk-` 前缀）；LiteLLM 管理凭证,同时交给 FC |

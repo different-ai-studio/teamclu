@@ -25,6 +25,8 @@ interface AppsState {
   teamId: string | null;
   /** App ids with a deploy in flight — drives per-row spinner / disabled state. */
   deployingIds: string[];
+  /** Per-app deploy phase for the column footer progress bar. */
+  deployProgressByAppId: Record<string, DeployProgress>;
   /** Last session opened for each app — a hint for re-open, not a 1:1 binding. */
   sessionIdByAppId: Record<string, string>;
   /** Reverse map for control-panel app resolution (session → app). */
@@ -52,6 +54,31 @@ interface AppsState {
 }
 
 type SetState = StoreApi<AppsState>["setState"];
+
+export type DeployPhase = "prepare" | "build" | "finalize" | "done";
+
+export interface DeployProgress {
+  phase: DeployPhase;
+  startedAt: number;
+}
+
+function setDeployProgress(set: SetState, appId: string, phase: DeployPhase): void {
+  set((s) => ({
+    deployProgressByAppId: {
+      ...s.deployProgressByAppId,
+      [appId]: { phase, startedAt: Date.now() },
+    },
+  }));
+}
+
+function clearDeployProgress(set: SetState, appId: string): void {
+  set((s) => {
+    if (!(appId in s.deployProgressByAppId)) return s;
+    const next = { ...s.deployProgressByAppId };
+    delete next[appId];
+    return { deployProgressByAppId: next };
+  });
+}
 
 /** Merge a fresh app row (from create/deploy/rename responses) into the store. */
 function mergeRow(set: SetState, row: AppRow): void {
@@ -301,6 +328,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
   error: null,
   teamId: null,
   deployingIds: [],
+  deployProgressByAppId: {},
   sessionIdByAppId: {},
   appIdBySessionId: {},
   selectedAppId: null,
@@ -386,6 +414,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     }
 
     set((s) => ({ deployingIds: [...s.deployingIds, appId] }));
+    setDeployProgress(set, appId, "prepare");
     try {
       // Only a Gitea-managed app deploys a commit off the forge. An imported
       // app has no repo of ours and no credential for the one it came from, so
@@ -407,6 +436,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       );
       mergeRow(set, started);
 
+      setDeployProgress(set, appId, "build");
       let gitRemoteUrl: string | undefined;
       let deployKeyPem: string | undefined;
       if (viaGitea) {
@@ -439,6 +469,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // vanity domain, and the row already carries it into the UI). A popup
       // naming the wrong host on every deploy is worse than no popup: the
       // merged row flips the row to live on its own.
+      setDeployProgress(set, appId, "finalize");
       const finalized = await getBackend().apps.finalizeDeploy(appId, {
         ...(gitCommitSha ? { gitCommitSha } : {}),
         deployToken: started.deployToken,
@@ -447,12 +478,15 @@ export const useAppsStore = create<AppsState>((set, get) => ({
        // server, so a successful finalize clears the warning on its own — there
        // is no local flag left to reset here.
       mergeRow(set, finalized);
+      setDeployProgress(set, appId, "done");
     } catch (e) {
       const reason = mapCloudDeployError(e);
       await reportDeployError(set, appId, reason);
       await toastError("部署失败", reason);
     } finally {
       set((s) => ({ deployingIds: s.deployingIds.filter((id) => id !== appId) }));
+      // Leave `done` visible briefly; footer clears the bar after linger.
+      window.setTimeout(() => clearDeployProgress(set, appId), 1200);
     }
   },
   rename: async (appId, name) => {

@@ -1205,14 +1205,17 @@
     "reseed": "Reseed",
     "deploy": "Deploy",
     "deploying": "Deploying…",
+    "deployPhase": {
+      "prepare": "Preparing…",
+      "build": "Building and uploading…",
+      "finalize": "Finalizing…",
+      "done": "Deploy complete"
+    },
+    "preview": "Preview",
     "deployConfirmTitle": "Confirm deploy",
     "deployConfirmContinue": "Deploy anyway",
     "deployFailed": "Deploy failed",
     "live": "Live",
-    "openUrl": "Open deployed URL",
-    "copyUrl": "Copy deployed URL",
-    "revealInFinder": "Reveal folder in Finder",
-    "moreActions": "More actions",
     "rename": "Rename",
     "delete": "Delete",
     "create": "New",
@@ -1241,8 +1244,6 @@
     "submit": "Create",
     "cancel": "Cancel",
     "createError": "Failed to create app",
-    "urlCopyFailed": "Failed to copy deployed URL",
-    "urlCopied": "Deployed URL copied",
     "data": {
       "section": "Live data",
       "title": "Live data",
@@ -1265,12 +1266,12 @@
       "deleteFailed": "Failed to delete the row",
       "loadFailed": "Failed to read data",
       "deleteTitle": "Delete this row?",
-      "deleteHint": "This deletes it from the live database and cannot be undone."
+      "deleteHint": "This deletes it from the live database and cannot be undone.",
+      "invalidTarget": "Invalid table address",
+      "appNotFound": "App not found"
     },
     "controlPanel": {
       "title": "App settings",
-      "deployUrl": "Deploy URL",
-      "noDeployUrl": "Not deployed yet — no live URL",
       "reseedHint": "Rewrite the template or clone the repo again. Use only when seeding failed or the folder is empty.",
       "localPath": "Local path",
       "localPathOnDevice": "Device: {{name}}",

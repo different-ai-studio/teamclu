@@ -1205,14 +1205,17 @@
     "reseed": "重新播种",
     "deploy": "部署",
     "deploying": "部署中…",
+    "deployPhase": {
+      "prepare": "准备部署…",
+      "build": "构建并上传…",
+      "finalize": "收尾上线…",
+      "done": "部署完成"
+    },
+    "preview": "预览",
     "deployConfirmTitle": "确认部署",
     "deployConfirmContinue": "继续部署",
     "deployFailed": "部署失败",
     "live": "已上线",
-    "openUrl": "打开部署地址",
-    "copyUrl": "复制部署地址",
-    "revealInFinder": "在 Finder 打开目录",
-    "moreActions": "更多操作",
     "rename": "重命名",
     "delete": "删除",
     "create": "新建",
@@ -1241,8 +1244,6 @@
     "submit": "创建",
     "cancel": "取消",
     "createError": "创建失败",
-    "urlCopyFailed": "复制失败",
-    "urlCopied": "部署地址已复制",
     "data": {
       "section": "线上数据",
       "title": "线上数据",
@@ -1265,12 +1266,12 @@
       "deleteFailed": "删除失败",
       "loadFailed": "读取数据失败",
       "deleteTitle": "删除这一行？",
-      "deleteHint": "这会直接从线上数据库删除，无法撤销。"
+      "deleteHint": "这会直接从线上数据库删除，无法撤销。",
+      "invalidTarget": "无效的数据表地址",
+      "appNotFound": "找不到这个应用"
     },
     "controlPanel": {
       "title": "应用设置",
-      "deployUrl": "部署地址",
-      "noDeployUrl": "尚未部署，暂无线上地址",
       "reseedHint": "重新写入模板或克隆仓库。仅在初始化失败或目录为空时使用。",
       "localPath": "本机路径",
       "localPathOnDevice": "设备：{{name}}",
