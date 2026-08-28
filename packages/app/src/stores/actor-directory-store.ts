@@ -14,8 +14,8 @@ export { isActorOnline, resolveActorOnlineStatus }
 
 /**
  * actor-directory-store — single reactive source of truth for a team's actor
- * directory (members + agents), shared by the second-column "All actors" panel,
- * the left-sidebar RECENTS group, and the new-session picker.
+ * directory (members + agents), shared by the Contacts panel, the left-sidebar
+ * RECENTS group, and the new-session picker.
  *
  * Replaces the old per-component `useActorsForTeam` fetch-once hook. The old
  * hook loaded once per `[teamId]` and never re-read, so a cold first launch
@@ -30,10 +30,6 @@ export { isActorOnline, resolveActorOnlineStatus }
  *      list re-reads once fresh server data lands without a restart
  *   3. a 60s periodic reconcile (tauri only) so member `last_active_at` and the
  *      relative-time labels age correctly during a long session
- *
- * Live agent online/offline is overlaid at the consumer level from
- * `actor-presence-store` (the only realtime directory signal that exists today —
- * there is no MQTT directory-delta channel for member add/remove/profile).
  */
 
 /**

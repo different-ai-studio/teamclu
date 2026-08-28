@@ -5,6 +5,7 @@ import { create } from '@bufbuild/protobuf'
 import { RuntimeInfoSchema, AgentStatus, AgentType, RuntimeLifecycle } from '@/lib/proto/amux_pb'
 import { useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { SessionActorPanel } from '../SessionActorSheet'
+import { clearSessionCreatedByCacheForTests } from '@/lib/session-created-by-cache'
 
 const workspaceStoreState = vi.hoisted(() => ({
   workspacePath: '/Users/weigan.huang/copilot-ws-v2',
@@ -23,8 +24,10 @@ const backendListAgentDefaults = vi.fn()
 const backendListActorDirectoryByIds = vi.fn()
 const backendListDaemonWorkspaces = vi.fn()
 const backendGetSession = vi.fn()
+const backendGetSessionDetail = vi.fn()
 const backendResolveCurrentMemberActor = vi.fn()
 const loadSessionParticipantsMock = vi.fn()
+const loadSessionsForTeamMock = vi.fn()
 const loadActorsForTeamMock = vi.fn()
 const loadActorsByIdsMock = vi.fn()
 const syncActorsForTeamMock = vi.fn().mockResolvedValue(undefined)
@@ -50,6 +53,9 @@ vi.mock('@/lib/backend', () => ({
     auth: {
       getSession: backendGetSession,
     },
+    sessions: {
+      getSession: backendGetSessionDetail,
+    },
     directory: {
       resolveCurrentMemberActor: backendResolveCurrentMemberActor,
     },
@@ -58,6 +64,7 @@ vi.mock('@/lib/backend', () => ({
 
 vi.mock('@/lib/local-cache', () => ({
   loadSessionParticipants: (...args: unknown[]) => loadSessionParticipantsMock(...args),
+  loadSessionsForTeam: (...args: unknown[]) => loadSessionsForTeamMock(...args),
   loadActorsForTeam: (...args: unknown[]) => loadActorsForTeamMock(...args),
   loadActorsByIds: (...args: unknown[]) => loadActorsByIdsMock(...args),
 }))
@@ -90,6 +97,7 @@ vi.mock('react-i18next', () => ({
 }))
 
 beforeEach(() => {
+  clearSessionCreatedByCacheForTests()
   backendListParticipants.mockReset()
   backendListCandidateActors.mockReset()
   backendAddParticipant.mockReset()
@@ -98,6 +106,7 @@ beforeEach(() => {
   backendListActorDirectoryByIds.mockReset()
   backendListDaemonWorkspaces.mockReset()
   backendGetSession.mockReset()
+  backendGetSessionDetail.mockReset()
   backendResolveCurrentMemberActor.mockReset()
   backendAddParticipant.mockResolvedValue(undefined)
   backendRemoveParticipant.mockResolvedValue(undefined)
@@ -108,9 +117,12 @@ beforeEach(() => {
   backendListActorDirectoryByIds.mockResolvedValue([])
   backendListDaemonWorkspaces.mockResolvedValue([])
   backendGetSession.mockResolvedValue({ user: { id: 'user-1' } })
+  backendGetSessionDetail.mockResolvedValue({ id: 'sess-1', created_by_actor_id: 'm-1' })
   backendResolveCurrentMemberActor.mockResolvedValue({ id: 'm-1', team_id: 'team-1' })
   mockRuntimeStart.mockReset()
   loadSessionParticipantsMock.mockReset()
+  loadSessionsForTeamMock.mockReset()
+  loadSessionsForTeamMock.mockResolvedValue([])
   loadActorsForTeamMock.mockReset()
   loadActorsByIdsMock.mockReset()
   syncActorsForTeamMock.mockClear()
@@ -400,8 +412,7 @@ describe('SessionActorSheet', () => {
     expect(screen.queryByText(/failed to load actors/i)).not.toBeInTheDocument()
   })
 
-  it('hides X button for self row but shows it for others', async () => {
-    // Current user is m-1; session has m-1 (self), m-2, and agent a-1
+  it('shows owner label on session creator instead of always on self', async () => {
     mockSheetData(
       ['m-1', 'm-2', 'a-1'],
       [
@@ -411,14 +422,17 @@ describe('SessionActorSheet', () => {
       ],
       [],
     )
+    backendGetSessionDetail.mockResolvedValue({ id: 'sess-1', created_by_actor_id: 'm-2' })
 
     render(<SessionActorPanel sessionId="sess-1" teamId="team-1" />)
-    await waitFor(() => expect(screen.getByText('Me')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByText('所有者')).toHaveLength(1))
 
-    // There should be exactly 2 remove buttons: one for 'Other' (m-2) and one for 'Bot' (a-1)
-    // The self row 'Me' (m-1) must NOT have a remove button
-    const removeBtns = screen.getAllByRole('button', { name: /remove/i })
-    expect(removeBtns).toHaveLength(2)
+    expect(backendGetSessionDetail).toHaveBeenCalledWith('sess-1', 'team-1')
+
+    const otherRow = screen.getByText('Other').closest('.group')
+    const meRow = screen.getByText('Me').closest('.group')
+    expect(otherRow).toHaveTextContent('所有者')
+    expect(meRow).not.toHaveTextContent('所有者')
   })
 
   it('starts added agents with opencode runtimeStart requests when runtime history says opencode', async () => {
@@ -455,8 +469,7 @@ describe('SessionActorSheet', () => {
       })
   })
 
-  it('opens confirm dialog when X is clicked and dismisses on cancel', async () => {
-    const user = userEvent.setup()
+  it('does not open remove confirm dialog while session kick is disabled', async () => {
     mockSheetData(
       ['m-1', 'm-2'],
       [
@@ -469,20 +482,8 @@ describe('SessionActorSheet', () => {
     render(<SessionActorPanel sessionId="sess-1" teamId="team-1" />)
     await waitFor(() => expect(screen.getByText('Other')).toBeInTheDocument())
 
-    // Click the remove button on the non-self row
-    const removeBtn = screen.getByRole('button', { name: /remove/i })
-    await user.click(removeBtn)
-
-    // Confirm dialog should appear
-    await waitFor(() => expect(screen.getByText(/remove from session\?/i)).toBeInTheDocument())
-    expect(screen.getByText(/remove other from this session\?/i)).toBeInTheDocument()
-
-    // Cancel dismisses the dialog (row stays)
-    const cancelBtn = screen.getByRole('button', { name: /cancel/i })
-    await user.click(cancelBtn)
-    await waitFor(() => expect(screen.queryByText(/remove from session\?/i)).not.toBeInTheDocument())
-    // Row still present after cancel
-    expect(screen.getByText('Other')).toBeInTheDocument()
+    expect(screen.queryAllByRole('button', { name: /remove/i })).toHaveLength(0)
+    expect(screen.queryByText(/remove from session\?/i)).not.toBeInTheDocument()
   })
 
   it('shows + button when team has candidate agents and hides when no candidates', async () => {

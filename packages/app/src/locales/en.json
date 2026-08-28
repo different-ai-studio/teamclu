@@ -2996,7 +2996,8 @@
     "memberCount_other": "{{count}} members"
   },
   "actors": {
-    "allTitle": "All actors",
+    "contactsTitle": "Contacts",
+    "detailEmpty": "Select a contact to view their profile",
     "loading": "Loading actors...",
     "empty": "No actors in this team yet",
     "error": "Failed to load actors",

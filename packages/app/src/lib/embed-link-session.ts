@@ -111,7 +111,7 @@ export async function resolveLinkSession(input: {
   const existing = await lookupLinkSessionEntry(teamId, input.linkKey)
   if (existing) {
     try {
-      const row = await getBackend().sessions.getSession(existing.sessionId)
+      const row = await getBackend().sessions.getSession(existing.sessionId, teamId)
       if (row) {
         // Product: reopening an existing link session does not re-inject the page pill.
         await useUIStore.getState().switchToSession(existing.sessionId)

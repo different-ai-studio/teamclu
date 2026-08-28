@@ -101,10 +101,10 @@ import {
   isTeamShareOwnedTarget,
   teamShareSectionForTarget,
 } from "@/lib/tabs/teamshare-target";
-import { isActorOwnedTarget } from "@/lib/tabs/actor-target";
-import { useTeamShareBrowserStore } from "@/stores/team-share-browser";
 import { TeamShareDetailContent } from "@/components/teamshare/TeamShareTabContent";
+import { useTeamShareBrowserStore } from "@/stores/team-share-browser";
 import { IdeasDetailColumn } from "@/components/panel/IdeaDetailPane";
+import { ActorsDetailColumn } from "@/components/main-content/ActorDetailPane";
 import { useTerminalStore } from "@/stores/terminal-store";
 import { useHeaderPreferencesStore } from "@/stores/header-preferences-store";
 import { TabBar } from "@/components/tab-bar/TabBar";
@@ -332,7 +332,8 @@ function MainContent() {
       : null;
   // Ideas mirror team-share: the section owns the main column, no tabs involved.
   const directIdeasSection = sidebarFilter.kind === "ideas";
-  const mainColumnOwned = !!directTeamShareSection || directIdeasSection;
+  const directActorsSection = sidebarFilter.kind === "actors";
+  const mainColumnOwned = !!directTeamShareSection || directIdeasSection || directActorsSection;
   const splitContainerRef = useRef<HTMLDivElement | null>(null);
   const [splitContainerWidth, setSplitContainerWidth] = useState(0);
   const mainSplitLeftMaxWidth =
@@ -426,6 +427,10 @@ function MainContent() {
         ) : directIdeasSection ? (
           <div className="absolute inset-0 bg-background">
             <IdeasDetailColumn />
+          </div>
+        ) : directActorsSection ? (
+          <div className="absolute inset-0 bg-background">
+            <ActorsDetailColumn />
           </div>
         ) : hasActiveTab ? (
           <div className={cn(
@@ -842,10 +847,9 @@ function AppContent() {
   }, [currentTeamId, sessionListLoadedTeamId]);
 
   // A team-share tab names a row in *this* team's registry — a skill id, an MCP
-  // server, an env key, a document's history. An actor tab names a row in this
-  // team's directory. After a switch those addresses resolve to nothing, so the
-  // tabs go with the team rather than lingering as windows onto another team's
-  // content.
+  // server, an env key, a document's history. After a switch those addresses
+  // resolve to nothing, so the tabs go with the team rather than lingering as
+  // windows onto another team's content.
   const prevTeamIdRef = useRef<string | null>(currentTeamId);
   useEffect(() => {
     const prev = prevTeamIdRef.current;
@@ -856,7 +860,7 @@ function AppContent() {
       .closeWhere(
         (tab) =>
           tab.type === "native" &&
-          (isTeamShareOwnedTarget(tab.target) || isActorOwnedTarget(tab.target)),
+          isTeamShareOwnedTarget(tab.target),
       );
     useTeamShareBrowserStore.getState().clearDetail();
   }, [currentTeamId]);

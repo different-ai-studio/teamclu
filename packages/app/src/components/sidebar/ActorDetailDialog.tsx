@@ -20,10 +20,8 @@ interface Props {
 
 /**
  * Actor profile as a modal. Used where there is no main column to hand the
- * profile to — the left sidebar's recents rows and the local-daemon row. The
- * actors list in column 2 opens `ActorDetailPane` in the main column instead.
- *
- * The body lives in `ActorDetailContent`; this file is the modal shell.
+ * profile to — the left sidebar's recents rows and the local-daemon row.
+ * Contacts in column 2 uses `ActorsDetailColumn` in the main column instead.
  */
 export function ActorDetailDialog({ actor, teamId, onOpenChange, onRemoved }: Props) {
   const { t } = useTranslation()

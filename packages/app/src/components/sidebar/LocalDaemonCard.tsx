@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { useActorsForTeam, type ActorRow as ActorRowData } from '@/components/panel/ActorsView'
+import { useActorDirectory, type ActorRow } from '@/stores/actor-directory-store'
 import { LocalDaemonRow } from '@/components/sidebar/LocalDaemonRow'
 import { getLocalDaemonAgent } from '@/lib/daemon-agent-admin'
 import { getKnownLocalDaemonActorId, noteLocalDaemonActorId } from '@/lib/local-daemon-identity'
@@ -21,10 +21,10 @@ import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
  */
 export function LocalDaemonCard() {
   const { t } = useTranslation()
-  const { actors, refetch, teamId } = useActorsForTeam()
+  const { actors, refetch, teamId } = useActorDirectory()
   const defaultAgentId = useMemberPreferencesStore((s) => s.defaultAgentId)
 
-  const [detailFor, setDetailFor] = React.useState<ActorRowData | null>(null)
+  const [detailFor, setDetailFor] = React.useState<ActorRow | null>(null)
 
   const [localDaemonAgentId, setLocalDaemonAgentId] = React.useState<string | null>(null)
   React.useEffect(() => {
@@ -57,7 +57,7 @@ export function LocalDaemonCard() {
   )
   const daemonMqttDisconnected = runtimeStatus === 'daemonMqttDisconnected'
 
-  const handleCopyName = async (actor: ActorRowData) => {
+  const handleCopyName = async (actor: ActorRow) => {
     try {
       await navigator.clipboard.writeText(actor.display_name)
     } catch {
@@ -65,7 +65,7 @@ export function LocalDaemonCard() {
     }
   }
 
-  const handleCopyId = async (actor: ActorRowData) => {
+  const handleCopyId = async (actor: ActorRow) => {
     try {
       await navigator.clipboard.writeText(actor.id)
     } catch {

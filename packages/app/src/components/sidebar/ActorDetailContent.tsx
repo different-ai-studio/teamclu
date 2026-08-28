@@ -36,8 +36,7 @@ interface Props {
   onRemoved?: () => void
   /**
    * Dismiss the host. Set by the dialog (which renders a Close button and closes
-   * itself after Start session / Remove); omitted by the main-column pane, whose
-   * host is a tab the user closes from the tab strip.
+   * itself after Start session / Remove); omitted by the main-column pane.
    */
   onClose?: () => void
   /**
@@ -52,9 +51,7 @@ interface Props {
  * versions, re-invite and remove — with no opinion about what contains it.
  *
  * Two hosts render it: `ActorDetailDialog` (sidebar rows, recents) and
- * `ActorDetailPane` (the main column, which is where the actors list now sends
- * every click). Extracted rather than duplicated so a field added for one host
- * cannot go missing in the other.
+ * `ActorDetailPane` (Contacts main column).
  */
 export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSections }: Props) {
   const { t } = useTranslation()

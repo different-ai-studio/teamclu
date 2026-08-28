@@ -25,25 +25,14 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { actorAvatarColor } from '@/lib/actor-color'
 import { formatRelativeTimeShort } from '@/lib/date-format'
 import { externalSourceLabel } from '@/lib/external-actor-source'
-import { encodeActorTarget } from '@/lib/tabs/actor-target'
-import { useTabsStore } from '@/stores/tabs'
+import { useActorDetailStore } from '@/stores/actor-detail-store'
 import { cn } from '@/lib/utils'
-import { useActorPresenceStore } from '@/stores/actor-presence-store'
 import {
   useActorDirectory,
-  isActorOnline,
   resolveActorOnlineStatus,
   type ActorRow,
 } from '@/stores/actor-directory-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
-
-// The actor directory now lives in a single reactive store
-// (`@/stores/actor-directory-store`). These re-exports keep the historical
-// import sites (`@/components/panel/ActorsView`) working unchanged.
-export { isActorOnline }
-export type { ActorRow }
-export type { UseActorDirectoryResult as UseActorsForTeamResult } from '@/stores/actor-directory-store'
-export const useActorsForTeam = useActorDirectory
 
 /**
  * `all` deliberately means "everyone on the team" — members and agents — and NOT
@@ -68,58 +57,151 @@ const actorNameCollator = new Intl.Collator(['zh-Hans-CN', 'en'], {
   numeric: true,
 })
 
-function ActorRowView({
+/** Elevated team roles shown as a pill beside the display name (not in subtitle). */
+export function memberTeamRolePill(
+  teamRole: string | null | undefined,
+): 'owner' | 'admin' | null {
+  if (teamRole === 'owner' || teamRole === 'admin') return teamRole
+  return null
+}
+
+/** Members sort: owner → admin → everyone else, alphabetical within each tier. */
+export function compareMembersByRoleThenName(a: ActorRow, b: ActorRow): number {
+  const roleRank = (role: string | null | undefined) => {
+    if (role === 'owner') return 0
+    if (role === 'admin') return 1
+    return 2
+  }
+  const rankDiff = roleRank(a.team_role) - roleRank(b.team_role)
+  if (rankDiff !== 0) return rankDiff
+  return actorNameCollator.compare(a.display_name, b.display_name)
+}
+
+function sortMembersByRoleThenName(list: ActorRow[]): ActorRow[] {
+  return [...list].sort(compareMembersByRoleThenName)
+}
+
+function ActorSectionLabel({ label, count }: { label: string; count: number }) {
+  return (
+    <div className="sticky top-0 z-[1] bg-gradient-to-b from-background from-70% to-transparent px-4 pb-1.5 pt-[13px] text-[9.5px] font-semibold uppercase tracking-[0.6px] text-faint">
+      {label}{' '}
+      <span className="font-mono font-normal">· {count}</span>
+    </div>
+  )
+}
+
+function MemberActorRowView({
   actor,
+  selected,
   onOpen,
   onViewProfile,
   onRequestRemove,
 }: {
   actor: ActorRow
+  selected: boolean
   onOpen: (actor: ActorRow) => void
   onViewProfile: (actor: ActorRow) => void
   onRequestRemove: (actor: ActorRow) => void
 }) {
   const { t } = useTranslation()
-  const isAgent = actor.actor_type === 'agent'
-  const isExternal = actor.actor_type === 'external'
-  const isDefaultAgent = useMemberPreferencesStore((s) => isAgent && s.defaultAgentId === actor.id)
-  // Members: heartbeat-based — last_active_at within 5min.
-  // Agents: authoritative MQTT presence from actor-presence-store
-  // (daemon LWT flips this to offline within seconds of disconnect).
-  // For an agent with no presence entry at all (daemon never connected
-  // since the app launched), fall back to last_active_at so freshly-loaded
-  // sessions don't show every agent as gray during the first second.
-  // Subscribe so agent rows re-render when MQTT presence / local cache changes.
-  useActorPresenceStore((s) => (isAgent ? s.byActorId[actor.id]?.online : undefined))
   const currentMemberActorId = useCurrentTeamStore((s) => s.currentMember?.id ?? null)
-  // External contacts resolve to offline inside resolveActorOnlineStatus — they
-  // publish no presence of their own.
   const online = resolveActorOnlineStatus(actor, { currentMemberActorId })
-  const status = actor.actor_type === 'member' ? actor.member_status : actor.agent_status
+  const rolePill = memberTeamRolePill(actor.team_role)
   const initial = actor.display_name?.trim().slice(0, 1).toUpperCase() || ''
   const colors = actorAvatarColor(actor.id)
   const lastActive = actor.last_active_at ? formatRelativeTimeShort(new Date(actor.last_active_at)) : ''
-  // Subtitle: an agent shows "Team Agent" / "Personal Agent" (the standalone
-  // "Agent" pill was dropped — it ate width that long display names need — so
-  // this line is now the only place the agent/role distinction is visible).
-  // A member shows their team role. An agent with unknown visibility
-  // (offline-cache first paint, which doesn't carry it) falls back to "Agent".
-  const subtitle = isAgent
-    ? actor.visibility === 'personal'
-      ? t('actors.visibility.personalAgent', 'Personal Agent')
-      : actor.visibility === 'team'
-        ? t('actors.visibility.teamAgent', 'Team Agent')
-        : t('actors.type.agent', 'Agent')
-    : isExternal
-      // Name the channel when we know it: for a WeCom contact whose nickname
-      // never resolved, the raw `wo…` id above says nothing and this line is
-      // the only thing that explains what the row is.
-      ? (actor.source
-        ? `${t('actors.type.external', 'External')} · ${externalSourceLabel(actor.source, t)}`
-        : t('actors.type.external', 'External'))
-      : actor.team_role
-        ? t(`actors.role.${actor.team_role}`, actor.team_role)
-        : t('actors.type.member', 'Team')
+
+  const handleCopyName = async () => {
+    try {
+      await navigator.clipboard.writeText(actor.display_name)
+    } catch {
+      toast.error(t('actors.copyFailed', 'Copy failed'))
+    }
+  }
+
+  const handleCopyId = async () => {
+    try {
+      await navigator.clipboard.writeText(actor.id)
+    } catch {
+      toast.error(t('actors.copyFailed', 'Copy failed'))
+    }
+  }
+
+  return (
+    <ActorContextMenu
+      actor={actor}
+      isDefault={false}
+      onViewDetail={onViewProfile}
+      onCopyName={handleCopyName}
+      onCopyId={handleCopyId}
+      onRequestRemove={onRequestRemove}
+    >
+      <button
+        type="button"
+        onClick={() => onOpen(actor)}
+        className={cn(
+          'flex w-full items-center gap-2.5 border-b border-border-soft px-4 py-2.5 text-left hover:bg-selected focus:outline-none focus-visible:bg-selected',
+          selected && 'bg-selected',
+        )}
+      >
+        <div
+          className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[16px] font-semibold text-white"
+          style={{ backgroundColor: colors.bg, color: colors.fg }}
+        >
+          {initial || <UserIcon className="h-4 w-4" />}
+          <span
+            className={cn(
+              'absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-background',
+              online ? 'bg-emerald-500' : 'bg-faint',
+            )}
+            aria-label={online ? 'online' : 'offline'}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-[13px] font-semibold leading-[19px] text-foreground">{actor.display_name}</span>
+            {rolePill && (
+              <span className="shrink-0 rounded bg-panel px-1.5 py-px text-[10px] font-semibold text-muted-foreground">
+                {t(
+                  `actors.role.${rolePill}`,
+                  rolePill === 'owner' ? 'Owner' : 'Admin',
+                )}
+              </span>
+            )}
+          </div>
+          <div className="mt-0.5 truncate text-[11.5px] leading-[18px] text-muted-foreground">
+            {t('actors.role.member', 'Member')}
+          </div>
+        </div>
+        {lastActive && <span className="ml-2 shrink-0 font-mono text-[11.5px] text-faint">{lastActive}</span>}
+      </button>
+    </ActorContextMenu>
+  )
+}
+
+function AgentActorRowView({
+  actor,
+  selected,
+  onOpen,
+  onViewProfile,
+  onRequestRemove,
+}: {
+  actor: ActorRow
+  selected: boolean
+  onOpen: (actor: ActorRow) => void
+  onViewProfile: (actor: ActorRow) => void
+  onRequestRemove: (actor: ActorRow) => void
+}) {
+  const { t } = useTranslation()
+  const isDefaultAgent = useMemberPreferencesStore((s) => s.defaultAgentId === actor.id)
+  const initial = actor.display_name?.trim().slice(0, 1).toUpperCase() || ''
+  const colors = actorAvatarColor(actor.id)
+  const lastActive = actor.last_active_at ? formatRelativeTimeShort(new Date(actor.last_active_at)) : ''
+  const subtitle = actor.visibility === 'personal'
+    ? t('actors.visibility.personalAgent', 'Personal Agent')
+    : actor.visibility === 'team'
+      ? t('actors.visibility.teamAgent', 'Team Agent')
+      : t('actors.type.agent', 'Agent')
 
   const handleCopyName = async () => {
     try {
@@ -149,37 +231,151 @@ function ActorRowView({
       <button
         type="button"
         onClick={() => onOpen(actor)}
-        className="flex w-full items-center gap-2.5 border-b border-border-soft px-4 py-2.5 text-left hover:bg-selected focus:outline-none focus-visible:bg-selected"
+        className={cn(
+          'flex w-full items-center gap-2.5 border-b border-border-soft px-4 py-2.5 text-left hover:bg-selected focus:outline-none focus-visible:bg-selected',
+          selected && 'bg-selected',
+        )}
       >
-          <div className={cn(
-            'relative flex h-10 w-10 shrink-0 items-center justify-center text-[16px] font-semibold text-white',
-            isAgent ? 'rounded-[11px] ring-[1.5px] ring-coral' : 'rounded-full',
-          )} style={{ backgroundColor: colors.bg, color: colors.fg }}>
-            {initial || (isAgent ? <Sparkles className="h-4 w-4" /> : <UserIcon className="h-4 w-4" />)}
-            <span className={cn(
-              'absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-background',
-              isAgent ? 'bg-coral' : online ? 'bg-emerald-500' : 'bg-faint',
-            )} aria-label={status ?? (online ? 'online' : 'offline')} />
+        <div
+          className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px] text-[16px] font-semibold text-white ring-[1.5px] ring-coral"
+          style={{ backgroundColor: colors.bg, color: colors.fg }}
+        >
+          {initial || <Sparkles className="h-4 w-4" />}
+          <span className="absolute -bottom-1 -right-1 rounded border border-coral bg-paper px-1 py-px font-mono text-[8px] font-bold leading-tight text-coral">
+            AI
+          </span>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-[13px] font-semibold leading-[19px] text-foreground">{actor.display_name}</span>
+            {isDefaultAgent && (
+              <Star
+                className="h-3 w-3 shrink-0 fill-coral text-coral"
+                aria-label={t('actors.defaultAgent', 'Default agent')}
+              />
+            )}
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-[13px] font-semibold leading-[19px] text-foreground">{actor.display_name}</span>
-              {isDefaultAgent && (
-                <Star
-                  className="h-3 w-3 shrink-0 fill-coral text-coral"
-                  aria-label={t('actors.defaultAgent', 'Default agent')}
-                />
-              )}
-            </div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-1.5 truncate text-[11.5px] leading-[18px] text-muted-foreground">
-              {subtitle && <span className="truncate">{subtitle}</span>}
-              {subtitle && status && <span className="text-faint">·</span>}
-              {status && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-faint" aria-label={status} />}
-            </div>
-          </div>
-          {lastActive && <span className="ml-2 shrink-0 font-mono text-[11.5px] text-faint">{lastActive}</span>}
+          <div className="mt-0.5 truncate text-[11.5px] leading-[18px] text-muted-foreground">{subtitle}</div>
+        </div>
+        {lastActive && <span className="ml-2 shrink-0 font-mono text-[11.5px] text-faint">{lastActive}</span>}
       </button>
     </ActorContextMenu>
+  )
+}
+
+function ExternalActorRowView({
+  actor,
+  selected,
+  onOpen,
+  onViewProfile,
+  onRequestRemove,
+}: {
+  actor: ActorRow
+  selected: boolean
+  onOpen: (actor: ActorRow) => void
+  onViewProfile: (actor: ActorRow) => void
+  onRequestRemove: (actor: ActorRow) => void
+}) {
+  const { t } = useTranslation()
+  const initial = actor.display_name?.trim().slice(0, 1).toUpperCase() || ''
+  const colors = actorAvatarColor(actor.id)
+  const lastActive = actor.last_active_at ? formatRelativeTimeShort(new Date(actor.last_active_at)) : ''
+  const subtitle = actor.source
+    ? `${t('actors.type.external', 'External')} · ${externalSourceLabel(actor.source, t)}`
+    : t('actors.type.external', 'External')
+
+  const handleCopyName = async () => {
+    try {
+      await navigator.clipboard.writeText(actor.display_name)
+    } catch {
+      toast.error(t('actors.copyFailed', 'Copy failed'))
+    }
+  }
+
+  const handleCopyId = async () => {
+    try {
+      await navigator.clipboard.writeText(actor.id)
+    } catch {
+      toast.error(t('actors.copyFailed', 'Copy failed'))
+    }
+  }
+
+  return (
+    <ActorContextMenu
+      actor={actor}
+      isDefault={false}
+      onViewDetail={onViewProfile}
+      onCopyName={handleCopyName}
+      onCopyId={handleCopyId}
+      onRequestRemove={onRequestRemove}
+    >
+      <button
+        type="button"
+        onClick={() => onOpen(actor)}
+        className={cn(
+          'flex w-full items-center gap-2.5 border-b border-border-soft px-4 py-2.5 text-left hover:bg-selected focus:outline-none focus-visible:bg-selected',
+          selected && 'bg-selected',
+        )}
+      >
+        <div
+          className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[16px] font-semibold text-white"
+          style={{ backgroundColor: colors.bg, color: colors.fg }}
+        >
+          {initial || <UserIcon className="h-4 w-4" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[13px] font-semibold leading-[19px] text-foreground">{actor.display_name}</div>
+          <div className="mt-0.5 truncate text-[11.5px] leading-[18px] text-muted-foreground">{subtitle}</div>
+        </div>
+        {lastActive && <span className="ml-2 shrink-0 font-mono text-[11.5px] text-faint">{lastActive}</span>}
+      </button>
+    </ActorContextMenu>
+  )
+}
+
+function ActorRowView({
+  actor,
+  selected,
+  onOpen,
+  onViewProfile,
+  onRequestRemove,
+}: {
+  actor: ActorRow
+  selected: boolean
+  onOpen: (actor: ActorRow) => void
+  onViewProfile: (actor: ActorRow) => void
+  onRequestRemove: (actor: ActorRow) => void
+}) {
+  if (actor.actor_type === 'agent') {
+    return (
+      <AgentActorRowView
+        actor={actor}
+        selected={selected}
+        onOpen={onOpen}
+        onViewProfile={onViewProfile}
+        onRequestRemove={onRequestRemove}
+      />
+    )
+  }
+  if (actor.actor_type === 'external') {
+    return (
+      <ExternalActorRowView
+        actor={actor}
+        selected={selected}
+        onOpen={onOpen}
+        onViewProfile={onViewProfile}
+        onRequestRemove={onRequestRemove}
+      />
+    )
+  }
+  return (
+    <MemberActorRowView
+      actor={actor}
+      selected={selected}
+      onOpen={onOpen}
+      onViewProfile={onViewProfile}
+      onRequestRemove={onRequestRemove}
+    />
   )
 }
 
@@ -217,7 +413,7 @@ export function ActorsView() {
   const { t } = useTranslation()
   const { state: sidebarState } = useSidebar()
   const sidebarCollapsed = sidebarState === 'collapsed'
-  const { actors, loading, error, teamId, refetch } = useActorsForTeam()
+  const { actors, loading, error, teamId, refetch } = useActorDirectory()
   const ensureDefaultAgentLoaded = useMemberPreferencesStore((s) => s.ensureLoaded)
 
   React.useEffect(() => {
@@ -251,32 +447,39 @@ export function ActorsView() {
     return { all: agent + member, agent, member, external }
   }, [actors])
 
-  const visibleActors = React.useMemo(() => {
+  const visibleSections = React.useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
-    return actors
-      .filter((actor) => {
-        // Unfiltered means the team, not the address book: external gateway
-        // contacts appear only under their own filter.
-        if (!matchesActorTypeFilter(actor.actor_type, filter)) return false
-        if (!normalizedQuery) return true
-        return actor.display_name.toLowerCase().includes(normalizedQuery)
-      })
-      .sort((a, b) => actorNameCollator.compare(a.display_name, b.display_name))
+    const matchesQuery = (actor: ActorRow) =>
+      !normalizedQuery || actor.display_name.toLowerCase().includes(normalizedQuery)
+    const sortByName = (list: ActorRow[]) =>
+      [...list].sort((a, b) => actorNameCollator.compare(a.display_name, b.display_name))
+
+    const members = sortMembersByRoleThenName(
+      actors.filter((a) => a.actor_type === 'member' && matchesActorTypeFilter('member', filter) && matchesQuery(a)),
+    )
+    const agents = sortByName(
+      actors.filter((a) => a.actor_type === 'agent' && matchesActorTypeFilter('agent', filter) && matchesQuery(a)),
+    )
+    const externals = sortByName(
+      actors.filter((a) => a.actor_type === 'external' && matchesActorTypeFilter('external', filter) && matchesQuery(a)),
+    )
+
+    return { members, agents, externals }
   }, [actors, filter, query])
 
-  const openTab = useTabsStore((s) => s.openTab)
+  const visibleActors = React.useMemo(
+    () => [...visibleSections.members, ...visibleSections.agents, ...visibleSections.externals],
+    [visibleSections],
+  )
 
-  /**
-   * Clicking a row shows who the actor is, in the main column.
-   *
-   * It used to open a draft session addressed to them instead — which was wrong
-   * for an external gateway contact (nothing on our side can deliver to one) and
-   * premature for everyone else: the list is where you go to look somebody up.
-   * "Start session" is now an explicit button inside the profile.
-   */
+  const showSectionHeaders = filter === 'all'
+  const openActorDetail = useActorDetailStore((s) => s.openActor)
+  const clearActorDetail = useActorDetailStore((s) => s.clearDetail)
+  const selectedActorId = useActorDetailStore((s) => s.actorId)
+
   const openActor = React.useCallback((actor: ActorRow) => {
-    openTab({ type: 'native', target: encodeActorTarget(actor.id), label: actor.display_name })
-  }, [openTab])
+    openActorDetail(actor.id)
+  }, [openActorDetail])
 
   const confirmRemove = async () => {
     if (!removeFor || !teamId) return
@@ -285,6 +488,9 @@ export function ActorsView() {
       await getBackend().teams.removeTeamActor(teamId, removeFor.id)
       toast.success(t('actors.removed', 'Removed from team'))
       setRemoveFor(null)
+      if (useActorDetailStore.getState().actorId === removeFor.id) {
+        clearActorDetail()
+      }
       refetch()
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -331,18 +537,66 @@ export function ActorsView() {
 
     return (
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-        {visibleActors.map((a) => (
-          <ActorRowView
-            key={a.id}
-            actor={a}
-            onOpen={openActor}
-            // The profile IS what the row opens, so the context-menu entry goes
-            // to the same place — two different answers to "show me this actor"
-            // would just be confusing.
-            onViewProfile={openActor}
-            onRequestRemove={setRemoveFor}
-          />
-        ))}
+        {visibleSections.members.length > 0 && (
+          <>
+            {showSectionHeaders && (
+              <ActorSectionLabel
+                label={t('actors.type.member', 'Team')}
+                count={visibleSections.members.length}
+              />
+            )}
+            {visibleSections.members.map((a) => (
+              <ActorRowView
+                key={a.id}
+                actor={a}
+                selected={selectedActorId === a.id}
+                onOpen={openActor}
+                onViewProfile={openActor}
+                onRequestRemove={setRemoveFor}
+              />
+            ))}
+          </>
+        )}
+        {visibleSections.agents.length > 0 && (
+          <>
+            {showSectionHeaders && (
+              <ActorSectionLabel
+                label={t('actors.type.agent', 'Agent')}
+                count={visibleSections.agents.length}
+              />
+            )}
+            {visibleSections.agents.map((a) => (
+              <ActorRowView
+                key={a.id}
+                actor={a}
+                selected={selectedActorId === a.id}
+                onOpen={openActor}
+                onViewProfile={openActor}
+                onRequestRemove={setRemoveFor}
+              />
+            ))}
+          </>
+        )}
+        {visibleSections.externals.length > 0 && (
+          <>
+            {showSectionHeaders && (
+              <ActorSectionLabel
+                label={t('actors.type.external', 'External')}
+                count={visibleSections.externals.length}
+              />
+            )}
+            {visibleSections.externals.map((a) => (
+              <ActorRowView
+                key={a.id}
+                actor={a}
+                selected={selectedActorId === a.id}
+                onOpen={openActor}
+                onViewProfile={openActor}
+                onRequestRemove={setRemoveFor}
+              />
+            ))}
+          </>
+        )}
       </div>
     )
   }
@@ -358,7 +612,7 @@ export function ActorsView() {
             </div>
           )}
           <h2 className="min-w-0 flex-1 truncate text-[15px] font-bold leading-7 text-foreground">
-            {t('actors.allTitle', 'All actors')}
+            {t('actors.contactsTitle', 'Contacts')}
             <span className="ml-2 font-mono text-[12.5px] font-normal text-faint">· {visibleActors.length}</span>
           </h2>
           <Button

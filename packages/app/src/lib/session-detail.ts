@@ -125,7 +125,7 @@ export async function fetchSessionDetailSnapshot(args: {
 
   const [remote, cached, workspaces, runtimes] = await Promise.all([
     getBackend()
-      .sessions.getSession(sessionId)
+      .sessions.getSession(sessionId, teamId)
       .catch((error) => {
         loadError = error instanceof Error ? error.message : String(error);
         return null;
