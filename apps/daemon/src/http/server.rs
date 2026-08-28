@@ -73,7 +73,10 @@ impl Drop for HttpHandle {
 /// Loopback URL adapters use to reach `/internal/runtime-context/resolve`.
 /// The public listener may bind `0.0.0.0` or `[::]`; resolver clients must
 /// always target an explicit loopback address.
-pub(crate) fn loopback_runtime_context_url(requested_bind: SocketAddr, bound: SocketAddr) -> String {
+pub(crate) fn loopback_runtime_context_url(
+    requested_bind: SocketAddr,
+    bound: SocketAddr,
+) -> String {
     let port = bound.port();
     match requested_bind.ip() {
         std::net::IpAddr::V4(v4) if v4.is_unspecified() => format!("http://127.0.0.1:{port}"),
@@ -88,7 +91,6 @@ pub(crate) fn loopback_runtime_context_url(requested_bind: SocketAddr, bound: So
         _ => format!("http://127.0.0.1:{port}"),
     }
 }
-
 
 /// Public bind addresses that are not loopback-reachable need a dedicated
 /// loopback listener for `/internal/runtime-context/resolve`.
@@ -200,9 +202,13 @@ pub async fn spawn(
     // Built from the same backend the routes already hold, so `get_providers`
     // can reconcile `provider.team` against the team's current cloud LLM config
     // before reading it back off disk.
-    let managed_llm = backend
-        .clone()
-        .map(|b| Arc::new(crate::runtime::managed_llm::ManagedLlmResolver::new(b)));
+    let managed_llm = backend.clone().map(|b| {
+        Arc::new(
+            crate::runtime::managed_llm::ManagedLlmResolver::new(b).with_tokens(Some(
+                crate::runtime::gateway_token::GatewayTokenSource::new(tokens.clone()),
+            )),
+        )
+    });
     // Same shape for team MCP / team env: desktop posts after a Cloud API write
     // so the daemon cache converges immediately instead of waiting for the tick.
     let team_cloud = backend
@@ -1413,8 +1419,9 @@ mod tests {
         )
         .with_runtime_context(Arc::clone(&service));
 
-        let (dedicated_base, join, shutdown_tx) =
-            spawn_dedicated_runtime_context_listener(state).await.unwrap();
+        let (dedicated_base, join, shutdown_tx) = spawn_dedicated_runtime_context_listener(state)
+            .await
+            .unwrap();
         assert!(dedicated_base.starts_with("http://127.0.0.1:"));
 
         let client = reqwest::Client::new();

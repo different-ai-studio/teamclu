@@ -35,7 +35,10 @@ pub use env_activation::{
     analyze_env_activation, find_unresolved_config_placeholders, EnvActivationAnalysis,
     EnvActivationInput, EnvKeyActivationStatus, UnresolvedConfigPlaceholder,
 };
-pub use merge::{host_shadowed_env_keys, secrets_for_team_provider, tc_api_key_for_actor};
+pub use merge::{
+    host_shadowed_env_keys, secrets_for_team_provider, GATEWAY_TOKEN_PLACEHOLDER,
+    LEGACY_VIRTUAL_KEY_PREFIX,
+};
 pub use personal_secrets::{
     count_user_personal_env_keys, diagnose_personal_env_store,
     diagnose_personal_env_store_for_brand, is_internal_personal_blob_key, merge_personal_env_index,
@@ -104,6 +107,14 @@ pub struct SystemEnvContext {
     /// frozen at spawn and the JWT expires (~1h) well before a multi-day
     /// session ends. `None` when there is no cloud backend to source it from.
     pub cloud_token_file: Option<String>,
+    /// Daemon session token scoped to `ai:invoke`, bound as `tc_gateway_token`
+    /// so `provider.team.options.apiKey` resolves to something the local AI
+    /// proxy will accept. Supplied by the daemon: only it can mint one.
+    ///
+    /// Unlike `cloud_token_file` this IS the value rather than a path, because
+    /// it is a daemon-lifetime credential — it dies with the process that
+    /// minted it, so it cannot go stale while a runtime is alive.
+    pub gateway_token: Option<String>,
 }
 
 pub fn assemble_runtime_env(
@@ -163,14 +174,19 @@ mod tests {
                 actor_id: "spawn-actor".to_string(),
                 display_name: String::new(),
                 cloud_token_file: None,
+                // Supplied by the daemon, which is the only thing that can mint
+                // one. There is no derivation from the actor id any more: the
+                // credential this replaced (a LiteLLM `sk-tc-*` virtual key)
+                // was guessable precisely because it was derived.
+                gateway_token: Some("tok_spawn_actor".to_string()),
             },
             &managed,
         )
         .unwrap();
 
         assert_eq!(
-            bundle.extra_env.get("tc_api_key").map(String::as_str),
-            Some("sk-tc-spawn-actor")
+            bundle.extra_env.get("tc_gateway_token").map(String::as_str),
+            Some("tok_spawn_actor")
         );
 
         let raw = std::fs::read_to_string(
@@ -179,7 +195,7 @@ mod tests {
                 .join("teams/team-test/state/opencode.json"),
         )
         .unwrap();
-        assert!(raw.contains("sk-tc-spawn-actor"));
+        assert!(raw.contains("tok_spawn_actor"));
         // The tier list is pinned client-side (team_provider::TEAM_MODEL_TIERS),
         // so a model name coming back from the cloud is deliberately ignored.
         assert!(raw.contains("\"default\""), "pinned tiers are materialized");

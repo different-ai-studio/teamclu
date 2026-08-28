@@ -317,7 +317,7 @@ pub fn load_team_env_listings(
 /// Personal env catalog: machine-global blob keys merged with workspace index metadata.
 ///
 /// Values live in `~/.{brand}/secrets`; workspace `envVars` is only a description
-/// / category cache (and system-seeded rows like `tc_api_key`).
+/// / category cache (and system-seeded rows like `tc_gateway_token`).
 pub fn load_personal_env_listings(
     workspace: &Path,
     brand_short_name: Option<&str>,
@@ -369,7 +369,7 @@ pub fn load_personal_env_listings(
     let mut by_lower: std::collections::HashMap<String, PersonalEnvListing> =
         std::collections::HashMap::new();
 
-    // System / index-only rows first (e.g. tc_api_key before a value is present).
+    // System / index-only rows first (e.g. tc_gateway_token before a value is present).
     // Legacy first so the machine copy overwrites it on a key both describe.
     for entry in legacy_entries.into_iter().chain(machine_entries) {
         by_lower.insert(entry.key.to_ascii_lowercase(), entry);
@@ -591,7 +591,7 @@ mod tests {
             tmp.path().join(".teamclu/teamclu.json"),
             serde_json::json!({
                 "envVars": [
-                    { "key": "tc_api_key", "category": "system" },
+                    { "key": "tc_gateway_token", "category": "system" },
                     { "key": "mine", "description": "personal" }
                 ],
                 "team": {
@@ -612,7 +612,7 @@ mod tests {
 
         let listings = load_agent_env_listings(tmp.path(), None, None);
         let keys: Vec<_> = listings.iter().map(|entry| entry.key.as_str()).collect();
-        assert!(keys.contains(&"tc_api_key"));
+        assert!(keys.contains(&"tc_gateway_token"));
         assert!(keys.contains(&"mine"));
         assert!(keys.contains(&"team_only"));
         assert_eq!(keys.len(), 3);
@@ -629,7 +629,7 @@ mod tests {
             home.path(),
             &[
                 ("ANTHROPIC_AUTH_TOKEN", "secret"),
-                ("tc_api_key", "sk-tc-x"),
+                ("tc_gateway_token", "tok_x"),
                 ("_team_secret.abc", "team"),
             ],
         );
@@ -640,7 +640,7 @@ mod tests {
             workspace.path().join(".teamclu/teamclu.json"),
             serde_json::json!({
                 "envVars": [
-                    { "key": "tc_api_key", "category": "system", "description": "Team LLM API Key" }
+                    { "key": "tc_gateway_token", "category": "system", "description": "Team LLM API Key" }
                 ]
             })
             .to_string(),
@@ -652,7 +652,7 @@ mod tests {
             listings.iter().map(|e| (e.key.as_str(), e)).collect();
         assert!(by_key.contains_key("ANTHROPIC_AUTH_TOKEN"));
         assert_eq!(
-            by_key.get("tc_api_key").and_then(|e| e.category.as_deref()),
+            by_key.get("tc_gateway_token").and_then(|e| e.category.as_deref()),
             Some("system")
         );
         assert!(!by_key.contains_key("_team_secret.abc"));

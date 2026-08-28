@@ -351,6 +351,7 @@ mod tests {
                         actor_id: "actor-1".to_string(),
                         display_name: "Test".to_string(),
                         cloud_token_file: None,
+                gateway_token: None,
                     },
                 ),
             }

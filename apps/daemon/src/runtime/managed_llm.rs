@@ -40,6 +40,11 @@ struct CachedManagedLlm {
 
 pub struct ManagedLlmResolver {
     backend: Arc<dyn Backend>,
+    /// Mints the `ai:invoke` session token that `provider.team.options.apiKey`
+    /// resolves to. `None` in focused tests and wherever no HTTP layer exists —
+    /// the provider is then written with the placeholder left in place, which
+    /// is correct: there is no local proxy to authenticate against either.
+    tokens: Option<super::gateway_token::GatewayTokenSource>,
     cache: AsyncMutex<HashMap<String, CachedManagedLlm>>,
     member_key_kicked: AsyncMutex<HashSet<String>>,
 }
@@ -48,9 +53,18 @@ impl ManagedLlmResolver {
     pub fn new(backend: Arc<dyn Backend>) -> Self {
         Self {
             backend,
+            tokens: None,
             cache: AsyncMutex::new(HashMap::new()),
             member_key_kicked: AsyncMutex::new(HashSet::new()),
         }
+    }
+
+    /// Attach the token source so reconciles can resolve
+    /// `provider.team.options.apiKey`. Chained after `new()` because most call
+    /// sites (tests, the channel manager) have no HTTP layer to mint from.
+    pub fn with_tokens(mut self, tokens: Option<super::gateway_token::GatewayTokenSource>) -> Self {
+        self.tokens = tokens;
+        self
     }
 
     /// Resolve the team's managed (shared) LLM directly from the cloud API, with
@@ -126,7 +140,15 @@ impl ManagedLlmResolver {
     /// A `Unknown` resolution (no fresh cloud answer) leaves the file untouched.
     pub async fn reconcile_global(&self, team_id: &str) {
         let state = self.resolve(team_id).await;
-        let secrets = teamclu_runtime_env::secrets_for_team_provider(self.backend.actor_id());
+        // One token per process, reused: `sync_global_team_provider` writes
+        // whatever it is given, so minting per reconcile would rewrite the file
+        // (and leak a token into the store) on every provider read.
+        let token = self
+            .tokens
+            .as_ref()
+            .map(|t| t.get_or_mint())
+            .unwrap_or_default();
+        let secrets = teamclu_runtime_env::secrets_for_team_provider(&token);
         if let Err(e) = teamclu_runtime_env::sync_global_team_provider(&state, &secrets) {
             tracing::warn!(
                 team_id,
@@ -292,10 +314,22 @@ mod tests {
 
     /// Provider reads after spawn must not revert a resolved LiteLLM key to the
     /// `${tc_api_key}` placeholder (wake / refresh regression).
-    #[tokio::test]
-    async fn reconcile_preserves_resolved_team_api_key() {
-        let (_global, _home) = isolated_global_config();
-        let resolved_key = "sk-tc-actor-x";
+
+    /// Helper: a resolver wired to a real token store, the way the HTTP layer
+    /// builds it.
+    fn resolver_with_tokens(backend: Arc<dyn Backend>) -> (ManagedLlmResolver, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::http::tokens::TokenStore::load_or_init(&dir.path().join("t")).unwrap();
+        std::mem::forget(dir);
+        let source = crate::runtime::gateway_token::GatewayTokenSource::new(store);
+        let token = source.get_or_mint();
+        (
+            ManagedLlmResolver::new(backend).with_tokens(Some(source)),
+            token,
+        )
+    }
+
+    fn write_team_provider(api_key: &str) {
         std::fs::write(
             teamclu_runtime_env::opencode_config::global_opencode_config_path(),
             serde_json::to_string_pretty(&serde_json::json!({
@@ -305,7 +339,7 @@ mod tests {
                         "name": "Team",
                         "options": {
                             "baseURL": "https://gateway.example/v1",
-                            "apiKey": resolved_key
+                            "apiKey": api_key
                         },
                         "models": { "model-a": { "name": "model-a" } }
                     }
@@ -314,44 +348,68 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
 
+    fn mock_resolver() -> Arc<dyn Backend> {
         let mock = MockBackend::with_identity("team-x", "actor-x");
         mock.state()
             .managed_llm_configs
             .insert("team-x".to_string(), config_with_models(&["model-a"]));
-        let backend: Arc<dyn Backend> = Arc::new(mock);
-        let resolver = ManagedLlmResolver::new(backend);
-
-        resolver.reconcile_global("team-x").await;
-        assert_eq!(team_api_key(), resolved_key);
+        Arc::new(mock)
     }
 
     #[tokio::test]
-    async fn reconcile_resolves_tc_api_key_placeholder() {
+    async fn reconcile_resolves_the_gateway_token_placeholder() {
         let (_global, _home) = isolated_global_config();
-        std::fs::write(
-            teamclu_runtime_env::opencode_config::global_opencode_config_path(),
-            serde_json::to_string_pretty(&serde_json::json!({
-                "provider": {
-                    "team": {
-                        "options": { "apiKey": "${tc_api_key}" },
-                        "models": { "model-a": { "name": "model-a" } }
-                    }
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        write_team_provider(teamclu_runtime_env::GATEWAY_TOKEN_PLACEHOLDER);
 
-        let mock = MockBackend::with_identity("team-x", "actor-x");
-        mock.state()
-            .managed_llm_configs
-            .insert("team-x".to_string(), config_with_models(&["model-a"]));
-        let backend: Arc<dyn Backend> = Arc::new(mock);
-        let resolver = ManagedLlmResolver::new(backend);
-
+        let (resolver, token) = resolver_with_tokens(mock_resolver());
         resolver.reconcile_global("team-x").await;
-        assert_eq!(team_api_key(), "sk-tc-actor-x");
+        assert_eq!(team_api_key(), token);
+    }
+
+    /// Session tokens live in daemon memory, so the value left on disk by a
+    /// previous process names a token nothing will accept. Reconcile writes the
+    /// current one outright rather than only substituting the placeholder --
+    /// otherwise a restart strands the device on a dead credential, and the
+    /// symptom is a permanent 401 that no amount of reconciling clears.
+    #[tokio::test]
+    async fn reconcile_replaces_a_token_from_a_previous_process() {
+        let (_global, _home) = isolated_global_config();
+        write_team_provider("tok_from_a_dead_process");
+
+        let (resolver, token) = resolver_with_tokens(mock_resolver());
+        resolver.reconcile_global("team-x").await;
+        assert_eq!(team_api_key(), token);
+    }
+
+    /// The migration case: a LiteLLM virtual key from before the gateway
+    /// cutover. Nothing else would ever clear it.
+    #[tokio::test]
+    async fn reconcile_clears_a_legacy_litellm_virtual_key() {
+        let (_global, _home) = isolated_global_config();
+        write_team_provider("sk-tc-actor-x");
+
+        let (resolver, token) = resolver_with_tokens(mock_resolver());
+        resolver.reconcile_global("team-x").await;
+        assert_eq!(team_api_key(), token);
+        assert!(!team_api_key().starts_with("sk-tc-"));
+    }
+
+    /// No token source (no HTTP layer) must leave the placeholder alone rather
+    /// than writing an empty credential, which would look resolved and fail.
+    #[tokio::test]
+    async fn reconcile_without_a_token_source_leaves_the_placeholder() {
+        let (_global, _home) = isolated_global_config();
+        write_team_provider(teamclu_runtime_env::GATEWAY_TOKEN_PLACEHOLDER);
+
+        ManagedLlmResolver::new(mock_resolver())
+            .reconcile_global("team-x")
+            .await;
+        assert_eq!(
+            team_api_key(),
+            teamclu_runtime_env::GATEWAY_TOKEN_PLACEHOLDER
+        );
     }
 
     /// A cloud blip must not strip a working `provider.team`.

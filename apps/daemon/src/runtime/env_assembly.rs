@@ -59,6 +59,13 @@ pub fn assemble_spawn_runtime_env_for_execution(
             actor_id: actor_id.to_string(),
             display_name: display_name.to_string(),
             cloud_token_file: cloud_token_file.map(str::to_string),
+            // Not supplied on the spawn path, and not needed there: since #941
+            // `provider.team` is written to the ACTIVE-TEAM GLOBAL config, and
+            // its apiKey is resolved by `sync_global_team_provider` during
+            // reconcile (which runs on every provider read). This context only
+            // feeds workspace-scoped `${...}` resolution, where nothing in the
+            // product references the gateway token.
+            gateway_token: None,
         },
         &managed_llm,
     )?;

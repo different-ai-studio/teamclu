@@ -1292,11 +1292,13 @@ impl RuntimeSupervisor {
                     .cloned()
                     .unwrap_or_default(),
                 cloud_token_file: snapshot.bindings.get("TC_ACCESS_TOKEN_FILE").cloned(),
+                gateway_token: None,
             })
             .unwrap_or(teamclu_runtime_env::SystemEnvContext {
                 actor_id: String::new(),
                 display_name: String::new(),
                 cloud_token_file: None,
+                gateway_token: None,
             });
         let resolved = teamclu_runtime_env::resolve_runtime_env(
             personal_env.clone(),
@@ -1705,6 +1707,7 @@ impl RuntimeSupervisor {
                     .cloned()
                     .unwrap_or_default(),
                 cloud_token_file: previous.bindings.get("TC_ACCESS_TOKEN_FILE").cloned(),
+                gateway_token: None,
             },
         );
         current.fingerprint == previous.fingerprint
@@ -2299,6 +2302,7 @@ mod tests {
                 actor_id: "actor-test".to_string(),
                 display_name: "Agent Test".to_string(),
                 cloud_token_file: None,
+                gateway_token: None,
             },
         );
         {

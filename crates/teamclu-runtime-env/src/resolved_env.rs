@@ -6,7 +6,7 @@ use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{merge::tc_api_key_for_actor, SystemEnvContext};
+use crate::SystemEnvContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -185,17 +185,17 @@ pub fn resolve_runtime_env(
             EnvScope::System,
             EnvSource::System,
         );
-        if let Some(key) = tc_api_key_for_actor(&system.actor_id) {
-            insert_direct(
-                &mut bindings,
-                &mut provenance,
-                &mut overrides,
-                "tc_api_key".to_string(),
-                key,
-                EnvScope::System,
-                EnvSource::System,
-            );
-        }
+    }
+    if let Some(token) = system.gateway_token.filter(|t| !t.is_empty()) {
+        insert_direct(
+            &mut bindings,
+            &mut provenance,
+            &mut overrides,
+            "tc_gateway_token".to_string(),
+            token,
+            EnvScope::System,
+            EnvSource::System,
+        );
     }
     if !system.display_name.is_empty() {
         insert_direct(
@@ -386,6 +386,7 @@ mod tests {
             actor_id: "actor-1".to_string(),
             display_name: "Agent".to_string(),
             cloud_token_file: Some("/tmp/cloud-token".to_string()),
+            gateway_token: None,
         }
     }
 

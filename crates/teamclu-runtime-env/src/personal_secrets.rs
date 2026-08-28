@@ -80,7 +80,7 @@ fn string_env_from_map(map: serde_json::Map<String, serde_json::Value>) -> HashM
 /// Keys seeded by the desktop runtime into the personal blob but not shown in
 /// the workspace `envVars` index (system / team-secret material).
 pub fn is_internal_personal_blob_key(key: &str) -> bool {
-    key == "tc_api_key" || key.starts_with("_team_secret.")
+    key == "tc_gateway_token" || key.starts_with("_team_secret.")
 }
 
 pub fn count_user_personal_env_keys(env: &HashMap<String, String>) -> usize {
@@ -222,7 +222,7 @@ pub struct PersonalEnvStoreDiagnostics {
     pub blob_error: Option<String>,
     /// All string keys in the encrypted blob (includes system-seeded keys).
     pub stored_var_count: usize,
-    /// User-configured personal keys only (`tc_api_key` / `_team_secret.*` excluded).
+    /// User-configured personal keys only (`tc_gateway_token` / `_team_secret.*` excluded).
     pub user_stored_var_count: usize,
 }
 
@@ -354,10 +354,10 @@ mod tests {
     fn internal_personal_blob_keys_are_excluded_from_user_count() {
         let mut env = HashMap::new();
         env.insert("MY_API_KEY".to_string(), "secret".to_string());
-        env.insert("tc_api_key".to_string(), "sk-tc-x".to_string());
+        env.insert("tc_gateway_token".to_string(), "tok_x".to_string());
         env.insert("_team_secret.abc".to_string(), "team-secret".to_string());
         assert_eq!(super::count_user_personal_env_keys(&env), 1);
-        assert!(super::is_internal_personal_blob_key("tc_api_key"));
+        assert!(super::is_internal_personal_blob_key("tc_gateway_token"));
         assert!(super::is_internal_personal_blob_key("_team_secret.team-1"));
         assert!(!super::is_internal_personal_blob_key("MY_API_KEY"));
     }
