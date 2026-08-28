@@ -1,3 +1,9 @@
+/**
+ * Path A business repository — PostgREST + caller JWT + RLS (default production).
+ *
+ * Parity target: lib/pg-repo/* (Path B). New methods belong here AND in pg-repo
+ * unless explicitly supabase-only. See README.md § Dual backend paths.
+ */
 import { randomUUID } from "node:crypto";
 import { createClient as defaultCreateClient } from "@supabase/supabase-js";
 import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
@@ -28,8 +34,8 @@ function assertNewOrgAllowed(): void {
 
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
 import { isLegalStatusTransition } from "./pg-repo/app-status.js";
-// Shared with the pg-repo twin on purpose — see the "Team MCP / env helpers"
-// note below. These are validation rules, not backend-specific plumbing.
+// Shared with the pg-repo twin on purpose — validation only; keep free of
+// PostgREST/Drizzle calls so both backends can import these helpers.
 import {
   assertTransportShape as assertTeamMcpTransportShape,
   readServerFields as readTeamMcpServerFields,
