@@ -43,9 +43,35 @@ pub async fn handle(workspace: &str, sock: &std::path::Path, arguments: &Value) 
             .unwrap_or("skill operation failed");
         return Err(format!("{code}: {message}"));
     }
-    raw.get("result")
+    let mut result = raw
+        .get("result")
         .cloned()
-        .ok_or_else(|| "amuxd returned no result".to_string())
+        .ok_or_else(|| "amuxd returned no result".to_string())?;
+    merge_partial_failures_into_result(&mut result, &raw);
+    Ok(result)
+}
+
+fn merge_partial_failures_into_result(result: &mut Value, raw: &Value) {
+    let Some(obj) = result.as_object_mut() else {
+        return;
+    };
+    let mut warnings = obj
+        .get("warnings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(failures) = raw.get("partialFailures").and_then(Value::as_array) {
+        for failure in failures {
+            if let Some(code) = failure.get("errorCode").and_then(Value::as_str) {
+                if !warnings.iter().any(|entry| entry.as_str() == Some(code)) {
+                    warnings.push(Value::String(code.to_string()));
+                }
+            }
+        }
+    }
+    if !warnings.is_empty() {
+        obj.insert("warnings".to_string(), Value::Array(warnings));
+    }
 }
 
 #[cfg(test)]
@@ -59,5 +85,22 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("create, update, or get"));
+    }
+
+    #[test]
+    fn merge_partial_failures_into_result_adds_warning_codes() {
+        let mut result = json!({
+            "slug": "demo",
+            "warnings": ["claude_local_override"]
+        });
+        let raw = json!({
+            "partialFailures": [
+                { "errorCode": "skill_refresh_failed", "message": "refresh failed" }
+            ]
+        });
+        merge_partial_failures_into_result(&mut result, &raw);
+        let warnings = result.get("warnings").unwrap().as_array().unwrap();
+        assert!(warnings.iter().any(|w| w == "claude_local_override"));
+        assert!(warnings.iter().any(|w| w == "skill_refresh_failed"));
     }
 }
