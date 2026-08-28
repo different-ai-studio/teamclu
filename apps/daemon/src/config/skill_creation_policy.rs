@@ -51,4 +51,14 @@ mod tests {
         assert!(once.contains("manage_skills"));
         assert_eq!(once, append_policy_to_prompt(&once));
     }
+
+    #[test]
+    fn materialize_policy_uses_brand_meta_dir() {
+        let _guard = crate::test_brand_env::BrandEnvGuard::set("copilot361");
+        let ws = tempfile::tempdir().unwrap();
+        materialize_policy_file(ws.path()).unwrap();
+        let path = ws.path().join(".copilot361/instructions/skill-creation-policy.txt");
+        assert!(path.is_file(), "expected {}", path.display());
+        assert!(!ws.path().join(".teamclu/instructions/skill-creation-policy.txt").exists());
+    }
 }

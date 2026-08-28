@@ -382,7 +382,7 @@ fn tool_definitions() -> Value {
                     },
                     "files": {
                         "type": "array",
-                        "description": "Optional pack files relative to the skill root.",
+                        "description": "Optional files to add or replace under the skill root. Omitted paths are preserved on update.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -392,6 +392,11 @@ fn tool_definitions() -> Value {
                             },
                             "required": ["path", "content"]
                         }
+                    },
+                    "deleteFiles": {
+                        "type": "array",
+                        "description": "Relative paths to remove explicitly on update.",
+                        "items": { "type": "string" }
                     },
                     "expectedDigest": {
                         "type": "string",
