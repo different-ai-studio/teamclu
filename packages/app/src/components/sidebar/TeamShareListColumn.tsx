@@ -626,7 +626,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             </span>
           ),
           dimmed: s.status === 'deprecated',
-          deletableSlug: s.kind === 'personal' ? undefined : s.slug,
+          deletableSlug: undefined,
           // Three states, and only one of them is asking for anything.
           //
           // Behind on version is a transitional state that resolves itself
