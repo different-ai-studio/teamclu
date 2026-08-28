@@ -527,15 +527,15 @@ CREATE TABLE amux.ai_usage_logs (
   public_model_id   text NOT NULL,       -- 客户请求的
   backend_model_id  text NOT NULL,       -- 实际路由到的
   provider_id       text NOT NULL,
-  -- 输入拆两段：缓存命中的单价约为未命中的 1/30（§4.4.0 ①）。
-  -- 合成一个 input_tokens 会让账单无法复核。
-  cached_input_tokens bigint NOT NULL DEFAULT 0,
-  input_tokens      bigint NOT NULL DEFAULT 0,   -- cache miss 部分
+  -- 计费按 input+output 与该档单价（§4.4）。cached_input_tokens 只是
+  -- 其中命中缓存的那部分，**不参与计费**，纯供毛利分析：实测命中率
+  -- 99.4%、命中成本约为未命中的 1/30，这一列是成本变化的早期信号。
+  input_tokens      bigint NOT NULL DEFAULT 0,
+  cached_input_tokens bigint NOT NULL DEFAULT 0,  -- input_tokens 的子集，不计费
   output_tokens     bigint NOT NULL DEFAULT 0,
-  -- 结算时套用的峰谷系数（§4.4.0 ②），留档以便复核账单。
-  peak_factor       numeric(4,2) NOT NULL DEFAULT 1,
   credits           bigint NOT NULL DEFAULT 0,
   -- 'upstream' = 上游回了 usage；'estimated' = 按 max_tokens 保守扣（§4.4）
+  -- DeepSeek 实测无条件回 usage，estimated 基本只在上游异常时出现
   usage_source      text NOT NULL DEFAULT 'upstream'
                     CHECK (usage_source IN ('upstream','estimated')),
   status_code       int,

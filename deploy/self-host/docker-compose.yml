@@ -210,6 +210,51 @@ services:
       retries: 12
       start_period: 60s
 
+  # Team AI gateway. Replaces LiteLLM's role for clients, but ships ALONGSIDE it:
+  # every installed desktop still points at the old gateway until Phase 1 flips
+  # team_workspace_config.llm_base_url, so removing litellm here would break
+  # them all instantly. Deletion is Phase 3, behind the gate in
+  # docs/specs/2026-08-28-team-ai-gateway-design.md §11.5.
+  #
+  # Reached publicly through Caddy at /ai/* ; FC calls it in-network on :4001.
+  ai-gateway:
+    build:
+      context: ../../services/ai-gateway
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: "4001"
+      # Least-privilege role created by 20260828120000_ai_gateway_credits.sql.
+      # The migration makes it NOLOGIN on purpose; the operator grants login and
+      # sets this password out of band, so no credential lives in the repo.
+      DATABASE_URL: "${AI_GATEWAY_DB_URL}"
+      CATALOG_PATH: /app/catalog.yaml
+      AI_GATEWAY_SERVICE_TOKEN: "${AI_GATEWAY_SERVICE_TOKEN}"
+      BACKEND_KIND: "${BACKEND_KIND:-supabase}"
+      # supabase path: identity is established by asking GoTrue, exactly as FC
+      # does. The gateway holds no signing key.
+      SUPABASE_URL: "${SUPABASE_URL:-http://kong:8000}"
+      SUPABASE_ANON_KEY: "${ANON_KEY:-}"
+      AUTH_BASE_URL: "${AUTH_BASE_URL:-}"
+      # Upstream provider keys, same vars litellm already uses.
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      - ./ai/catalog.yaml:/app/catalog.yaml:ro
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://127.0.0.1:4001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
   gitea:
     # Per-app private git repos for the Apps module. HTTP is fronted by Caddy on
     # GITEA_DOMAIN; SSH is published to the host on GITEA_SSH_PORT so developer
@@ -425,6 +470,12 @@ services:
       # Points FC at the bundled gateway. FC now fails closed on a blank value
       # rather than falling back to a hosted endpoint, so this default is a
       # convenience, not a safety net.
+      # Public, client-facing gateway URL. Already read by team-provisioning.ts,
+      # so it only needs re-pointing at the new gateway -- no code change.
+      # AI_GATEWAY_INTERNAL_URL / AI_GATEWAY_SERVICE_TOKEN are deliberately NOT
+      # here yet: FC does not call the gateway until the Phase 2 credits routes,
+      # and deploy-env-parity.test.ts fails a var declared but never read.
+      AI_GATEWAY_ENDPOINT: "${AI_GATEWAY_ENDPOINT:-}"
       LITELLM_URL: "${LITELLM_URL:-http://litellm:4000}"
       LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-}"
       # Per-team spend cap written at /team/new. Blank = no cap. This was absent

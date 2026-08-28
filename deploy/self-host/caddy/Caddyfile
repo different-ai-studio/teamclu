@@ -44,6 +44,14 @@
 		reverse_proxy litellm:4000
 	}
 
+	# Team AI gateway. handle_path strips the /ai prefix, so
+	# https://<host>/ai/v1/teams/<id>/chat/completions arrives at the service as
+	# /v1/teams/<id>/chat/completions. Added ALONGSIDE /llm/* -- the litellm
+	# routes stay until Phase 3 (design §11.5).
+	handle_path /ai/* {
+		reverse_proxy ai-gateway:4001
+	}
+
 	# CORS is handled entirely by FC (Hono middleware in services/fc/src/app.ts),
 	# which is origin-aware (reflects the request Origin, allows tauri:// and
 	# localhost, honours CORS_ORIGINS). Do NOT also set CORS headers here — Caddy
