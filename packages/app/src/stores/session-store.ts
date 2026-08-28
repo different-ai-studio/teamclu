@@ -152,8 +152,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setConnected: (v: boolean) => set({ isConnected: v }),
   setInactivityWarning: (v: Compat) => set({ inactivityWarning: v }),
 
-  // ── Phase 1E compat: pure stubs (no v2 implementation yet) ───────
-  pollPermissions: stubAsync("pollPermissions"),
+  // ── Phase 1E compat: legacy pending-permission UI still calls replyPermission ──
   replyPermission: async (permissionId: string, decision: "allow" | "deny" | "always") => {
     const { replyPermissionById } = await import("@/lib/teamclu/reply-acp-permission");
     await replyPermissionById(permissionId, decision);
@@ -223,7 +222,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   handleMessagePartUpdated: stub("handleMessagePartUpdated"),
   handleMessageCompleted: stub("handleMessageCompleted"),
   handleToolExecuting: stub("handleToolExecuting"),
-  handlePermissionAsked: stub("handlePermissionAsked"),
   handleQuestionAsked: stub("handleQuestionAsked"),
   handleTodoUpdated: stub("handleTodoUpdated"),
   handleSessionDiff: stub("handleSessionDiff"),

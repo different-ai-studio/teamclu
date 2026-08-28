@@ -16,7 +16,6 @@ import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
 import { markStartup } from "@/lib/startup-perf";
 import { classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, localizeAgentTurnErrorMessage } from "@/lib/agent-turn-error";
-import { getDispatcher } from "@/hooks/useDesktopNotifications";
 import { useSessionStore } from "@/stores/session";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
@@ -1016,27 +1015,6 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
               };
               upsertMessagesBatch([msgRow]).catch((e) => {
                 console.warn("[cache] message upsert failed:", e);
-              });
-            }
-            // Desktop notification: fire-and-forget; dispatcher filters own
-            // messages, DnD, focus, mute — no action needed on error.
-            {
-              const dm = decoded.message;
-              const dmKind =
-                dm.kind === MessageKind.AGENT_TOOL_CALL ? "agent_tool_call"
-                : dm.kind === MessageKind.AGENT_TOOL_RESULT ? "agent_tool_result"
-                : dm.kind === MessageKind.AGENT_THINKING ? "agent_thinking"
-                : dm.kind === MessageKind.AGENT_REPLY ? "agent_reply"
-                : dm.kind === MessageKind.SYSTEM ? "system"
-                : "text";
-              getDispatcher()?.maybeNotify({
-                id: dm.messageId,
-                session_id: dm.sessionId,
-                sender_actor_id: dm.senderActorId,
-                kind: dmKind,
-                content: dm.content,
-              }).catch((e) => {
-                console.warn("[notifications] maybeNotify failed:", e);
               });
             }
             return;

@@ -4,7 +4,6 @@
 //   session-loader.ts     — Session CRUD: load, create, archive, setActive, etc.
 //   session-messages.ts   — sendMessage, abortSession, message queue, reloadMessages
 //   session-sse-handlers.ts — All SSE event handlers (message, tool, session lifecycle)
-//   session-permissions.ts — Permission handling and auto-authorize
 //   session-questions.ts  — Question tool handling
 //   session-types.ts      — All type/interface definitions
 //   session-cache.ts      — Session lookup cache utilities

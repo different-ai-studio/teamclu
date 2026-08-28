@@ -1,22 +1,26 @@
 import {
   isPermissionGranted,
+  onAction,
   requestPermission,
+  sendNotification,
 } from "@tauri-apps/plugin-notification";
 import { getPermissionPolicy } from "@/lib/permission-policy";
 import { isTauri } from "@/lib/utils";
 import { appStoragePrefix } from "@/lib/build-config";
+import { useSessionSelectionStore } from "@/stores/session-selection-store";
 
 // --- Types ---
 
+/** OS banner types still exposed in settings; only action_required is sent today. */
 export type NotificationType = "action_required" | "task_completed" | "info";
 
 export type NotificationLevel = "all" | "important" | "mute";
 
 export const NOTIFICATION_LEVEL_KEY = `${appStoragePrefix}-notification-level`;
 const DEFAULT_LEVEL: NotificationLevel = "important";
-const THROTTLE_WINDOW_MS = 5000; // 5 seconds dedup window for task_completed
-
-// --- Level filtering ---
+const DOCK_ATTENTION_THROTTLE_MS = 5000;
+const OS_BODY_MAX = 80;
+const DIAG = "[notify-diag]";
 
 /** Which notification types are allowed at each level */
 const LEVEL_ALLOWS: Record<NotificationLevel, Set<NotificationType>> = {
@@ -25,35 +29,55 @@ const LEVEL_ALLOWS: Record<NotificationLevel, Set<NotificationType>> = {
   mute: new Set(),
 };
 
+const notificationClickHandlers = new Map<number, () => void>();
+let actionListenerReady = false;
+
+function diag(event: string, detail?: Record<string, unknown>): void {
+  if (detail) {
+    console.info(DIAG, event, detail);
+    return;
+  }
+  console.info(DIAG, event);
+}
+
+async function ensureNotificationActionListener(): Promise<void> {
+  if (actionListenerReady || !isTauri()) return;
+  actionListenerReady = true;
+  try {
+    await onAction((notification) => {
+      diag("os:action-click", { id: notification.id ?? null });
+      const id = notification.id;
+      if (id == null) return;
+      const handler = notificationClickHandlers.get(id);
+      if (!handler) return;
+      notificationClickHandlers.delete(id);
+      try {
+        handler();
+      } catch (err) {
+        console.warn(DIAG, "os:action-handler-failed", err);
+      }
+    });
+    diag("os:action-listener-ready");
+  } catch (err) {
+    actionListenerReady = false;
+    console.warn(DIAG, "os:action-listener-failed", err);
+  }
+}
+
+function nextNotificationId(): number {
+  return ((Date.now() & 0x7fffffff) ^ Math.floor(Math.random() * 0x7fffffff)) | 0;
+}
+
+function truncateBody(body: string, max = OS_BODY_MAX): string {
+  if (!body) return "";
+  return body.length <= max ? body : `${body.slice(0, max - 1)}…`;
+}
+
 // --- NotificationService ---
 
 class NotificationService {
-  /** Tracks last notification timestamp per session for dedup */
-  private lastNotified = new Map<string, number>();
-  /** Currently active (focused) session ID — set by session store */
-  activeSessionId: string | null = null;
-  /** Whether the main window is currently visible/focused */
-  isWindowVisible = true;
-
-  constructor() {
-    // Track window visibility via document.visibilityState and Tauri focus events
-    if (typeof document !== "undefined") {
-      document.addEventListener("visibilitychange", () => {
-        this.isWindowVisible = document.visibilityState === "visible";
-      });
-    }
-    // Also track via Tauri window focus/blur for more accurate state
-    if (isTauri()) {
-      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-        const win = getCurrentWindow();
-        win.onFocusChanged(({ payload: focused }) => {
-          this.isWindowVisible = focused;
-        });
-      }).catch(() => {
-        // Tauri API not available
-      });
-    }
-  }
+  /** Global throttle for macOS Dock bounce (inbox pings). */
+  private lastDockAttentionAt = 0;
 
   /** Read the user's notification level from localStorage */
   getLevel(): NotificationLevel {
@@ -78,14 +102,9 @@ class NotificationService {
   }
 
   /**
-   * Send a desktop notification with level filtering and dedup.
-   * Suppresses notifications when the application window is focused.
-   *
-   * @param type - Notification classification
-   * @param title - Notification title
-   * @param body - Notification body text
-   * @param sessionId - Session ID for dedup tracking
-   * @param onClick - Callback when user clicks the notification
+   * Send a desktop OS banner (permission prompts, etc.).
+   * Chat messages use Dock bounce via inbox MQTT — see inbox-handler +
+   * mqtt/dock_attention.rs.
    */
   async send(
     type: NotificationType,
@@ -94,53 +113,91 @@ class NotificationService {
     sessionId: string,
     onClick?: () => void,
   ): Promise<void> {
-    // 0. Suppress if window is visible (user is actively using the app)
-    if (this.isWindowVisible) {
-      console.log("[Notification] Suppressed (window visible):", { type, title, sessionId });
+    const activeSessionId = useSessionSelectionStore.getState().activeSessionId;
+    const focused = await this.isWindowFocused();
+    const visibility =
+      typeof document !== "undefined" ? document.visibilityState : "unknown";
+
+    diag("send:start", {
+      type,
+      sessionId,
+      activeSessionId,
+      focused,
+      visibility,
+      level: this.getLevel(),
+      isTauri: isTauri(),
+      title,
+    });
+
+    const suppress = await this.shouldSuppressBanner(type, sessionId);
+    if (suppress) {
+      diag("send:skipped", {
+        reason: "suppress_banner",
+        type,
+        sessionId,
+        activeSessionId,
+        focused,
+        visibility,
+      });
       return;
     }
-    
-    console.log("[Notification] Processing:", { type, title, sessionId, isWindowVisible: this.isWindowVisible });
 
-    // 1. Level filter
     const level = this.getLevel();
     if (!LEVEL_ALLOWS[level].has(type)) {
+      diag("send:skipped", { reason: "level_filter", type, level });
       return;
     }
 
-    // 2. Throttle: task_completed dedup within 5s window per session
-    if (type === "task_completed") {
-      const now = Date.now();
-      const lastTime = this.lastNotified.get(sessionId);
-      if (lastTime && now - lastTime < THROTTLE_WINDOW_MS) {
-        return; // suppress duplicate
-      }
-      this.lastNotified.set(sessionId, now);
-    }
-
-    // 3. Check notification permission (respecting permission policy)
     try {
       let granted = await isPermissionGranted();
+      diag("send:permission-check", { granted });
       if (!granted) {
         const policy = getPermissionPolicy();
         if (policy === "bypass" || policy === "batch") {
-          // In bypass/batch mode, don't trigger the OS permission dialog.
-          // If not already granted, silently skip sending.
+          diag("send:skipped", { reason: "permission_policy", policy });
           return;
         }
         const permission = await requestPermission();
         granted = permission === "granted";
+        diag("send:permission-requested", { permission, granted });
       }
-      if (!granted) return;
-    } catch {
-      // Notification API not available (e.g., browser mode)
+      if (!granted) {
+        diag("send:skipped", { reason: "os_permission_denied" });
+        return;
+      }
+    } catch (err) {
+      console.warn(DIAG, "send:permission-check-failed", err);
       return;
     }
 
-    // 4. Create and show notification
+    const truncatedBody = truncateBody(body);
+
+    if (isTauri()) {
+      try {
+        await ensureNotificationActionListener();
+        const id = nextNotificationId();
+        if (onClick) {
+          notificationClickHandlers.set(id, onClick);
+        }
+        diag("send:tauri-sendNotification", { id, title, body: truncatedBody });
+        sendNotification({
+          id,
+          title,
+          body: truncatedBody || undefined,
+          autoCancel: true,
+        });
+        diag("send:tauri-sendNotification-ok", { id });
+      } catch (err) {
+        notificationClickHandlers.clear();
+        console.warn(DIAG, "send:tauri-sendNotification-failed", err);
+      }
+      return;
+    }
+
     try {
+      diag("send:web-notification", { title, body: truncatedBody });
       const notification = new Notification(title, {
-        body: body || undefined,
+        body: truncatedBody || undefined,
         silent: false,
       });
 
@@ -148,14 +205,72 @@ class NotificationService {
         notification.onclick = () => {
           try {
             onClick();
-          } catch {
-            // Ignore click handler errors
+          } catch (err) {
+            console.warn(DIAG, "send:web-click-failed", err);
           }
         };
       }
-    } catch {
-      // Notification constructor not available
+      diag("send:web-notification-ok");
+    } catch (err) {
+      console.warn(DIAG, "send:web-notification-failed", err);
     }
+  }
+
+  /** Bounce the macOS Dock icon once when the app is in the background. */
+  async requestDockAttention(): Promise<void> {
+    if (!isTauri()) return;
+    if (await this.isWindowFocused()) return;
+
+    const now = Date.now();
+    if (now - this.lastDockAttentionAt < DOCK_ATTENTION_THROTTLE_MS) {
+      return;
+    }
+    this.lastDockAttentionAt = now;
+
+    try {
+      const { getCurrentWindow, UserAttentionType } = await import(
+        "@tauri-apps/api/window"
+      );
+      await getCurrentWindow().requestUserAttention(
+        UserAttentionType.Informational,
+      );
+    } catch {
+      // Tauri window API unavailable
+    }
+  }
+
+  /**
+   * Permission banners suppress only when the user is already on that session.
+   * Other types suppress whenever the window is focused.
+   */
+  private async shouldSuppressBanner(
+    type: NotificationType,
+    sessionId: string,
+  ): Promise<boolean> {
+    const focused = await this.isWindowFocused();
+    if (!focused) return false;
+    if (type === "action_required") {
+      return useSessionSelectionStore.getState().activeSessionId === sessionId;
+    }
+    return true;
+  }
+
+  private async isWindowFocused(): Promise<boolean> {
+    if (!isTauri()) {
+      return typeof document !== "undefined" && document.visibilityState === "visible";
+    }
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      return await getCurrentWindow().isFocused();
+    } catch (err) {
+      console.warn(DIAG, "focus:isFocused-failed", err);
+      return false;
+    }
+  }
+
+  /** Test hook — clears dock-attention throttle. */
+  resetDockAttentionForTests(): void {
+    this.lastDockAttentionAt = 0;
   }
 }
 

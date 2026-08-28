@@ -1028,6 +1028,12 @@ export const useV2StreamingStore = create<State>((set, get) => ({
   setPermissionRequest: (sessionId, actorId, req) => {
     const requestId = req.requestId?.trim();
     if (!requestId) return;
+    console.info("[notify-diag] v2-stream:setPermissionRequest", {
+      sessionId,
+      actorId,
+      requestId,
+      toolName: req.toolName ?? null,
+    });
     const state = get();
     const { entry, toArchive } = prepareMutation(state, sessionId, actorId);
     set({

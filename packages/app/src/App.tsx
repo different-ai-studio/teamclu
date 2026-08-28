@@ -44,7 +44,6 @@ import {
   useTauriBodyClass,
   useTelemetryConsent,
 } from "@/hooks/useAppInit";
-import { useDesktopNotifications } from "@/hooks/useDesktopNotifications";
 import { useMemberPresenceHeartbeat } from "@/hooks/useMemberPresenceHeartbeat";
 import { useExtensionSessionCleanup } from "@/hooks/useExtensionSessionCleanup";
 import {
@@ -741,7 +740,7 @@ function AppContent() {
   // closed, so the chat header should NOT re-render that strip there.
   const collapsedInsetLeading = null;
   const [isRefreshingMessages, setIsRefreshingMessages] = useState(false);
-  // Resolved by the MQTT-connect effect; passed to the notification dispatcher.
+  // Resolved by the MQTT-connect effect; used for presence + live wiring.
   const [myActorId, setMyActorId] = useState<string | null>(null);
   // Extracted hooks — initialization, panel state, keyboard shortcuts
   const { initialWorkspaceResolved, openCodeError } = useWorkspaceInit();
@@ -770,7 +769,6 @@ function AppContent() {
     }
   }, [workspacePath, daemonHttpReady, openCodeError, t]);
 
-  useDesktopNotifications(myActorId);
   useChannelGatewayInit();
   useGitReposInit();
   useCronInit();

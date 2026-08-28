@@ -476,6 +476,9 @@ pub async fn run_event_loop(bus: Arc<super::MqttBusInner>, app: tauri::AppHandle
                 while let Ok(Some(next)) = tokio::time::timeout_at(deadline, env_rx.recv()).await {
                     batch.push(next);
                 }
+                for (topic, bytes) in &batch {
+                    super::dock_attention::maybe_request_dock_attention(&app, topic, bytes);
+                }
                 let payload: Vec<serde_json::Value> = batch
                     .iter()
                     .map(|(topic, bytes)| {

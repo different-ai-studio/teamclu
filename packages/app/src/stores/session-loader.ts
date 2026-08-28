@@ -1,5 +1,4 @@
 import type { SelectedModel, SessionState } from "./session-types";
-import { notificationService } from "@/lib/notification-service";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
@@ -178,7 +177,6 @@ export function createLoaderActions(set: SessionSet, _get: SessionGet) {
     },
 
     setActiveSession: async (id: string) => {
-      notificationService.activeSessionId = id;
       set({
         activeSessionId: id,
         currentSessionId: id,

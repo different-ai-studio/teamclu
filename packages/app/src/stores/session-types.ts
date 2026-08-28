@@ -330,14 +330,12 @@ export interface SessionState {
   handleMessagePartUpdated: (event: MessagePartUpdatedEvent) => void;
   handleMessageCompleted: (event: MessageCompletedEvent) => void;
   handleToolExecuting: (event: ToolExecutingEvent) => void;
-  handlePermissionAsked: (event: PermissionAskedEvent) => void;
 
-  // Actions - Permission
+  // Actions - Permission (legacy UI; v2 ACP path uses replyAcpPermission directly)
   replyPermission: (
     permissionId: string,
     decision: "allow" | "deny" | "always",
   ) => Promise<void>;
-  pollPermissions: () => Promise<void>;
 
   // Actions - Question
   answerQuestion: (answers: Record<string, string>, questionId?: string) => Promise<void>;

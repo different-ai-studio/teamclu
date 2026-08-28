@@ -25,7 +25,6 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { SettingCard, SectionHeader } from './shared'
-import { invalidatePermissionConfigCache } from '@/stores/session-permissions'
 import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
 import {
   encodeWorkspaceId,
@@ -151,7 +150,6 @@ export const PermissionManagementSection = React.memo(function PermissionManagem
     try {
       await putDaemonToolPermissions(workspaceId, permissionConfig)
       setConfigModified(false)
-      invalidatePermissionConfigCache()
     } catch (error) {
       console.error('[PermissionManagement] Failed to save permissions:', error)
     } finally {
