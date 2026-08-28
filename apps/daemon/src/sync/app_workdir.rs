@@ -149,17 +149,63 @@ fn metadata_for_fs_check(path: &Path) -> Option<u64> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        let meta = std::fs::metadata(path)
-            .ok()
-            .or_else(|| path.parent().and_then(|p| std::fs::metadata(p).ok()))?;
-        Some(meta.volume_serial_number())
+        volume_serial_for_path(path).map(u64::from)
     }
     #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
         None
     }
+}
+
+#[cfg(windows)]
+fn volume_serial_for_path(path: &Path) -> Option<u32> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationW;
+
+    let root = volume_root_for_path(path)?;
+    let mut wide: Vec<u16> = root.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut serial = 0u32;
+    // SAFETY: `wide` is a null-terminated UTF-16 path; out pointers are valid.
+    let ok = unsafe {
+        GetVolumeInformationW(
+            wide.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            &mut serial,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if ok == 0 {
+        None
+    } else {
+        Some(serial)
+    }
+}
+
+/// Root path accepted by `GetVolumeInformationW` (`C:\` or `\\server\share`).
+#[cfg(windows)]
+fn volume_root_for_path(path: &Path) -> Option<PathBuf> {
+    let resolved = if path.exists() {
+        path.canonicalize().ok()?
+    } else {
+        path.parent()?.canonicalize().ok()?
+    };
+    let raw = resolved.to_string_lossy();
+    let raw = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+    if raw.starts_with(r"\\") {
+        let trimmed = raw.trim_start_matches('\\');
+        let server = trimmed.split('\\').next()?;
+        let rest = trimmed.strip_prefix(server)?.trim_start_matches('\\');
+        let share = rest.split('\\').next()?;
+        return Some(PathBuf::from(format!(r"\\{server}\{share}")));
+    }
+    let colon = raw.find(":\\").or_else(|| raw.find(":/"))?;
+    Some(PathBuf::from(&raw[..colon + 2]))
 }
 
 fn same_filesystem(a: &Path, b: &Path) -> bool {
