@@ -134,8 +134,11 @@ fn acp_session_for(
     shared.session_routes.lock().get(&encoded).cloned()
 }
 
-async fn emit_slash_commands(shared: &Arc<Shared>, session_id: &str, event: &serde_json::Value) {
-    let commands: Vec<amux::AcpAvailableCommand> = event
+/// Claude bridge `slash_commands` event → ACP available commands (production parse path).
+pub fn available_commands_from_slash_commands_event(
+    event: &serde_json::Value,
+) -> Vec<amux::AcpAvailableCommand> {
+    event
         .get("commands")
         .and_then(|v| v.as_array())
         .map(|arr| {
@@ -161,7 +164,11 @@ async fn emit_slash_commands(shared: &Arc<Shared>, session_id: &str, event: &ser
                 })
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+async fn emit_slash_commands(shared: &Arc<Shared>, session_id: &str, event: &serde_json::Value) {
+    let commands = available_commands_from_slash_commands_event(event);
     if commands.is_empty() {
         return;
     }

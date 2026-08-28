@@ -42,8 +42,9 @@ pub use skill_creation_policy::{
     SKILL_CREATION_POLICY_VERSION,
 };
 pub use roles_skills::{
-    is_inherent_skill, scan_roles_skills_state, team_skill_roots, ManagedSkillDto, RoleRecordDto,
-    RoleSkillLinkDto, RolesSkillsMetricsDto, RolesSkillsStateDto,
+    find_managed_skill_in_session_inventory, is_inherent_skill, scan_roles_skills_state,
+    team_skill_roots, ManagedSkillDto, RoleRecordDto, RoleSkillLinkDto, RolesSkillsMetricsDto,
+    RolesSkillsStateDto,
 };
 pub use session_store::{SessionBinding, SessionStore};
 pub use workspace_control::{

@@ -251,6 +251,7 @@ impl DaemonServer {
 mod tests {
     use super::*;
     use crate::config::{create_pack, CreatePackRequest, ClaimedTeamContext};
+    use serde_json::{json, Value};
     use std::fs;
 
     fn test_skill_md(slug: &str) -> String {
@@ -294,5 +295,36 @@ mod tests {
         );
         assert!(warnings.iter().any(|w| w == WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED));
         assert!(canonical.join("SKILL.md").is_file());
+    }
+
+    #[tokio::test]
+    async fn skills_manage_create_crosses_control_socket_pipeline() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard =
+            crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".agents/skills")).unwrap();
+
+        let fixture = super::super::tests::test_server();
+        let body = "---\nname: manage-transport\ndescription: Via socket.\n---\n\n# Body\n";
+        let payload = json!({
+            "action": "create",
+            "workspace_path": ws.path().to_string_lossy(),
+            "slug": "manage-transport",
+            "content": body,
+            "files": [],
+        });
+
+        let reply = fixture.server.handle_skills_manage_inner(payload).await;
+        let envelope: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(envelope["ok"], true, "reply: {reply}");
+        let result = &envelope["result"];
+        assert_eq!(result["slug"], "manage-transport");
+        let canonical = PathBuf::from(result["path"].as_str().unwrap());
+        assert!(canonical.join("SKILL.md").is_file());
+        assert!(
+            ws.path().join(".claude/skills/manage-transport").exists(),
+            "skills.manage create should reconcile Claude bridge symlinks"
+        );
     }
 }
