@@ -448,6 +448,10 @@ impl PiProcessPool {
             warn!(path = %perms_file.display(), error = %e, "pi permissions file init failed");
         }
         cmd.env("TEAMCLU_PI_PERMISSIONS_FILE", &perms_file);
+        cmd.env(
+            "TEAMCLU_SKILL_CREATION_POLICY",
+            crate::config::SKILL_CREATION_POLICY,
+        );
         if let Some(remote_cmd) = &env.remote_tools_cmd {
             cmd.env("TEAMCLU_REMOTE_TOOLS_CMD", remote_cmd);
         }

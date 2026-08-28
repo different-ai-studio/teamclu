@@ -220,7 +220,10 @@ fn try_load_skill_from_root(
     }))
 }
 
-fn load_skills_from_dir(dir: &Path, source: &str) -> Result<Vec<RawSkill>, WorkspaceControlError> {
+pub(crate) fn load_skills_from_dir(
+    dir: &Path,
+    source: &str,
+) -> Result<Vec<RawSkill>, WorkspaceControlError> {
     if !dir.is_dir() {
         return Ok(vec![]);
     }

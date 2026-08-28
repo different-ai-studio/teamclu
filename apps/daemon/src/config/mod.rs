@@ -7,7 +7,9 @@ mod member_store;
 mod model_catalog;
 mod model_resolution;
 pub mod provider_auth;
+mod managed_skill_writer;
 mod roles_skills;
+mod skill_creation_policy;
 mod session_store;
 pub mod team_config;
 pub mod team_mcp;
@@ -29,6 +31,14 @@ pub use model_resolution::first_available;
 pub use provider_auth::{
     builtin_provider_auth_methods, merge_live_provider_auth_methods, ProviderAuthMethod,
     ProviderAuthMethodType, ProviderAuthMethodsResponse,
+};
+pub use managed_skill_writer::{
+    create_pack, get_pack, update_pack, CreatePackRequest, ManageSkillResponse, ManagedSkillError,
+    ManagedSkillErrorCode, PackFileInput, RuntimeActivation, UpdatePackRequest,
+};
+pub use skill_creation_policy::{
+    append_policy_to_prompt, materialize_policy_file, SKILL_CREATION_POLICY,
+    SKILL_CREATION_POLICY_VERSION,
 };
 pub use roles_skills::{
     is_inherent_skill, scan_roles_skills_state, team_skill_roots, ManagedSkillDto, RoleRecordDto,
