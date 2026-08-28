@@ -9,6 +9,7 @@ mod participants;
 mod roles;
 mod send;
 mod session;
+mod skills;
 mod sync;
 mod team_skills;
 
@@ -361,6 +362,46 @@ fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "manage_skills",
+            "description": "Create, update, or read a personal reusable skill stored under ~/.agents/skills/<slug>/. Use this for normal skills shared across OpenCode, Pi, and Claude Code. Do not write skills directly to .opencode/skills, .pi/skills, or .claude/skills.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "update", "get"],
+                        "description": "The action to perform."
+                    },
+                    "slug": {
+                        "type": "string",
+                        "description": "Skill directory name (lowercase letters, digits, hyphens). Required for all actions."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full SKILL.md content with YAML frontmatter (name must match slug). Required for create and update."
+                    },
+                    "files": {
+                        "type": "array",
+                        "description": "Optional pack files relative to the skill root.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": { "type": "string" },
+                                "content": { "type": "string" },
+                                "encoding": { "type": "string", "enum": ["utf8"] }
+                            },
+                            "required": ["path", "content"]
+                        }
+                    },
+                    "expectedDigest": {
+                        "type": "string",
+                        "description": "Optimistic concurrency digest (sha256:...) from a prior get/create."
+                    }
+                },
+                "required": ["action"]
+            }
+        },
+        {
             "name": "archive_session",
             "description": "Archive a TeamClu cloud session (soft-hide from the active session list). Requires the desktop app to be running and the user to be signed in. When session_id is omitted, daemon-managed agent runtimes inject the current session automatically; standalone CLI may use TEAMCLU_SESSION_ID (legacy workspace active-session-id fallback is deprecated).",
             "inputSchema": {
@@ -552,6 +593,13 @@ async fn handle_request(
                     }
                 }
                 "manage_team_skills" => match team_skills::handle(api_port, &arguments).await {
+                    Ok(v) => {
+                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+                        tool_ok(&text)
+                    }
+                    Err(e) => tool_err(&e),
+                },
+                "manage_skills" => match skills::handle(workspace, sock, &arguments).await {
                     Ok(v) => {
                         let text = serde_json::to_string_pretty(&v).unwrap_or_default();
                         tool_ok(&text)

@@ -151,6 +151,22 @@ pub async fn send_via_daemon(
     Ok(parsed)
 }
 
+/// Forward managed skill create/update/get to amuxd (`cmd: "skills-manage"`).
+pub async fn skills_manage_via_daemon(sock: PathBuf, payload: Value) -> Result<Value, String> {
+    let mut body = payload;
+    if body.get("cmd").is_none() {
+        body["cmd"] = json!("skills-manage");
+    }
+    let line = body.to_string();
+    let raw = tokio::task::spawn_blocking(move || roundtrip(&sock, &line))
+        .await
+        .map_err(|e| format!("skills manage task failed: {e}"))?
+        .map_err(|e| format!("amuxd.sock roundtrip failed: {e} — is the daemon running?"))?;
+
+    serde_json::from_str(&raw)
+        .map_err(|e| format!("amuxd returned a non-JSON reply ({e}): {raw}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

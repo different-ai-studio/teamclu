@@ -848,6 +848,7 @@ pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlEr
 
     install_instruction_plugin_file(workspace_path)?;
     install_session_context_plugin_file(workspace_path)?;
+    crate::config::materialize_policy_file(workspace_path)?;
     materialize_opencode_for_prepare(workspace_path)?;
     ensure_inherent_skills_in_dir(&inherent_skills_dir()?)?;
     crate::runtime::claude_skills::ensure_claude_team_skills(workspace_path)?;

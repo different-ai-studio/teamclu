@@ -15,6 +15,15 @@ async function loadSystemPrompt(workspaceDir) {
   }
 }
 
+async function loadSkillCreationPolicy(workspaceDir) {
+  const policyPath = path.join(workspaceDir, ".teamclu", "instructions", "skill-creation-policy.txt")
+  try {
+    return String(await fs.readFile(policyPath, "utf8")).trim()
+  } catch {
+    return ""
+  }
+}
+
 export const TeamcluInstructionPlugin = async ({ directory, worktree }) => {
   const pluginWorkspaceDir = directory || worktree
 
@@ -30,8 +39,12 @@ export const TeamcluInstructionPlugin = async ({ directory, worktree }) => {
         return
       }
 
-      const prompt = await loadSystemPrompt(workspaceDir)
-      if (!prompt) {
+      const [prompt, policy] = await Promise.all([
+        loadSystemPrompt(workspaceDir),
+        loadSkillCreationPolicy(workspaceDir),
+      ])
+      const parts = [prompt, policy].filter(Boolean)
+      if (parts.length === 0) {
         return
       }
 
@@ -39,7 +52,7 @@ export const TeamcluInstructionPlugin = async ({ directory, worktree }) => {
         output.system = []
       }
 
-      output.system.unshift(prompt)
+      output.system.unshift(parts.join("\n\n"))
     },
   }
 }
