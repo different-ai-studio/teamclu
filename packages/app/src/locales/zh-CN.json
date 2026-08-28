@@ -1205,6 +1205,8 @@
     "reseed": "重新播种",
     "deploy": "部署",
     "deploying": "部署中…",
+    "deployConfirmTitle": "确认部署",
+    "deployConfirmContinue": "继续部署",
     "deployFailed": "部署失败",
     "live": "已上线",
     "openUrl": "打开部署地址",

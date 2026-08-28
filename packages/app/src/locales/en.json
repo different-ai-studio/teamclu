@@ -1205,6 +1205,8 @@
     "reseed": "Reseed",
     "deploy": "Deploy",
     "deploying": "Deploying…",
+    "deployConfirmTitle": "Confirm deploy",
+    "deployConfirmContinue": "Deploy anyway",
     "deployFailed": "Deploy failed",
     "live": "Live",
     "openUrl": "Open deployed URL",

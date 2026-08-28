@@ -374,14 +374,14 @@ export const useAppsStore = create<AppsState>((set, get) => ({
           app.teamId,
         );
         if (envDiag?.workspace_has_active_turn) {
-          const accepted = publicDeployConfirm.run(ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE);
+          const accepted = await publicDeployConfirm.run(ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE);
           if (!accepted) return;
         }
       }
     }
 
     if (app.authMode === "none") {
-      const accepted = publicDeployConfirm.run(PUBLIC_DEPLOY_CONFIRM_MESSAGE);
+      const accepted = await publicDeployConfirm.run(PUBLIC_DEPLOY_CONFIRM_MESSAGE);
       if (!accepted) return;
     }
 

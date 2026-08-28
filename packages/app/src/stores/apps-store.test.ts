@@ -65,7 +65,7 @@ vi.mock("sonner", () => ({ toast: { error: mocks.toastError, success: vi.fn() } 
 vi.mock("@/lib/app-session", () => ({ bindAppWorkdir: mocks.bindAppWorkdir }));
 
 vi.mock("@/lib/app-deploy-confirm", () => ({
-  publicDeployConfirm: { run: vi.fn(() => true) },
+  publicDeployConfirm: { run: vi.fn(async () => true) },
   PUBLIC_DEPLOY_CONFIRM_MESSAGE:
     "此应用未启用登录保护，任何拿到链接的人都能访问。\n\n确定继续部署吗？",
   ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE:
@@ -554,7 +554,7 @@ describe("apps-store deploy", () => {
     mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
       workspace_has_active_turn: false,
     });
-    vi.mocked(publicDeployConfirm.run).mockReturnValue(true);
+    vi.mocked(publicDeployConfirm.run).mockResolvedValue(true);
     const mod = await import("./apps-store");
     mod.useAppsStore.setState({
       items: [readyApp()],
@@ -622,7 +622,7 @@ describe("apps-store deploy", () => {
   });
 
   it("authMode=none: declined confirm aborts deploy", async () => {
-    vi.mocked(publicDeployConfirm.run).mockReturnValue(false);
+    vi.mocked(publicDeployConfirm.run).mockResolvedValue(false);
     const { useAppsStore } = await import("./apps-store");
     useAppsStore.setState({ items: [readyApp({ authMode: "none" })] });
 
@@ -672,7 +672,7 @@ describe("apps-store deploy", () => {
     mocks.getDaemonEnvActivationDiagnostics.mockResolvedValueOnce({
       workspace_has_active_turn: true,
     });
-    vi.mocked(publicDeployConfirm.run).mockReturnValue(false);
+    vi.mocked(publicDeployConfirm.run).mockResolvedValue(false);
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
 
