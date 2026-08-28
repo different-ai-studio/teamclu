@@ -25,8 +25,39 @@ test("normalizeSessionScopedToolName handles slash and mcp__ forms", () => {
   );
 });
 
+test("normalizeSessionScopedToolName handles OpenCode server_tool ids", () => {
+  assert.equal(
+    normalizeSessionScopedToolName("teamclu-introspect_get_session_deeplink"),
+    "get_session_deeplink",
+  );
+  assert.equal(
+    normalizeSessionScopedToolName("teamclu-introspect_manage_participants"),
+    "manage_participants",
+  );
+  assert.equal(
+    normalizeSessionScopedToolName("teamclu-introspect_archive_session"),
+    "archive_session",
+  );
+  assert.equal(
+    normalizeSessionScopedToolName("teamclaw-introspect_get_session_deeplink"),
+    "get_session_deeplink",
+  );
+});
+
+test("normalizeSessionScopedToolName rejects similar but non-managed OpenCode ids", () => {
+  for (const name of [
+    "other-server_get_session_deeplink",
+    "teamclu-introspect_get_session_deeplink_extra",
+    "browser_manage_participants",
+  ]) {
+    assert.equal(normalizeSessionScopedToolName(name), name);
+    assert.equal(isSessionScopedTool(name), false);
+  }
+});
+
 test("isSessionScopedTool recognizes namespaced MCP tool ids", () => {
   assert.equal(isSessionScopedTool("mcp__teamclu-introspect__manage_participants"), true);
+  assert.equal(isSessionScopedTool("teamclu-introspect_get_session_deeplink"), true);
   assert.equal(isSessionScopedTool("browser_click"), false);
 });
 
@@ -37,6 +68,25 @@ test("handleToolExecuteBefore injects output.args.session_id using OpenCode hook
     output,
     {
       injectSessionIdForTool: async () => ({ session_id: "teamclu-a" }),
+    },
+  );
+  assert.equal(output.args.session_id, "teamclu-a");
+});
+
+test("handleToolExecuteBefore injects for real OpenCode production tool id", async () => {
+  const output = { args: { scheme: "copilot361" } };
+  await handleToolExecuteBefore(
+    {
+      tool: "teamclu-introspect_get_session_deeplink",
+      sessionID: "backend-a",
+      callID: "call-a",
+    },
+    output,
+    {
+      injectSessionIdForTool: async () => ({
+        scheme: "copilot361",
+        session_id: "teamclu-a",
+      }),
     },
   );
   assert.equal(output.args.session_id, "teamclu-a");
@@ -54,9 +104,9 @@ test("concurrent A/B resolve injects distinct TeamClu sessions", async () => {
     });
 
   const results = await Promise.all([
-    inject("get_session_deeplink", {}, "backend-a"),
-    inject("get_session_deeplink", {}, "backend-b"),
-    inject("get_session_deeplink", {}, "backend-a"),
+    inject("teamclu-introspect_get_session_deeplink", {}, "backend-a"),
+    inject("teamclu-introspect_get_session_deeplink", {}, "backend-b"),
+    inject("teamclu-introspect_get_session_deeplink", {}, "backend-a"),
   ]);
   assert.deepEqual(results, [
     { session_id: "teamclu-a" },
