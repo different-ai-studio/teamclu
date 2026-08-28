@@ -97,6 +97,7 @@ export function routeToolPresentation(toolCall: ToolCallLike): string {
   if (hasArgument(args, "questions") || titleLower === "question") return "question";
 
   if (descHint === "skill" || titleLower === "skill") return "skill";
+  if (titleLower === "manage_skills") return "manage_skills";
   if (descHint === "role_skill" || titleLower === "role_skill") return "role_skill";
   if (descHint.includes("role_load") || titleLower.includes("role_load")) return "role_load";
 
@@ -263,6 +264,10 @@ export function matchesTaskTool(toolCall: ToolCallLike): boolean {
 
 export function matchesSkillTool(toolCall: ToolCallLike): boolean {
   return routeToolPresentation(toolCall) === "skill";
+}
+
+export function matchesManageSkillsTool(toolCall: ToolCallLike): boolean {
+  return routeToolPresentation(toolCall) === "manage_skills";
 }
 
 export function matchesRoleSkillTool(toolCall: ToolCallLike): boolean {
@@ -495,6 +500,9 @@ export function formatToolName(t: TranslateFn, name: string): string {
   if (name.toLowerCase() === "role_skill") {
     return t("chat.toolCall.roleSkill.title", "Role skill");
   }
+  if (name.toLowerCase() === "manage_skills") {
+    return t("chat.toolCall.manageSkills.title", "Manage skill");
+  }
   if (name.toLowerCase() === "role_load") {
     return t("chat.toolCall.roleLoad.title", "Role Load");
   }
@@ -548,6 +556,37 @@ export function parseDeleteOnlyPatch(patchText: string): string[] | null {
   }
 
   return deleteFiles.length > 0 ? deleteFiles : null;
+}
+
+export type ManageSkillsToolResult = {
+  slug?: string;
+  path?: string;
+  runtimeActivation?: string;
+  warnings?: string[];
+};
+
+export function parseManageSkillsToolResult(result: unknown): ManageSkillsToolResult | null {
+  let payload: unknown = result;
+  if (typeof payload === "string") {
+    const trimmed = payload.trim();
+    if (!trimmed.startsWith("{")) return null;
+    try {
+      payload = JSON.parse(trimmed) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+  return {
+    slug: typeof record.slug === "string" ? record.slug : undefined,
+    path: typeof record.path === "string" ? record.path : undefined,
+    runtimeActivation:
+      typeof record.runtimeActivation === "string" ? record.runtimeActivation : undefined,
+    warnings: Array.isArray(record.warnings)
+      ? record.warnings.filter((value): value is string => typeof value === "string")
+      : undefined,
+  };
 }
 
 /**

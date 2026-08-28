@@ -8,6 +8,54 @@ import { ToolCall, useSessionStore } from "@/stores/session";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { ToolCallStatusGlyph } from "./ToolCallStatusGlyph";
 import { ToolCallDisclosure } from "./ToolCallDisclosure";
+import { parseManageSkillsToolResult } from "./tool-call-utils";
+
+export function ManageSkillsToolCard({ toolCall }: { toolCall: ToolCall }) {
+  const { t } = useTranslation();
+  const args = toolCall.arguments as {
+    action?: string;
+    slug?: string;
+  };
+  const parsed = parseManageSkillsToolResult(toolCall.result);
+  const slug = parsed?.slug || args?.slug || t("chat.toolCall.manageSkills.unknown", "unknown-skill");
+  const action = args?.action?.trim() || t("chat.toolCall.manageSkills.defaultAction", "update");
+  const target = `${action} · ${slug}`;
+  const footnotes: string[] = [];
+
+  if (parsed?.runtimeActivation === "next_start") {
+    footnotes.push(
+      t(
+        "chat.toolCall.manageSkills.nextStart",
+        "Saved to ~/.agents/skills. New OpenCode, Pi, and Claude Code runtimes will pick it up on their next start.",
+      ),
+    );
+  }
+  if (parsed?.warnings?.includes("claude_local_override")) {
+    footnotes.push(
+      t(
+        "chat.toolCall.manageSkills.claudeLocalOverride",
+        "Claude Code will keep using the workspace-local .claude/skills copy for this slug.",
+      ),
+    );
+  }
+
+  return (
+    <div className="w-full" data-testid="tool-card-manage-skills-wrap">
+      <ToolCallDisclosure
+        testId="tool-card-manage-skills"
+        icon={<Zap className="h-3.5 w-3.5" />}
+        title={t("chat.toolCall.manageSkills.title", "Manage skill")}
+        target={target}
+        status={<ToolCallStatusGlyph status={toolCall.status} />}
+      />
+      {footnotes.length > 0 ? (
+        <p className="mt-1 px-[9px] text-[11.5px] leading-relaxed text-muted-foreground">
+          {footnotes.join(" ")}
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 export function SkillToolCard({ toolCall }: { toolCall: ToolCall }) {
   const { t } = useTranslation();

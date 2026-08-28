@@ -11,6 +11,7 @@ export type Command = {
   _type?: 'role' | 'skill' | 'command';
 }
 import { SKILLS_CHANGED_EVENT } from '@/hooks/useAppInit'
+import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { attachmentsForSession, useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { isTauri } from '@/lib/utils'
@@ -210,6 +211,7 @@ export function CommandPopover({
   const [isLoading, setIsLoading] = React.useState(false)
   const [highlightedIndex, setHighlightedIndex] = React.useState(0)
   const [skillsRevision, setSkillsRevision] = React.useState(0)
+  const runtimeRefresh = useWorkspaceRuntimeRefreshStore((s) => s.refresh)
   const listRef = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
@@ -217,6 +219,12 @@ export function CommandPopover({
     window.addEventListener(SKILLS_CHANGED_EVENT, bump)
     return () => window.removeEventListener(SKILLS_CHANGED_EVENT, bump)
   }, [])
+
+  React.useEffect(() => {
+    if (!runtimeRefresh?.change_kinds.includes('skills')) return
+    setSkillsRevision((value) => value + 1)
+    window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
+  }, [runtimeRefresh?.last_detected_at, runtimeRefresh?.change_kinds])
   
   // Load commands and skills when popover opens
   React.useEffect(() => {

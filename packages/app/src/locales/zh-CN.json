@@ -639,6 +639,13 @@
         "title": "技能",
         "unknown": "未知技能"
       },
+      "manageSkills": {
+        "title": "管理技能",
+        "unknown": "未知技能",
+        "defaultAction": "更新",
+        "nextStart": "已保存至 ~/.agents/skills。新的 OpenCode、Pi 与 Claude Code 运行时将在下次启动时生效。",
+        "claudeLocalOverride": "Claude Code 将继续使用工作区内 .claude/skills 下的同名本地副本。"
+      },
       "roleSkill": {
         "title": "角色技能",
         "unknown": "未知角色技能"
