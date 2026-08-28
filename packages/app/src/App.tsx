@@ -65,6 +65,7 @@ import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
 import { UpdateDialogContainer } from "@/components/updater/UpdateDialog";
 import { RightPanel } from "@/components/panel";
 import { AppControlPanel } from "@/components/apps/AppControlPanel";
+import { AppDeployConfirmDialog } from "@/components/apps/AppDeployConfirmDialog";
 import { resolveControlPanelAppId } from "@/lib/app-control-panel";
 import { ExtensionSettings, Settings } from "@/components/settings";
 import { FeedbackDialog } from "@/components/settings/FeedbackDialog";
@@ -1419,6 +1420,7 @@ function App() {
       />
       <UpdateDialogContainer />
       <CloseToTrayHost />
+      <AppDeployConfirmDialog />
       <NewSessionDialog />
       <TelemetryConsentDialog
         open={showConsentDialog}

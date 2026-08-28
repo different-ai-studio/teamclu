@@ -5,12 +5,14 @@ import { KnowledgeVersionHistory } from "@/components/teamshare/KnowledgeVersion
 import { KnowledgeConflictResolver } from "@/components/teamshare/KnowledgeConflictResolver"
 import { KnowledgeCloudVersion } from "@/components/teamshare/KnowledgeCloudVersion"
 import { TeamShareTabContent } from "@/components/teamshare/TeamShareTabContent"
+import { AppDataTabContent } from "@/components/apps/AppDataTabContent"
 import {
   decodeCloudVersionTarget,
   decodeKnowledgeConflictTarget,
   decodeTeamShareTarget,
   decodeVersionHistoryTarget,
 } from "@/lib/tabs/teamshare-target"
+import { decodeAppDataTarget } from "@/lib/tabs/app-tabs"
 
 interface NativeContentProps {
   target: string
@@ -27,6 +29,9 @@ export function NativeContent({ target }: NativeContentProps) {
 
   const teamShare = decodeTeamShareTarget(target)
   if (teamShare) return <TeamShareTabContent target={teamShare} />
+
+  const appData = decodeAppDataTarget(target)
+  if (appData) return <AppDataTabContent target={target} />
 
   const conflictPath = decodeKnowledgeConflictTarget(target)
   if (conflictPath) return <KnowledgeConflictResolver path={conflictPath} />

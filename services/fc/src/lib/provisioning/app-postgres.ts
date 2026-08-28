@@ -188,3 +188,52 @@ export function readAppsAdminUrl(env: NodeJS.ProcessEnv = process.env): string |
   const url = env.APPS_DB_ADMIN_URL?.trim();
   return url || undefined;
 }
+
+/** Read APPS_DB_APP_URL; empty → undefined. */
+export function readAppsAppUrl(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const url = env.APPS_DB_APP_URL?.trim();
+  return url || undefined;
+}
+
+const COMPOSE_INTERNAL_DB_HOSTS = new Set(["db", "supabase-db", "localhost", "127.0.0.1"]);
+
+/** True when the URL names a Postgres host that only resolves on the compose network. */
+export function isComposeInternalDbHost(url: string): boolean {
+  try {
+    return COMPOSE_INTERNAL_DB_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Copy protocol/host/port from `hostSource` onto `target`, keeping path/credentials/query. */
+export function withDbHost(target: string, hostSource: string): string {
+  const t = new URL(target);
+  const h = new URL(hostSource);
+  t.protocol = h.protocol;
+  t.hostname = h.hostname;
+  t.port = h.port;
+  return t.toString();
+}
+
+/**
+ * Connection string written into a deployed app's FC env.
+ *
+ * Provisioning uses {@link APPS_DB_ADMIN_URL} (often `@db` on self-host). The
+ * function itself runs on external FC and must reach Postgres via
+ * {@link APPS_DB_APP_URL} when the admin URL is compose-internal.
+ */
+export function resolveAppConnectionString(
+  connectionString: string,
+  appsAdminUrl: string,
+  appsAppUrl?: string,
+): string {
+  const appUrl = appsAppUrl ?? readAppsAppUrl();
+  if (appUrl) return withDbHost(connectionString, appUrl);
+  if (isComposeInternalDbHost(appsAdminUrl)) {
+    throw new Error(
+      "APPS_DB_APP_URL is required: deployed apps run on external Function Compute and cannot reach the compose-internal Postgres host from APPS_DB_ADMIN_URL",
+    );
+  }
+  return connectionString;
+}
