@@ -42,9 +42,7 @@ pub fn maybe_request_dock_attention(app: &AppHandle, topic: &str, payload: &[u8]
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let now = Instant::now();
-    if last
-        .is_some_and(|prev| now.duration_since(prev) < DOCK_ATTENTION_THROTTLE)
-    {
+    if last.is_some_and(|prev| now.duration_since(prev) < DOCK_ATTENTION_THROTTLE) {
         return;
     }
     *last = Some(now);
@@ -80,6 +78,8 @@ mod tests {
 
     #[test]
     fn rejects_missing_session_id() {
-        assert!(!inbox_message_ping(br#"{"type":"message","ts":1}"#.as_slice()));
+        assert!(!inbox_message_ping(
+            br#"{"type":"message","ts":1}"#.as_slice()
+        ));
     }
 }

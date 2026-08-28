@@ -172,7 +172,7 @@ vi.mock('@/stores/ui', () => ({
     vi.fn((sel: (s: any) => any) => {
       return sel(uiStoreState)
     }),
-    { getState: () => uiStoreState }
+    { getState: () => uiStoreState, subscribe: () => () => {} },
   ),
 }))
 vi.mock('@/stores/workspace', () => ({
