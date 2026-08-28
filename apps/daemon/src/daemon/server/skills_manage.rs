@@ -26,6 +26,20 @@ fn sock_ok(result: Value) -> String {
     json!({ "ok": true, "result": result }).to_string()
 }
 
+fn merge_claude_bridge_warnings(workspace: &Path, slug: &str, warnings: &mut Vec<String>) {
+    match crate::runtime::claude_skills::reconcile_after_managed_mutation(workspace, slug) {
+        Ok(extra) => warnings.extend(extra),
+        Err(error) => {
+            tracing::warn!(
+                workspace_path = %workspace.display(),
+                slug = %slug,
+                error = %error,
+                "claude skill bridge reconcile failed after manage_skills"
+            );
+        }
+    }
+}
+
 async fn load_team_ownership(server: &DaemonServer) -> ClaimedTeamContext {
     let team_id = server.backend.team_id();
     if team_id.trim().is_empty() {
@@ -131,7 +145,8 @@ impl DaemonServer {
                     }
                 };
                 match create_pack(workspace, &home, &req, &ownership) {
-                    Ok(resp) => {
+                    Ok(mut resp) => {
+                        merge_claude_bridge_warnings(workspace, &req.slug, &mut resp.warnings);
                         record_skills_refresh(self, workspace).await;
                         sock_ok(serde_json::to_value(resp).unwrap_or(json!({})))
                     }
@@ -149,7 +164,8 @@ impl DaemonServer {
                     }
                 };
                 match update_pack(workspace, &home, &req, &ownership) {
-                    Ok(resp) => {
+                    Ok(mut resp) => {
+                        merge_claude_bridge_warnings(workspace, &req.slug, &mut resp.warnings);
                         record_skills_refresh(self, workspace).await;
                         sock_ok(serde_json::to_value(resp).unwrap_or(json!({})))
                     }

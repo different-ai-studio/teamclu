@@ -12,6 +12,32 @@ use crate::config::team_skill_roots;
 use crate::config::workspace_control::WorkspaceControlError;
 
 const CLAUDE_SKILLS_DIR: &str = ".claude/skills";
+pub const WARNING_CLAUDE_LOCAL_OVERRIDE: &str = "claude_local_override";
+
+/// Whether a real workspace-local Claude skill directory blocks the bridge for `slug`.
+pub fn has_claude_local_skill_override(workspace_path: &Path, slug: &str) -> bool {
+    let local = workspace_path.join(CLAUDE_SKILLS_DIR).join(slug);
+    match std::fs::symlink_metadata(&local) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => true,
+        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => true,
+        _ => false,
+    }
+}
+
+/// After a managed personal skill mutation, refresh Claude bridge links and report
+/// whether a workspace-local pack still wins for Claude Code.
+pub fn reconcile_after_managed_mutation(
+    workspace_path: &Path,
+    slug: &str,
+) -> Result<Vec<String>, WorkspaceControlError> {
+    let local_override = has_claude_local_skill_override(workspace_path, slug);
+    ensure_claude_team_skills(workspace_path)?;
+    Ok(if local_override {
+        vec![WARNING_CLAUDE_LOCAL_OVERRIDE.into()]
+    } else {
+        Vec::new()
+    })
+}
 
 /// Ensure team skills are symlinked into `.claude/skills/`, without overwriting
 /// workspace-local entries. Idempotent; safe to call on every `prepare_workspace`.
@@ -361,5 +387,34 @@ mod tests {
             assert!(link.join("SKILL.md").is_file());
             assert!(symlink_points_to(&link, &team_skills.join("broken-link")));
         }
+    }
+
+    #[test]
+    fn reconcile_after_managed_mutation_bridges_global_agent_skill() {
+        let (_lock, home, ws, _team_skills) = workspace_with_team_root();
+        let pack_root = home.path().join(".agents/skills");
+        write_skill(&pack_root, "managed-skill");
+
+        let warnings = reconcile_after_managed_mutation(ws.path(), "managed-skill").unwrap();
+        assert!(warnings.is_empty());
+
+        let link = ws.path().join(".claude/skills/managed-skill");
+        assert!(is_symlink(&link));
+        assert!(symlink_points_to(&link, &pack_root.join("managed-skill")));
+    }
+
+    #[test]
+    fn reconcile_after_managed_mutation_reports_local_override() {
+        let (_lock, home, ws, _team_skills) = workspace_with_team_root();
+        let pack_root = home.path().join(".agents/skills");
+        write_skill(&pack_root, "shared-name");
+
+        let local = ws.path().join(".claude/skills/shared-name");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("SKILL.md"), "local wins").unwrap();
+
+        let warnings = reconcile_after_managed_mutation(ws.path(), "shared-name").unwrap();
+        assert_eq!(warnings, vec![WARNING_CLAUDE_LOCAL_OVERRIDE.to_string()]);
+        assert!(!is_symlink(&local));
     }
 }

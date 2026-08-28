@@ -26,7 +26,7 @@ import { ReadToolCard } from "./tool-calls/ReadToolCard";
 import { RoleLoadToolCard } from "./tool-calls/RoleLoadToolCard";
 import { PageNavLinksToolCard } from "./tool-calls/PageNavLinksToolCard";
 import { QuestionCard } from "./QuestionCard";
-import { RoleSkillToolCard, SkillToolCard, TaskToolCard } from "./tool-calls/TaskToolCard";
+import { RoleSkillToolCard, ManageSkillsToolCard, SkillToolCard, TaskToolCard } from "./tool-calls/TaskToolCard";
 import {
   getStatusConfig,
   getToolIconByKind,
@@ -36,6 +36,7 @@ import {
   matchesReadTool,
   matchesTaskTool,
   matchesSkillTool,
+  matchesManageSkillsTool,
   matchesRoleSkillTool,
   matchesRoleLoadTool,
   matchesShowPageNavLinksTool,
@@ -282,6 +283,11 @@ export const ToolCallCard = React.memo(function ToolCallCard({ toolCall, onOpenD
 
   if (matchesShowPageNavLinksTool(toolCall)) {
     return <PageNavLinksToolCard toolCall={toolCall} />;
+  }
+
+  // If this is a manage_skills tool, render ManageSkillsToolCard
+  if (matchesManageSkillsTool(toolCall)) {
+    return <ManageSkillsToolCard toolCall={toolCall} />;
   }
 
   // If this is a Skill tool, render SkillToolCard

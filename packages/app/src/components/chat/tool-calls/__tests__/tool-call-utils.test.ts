@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  matchesManageSkillsTool,
   matchesSkillTool,
   matchesWriteTool,
+  parseManageSkillsToolResult,
   resolveWireToolName,
   routeToolPresentation,
 } from "../tool-call-utils";
@@ -55,6 +57,41 @@ describe("routeToolPresentation", () => {
         arguments: { name: "brainstorming", description: "skill" },
       }),
     ).toBe("skill");
+  });
+
+  it("routes manage_skills MCP tool to dedicated presentation", () => {
+    expect(
+      routeToolPresentation({
+        name: "manage_skills",
+        toolKind: "other",
+        arguments: { action: "create", slug: "demo" },
+      }),
+    ).toBe("manage_skills");
+    expect(
+      matchesManageSkillsTool({
+        name: "manage_skills",
+        toolKind: "other",
+        arguments: { action: "create", slug: "demo" },
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("parseManageSkillsToolResult", () => {
+  it("parses JSON tool results with activation and warnings", () => {
+    expect(
+      parseManageSkillsToolResult({
+        slug: "demo",
+        path: "/Users/me/.agents/skills/demo",
+        runtimeActivation: "next_start",
+        warnings: ["claude_local_override"],
+      }),
+    ).toEqual({
+      slug: "demo",
+      path: "/Users/me/.agents/skills/demo",
+      runtimeActivation: "next_start",
+      warnings: ["claude_local_override"],
+    });
   });
 });
 

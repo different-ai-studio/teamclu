@@ -1,7 +1,7 @@
 pub mod acp_event_frame;
 pub mod backend;
 pub mod claude_agent;
-mod claude_skills;
+pub(crate) mod claude_skills;
 pub mod cursor_sdk;
 pub mod execution_context;
 pub mod opencode_http;

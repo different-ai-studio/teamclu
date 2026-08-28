@@ -639,6 +639,13 @@
         "title": "Skill",
         "unknown": "unknown-skill"
       },
+      "manageSkills": {
+        "title": "Manage skill",
+        "unknown": "unknown-skill",
+        "defaultAction": "update",
+        "nextStart": "Saved to ~/.agents/skills. New OpenCode, Pi, and Claude Code runtimes will pick it up on their next start.",
+        "claudeLocalOverride": "Claude Code will keep using the workspace-local .claude/skills copy for this slug."
+      },
       "roleSkill": {
         "title": "Role skill",
         "unknown": "unknown-role-skill"
