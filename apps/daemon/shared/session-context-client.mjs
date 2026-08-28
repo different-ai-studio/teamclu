@@ -4,22 +4,33 @@
  * MCP tools without an explicit session_id argument.
  */
 
-const SESSION_SCOPED_TOOLS = new Set([
+const SESSION_SCOPED_TOOL_LIST = [
   "get_session_deeplink",
   "manage_participants",
   "archive_session",
-]);
+];
+
+const SESSION_SCOPED_TOOLS = new Set(SESSION_SCOPED_TOOL_LIST);
+
+/** Managed introspect MCP servers whose OpenCode tool IDs we recognize. */
+const MANAGED_INTROSPECT_SERVERS = ["teamclu-introspect", "teamclaw-introspect"];
 
 /** Extract the bare tool name from OpenCode / MCP namespaced identifiers. */
 export function normalizeSessionScopedToolName(name) {
   const raw = String(name ?? "").trim();
   if (!raw) return "";
-  if (raw.startsWith("mcp__")) {
-    const parts = raw.split("__");
-    const last = parts[parts.length - 1]?.trim();
-    if (last) return last;
+
+  for (const tool of SESSION_SCOPED_TOOL_LIST) {
+    if (raw === tool) return tool;
+    if (raw.endsWith(`/${tool}`)) return tool;
+    if (raw.startsWith("mcp__") && raw.endsWith(`__${tool}`)) return tool;
+
+    for (const server of MANAGED_INTROSPECT_SERVERS) {
+      if (raw === `${server}_${tool}`) return tool;
+    }
   }
-  return raw.split("/").pop()?.trim() ?? raw;
+
+  return raw;
 }
 
 export function isSessionScopedTool(name) {

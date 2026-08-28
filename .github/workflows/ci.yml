@@ -56,6 +56,9 @@ jobs:
           apps/daemon/claude-bridge/src/transcript-repair.test.mjs
           apps/daemon/claude-bridge/src/mcp-schema-sanitize.test.mjs
           apps/daemon/cursor-bridge/src/auth-retry.test.mjs
+          apps/daemon/shared/session-context-client.test.mjs
+          apps/daemon/shared/session-context-plugin-install.test.mjs
+          apps/daemon/assets/pi-extension/session-context.test.mjs
 
       # The scripts above are scoped to @teamclu/app, so the Expo app was
       # outside every gate until now. See apps/expo/CI.md for what is and is

@@ -2665,6 +2665,39 @@ mod tests {
     }
 
     #[test]
+    fn ensure_session_context_plugin_creates_file_and_registers() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_session_context_plugin(dir.path()).unwrap();
+
+        let plugin_path = dir
+            .path()
+            .join(crate::runtime::workspace_runtime::SESSION_CONTEXT_PLUGIN_REL);
+        let client_path = dir
+            .path()
+            .join(crate::runtime::workspace_runtime::SESSION_CONTEXT_CLIENT_REL);
+        assert!(plugin_path.is_file());
+        assert!(client_path.is_file());
+        assert!(std::fs::read_to_string(plugin_path)
+            .unwrap()
+            .contains("teamclu-session-context-client.mjs"));
+        assert!(std::fs::read_to_string(client_path)
+            .unwrap()
+            .contains("normalizeSessionScopedToolName"));
+
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
+        )
+        .unwrap();
+        let plugins = cfg["plugin"].as_array().unwrap();
+        assert!(plugins.iter().any(|entry| {
+            entry
+                .as_str()
+                .map(|value| value.contains("teamclu-session-context"))
+                .unwrap_or(false)
+        }));
+    }
+
+    #[test]
     fn prepare_workspace_drops_renamed_inherent_mcp_entry() {
         // A workspace written before the 2026-08-09 teamclaw→teamclu rename
         // carries `teamclaw-introspect` with an absolute path into an app
