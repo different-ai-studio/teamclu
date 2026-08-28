@@ -871,6 +871,56 @@ impl OpenCodeHostPool {
         }
     }
 
+    /// Drop the cached opencode instance for `directory` on every ready
+    /// generation whose serve process is actually running. The next request
+    /// for that directory re-reads config (skills included); the serve
+    /// processes themselves keep running, so other workspaces are unaffected.
+    ///
+    /// Returns the number of serve processes that acknowledged the dispose.
+    /// Generations without a running process are skipped — a process that is
+    /// not up holds no cached instance, so there is nothing to invalidate.
+    /// opencode answers 404 for a directory with no cached instance, which the
+    /// client already treats as success: disposal is idempotent.
+    ///
+    /// A dispose that fails on the wire propagates as `Err` so callers can
+    /// retry instead of silently leaving a stale instance cache behind.
+    pub async fn dispose_workspace_instance(
+        &self,
+        directory: &str,
+    ) -> crate::error::Result<usize> {
+        let generations: Vec<Arc<HostGeneration>> = {
+            let domains = self.domains.lock();
+            domains
+                .values()
+                .filter_map(|slot| slot.state.lock().current.clone())
+                .filter(|generation| generation.lifecycle() == HostLifecycle::Ready)
+                .collect()
+        };
+        let mut disposed = 0usize;
+        let mut last_error: Option<crate::error::AmuxError> = None;
+        for generation in generations {
+            let Some(client) = generation.serve.running_client() else {
+                continue;
+            };
+            match client.dispose_instance(directory).await {
+                Ok(()) => disposed += 1,
+                Err(error) => {
+                    tracing::warn!(
+                        generation_id = %generation.generation_id,
+                        directory,
+                        %error,
+                        "failed to dispose opencode instance for workspace"
+                    );
+                    last_error = Some(error);
+                }
+            }
+        }
+        if let Some(error) = last_error {
+            return Err(error);
+        }
+        Ok(disposed)
+    }
+
     pub async fn shutdown_all(&self) {
         let slots: Vec<Arc<DomainSlot>> = self.domains.lock().values().cloned().collect();
         for slot in slots {
@@ -1864,5 +1914,111 @@ mod tests {
             .iter()
             .all(|lease| Arc::ptr_eq(&lease.generation, &leases[0].generation)));
         assert_eq!(leases[0].generation.route_count(), 100);
+    }
+
+    /// Factory whose serve supervisors answer HTTP through a mock server, so
+    /// dispose calls are observable without a real opencode process.
+    struct BaseUrlFactory {
+        base_url: String,
+    }
+
+    #[async_trait]
+    impl GenerationFactory for BaseUrlFactory {
+        async fn start(
+            &self,
+            generation_id: String,
+            _domain: IsolationDomainKey,
+            revision: ProcessEnvRevision,
+            _env: HashMap<String, String>,
+        ) -> Result<Arc<ServeSupervisor>, String> {
+            Ok(Arc::new(ServeSupervisor::test_with_base_url(
+                generation_id,
+                revision,
+                self.base_url.clone(),
+            )))
+        }
+
+        fn stop(&self, _generation: &HostGeneration) -> ShutdownOutcome {
+            ShutdownOutcome::Stopped
+        }
+    }
+
+    #[tokio::test]
+    async fn dispose_workspace_instance_posts_to_running_ready_generations() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param("directory", "/tmp/ws-a"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let lease = pool
+            .acquire(domain("a"), revision("1"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+        drop(lease);
+
+        let disposed = pool.dispose_workspace_instance("/tmp/ws-a").await.unwrap();
+
+        assert_eq!(disposed, 1);
+        // The mock's `expect(1)` verifies on server drop that exactly one
+        // dispose request arrived.
+    }
+
+    #[tokio::test]
+    async fn dispose_workspace_instance_skips_generations_without_a_running_process() {
+        // FakeGenerationFactory supervisors have no running serve process
+        // (and no test client), so there is nothing to dispose — and
+        // importantly no spawn is triggered just to dispose.
+        let factory = FakeGenerationFactory::new();
+        let pool = OpenCodeHostPool::new(factory.clone());
+        let lease = pool
+            .acquire(domain("a"), revision("1"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+        drop(lease);
+
+        let disposed = pool.dispose_workspace_instance("/tmp/ws-a").await.unwrap();
+
+        assert_eq!(disposed, 0);
+        assert_eq!(
+            factory.start_count(),
+            1,
+            "dispose must not spawn a serve process"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispose_workspace_instance_propagates_http_failure_for_retry() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let lease = pool
+            .acquire(domain("a"), revision("1"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+        drop(lease);
+
+        pool.dispose_workspace_instance("/tmp/ws-a")
+            .await
+            .expect_err("a failed dispose must surface so the caller retries");
     }
 }
