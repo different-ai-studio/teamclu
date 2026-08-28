@@ -1,3 +1,9 @@
+/**
+ * Path B business repository — Drizzle + app-layer authz (BACKEND_KIND=postgres).
+ *
+ * Parity target: lib/supabase-repo.ts (Path A). Any new repository method needs
+ * a matching implementation here and in the contract tests above.
+ */
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { ApiError } from "../http-utils.js";
 import { makeTeamsRepo, type TeamsRepoDeps } from "./teams.js";

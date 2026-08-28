@@ -4,8 +4,10 @@
 // Each export is a standalone async function; the router in index.mjs
 // dispatches here after JWT/actor auth.
 //
-// Under BACKEND_KIND=postgres: metadata ops go through makeOssSyncRepo(getDb()).
-// Under BACKEND_KIND=supabase (default): original Supabase path is unchanged.
+// DUAL PATH: each handler branches on resolveBackendKind() — keep postgres AND
+// supabase blocks in sync when changing OSS sync metadata (README § Dual backend).
+//   postgres → makeOssSyncRepo(getDb())
+//   supabase → createServiceRoleClient() + .from() / .rpc()  (production default)
 // Blob bytes live in Supabase Storage under both (see team-blob-storage.ts).
 
 import { createHash, randomUUID } from 'node:crypto';

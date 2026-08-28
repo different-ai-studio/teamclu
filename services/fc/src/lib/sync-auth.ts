@@ -3,6 +3,10 @@
 // JWT verification + actor resolution for /sync/* endpoints.
 // Spec §3 auth middleware.
 //
+// DUAL PATH: JWT + actor resolution for /sync/* — postgres uses verifyAccessToken
+// + pg-repo/authz; supabase uses auth.getUser + actor_id_for_user_in_team RPC.
+// Update BOTH branches when changing sync auth (README § Dual backend paths).
+//
 // Under BACKEND_KIND=postgres the token is verified locally (verifyAccessToken)
 // and actor membership is resolved via pg-repo/authz — no Supabase calls.
 // Under the default "supabase" backend the original supabase.auth.getUser +

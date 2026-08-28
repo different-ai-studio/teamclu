@@ -1,5 +1,6 @@
 /**
- * pg-repo-contract.test.ts — GREEN GATE for pg-repo against the repository contract.
+ * pg-repo-contract.test.ts — GREEN GATE for Path B (pg-repo) against the contract.
+ * Path A gate: repository-contract.test.ts. Both must pass when changing the API.
  *
  * HARNESS STATE MODEL (derived from repository-contract.ts):
  *   - createRepository() is called fresh per test; the in-memory stub builds fresh

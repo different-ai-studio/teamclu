@@ -191,6 +191,13 @@ export function vanityLookup() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Repository factories — dual backend (see README.md § Dual backend paths).
+// make*RepoFactory(kind) must stay symmetric: new deps wired into BOTH
+// createSupabaseBusinessRepository and createPgBusinessRepository unless
+// documented supabase-only.
+// ---------------------------------------------------------------------------
+
 export function makeAuthRepoFactory(kind: "supabase" | "postgres") {
   if (kind === "postgres") {
     return () => createPgAuthRepository();
