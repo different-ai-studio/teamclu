@@ -1,17 +1,31 @@
 //! Control-socket handler for agent-managed personal skill packs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use crate::config::{
-    create_pack, get_pack, update_pack, ClaimedTeamContext, CreatePackRequest, ManagedSkillError,
+    create_pack, get_pack, update_pack, ClaimedTeamContext, CreatePackRequest, ManageSkillResponse,
     ManagedSkillErrorCode, UpdatePackRequest,
+};
+use crate::runtime::claude_skills::{
+    reconcile_after_managed_mutation, WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED,
+    WARNING_CLAUDE_LOCAL_OVERRIDE,
 };
 use crate::runtime::refresh::{RefreshChangeKind, RefreshSource};
 
 use super::DaemonServer;
+
+pub(crate) const WARNING_SKILL_REFRESH_FAILED: &str = "skill_refresh_failed";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PartialFailure {
+    error_code: String,
+    message: String,
+}
 
 fn sock_error(code: ManagedSkillErrorCode, message: impl Into<String>) -> String {
     json!({
@@ -22,22 +36,99 @@ fn sock_error(code: ManagedSkillErrorCode, message: impl Into<String>) -> String
     .to_string()
 }
 
-fn sock_ok(result: Value) -> String {
-    json!({ "ok": true, "result": result }).to_string()
+fn sock_managed_ok(result: ManageSkillResponse, partial_failures: &[PartialFailure]) -> String {
+    let mut envelope = json!({
+        "ok": true,
+        "result": result,
+    });
+    if !partial_failures.is_empty() {
+        envelope["partialFailures"] = serde_json::to_value(partial_failures).unwrap_or(json!([]));
+    }
+    envelope.to_string()
 }
 
-fn merge_claude_bridge_warnings(workspace: &Path, slug: &str, warnings: &mut Vec<String>) {
-    match crate::runtime::claude_skills::reconcile_after_managed_mutation(workspace, slug) {
-        Ok(extra) => warnings.extend(extra),
+pub(crate) fn apply_claude_bridge_after_mutation(
+    workspace: &Path,
+    slug: &str,
+    canonical_pack: &Path,
+    warnings: &mut Vec<String>,
+) -> Option<PartialFailure> {
+    match reconcile_after_managed_mutation(workspace, slug, canonical_pack) {
+        Ok(extra) => {
+            warnings.extend(extra);
+            None
+        }
         Err(error) => {
-            tracing::warn!(
-                workspace_path = %workspace.display(),
-                slug = %slug,
-                error = %error,
-                "claude skill bridge reconcile failed after manage_skills"
-            );
+            warnings.push(WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED.into());
+            Some(PartialFailure {
+                error_code: WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED.into(),
+                message: error.to_string(),
+            })
         }
     }
+}
+
+async fn record_skills_refresh(
+    server: &DaemonServer,
+    workspace_path: &Path,
+) -> Option<PartialFailure> {
+    let Some(refresh) = server.refresh_coordinator.as_ref() else {
+        return Some(PartialFailure {
+            error_code: WARNING_SKILL_REFRESH_FAILED.into(),
+            message: "refresh coordinator unavailable".into(),
+        });
+    };
+    let workspace_id = match crate::config::encode_workspace_path(workspace_path) {
+        Ok(workspace_id) => workspace_id,
+        Err(error) => {
+            return Some(PartialFailure {
+                error_code: WARNING_SKILL_REFRESH_FAILED.into(),
+                message: format!("workspace path encoding failed: {error}"),
+            });
+        }
+    };
+    if let Err(error) = refresh
+        .record_change(
+            &workspace_id,
+            workspace_path,
+            RefreshChangeKind::Skills,
+            RefreshSource::UiMutation,
+        )
+        .await
+    {
+        tracing::warn!(
+            workspace_id = %workspace_id,
+            workspace_path = %workspace_path.display(),
+            error = %error,
+            "failed to record skills refresh after manage_skills"
+        );
+        return Some(PartialFailure {
+            error_code: WARNING_SKILL_REFRESH_FAILED.into(),
+            message: error.to_string(),
+        });
+    }
+    None
+}
+
+pub(crate) async fn finalize_managed_mutation(
+    server: &DaemonServer,
+    workspace: &Path,
+    mut resp: ManageSkillResponse,
+) -> String {
+    let canonical = PathBuf::from(&resp.path);
+    let mut partial_failures = Vec::new();
+
+    if let Some(failure) =
+        apply_claude_bridge_after_mutation(workspace, &resp.slug, &canonical, &mut resp.warnings)
+    {
+        partial_failures.push(failure);
+    }
+    if let Some(failure) = record_skills_refresh(server, workspace).await {
+        resp.warnings.push(WARNING_SKILL_REFRESH_FAILED.into());
+        partial_failures.push(failure);
+    }
+
+    sock_managed_ok(resp, &partial_failures)
 }
 
 async fn load_team_ownership(server: &DaemonServer) -> ClaimedTeamContext {
@@ -60,31 +151,6 @@ async fn load_team_ownership(server: &DaemonServer) -> ClaimedTeamContext {
             );
             ClaimedTeamContext::Unavailable
         }
-    }
-}
-
-async fn record_skills_refresh(server: &DaemonServer, workspace_path: &Path) {
-    let Some(refresh) = server.refresh_coordinator.as_ref() else {
-        return;
-    };
-    let Ok(workspace_id) = crate::config::encode_workspace_path(workspace_path) else {
-        return;
-    };
-    if let Err(error) = refresh
-        .record_change(
-            &workspace_id,
-            workspace_path,
-            RefreshChangeKind::Skills,
-            RefreshSource::UiMutation,
-        )
-        .await
-    {
-        tracing::warn!(
-            workspace_id = %workspace_id,
-            workspace_path = %workspace_path.display(),
-            error = %error,
-            "failed to record skills refresh after manage_skills"
-        );
     }
 }
 
@@ -145,11 +211,7 @@ impl DaemonServer {
                     }
                 };
                 match create_pack(workspace, &home, &req, &ownership) {
-                    Ok(mut resp) => {
-                        merge_claude_bridge_warnings(workspace, &req.slug, &mut resp.warnings);
-                        record_skills_refresh(self, workspace).await;
-                        sock_ok(serde_json::to_value(resp).unwrap_or(json!({})))
-                    }
+                    Ok(resp) => finalize_managed_mutation(self, workspace, resp).await,
                     Err(err) => sock_error(err.code, err.message),
                 }
             }
@@ -164,11 +226,7 @@ impl DaemonServer {
                     }
                 };
                 match update_pack(workspace, &home, &req, &ownership) {
-                    Ok(mut resp) => {
-                        merge_claude_bridge_warnings(workspace, &req.slug, &mut resp.warnings);
-                        record_skills_refresh(self, workspace).await;
-                        sock_ok(serde_json::to_value(resp).unwrap_or(json!({})))
-                    }
+                    Ok(resp) => finalize_managed_mutation(self, workspace, resp).await,
                     Err(err) => sock_error(err.code, err.message),
                 }
             }
@@ -178,7 +236,7 @@ impl DaemonServer {
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 match get_pack(&home, slug) {
-                    Ok(resp) => sock_ok(serde_json::to_value(resp).unwrap_or(json!({}))),
+                    Ok(resp) => sock_managed_ok(resp, &[]),
                     Err(err) => sock_error(err.code, err.message),
                 }
             }
@@ -187,5 +245,55 @@ impl DaemonServer {
                 "action must be create, update, or get",
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{create_pack, CreatePackRequest, ClaimedTeamContext};
+    use std::fs;
+
+    fn test_skill_md(slug: &str) -> String {
+        format!("---\nname: {slug}\ndescription: Demo.\n---\n")
+    }
+
+    #[test]
+    fn apply_claude_bridge_surfaces_reconcile_failure_without_dropping_pack() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let req = CreatePackRequest {
+            slug: "demo-bridge".into(),
+            content: test_skill_md("demo-bridge"),
+            files: vec![],
+        };
+        let resp = create_pack(
+            ws.path(),
+            home.path(),
+            &req,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+        let canonical = PathBuf::from(&resp.path);
+        assert!(canonical.join("SKILL.md").is_file());
+
+        fs::create_dir_all(ws.path().join(".claude")).unwrap();
+        fs::write(ws.path().join(".claude/skills"), "not-a-directory").unwrap();
+
+        let mut warnings = Vec::new();
+        let failure = apply_claude_bridge_after_mutation(
+            ws.path(),
+            "demo-bridge",
+            &canonical,
+            &mut warnings,
+        );
+        assert!(failure.is_some(), "expected bridge failure to surface");
+        assert_eq!(
+            failure.unwrap().error_code,
+            WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED
+        );
+        assert!(warnings.iter().any(|w| w == WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED));
+        assert!(canonical.join("SKILL.md").is_file());
     }
 }

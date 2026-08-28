@@ -13,15 +13,41 @@ use crate::config::workspace_control::WorkspaceControlError;
 
 const CLAUDE_SKILLS_DIR: &str = ".claude/skills";
 pub const WARNING_CLAUDE_LOCAL_OVERRIDE: &str = "claude_local_override";
+pub const WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED: &str = "claude_bridge_reconcile_failed";
 
-/// Whether a real workspace-local Claude skill directory blocks the bridge for `slug`.
-pub fn has_claude_local_skill_override(workspace_path: &Path, slug: &str) -> bool {
-    let local = workspace_path.join(CLAUDE_SKILLS_DIR).join(slug);
-    match std::fs::symlink_metadata(&local) {
+/// Whether an existing workspace-local Claude entry blocks bridging to `canonical_pack`.
+pub fn claude_bridge_blocked_by_local_entry(
+    workspace_path: &Path,
+    slug: &str,
+    canonical_pack: &Path,
+) -> bool {
+    let link = workspace_path.join(CLAUDE_SKILLS_DIR).join(slug);
+    let team_roots = team_skill_roots(workspace_path);
+    match std::fs::symlink_metadata(&link) {
         Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => true,
         Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => true,
-        _ => false,
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if is_team_managed_symlink(&link, &team_roots) {
+                !symlink_points_to(&link, canonical_pack)
+            } else {
+                !symlink_points_to(&link, canonical_pack)
+            }
+        }
+        Ok(_) => false,
+        Err(_) => false,
     }
+}
+
+fn claude_bridge_points_to_canonical(
+    workspace_path: &Path,
+    slug: &str,
+    canonical_pack: &Path,
+) -> bool {
+    let link = workspace_path.join(CLAUDE_SKILLS_DIR).join(slug);
+    if same_path(&link, canonical_pack) {
+        return true;
+    }
+    symlink_points_to(&link, canonical_pack)
 }
 
 /// After a managed personal skill mutation, refresh Claude bridge links and report
@@ -29,14 +55,20 @@ pub fn has_claude_local_skill_override(workspace_path: &Path, slug: &str) -> boo
 pub fn reconcile_after_managed_mutation(
     workspace_path: &Path,
     slug: &str,
+    canonical_pack: &Path,
 ) -> Result<Vec<String>, WorkspaceControlError> {
-    let local_override = has_claude_local_skill_override(workspace_path, slug);
+    let blocked_before =
+        claude_bridge_blocked_by_local_entry(workspace_path, slug, canonical_pack);
     ensure_claude_team_skills(workspace_path)?;
-    Ok(if local_override {
-        vec![WARNING_CLAUDE_LOCAL_OVERRIDE.into()]
-    } else {
-        Vec::new()
-    })
+    if blocked_before || claude_bridge_blocked_by_local_entry(workspace_path, slug, canonical_pack) {
+        return Ok(vec![WARNING_CLAUDE_LOCAL_OVERRIDE.into()]);
+    }
+    if !claude_bridge_points_to_canonical(workspace_path, slug, canonical_pack) {
+        return Err(WorkspaceControlError::Io(format!(
+            "claude bridge for skill {slug} is not ready"
+        )));
+    }
+    Ok(Vec::new())
 }
 
 /// Ensure team skills are symlinked into `.claude/skills/`, without overwriting
@@ -395,12 +427,14 @@ mod tests {
         let pack_root = home.path().join(".agents/skills");
         write_skill(&pack_root, "managed-skill");
 
-        let warnings = reconcile_after_managed_mutation(ws.path(), "managed-skill").unwrap();
+        let canonical = pack_root.join("managed-skill");
+        let warnings =
+            reconcile_after_managed_mutation(ws.path(), "managed-skill", &canonical).unwrap();
         assert!(warnings.is_empty());
 
         let link = ws.path().join(".claude/skills/managed-skill");
         assert!(is_symlink(&link));
-        assert!(symlink_points_to(&link, &pack_root.join("managed-skill")));
+        assert!(symlink_points_to(&link, &canonical));
     }
 
     #[test]
@@ -409,12 +443,72 @@ mod tests {
         let pack_root = home.path().join(".agents/skills");
         write_skill(&pack_root, "shared-name");
 
+        let canonical = pack_root.join("shared-name");
         let local = ws.path().join(".claude/skills/shared-name");
         std::fs::create_dir_all(&local).unwrap();
         std::fs::write(local.join("SKILL.md"), "local wins").unwrap();
 
-        let warnings = reconcile_after_managed_mutation(ws.path(), "shared-name").unwrap();
+        let warnings =
+            reconcile_after_managed_mutation(ws.path(), "shared-name", &canonical).unwrap();
         assert_eq!(warnings, vec![WARNING_CLAUDE_LOCAL_OVERRIDE.to_string()]);
         assert!(!is_symlink(&local));
+    }
+
+    #[test]
+    fn reconcile_after_managed_mutation_reports_user_owned_symlink_override() {
+        let (_lock, home, ws, _team_skills) = workspace_with_team_root();
+        let pack_root = home.path().join(".agents/skills");
+        write_skill(&pack_root, "linked-skill");
+
+        let external = ws.path().join("external-skill");
+        write_skill(ws.path(), "external-skill");
+        let local = ws.path().join(".claude/skills/linked-skill");
+        std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&external, &local).unwrap();
+            let warnings = reconcile_after_managed_mutation(
+                ws.path(),
+                "linked-skill",
+                &pack_root.join("linked-skill"),
+            )
+            .unwrap();
+            assert_eq!(warnings, vec![WARNING_CLAUDE_LOCAL_OVERRIDE.to_string()]);
+            assert!(is_symlink(&local));
+        }
+    }
+
+    #[test]
+    fn managed_create_is_visible_to_inventory_and_claude_bridge() {
+        use crate::config::{create_pack, scan_roles_skills_state, CreatePackRequest, ClaimedTeamContext};
+
+        let (_lock, home, ws, _team_skills) = workspace_with_team_root();
+        let req = CreatePackRequest {
+            slug: "cross-runtime".into(),
+            content: "---\nname: cross-runtime\ndescription: Shared.\n---\n\n# Shared\n".into(),
+            files: vec![],
+        };
+        let resp = create_pack(
+            ws.path(),
+            home.path(),
+            &req,
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+        let canonical = std::path::PathBuf::from(&resp.path);
+        reconcile_after_managed_mutation(ws.path(), "cross-runtime", &canonical).unwrap();
+
+        let state = scan_roles_skills_state(ws.path()).unwrap();
+        assert!(
+            state
+                .skills
+                .iter()
+                .any(|skill| skill.filename == "cross-runtime"),
+            "inventory should include the canonical managed skill"
+        );
+
+        let link = ws.path().join(".claude/skills/cross-runtime");
+        assert!(is_symlink(&link));
+        assert!(symlink_points_to(&link, &canonical));
     }
 }

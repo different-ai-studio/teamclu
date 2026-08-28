@@ -25,16 +25,35 @@ export function ManageSkillsToolCard({ toolCall }: { toolCall: ToolCall }) {
   if (parsed?.runtimeActivation === "next_start") {
     footnotes.push(
       t(
-        "chat.toolCall.manageSkills.nextStart",
-        "Saved to ~/.agents/skills. New OpenCode, Pi, and Claude Code runtimes will pick it up on their next start.",
+        "chat.toolCall.manageSkills.nextStartStorage",
+        "Saved to ~/.agents/skills. New OpenCode and Pi runtimes will pick it up on their next start.",
       ),
     );
+    const claudeBlocked =
+      parsed?.warnings?.includes("claude_local_override") ||
+      parsed?.warnings?.includes("claude_bridge_reconcile_failed");
+    if (!claudeBlocked) {
+      footnotes.push(
+        t(
+          "chat.toolCall.manageSkills.nextStartClaude",
+          "Claude Code will also load this skill on its next start.",
+        ),
+      );
+    }
   }
   if (parsed?.warnings?.includes("claude_local_override")) {
     footnotes.push(
       t(
         "chat.toolCall.manageSkills.claudeLocalOverride",
         "Claude Code will keep using the workspace-local .claude/skills copy for this slug.",
+      ),
+    );
+  }
+  if (parsed?.warnings?.includes("claude_bridge_reconcile_failed")) {
+    footnotes.push(
+      t(
+        "chat.toolCall.manageSkills.claudeBridgeReconcileFailed",
+        "Claude Code bridge setup did not complete; Claude may not discover this skill on the next start.",
       ),
     );
   }

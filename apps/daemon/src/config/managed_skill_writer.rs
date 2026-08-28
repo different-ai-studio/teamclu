@@ -35,6 +35,7 @@ pub enum ManagedSkillErrorCode {
     SkillPackTooLarge,
     SkillWriteFailed,
     SkillOwnershipUnavailable,
+    SkillRefreshFailed,
 }
 
 impl ManagedSkillErrorCode {
@@ -51,6 +52,7 @@ impl ManagedSkillErrorCode {
             Self::SkillPackTooLarge => "skill_pack_too_large",
             Self::SkillWriteFailed => "skill_write_failed",
             Self::SkillOwnershipUnavailable => "skill_ownership_unavailable",
+            Self::SkillRefreshFailed => "skill_refresh_failed",
         }
     }
 }
