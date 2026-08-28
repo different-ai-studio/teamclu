@@ -19,6 +19,11 @@ mod handle;
 mod instruction_delivery;
 pub mod managed_llm;
 mod manager;
+mod native_skill_fallback_guard;
+pub(crate) use native_skill_fallback_guard::{
+    guard_enabled, snapshot_baseline, violations_after_turn, AGENT_REPLY_CONTENT,
+    AGENT_REPLY_METADATA_JSON, NativeSkillBaseline,
+};
 pub mod permission_policy;
 pub mod prompt_attachments;
 pub mod refresh;
