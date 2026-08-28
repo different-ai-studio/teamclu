@@ -325,6 +325,53 @@ fn verify_tree_confined(root: &Path) -> Result<(), ManagedSkillError> {
     Ok(())
 }
 
+/// Validates size and file-count limits on the final on-disk pack tree.
+fn validate_pack_tree_limits(root: &Path) -> Result<(), ManagedSkillError> {
+    verify_tree_confined(root)?;
+    let mut file_count = 0usize;
+    let mut total_bytes = 0usize;
+    for entry in walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+    {
+        let entry = entry.map_err(|e| io_managed(std::io::Error::other(e.to_string())))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        file_count += 1;
+        if file_count > MAX_PACK_FILES {
+            return Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::SkillPackTooLarge,
+                "skill pack exceeds file count limit",
+            ));
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(root)
+            .map_err(|_| io_managed(std::io::Error::other("strip pack prefix")))?;
+        let len = entry
+            .metadata()
+            .map_err(|e| io_managed(std::io::Error::other(e.to_string())))?
+            .len()
+            .try_into()
+            .unwrap_or(usize::MAX);
+        if len > MAX_SINGLE_FILE_BYTES {
+            return Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::SkillPackTooLarge,
+                format!("file {} exceeds size limit", rel.display()),
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(len);
+        if total_bytes > MAX_PACK_TOTAL_BYTES {
+            return Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::SkillPackTooLarge,
+                "skill pack exceeds total size limit",
+            ));
+        }
+    }
+    Ok(())
+}
+
 struct PackBuild {
     skill_md: String,
     files: Vec<(PathBuf, Vec<u8>)>,
@@ -396,7 +443,6 @@ fn write_temp_pack(root: &Path, build: &PackBuild) -> Result<(), ManagedSkillErr
         }
         fs::write(&dest, bytes).map_err(io_managed)?;
     }
-    verify_tree_confined(root)?;
     Ok(())
 }
 
@@ -552,6 +598,7 @@ pub fn create_pack(
     let temp = TempPackGuard::new(skills_root.join(format!(".teamclu-create-{}", Uuid::new_v4())));
     write_temp_pack(temp.path(), &build)?;
     verify_final_skill_md(temp.path(), &req.slug)?;
+    validate_pack_tree_limits(temp.path())?;
     let digest = pack_digest(temp.path())?;
     publish_temp_dir(temp.path(), &target)?;
     temp.disarm();
@@ -584,6 +631,12 @@ pub fn update_pack(
         ));
     }
     validate_strict_frontmatter(&req.content, &req.slug)?;
+    if req.content.len() > MAX_SINGLE_FILE_BYTES {
+        return Err(ManagedSkillError::new(
+            ManagedSkillErrorCode::SkillPackTooLarge,
+            "SKILL.md exceeds size limit",
+        ));
+    }
 
     let mut patch_files = Vec::new();
     let mut total_bytes = req.content.len();
@@ -644,7 +697,7 @@ pub fn update_pack(
     apply_patch_files(temp.path(), &patch_files)?;
     apply_delete_files(temp.path(), &req.delete_files)?;
     verify_final_skill_md(temp.path(), &req.slug)?;
-    verify_tree_confined(temp.path())?;
+    validate_pack_tree_limits(temp.path())?;
     let digest = pack_digest(temp.path())?;
     let backup = skills_root.join(format!(".teamclu-backup-{}", Uuid::new_v4()));
     fs::rename(&target, &backup).map_err(io_managed)?;
@@ -1090,5 +1143,258 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, ManagedSkillErrorCode::SkillOwnershipUnavailable);
+    }
+
+    fn test_skill_md(slug: &str) -> String {
+        format!("---\nname: {slug}\ndescription: Demo.\n---\n")
+    }
+
+    fn blob(size: usize) -> String {
+        "x".repeat(size)
+    }
+
+    fn pack_files(prefix: &str, count: usize, size: usize) -> Vec<PackFileInput> {
+        (0..count)
+            .map(|i| PackFileInput {
+                path: format!("assets/{prefix}-{i}.bin"),
+                content: blob(size),
+                encoding: None,
+            })
+            .collect()
+    }
+
+    fn assert_no_update_temp_dirs(skills_root: &Path) {
+        let entries = fs::read_dir(skills_root).unwrap();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            assert!(
+                !name.starts_with(".teamclu-update-"),
+                "unexpected temp dir: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn update_rejects_oversized_skill_md() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        create_pack(
+            ws.path(),
+            home.path(),
+            &CreatePackRequest {
+                slug: "big-md".into(),
+                content: test_skill_md("big-md"),
+                files: vec![],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let before = get_pack(home.path(), "big-md").unwrap();
+        let oversized = format!(
+            "{}\n{}",
+            test_skill_md("big-md"),
+            blob(MAX_SINGLE_FILE_BYTES)
+        );
+        let err = update_pack(
+            ws.path(),
+            home.path(),
+            &UpdatePackRequest {
+                slug: "big-md".into(),
+                content: oversized,
+                files: vec![],
+                expected_digest: None,
+                delete_files: vec![],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ManagedSkillErrorCode::SkillPackTooLarge);
+        assert_eq!(get_pack(home.path(), "big-md").unwrap().digest, before.digest);
+        assert_no_update_temp_dirs(&home.path().join(".agents/skills"));
+    }
+
+    #[test]
+    fn update_rejects_when_final_file_count_exceeds_limit() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        create_pack(
+            ws.path(),
+            home.path(),
+            &CreatePackRequest {
+                slug: "many-files".into(),
+                content: test_skill_md("many-files"),
+                files: vec![PackFileInput {
+                    path: "assets/seed.bin".into(),
+                    content: "seed".into(),
+                    encoding: None,
+                }],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let before = get_pack(home.path(), "many-files").unwrap();
+        let err = update_pack(
+            ws.path(),
+            home.path(),
+            &UpdatePackRequest {
+                slug: "many-files".into(),
+                content: test_skill_md("many-files"),
+                files: pack_files("bulk", MAX_PACK_FILES - 1, 1),
+                expected_digest: None,
+                delete_files: vec![],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ManagedSkillErrorCode::SkillPackTooLarge);
+        assert_eq!(get_pack(home.path(), "many-files").unwrap().digest, before.digest);
+        assert_no_update_temp_dirs(&home.path().join(".agents/skills"));
+    }
+
+    #[test]
+    fn update_rejects_when_retained_plus_new_exceeds_total_size() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let chunk = MAX_SINGLE_FILE_BYTES - 512;
+        create_pack(
+            ws.path(),
+            home.path(),
+            &CreatePackRequest {
+                slug: "heavy".into(),
+                content: test_skill_md("heavy"),
+                files: pack_files("base", 3, chunk),
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let before = get_pack(home.path(), "heavy").unwrap();
+        let err = update_pack(
+            ws.path(),
+            home.path(),
+            &UpdatePackRequest {
+                slug: "heavy".into(),
+                content: test_skill_md("heavy"),
+                files: pack_files("extra", 3, chunk),
+                expected_digest: None,
+                delete_files: vec![],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ManagedSkillErrorCode::SkillPackTooLarge);
+        assert_eq!(get_pack(home.path(), "heavy").unwrap().digest, before.digest);
+        assert_no_update_temp_dirs(&home.path().join(".agents/skills"));
+    }
+
+    #[test]
+    fn cumulative_updates_reject_when_final_pack_exceeds_limit() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let chunk = MAX_SINGLE_FILE_BYTES - 512;
+        create_pack(
+            ws.path(),
+            home.path(),
+            &CreatePackRequest {
+                slug: "grow".into(),
+                content: test_skill_md("grow"),
+                files: pack_files("seed", 3, chunk),
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        update_pack(
+            ws.path(),
+            home.path(),
+            &UpdatePackRequest {
+                slug: "grow".into(),
+                content: test_skill_md("grow"),
+                files: pack_files("step", 2, chunk),
+                expected_digest: None,
+                delete_files: vec![],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let before = get_pack(home.path(), "grow").unwrap();
+        let err = update_pack(
+            ws.path(),
+            home.path(),
+            &UpdatePackRequest {
+                slug: "grow".into(),
+                content: test_skill_md("grow"),
+                files: pack_files("final", 1, chunk),
+                expected_digest: None,
+                delete_files: vec![],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ManagedSkillErrorCode::SkillPackTooLarge);
+        assert_eq!(get_pack(home.path(), "grow").unwrap().digest, before.digest);
+    }
+
+    #[test]
+    fn delete_files_frees_capacity_for_legal_update() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let chunk = MAX_SINGLE_FILE_BYTES - 512;
+        create_pack(
+            ws.path(),
+            home.path(),
+            &CreatePackRequest {
+                slug: "trim".into(),
+                content: test_skill_md("trim"),
+                files: pack_files("base", 4, chunk),
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        update_pack(
+            ws.path(),
+            home.path(),
+            &UpdatePackRequest {
+                slug: "trim".into(),
+                content: test_skill_md("trim"),
+                files: vec![],
+                expected_digest: None,
+                delete_files: vec![
+                    "assets/base-0.bin".into(),
+                    "assets/base-1.bin".into(),
+                    "assets/base-2.bin".into(),
+                ],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        update_pack(
+            ws.path(),
+            home.path(),
+            &UpdatePackRequest {
+                slug: "trim".into(),
+                content: test_skill_md("trim"),
+                files: pack_files("extra", 3, chunk),
+                expected_digest: None,
+                delete_files: vec![],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let root = home.path().join(".agents/skills/trim");
+        assert!(!root.join("assets/base-0.bin").exists());
+        assert!(root.join("assets/extra-0.bin").exists());
     }
 }
