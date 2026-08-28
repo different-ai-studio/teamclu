@@ -1,0 +1,761 @@
+<title>TeamClu 账单页</title>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  /* Editorial Calm tokens — AGENTS.md is the source of truth for packages/app.
+     Light-only by deliberate choice: light is the canonical theme for the
+     desktop app, and this sheet mirrors a specific in-app screen. Every color
+     is painted explicitly so the page holds on any host ground. */
+  :root {
+    --background: #fbfaf7;
+    --paper: #ffffff;
+    --panel: #efece4;
+    --selected: #e7e2d6;
+    --foreground: #1a1a14;
+    --ink-2: #3d3c34;
+    --muted: #75736a;
+    --faint: #a8a6a0;
+    --border: rgba(26, 26, 20, 0.08);
+    --border-soft: rgba(26, 26, 20, 0.05);
+    --coral: #e85a4a;
+    --coral-soft: #f5d6cf;
+    --warn: #b8791f;
+    --stop: #a8392c;
+    --warn-soft: #fbf1dd;
+    --shadow: 0 4px 16px -10px rgba(20, 20, 15, 0.12);
+    --shadow-lg: 0 18px 48px -20px rgba(20, 20, 15, 0.28);
+    --font: "PingFang SC", "Noto Sans SC", "Source Han Sans SC", -apple-system,
+      BlinkMacSystemFont, "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font);
+    font-size: 13px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page { max-width: 1180px; margin: 0 auto; padding: 40px 24px 72px; }
+
+  .page-head { margin-bottom: 32px; }
+  .page-head h1 {
+    font-size: 20px; font-weight: 700; margin: 0 0 6px;
+    letter-spacing: -0.01em; text-wrap: balance;
+  }
+  .page-head p { margin: 0; color: var(--muted); font-size: 12.5px; max-width: 62ch; }
+  .page-head .ref {
+    display: inline-block; margin-top: 10px; font-family: var(--mono);
+    font-size: 11px; color: var(--faint);
+  }
+
+  .frame-label {
+    display: flex; align-items: baseline; gap: 10px;
+    margin: 40px 0 14px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .frame-label .n {
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    color: var(--faint);
+  }
+  .frame-label h2 { font-size: 15px; font-weight: 700; margin: 0; }
+  .frame-label .note { font-size: 12px; color: var(--muted); }
+
+  /* ---- settings modal chrome (mirrors the real 设置 dialog) ---- */
+  .shell {
+    display: grid; grid-template-columns: 208px 1fr;
+    background: var(--paper); border: 1px solid var(--border);
+    border-radius: 14px; overflow: hidden; box-shadow: var(--shadow-lg);
+  }
+  .nav { background: var(--panel); padding: 14px 10px; border-right: 1px solid var(--border); }
+  .nav-group {
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--faint); padding: 6px 10px 8px;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 7px; font-size: 12.5px; color: var(--ink-2);
+  }
+  .nav-item.is-active { background: var(--selected); font-weight: 600; color: var(--foreground); }
+  .nav-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); flex: none; }
+  .nav-item.is-active .nav-dot { background: var(--foreground); }
+
+  .content { padding: 26px 28px 30px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .content-head h3 { font-size: 15px; font-weight: 700; margin: 0 0 4px; }
+  .content-head p { margin: 0; font-size: 12.5px; color: var(--muted); }
+
+  /* ---- cards ---- */
+  .card {
+    background: var(--paper); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 20px;
+  }
+  .card-title {
+    font-size: 13px; font-weight: 600; margin: 0 0 2px;
+  }
+  .card-sub { font-size: 12px; color: var(--muted); margin: 0; }
+  .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+
+  /* ---- balance ---- */
+  .balance-row { display: flex; align-items: flex-end; gap: 34px; flex-wrap: wrap; margin-top: 14px; }
+  .metric .k {
+    font-size: 11px; color: var(--muted); letter-spacing: 0.02em;
+    display: block; margin-bottom: 3px;
+  }
+  .metric .v {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: 30px; font-weight: 600; line-height: 1.1; letter-spacing: -0.02em;
+  }
+  .metric .v .unit { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 5px; }
+  .metric.sm .v { font-size: 18px; }
+  .metric.warn .v { color: var(--warn); }
+
+  .btn {
+    border: 1px solid var(--border); background: var(--paper); color: var(--ink-2);
+    border-radius: 8px; padding: 7px 14px; font-size: 12.5px; font-family: var(--font);
+    cursor: pointer; white-space: nowrap;
+  }
+  .btn:focus-visible { outline: 2px solid var(--foreground); outline-offset: 2px; }
+  /* Coral spot #1 of 2 — the single primary action on this screen. */
+  .btn-primary { background: var(--coral); border-color: var(--coral); color: #fff; font-weight: 600; }
+
+  /* ---- warning banner (semantic, not the brand accent) ---- */
+  .banner {
+    display: flex; gap: 11px; align-items: flex-start;
+    background: var(--warn-soft); border: 1px solid rgba(184, 121, 31, 0.22);
+    border-radius: 10px; padding: 12px 14px; margin-top: 14px;
+  }
+  .banner .icon { color: var(--warn); font-weight: 700; line-height: 1.4; flex: none; }
+  .banner .t { font-size: 12.5px; font-weight: 600; margin: 0 0 2px; color: #6b4711; }
+  .banner .d { font-size: 12px; margin: 0; color: #6b4711; opacity: 0.86; }
+
+  /* ---- tables ---- */
+  .tbl-wrap { overflow-x: auto; margin-top: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th {
+    text-align: left; font-size: 11px; font-weight: 600; color: var(--muted);
+    letter-spacing: 0.03em; padding: 0 0 8px; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td { padding: 9px 0; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  .num {
+    text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  th.num { text-align: right; }
+  .tier { font-weight: 600; }
+  .tier-id { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-left: 7px; font-weight: 400; }
+
+  .bar { height: 4px; border-radius: 2px; background: var(--panel); width: 110px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--ink-2); border-radius: 2px; }
+  .bar.is-warn > i { background: var(--warn); }
+  .bar.is-stop > i { background: var(--stop); }
+
+  .pill {
+    display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 7px;
+    border-radius: 5px; background: var(--panel); color: var(--ink-2); white-space: nowrap;
+  }
+  .pill.owner { background: transparent; border: 1px solid var(--border); color: var(--muted); font-weight: 500; }
+  .pill.is-warn { background: var(--warn-soft); color: #6b4711; }
+  .pill.is-stop { background: #f7e3e0; color: var(--stop); }
+  .pill.agent { background: transparent; border: 1px solid var(--border); color: var(--muted); font-weight: 500; }
+  .unlimited { color: var(--faint); }
+  .field { display: flex; align-items: center; gap: 10px; }
+  .field label { font-size: 12px; color: var(--muted); min-width: 92px; }
+  .seg { display: inline-flex; background: var(--panel); border-radius: 7px; padding: 2px; gap: 2px; }
+  .seg span { font-size: 12px; padding: 4px 12px; border-radius: 5px; color: var(--ink-2); }
+  .seg span.on { background: var(--paper); font-weight: 600; box-shadow: var(--shadow); }
+  .inp {
+    font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 12.5px;
+    border: 1px solid var(--border); border-radius: 7px; padding: 5px 10px;
+    background: var(--paper); color: var(--foreground); width: 130px;
+  }
+  .pos { color: #1f7a4d; }
+
+  .foot {
+    font-size: 11.5px; color: var(--faint); margin: 12px 0 0; padding-top: 10px;
+    border-top: 1px dashed var(--border-soft);
+  }
+
+  /* ---- spec annotations ---- */
+  .spec {
+    background: var(--paper); border: 1px solid var(--border);
+    border-left: 3px solid var(--foreground);
+    border-radius: 0 10px 10px 0; padding: 16px 20px; margin-top: 18px;
+  }
+  .spec h4 {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.07em; color: var(--muted); margin: 0 0 10px;
+  }
+  .spec ul { margin: 0; padding-left: 17px; display: flex; flex-direction: column; gap: 7px; }
+  .spec li { font-size: 12.5px; color: var(--ink-2); }
+  .spec code {
+    font-family: var(--mono); font-size: 11.5px;
+    background: var(--panel); padding: 1px 5px; border-radius: 4px;
+  }
+  .spec .ph { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+
+  @media (max-width: 820px) {
+    .shell { grid-template-columns: 1fr; }
+    .nav { display: none; }
+    .balance-row { gap: 22px; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="page-head">
+    <h1>账单页 · 交互稿</h1>
+    <p>设置 → 账单。余额、充值入口、积分能买多少 token、充值历史，以及迁移到新数据模型后的用量视图。产品参考为 Cursor 的 Billing &amp; Invoices，但套餐制换成了预付费钱包。</p>
+    <span class="ref">依据 docs/specs/2026-08-28-team-ai-gateway-design.md §12 · 配色遵循 AGENTS.md「Editorial Calm」</span>
+  </header>
+
+  <!-- ============ FRAME 1 ============ -->
+  <div class="frame-label">
+    <span class="n">01</span>
+    <h2>常规状态</h2>
+    <span class="note">余额充足，本周期已有用量</span>
+  </div>
+
+  <div class="shell">
+    <nav class="nav">
+      <div class="nav-group">客户端</div>
+      <div class="nav-item"><span class="nav-dot"></span>通用</div>
+      <div class="nav-item"><span class="nav-dot"></span>快捷方式</div>
+      <div class="nav-item is-active"><span class="nav-dot"></span>账单</div>
+      <div class="nav-item"><span class="nav-dot"></span>Token 用量</div>
+      <div class="nav-item"><span class="nav-dot"></span>隐私与遥测</div>
+      <div class="nav-item"><span class="nav-dot"></span>本地缓存</div>
+      <div class="nav-item"><span class="nav-dot"></span>诊断与支持</div>
+      <div class="nav-group" style="margin-top:10px">Daemon</div>
+      <div class="nav-item"><span class="nav-dot"></span>运行时</div>
+    </nav>
+
+    <div class="content">
+      <div class="content-head">
+        <h3>账单</h3>
+        <p>团队共享钱包。所有成员的 AI 用量都从这里扣。</p>
+      </div>
+
+      <!-- 余额 -->
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <p class="card-title">当前余额</p>
+            <p class="card-sub">2026 年 8 月 1 日 — 8 月 31 日</p>
+          </div>
+          <button class="btn btn-primary" type="button">充值</button>
+        </div>
+        <div class="balance-row">
+          <div class="metric">
+            <span class="k">可用余额</span>
+            <span class="v">2,880<span class="unit">积分</span></span>
+          </div>
+          <div class="metric sm">
+            <span class="k">本周期已消耗</span>
+            <span class="v">4,080<span class="unit">积分</span></span>
+          </div>
+          <div class="metric sm">
+            <span class="k">按当前速度可用</span>
+            <span class="v">约 20<span class="unit">天</span></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 积分能买多少 token -->
+      <section class="card">
+        <p class="card-title">积分能买多少 token</p>
+        <p class="card-sub">换算取决于档位，以及输入还是输出 —— 没有单一比值。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>档位</th>
+                <th class="num">1 积分 ≈ 输入 token</th>
+                <th class="num">1 积分 ≈ 输出 token</th>
+                <th class="num">当前余额 ≈ 输入 token</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="tier">标准</span><span class="tier-id">default</span></td>
+                <td class="num">20,000</td>
+                <td class="num">10,000</td>
+                <td class="num">5,760 万</td>
+              </tr>
+              <tr>
+                <td><span class="tier">高级</span><span class="tier-id">pro</span></td>
+                <td class="num">5,000</td>
+                <td class="num">2,500</td>
+                <td class="num">1,440 万</td>
+              </tr>
+              <tr>
+                <td><span class="tier">旗舰</span><span class="tier-id">max</span></td>
+                <td class="num">550</td>
+                <td class="num">138</td>
+                <td class="num">158 万</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="foot">按当前价目表估算，实际以出账为准。旗舰档会在多个上游之间切换，这里按其中最贵的一条算。</p>
+      </section>
+
+      <!-- 本周期用量 -->
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <p class="card-title">本周期用量</p>
+            <p class="card-sub">共 4,750 万 tokens · 8,540 次请求</p>
+          </div>
+          <button class="btn" type="button">查看明细</button>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>档位</th>
+                <th class="num">Tokens</th>
+                <th class="num">消耗积分</th>
+                <th class="num">占比</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="tier">标准</span><span class="tier-id">default</span></td>
+                <td class="num">4,200 万</td>
+                <td class="num">2,400</td>
+                <td class="num">58.8%</td>
+                <td><div class="bar"><i style="width:58.8%"></i></div></td>
+              </tr>
+              <tr>
+                <td><span class="tier">高级</span><span class="tier-id">pro</span></td>
+                <td class="num">525 万</td>
+                <td class="num">1,200</td>
+                <td class="num">29.4%</td>
+                <td><div class="bar"><i style="width:29.4%"></i></div></td>
+              </tr>
+              <tr>
+                <td><span class="tier">旗舰</span><span class="tier-id">max</span></td>
+                <td class="num">24.7 万</td>
+                <td class="num">480</td>
+                <td class="num">11.8%</td>
+                <td><div class="bar"><i style="width:11.8%"></i></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="foot">占比按消耗积分计，不按 token 数 —— 不同档位每 token 的成本差一个数量级。</p>
+      </section>
+
+      <!-- 充值历史 -->
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <p class="card-title">充值历史</p>
+            <p class="card-sub">不含每次请求的扣费明细</p>
+          </div>
+          <span class="pill owner">仅团队所有者可见</span>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>类型</th>
+                <th class="num">积分</th>
+                <th>备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="num" style="text-align:left">2026-08-26</td>
+                <td><span class="pill">充值</span></td>
+                <td class="num pos">+5,000</td>
+                <td>Stripe · ¥100.00</td>
+              </tr>
+              <tr>
+                <td class="num" style="text-align:left">2026-08-12</td>
+                <td><span class="pill">调整</span></td>
+                <td class="num pos">+200</td>
+                <td>上游故障期间的补偿</td>
+              </tr>
+              <tr>
+                <td class="num" style="text-align:left">2026-08-01</td>
+                <td><span class="pill">充值</span></td>
+                <td class="num pos">+5,000</td>
+                <td>Stripe · ¥100.00</td>
+              </tr>
+              <tr>
+                <td class="num" style="text-align:left">2026-07-15</td>
+                <td><span class="pill">赠送</span></td>
+                <td class="num pos">+1,000</td>
+                <td>新团队开通赠送</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="spec">
+    <h4>规格</h4>
+    <ul>
+      <li><strong>余额与用量对全体成员可见</strong>；充值历史与充值按钮仅团队所有者。余额耗尽是硬停，成员必须能自己看到为什么用不了。<span class="ph">§12.6</span></li>
+      <li><strong>换算表的价格由 <code>GET /models</code> 的 <code>estimatedPricing</code> 下发</strong>，不在客户端硬编码 —— 否则调价当天就变成错误信息。<span class="ph">§12.3</span></li>
+      <li><strong>「按当前速度可用 N 天」是派生值</strong>，由余额 ÷ 近 7 日日均消耗算出；日均为 0 时整个指标隐藏，不显示 ∞。</li>
+      <li>充值历史只取 <code>kind IN (top_up, grant, adjustment, refund)</code>，排除 <code>usage</code> 行。<span class="ph">§12.5</span></li>
+      <li>充值按钮：Phase 2 只有管理员手工充值，按钮改为说明文案；Phase 4 接 Stripe Checkout，走系统浏览器而非内嵌 webview。<span class="ph">§4.9.7</span></li>
+    </ul>
+  </div>
+
+  <!-- ============ FRAME 2 ============ -->
+  <div class="frame-label">
+    <span class="n">02</span>
+    <h2>余额不足</h2>
+    <span class="note">硬停状态 —— 不降级、不透支</span>
+  </div>
+
+  <div class="shell">
+    <nav class="nav">
+      <div class="nav-group">客户端</div>
+      <div class="nav-item"><span class="nav-dot"></span>通用</div>
+      <div class="nav-item"><span class="nav-dot"></span>快捷方式</div>
+      <div class="nav-item is-active"><span class="nav-dot"></span>账单</div>
+      <div class="nav-item"><span class="nav-dot"></span>Token 用量</div>
+      <div class="nav-item"><span class="nav-dot"></span>隐私与遥测</div>
+      <div class="nav-item"><span class="nav-dot"></span>本地缓存</div>
+      <div class="nav-item"><span class="nav-dot"></span>诊断与支持</div>
+      <div class="nav-group" style="margin-top:10px">Daemon</div>
+      <div class="nav-item"><span class="nav-dot"></span>运行时</div>
+    </nav>
+
+    <div class="content">
+      <div class="content-head">
+        <h3>账单</h3>
+        <p>团队共享钱包。所有成员的 AI 用量都从这里扣。</p>
+      </div>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <p class="card-title">当前余额</p>
+            <p class="card-sub">2026 年 8 月 1 日 — 8 月 31 日</p>
+          </div>
+          <button class="btn btn-primary" type="button">立即充值</button>
+        </div>
+        <div class="balance-row">
+          <div class="metric warn">
+            <span class="k">可用余额</span>
+            <span class="v">0<span class="unit">积分</span></span>
+          </div>
+          <div class="metric sm">
+            <span class="k">本周期已消耗</span>
+            <span class="v">10,000<span class="unit">积分</span></span>
+          </div>
+        </div>
+        <div class="banner">
+          <span class="icon">!</span>
+          <div>
+            <p class="t">余额已用完，团队的 AI 请求已停止</p>
+            <p class="d">充值后立即恢复，不需要重启。已经在跑的会话会收到「余额不足」并停在当前一步。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <p class="card-title">本周期用量</p>
+        <p class="card-sub">共 1.16 亿 tokens · 21,043 次请求</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>档位</th>
+                <th class="num">Tokens</th>
+                <th class="num">消耗积分</th>
+                <th class="num">占比</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="tier">标准</span><span class="tier-id">default</span></td>
+                <td class="num">1.02 亿</td>
+                <td class="num">5,800</td>
+                <td class="num">58.0%</td>
+                <td><div class="bar"><i style="width:58%"></i></div></td>
+              </tr>
+              <tr>
+                <td><span class="tier">高级</span><span class="tier-id">pro</span></td>
+                <td class="num">1,320 万</td>
+                <td class="num">3,000</td>
+                <td class="num">30.0%</td>
+                <td><div class="bar"><i style="width:30%"></i></div></td>
+              </tr>
+              <tr>
+                <td><span class="tier">旗舰</span><span class="tier-id">max</span></td>
+                <td class="num">61.5 万</td>
+                <td class="num">1,200</td>
+                <td class="num">12.0%</td>
+                <td><div class="bar"><i style="width:12%"></i></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="spec">
+    <h4>规格</h4>
+    <ul>
+      <li><strong>低水位在余额跌到零之前就要出现</strong>，不能等停机才提示。阈值与通知通道待定，是设计稿附录 F 仅剩的两条未决之一。</li>
+      <li><strong>不降级、不透支。</strong> 静默降到便宜档会让 agent 继续产出但质量下降且无人察觉 —— 定时任务尤其危险。失败是可见的，降级不是。<span class="ph">§4.2</span></li>
+      <li>错误码 <code>insufficient_credits</code>（团队余额不足）与 <code>quota_exceeded</code>（成员周期限额已满）要分开呈现，两者的解法不同：前者充值，后者调限额。</li>
+    </ul>
+  </div>
+
+  <!-- ============ FRAME 3 ============ -->
+  <div class="frame-label">
+    <span class="n">03</span>
+    <h2>Token 用量页 · 迁移后</h2>
+    <span class="note">现有页面换数据源，不是重做</span>
+  </div>
+
+  <div class="shell">
+    <nav class="nav">
+      <div class="nav-group">客户端</div>
+      <div class="nav-item"><span class="nav-dot"></span>通用</div>
+      <div class="nav-item"><span class="nav-dot"></span>快捷方式</div>
+      <div class="nav-item"><span class="nav-dot"></span>账单</div>
+      <div class="nav-item is-active"><span class="nav-dot"></span>Token 用量</div>
+      <div class="nav-item"><span class="nav-dot"></span>隐私与遥测</div>
+      <div class="nav-item"><span class="nav-dot"></span>本地缓存</div>
+      <div class="nav-item"><span class="nav-dot"></span>诊断与支持</div>
+      <div class="nav-group" style="margin-top:10px">Daemon</div>
+      <div class="nav-item"><span class="nav-dot"></span>运行时</div>
+    </nav>
+
+    <div class="content">
+      <div class="content-head">
+        <h3>Token 用量</h3>
+        <p>查看整个团队真实的 AI Token 消耗与积分。</p>
+      </div>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <span class="pill">当日</span>
+            <span class="pill">当周</span>
+            <span class="pill">当月</span>
+            <span class="pill" style="background:var(--selected);font-weight:600">当年</span>
+          </div>
+          <span style="font-family:var(--mono);font-size:11.5px;color:var(--muted)">2026-01-01 → 2026-12-31</span>
+        </div>
+        <div class="balance-row">
+          <div class="metric sm">
+            <span class="k">消耗积分</span>
+            <span class="v">4,080</span>
+          </div>
+          <div class="metric sm">
+            <span class="k">输入 tokens</span>
+            <span class="v">4,074 万</span>
+          </div>
+          <div class="metric sm">
+            <span class="k">输出 tokens</span>
+            <span class="v">676 万</span>
+          </div>
+          <div class="metric sm">
+            <span class="k">请求数</span>
+            <span class="v">8,540</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <p class="card-title">成员排行榜</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>成员</th>
+                <th class="num">Tokens</th>
+                <th class="num">消耗积分</th>
+                <th class="num">请求数</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>周金亮</td><td class="num">2,666 万</td><td class="num">2,290</td><td class="num">4,793</td></tr>
+              <tr><td>海港</td><td class="num">1,281 万</td><td class="num">1,100</td><td class="num">2,303</td></tr>
+              <tr><td>weigan</td><td class="num">582 万</td><td class="num">500</td><td class="num">1,046</td></tr>
+              <tr><td>Mac-mini 值守 Agent <span class="pill" style="margin-left:6px">Agent</span></td><td class="num">221 万</td><td class="num">190</td><td class="num">398</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="banner" style="margin-top:0">
+          <span class="icon">i</span>
+          <div>
+            <p class="t">2026 年 7 月 8 日之前没有统计数据</p>
+            <p class="d">用量统计自新账单系统上线起开始记录。更早的记录停留在旧网关，口径不同，没有迁移。</p>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="spec">
+    <h4>规格</h4>
+    <ul>
+      <li><strong>「总费用 $0」改成「消耗积分」是语义变化，不是换个数字。</strong> 旧系统记的是美元花费，与积分没有确定换算，历史数据不迁移。<span class="ph">§11.4</span></li>
+      <li><strong>周期早于统计起始日时显示说明，不要显示 0。</strong> 显示 0 会被读成「那段时间没人用」，是错误信息。<span class="ph">§12.4</span></li>
+      <li>总 token 拆成输入/输出两个数 —— 上游本来就分开计费，合成一个数会让用户无法核对。</li>
+      <li>排行榜按 <code>actor_id</code> 分组，agent 与人一起排但要有标记：定时任务的消耗也是团队的钱。<span class="ph">§6.2.2</span></li>
+      <li>按档分组用 <code>public_model_id</code>（三档），不暴露实际上游模型名。<span class="ph">§4.3</span></li>
+      <li class="ph">现有响应的 summary / members / byModel 三段结构原样保留，只换数据源与字段语义，前端改动面因此可控。</li>
+    </ul>
+  </div>
+
+  <!-- ============ FRAME 4 ============ -->
+  <div class="frame-label">
+    <span class="n">04</span>
+    <h2>成员限额</h2>
+    <span class="note">团队有钱，但单个成员可以被单独拦住</span>
+  </div>
+
+  <div class="shell">
+    <nav class="nav">
+      <div class="nav-group">客户端</div>
+      <div class="nav-item"><span class="nav-dot"></span>通用</div>
+      <div class="nav-item"><span class="nav-dot"></span>快捷方式</div>
+      <div class="nav-item is-active"><span class="nav-dot"></span>账单</div>
+      <div class="nav-item"><span class="nav-dot"></span>Token 用量</div>
+      <div class="nav-item"><span class="nav-dot"></span>隐私与遥测</div>
+      <div class="nav-item"><span class="nav-dot"></span>本地缓存</div>
+      <div class="nav-item"><span class="nav-dot"></span>诊断与支持</div>
+      <div class="nav-group" style="margin-top:10px">Daemon</div>
+      <div class="nav-item"><span class="nav-dot"></span>运行时</div>
+    </nav>
+
+    <div class="content">
+      <div class="content-head">
+        <h3>成员限额</h3>
+        <p>限制单个成员在一个周期内最多能消耗多少积分。额度仍然从团队钱包里扣，不是各自的钱包。</p>
+      </div>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <p class="card-title">周期与默认值</p>
+            <p class="card-sub">周期对全团队统一。周一 00:00 / 每月 1 日 00:00 重置（北京时间）。</p>
+          </div>
+          <span class="pill owner">仅团队所有者可编辑</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px;margin-top:16px">
+          <div class="field">
+            <label for="q-period">结算周期</label>
+            <span class="seg" id="q-period"><span>每周</span><span class="on">每月</span></span>
+          </div>
+          <div class="field">
+            <label for="q-default">新成员默认</label>
+            <input class="inp" id="q-default" value="不限" readonly />
+            <span style="font-size:11.5px;color:var(--faint)">留空 = 不限，仅受团队余额约束</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <p class="card-title">成员</p>
+            <p class="card-sub">2026 年 8 月 1 日 — 8 月 31 日</p>
+          </div>
+          <button class="btn btn-primary" type="button">保存</button>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>成员</th>
+                <th class="num">本周期已用</th>
+                <th class="num">限额</th>
+                <th class="num">已用</th>
+                <th></th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>周金亮 <span class="pill owner" style="margin-left:6px">所有者</span></td>
+                <td class="num">2,290</td>
+                <td class="num unlimited">不限</td>
+                <td class="num unlimited">—</td>
+                <td></td>
+                <td><span class="pill">正常</span></td>
+              </tr>
+              <tr>
+                <td>海港</td>
+                <td class="num">1,100</td>
+                <td class="num">2,000</td>
+                <td class="num">55%</td>
+                <td><div class="bar"><i style="width:55%"></i></div></td>
+                <td><span class="pill">正常</span></td>
+              </tr>
+              <tr>
+                <td>weigan</td>
+                <td class="num">500</td>
+                <td class="num">500</td>
+                <td class="num">100%</td>
+                <td><div class="bar is-stop"><i style="width:100%"></i></div></td>
+                <td><span class="pill is-stop">已触顶</span></td>
+              </tr>
+              <tr>
+                <td>Mac-mini 值守 Agent <span class="pill agent" style="margin-left:6px">Agent</span></td>
+                <td class="num">190</td>
+                <td class="num unlimited">不限</td>
+                <td class="num unlimited">—</td>
+                <td></td>
+                <td><span class="pill">正常</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="banner">
+          <span class="icon">!</span>
+          <div>
+            <p class="t">weigan 本周期的 AI 请求已停止</p>
+            <p class="d">团队余额还够，只有这名成员被拦住。9 月 1 日自动恢复，或者现在把限额调高。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <p class="card-title">给 Agent 设限额前请三思</p>
+        <p class="card-sub">值守 Agent 和定时任务是无人值守运行的。给它设限额意味着额度用完时任务会在半夜静默失败，而没有人会看到那条错误。默认不限是刻意的。</p>
+      </section>
+    </div>
+  </div>
+
+  <div class="spec">
+    <h4>规格</h4>
+    <ul>
+      <li><strong>发现一处 schema 与 UI 的错配：</strong><code>member_credit_quota</code> 把 <code>period</code> 放在<em>每个成员</em>的行上，但这一屏按团队统一设置。成员各用各的周期会让「本周期已用」这一列不可比，报表也讲不通。建议把 <code>period</code> 提到团队级列；若保留现状，UI 必须强制向所有行写同一个值。<span class="ph">§5.2</span></li>
+      <li><strong><code>quota_exceeded</code> 与 <code>insufficient_credits</code> 要分开呈现。</strong> 前者只拦一个人、解法是调限额；后者全员停、解法是充值。两者混成一句「额度不足」会把人引向错误的操作。<span class="ph">§4.2</span></li>
+      <li><strong>把限额调到低于已用量时要提示。</strong> 该成员会立刻停到周期结束 —— 这是合法操作，但必须让所有者知道自己按下去会发生什么。</li>
+      <li><strong>Agent actor 无显式限额行时跳过 quota 检查</strong>，只受团队余额约束。给 Agent 设限额要二次确认。<span class="ph">§6.2.2</span></li>
+      <li><strong>「新成员默认」是附录 F 仅剩的两条未决之一。</strong> 现在按「不限」画；等有真实用量分布后再定，改的是数据不是结构。</li>
+      <li>周期口径与用量报表共用同一套 CST 换算，不要各写一份。<span class="ph">附录 A</span></li>
+      <li class="ph">编辑限额的弹层记得传 container —— 设置页是模态 dialog，默认 portal 到 body 会永远打不开。§12.7</li>
+    </ul>
+  </div>
+
+</div>

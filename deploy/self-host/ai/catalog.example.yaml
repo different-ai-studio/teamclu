@@ -1,0 +1,141 @@
+# TeamClu AI Gateway — operator catalog (example)
+# Mount read-only into ai-gateway container as /app/catalog.yaml
+#
+# Three layers:
+#   providers      — connection (api_base + api_key_env)
+#   backend_models — upstream model id + credits pricing
+#   public_models  — customer-facing id + 1:n routes
+#
+# This file is PER DEPLOYMENT, not a single source of truth in the repo: each
+# deploy target runs its own gateway against its own database (see §3.1 of
+# docs/specs/2026-08-28-team-ai-gateway-design.md).
+#
+# ⚠️ public_models must stay a SUPERSET of the ids LiteLLM exposes today
+# (default / pro / max / deepseek-v4-flash / deepseek-v4-pro). Those ids are
+# already stored in every team's team_workspace_config.llm_models — dropping one
+# silently invalidates the model those teams have selected. New ids (auto) may
+# be added; retiring an old id needs a separate UPDATE on llm_models.
+
+providers:
+  deepseek:
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+  openai:
+    api_base: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+
+# ── credits pricing unit ─────────────────────────────────────────────
+# 1 credit = 0.000001 CNY of UPSTREAM COST, so a number here is simply
+#   <price in CNY per 1M tokens> * 1_000_000
+# The unit is deliberately this fine: at a coarser one, ceil() over-charges a
+# typical 5k-token agent request by ~10x, and agents are made of small requests.
+# See §4.4.1 of docs/specs/2026-08-28-team-ai-gateway-design.md.
+#
+# Credits are anchored to COST, not to sale price — the markup lives in the one
+# CNY→credits conversion at top-up, so this file stays a straight transcription
+# of the provider's price list.
+#
+# ⚠️ Write plain digits. YAML 1.2 parsers read 1_000_000 as a STRING, not an int.
+# ⚠️ The numbers below are PLACEHOLDERS — replace with the real price list.
+
+# Body keys forwarded upstream. Everything else is dropped with a debug log —
+# this replaces LiteLLM's `litellm_settings.drop_params: true`, which existed
+# because agent runtimes (opencode / pi) send a SUPERSET of OpenAI params and
+# upstreams 400 on keys they don't know. Overridable per backend_model.
+default_supported_params:
+  - model
+  - messages
+  - stream
+  - stream_options
+  - temperature
+  - top_p
+  - max_tokens
+  - stop
+  - tools
+  - tool_choice
+  - parallel_tool_calls
+  - response_format
+  - seed
+  - n
+  - presence_penalty
+  - frequency_penalty
+  - user
+
+backend_models:
+  ds-v4-pro:
+    provider: deepseek
+    upstream_model: deepseek-v4-pro
+    # Used to size the pre-flight reservation when the request omits max_tokens,
+    # and as the conservative settle amount when the upstream returns no usage.
+    default_max_output_tokens: 16000
+    pricing:
+      input_per_1m_credits: 2000000     # 2.00 CNY / 1M tokens
+      output_per_1m_credits: 4000000    # 4.00 CNY / 1M tokens
+
+  ds-v4-flash:
+    provider: deepseek
+    upstream_model: deepseek-v4-flash
+    default_max_output_tokens: 16000
+    pricing:
+      input_per_1m_credits: 500000      # 0.50 CNY / 1M tokens
+      output_per_1m_credits: 1000000    # 1.00 CNY / 1M tokens
+
+  gpt-4o:
+    provider: openai
+    upstream_model: gpt-4o
+    default_max_output_tokens: 16000
+    pricing:
+      input_per_1m_credits: 18000000    # 18.00 CNY / 1M tokens
+      output_per_1m_credits: 72000000   # 72.00 CNY / 1M tokens
+
+public_models:
+  # ── THE public contract: exactly three tiers ─────────────────────────
+  # The desktop hardcodes these three ids (design §4.3.1). They are STABLE
+  # NAMES — what changes is which backend they point at, and that mapping
+  # lives right here on the server. Re-point a tier, adjust weights, or swap
+  # vendors with no client release.
+  #
+  # Adding a FOURTH tier requires shipping a client. That is deliberate:
+  # adding a tier is a product decision, not a config tweak.
+
+  default:
+    name: 标准
+    routing: priority
+    routes:
+      - backend: ds-v4-flash
+
+  pro:
+    name: 高级
+    routing: priority
+    routes:
+      - backend: ds-v4-pro
+
+  # Mixed routing is exactly why pricing lives on backend_models: this tier
+  # bills gpt-4o on some calls and ds-v4-pro on others.
+  max:
+    name: 旗舰
+    routing: failover
+    routes:
+      - backend: gpt-4o
+      - backend: ds-v4-pro
+
+  # ── transition aliases — REMOVE IN PHASE 3 ───────────────────────────
+  # Old clients still send these vendor ids, and they are still sitting in
+  # team_workspace_config.llm_models. Keep them serving until those clients
+  # are gone (same gate as deleting LiteLLM), then drop both these entries
+  # and the dead llm_models rows. See design §4.3.2.
+  #
+  # Unknown model ids get 403 model_not_allowed — never a silent fallback to
+  # `default`, which would leave a mis-configured client on the wrong tier
+  # with no signal.
+  deepseek-v4-flash:
+    name: DeepSeek V4 Flash
+    routing: priority
+    routes:
+      - backend: ds-v4-flash
+
+  deepseek-v4-pro:
+    name: DeepSeek V4 Pro
+    routing: priority
+    routes:
+      - backend: ds-v4-pro
