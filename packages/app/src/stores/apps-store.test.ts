@@ -19,6 +19,12 @@ const mocks = vi.hoisted(() => ({
   toastError: vi.fn(),
   workdirExists: vi.fn(),
   readDir: vi.fn(),
+  encodeWorkspaceId: (workspacePath: string) => {
+    const bytes = new TextEncoder().encode(workspacePath);
+    let binary = "";
+    bytes.forEach((b) => (binary += String.fromCharCode(b)));
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+  },
 }));
 
 vi.mock("@/lib/backend", () => ({
@@ -37,6 +43,7 @@ vi.mock("@/lib/backend", () => ({
 }));
 
 vi.mock("@/lib/daemon-local-client", () => ({
+  encodeWorkspaceId: mocks.encodeWorkspaceId,
   seedDaemonApp: mocks.seedDaemonApp,
   cloneDaemonApp: mocks.cloneDaemonApp,
   daemonAppWorkdir: mocks.daemonAppWorkdir,
@@ -538,6 +545,10 @@ describe("apps-store deploy", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mocks.daemonAppWorkdir.mockResolvedValue({
+      workdir: "/workdir/app-1",
+      deviceName: "test-host",
+    });
     mocks.getGitHead.mockResolvedValue({ sha: "abc1234567890" });
     mocks.getGitCredential.mockResolvedValue(gitCred);
     mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
@@ -649,7 +660,10 @@ describe("apps-store deploy", () => {
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
 
-    expect(mocks.getDaemonEnvActivationDiagnostics).toHaveBeenCalledWith("ws-1", "team-1");
+    expect(mocks.getDaemonEnvActivationDiagnostics).toHaveBeenCalledWith(
+      mocks.encodeWorkspaceId("/workdir/app-1"),
+      "team-1",
+    );
     expect(vi.mocked(publicDeployConfirm.run)).toHaveBeenCalledTimes(1);
     expect(mocks.deployApp).toHaveBeenCalled();
   });

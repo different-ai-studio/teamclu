@@ -10,6 +10,7 @@ import {
   buildDaemonApp,
   cloneDaemonApp,
   daemonAppWorkdir,
+  encodeWorkspaceId,
   getDaemonEnvActivationDiagnostics,
   type SeedAppResult,
 } from "@/lib/daemon-local-client";
@@ -363,10 +364,19 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     }
 
     if (app.workspaceId) {
-      const envDiag = await getDaemonEnvActivationDiagnostics(app.workspaceId, app.teamId);
-      if (envDiag?.workspace_has_active_turn) {
-        const accepted = publicDeployConfirm.run(ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE);
-        if (!accepted) return;
+      // Daemon `/v1/workspaces/:id/*` routes take a base64url-encoded absolute
+      // path, not the cloud workspace UUID stored on the app row.
+      const workdirInfo = await daemonAppWorkdir(app.id, app.teamId);
+      const workspacePath = workdirInfo?.workdir?.trim();
+      if (workspacePath) {
+        const envDiag = await getDaemonEnvActivationDiagnostics(
+          encodeWorkspaceId(workspacePath),
+          app.teamId,
+        );
+        if (envDiag?.workspace_has_active_turn) {
+          const accepted = publicDeployConfirm.run(ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE);
+          if (!accepted) return;
+        }
       }
     }
 
