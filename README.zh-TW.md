@@ -13,7 +13,7 @@
 - **🔋 開箱即用** — 內建 RAG 知識庫、Auto UI 視覺理解、語音轉文字，以及六大通道閘道（企業微信、飛書、Discord、Kook、微信、Email），無需膠水程式碼
 - **🧑‍💻 個人開發者到中小企業** — 本地優先、預設私有；從單人使用擴展到小型公司
 
-[English](README.md) | [简体中文](README.zh-CN.md) | 繁體中文 | [日本語](README.ja.md) | [한국어](README.ko.md)
+[English](README.md) | [简体中文](README.zh-CN.md) | 繁體中文 | [日本語](README.ja.md) | [한국어](README.ko.md) | [Bahasa Indonesia](README.id.md)
 
 ## 介面截圖
 

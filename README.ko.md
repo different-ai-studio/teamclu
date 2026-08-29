@@ -13,7 +13,7 @@
 - **🔋 기본 탑재** — RAG 지식 베이스, Auto UI 이해, 음성 인식(STT), 6 개 채널 게이트웨이(WeCom, Feishu, Discord, Kook, WeChat, Email) 내장. 글루 코드 불필요
 - **🧑‍💻 개인 개발자부터 중소기업까지** — 로컬 우선, 기본 비공개; 1 인 사용자부터 소규모 기업까지 확장 가능
 
-[English](README.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | 한국어
+[English](README.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | 한국어 | [Bahasa Indonesia](README.id.md)
 
 ## 스크린샷
 
