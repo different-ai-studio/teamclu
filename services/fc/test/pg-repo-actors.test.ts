@@ -437,3 +437,16 @@ test("listActorDirectoryByIds hides other members' personal agents", async () =>
   assert.ok(ids.includes(other.id));
   assert.ok(!ids.includes(personalAgent.id), "private agent of another owner must be hidden");
 });
+
+test("listActorDirectoryByIds returns a personal agent looking up itself", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const owner = await seedMemberActor(db, team.id, { userId: "owner-u" });
+  const personalAgent = await seedAgentActor(db, team.id, owner.id, "private");
+  const repo = createPgBusinessRepository({ db, callerActorId: personalAgent.id });
+
+  const items = await repo.listActorDirectoryByIds([personalAgent.id], team.id);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].id, personalAgent.id);
+  assert.equal(items[0].displayName, "Bot");
+});

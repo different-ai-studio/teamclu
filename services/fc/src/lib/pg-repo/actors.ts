@@ -366,7 +366,15 @@ export function makeActorsRepo(db: DbLike, ctx: ActorsCtx = {}) {
         (ctx.userId && teamId
           ? (await resolveActorForTeam(db, ctx.userId, teamId)) ?? undefined
           : undefined);
-      const conditions = [inArray(actorDirectory.id, actorIds), visibilityFilter(callerActorId)!];
+      // Batch by-id lookup is used to name seats the caller already holds (e.g.
+      // session participants, the daemon resolving its own actor). Always return
+      // the caller's own row when explicitly requested — visibility otherwise
+      // compares ownerMemberId (a member id) to callerActorId (often an agent
+      // id) and would hide a personal agent from itself.
+      const visibility = callerActorId
+        ? or(visibilityFilter(callerActorId)!, eq(actorDirectory.id, callerActorId))
+        : visibilityFilter(callerActorId)!;
+      const conditions = [inArray(actorDirectory.id, actorIds), visibility];
       if (teamId) conditions.push(eq(actorDirectory.teamId, teamId));
       const rows = await db
         .select()
