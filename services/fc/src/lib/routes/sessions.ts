@@ -135,6 +135,12 @@ export function registerSessions(router) {
     return { body: out };
   });
 
+  router.get("/v1/sessions/:sessionId/roster", async (ctx) => {
+    const sessionId = decodeURIComponent(ctx.params.sessionId);
+    const out = await ctx.repository.listSessionRoster(sessionId);
+    return { body: out };
+  });
+
   router.post("/v1/sessions/:sessionId/participants", async (ctx) => {
     const sessionId = decodeURIComponent(ctx.params.sessionId);
     const body = ctx.json ?? {};
