@@ -207,6 +207,15 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     assert.ok(Array.isArray(out.items), "items should be an array");
   });
 
+  test("repository contract: listSessionRoster returns roster items", async () => {
+    const repo = createRepository();
+    const out = await repo.listSessionRoster("session-1");
+    assert.equal(out.sessionId, "session-1");
+    assert.ok(Array.isArray(out.items), "items should be an array");
+    assert.ok(out.items.length >= 1, "contract fixture includes participants");
+    assert.ok("displayName" in out.items[0], "roster items expose displayName");
+  });
+
   test("repository contract: upsertSessionParticipant returns participant", async () => {
     const repo = createRepository();
     const p = await repo.upsertSessionParticipant("session-1", { actorId: "actor-new", role: "member" });

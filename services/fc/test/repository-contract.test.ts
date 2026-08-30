@@ -216,6 +216,20 @@ function contractRepo() {
       const s = sessionStore.find(s => s.id === sessionId);
       return { items: s?.participants ?? [] };
     },
+    async listSessionRoster(sessionId) {
+      const s = sessionStore.find(s => s.id === sessionId);
+      const participants = s?.participants ?? [];
+      return {
+        sessionId,
+        callerActorId: participants[0]?.actorId ?? "actor-1",
+        items: participants.map((p) => ({
+          actorId: p.actorId,
+          displayName: p.actorId === "actor-1" ? "Alice" : null,
+          kind: p.actorId === "actor-1" ? "member" : null,
+          isSelf: p.actorId === (participants[0]?.actorId ?? "actor-1"),
+        })),
+      };
+    },
     async upsertSessionParticipant(sessionId, input) {
       const s = sessionStore.find(s => s.id === sessionId);
       const existing = s?.participants?.find(p => p.actorId === input.actorId);

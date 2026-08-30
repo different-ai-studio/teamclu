@@ -66,6 +66,7 @@ export interface SessionsRepoDeps {
 
 interface SessionsCtx {
   userId?: string;
+  callerActorId?: string;
 }
 
 function mapSession(r: any) {
@@ -848,6 +849,70 @@ export function makeSessionsRepo(db: DbLike, ctx: SessionsCtx = {}, deps: Sessio
         .from(sessionParticipants)
         .where(eq(sessionParticipants.actorId, actorId));
       return rows.map((r) => r.sessionId).filter(Boolean);
+    },
+
+    // ── listSessionRoster ─────────────────────────────────────────────────────
+    /**
+     * Display names for session participants, read from `actors` directly.
+     *
+     * Unlike `listSessionParticipants` (which joins `actor_directory`), this path
+     * bypasses agent-visibility filtering so a personal agent authenticated as
+     * itself can resolve its own display name for session-context injection.
+     *
+     * AUTHZ: caller must be a participant in the session (403 otherwise).
+     * Only returns rows for actors already seated in `session_participants`.
+     */
+    async listSessionRoster(sessionId: string) {
+      const [s] = await db
+        .select({ id: sessions.id, teamId: sessions.teamId })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .limit(1);
+      if (!s) throw new ApiError(404, "not_found", "session not found");
+
+      const callerActorId =
+        ctx.callerActorId ??
+        (ctx.userId ? await resolveActorForTeam(db, ctx.userId, s.teamId) : null);
+      if (!callerActorId) {
+        throw new ApiError(401, "missing_identity", "authentication required");
+      }
+
+      const seats = await db
+        .select()
+        .from(sessionParticipants)
+        .where(eq(sessionParticipants.sessionId, sessionId));
+      const isParticipant = seats.some((seat: any) => seat.actorId === callerActorId);
+      if (!isParticipant) {
+        throw new ApiError(403, "forbidden", "not a participant in this session");
+      }
+
+      const actorIds = seats.map((seat: any) => seat.actorId).filter(Boolean);
+      const actorRows =
+        actorIds.length === 0
+          ? []
+          : await db
+              .select({
+                id: actors.id,
+                displayName: actors.displayName,
+                actorType: actors.actorType,
+              })
+              .from(actors)
+              .where(inArray(actors.id, actorIds));
+      const actorsById = new Map(actorRows.map((row: any) => [row.id, row]));
+
+      return {
+        sessionId,
+        callerActorId,
+        items: seats.map((seat: any) => {
+          const actor = actorsById.get(seat.actorId);
+          return {
+            actorId: seat.actorId,
+            displayName: actor?.displayName ?? null,
+            kind: actor?.actorType ?? null,
+            isSelf: seat.actorId === callerActorId,
+          };
+        }),
+      };
     },
 
     // ── listSessionParticipants ───────────────────────────────────────────────

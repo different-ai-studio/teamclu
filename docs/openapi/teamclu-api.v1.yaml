@@ -745,6 +745,38 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/roster:
+    get:
+      operationId: listSessionRoster
+      summary: List session participant display names
+      description: |
+        Returns display names for actors seated in this session, read from
+        `actors` directly. Unlike `GET …/participants`, this bypasses the
+        `actor_directory` visibility filter so a personal agent authenticated
+        as itself can resolve its own display name (e.g. for session-context
+        injection).
+
+        Caller must be a participant in the session. Only seated actor ids are
+        returned — no team-wide directory leak.
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Session roster labels.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRoster"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
   /v1/sessions/{sessionId}/participants/{actorId}:
     delete:
       operationId: removeSessionParticipant
@@ -7051,6 +7083,39 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SessionParticipant"
+    SessionRoster:
+      type: object
+      required: [sessionId, callerActorId, items]
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        callerActorId:
+          type: string
+          format: uuid
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionRosterEntry"
+    SessionRosterEntry:
+      type: object
+      required: [actorId, displayName, kind, isSelf]
+      properties:
+        actorId:
+          type: string
+          format: uuid
+        displayName:
+          type:
+            - string
+            - "null"
+        kind:
+          type:
+            - string
+            - "null"
+          description: Actor type (`member`, `agent`, `external`, …).
+        isSelf:
+          type: boolean
+          description: True when this row is the authenticated caller.
     TeamMember:
       type: object
       required: [actorId, teamId, role]

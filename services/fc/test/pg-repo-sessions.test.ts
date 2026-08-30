@@ -19,6 +19,7 @@ import {
   teamMembers,
   sessions,
   sessionParticipants,
+  agents,
 } from "../src/db/schema/index.js";
 
 // ── Seed helpers ─────────────────────────────────────────────────────────────
@@ -44,6 +45,26 @@ async function seedActor(db: any, teamId: string, opts: { kind?: string; userId?
   await db.insert(members).values({ id: actor.id, status: "active" });
   await db.insert(teamMembers).values({ teamId, memberId: actor.id, role: "member" });
   return actor;
+}
+
+async function seedPersonalAgent(
+  db: any,
+  teamId: string,
+  ownerMemberId: string,
+  displayName = "MDC",
+) {
+  const [agentActor] = await db
+    .insert(actors)
+    .values({ teamId, actorType: "agent", displayName })
+    .returning();
+  await db.insert(agents).values({
+    id: agentActor.id,
+    agentKind: "pi",
+    status: "active",
+    visibility: "personal",
+    ownerMemberId,
+  });
+  return agentActor;
 }
 
 // ── listSessions ──────────────────────────────────────────────────────────────
@@ -792,4 +813,57 @@ test("listSessionParticipantsForSync returns participant rows", async () => {
   const r = rows[0];
   assert.ok("session_id" in r && "actor_id" in r && "joined_at" in r, "must be snake_case");
   assert.ok(!("sessionId" in r), "must not leak camelCase keys");
+});
+
+// ── listSessionRoster ─────────────────────────────────────────────────────────
+
+test("listSessionRoster returns personal agent display name for caller agent", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const member = await seedActor(db, team.id, { userId: "member-u" });
+  const personalAgent = await seedPersonalAgent(db, team.id, member.id, "MDC");
+  const repo = createPgBusinessRepository({ db, callerActorId: personalAgent.id });
+
+  const s = await repo.createSession({
+    teamId: team.id,
+    title: "Roster",
+    mode: "collab",
+    participantActorIds: [member.id, personalAgent.id],
+  });
+  const out = await repo.listSessionRoster(s.id);
+
+  assert.equal(out.sessionId, s.id);
+  assert.equal(out.callerActorId, personalAgent.id);
+  const self = out.items.find((item: any) => item.actorId === personalAgent.id);
+  assert.ok(self, "personal agent should appear in roster");
+  assert.equal(self.displayName, "MDC");
+  assert.equal(self.kind, "agent");
+  assert.equal(self.isSelf, true);
+
+  const human = out.items.find((item: any) => item.actorId === member.id);
+  assert.ok(human);
+  assert.equal(human.displayName, "Test Actor");
+  assert.equal(human.kind, "member");
+  assert.equal(human.isSelf, false);
+});
+
+test("listSessionRoster rejects non-participants", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const member = await seedActor(db, team.id);
+  const outsider = await seedActor(db, team.id);
+  const personalAgent = await seedPersonalAgent(db, team.id, member.id);
+  const repo = createPgBusinessRepository({ db, callerActorId: outsider.id });
+
+  const s = await repo.createSession({
+    teamId: team.id,
+    title: "Private roster",
+    mode: "solo",
+    participantActorIds: [member.id, personalAgent.id],
+  });
+
+  await assert.rejects(
+    () => repo.listSessionRoster(s.id),
+    (err: any) => err.code === "forbidden",
+  );
 });
