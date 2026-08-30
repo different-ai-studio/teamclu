@@ -1,6 +1,6 @@
 [package]
 name = "teamclu"
-version = "0.4.1-beta.36"
+version = "0.4.1-beta.37"
 description = "TeamClu - AI Agent Desktop Platform"
 authors = ["TeamClu Team"]
 edition = "2021"
