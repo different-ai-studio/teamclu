@@ -354,27 +354,15 @@ export function makeActorsRepo(db: DbLike, ctx: ActorsCtx = {}) {
     /**
      * Batch actor-directory lookup by ids, optionally scoped to a team.
      * Returns the full directory-actor shape (parity with supabase-repo
-     * `listActorDirectoryByIds`). Agent-visibility filtering is applied here (the
-     * pg `actor_directory` view is caller-independent) using the caller's actor
-     * so personal agents owned by others are excluded — matching what RLS does on
-     * the Supabase side.
+     * `listActorDirectoryByIds`).
+     *
+     * No agent-visibility filter here: callers pass ids they already hold
+     * (session participants, the daemon naming its own actor). Listing endpoints
+     * such as `listTeamActors` still apply visibility.
      */
     async listActorDirectoryByIds(actorIds: string[], teamId: string | null) {
       if (!Array.isArray(actorIds) || actorIds.length === 0) return [];
-      const callerActorId =
-        ctx.callerActorId ??
-        (ctx.userId && teamId
-          ? (await resolveActorForTeam(db, ctx.userId, teamId)) ?? undefined
-          : undefined);
-      // Batch by-id lookup is used to name seats the caller already holds (e.g.
-      // session participants, the daemon resolving its own actor). Always return
-      // the caller's own row when explicitly requested — visibility otherwise
-      // compares ownerMemberId (a member id) to callerActorId (often an agent
-      // id) and would hide a personal agent from itself.
-      const visibility = callerActorId
-        ? or(visibilityFilter(callerActorId)!, eq(actorDirectory.id, callerActorId))
-        : visibilityFilter(callerActorId)!;
-      const conditions = [inArray(actorDirectory.id, actorIds), visibility];
+      const conditions = [inArray(actorDirectory.id, actorIds)];
       if (teamId) conditions.push(eq(actorDirectory.teamId, teamId));
       const rows = await db
         .select()
