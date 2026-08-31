@@ -398,6 +398,7 @@ async fn reconcile_team_skills_for_state(
         outcome,
         state.backend.as_ref(),
         state.runtime_refresh.as_ref(),
+        state.refresh_watch_registry.as_ref(),
     )
     .await;
     Ok(Json(TeamSkillReconcileResponse { team_id, outcome }))

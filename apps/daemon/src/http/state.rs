@@ -134,6 +134,8 @@ pub struct HttpState {
     pub runtime_supervisor: Option<Arc<crate::runtime::RuntimeSupervisor>>,
     /// Workspace refresh state shared with `/v1/workspaces/:id/runtime*`.
     pub runtime_refresh: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
+    pub refresh_watch_registry:
+        Option<Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
     /// Loopback `opencode serve` pool for provider OAuth (settings only).
     pub opencode_settings: Option<Arc<crate::opencode_settings::OpenCodeSettingsService>>,
     /// Daemon-owned team sync dispatcher (drives `/v1/team/sync*`).
@@ -225,6 +227,7 @@ impl HttpState {
             workspace_control,
             runtime_supervisor,
             runtime_refresh,
+            refresh_watch_registry: None,
             opencode_settings,
             sync_dispatcher,
             register_workspace_tx,
@@ -305,6 +308,14 @@ impl HttpState {
         team_skills: Option<Arc<crate::runtime::team_skills::TeamSkillReconciler>>,
     ) -> Self {
         self.team_skills = team_skills;
+        self
+    }
+
+    pub fn with_refresh_watch_registry(
+        mut self,
+        registry: Option<Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
+    ) -> Self {
+        self.refresh_watch_registry = registry;
         self
     }
 

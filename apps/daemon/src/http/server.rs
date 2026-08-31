@@ -157,6 +157,51 @@ pub async fn spawn(
     register_workspace_tx: Option<crate::http::state::RegisterWorkspaceTx>,
     backend: Option<Arc<dyn Backend>>,
     live_tee: Option<tokio::sync::broadcast::Sender<super::live_events::LiveTeeEvent>>,
+    config_path: Option<std::path::PathBuf>,
+    channel_reload_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    onboarding: Option<Arc<dyn crate::http::setup::OnboardingService>>,
+    local_rpc_tx: Option<crate::http::state::LocalRpcTx>,
+    local_live_ingest_tx: Option<crate::http::state::LocalLiveIngestTx>,
+    team_skills: Option<Arc<crate::runtime::team_skills::TeamSkillReconciler>>,
+    runtime_context: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
+    session_prompt: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
+) -> anyhow::Result<HttpHandle> {
+    spawn_with_refresh_watch_registry(
+        http,
+        meta,
+        runtime,
+        workspace_control,
+        runtime_supervisor,
+        opencode_settings,
+        sync_dispatcher,
+        register_workspace_tx,
+        backend,
+        live_tee,
+        config_path,
+        channel_reload_tx,
+        onboarding,
+        local_rpc_tx,
+        local_live_ingest_tx,
+        team_skills,
+        None,
+        runtime_context,
+        session_prompt,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn spawn_with_refresh_watch_registry(
+    http: HttpConfig,
+    meta: DaemonMetadata,
+    runtime: Arc<dyn RuntimeAdapter>,
+    workspace_control: Option<Arc<dyn WorkspaceControlStore>>,
+    runtime_supervisor: Option<Arc<crate::runtime::RuntimeSupervisor>>,
+    opencode_settings: Option<Arc<crate::opencode_settings::OpenCodeSettingsService>>,
+    sync_dispatcher: crate::sync::dispatch::SyncDispatcher,
+    register_workspace_tx: Option<crate::http::state::RegisterWorkspaceTx>,
+    backend: Option<Arc<dyn Backend>>,
+    live_tee: Option<tokio::sync::broadcast::Sender<super::live_events::LiveTeeEvent>>,
     // Daemon-level config surface (`/v1/config/*`, `/v1/setup/*`). All three are
     // `None` in focused tests, which makes those routes 503 rather than panic.
     config_path: Option<std::path::PathBuf>,
@@ -165,6 +210,9 @@ pub async fn spawn(
     local_rpc_tx: Option<crate::http::state::LocalRpcTx>,
     local_live_ingest_tx: Option<crate::http::state::LocalLiveIngestTx>,
     team_skills: Option<Arc<crate::runtime::team_skills::TeamSkillReconciler>>,
+    refresh_watch_registry: Option<
+        Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>,
+    >,
     runtime_context: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
     session_prompt: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
 ) -> anyhow::Result<HttpHandle> {
@@ -237,6 +285,7 @@ pub async fn spawn(
     .with_managed_llm(managed_llm)
     .with_team_cloud(team_cloud)
     .with_team_skills(team_skills)
+    .with_refresh_watch_registry(refresh_watch_registry)
     .with_local_rpc(local_rpc_tx)
     .with_local_live_ingest(local_live_ingest_tx);
     let state = if let Some(service) = runtime_context {
