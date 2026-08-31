@@ -103,7 +103,7 @@ impl SessionPromptService {
         }
 
         let brand = teamclu_runtime_env::brand_display_name_from_env();
-        let host_label = crate::config::daemon_host_label();
+        let host_label = crate::config::daemon_machine_hostname();
         let append_system_prompt = build_session_prompt(
             &brand,
             roster.title.as_deref(),
