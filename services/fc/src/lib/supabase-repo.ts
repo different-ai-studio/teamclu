@@ -2336,11 +2336,186 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async createThread(parentSessionId, { rootMessageId }) {
-      throw new ApiError(501, "not_implemented", "createThread requires BACKEND_KIND=postgres");
+      if (!rootMessageId?.trim()) {
+        throw new ApiError(400, "validation_failed", "rootMessageId is required");
+      }
+
+      const { data: parent, error: parentErr } = await supabase
+        .from("sessions")
+        .select("id, team_id, title, mode, idea_id, primary_agent_id, parent_session_id")
+        .eq("id", parentSessionId)
+        .maybeSingle();
+      if (parentErr) throw parentErr;
+      if (!parent) throw new ApiError(404, "not_found", "parent session not found");
+      if (parent.parent_session_id) {
+        throw new ApiError(400, "validation_failed", "cannot open a thread on a thread session");
+      }
+
+      const callerActorId = (await this.resolveCallerActorForTeam(parent.team_id))?.id ?? null;
+      if (!callerActorId) {
+        throw new ApiError(401, "missing_identity", "authentication required");
+      }
+
+      const { data: callerSeat, error: seatErr } = await supabase
+        .from("session_participants")
+        .select("actor_id")
+        .eq("session_id", parentSessionId)
+        .eq("actor_id", callerActorId)
+        .maybeSingle();
+      if (seatErr) throw seatErr;
+      if (!callerSeat) {
+        throw new ApiError(403, "forbidden", "not a participant in the parent session");
+      }
+
+      const { data: existing, error: existingErr } = await supabase
+        .from("sessions")
+        .select(SESSION_FULL_COLUMNS)
+        .eq("thread_root_message_id", rootMessageId)
+        .maybeSingle();
+      if (existingErr) throw existingErr;
+      if (existing) {
+        const { items } = await this.listSessionParticipants(existing.id);
+        return { ...mapSessionFull(existing), participants: items };
+      }
+
+      const { data: rootMsg, error: rootErr } = await supabase
+        .from("messages")
+        .select("id, session_id, kind, content")
+        .eq("id", rootMessageId)
+        .eq("session_id", parentSessionId)
+        .maybeSingle();
+      if (rootErr) throw rootErr;
+      if (!rootMsg) {
+        throw new ApiError(404, "not_found", "root message not found in parent session");
+      }
+      if (rootMsg.kind !== "agent_reply") {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "rootMessageId must reference an agent_reply message",
+        );
+      }
+
+      const preview = String(rootMsg.content ?? "").trim().slice(0, 80);
+      const threadTitle = preview
+        ? `${parent.title} · ${preview}${preview.length >= 80 ? "…" : ""}`
+        : `${parent.title} · 话题`;
+
+      const childId = randomUUID();
+      const { data: child, error: insertErr } = await supabase
+        .from("sessions")
+        .insert({
+          id: childId,
+          team_id: parent.team_id,
+          title: threadTitle,
+          mode: parent.mode ?? "collab",
+          idea_id: parent.idea_id ?? null,
+          primary_agent_id: parent.primary_agent_id ?? null,
+          created_by_actor_id: callerActorId,
+          source: "thread",
+          parent_session_id: parentSessionId,
+          thread_root_message_id: rootMessageId,
+        })
+        .select(SESSION_FULL_COLUMNS)
+        .single();
+      if (insertErr) throw insertErr;
+
+      const { data: parentSeats, error: parentSeatsErr } = await supabase
+        .from("session_participants")
+        .select("actor_id")
+        .eq("session_id", parentSessionId);
+      if (parentSeatsErr) throw parentSeatsErr;
+
+      const participantIds = Array.from(
+        new Set(
+          (parentSeats ?? [])
+            .map((row) => row.actor_id)
+            .filter((id): id is string => typeof id === "string" && id.length > 0),
+        ),
+      );
+      if (participantIds.length > 0) {
+        const rows = participantIds.map((actorId) => ({
+          session_id: childId,
+          actor_id: actorId,
+        }));
+        const { error: partErr } = await supabase
+          .from("session_participants")
+          .upsert(rows, { onConflict: "session_id,actor_id" });
+        if (partErr) throw partErr;
+      }
+
+      const { items } = await this.listSessionParticipants(childId);
+      return { ...mapSessionFull(child), participants: items };
     },
 
-    async listThreadSummaries(_parentSessionId) {
-      throw new ApiError(501, "not_implemented", "listThreadSummaries requires BACKEND_KIND=postgres");
+    async listThreadSummaries(parentSessionId) {
+      const { data: parent, error: parentErr } = await supabase
+        .from("sessions")
+        .select("id, team_id")
+        .eq("id", parentSessionId)
+        .maybeSingle();
+      if (parentErr) throw parentErr;
+      if (!parent) throw new ApiError(404, "not_found", "parent session not found");
+
+      const callerActorId = (await this.resolveCallerActorForTeam(parent.team_id))?.id ?? null;
+      if (!callerActorId) {
+        throw new ApiError(401, "missing_identity", "authentication required");
+      }
+
+      const { data: callerSeat, error: seatErr } = await supabase
+        .from("session_participants")
+        .select("actor_id")
+        .eq("session_id", parentSessionId)
+        .eq("actor_id", callerActorId)
+        .maybeSingle();
+      if (seatErr) throw seatErr;
+      if (!callerSeat) {
+        throw new ApiError(403, "forbidden", "not a participant in the parent session");
+      }
+
+      const { data: threads, error: threadsErr } = await supabase
+        .from("sessions")
+        .select("id, thread_root_message_id, last_message_at")
+        .eq("parent_session_id", parentSessionId);
+      if (threadsErr) throw threadsErr;
+      if (!threads?.length) return [];
+
+      const threadIds = threads.map((row) => row.id).filter(Boolean);
+      const participantCounts = new Map<string, number>();
+      const messageCounts = new Map<string, number>();
+
+      if (threadIds.length > 0) {
+        const { data: partRows, error: partErr } = await supabase
+          .from("session_participants")
+          .select("session_id")
+          .in("session_id", threadIds);
+        if (partErr) throw partErr;
+        for (const row of partRows ?? []) {
+          if (!row.session_id) continue;
+          participantCounts.set(
+            row.session_id,
+            (participantCounts.get(row.session_id) ?? 0) + 1,
+          );
+        }
+
+        const { data: msgRows, error: msgErr } = await supabase
+          .from("messages")
+          .select("session_id")
+          .in("session_id", threadIds);
+        if (msgErr) throw msgErr;
+        for (const row of msgRows ?? []) {
+          if (!row.session_id) continue;
+          messageCounts.set(row.session_id, (messageCounts.get(row.session_id) ?? 0) + 1);
+        }
+      }
+
+      return threads.map((row) => ({
+        threadSessionId: row.id,
+        rootMessageId: row.thread_root_message_id,
+        messageCount: messageCounts.get(row.id) ?? 0,
+        lastMessageAt: row.last_message_at ?? null,
+        participantCount: participantCounts.get(row.id) ?? 0,
+      }));
     },
 
     async listSessionIdsForActor(actorId) {
