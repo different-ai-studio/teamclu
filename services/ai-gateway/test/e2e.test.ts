@@ -162,8 +162,11 @@ test("a refund is accepted as a NEGATIVE amount and may drive the balance below 
     headers: svc,
     body: JSON.stringify({ amountCredits: -5000, kind: "refund", idempotencyKey: key }),
   });
-  assert.equal(r.status, 200, await r.text());
+  // Read the body ONCE: passing `await r.text()` as the assertion message
+  // consumes it even when the assertion passes, and the next read throws
+  // "Body has already been read".
   const body = await r.json() as any;
+  assert.equal(r.status, 200, JSON.stringify(body));
   assert.equal(body.applied, true);
   assert.equal(body.balanceCredits, -4000, "the spend gate refuses at a negative balance; the ledger still records the truth");
 });
