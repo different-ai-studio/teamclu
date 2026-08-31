@@ -49,6 +49,7 @@ mod peers_workspaces;
 mod remote_tools;
 mod rpc;
 mod skills_manage;
+mod knowledge;
 mod runtime_lifecycle;
 use crate::history::EventHistory;
 #[cfg(test)]
@@ -174,6 +175,8 @@ pub struct DaemonServer {
     refresh_watch_registry:
         Option<std::sync::Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
     refresh_coordinator: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
+    /// Applies skills-only refreshes once the workspace becomes idle.
+    refresh_auto_apply_task: Option<tokio::task::JoinHandle<()>>,
     /// Shared flag written by the MQTT event loop and read by `/v1/info`.
     mqtt_connected_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Recovery signal receiver is installed into the supervisor exactly once.
@@ -326,6 +329,12 @@ pub(crate) enum SockCommand {
     },
     /// Agent-managed personal skill create/update/get from teamclu-introspect.
     SkillsManage {
+        payload: serde_json::Value,
+        reply_tx: oneshot::Sender<String>,
+    },
+    /// Knowledge-base MCP tools (scaffold / create / search) from the
+    /// agent-facing MCP bridge. Pure vault file ops on the active team.
+    Knowledge {
         payload: serde_json::Value,
         reply_tx: oneshot::Sender<String>,
     },
@@ -811,6 +820,7 @@ impl DaemonServer {
             cron_sessions: cron::CronSessionCache::new(),
             refresh_watch_registry: None,
             refresh_coordinator: None,
+            refresh_auto_apply_task: None,
             mqtt_connected_flag: None,
             managed_llm: Arc::new(crate::runtime::managed_llm::ManagedLlmResolver::new(
                 backend,
@@ -1130,6 +1140,8 @@ impl DaemonServer {
                 let mut manager = self.agents.lock().await;
                 manager.attach_refresh_coordinator(refresh_coordinator.clone());
             }
+            self.refresh_auto_apply_task =
+                Some(runtime_supervisor.clone().start_refresh_auto_applier());
             let runtime: Arc<dyn crate::http::runtime_adapter::RuntimeAdapter> =
                 crate::http::runtime_adapter::RuntimeManagerAdapter::new_with_execution_context_assembler(
                     self.agents.clone(),
@@ -1167,7 +1179,7 @@ impl DaemonServer {
                     self.backend.clone(),
                 ),
             ));
-            match crate::http::spawn(
+            match crate::http::spawn_with_refresh_watch_registry(
                 http_cfg,
                 meta,
                 runtime,
@@ -1186,6 +1198,7 @@ impl DaemonServer {
                 Some(local_rpc_tx),
                 Some(local_live_ingest_tx),
                 Some(team_skill_reconciler.clone()),
+                self.refresh_watch_registry.clone(),
                 Some(self.runtime_context.clone()),
                 session_prompt,
             )
@@ -1518,13 +1531,20 @@ impl DaemonServer {
             let reconciler = team_skill_reconciler.clone();
             let backend = Some(self.backend.clone());
             let refresh = self.refresh_coordinator.clone();
+            let refresh_watch_registry = self.refresh_watch_registry.clone();
             tokio::spawn(async move {
                 // Once at startup so a daemon that was offline while an admin
                 // made a change converges immediately rather than after a full
                 // interval.
                 let outcome = reconciler.reconcile_now(&team_id).await;
-                apply_team_skill_outcome(&team_id, outcome, backend.as_ref(), refresh.as_ref())
-                    .await;
+                apply_team_skill_outcome(
+                    &team_id,
+                    outcome,
+                    backend.as_ref(),
+                    refresh.as_ref(),
+                    refresh_watch_registry.as_ref(),
+                )
+                .await;
                 let mut tick = tokio::time::interval(crate::runtime::team_skills::TEAM_SKILLS_TTL);
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
@@ -1536,8 +1556,14 @@ impl DaemonServer {
                     // every tick lands a few seconds short of the TTL and skips,
                     // silently halving the cadence to 20 minutes.
                     let outcome = reconciler.reconcile_now(&team_id).await;
-                    apply_team_skill_outcome(&team_id, outcome, backend.as_ref(), refresh.as_ref())
-                        .await;
+                    apply_team_skill_outcome(
+                        &team_id,
+                        outcome,
+                        backend.as_ref(),
+                        refresh.as_ref(),
+                        refresh_watch_registry.as_ref(),
+                    )
+                    .await;
                 }
             });
         }
@@ -1960,6 +1986,9 @@ impl DaemonServer {
                             }
                             Some(SockCommand::SkillsManage { payload, reply_tx }) => {
                                 self.handle_skills_manage(payload, reply_tx).await;
+                            }
+                            Some(SockCommand::Knowledge { payload, reply_tx }) => {
+                                self.handle_knowledge(payload, reply_tx).await;
                             }
                             Some(SockCommand::CursorPermission { payload, reply_tx }) => {
                                 tokio::spawn(async move {
@@ -2413,6 +2442,9 @@ impl DaemonServer {
                             }
                             Some(SockCommand::SkillsManage { payload, reply_tx }) => {
                                 self.handle_skills_manage(payload, reply_tx).await;
+                            }
+                            Some(SockCommand::Knowledge { payload, reply_tx }) => {
+                                self.handle_knowledge(payload, reply_tx).await;
                             }
                             Some(SockCommand::CursorPermission { payload, reply_tx }) => {
                                 tokio::spawn(async move {
@@ -2917,6 +2949,32 @@ where
                                 }
                                 Err(_) => {
                                     warn!("amuxd.sock: skills-manage reply dropped");
+                                }
+                            }
+                        } else if cmd == "knowledge" {
+                            let (reply_tx, reply_rx) = oneshot::channel();
+                            if tx
+                                .send(SockCommand::Knowledge {
+                                    payload: v,
+                                    reply_tx,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                            match reply_rx.await {
+                                Ok(body) => {
+                                    let mut stream = reader.into_inner();
+                                    if let Err(e) = stream.write_all(body.as_bytes()).await {
+                                        warn!("amuxd.sock: knowledge write failed: {e}");
+                                        return;
+                                    }
+                                    let _ = stream.write_all(b"\n").await;
+                                    let _ = stream.shutdown().await;
+                                }
+                                Err(_) => {
+                                    warn!("amuxd.sock: knowledge reply dropped");
                                 }
                             }
                         } else if cmd == "cursor-permission" {
@@ -3826,6 +3884,7 @@ pub(crate) mod tests {
                 cron_sessions: cron::CronSessionCache::new(),
                 refresh_watch_registry: None,
                 refresh_coordinator: None,
+                refresh_auto_apply_task: None,
                 mqtt_connected_flag: None,
                 mqtt_recovery_rx: None,
                 mqtt_recovery_handle: crate::mqtt::MqttRecoveryHandle::channel().0,

@@ -48,7 +48,6 @@ pub use roles_skills::{
     team_skill_roots, ManagedSkillDto, RoleRecordDto, RoleSkillLinkDto, RolesSkillsMetricsDto,
     RolesSkillsStateDto,
 };
-pub use knowledge_scaffold::{domain_index_template, scaffold_knowledge, ScaffoldReport};
 pub use session_store::{SessionBinding, SessionStore};
 pub use workspace_control::{
     decode_workspace_path, encode_workspace_path, AllowlistDecision, AllowlistRule, ApplyOutcome,

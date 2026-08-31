@@ -115,7 +115,9 @@ pub fn domain_index_template() -> &'static str {
     template_source("_index.md")
 }
 
-fn today_iso() -> String {
+/// Today as `YYYY-MM-DD` (UTC). Exposed for the knowledge MCP handlers
+/// (template stamping in `daemon::server::knowledge`).
+pub(crate) fn today_iso() -> String {
     // Avoid pulling in chrono for one date stamp; the daemon's MSRV and dep
     // tree are already heavy. A simple UTC date from SystemTime is fine here.
     use std::time::{SystemTime, UNIX_EPOCH};
