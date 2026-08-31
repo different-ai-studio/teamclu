@@ -14,6 +14,8 @@ function makeRepo(overrides = {}) {
     listSessionsForTeamSince: record("listSessionsForTeamSince"),
     listMessagesForSessionSince: record("listMessagesForSessionSince"),
     listSessionDisplayRows: record("listSessionDisplayRows"),
+    createThread: record("createThread"),
+    listThreadSummaries: record("listThreadSummaries"),
     listSessionIdsForActor: record("listSessionIdsForActor"),
     listWorkspacesByIdsSlim: record("listWorkspacesByIdsSlim"),
     listShortcutRoleBindings: record("listShortcutRoleBindings"),
@@ -341,4 +343,38 @@ test("GET /v1/feedback-summary requires teamId", async () => {
     query: {},
   });
   assert.equal(res.statusCode, 400);
+});
+
+test("POST /v1/sessions/:id/threads forwards rootMessageId", async () => {
+  const repo = makeRepo({
+    createThread: () => ({ id: "thread-1", title: "T" }),
+  });
+  const res = await request(repo, {
+    method: "POST",
+    path: "/v1/sessions/parent-1/threads",
+    body: { rootMessageId: "msg-1" },
+  });
+  assert.equal(res.statusCode, 201);
+  assert.deepEqual(repo.calls[0].args, ["parent-1", { rootMessageId: "msg-1" }]);
+});
+
+test("GET /v1/sessions/:id/thread-summaries returns items", async () => {
+  const repo = makeRepo({
+    listThreadSummaries: () => [
+      {
+        threadSessionId: "t1",
+        rootMessageId: "m1",
+        messageCount: 2,
+        lastMessageAt: null,
+        participantCount: 3,
+      },
+    ],
+  });
+  const res = await request(repo, {
+    method: "GET",
+    path: "/v1/sessions/parent-1/thread-summaries",
+  });
+  assert.equal(res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.items.length, 1);
 });

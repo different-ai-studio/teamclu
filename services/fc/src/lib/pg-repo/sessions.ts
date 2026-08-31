@@ -31,6 +31,7 @@ import {
   agents,
   teams,
   teamMembers,
+  messages,
 } from "../../db/schema/index.js";
 import { ApiError } from "../http-utils.js";
 import { requireActorForTeam, resolveActorForTeam } from "./authz.js";
@@ -105,6 +106,8 @@ function mapSessionFull(r: any, participants: any[] = []) {
     gatewayKey: r.gatewayKey ?? null,
     source: r.source ?? "user",
     cronJobId: r.cronJobId ?? null,
+    parentSessionId: r.parentSessionId ?? null,
+    threadRootMessageId: r.threadRootMessageId ?? null,
     createdAt: iso(r.createdAt)!,
     updatedAt: iso(r.updatedAt)!,
     participants,
@@ -143,6 +146,8 @@ function mapSessionSyncRow(r: any) {
     created_by_actor_id: r.createdByActorId ?? null,
     source: r.source ?? "user",
     cron_job_id: r.cronJobId ?? null,
+    parent_session_id: r.parentSessionId ?? null,
+    thread_root_message_id: r.threadRootMessageId ?? null,
     created_at: iso(r.createdAt),
     updated_at: iso(r.updatedAt),
   };
@@ -294,6 +299,7 @@ export function makeSessionsRepo(db: DbLike, ctx: SessionsCtx = {}, deps: Sessio
           AND (${kindFilter})
           AND (${participantFilter})
           AND (${cursorFilter})
+          AND sessions.parent_session_id IS NULL
           -- No archived_at filter, unlike the Supabase RPC: this schema has no
           -- such column (see the note in ensureGatewaySession below). Archive
           -- semantics live entirely in the supabase path.
@@ -831,6 +837,160 @@ export function makeSessionsRepo(db: DbLike, ctx: SessionsCtx = {}, deps: Sessio
         .orderBy(asc(sessions.updatedAt), asc(sessions.id))
         .limit(limit);
       return rows.map(mapSessionSyncRow);
+    },
+
+    // ── createThread ──────────────────────────────────────────────────────────
+    async createThread(
+      parentSessionId: string,
+      { rootMessageId }: { rootMessageId: string },
+    ) {
+      if (!rootMessageId?.trim()) {
+        throw new ApiError(400, "validation_failed", "rootMessageId is required");
+      }
+      const [parent] = await db
+        .select()
+        .from(sessions)
+        .where(eq(sessions.id, parentSessionId))
+        .limit(1);
+      if (!parent) throw new ApiError(404, "not_found", "parent session not found");
+      if (parent.parentSessionId) {
+        throw new ApiError(400, "validation_failed", "cannot open a thread on a thread session");
+      }
+
+      const callerActorId =
+        ctx.callerActorId ??
+        (ctx.userId ? await requireActorForTeam(db, ctx.userId, parent.teamId) : null);
+      if (!callerActorId) {
+        throw new ApiError(401, "missing_identity", "authentication required");
+      }
+
+      const parentSeats = await db
+        .select()
+        .from(sessionParticipants)
+        .where(eq(sessionParticipants.sessionId, parentSessionId));
+      if (!parentSeats.some((s: { actorId: string }) => s.actorId === callerActorId)) {
+        throw new ApiError(403, "forbidden", "not a participant in the parent session");
+      }
+
+      const [existing] = await db
+        .select()
+        .from(sessions)
+        .where(eq(sessions.threadRootMessageId, rootMessageId))
+        .limit(1);
+      if (existing) {
+        const parts = await db
+          .select()
+          .from(sessionParticipants)
+          .where(eq(sessionParticipants.sessionId, existing.id));
+        return mapSessionFull(existing, parts.map(mapParticipant));
+      }
+
+      const [rootMsg] = await db
+        .select()
+        .from(messages)
+        .where(
+          and(eq(messages.id, rootMessageId), eq(messages.sessionId, parentSessionId)),
+        )
+        .limit(1);
+      if (!rootMsg) {
+        throw new ApiError(404, "not_found", "root message not found in parent session");
+      }
+      if (rootMsg.kind !== "agent_reply") {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "rootMessageId must reference an agent_reply message",
+        );
+      }
+
+      const childId = crypto.randomUUID();
+      const preview = (rootMsg.content ?? "").trim().slice(0, 80);
+      const threadTitle = preview
+        ? `${parent.title} · ${preview}${preview.length >= 80 ? "…" : ""}`
+        : `${parent.title} · 话题`;
+
+      const [child] = await (db.insert(sessions) as any)
+        .values({
+          id: childId,
+          teamId: parent.teamId,
+          title: threadTitle,
+          mode: parent.mode,
+          ideaId: parent.ideaId,
+          primaryAgentId: parent.primaryAgentId,
+          createdByActorId: callerActorId,
+          source: "thread",
+          parentSessionId,
+          threadRootMessageId: rootMessageId,
+        })
+        .returning();
+
+      const participantIds = parentSeats
+        .map((s: { actorId: string }) => s.actorId)
+        .filter(Boolean);
+      let parts: any[] = [];
+      if (participantIds.length > 0) {
+        parts = await (db.insert(sessionParticipants) as any)
+          .values(participantIds.map((actorId: string) => ({ sessionId: childId, actorId })))
+          .onConflictDoNothing()
+          .returning();
+      }
+
+      return mapSessionFull(child, parts.map(mapParticipant));
+    },
+
+    async listThreadSummaries(parentSessionId: string) {
+      const [parent] = await db
+        .select({ id: sessions.id, teamId: sessions.teamId })
+        .from(sessions)
+        .where(eq(sessions.id, parentSessionId))
+        .limit(1);
+      if (!parent) throw new ApiError(404, "not_found", "parent session not found");
+
+      const callerActorId =
+        ctx.callerActorId ??
+        (ctx.userId ? await resolveActorForTeam(db, ctx.userId, parent.teamId) : null);
+      if (!callerActorId) {
+        throw new ApiError(401, "missing_identity", "authentication required");
+      }
+
+      const seats = await db
+        .select({ id: sessionParticipants.id })
+        .from(sessionParticipants)
+        .where(
+          and(
+            eq(sessionParticipants.sessionId, parentSessionId),
+            eq(sessionParticipants.actorId, callerActorId),
+          ),
+        )
+        .limit(1);
+      if (seats.length === 0) {
+        throw new ApiError(403, "forbidden", "not a participant in the parent session");
+      }
+
+      const threadRows = await db
+        .select({
+          threadSessionId: sessions.id,
+          rootMessageId: sessions.threadRootMessageId,
+          lastMessageAt: sessions.lastMessageAt,
+          participantCount: sql<number>`(
+            SELECT COUNT(*)::int FROM session_participants sp
+            WHERE sp.session_id = ${sessions.id}
+          )`,
+          messageCount: sql<number>`(
+            SELECT COUNT(*)::int FROM messages m
+            WHERE m.session_id = ${sessions.id}
+          )`,
+        })
+        .from(sessions)
+        .where(eq(sessions.parentSessionId, parentSessionId));
+
+      return threadRows.map((r: any) => ({
+        threadSessionId: r.threadSessionId,
+        rootMessageId: r.rootMessageId,
+        messageCount: r.messageCount ?? 0,
+        lastMessageAt: iso(r.lastMessageAt),
+        participantCount: r.participantCount ?? 0,
+      }));
     },
 
     // ── listSessionDisplayRows ────────────────────────────────────────────────
