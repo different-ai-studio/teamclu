@@ -198,19 +198,30 @@ export async function createCheckoutSession(
 /**
  * Public origin for the post-checkout landing pages.
  *
- * Reuses `AUTH_BASE_URL` — FC's own public origin, already declared on both
- * deploy targets — rather than introducing a second variable that means the
- * same thing and can drift from it. The desktop never depends on this redirect:
- * it shows "processing" and lets the balance refresh (§4.9.7), so the page only
- * has to tell a human they can close the tab.
+ * Its OWN variable, deliberately, after the first version tried to reuse an
+ * existing one twice and was wrong both times:
+ *
+ * - `AUTH_BASE_URL` is the Better-Auth issuer/JWKS origin. On the supabase
+ *   backend path nothing calls it, so it sits EMPTY on the deployment that
+ *   actually runs — checkout failed with "AUTH_BASE_URL is not set". Filling it
+ *   in to please Stripe would also quietly become the JWT issuer the day
+ *   BACKEND_KIND flips to postgres.
+ * - `API_EXTERNAL_URL` belongs to GoTrue (deploy/self-host/supabase/
+ *   docker-compose.yml). It happens to hold the Cloud API host here, which is
+ *   itself a surprising local choice; anyone "correcting" it to the Supabase
+ *   host would silently repoint these return URLs.
+ *
+ * The desktop never depends on this redirect — it shows "processing" and lets
+ * the balance refresh (§4.9.7) — so the page only has to tell a human they can
+ * close the tab. That is not a reason to let its origin be ambiguous.
  */
 function returnUrlBase(): string {
-  const base = process.env.AUTH_BASE_URL?.trim();
+  const base = process.env.STRIPE_RETURN_URL_BASE?.trim();
   if (!base) {
     throw new ApiError(
       503,
       "stripe_unavailable",
-      "AUTH_BASE_URL is not set — Stripe checkout needs a public origin for its return URLs",
+      "STRIPE_RETURN_URL_BASE is not set — Stripe checkout needs this deployment's public origin for its return URLs",
     );
   }
   return base.replace(/\/+$/, "");

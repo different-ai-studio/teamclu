@@ -504,6 +504,10 @@ services:
       STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
       STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
       STRIPE_PRICE_IDS: "${STRIPE_PRICE_IDS:-}"
+      # This deployment's own public origin, for the post-checkout landing page.
+      # Its own variable on purpose: AUTH_BASE_URL is empty on the supabase
+      # backend path, and API_EXTERNAL_URL belongs to GoTrue.
+      STRIPE_RETURN_URL_BASE: "${STRIPE_RETURN_URL_BASE:-}"
       LITELLM_URL: "${LITELLM_URL:-http://litellm:4000}"
       LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-}"
       # Per-team spend cap written at /team/new. Blank = no cap. This was absent

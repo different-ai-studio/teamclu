@@ -438,8 +438,15 @@ Tauri 内嵌 webview **不要**用来打开 Checkout（3DS 与钱包会出问题
 | 补充 | 为什么 |
 |---|---|
 | `GET /v1/teams/:teamId/credits/packages` | 充值卡要显示「买什么、多少钱、给多少积分」。三者都只能来自 Stripe Price + `metadata.credits`（§4.9.3），客户端硬编码价格在调价当天就是错的。**任何成员可读**（看得见但买不了），下单才是 owner-only |
-| `GET /v1/stripe/return` | Checkout 完成后浏览器要有地方落。一张静态 HTML：桌面端本来就不依赖这次跳转（§4.9.7），这页只需要告诉人可以关掉。复用 `AUTH_BASE_URL` 作公网 origin，不为同一个含义再引入一个变量 |
+| `GET /v1/stripe/return` | Checkout 完成后浏览器要有地方落。一张静态 HTML：桌面端本来就不依赖这次跳转（§4.9.7），这页只需要告诉人可以关掉。公网 origin 用**专门的 `STRIPE_RETURN_URL_BASE`** —— 见下方那条 |
 | `stripe-reconcile` cron 任务 | §4.9.6 的第二层兜底。**不查账本**：重复 top-up 靠唯一索引变成空操作，返回的 `applied` 就是「这笔本地是不是缺了」的答案，比自己 join 一次账本少一条会腐化的查询路径 |
+
+⚠️ **回跳地址不要复用现成变量。** 第一版试过两个，两个都错：
+
+- `AUTH_BASE_URL` 是 Better-Auth 的 issuer / JWKS origin。`BACKEND_KIND=supabase` 这条路上没人调它，所以它在**唯一真正在跑的部署上是空的** —— 上线后点「购买」直接报 `AUTH_BASE_URL is not set`。而且为了喂 Stripe 把它填上，等于在 BACKEND_KIND 哪天切到 postgres 时，悄悄把它变成了 JWT 的签发者。
+- `API_EXTERNAL_URL` 是 **GoTrue 的**变量（`deploy/self-host/supabase/docker-compose.yml`）。它在这台机器上碰巧是 Cloud API 的地址 —— 这本身就是个反直觉的本地配置；谁哪天按名字把它「修正」成 Supabase 的地址，回跳地址就静默指错了。
+
+教训不是「少加变量」，是**别把语义挂在自己不拥有的变量上**。桌面端不依赖这次跳转，不等于它的 origin 可以含糊。
 
 对账任务的 Stripe client 是**可注入的**。第一版不是，于是 `npm test` 直接打到了 api.stripe.com —— 一个测试套件能对着生产支付账号发请求，这本身就是缺陷。
 
