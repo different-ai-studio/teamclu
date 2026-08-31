@@ -83,7 +83,6 @@ test("get/putTeamWorkspaceConfig roundtrip; getWorkspaceConfig merges", async ()
   assert.equal(wc.llm.enabled, false);
   assert.equal(wc.llm.baseUrl, null);
   assert.deepEqual(wc.llm.models, []);
-  assert.deepEqual(wc.llm.availableModels, []);
 });
 
 test("setLlmConfig persists and getWorkspaceConfig round-trips stored llm config", async () => {
@@ -102,8 +101,6 @@ test("setLlmConfig persists and getWorkspaceConfig round-trips stored llm config
   assert.equal(wc.llm.enabled, true);
   assert.equal(wc.llm.baseUrl, "https://proxy.example.com/v1");
   assert.deepEqual(wc.llm.models, [{ id: "gpt-4o", name: "GPT-4o" }, { id: "claude", name: "Claude" }]);
-  // availableModels (gateway proxy) is independent; no endpoint → [].
-  assert.deepEqual(wc.llm.availableModels, []);
 
   // Upsert update path: toggling off + replacing models.
   await repo.setLlmConfig(t.id, { enabled: false, baseUrl: null, models: [] });
@@ -125,39 +122,9 @@ test("createTeam still succeeds when member-key provisioning throws", async () =
   assert.ok(team.id);
 });
 
-test("createTeam seeds owner's member key exactly once when litellmTeamId is set", async () => {
-  const { db } = await makeTestDb();
-  const userId = crypto.randomUUID();
-  const calls: Array<{ litellmTeamId: string; actorId: string }> = [];
-  const repo = createPgBusinessRepository({
-    db,
-    userId,
-    provisionMemberKey: async (litellmTeamId: string, actorId: string) => {
-      calls.push({ litellmTeamId, actorId });
-      return { key: "sk-tc-x", aiGatewayEndpoint: "https://ai.example.com/v1" };
-    },
-  });
-  const team = await repo.createTeam({ name: "T2", litellmTeamId: "lt-1" });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].litellmTeamId, "lt-1");
-  assert.ok(calls[0].actorId);
 
-  const [ownerRow] = await db.select({ id: actors.id }).from(actors).where(eq(actors.teamId, team.id));
-  assert.equal(calls[0].actorId, ownerRow.id);
-});
 
-test("createTeam does not attempt member-key seeding when litellmTeamId is absent", async () => {
-  const { db } = await makeTestDb();
-  const userId = crypto.randomUUID();
-  let called = false;
-  const repo = createPgBusinessRepository({
-    db,
-    userId,
-    provisionMemberKey: async () => { called = true; return { key: "x", aiGatewayEndpoint: "y" }; },
-  });
-  await repo.createTeam({ name: "T3" });
-  assert.equal(called, false);
-});
+
 
 test("createTeam requires userId context", async () => {
   const { db } = await makeTestDb();
@@ -261,9 +228,8 @@ test("setLlmConfig round-trips into getWorkspaceConfig llm block", async () => {
   assert.equal(cfg.llm.enabled, true);
   assert.equal(cfg.llm.baseUrl, "https://gw.example/x");
   assert.deepEqual(cfg.llm.models, models);
-  // aiGatewayEndpoint not set → null, availableModels degrades to []
+  // aiGatewayEndpoint not set → null
   assert.equal(cfg.llm.aiGatewayEndpoint, null);
-  assert.deepEqual(cfg.llm.availableModels, []);
 });
 
 test("getWorkspaceConfig llm block defaults for fresh team", async () => {
@@ -275,7 +241,6 @@ test("getWorkspaceConfig llm block defaults for fresh team", async () => {
     enabled: false,
     baseUrl: null,
     models: [],
-    availableModels: [],
     aiGatewayEndpoint: null,
   });
 });
@@ -316,26 +281,6 @@ test("listAllMyTeams requires userId context", async () => {
 
 // ── drift-parity: team workspace config ─────────────────────────────────────
 
-test("getLiteLlmUsage returns empty shape without querying when LiteLLM unprovisioned", async () => {
-  const { db } = await makeTestDb();
-  const { teamId, userId } = await seedOwner(db);
-  const repo = createPgBusinessRepository({ db, userId });
-  const usage = await repo.getLiteLlmUsage(teamId, { range: "month" });
-  assert.equal(usage.litellmTeamId, null);
-  assert.equal(usage.range, "month");
-  assert.deepEqual(usage.summary, {
-    totalTokens: 0, promptTokens: 0, completionTokens: 0, totalSpend: 0, requestCount: 0,
-  });
-  assert.equal(usage.maxBudget, null);
-  assert.deepEqual(usage.members, []);
-  assert.deepEqual(usage.byModel, []);
-  assert.equal(typeof usage.startUtc, "string");
-});
 
-test("getLiteLlmUsage requires team membership", async () => {
-  const { db } = await makeTestDb();
-  const { teamId } = await seedOwner(db);
-  const stranger = crypto.randomUUID();
-  const repo = createPgBusinessRepository({ db, userId: stranger });
-  await assert.rejects(() => repo.getLiteLlmUsage(teamId, {}), /forbidden|not a member/i);
-});
+
+

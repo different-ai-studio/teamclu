@@ -151,7 +151,6 @@ function contractRepo() {
           enabled: llm?.enabled ?? false,
           baseUrl: llm?.baseUrl ?? null,
           models: llm?.models ?? [],
-          availableModels: [],
           aiGatewayEndpoint: null,
         },
       };

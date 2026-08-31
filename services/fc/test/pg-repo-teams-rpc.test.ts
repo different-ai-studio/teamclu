@@ -410,28 +410,4 @@ test("removeTeamActor: still succeeds when the injected key-deletion function th
   assert.equal(after.length, 0, "actor must still be deleted");
 });
 
-test("removeTeamActor: invokes key deletion exactly once with the deterministic sk-tc key value", async () => {
-  const { db } = await makeTestDb();
-  const userId = `user-${Math.random()}`;
-  const calls: string[] = [];
-  const repo = createPgBusinessRepository({
-    db,
-    userId,
-    deleteMemberKey: async (actorId: string) => { calls.push(actorId); },
-  });
-  const team = await repo.createTeam({ name: "Key Delete Team" });
 
-  const [actorToRemove] = await db.insert(actors).values({
-    teamId: team.id,
-    actorType: "member",
-    displayName: "To Remove",
-    userId: `user-${Math.random()}`,
-  }).returning();
-  await db.insert(members).values({ id: actorToRemove.id, status: "active" });
-  await db.insert(teamMembers).values({ teamId: team.id, memberId: actorToRemove.id, role: "member" });
-
-  await repo.removeTeamActor(team.id, actorToRemove.id);
-
-  assert.equal(calls.length, 1, "deleteMemberKey must be called exactly once");
-  assert.equal(calls[0], actorToRemove.id);
-});

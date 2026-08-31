@@ -1,6 +1,5 @@
 import { json } from "./responses.js";
 import { sha256, ossGet, ossPut } from "./oss-store.js";
-import { litellmFetch, LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD } from "./litellm.js";
 import { dispatchPush } from "./push-dispatch.js";
 import { pushDeps } from "./push-deps.js";
 import { sharedSecretMatches } from "./shared-secret.js";
@@ -53,75 +52,6 @@ export async function handleResetSecret(body: any) {
   return json(200, { success: true });
 }
 
-export async function handleManagedGitSetupLitellm(body: any) {
-  // ownerActorId is the owner's actor_id; the owner LiteLLM key is seeded from
-  // it (sk-tc-{actor_id[..40]}) to match the desktop runtime token.
-  const { teamId, teamSecret, teamName, ownerName } = body;
-  const ownerNodeId = body.ownerActorId ?? body.ownerNodeId;
-  if (!teamId || !teamSecret || !ownerNodeId) {
-    return json(400, { error: "Missing teamId, teamSecret, or ownerActorId" });
-  }
-
-  const teamSecretHash = sha256(teamSecret);
-  const existing = await ossGet(`teams/${teamId}/_registry/auth.json`);
-  if (existing) {
-    if (existing.teamSecretHash !== teamSecretHash) {
-      return json(403, { error: "Team already registered with different secret" });
-    }
-  } else {
-    const createdAt = new Date().toISOString();
-    await ossPut(`teams/${teamId}/_registry/auth.json`, {
-      schemaVersion: 1,
-      teamSecretHash,
-      ownerNodeId,
-      createdAt,
-    });
-    await ossPut(`teams/${teamId}/_meta/team.json`, {
-      schemaVersion: 1,
-      teamId,
-      teamName: teamName || teamId,
-      ownerName: ownerName || "",
-      ownerNodeId,
-      createdAt,
-    });
-    console.log(`[managed-git/setup-litellm] Registered teamId=${teamId} owner=${ownerNodeId.slice(0, 8)}`);
-  }
-
-  const litellmTeamId = `tc-${teamId}`;
-  const maxBudget = LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD();
-  const teamRes = await litellmFetch("/team/new", "POST", {
-    team_id: litellmTeamId,
-    team_alias: teamName || teamId,
-    max_budget: maxBudget,
-  });
-  if (!teamRes.ok && teamRes.status !== 409) {
-    console.error(`[managed-git/setup-litellm] team/new error:`, teamRes.data);
-    return json(502, { error: "Failed to create LiteLLM team", detail: teamRes.data });
-  }
-
-  const keyAlias = `${ownerName || "owner"}-${ownerNodeId.slice(0, 8)}`;
-  const keyValue = `sk-tc-${ownerNodeId.slice(0, 40)}`;
-  const keyRes = await litellmFetch("/key/generate", "POST", {
-    key: keyValue,
-    team_id: litellmTeamId,
-    key_alias: keyAlias,
-  });
-  if (!keyRes.ok) {
-    console.error(`[managed-git/setup-litellm] key/generate error:`, keyRes.data);
-    return json(502, { error: "Failed to create owner key", detail: keyRes.data });
-  }
-
-  console.log(
-    `[managed-git/setup-litellm] team=${litellmTeamId} owner=${ownerNodeId.slice(0, 8)} max_budget_usd=${maxBudget}`
-  );
-  return json(200, {
-    success: true,
-    litellmTeamId,
-    key: keyValue,
-    keyAlias,
-    maxBudgetUsd: maxBudget,
-  });
-}
 
 export async function handlePushDispatch(headers: Record<string, string> | undefined, body: any) {
   if (!sharedSecretMatches(headers?.['x-webhook-secret'], PUSH_WEBHOOK_SECRET())) {

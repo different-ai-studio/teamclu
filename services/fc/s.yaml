@@ -59,15 +59,6 @@ resources:
         AI_GATEWAY_ENDPOINT: ${env('AI_GATEWAY_ENDPOINT', '')}
         AI_GATEWAY_INTERNAL_URL: ${env('AI_GATEWAY_INTERNAL_URL', '')}
         AI_GATEWAY_SERVICE_TOKEN: ${env('AI_GATEWAY_SERVICE_TOKEN', '')}
-        LITELLM_URL: ${env('LITELLM_URL', 'https://ai.ucar.cc')}
-        LITELLM_MASTER_KEY: ${env('LITELLM_MASTER_KEY', '')}
-        # Blank = no cap, matching the compose default. Keep the two targets in
-        # step: a default that differs per target is how the $1 cap went unnoticed.
-        LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD: ${env('LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD', '')}
-        # LiteLLM usage reads the `litellm` database on the SAME Postgres instance
-        # as the primary FC connection (DATABASE_URL/POSTGRES_*); only the db name
-        # differs. Override the db name here if it is not `litellm`.
-        LITELLM_DB_NAME: ${env('LITELLM_DB_NAME', 'litellm')}
         CODEUP_ORG_ID: ${env('CODEUP_ORG_ID', '')}
         CODEUP_PAT: ${env('CODEUP_PAT', '')}
         CODEUP_BOT_USERNAME: ${env('CODEUP_BOT_USERNAME', 'teamclu')}
@@ -179,10 +170,6 @@ resources:
         # and falls back to these. Without them declared here that fallback was
         # unreachable in production: LiteLLM usage 503s the moment DATABASE_URL
         # is blank instead of degrading to the parts it already knows how to use.
-        POSTGRES_HOST: ${env('POSTGRES_HOST', '')}
-        POSTGRES_PORT: ${env('POSTGRES_PORT', '')}
-        POSTGRES_USERNAME: ${env('POSTGRES_USERNAME', '')}
-        POSTGRES_PASSWORD: ${env('POSTGRES_PASSWORD', '')}
         BACKEND_KIND: ${env('BACKEND_KIND', 'supabase')}
         # Phone login (partner-aligned). DEFAULT_ORG_ID = the default tenant new
         # users join; PHONE_EMAIL_DOMAIN = domain of the synthetic auth email

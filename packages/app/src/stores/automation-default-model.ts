@@ -32,7 +32,7 @@ import { useCurrentTeamStore } from "@/stores/current-team";
  *
  * Same reasoning as `client-model-mru`: model ids are backend-local, so a
  * backend switch must not leave ids that can never match, and catalogs vary by
- * team (the team's LiteLLM gateway), not by worktree.
+ * team (the team's shared AI gateway), not by worktree.
  */
 
 function key(backend: string, teamId: string): string {

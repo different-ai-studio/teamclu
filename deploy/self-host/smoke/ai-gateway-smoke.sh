@@ -1,6 +1,5 @@
 #!/bin/sh
-# Post-deploy smoke for services/ai-gateway. Runs alongside litellm-smoke.sh --
-# both gateways are live until Phase 3 (design §11.5).
+# Post-deploy smoke for services/ai-gateway.
 #
 # Deliberately does NOT spend upstream tokens: a completion needs a real member
 # JWT, which this script has no way to mint. What it proves is that the service

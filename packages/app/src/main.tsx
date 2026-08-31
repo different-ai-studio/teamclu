@@ -23,7 +23,7 @@ import { E2E_BUILD } from './lib/e2e/v2-control-active'
 markStartup('main:start')
 
 // Sync the Supabase JWT into teamclu.json so FC-backed commands (team share,
-// LiteLLM, OSS sync) can authenticate. Must run at startup, before any of those
+// the team AI gateway, OSS sync) can authenticate. Must run at startup, before any of those
 // features open. No-op outside Tauri.
 initJwtBridge()
 

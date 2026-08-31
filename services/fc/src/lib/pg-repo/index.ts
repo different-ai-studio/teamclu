@@ -7,8 +7,6 @@
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { ApiError } from "../http-utils.js";
 import { makeTeamsRepo, type TeamsRepoDeps } from "./teams.js";
-import { fetchLiteLlmModels } from "../team-provisioning.js";
-import { litellmFetch } from "../litellm.js";
 import { makeIdeasRepo } from "./ideas.js";
 import { makeSessionsRepo, type SessionsRepoDeps } from "./sessions.js";
 import { makeMessagesRepo, type MessagesRepoDeps } from "./messages.js";
@@ -27,18 +25,14 @@ import { makeTeamMcpRepo } from "./team-mcp.js";
 import { makeTeamEnvSecretsRepo } from "./team-env-secrets.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createPgBusinessRepository({ db, accessToken, userId, callerActorId, provisionLiteLlm, fetchLiteLlmModels: fetchLiteLlmModelsOpt, provisionMemberKey, queryLiteLlmUsage, startDeploy, finalizeDeploy, deployUnavailableReason, gitea, giteaUnavailableReason, gotrue, gotrueUnavailableReason, dispatchPush, publishReadEvent, deleteMemberKey }: { db: PgDatabase<any, any>; accessToken?: string; userId?: string; callerActorId?: string; provisionLiteLlm?: TeamsRepoDeps["provisionLiteLlm"]; fetchLiteLlmModels?: TeamsRepoDeps["fetchLiteLlmModels"]; provisionMemberKey?: TeamsRepoDeps["provisionMemberKey"]; queryLiteLlmUsage?: TeamsRepoDeps["queryLiteLlmUsage"]; deleteMemberKey?: TeamsRepoDeps["deleteMemberKey"]; startDeploy?: AppsRepoDeps["startDeploy"]; finalizeDeploy?: AppsRepoDeps["finalizeDeploy"]; deployUnavailableReason?: AppsRepoDeps["deployUnavailableReason"]; gitea?: AppsRepoDeps["gitea"]; giteaUnavailableReason?: AppsRepoDeps["giteaUnavailableReason"]; gotrue?: AppsRepoDeps["gotrue"]; gotrueUnavailableReason?: AppsRepoDeps["gotrueUnavailableReason"]; dispatchPush?: MessagesRepoDeps["dispatchPush"]; publishReadEvent?: SessionsRepoDeps["publishReadEvent"] }) {
+export function createPgBusinessRepository({ db, accessToken, userId, callerActorId, startDeploy, finalizeDeploy, deployUnavailableReason, gitea, giteaUnavailableReason, gotrue, gotrueUnavailableReason, dispatchPush, publishReadEvent }: { db: PgDatabase<any, any>; accessToken?: string; userId?: string; callerActorId?: string; startDeploy?: AppsRepoDeps["startDeploy"]; finalizeDeploy?: AppsRepoDeps["finalizeDeploy"]; deployUnavailableReason?: AppsRepoDeps["deployUnavailableReason"]; gitea?: AppsRepoDeps["gitea"]; giteaUnavailableReason?: AppsRepoDeps["giteaUnavailableReason"]; gotrue?: AppsRepoDeps["gotrue"]; gotrueUnavailableReason?: AppsRepoDeps["gotrueUnavailableReason"]; dispatchPush?: MessagesRepoDeps["dispatchPush"]; publishReadEvent?: SessionsRepoDeps["publishReadEvent"] }) {
   // accessToken is verified upstream (makeBusinessRepoFactory) and its `sub`
   // claim is passed here as `userId`. It is kept in the signature only for the
   // few methods that need to forward the raw bearer (none currently); identity
   // for authz flows exclusively through ctx.userId.
   void accessToken;
   const ctx = { userId, callerActorId };
-  // queryLiteLlmUsage was declared in TeamsRepoDeps but never forwarded here, so
-  // the seam existed in the types while every caller still hit the real LiteLLM
-  // Postgres. Wiring it through matches the supabase repo, which has always
-  // accepted the same injection.
-  const teamsRepo = makeTeamsRepo(db, { provisionLiteLlm, fetchLiteLlmModels: fetchLiteLlmModelsOpt ?? fetchLiteLlmModels, provisionMemberKey, queryLiteLlmUsage, deleteMemberKey, litellmFetch });
+  const teamsRepo = makeTeamsRepo(db, {});
   const teamsCtx = { userId };
   const ideasRepo = makeIdeasRepo(db, ctx);
   const sessionsRepo = makeSessionsRepo(db, ctx, { publishReadEvent });
@@ -103,10 +97,6 @@ export function createPgBusinessRepository({ db, accessToken, userId, callerActo
     createTeam: (input: any) => teamsRepo.createTeam(input, teamsCtx),
     bootstrapTeam: (input: any) => teamsRepo.bootstrapTeam(input, teamsCtx),
     createTeamInvite: (teamId: string, input: any) => teamsRepo.createTeamInvite(teamId, input, teamsCtx),
-    ensureMemberKey: (teamId: string) => teamsRepo.ensureMemberKey(teamId, teamsCtx),
-    listLiteLlmKeys: (teamId: string) => teamsRepo.listLiteLlmKeys(teamId, teamsCtx),
-    setLiteLlmBudget: (teamId: string, input: { maxBudget?: unknown }) => teamsRepo.setLiteLlmBudget(teamId, input, teamsCtx),
-    getLiteLlmUsage: (teamId: string, opts?: { range?: string; date?: string }) => teamsRepo.getLiteLlmUsage(teamId, opts ?? {}, teamsCtx),
     removeTeamActor: (teamId: string, actorId: string) => teamsRepo.removeTeamActor(teamId, actorId, teamsCtx),
     // Account upgrade (default-org → own org) is org-model-specific and only
     // implemented on the supabase backend (postgres has no org model).

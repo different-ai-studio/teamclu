@@ -67,7 +67,7 @@ jobs:
 
             cd deploy/self-host
 
-            echo "=== ensure LiteLLM env ==="
+            echo "=== ensure AI gateway env ==="
             # The server's .env predates the bundled gateway and bootstrap/gen-secrets.sh
             # is NOT run here (it would re-mint ANON_KEY/SERVICE_ROLE_KEY with fresh
             # iat/exp on every deploy). Upsert required runtime values idempotently.
@@ -209,22 +209,15 @@ jobs:
                   done
                 '
             fi
-            # Point FC at the bundled gateway explicitly. Left blank, FC's client
-            # falls back to the hosted https://ai.ucar.cc.
-            upsert_env LITELLM_URL "http://litellm:4000"
-            # New gateway, alongside litellm. Not a replacement yet: clients
-            # keep using litellm until their team's llm_base_url is flipped.
+            # Point FC at the bundled gateway explicitly.
             upsert_env AI_GATEWAY_INTERNAL_URL "http://ai-gateway:4001"
-            # Admin credential for the gateway. Generated once on the server and then
-            # preserved — rotating it would orphan every virtual key already issued
-            # to a team in the _litellm database.
-            if ! grep -qE '^LITELLM_MASTER_KEY=sk-' .env; then
-              upsert_env LITELLM_MASTER_KEY "sk-$(openssl rand -hex 24)"
+            # Shared secret for the gateway's /internal/* routes. Generated once
+            # on the server and preserved — rotating it locks FC out of a
+            # gateway that is already deployed until both restart together.
+            if ! grep -qE '^AI_GATEWAY_SERVICE_TOKEN=.+' .env; then
+              upsert_env AI_GATEWAY_SERVICE_TOKEN "$(openssl rand -hex 32)"
             else
-              echo "  keep LITELLM_MASTER_KEY (already set)"
-            fi
-            if ! grep -qE '^LITELLM_UI_PASSWORD=.+' .env; then
-              upsert_env LITELLM_UI_PASSWORD "$(openssl rand -hex 16)"
+              echo "  keep AI_GATEWAY_SERVICE_TOKEN (already set)"
             fi
             upsert_env DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
 
@@ -264,22 +257,6 @@ jobs:
             echo "=== build fc ==="
             docker compose build fc
 
-            echo "=== pull litellm (up --pull never will not fetch it) ==="
-            # Same flaky path to ghcr.io as the git fetch above; the image is
-            # ~500MB so a cold pull is slow and worth retrying rather than
-            # failing the whole deploy. Skipped once the image is present.
-            if docker image inspect ghcr.io/berriai/litellm-database:v1.83.3-stable >/dev/null 2>&1; then
-              echo "  litellm image already present"
-            else
-              pulled=""
-              for i in 1 2 3 4 5; do
-                if docker compose pull litellm; then pulled=yes; echo "  pull ok (attempt $i)"; break; fi
-                echo "  pull attempt $i failed; retrying in 15s"
-                sleep 15
-              done
-              [ -n "$pulled" ] || { echo "litellm image pull failed after 5 attempts"; exit 1; }
-            fi
-
             # `up --pull never` fetches nothing, so any image this compose file
             # adds must be pulled here or the whole `up` aborts with "No such
             # image". Guarded by the service list, which only names services
@@ -313,10 +290,6 @@ jobs:
             timeout 180 sh -c \
               'until docker compose ps ai-gateway | grep -q healthy; do sleep 5; done'
 
-            echo "=== wait for litellm healthy (prisma migrate runs on first boot) ==="
-            timeout 300 sh -c \
-              'until docker compose ps litellm | grep -q healthy; do sleep 5; done'
-
             echo "=== wait for fc healthy ==="
             timeout 90 sh -c \
               'until docker compose ps fc | grep -q healthy; do sleep 5; done'
@@ -325,9 +298,6 @@ jobs:
             docker compose restart caddy
             timeout 60 sh -c \
               'until docker compose ps caddy | grep -q "Up\|running"; do sleep 3; done'
-
-            echo "=== litellm smoke ==="
-            sh /opt/teamclaw/deploy/self-host/smoke/litellm-smoke.sh
 
             echo "=== ai-gateway smoke ==="
             sh /opt/teamclaw/deploy/self-host/smoke/ai-gateway-smoke.sh

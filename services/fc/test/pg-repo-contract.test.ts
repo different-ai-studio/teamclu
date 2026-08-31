@@ -141,40 +141,7 @@ test("pg-repo [teams]: putTeamWorkspaceConfig upserts row, getTeamWorkspaceConfi
 });
 
 // --- getWorkspaceConfig surfaces gateway endpoint + proxied models ---
-test("pg-repo [teams]: getWorkspaceConfig.llm proxies gateway models via injected dep", async () => {
-  const { pg, db } = await makeTestDb();
-  const TLLM = "a0000000-0000-0000-0000-0000000000aa";
-  await seedTeam(pg, TLLM, "team-llm-slug");
-  await pg.exec(
-    `INSERT INTO team_workspace_config (team_id, ai_gateway_endpoint, updated_at)
-     VALUES ('${TLLM}', 'https://ai.example.com/v1', NOW())
-     ON CONFLICT (team_id) DO UPDATE SET ai_gateway_endpoint = EXCLUDED.ai_gateway_endpoint`,
-  );
 
-  let calledWith: { endpoint?: string; key?: string } = {};
-  const prevKey = process.env.LITELLM_MASTER_KEY;
-  process.env.LITELLM_MASTER_KEY = "sk-test-master";
-  try {
-    const repo = createPgBusinessRepository({
-      db,
-      fetchLiteLlmModels: async (endpoint: string, key: string) => {
-        calledWith = { endpoint, key };
-        return [{ id: "gpt-4o", name: "GPT-4o" }, { id: "claude-3", name: "Claude 3" }];
-      },
-    });
-    const out = await repo.getWorkspaceConfig(TLLM);
-    assert.equal(out.llm.aiGatewayEndpoint, "https://ai.example.com/v1");
-    assert.deepEqual(out.llm.models, [
-      { id: "gpt-4o", name: "GPT-4o" },
-      { id: "claude-3", name: "Claude 3" },
-    ]);
-    assert.equal(calledWith.endpoint, "https://ai.example.com/v1");
-    assert.equal(calledWith.key, "sk-test-master");
-  } finally {
-    if (prevKey === undefined) delete process.env.LITELLM_MASTER_KEY;
-    else process.env.LITELLM_MASTER_KEY = prevKey;
-  }
-});
 
 // --- getWorkspaceConfig.llm degrades gracefully when the dep throws ---
 test("pg-repo [teams]: getWorkspaceConfig.llm returns [] when the models dep throws", async () => {

@@ -89,6 +89,10 @@ public_models:
   # Adding a FOURTH tier requires shipping a client. Deliberate: adding a tier
   # is a product decision, not a config tweak.
   #
+  # Unknown model ids get 403 model_not_allowed — never a silent fallback to
+  # `default`, which would leave a mis-configured client on the wrong tier with
+  # no signal.
+  #
   # ⚠️ PRICES BELOW ARE PLACEHOLDERS — the real numbers are a pricing decision
   # (design 附录 F). The one ENGINEERING constraint on whatever gets chosen:
   # a typical request must cost at least a few thousand credits, or ceil()
@@ -127,32 +131,4 @@ public_models:
       output_per_1m_credits: 80000000
     routes:
       - backend: gpt-4o
-      - backend: ds-v4-pro
-
-  # ── transition aliases — REMOVE IN PHASE 3 ───────────────────────────
-  # Old clients still send these vendor ids, and they are still sitting in
-  # team_workspace_config.llm_models. Keep them serving until those clients are
-  # gone (same gate as deleting LiteLLM), then drop both these entries and the
-  # dead llm_models rows. See §4.3.2. Priced identically to the tier they
-  # shadow, so the migration never changes anyone's bill.
-  #
-  # Unknown model ids get 403 model_not_allowed — never a silent fallback to
-  # `default`, which would leave a mis-configured client on the wrong tier with
-  # no signal.
-  deepseek-v4-flash:
-    name: DeepSeek V4 Flash
-    routing: priority
-    pricing:
-      input_per_1m_credits: 1000000
-      output_per_1m_credits: 4000000
-    routes:
-      - backend: ds-v4-flash
-
-  deepseek-v4-pro:
-    name: DeepSeek V4 Pro
-    routing: priority
-    pricing:
-      input_per_1m_credits: 4000000
-      output_per_1m_credits: 16000000
-    routes:
       - backend: ds-v4-pro

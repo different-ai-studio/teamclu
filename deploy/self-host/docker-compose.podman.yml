@@ -82,13 +82,9 @@ services:
       - auth
       - storage
 
-  litellm-init:
-    depends_on:
-      - db
-
-  litellm:
-    # podman-compose goes stale on the completed litellm-init container; up.sh
-    # ordering is enough (litellm retries its DB connection on boot anyway).
+  ai-gateway:
+    # Same reason the other services drop theirs: podman-compose stores
+    # container dependency IDs that go stale after a one-shot exits.
     depends_on: []
 
   fc:

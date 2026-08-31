@@ -99,44 +99,11 @@ services:
     # script is mounted read-only, so invoke via `sh` rather than chmod +x (chmod fails on a ro mount)
     entrypoint: ["/bin/sh", "-c", "sh /apply-migrations.sh"]
 
-  # Creates the _litellm database inside the Supabase postgres (`db`) container.
-  # LiteLLM's prisma schema owns ~20 tables and would collide with the app schema
-  # in `postgres`, so it gets its own database on the same server — same pattern
-  # as Supabase's own _supabase/_analytics database.
-  #
-  # This runs as a one-shot service rather than a volumes/db/*.sql init script
-  # because docker-entrypoint-initdb.d only executes on FIRST cluster init: an
-  # already-deployed stack would never get the database. CREATE DATABASE cannot
-  # run inside a transaction or take IF NOT EXISTS, hence the SELECT-then-create.
-  litellm-init:
-    image: postgres:15-alpine
-    restart: "no"
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      PGHOST: "${POSTGRES_HOST}"
-      PGPORT: "${POSTGRES_PORT}"
-      PGUSER: postgres
-      PGPASSWORD: "${POSTGRES_PASSWORD}"
-      PGDATABASE: "${POSTGRES_DB}"
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -e
-        if [ "$$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='_litellm'")" = "1" ]; then
-          echo "litellm-init: _litellm already exists"
-        else
-          psql -c 'CREATE DATABASE "_litellm"'
-          echo "litellm-init: created _litellm"
-        fi
-
   # Ensures the legacy `teamclaw_apps` database exists (pre per-org DBs). New
   # data_app deploys create `tc_org_<orgId>` on demand via APPS_DB_ADMIN_URL
   # (superuser connection to the compose `db` service) and do not need it.
   #
-  # Same one-shot pattern as litellm-init: CREATE DATABASE has no IF NOT EXISTS
+  # One-shot rather than a volumes/db/*.sql init script: CREATE DATABASE has no IF NOT EXISTS
   # and cannot run inside a transaction; docker-entrypoint-initdb.d never re-runs
   # on an already-initialized volume.
   apps-db-init:
@@ -165,95 +132,6 @@ services:
           psql -c 'CREATE DATABASE "teamclaw_apps"'
           echo "apps-db-init: created teamclaw_apps (legacy; new deploys use tc_org_*)"
         fi
-
-  # AI gateway. FC provisions per-team budgets and virtual keys against the admin
-  # API (/team/new, /key/generate) using LITELLM_MASTER_KEY.
-  #
-  # The -database image variant runs `prisma migrate deploy` against DATABASE_URL
-  # on boot; the plain litellm image does not and would fail on a fresh database.
-  litellm:
-    image: ghcr.io/berriai/litellm-database:v1.83.3-stable
-    restart: unless-stopped
-    depends_on:
-      litellm-init:
-        condition: service_completed_successfully
-    # Not fronted by Caddy — the gateway is reachable in-network at
-    # http://litellm:4000 (FC) and on the host loopback for admin work
-    # (curl/UI via an SSH tunnel). Publish to 0.0.0.0 only behind a firewall:
-    # the master key is a full admin credential.
-    ports:
-      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
-    environment:
-      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY}"
-      # Postgres password is interpolated raw — if POSTGRES_PASSWORD contains
-      # @ : / or #, percent-encode it here or prisma will misparse the URL.
-      DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/_litellm"
-      STORE_MODEL_IN_DB: "True"
-      UI_USERNAME: "${LITELLM_UI_USERNAME:-admin}"
-      UI_PASSWORD: "${LITELLM_UI_PASSWORD:-}"
-      # Provider keys referenced by litellm/config.yaml via os.environ/.
-      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-    volumes:
-      - ./litellm/config.yaml:/app/config.yaml:ro
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
-    healthcheck:
-      # Image has no curl; python3 is the interpreter the proxy itself runs on.
-      test:
-        - "CMD"
-        - "python3"
-        - "-c"
-        - "import urllib.request;urllib.request.urlopen('http://localhost:4000/health/liveliness')"
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 60s
-
-  # Team AI gateway. Replaces LiteLLM's role for clients, but ships ALONGSIDE it:
-  # every installed desktop still points at the old gateway until Phase 1 flips
-  # team_workspace_config.llm_base_url, so removing litellm here would break
-  # them all instantly. Deletion is Phase 3, behind the gate in
-  # docs/specs/2026-08-28-team-ai-gateway-design.md §11.5.
-  #
-  # Reached publicly through Caddy at /ai/* ; FC calls it in-network on :4001.
-  ai-gateway:
-    build:
-      context: ../../services/ai-gateway
-    restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      PORT: "4001"
-      # Least-privilege role created by 20260828120000_ai_gateway_credits.sql.
-      # The migration makes it NOLOGIN on purpose; the operator grants login and
-      # sets this password out of band, so no credential lives in the repo.
-      DATABASE_URL: "${AI_GATEWAY_DB_URL}"
-      CATALOG_PATH: /app/catalog.yaml
-      AI_GATEWAY_SERVICE_TOKEN: "${AI_GATEWAY_SERVICE_TOKEN}"
-      BACKEND_KIND: "${BACKEND_KIND:-supabase}"
-      # supabase path: identity is established by asking GoTrue, exactly as FC
-      # does. The gateway holds no signing key.
-      SUPABASE_URL: "${SUPABASE_URL:-http://kong:8000}"
-      SUPABASE_ANON_KEY: "${ANON_KEY:-}"
-      AUTH_BASE_URL: "${AUTH_BASE_URL:-}"
-      # Upstream provider keys, same vars litellm already uses.
-      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-    volumes:
-      - ./ai/catalog.yaml:/app/catalog.yaml:ro
-    healthcheck:
-      test:
-        - "CMD"
-        - "node"
-        - "-e"
-        - "fetch('http://127.0.0.1:4001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
 
   gitea:
     # Per-app private git repos for the Apps module. HTTP is fronted by Caddy on
@@ -363,13 +241,7 @@ services:
       CRON_TRIGGER_SECRET: "${CRON_TRIGGER_SECRET}"
       DATABASE_URL: "${DATABASE_URL:-}"
       # Parts-based fallback for the same Postgres, mirroring s.yaml.
-      # resolveLiteLlmConnString prefers DATABASE_URL and falls back to these;
-      # declared on both targets so LiteLLM usage degrades instead of 503-ing
       # when DATABASE_URL is blank. Defaults match the compose Postgres service.
-      POSTGRES_HOST: "${POSTGRES_HOST:-db}"
-      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
-      POSTGRES_USERNAME: "${POSTGRES_USERNAME:-postgres}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
       ACCESS_KEY_ID: "${ACCESS_KEY_ID:-}"
       ACCESS_KEY_SECRET: "${ACCESS_KEY_SECRET:-}"
       ROLE_ARN: "${ROLE_ARN:-}"
@@ -478,19 +350,11 @@ services:
       # silently goes missing on the other.
       AI_GATEWAY_INTERNAL_URL: "${AI_GATEWAY_INTERNAL_URL:-http://ai-gateway:4001}"
       AI_GATEWAY_SERVICE_TOKEN: "${AI_GATEWAY_SERVICE_TOKEN:-}"
-      LITELLM_URL: "${LITELLM_URL:-http://litellm:4000}"
-      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-}"
       # Per-team spend cap written at /team/new. Blank = no cap. This was absent
       # from the allowlist, so FC always saw undefined and fell back to its old
       # default of 1 — every self-host team hard-stopped after a dollar, and it
-      # surfaced from LiteLLM as budget-exceeded rather than as a config problem.
       # Note it applies at provisioning time only: changing it never moves a team
-      # that already exists.
-      LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD: "${LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD:-}"
-      # Must be set: litellm-init creates the database as `_litellm`, but
-      # resolveLiteLlmConnString() defaults to `litellm` (no underscore), so
-      # without this the usage queries connect to a database that never exists.
-      LITELLM_DB_NAME: "${LITELLM_DB_NAME:-_litellm}"
+      # that already exists.      # without this the usage queries connect to a database that never exists.
 
       # ── Declared in services/fc/s.yaml but historically absent here, so the
       # container never received them and the features were silently off on the
@@ -706,7 +570,6 @@ services:
     restart: unless-stopped
     profiles: ["postgres"]
     environment:
-      POSTGRES_PASSWORD: "${POSTGRES_BACKEND_PASSWORD:-postgres}"
     volumes:
       - postgres_backend_data:/var/lib/postgresql/data
     healthcheck:

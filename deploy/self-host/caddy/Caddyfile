@@ -24,30 +24,11 @@
 {$CADDY_SITE_SCHEME}{$FC_DOMAIN} {
 	{$CADDY_SITE_TLS}
 
-	# LiteLLM AI gateway, mounted as a path on the FC domain so it needs no extra
-	# DNS record: base_url = https://{$FC_DOMAIN}/llm
-	# handle_path strips the /llm prefix, so /llm/chat/completions reaches LiteLLM
-	# as /chat/completions (it serves both the bare and /v1 forms).
-	# handle_path + handle are mutually exclusive, so /llm never falls through to FC.
-	# Note this also exposes LiteLLM's admin API (/llm/team/new, /llm/key/generate)
-	# publicly — they are master-key authenticated, same as the hosted gateway.
-	# LiteLLM admin UI static assets and login routes are emitted at the site root
-	# (/litellm-asset-prefix, /ui) — not under /llm. Proxy them to the gateway so
-	# the dashboard loads through Caddy on the FC domain.
-	handle_path /litellm-asset-prefix/* {
-		reverse_proxy litellm:4000
-	}
-	handle_path /ui/* {
-		reverse_proxy litellm:4000
-	}
-	handle_path /llm/* {
-		reverse_proxy litellm:4000
-	}
-
-	# Team AI gateway. handle_path strips the /ai prefix, so
-	# https://<host>/ai/v1/teams/<id>/chat/completions arrives at the service as
-	# /v1/teams/<id>/chat/completions. Added ALONGSIDE /llm/* -- the litellm
-	# routes stay until Phase 3 (design §11.5).
+	# Team AI gateway, mounted as a path on the FC domain so it needs no extra
+	# DNS record. handle_path strips the /ai prefix, so
+	# https://{$FC_DOMAIN}/ai/v1/teams/<id>/chat/completions arrives at the
+	# service as /v1/teams/<id>/chat/completions.
+	# handle_path + handle are mutually exclusive, so /ai never falls through to FC.
 	handle_path /ai/* {
 		reverse_proxy ai-gateway:4001
 	}

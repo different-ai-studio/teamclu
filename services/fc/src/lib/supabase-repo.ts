@@ -65,9 +65,6 @@ import {
 } from "./provisioning/app-secrets.js";
 import { normalizeAgentTypes } from "./agent-types.js";
 import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-status.js";
-import { computeRange, getLiteLlmSql, queryTeamUsage } from "./litellm-usage.js";
-import { rollUpUsageByOwner, type UsageOwner } from "./usage-attribution.js";
-import { litellmFetch as sharedLitellmFetch } from "./litellm.js";
 import {
   REALTIME_TRANSPORT_OPTS, requiredRow, requiredString, requiredInteger,
   DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
@@ -88,76 +85,6 @@ import { normalizePhone } from "./supabase-repo/phone-auth.js";
  */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/**
- * Map spending actor ids → the accountable human (supabase/PostgREST twin of
- * pg-repo's resolveOwnersForTeam; kept behaviourally identical).
- *
- * Three flat queries rather than one embedded select: PostgREST resource
- * embedding would need the actors→agents FK relationship spelled by name, and
- * a rename there fails at runtime, not build time.
- *
- * Team-scoped on purpose — ids come from LiteLLM, so an unscoped lookup would
- * let any key surface an unrelated team's member name.
- */
-async function resolveOwnersForTeam(supabase, teamId, actorIds): Promise<Map<string, UsageOwner>> {
-  const ids = actorIds.filter((id) => UUID_RE.test(id));
-  const out = new Map<string, UsageOwner>();
-  if (!ids.length) return out;
-
-  const actorRows = await chunkedIn(ids, async (chunk) => {
-    const { data, error } = await supabase
-      .from("actors")
-      .select("id, actor_type, display_name")
-      .eq("team_id", teamId)
-      .in("id", chunk);
-    if (error) throw error;
-    return data ?? [];
-  });
-  if (!actorRows.length) return out;
-
-  const agentIds = actorRows.filter((a) => a.actor_type === "agent").map((a) => a.id);
-  const ownerOf = new Map<string, string>();
-  if (agentIds.length) {
-    const agentRows = await chunkedIn(agentIds, async (chunk) => {
-      const { data, error } = await supabase
-        .from("agents")
-        .select("id, owner_member_id")
-        .in("id", chunk);
-      if (error) throw error;
-      return data ?? [];
-    });
-    for (const r of agentRows) if (r.owner_member_id) ownerOf.set(r.id, r.owner_member_id);
-  }
-
-  // Owner display names: an agent's owner need not be among the spending actors
-  // (a human can own a daemon and never spend under their own key), so their
-  // actor row may not be in actorRows and has to be fetched separately.
-  const nameOf = new Map<string, string>(actorRows.map((a) => [a.id, a.display_name]));
-  const missing = [...new Set([...ownerOf.values()])].filter((id) => !nameOf.has(id));
-  if (missing.length) {
-    const ownerRows = await chunkedIn(missing, async (chunk) => {
-      const { data, error } = await supabase
-        .from("actors")
-        .select("id, display_name")
-        .eq("team_id", teamId)
-        .in("id", chunk);
-      if (error) throw error;
-      return data ?? [];
-    });
-    for (const r of ownerRows) nameOf.set(r.id, r.display_name);
-  }
-
-  for (const a of actorRows) {
-    if (a.actor_type === "agent") {
-      const ownerId = ownerOf.get(a.id);
-      const ownerName = ownerId ? nameOf.get(ownerId) : undefined;
-      if (ownerId && ownerName) out.set(a.id, { actorId: ownerId, displayName: ownerName });
-      continue;
-    }
-    out.set(a.id, { actorId: a.id, displayName: a.display_name });
-  }
-  return out;
-}
 
 /**
  * Longest PostgREST URL we let out of this process.
@@ -376,7 +303,6 @@ export function createSupabaseBusinessRepository(options) {
     appData,
     appDataUnavailableReason,
     // Injectable for tests; defaults to querying the LiteLLM RDS directly.
-    queryLiteLlmUsage = (litellmTeamId, range) => queryTeamUsage(getLiteLlmSql(), litellmTeamId, range),
     // Injectable for tests; defaults to the shared LiteLLM HTTP client.
     litellmFetch: litellmFetchOpt,
     trustedExternalJwtSecret = process.env.TRUSTED_EXTERNAL_JWT_SECRET,
@@ -482,38 +408,6 @@ export function createSupabaseBusinessRepository(options) {
     return actor.id as string;
   }
 
-  // Shared by setupLiteLlm() and ensureMemberKey(): provisions a LiteLLM team
-  // (if not already configured) and persists litellm_team_id +
-  // ai_gateway_endpoint via the update_team_litellm RPC. Returns the FULL
-  // provisioning result (including the LiteLLM-generated litellmTeamId) so
-  // callers never need to reconstruct/guess the id — provisionTeamLiteLLM
-  // persists whatever team_id LiteLLM's own POST /team/new assigns, NOT a
-  // deterministic `tc-${teamId}` value, so any code that assumed the latter
-  // would silently talk to the wrong (or a non-existent) LiteLLM team.
-  async function provisionLiteLlmForTeam(teamId) {
-    const provisioner = provisionLiteLlm ?? (await import("./team-provisioning.js")).provisionTeamLiteLLM;
-    const { data: teamRow, error: teamErr } = await supabase
-      .from("teams")
-      .select("id, name")
-      .eq("id", teamId)
-      .single();
-    if (teamErr) throw teamErr;
-    const provisioning = await provisioner(teamRow?.name ?? teamId);
-    if (!provisioning) {
-      throw new ApiError(
-        503,
-        "litellm_unavailable",
-        "LiteLLM provisioning is not configured (LITELLM_MASTER_KEY missing)",
-      );
-    }
-    const { error: rpcErr } = await supabase.rpc("update_team_litellm", {
-      p_team_id: teamId,
-      p_litellm_team_id: provisioning.litellmTeamId,
-      p_ai_gateway_endpoint: provisioning.aiGatewayEndpoint,
-    });
-    if (rpcErr) throw rpcErr;
-    return provisioning;
-  }
 
   // Escalation hatch for the handful of writes the caller's own token cannot
   // make. `what` is spliced into the misconfiguration error so a missing key
@@ -895,18 +789,6 @@ export function createSupabaseBusinessRepository(options) {
         .schema("amux")
         .rpc("remove_team_actor", { p_actor_id: actorId });
       if (error) throw error;
-
-      // Best-effort: delete the removed actor's LiteLLM key (replaces the
-      // legacy POST /ai/remove-member endpoint). Never blocks/fails actor
-      // removal — deleteMemberKey swallows its own errors, and we also guard
-      // the dynamic import itself so a module-resolution failure can't throw
-      // out of an already-committed removal (parity with pg-repo).
-      try {
-        const { deleteMemberKey } = await import("./team-provisioning.js");
-        await deleteMemberKey(actorId);
-      } catch (e) {
-        console.warn("[removeTeamActor] LiteLLM key cleanup skipped:", (e as any)?.message);
-      }
     },
 
     async updateCurrentActorProfile(actorId, { displayName, avatarUrl }) {
@@ -980,138 +862,9 @@ export function createSupabaseBusinessRepository(options) {
     },
 
 
-    async setupLiteLlm(teamId) {
-      // Lazy import keeps the LiteLLM client out of cold-path repo constructors
-      // and makes it trivial to inject in tests via options.provisionLiteLlm.
-      // Persist litellm_team_id + ai_gateway_endpoint via SECURITY DEFINER
-      // RPC because team_workspace_config.litellm_team_id is guarded against
-      // direct authenticated UPDATEs (see 20260527000004 guard trigger).
-      const provisioning = await provisionLiteLlmForTeam(teamId);
-      return {
-        aiGatewayEndpoint: provisioning.aiGatewayEndpoint,
-        litellmKey: provisioning.litellmKey,
-      };
-    },
 
-    // Idempotently issues the CALLER's own per-member LiteLLM virtual key,
-    // auto-provisioning the team's LiteLLM team first if it hasn't been set
-    // up yet (A2-1). There is intentionally NO actorId parameter: the caller
-    // can only ever provision a key for themselves, resolved team-scoped via
-    // requireCallerTeamMemberActor (401 if unauthenticated, 403 if not a
-    // member of teamId).
-    async ensureMemberKey(teamId) {
-      const actorId = await requireCallerTeamMemberActor(teamId);
 
-      const { data: cfg, error: cfgErr } = await supabase
-        .from("team_workspace_config")
-        .select("litellm_team_id")
-        .eq("team_id", teamId)
-        .maybeSingle();
-      if (cfgErr) throw cfgErr;
 
-      let litellmTeamId = cfg?.litellm_team_id ?? null;
-      if (!litellmTeamId) {
-        // provisionLiteLlmForTeam persists the LiteLLM-generated team_id (from
-        // provisionTeamLiteLLM's POST /team/new) into team_workspace_config —
-        // NOT a deterministic `tc-${teamId}` value — so we take the id
-        // straight from its return value rather than reconstructing it.
-        const provisioning = await provisionLiteLlmForTeam(teamId);
-        litellmTeamId = provisioning.litellmTeamId;
-      }
-      if (!litellmTeamId) {
-        throw new ApiError(
-          502,
-          "litellm_team_id_missing",
-          "LiteLLM team id was not persisted after setup",
-        );
-      }
-
-      const { ensureMemberKeyFor } = await import("./team-provisioning.js");
-      return ensureMemberKeyFor(litellmTeamId, actorId);
-    },
-
-    // Team-wide LiteLLM token + spend usage from the migrated LiteLLM RDS.
-    // Any team member may read. The LiteLLM team id is NOT a deterministic
-    // `tc-${teamId}` value — it's provisioner-generated and persisted into
-    // team_workspace_config.litellm_team_id by setupLiteLlm/ensureMemberKey
-    // (see the read pattern mirrored from ensureMemberKey above). If the team
-    // has never provisioned LiteLLM, return an empty usage shape without
-    // querying LiteLLM.
-    async getLiteLlmUsage(teamId, opts: { range?: string; date?: string } = {}) {
-      await requireCallerTeamMember(teamId);
-      const range = computeRange((opts.range ?? "month") as any, opts.date);
-
-      const { data: cfg, error: cfgErr } = await supabase
-        .from("team_workspace_config")
-        .select("litellm_team_id")
-        .eq("team_id", teamId)
-        .maybeSingle();
-      if (cfgErr) throw cfgErr;
-
-      const litellmTeamId = cfg?.litellm_team_id ?? null;
-      if (!litellmTeamId) {
-        return {
-          litellmTeamId: null,
-          range: range.range,
-          startDate: range.startDate,
-          endDate: range.endDate,
-          startUtc: range.startUtc,
-          endUtc: range.endUtc,
-          summary: {
-            totalTokens: 0,
-            promptTokens: 0,
-            completionTokens: 0,
-            totalSpend: 0,
-            requestCount: 0,
-          },
-          maxBudget: null,
-          members: [],
-          byModel: [],
-        };
-      }
-
-      const usage = await queryLiteLlmUsage(litellmTeamId, range);
-      return {
-        ...usage,
-        members: await rollUpUsageByOwner(usage.members ?? [], (ids) => resolveOwnersForTeam(supabase, teamId, ids)),
-      };
-    },
-
-    // Lists the team's LiteLLM virtual keys (masked). Any team member may
-    // read — resolved via requireCallerTeamMemberActor (401/403). The
-    // LiteLLM team id is NOT a deterministic `tc-${teamId}` value; it's
-    // provisioner-generated and persisted into
-    // team_workspace_config.litellm_team_id (see ensureMemberKey/getLiteLlmUsage
-    // above). If the team has never provisioned LiteLLM, return an empty
-    // keys list without calling LiteLLM.
-    async listLiteLlmKeys(teamId) {
-      await requireCallerTeamMemberActor(teamId);
-
-      const { data: cfg, error: cfgErr } = await supabase
-        .from("team_workspace_config")
-        .select("litellm_team_id")
-        .eq("team_id", teamId)
-        .maybeSingle();
-      if (cfgErr) throw cfgErr;
-
-      const litellmTeamId = cfg?.litellm_team_id ?? null;
-      if (!litellmTeamId) {
-        return { teamId: null, keys: [] };
-      }
-
-      const fetcher = litellmFetchOpt ?? sharedLitellmFetch;
-      const res = await fetcher(`/team/info?team_id=${litellmTeamId}`, "GET");
-      if (!res.ok) {
-        throw new ApiError(502, "litellm_error", "Failed to fetch team info from LiteLLM");
-      }
-      const keys = ((res.data as any)?.keys || []).map((k: any) => ({
-        key: k.token ? `${k.token.slice(0, 10)}...` : "",
-        alias: k.key_alias || "",
-        spend: k.spend || 0,
-        created_at: k.created_at || "",
-      }));
-      return { teamId: litellmTeamId, keys };
-    },
 
     // Sets the team's LiteLLM max budget. Owner-only — resolved via
     // requireCallerTeamOwner (401/403). The LiteLLM team id is read from the
@@ -1204,36 +957,6 @@ export function createSupabaseBusinessRepository(options) {
       return aiGateway.setQuotas(teamId, input ?? {});
     },
 
-    async setLiteLlmBudget(teamId, { maxBudget }: { maxBudget?: unknown } = {}) {
-      await requireCallerTeamOwner(teamId);
-
-      if (maxBudget === undefined || maxBudget === null || Number.isNaN(Number(maxBudget))) {
-        throw new ApiError(400, "missing_maxBudget", "maxBudget is required and must be numeric");
-      }
-
-      const { data: cfg, error: cfgErr } = await supabase
-        .from("team_workspace_config")
-        .select("litellm_team_id")
-        .eq("team_id", teamId)
-        .maybeSingle();
-      if (cfgErr) throw cfgErr;
-
-      const litellmTeamId = cfg?.litellm_team_id ?? null;
-      if (!litellmTeamId) {
-        throw new ApiError(409, "litellm_not_provisioned", "team has not provisioned LiteLLM");
-      }
-
-      const fetcher = litellmFetchOpt ?? sharedLitellmFetch;
-      const res = await fetcher("/team/update", "POST", {
-        team_id: litellmTeamId,
-        max_budget: Number(maxBudget),
-      });
-      if (!res.ok) {
-        throw new ApiError(502, "litellm_error", "Failed to update LiteLLM budget");
-      }
-
-      return { maxBudget: Number(maxBudget) };
-    },
 
     async getWorkspaceConfig(teamId) {
       const { data: configData, error: configError } = await supabase
@@ -1243,39 +966,19 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (configError) throw configError;
       const configRes = { data: configData };
-      const aiGatewayEndpoint = configRes.data?.ai_gateway_endpoint ?? null;
-      // availableModels proxies the LiteLLM gateway GET /v1/models (the gateway
-      // authoritatively lists its models) and degrades to [] whenever the
-      // dep/endpoint/credential is missing or the call throws — it must never
-      // fail the workspace-config request. FC does not persist a per-team
-      // LiteLLM key, so the FC-level LITELLM_MASTER_KEY is used (same credential
-      // setupLiteLlm/provisioning uses; the catalogue is gateway-wide).
-      let availableModels: Array<{ id: string; name: string }> = [];
-      try {
-        if (aiGatewayEndpoint) {
-          const fetcher =
-            fetchLiteLlmModelsOpt ??
-            (await import("./team-provisioning.js")).fetchLiteLlmModels;
-          const key = process.env.LITELLM_MASTER_KEY || "";
-          if (fetcher && key) {
-            const out = await fetcher(aiGatewayEndpoint, key);
-            if (Array.isArray(out)) availableModels = out;
-          }
-        }
-      } catch {
-        availableModels = [];
-      }
+      // Same deployment-wide fallback as the pg path (design §11.2): pointing
+      // this env at the new gateway moves every team without an override.
+      const aiGatewayEndpoint =
+        configRes.data?.ai_gateway_endpoint ?? (process.env.AI_GATEWAY_ENDPOINT?.trim() || null);
       const storedModels = Array.isArray(configRes.data?.llm_models) ? configRes.data.llm_models : [];
       return {
         syncMode: configRes.data?.sync_mode ?? null,
         litellmTeamId: configRes.data?.litellm_team_id ?? null,
-        // `models` is the STORED, authoritative per-team list; `availableModels`
-        // is the optional gateway picker source.
+        // `models` is the STORED, authoritative per-team list.
         llm: {
           enabled: configRes.data?.llm_enabled ?? false,
           baseUrl: configRes.data?.llm_base_url ?? null,
           models: storedModels,
-          availableModels,
           aiGatewayEndpoint,
         },
       };

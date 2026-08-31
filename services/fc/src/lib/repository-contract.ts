@@ -961,32 +961,8 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     assert.ok(out.aiGatewayEndpoint.length > 0, "aiGatewayEndpoint must be non-empty");
   });
 
-  test("repository contract: listLiteLlmKeys returns { teamId, keys }", async () => {
-    const repo = createRepository();
-    assert.equal(typeof repo.listLiteLlmKeys, "function", "repository must implement listLiteLlmKeys");
-    const out = await repo.listLiteLlmKeys("team-share-1");
-    assert.ok(out, "result must be returned");
-    assert.ok("teamId" in out, "result must have teamId");
-    assert.ok(Array.isArray(out.keys), "result must have keys array");
-  });
 
-  test("repository contract: setLiteLlmBudget returns { maxBudget }", async () => {
-    const repo = createRepository();
-    assert.equal(typeof repo.setLiteLlmBudget, "function", "repository must implement setLiteLlmBudget");
-    const out = await repo.setLiteLlmBudget("team-share-1", { maxBudget: 42 });
-    assert.ok(out, "result must be returned");
-    assert.equal(out.maxBudget, 42);
-  });
 
-  test("repository contract: setupLiteLlm returns gateway endpoint and key", async () => {
-    const repo = createRepository();
-    const out = await repo.setupLiteLlm("team-share-1");
-    assert.ok(out, "result must be returned");
-    assert.equal(typeof out.aiGatewayEndpoint, "string");
-    assert.ok(out.aiGatewayEndpoint.length > 0, "aiGatewayEndpoint must be non-empty");
-    assert.equal(typeof out.litellmKey, "string");
-    assert.ok(out.litellmKey.length > 0, "litellmKey must be non-empty");
-  });
 
   test("repository contract: getWorkspaceConfig returns an empty llm block for a fresh team", async () => {
     const repo = createRepository();
@@ -995,7 +971,6 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     assert.ok(out.llm && typeof out.llm === "object", "llm block must be present");
     assert.equal(out.llm.aiGatewayEndpoint, null);
     assert.deepEqual(out.llm.models, []);
-    assert.deepEqual(out.llm.availableModels, []);
   });
 
   test("repository contract: setLlmConfig persists and getWorkspaceConfig round-trips stored models", async () => {
@@ -1013,7 +988,6 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     assert.equal(out.llm.enabled, true);
     assert.equal(out.llm.baseUrl, "https://proxy.example.com/v1");
     assert.deepEqual(out.llm.models, [{ id: "gpt-4o", name: "GPT-4o" }, { id: "claude", name: "Claude" }]);
-    assert.ok(Array.isArray(out.llm.availableModels), "availableModels must be an array");
   });
 }
 

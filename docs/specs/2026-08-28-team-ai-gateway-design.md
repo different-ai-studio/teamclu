@@ -908,6 +908,8 @@ UPDATE amux.team_workspace_config
 
 - [ ] 两个部署目标（self-host + `s.yaml` 那套）都已完成 Phase 1 全量切换
 - [ ] 所有团队的 `llm_base_url` 都已指向新网关（`SELECT count(*) ... WHERE llm_base_url LIKE '%/llm/%'` 为 0）
+- [ ] ⚠️ **`AI_GATEWAY_ENDPOINT` 也已指向新网关。** 上面那条单独是不够的：绝大多数团队这一列是 NULL、走该 env 兜底，所以只查列会在「一个团队都没切」的情况下返回 0 并给出「可以删」的假信号。这条是跑 gate 脚本时发现的
+- [ ] 用 `deploy/self-host/smoke/phase3-gate.sh` 跑一遍，输出 `GATE OPEN`
 - [ ] 观察期 ≥ 2 周，`ai_usage_logs` 有持续流量，LiteLLM 侧流量归零（查 `LiteLLM_SpendLogs` 最近 14 天无新行）
 - [ ] 最低支持的桌面端 / iOS 版本已不读 `litellmTeamId`
 - [ ] 运营已确认不再需要 LiteLLM admin UI（§10.3）

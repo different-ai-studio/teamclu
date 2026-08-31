@@ -17,7 +17,6 @@ function makeRepo(overrides: any = {}) {
           enabled: true,
           baseUrl: "https://proxy.example.com/v1",
           models: [{ id: "gpt-4o", name: "GPT-4o" }],
-          availableModels: [{ id: "gpt-4o", name: "GPT-4o" }, { id: "o3", name: "o3" }],
           aiGatewayEndpoint: "https://ai.example.com/v1",
         },
       };
@@ -64,7 +63,6 @@ test("GET /v1/teams/:id/workspace-config → 200 with merged shape", async () =>
       enabled: true,
       baseUrl: "https://proxy.example.com/v1",
       models: [{ id: "gpt-4o", name: "GPT-4o" }],
-      availableModels: [{ id: "gpt-4o", name: "GPT-4o" }, { id: "o3", name: "o3" }],
       aiGatewayEndpoint: "https://ai.example.com/v1",
     },
   });

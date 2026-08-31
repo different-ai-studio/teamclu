@@ -12,25 +12,6 @@ import { user } from "../../db/schema/auth.js";
 import { ApiError } from "../http-utils.js";
 import { randomUUID } from "node:crypto";
 
-// Best-effort: look up the team's persisted litellmTeamId (if any) and seed
-// the given actor's LiteLLM member key. Always called AFTER the enclosing
-// transaction has committed — never inside it — so a provisioning failure
-// can't roll back invite claiming. No-ops when the team has no
-// litellmTeamId yet. Never throws (delegates to seedMemberKey's try/catch).
-async function seedMemberKeyForTeam(db: PgDatabase<any, any>, teamId: string, actorId: string) {
-  try {
-    const [wc] = await db
-      .select({ litellmTeamId: teamWorkspaceConfig.litellmTeamId })
-      .from(teamWorkspaceConfig)
-      .where(eq(teamWorkspaceConfig.teamId, teamId))
-      .limit(1);
-    const { seedMemberKey } = await import("../team-provisioning.js");
-    await seedMemberKey(wc?.litellmTeamId ?? null, actorId);
-  } catch (e) {
-    console.warn("[claimInvite] member-key provisioning skipped:", (e as any)?.message);
-  }
-}
-
 // createPgAuthRepository — the BACKEND_KIND=postgres AuthRepository, backed by
 // Better-Auth. Every method calls the VERIFIED getAuth().api.* and reshapes the
 // result into the fixed client contract (GoTrue-compatible envelopes).
@@ -506,7 +487,6 @@ export function createPgAuthRepository(
 
         // Best-effort: seed the new member's LiteLLM key. Runs AFTER the
         // transaction commits — never blocks/rolls back invite claiming.
-        await seedMemberKeyForTeam(db, claimed.teamId, claimed.actorId);
 
         return claimed;
       }
@@ -664,7 +644,6 @@ export function createPgAuthRepository(
 
         // Best-effort: seed the new agent actor's LiteLLM key. Runs AFTER the
         // transaction commits — never blocks/rolls back invite claiming.
-        await seedMemberKeyForTeam(db, result.teamId, result.actorId);
 
         return result;
       }

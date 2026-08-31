@@ -14,7 +14,7 @@ name: Daemon Deploy
 # Agent capability is optional:
 #   - presence-only (default): leave OPENCODE_API_KEY unset.
 #   - full agent sessions: set OPENCODE_BASE_URL + OPENCODE_API_KEY + OPENCODE_MODEL
-#     (LiteLLM on the same box: http://litellm:4000/v1 + a virtual key).
+#     (the team AI gateway on the same box: http://ai-gateway:4001).
 
 on:
   workflow_dispatch: {}

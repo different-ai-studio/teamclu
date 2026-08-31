@@ -745,55 +745,9 @@ test("bootstrapTeam rejects a token the trust secret does not verify", async () 
   assert.deepEqual(rpcCalls, [], "no RPC may run for an unverified caller");
 });
 
-test("setupLiteLlm persists via update_team_litellm RPC", async () => {
-  const rpcCalls = [];
-  let provisionCalls = 0;
-  const repo = createRepo(
-    fakeSupabase({
-      rpcCalls,
-      tableData: {
-        teams: [{ id: "team-4", name: "Gamma" }],
-      },
-    }),
-    {
-      provisionLiteLlm: async (name) => {
-        provisionCalls++;
-        assert.equal(name, "Gamma");
-        return {
-          litellmTeamId: "litellm-team-xyz",
-          litellmKey: "sk-litellm-xyz",
-          aiGatewayEndpoint: "https://ai.example.com/v1",
-        };
-      },
-    },
-  );
 
-  const result = await repo.setupLiteLlm("team-4");
 
-  assert.equal(provisionCalls, 1);
-  assert.deepEqual(result, {
-    aiGatewayEndpoint: "https://ai.example.com/v1",
-    litellmKey: "sk-litellm-xyz",
-  });
-  const rpc = rpcCalls.find((c) => c.name === "update_team_litellm");
-  assert.ok(rpc, "expected update_team_litellm RPC call");
-  assert.deepEqual(rpc.args, {
-    p_team_id: "team-4",
-    p_litellm_team_id: "litellm-team-xyz",
-    p_ai_gateway_endpoint: "https://ai.example.com/v1",
-  });
-});
 
-test("setupLiteLlm throws 503 when provisioner returns null", async () => {
-  const repo = createRepo(
-    fakeSupabase({ tableData: { teams: [{ id: "team-5", name: "Delta" }] } }),
-    { provisionLiteLlm: async () => null },
-  );
-  await assert.rejects(
-    () => repo.setupLiteLlm("team-5"),
-    (err: any) => err.code === "litellm_unavailable",
-  );
-});
 
 // litellmFetch (used by ensureMemberKeyFor, Task 1) is driven by global fetch;
 // stub it the same way test/ensure-member-key.test.ts does.
@@ -809,316 +763,33 @@ function stubLitellmFetch(routes: Record<string, (init: any) => { status: number
   return calls;
 }
 
-test("ensureMemberKey returns caller's own sk-tc key when team already has litellm_team_id", async () => {
-  process.env.LITELLM_MASTER_KEY = "sk-master";
-  process.env.LITELLM_URL = "https://ai.example";
-  stubLitellmFetch({
-    "/key/info": () => ({ status: 200, body: { info: { key_name: "sk-tc-actor-self" } } }),
-  });
-  const repo = createRepo(
-    fakeSupabase({
-      auth: {
-        async getUser() {
-          return { data: { user: { id: "user-self-1" } }, error: null };
-        },
-      },
-      tableData: {
-        actors: [{ id: "actor-self" }],
-        team_workspace_config: [{ litellm_team_id: "litellm-team-existing" }],
-      },
-    }),
-    {
-      provisionLiteLlm: async () => {
-        throw new Error("must not provision when litellm_team_id already set");
-      },
-    },
-  );
 
-  const out = await repo.ensureMemberKey("team-8");
-  assert.equal(out.key, "sk-tc-actor-self");
-  assert.equal(typeof out.aiGatewayEndpoint, "string");
-  assert.ok(out.aiGatewayEndpoint.length > 0);
-});
 
-test("ensureMemberKey auto-provisions LiteLLM team (A2-1) when litellm_team_id missing, using the persisted id (not tc-${teamId})", async () => {
-  process.env.LITELLM_MASTER_KEY = "sk-master";
-  process.env.LITELLM_URL = "https://ai.example";
-  stubLitellmFetch({
-    "/key/info": () => ({ status: 404, body: {} }),
-    "/key/generate": () => ({ status: 200, body: { key: "sk-tc-actor-self-2" } }),
-  });
-  const rpcCalls = [];
-  const repo = createRepo(
-    fakeSupabase({
-      rpcCalls,
-      auth: {
-        async getUser() {
-          return { data: { user: { id: "user-self-2" } }, error: null };
-        },
-      },
-      tableData: {
-        actors: [{ id: "actor-self-2" }],
-        team_workspace_config: [], // no litellm_team_id yet
-        teams: [{ id: "team-9", name: "Zeta" }],
-      },
-    }),
-    {
-      provisionLiteLlm: async (name) => {
-        assert.equal(name, "Zeta");
-        // LiteLLM-generated id — deliberately NOT `tc-team-9` — to prove
-        // ensureMemberKey uses the persisted/returned id rather than
-        // reconstructing `tc-${teamId}`.
-        return {
-          litellmTeamId: "litellm-generated-abc123",
-          litellmKey: "sk-litellm-abc123",
-          aiGatewayEndpoint: "https://ai.example.com/v1",
-        };
-      },
-    },
-  );
 
-  const out = await repo.ensureMemberKey("team-9");
-  assert.equal(out.key, "sk-tc-actor-self-2");
-  // Note: ensureMemberKeyFor (Task 1) always computes aiGatewayEndpoint from
-  // LITELLM_URL/AI_GATEWAY_ENDPOINT env vars, not from the provisioning
-  // result, so this reflects the LITELLM_URL set above, not the fake
-  // provisioner's returned aiGatewayEndpoint.
-  assert.equal(out.aiGatewayEndpoint, "https://ai.example/v1");
-  const rpc = rpcCalls.find((c: any) => c.name === "update_team_litellm");
-  assert.ok(rpc, "expected update_team_litellm RPC call during auto-provision");
-  assert.equal(rpc.args.p_litellm_team_id, "litellm-generated-abc123");
-});
 
-test("ensureMemberKey rejects non-member with 403", async () => {
-  const repo = createRepo(
-    fakeSupabase({
-      auth: {
-        async getUser() {
-          return { data: { user: { id: "user-outsider" } }, error: null };
-        },
-      },
-      tableData: {
-        actors: [], // caller has no actor row in this team -> not a member
-      },
-    }),
-  );
 
-  await assert.rejects(
-    () => repo.ensureMemberKey("team-10"),
-    (err: any) => err.statusCode === 403 && err.code === "forbidden",
-  );
-});
 
-test("ensureMemberKey rejects unauthenticated caller with 401", async () => {
-  const repo = createRepo(
-    fakeSupabase({
-      auth: {
-        async getUser() {
-          return { data: { user: null }, error: null };
-        },
-      },
-    }),
-  );
 
-  await assert.rejects(
-    () => repo.ensureMemberKey("team-11"),
-    (err: any) => err.statusCode === 401 && err.code === "missing_auth",
-  );
-});
 
-test("removeTeamActor still succeeds when LiteLLM key deletion fails", async () => {
-  process.env.LITELLM_MASTER_KEY = "sk-master";
-  process.env.LITELLM_URL = "https://ai.example";
-  stubLitellmFetch({
-    "/key/delete": () => ({ status: 500, body: { error: "boom" } }),
-  });
-  const rpcCalls: any[] = [];
-  const repo = createRepo(fakeSupabase({ rpcCalls, rpcData: { remove_team_actor: null } }));
 
-  // Should not throw even though LiteLLM key deletion fails.
-  await repo.removeTeamActor("team-12", "actor-12");
 
-  const rpc = rpcCalls.find((c) => c.name === "remove_team_actor");
-  assert.ok(rpc, "expected remove_team_actor RPC call");
-  assert.equal(rpc.schema, "amux", "must call amux.remove_team_actor explicitly");
-});
 
-test("removeTeamActor deletes the actor's LiteLLM key exactly once with the deterministic key value", async () => {
-  process.env.LITELLM_MASTER_KEY = "sk-master";
-  process.env.LITELLM_URL = "https://ai.example";
-  const calls = stubLitellmFetch({
-    "/key/delete": () => ({ status: 200, body: { deleted: 1 } }),
-  });
-  const repo = createRepo(fakeSupabase({ rpcData: { remove_team_actor: null } }));
 
-  const actorId = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef"; // > 40 chars
-  await repo.removeTeamActor("team-13", actorId);
 
-  const deleteCalls = calls.filter((c) => c.url.includes("/key/delete"));
-  assert.equal(deleteCalls.length, 1, "expected exactly one /key/delete call");
-});
 
-test("listLiteLlmKeys returns masked keys from LiteLLM using the persisted litellm_team_id", async () => {
-  stubLitellmFetch({
-    "/team/info": () => ({
-      status: 200,
-      body: {
-        keys: [
-          { token: "sk-abcdefghijklmnop", key_alias: "member-1", spend: 1.5, created_at: "2026-06-01T00:00:00Z" },
-        ],
-      },
-    }),
-  });
-  const repo = createRepo(
-    fakeSupabase({
-      auth: {
-        async getUser() {
-          return { data: { user: { id: "user-member-1" } }, error: null };
-        },
-      },
-      tableData: {
-        actors: [{ id: "actor-member-1" }],
-        team_workspace_config: [{ litellm_team_id: "litellm-team-persisted" }],
-      },
-    }),
-  );
 
-  const out = await repo.listLiteLlmKeys("team-12");
-  assert.deepEqual(out, {
-    teamId: "litellm-team-persisted",
-    keys: [{ key: "sk-abcdefg...", alias: "member-1", spend: 1.5, created_at: "2026-06-01T00:00:00Z" }],
-  });
-});
 
-test("listLiteLlmKeys returns { teamId: null, keys: [] } without calling LiteLLM when litellm_team_id is unset", async () => {
-  const calls = stubLitellmFetch({});
-  const repo = createRepo(
-    fakeSupabase({
-      auth: {
-        async getUser() {
-          return { data: { user: { id: "user-member-2" } }, error: null };
-        },
-      },
-      tableData: {
-        actors: [{ id: "actor-member-2" }],
-        team_workspace_config: [], // no litellm_team_id yet
-      },
-    }),
-  );
 
-  const out = await repo.listLiteLlmKeys("team-13");
-  assert.deepEqual(out, { teamId: null, keys: [] });
-  assert.equal(calls.length, 0, "must not call LiteLLM when no litellm_team_id is persisted");
-});
 
-test("listLiteLlmKeys rejects non-member with 403", async () => {
-  const repo = createRepo(
-    fakeSupabase({
-      auth: {
-        async getUser() {
-          return { data: { user: { id: "user-outsider-2" } }, error: null };
-        },
-      },
-      tableData: {
-        actors: [], // caller has no actor row in this team -> not a member
-      },
-    }),
-  );
 
-  await assert.rejects(
-    () => repo.listLiteLlmKeys("team-14"),
-    (err: any) => err.statusCode === 403 && err.code === "forbidden",
-  );
-});
 
-test("listLiteLlmKeys rejects unauthenticated caller with 401", async () => {
-  const repo = createRepo(
-    fakeSupabase({
-      auth: {
-        async getUser() {
-          return { data: { user: null }, error: null };
-        },
-      },
-    }),
-  );
 
-  await assert.rejects(
-    () => repo.listLiteLlmKeys("team-15"),
-    (err: any) => err.statusCode === 401 && err.code === "missing_auth",
-  );
-});
 
-test("setLiteLlmBudget calls LiteLLM team/update with persisted litellm_team_id and returns maxBudget", async () => {
-  const calls = stubLitellmFetch({
-    "/team/update": (init: any) => ({ status: 200, body: JSON.parse(init.body) }),
-  });
-  const repo = createRepo(
-    fakeSupabase({
-      auth: OWNER_AUTH.auth,
-      tableData: {
-        actors: [{ id: "actor-owner-1" }],
-        team_members: [{ role: "owner" }],
-        team_workspace_config: [{ litellm_team_id: "litellm-team-budget" }],
-      },
-    }),
-  );
 
-  const out = await repo.setLiteLlmBudget("team-budget-1", { maxBudget: 25 });
-  assert.deepEqual(out, { maxBudget: 25 });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].method, "POST");
-  assert.equal(calls[0].url.endsWith("/team/update"), true);
-});
 
-test("setLiteLlmBudget rejects non-owner with 403", async () => {
-  const repo = createRepo(
-    fakeSupabase({
-      auth: {
-        async getUser() {
-          return { data: { user: { id: "user-member-not-owner" } }, error: null };
-        },
-      },
-      tableData: {
-        actors: [{ id: "actor-member-1" }],
-        team_members: [{ role: "member" }],
-      },
-    }),
-  );
 
-  await assert.rejects(
-    () => repo.setLiteLlmBudget("team-budget-2", { maxBudget: 25 }),
-    (err: any) => err.statusCode === 403 && err.code === "forbidden",
-  );
-});
 
-test("setLiteLlmBudget throws 409 litellm_not_provisioned when litellm_team_id is unset", async () => {
-  const repo = createRepo(
-    fakeSupabaseForOwnerRpc({}),
-  );
-  // fakeSupabaseForOwnerRpc has no team_workspace_config rows
-  await assert.rejects(
-    () => repo.setLiteLlmBudget("team-budget-3", { maxBudget: 25 }),
-    (err: any) => err.statusCode === 409 && err.code === "litellm_not_provisioned",
-  );
-});
 
-test("setLiteLlmBudget throws 400 missing_maxBudget when maxBudget is absent", async () => {
-  const repo = createRepo(
-    fakeSupabase({
-      auth: OWNER_AUTH.auth,
-      tableData: {
-        actors: [{ id: "actor-owner-1" }],
-        team_members: [{ role: "owner" }],
-        team_workspace_config: [{ litellm_team_id: "litellm-team-budget" }],
-      },
-    }),
-  );
-
-  await assert.rejects(
-    () => repo.setLiteLlmBudget("team-budget-4", {}),
-    (err: any) => err.statusCode === 400 && err.code === "missing_maxBudget",
-  );
-});
 
 test("getWorkspaceConfig merges teams + team_workspace_config rows", async () => {
   const repo = createRepo(fakeSupabase({
@@ -1141,8 +812,6 @@ test("getWorkspaceConfig merges teams + team_workspace_config rows", async () =>
   const result = await repo.getWorkspaceConfig("team-6");
 
   // The `llm` block joined this shape after the test was written. `models` is
-  // the stored, authoritative per-team list; `availableModels` is the optional
-  // gateway picker source and stays empty when no gateway answers.
   assert.deepEqual(result, {
     syncMode: "git",
     litellmTeamId: "litellm-team-zzz",
@@ -1150,7 +819,6 @@ test("getWorkspaceConfig merges teams + team_workspace_config rows", async () =>
       enabled: true,
       baseUrl: "https://gateway.example/v1",
       models: [{ id: "pro", name: "Pro" }],
-      availableModels: [],
       aiGatewayEndpoint: null,
     },
   });
@@ -1170,7 +838,6 @@ test("getWorkspaceConfig returns nulls when both rows absent", async () => {
       enabled: false,
       baseUrl: null,
       models: [],
-      availableModels: [],
       aiGatewayEndpoint: null,
     },
   });

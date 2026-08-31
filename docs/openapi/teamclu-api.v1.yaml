@@ -135,11 +135,12 @@ paths:
       responses:
         "200":
           description: |
-            Created team. Server-side this provisions a LiteLLM team + default
-            key and seeds team_workspace_config in one call. When
-            LITELLM_MASTER_KEY is unset on the FC side (local dev / tests),
-            provisioning is skipped and `aiGatewayEndpoint` / `litellmKey` are
-            `null` in the response.
+            Created team. Seeds team_workspace_config in the same call.
+
+            `aiGatewayEndpoint` is still returned so older clients keep
+            parsing the response; it is null unless the deployment configured
+            one. The team's AI credential is no longer minted here — the
+            daemon presents a scoped session token to its local proxy.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -151,12 +152,7 @@ paths:
                   - type: object
                     properties:
                       aiGatewayEndpoint:
-                        description: LiteLLM-fronted OpenAI-compatible gateway base URL (e.g. `https://ai.ucar.cc/v1`). Null when provisioning was skipped.
-                        type:
-                          - string
-                          - "null"
-                      litellmKey:
-                        description: One-shot default LiteLLM key for the new team. Returned only at creation time; store it locally on receipt. Null when provisioning was skipped.
+                        description: OpenAI-compatible gateway base URL. Null when the deployment has none configured.
                         type:
                           - string
                           - "null"
@@ -165,7 +161,7 @@ paths:
         "401":
           $ref: "#/components/responses/Error"
         "502":
-          description: LiteLLM provisioning failed; no DB rows were written.
+          description: Team provisioning failed; no DB rows were written.
           $ref: "#/components/responses/Error"
   /v1/teams/bootstrap:
     post:
@@ -1571,7 +1567,7 @@ paths:
         Returns the legacy team workspace defaults shape:
         `{ defaultWorkspaceId, pinnedWorkspaceIds, updatedAt }`.
         Distinct from `GET /v1/teams/{teamId}/workspace-config`, which returns
-        the merged sync + litellm shape introduced in the team-share
+        the merged sync + llm shape introduced in the team-share
         onboarding refactor.
       tags: [Teams]
       parameters:
@@ -1591,11 +1587,11 @@ paths:
   /v1/teams/{teamId}/workspace-config:
     get:
       operationId: getTeamWorkspaceConfig
-      summary: Get merged team workspace config (share mode + litellm)
+      summary: Get merged team workspace config (share mode + llm)
       description: |
         Returns the merged team workspace config introduced in the team-share
         onboarding refactor: share mode, git remote/auth (when applicable),
-        sync mode, and the provisioned LiteLLM team id. The legacy default
+        sync mode, and the team's shared LLM config. The legacy default
         workspace shape now lives at `GET /v1/teams/{teamId}/workspace-defaults`.
       tags: [Teams]
       parameters:
@@ -1620,7 +1616,7 @@ paths:
       description: |
         Upserts the legacy team workspace defaults shape
         (`defaultWorkspaceId`, `pinnedWorkspaceIds`). Does not modify the
-        litellm fields — those are managed via `/litellm/setup`.
+        llm fields — those are managed via `PUT /v1/teams/:id/llm-config`.
       tags: [Teams]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -2761,140 +2757,6 @@ paths:
         '200': { description: Updated }
         '403': { description: Only team owners may change limits }
 
-  /v1/teams/{teamId}/litellm/setup:
-    post:
-      operationId: setupTeamLiteLlm
-      summary: Provision LiteLLM team for AI gateway
-      description: |
-        Provisions a LiteLLM team for the given TeamClu team and persists
-        the resulting `litellm_team_id` and `ai_gateway_endpoint` on the team
-        workspace config. Returns the `aiGatewayEndpoint` and the freshly
-        minted `litellmKey` (the caller is responsible for storing the key
-        securely on the device). Returns 503 `litellm_unavailable` when the
-        FC environment is not configured to talk to LiteLLM.
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: LiteLLM provisioning result.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LiteLlmSetupResponse"
-        "401":
-          $ref: "#/components/responses/Error"
-        "404":
-          $ref: "#/components/responses/Error"
-        "503":
-          $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/litellm/member-key:
-    post:
-      operationId: ensureTeamLiteLlmMemberKey
-      summary: Self-service ensure caller's LiteLLM member key
-      description: |
-        Idempotently ensures a LiteLLM member key exists for the calling
-        actor's own membership in this team, auto-provisioning the team's
-        LiteLLM (via the same flow as `/litellm/setup`) if it has not been
-        set up yet. Self-only: the key is scoped to the caller, resolved
-        from the bearer token; there is no way to request another member's
-        key via this endpoint. Returns 403 if the caller is not a member of
-        the team, and 503 `litellm_unavailable` when the FC environment is
-        not configured to talk to LiteLLM.
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: Member key ensured.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LiteLlmMemberKeyResponse"
-        "401":
-          $ref: "#/components/responses/Error"
-        "403":
-          $ref: "#/components/responses/Error"
-        "503":
-          $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/litellm/keys:
-    get:
-      operationId: listTeamLiteLlmKeys
-      summary: List team LiteLLM keys (masked)
-      description: |
-        Lists the team's LiteLLM virtual keys (masked). Any team member may
-        read. The LiteLLM team id used is the one persisted on
-        team_workspace_config.litellm_team_id (via `/litellm/setup` or
-        `/litellm/member-key`) — never a deterministic `tc-{teamId}` value.
-        If the team has never provisioned LiteLLM, returns `{ teamId: null,
-        keys: [] }` without calling LiteLLM. Returns 403 if the caller is not
-        a member of the team.
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: LiteLLM keys for the team.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LiteLlmKeysResponse"
-        "401":
-          $ref: "#/components/responses/Error"
-        "403":
-          $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/litellm/budget:
-    put:
-      operationId: setTeamLiteLlmBudget
-      summary: Set team LiteLLM max budget
-      description: |
-        Sets the team's LiteLLM max budget. Owner-only. The LiteLLM team id
-        used is the one persisted on team_workspace_config.litellm_team_id
-        (via `/litellm/setup` or `/litellm/member-key`) — never a
-        deterministic `tc-{teamId}` value. Returns 409 `litellm_not_provisioned`
-        if the team has never provisioned LiteLLM (no implicit setup).
-        Returns 403 if the caller is not the team owner, and 400 if
-        `maxBudget` is missing or not numeric.
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [maxBudget]
-              properties:
-                maxBudget:
-                  type: number
-      responses:
-        "200":
-          description: Updated LiteLLM budget.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LiteLlmBudgetResponse"
-        "400":
-          $ref: "#/components/responses/Error"
-        "401":
-          $ref: "#/components/responses/Error"
-        "403":
-          $ref: "#/components/responses/Error"
-        "409":
-          $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/actors:
     get:
       operationId: listTeamActors
@@ -6874,18 +6736,9 @@ components:
             - "null"
     MergedWorkspaceConfig:
       type: object
-      # `litellmTeamId` left the required set when the team gateway replaced
-      # LiteLLM. It is still RETURNED (as null where absent) so older desktop
-      # and iOS builds keep parsing the response — those do not update in
-      # lockstep with the server. Removing it from the payload is a separate,
-      # later step, gated on the minimum supported client no longer reading it.
       required: [syncMode]
       properties:
         syncMode:
-          type:
-            - string
-            - "null"
-        litellmTeamId:
           type:
             - string
             - "null"
@@ -6963,54 +6816,6 @@ components:
             properties:
               actorId: { type: string }
               limitCredits: { type: ["integer", "null"] }
-    LiteLlmSetupResponse:
-      type: object
-      required: [aiGatewayEndpoint, litellmKey]
-      properties:
-        aiGatewayEndpoint:
-          type: string
-        litellmKey:
-          type: string
-    LiteLlmMemberKeyResponse:
-      type: object
-      required: [key, aiGatewayEndpoint]
-      properties:
-        key:
-          type: string
-        aiGatewayEndpoint:
-          type: string
-    LiteLlmKeyEntry:
-      type: object
-      required: [key, alias, spend, created_at]
-      properties:
-        key:
-          type: string
-          description: Masked LiteLLM virtual key token (first 10 chars + "...").
-        alias:
-          type: string
-        spend:
-          type: number
-        created_at:
-          type: string
-    LiteLlmKeysResponse:
-      type: object
-      required: [teamId, keys]
-      properties:
-        teamId:
-          type:
-            - string
-            - "null"
-          description: The persisted LiteLLM team id, or null if the team has never provisioned LiteLLM.
-        keys:
-          type: array
-          items:
-            $ref: "#/components/schemas/LiteLlmKeyEntry"
-    LiteLlmBudgetResponse:
-      type: object
-      required: [maxBudget]
-      properties:
-        maxBudget:
-          type: number
     Workspace:
       type: object
       required: [id, teamId, name, archived, createdAt, updatedAt]

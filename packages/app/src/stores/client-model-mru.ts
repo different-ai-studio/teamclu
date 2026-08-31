@@ -30,7 +30,7 @@ import { useCurrentTeamStore } from "@/stores/current-team";
  *
  * Team is in the key because it is the *only* thing catalogs actually vary by.
  * The daemon's store sharded by worktree; auditing 15 worktrees on one device
- * found every difference traced to the team's LiteLLM gateway models or to probe
+ * found every difference traced to the team's shared gateway models or to probe
  * staleness, and none to the directory (#742 decision 3). Keying by team tracks
  * the real variable; keying by worktree would re-implement a split that was
  * already disproved.

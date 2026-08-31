@@ -28,14 +28,14 @@ function readTeamModel(): string | null {
 /**
  * Upgrade `http://` → `https://` for remote LLM hosts.
  *
- * LiteLLM deployments behind Caddy/Nginx typically 308-redirect `http` → `https`,
+ * Gateway deployments behind Caddy/Nginx typically 308-redirect `http` → `https`,
  * and both fetch and the AI SDK drop the `Authorization` header across that
  * redirect — surfacing as `Authentication Error, No api key passed in.` on
  * chat-completions calls. Force https for any non-local host before we hand
  * the URL to the agent provider config.
  *
  * Local/private hosts keep `http://` (they don't redirect, and users may run
- * a dev LiteLLM without TLS).
+ * a dev gateway without TLS).
  */
 function normalizeLlmBaseUrl(url: string): string {
   if (!url.startsWith('http://')) return url

@@ -37,7 +37,7 @@ describe("client model MRU", () => {
   });
 
   it("keeps teams apart", () => {
-    // Catalogs vary by team (the team's LiteLLM gateway models), which is the
+    // Catalogs vary by team (the team's shared gateway models), which is the
     // only variable #742 could actually attribute a catalog difference to.
     const s = useClientModelMruStore.getState();
     s.record("opencode", "team-1", "gateway/team-1-only");

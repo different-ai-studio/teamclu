@@ -9,6 +9,13 @@ const SHIPPED = readFileSync(
   "utf8",
 );
 
+// Phase 3 removed the vendor-named transition aliases, so the tier list is now
+// exactly the three the desktop hardcodes — nothing wider.
+test("the catalog exposes exactly the three tiers, no vendor names", () => {
+  const cat = parseCatalog(SHIPPED, ENV);
+  assert.deepEqual(Object.keys(cat.public_models).sort(), ["default", "max", "pro"]);
+});
+
 test("the shipped example catalog is valid", () => {
   const cat = parseCatalog(SHIPPED, ENV);
   for (const tier of REQUIRED_TIERS) assert.ok(cat.public_models[tier], `missing ${tier}`);
@@ -22,13 +29,6 @@ test("every shipped tier carries pricing (billing basis is the tier, not the bac
   }
 });
 
-test("transition aliases are priced identically to the tier they shadow", () => {
-  // Phase 3 removes these. Until then a client on an old vendor id must not be
-  // billed differently from one on the tier.
-  const cat = parseCatalog(SHIPPED, ENV);
-  assert.deepEqual(cat.public_models["deepseek-v4-flash"].pricing, cat.public_models["default"].pricing);
-  assert.deepEqual(cat.public_models["deepseek-v4-pro"].pricing, cat.public_models["pro"].pricing);
-});
 
 test("refuses to start when a required tier is missing", () => {
   const cat = parseCatalog(SHIPPED, ENV);

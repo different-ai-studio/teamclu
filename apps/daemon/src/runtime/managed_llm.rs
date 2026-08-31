@@ -46,7 +46,6 @@ pub struct ManagedLlmResolver {
     /// is correct: there is no local proxy to authenticate against either.
     tokens: Option<super::gateway_token::GatewayTokenSource>,
     cache: AsyncMutex<HashMap<String, CachedManagedLlm>>,
-    member_key_kicked: AsyncMutex<HashSet<String>>,
 }
 
 impl ManagedLlmResolver {
@@ -55,7 +54,6 @@ impl ManagedLlmResolver {
             backend,
             tokens: None,
             cache: AsyncMutex::new(HashMap::new()),
-            member_key_kicked: AsyncMutex::new(HashSet::new()),
         }
     }
 
@@ -74,17 +72,13 @@ impl ManagedLlmResolver {
     ///
     /// On a transient fetch failure, falls back to the last-known cached value
     /// (or `Unknown` if none) so a working `provider.team` is never wiped by a
-    /// blip. The first resolution per team also kicks a fire-and-forget
-    /// member-key provisioning POST so LiteLLM actually mints the locally-derived
-    /// `sk-tc-{actor}` key.
+    /// blip.
     pub async fn resolve(&self, team_id: &str) -> ManagedLlmState {
         if let Some(cached) = self.cache.lock().await.get(team_id) {
             if cached.fetched_at.elapsed() < MANAGED_LLM_TTL {
                 return cached.state.clone();
             }
         }
-
-        self.maybe_kick_member_key(team_id).await;
 
         match self.backend.managed_llm_config(team_id).await {
             Ok(cfg) => {
@@ -155,48 +149,6 @@ impl ManagedLlmResolver {
                 error = %e,
                 "global team provider sync failed during managed LLM reconcile"
             );
-        }
-    }
-
-    /// Kick a one-time, fire-and-forget LiteLLM member-key provisioning POST for
-    /// this team. Guarded so it runs at most once per team per process; failures
-    /// are logged and ignored (the key value is derived locally regardless).
-    async fn maybe_kick_member_key(&self, team_id: &str) {
-        {
-            let mut kicked = self.member_key_kicked.lock().await;
-            if !kicked.insert(team_id.to_string()) {
-                return;
-            }
-        }
-        let backend = self.backend.clone();
-        let tid = team_id.to_string();
-        tokio::spawn(async move {
-            if let Err(e) = backend.ensure_llm_member_key(&tid).await {
-                tracing::warn!(team_id = %tid, error = %e, "LiteLLM member-key self-heal failed");
-            }
-        });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::backend::mock::MockBackend;
-    use crate::backend::{ManagedLlmConfig, ManagedLlmModelInfo};
-    use crate::test_brand_env::BrandEnvGuard;
-
-    fn config_with_models(models: &[&str]) -> ManagedLlmConfig {
-        ManagedLlmConfig {
-            enabled: true,
-            base_url: Some("https://gateway.example/v1".to_string()),
-            name: Some("Team".to_string()),
-            models: models
-                .iter()
-                .map(|id| ManagedLlmModelInfo {
-                    id: (*id).to_string(),
-                    name: (*id).to_string(),
-                })
-                .collect(),
         }
     }
 
