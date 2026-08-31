@@ -98,10 +98,12 @@ impl RefreshWatchRegistry {
     }
 
     pub async fn upsert_workspace(&self, workspace: WatchedWorkspace) {
-        self.workspaces
-            .write()
-            .await
-            .insert(workspace.workspace_path.clone(), workspace);
+        let mut workspaces = self.workspaces.write().await;
+        workspaces.retain(|path, existing| {
+            path == &workspace.workspace_path || existing.workspace_id != workspace.workspace_id
+        });
+        workspaces.insert(workspace.workspace_path.clone(), workspace);
+        drop(workspaces);
         self.changed.notify_one();
     }
 
@@ -110,7 +112,7 @@ impl RefreshWatchRegistry {
         self.changed.notify_one();
     }
 
-    async fn snapshot(&self) -> Vec<WatchedWorkspace> {
+    pub(crate) async fn snapshot(&self) -> Vec<WatchedWorkspace> {
         self.workspaces.read().await.values().cloned().collect()
     }
 
@@ -868,6 +870,22 @@ mod tests {
         assert_eq!(
             registry.workspace_paths().await,
             vec![PathBuf::from("/tmp/ws-2")]
+        );
+    }
+
+    #[tokio::test]
+    async fn watch_registry_replaces_stale_path_for_same_workspace_id() {
+        let registry = RefreshWatchRegistry::new(Vec::new());
+        registry
+            .upsert_workspace(watched_workspace("ws-1", "/tmp/cloud-path"))
+            .await;
+        registry
+            .upsert_workspace(watched_workspace("ws-1", "/tmp/runtime-path"))
+            .await;
+
+        assert_eq!(
+            registry.workspace_paths().await,
+            vec![PathBuf::from("/tmp/runtime-path")]
         );
     }
 

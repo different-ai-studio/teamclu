@@ -1476,7 +1476,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
 
     // Publish what is on disk right now, including whatever the author edited
     // locally — that content is the whole reason a new version is being cut.
-    const sourceDir = await invoke<string>('team_skill_installed_dir', { slug })
+    const sourceDir = await invoke<string>('team_skill_installed_dir', { slug, teamId })
     const packed = await invoke<{ contentHash: string; size: number }>('team_skill_pack_and_upload', {
       dirPath: sourceDir,
       slug,
@@ -1500,12 +1500,11 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // Re-baseline against the version just published. Skipping this leaves the
     // author permanently in conflict with their own release, since the disk
     // still differs from the baseline taken at the previous version.
-    await invoke('team_skill_install_from_dir', {
+    await invoke('team_skill_rebaseline', {
       request: {
         workspacePath: wsPath,
         slug,
         teamId,
-        sourceDir,
         version: version.version,
         owner: skill.ownerActorId,
         category: input.category ?? skill.category,
@@ -1513,7 +1512,6 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         whenToUse: input.whenToUse ?? skill.whenToUse,
         whenNotToUse: input.whenNotToUse ?? skill.whenNotToUse,
         requires: input.requires ?? skill.requires,
-        isGlobal: true,
       },
     })
     // Same reason as Share: the pack landed on this Agent's disk, so this Agent
@@ -1744,7 +1742,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     const skill = get().skills.items.find((s) => s.slug === slug)
-    const trashedPath = await invoke<string>('team_skill_discard_local', { slug })
+    const trashedPath = await invoke<string>('team_skill_discard_local', { slug, teamId })
     try {
       await materializeSkill(teamId, slug, skill?.latestVersion ?? 1)
     } catch (e) {
@@ -1764,13 +1762,17 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   },
 
   restoreDiscardedSkill: async (trashedPath, slug) => {
-    await invoke('team_skill_restore_trashed', { trashedPath, slug })
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    await invoke('team_skill_restore_trashed', { trashedPath, slug, teamId })
     await get().reconcileSkills()
     await get().loadSection('skills', { force: true })
   },
 
   forkSkill: async (slug, newSlug) => {
-    const path = await invoke<string>('team_skill_fork', { slug, newSlug })
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    const path = await invoke<string>('team_skill_fork', { slug, newSlug, teamId })
     // The copy is what the user asked for and it is on disk now. Handing the
     // team pack back to auto-follow is cleanup, and cleanup must not be able to
     // fail the whole action: reporting "save failed" after the copy exists sends
@@ -1803,6 +1805,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     return invoke<TeamSkillFileDiff[]>('team_skill_diff', {
       request: {
         slug,
+        teamId,
         downloadUrl: url,
         accessToken: null,
         version: installedVersion,
