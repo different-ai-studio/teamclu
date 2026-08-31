@@ -148,6 +148,12 @@ export function createTeamsModule(client: CloudApiClient): TeamsBackend {
     async topUpCredits(teamId, input) {
       return client.post(`/v1/teams/${encodeURIComponent(teamId)}/credits/top-up`, input);
     },
+    async listCreditPackages(teamId) {
+      return client.get(`/v1/teams/${encodeURIComponent(teamId)}/credits/packages`);
+    },
+    async createCreditCheckoutSession(teamId, input) {
+      return client.post(`/v1/teams/${encodeURIComponent(teamId)}/credits/checkout-session`, input);
+    },
     async getMemberQuotas(teamId) {
       return client.get(`/v1/teams/${encodeURIComponent(teamId)}/quotas`);
     },

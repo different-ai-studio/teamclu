@@ -17,6 +17,7 @@ import {
 } from "../db/schema/oss-sync.js";
 import { teamSkills, teamSkillVersions } from "../db/schema/team-skills.js";
 import { getTeamBlobStorage, type BlobStorage } from "./team-blob-storage.js";
+import { stripeReconcileCheckouts } from "./stripe-reconcile.js";
 
 /** What the cron tasks need injected; everything defaults to the real thing. */
 export interface CronDeps {
@@ -276,7 +277,7 @@ export async function ossSyncGcOrphanBlobs(
 // ---------------------------------------------------------------------------
 // runCronTask — dispatch by task name
 // ---------------------------------------------------------------------------
-export type CronTask = "oss-abandon-sessions" | "oss-gc-blobs";
+export type CronTask = "oss-abandon-sessions" | "oss-gc-blobs" | "stripe-reconcile";
 
 export async function runCronTask(
   db: Db,
@@ -290,6 +291,12 @@ export async function runCronTask(
     }
     case "oss-gc-blobs": {
       const result = await ossSyncGcOrphanBlobs(db, deps);
+      return { task, result };
+    }
+    // No `db`: the gateway owns the ledger, so this task talks to Stripe and to
+    // the gateway's /internal API and never touches a table here.
+    case "stripe-reconcile": {
+      const result = await stripeReconcileCheckouts();
       return { task, result };
     }
     default:

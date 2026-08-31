@@ -41,6 +41,21 @@ export function registerTeamCredits(router) {
     return { body: await ctx.repository.topUpCredits(ctx.params.teamId, ctx.json ?? {}) };
   });
 
+  // What a team can buy. Shape and price come from Stripe (the allowlisted
+  // Prices and their metadata.credits) so nothing about pricing is duplicated
+  // in this repo — see design §4.9.3.
+  router.get("/v1/teams/:teamId/credits/packages", async (ctx) => {
+    return { body: await ctx.repository.listCreditPackages(ctx.params.teamId) };
+  });
+
+  // Opens a Stripe Checkout Session for one package. Owner-only: it is the
+  // action that spends the team's money.
+  router.post("/v1/teams/:teamId/credits/checkout-session", async (ctx) => {
+    return {
+      body: await ctx.repository.createCreditCheckoutSession(ctx.params.teamId, ctx.json ?? {}),
+    };
+  });
+
   router.get("/v1/teams/:teamId/quotas", async (ctx) => {
     return { body: await ctx.repository.getMemberQuotas(ctx.params.teamId) };
   });

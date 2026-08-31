@@ -860,8 +860,7 @@
     "unsupportedNativeSkill": {
       "failedTitle": "技能未创建",
       "statusLabel": "unsupported directory",
-      "description": "技能被写入了原生 agent 目录，而不是通过 manage_skills。请删除原生副本，并用 manage_skills action=create 重新创建。",
-      "violationLine": "{{slug}} · {{root}}"
+      "description": "技能被写入了原生 agent 目录，而不是通过 manage_skills。请删除原生副本，并用 manage_skills action=create 重新创建。"
     },
     "acpDebug": {
       "title": "ACP 流调试",
@@ -2847,6 +2846,11 @@
       "pointsUsed": "消耗积分",
       "share": "占比",
       "shareNote": "占比按积分计，不按 token 数 —— 不同档位每 token 的成本差一个数量级。",
+      "topUp": "充值",
+      "topUpUnavailable": "当前部署未开通在线充值。管理员仍可手工为团队加额度。",
+      "packageCredits": "{{points}} 积分",
+      "buy": "购买",
+      "processing": "支付已在浏览器中打开。完成后额度通常几秒内到账 —— 回到这里会自动刷新。",
       "ledger": "充值历史",
       "ownerOnly": "仅所有者可见",
       "noLedger": "暂无充值记录。",

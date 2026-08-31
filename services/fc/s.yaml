@@ -59,6 +59,13 @@ resources:
         AI_GATEWAY_ENDPOINT: ${env('AI_GATEWAY_ENDPOINT', '')}
         AI_GATEWAY_INTERNAL_URL: ${env('AI_GATEWAY_INTERNAL_URL', '')}
         AI_GATEWAY_SERVICE_TOKEN: ${env('AI_GATEWAY_SERVICE_TOKEN', '')}
+        # Stripe credit top-ups (design 4.9). This target runs against its OWN
+        # database, so it needs its own webhook endpoint (or its own Stripe
+        # account): a payment landing on the wrong environment credits the
+        # wrong team, and nothing downstream can tell.
+        STRIPE_SECRET_KEY: ${env('STRIPE_SECRET_KEY', '')}
+        STRIPE_WEBHOOK_SECRET: ${env('STRIPE_WEBHOOK_SECRET', '')}
+        STRIPE_PRICE_IDS: ${env('STRIPE_PRICE_IDS', '')}
         LITELLM_URL: ${env('LITELLM_URL', 'https://ai.ucar.cc')}
         LITELLM_MASTER_KEY: ${env('LITELLM_MASTER_KEY', '')}
         # Blank = no cap, matching the compose default. Keep the two targets in

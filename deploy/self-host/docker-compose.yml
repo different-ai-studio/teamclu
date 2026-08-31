@@ -495,6 +495,15 @@ services:
       # silently goes missing on the other.
       AI_GATEWAY_INTERNAL_URL: "${AI_GATEWAY_INTERNAL_URL:-http://ai-gateway:4001}"
       AI_GATEWAY_SERVICE_TOKEN: "${AI_GATEWAY_SERVICE_TOKEN:-}"
+      # Stripe credit top-ups (design 4.9). Blank = the top-up UI reports
+      # stripe_unavailable and nothing else changes; metering and manual
+      # admin top-ups are unaffected.
+      # STRIPE_PRICE_IDS is an ALLOWLIST of Price ids, comma-separated: the
+      # checkout endpoint takes a price id from the caller, so without it
+      # anyone could open a Session against an arbitrary Price on the account.
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
+      STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
+      STRIPE_PRICE_IDS: "${STRIPE_PRICE_IDS:-}"
       LITELLM_URL: "${LITELLM_URL:-http://litellm:4000}"
       LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-}"
       # Per-team spend cap written at /team/new. Blank = no cap. This was absent
@@ -677,6 +686,13 @@ services:
             -H "x-cron-secret: ${CRON_TRIGGER_SECRET}" \
             -H "content-type: application/json" \
             -d '{"task":"oss-gc-blobs"}' || true
+          # Repairs top-ups whose webhook never arrived. Stripe calls in from
+          # outside the country to a mainland host, so the delivery link is the
+          # weak point; this pass is idempotent and cheap when nothing is wrong.
+          curl -fsS -X POST http://fc:9000/internal/cron \
+            -H "x-cron-secret: ${CRON_TRIGGER_SECRET}" \
+            -H "content-type: application/json" \
+            -d '{"task":"stripe-reconcile"}' || true
           sleep 900
         done
 

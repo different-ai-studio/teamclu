@@ -860,8 +860,7 @@
     "unsupportedNativeSkill": {
       "failedTitle": "Skill not created",
       "statusLabel": "unsupported directory",
-      "description": "A skill was written under a native agent directory instead of through manage_skills. Remove the native copy and recreate with manage_skills action=create.",
-      "violationLine": "{{slug}} in {{root}}"
+      "description": "A skill was written under a native agent directory instead of through manage_skills. Remove the native copy and recreate with manage_skills action=create."
     },
     "acpDebug": {
       "title": "ACP stream debug",
@@ -2847,6 +2846,11 @@
       "pointsUsed": "Points",
       "share": "Share",
       "shareNote": "Share is measured in points, not tokens — per-token cost differs by an order of magnitude across tiers.",
+      "topUp": "Add credits",
+      "topUpUnavailable": "Online top-up is not available on this deployment. An administrator can still add credits manually.",
+      "packageCredits": "{{points}} points",
+      "buy": "Buy",
+      "processing": "Payment continues in your browser. Credits usually land within seconds of it completing — this page refreshes when you come back.",
       "ledger": "Top-up history",
       "ownerOnly": "Owners only",
       "noLedger": "No top-ups yet.",

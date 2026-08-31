@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, Loader2, Receipt, Wallet } from 'lucide-react'
+import { AlertTriangle, CreditCard, ExternalLink, Loader2, Receipt, Wallet } from 'lucide-react'
 import { getBackend } from '@/lib/backend'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { cn } from '@/lib/utils'
+import { useTeamPermissions } from '@/lib/team-permissions'
+import { cn, openExternalUrl } from '@/lib/utils'
 import type {
   CreditLedgerEntry,
+  CreditPackage,
   CreditUsageReport,
   TeamCredits,
 } from '@/lib/backend/types'
@@ -27,6 +29,20 @@ const toPoints = (credits: number) => credits / POINTS_PER_CREDIT
 const fmtPoints = (credits: number) =>
   toPoints(credits).toLocaleString(undefined, { maximumFractionDigits: 0 })
 
+/** Stripe reports minor units (cents, 分). Formatting is left to the platform
+ *  so a currency we have never seen still renders correctly. */
+function fmtMoney(minorUnits: number | null, currency: string): string {
+  if (minorUnits === null) return '—'
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: currency.toUpperCase(),
+    }).format(minorUnits / 100)
+  } catch {
+    return `${(minorUnits / 100).toFixed(2)} ${currency.toUpperCase()}`
+  }
+}
+
 function fmtTokens(n: number): string {
   if (n >= 100_000_000) return `${(n / 100_000_000).toFixed(2)} 亿`
   if (n >= 10_000) return `${(n / 10_000).toFixed(1)} 万`
@@ -36,10 +52,17 @@ function fmtTokens(n: number): string {
 export function BillingSection() {
   const { t } = useTranslation()
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
+  const { isOwner } = useTeamPermissions()
 
   const [credits, setCredits] = useState<TeamCredits | null>(null)
   const [usage, setUsage] = useState<CreditUsageReport | null>(null)
   const [ledger, setLedger] = useState<CreditLedgerEntry[] | null>(null)
+  const [packages, setPackages] = useState<CreditPackage[] | null>(null)
+  const [buying, setBuying] = useState<string | null>(null)
+  /** Set once checkout opens in the browser. The payment completes out there
+   *  and the credits arrive over Stripe's webhook, so there is nothing here to
+   *  await — we say so and let the refresh below pick the balance up. */
+  const [awaitingPayment, setAwaitingPayment] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [unavailable, setUnavailable] = useState(false)
@@ -65,6 +88,14 @@ export function BillingSection() {
       } catch {
         setLedger(null)
       }
+      // Independent of the above: a deployment with no Stripe answers with an
+      // empty list, which is a state to render, not a failure to report.
+      try {
+        const p = await backend.teams.listCreditPackages(teamId)
+        setPackages(p.items)
+      } catch {
+        setPackages([])
+      }
     } catch (e: unknown) {
       const code = (e as { code?: string })?.code
       if (code === 'ai_gateway_unavailable') setUnavailable(true)
@@ -75,6 +106,34 @@ export function BillingSection() {
   }, [teamId])
 
   useEffect(() => { void load() }, [load])
+
+  const buy = useCallback(async (priceId: string) => {
+    if (!teamId) return
+    setBuying(priceId)
+    setError(null)
+    try {
+      const { url } = await getBackend().teams.createCreditCheckoutSession(teamId, { priceId })
+      // System browser, never the embedded webview: 3DS and wallet flows break
+      // in there, and a payment page with no address bar is not something to
+      // ask anyone to trust.
+      await openExternalUrl(url)
+      setAwaitingPayment(true)
+    } catch (e: unknown) {
+      setError((e as Error)?.message ?? String(e))
+    } finally {
+      setBuying(null)
+    }
+  }, [teamId])
+
+  // Checkout happens in another application, so the moment this window is
+  // focused again is the one useful signal that it may be over. Cheap, and it
+  // beats polling on a timer for a payment that may never be completed.
+  useEffect(() => {
+    if (!awaitingPayment) return
+    const onFocus = () => { void load() }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [awaitingPayment, load])
 
   /** Days of runway from the last 7 days' burn. Hidden when nothing was spent:
    *  an infinity symbol is not a useful answer to "how long do I have". */
@@ -169,6 +228,74 @@ export function BillingSection() {
               </div>
             )}
           </section>
+
+          {/* Top-up */}
+          {packages !== null && (
+            <section className="rounded-lg border border-border bg-paper">
+              <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+                <div className="flex items-center gap-2">
+                  <CreditCard className="h-4 w-4 text-muted-foreground" />
+                  <p className="text-[13px] font-semibold">{t('settings.billing.topUp', 'Add credits')}</p>
+                </div>
+                {!isOwner && packages.length > 0 && (
+                  <span className="rounded border border-border px-2 py-0.5 text-[10.5px] text-muted-foreground">
+                    {t('settings.billing.ownerOnly', 'Owners only')}
+                  </span>
+                )}
+              </div>
+
+              {packages.length === 0 ? (
+                <p className="px-4 py-6 text-center text-[12.5px] text-muted-foreground">
+                  {t('settings.billing.topUpUnavailable', 'Online top-up is not available on this deployment. An administrator can still add credits manually.')}
+                </p>
+              ) : (
+                <>
+                  <ul className="divide-y divide-border-soft">
+                    {packages.map((p) => (
+                      <li key={p.priceId} className="flex items-center justify-between gap-4 px-4 py-3">
+                        <div>
+                          <p className="text-[13px] font-medium">{p.name}</p>
+                          <p className="mt-0.5 text-[12px] text-muted-foreground">
+                            {t('settings.billing.packageCredits', '{{points}} points', {
+                              points: fmtPoints(p.credits),
+                            })}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="font-mono text-[13px] tabular-nums">
+                            {fmtMoney(p.unitAmount, p.currency)}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={!isOwner || buying !== null}
+                            onClick={() => void buy(p.priceId)}
+                            className={cn(
+                              'inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[12.5px] font-medium transition-colors',
+                              isOwner
+                                ? 'hover:border-primary/60 hover:bg-primary/5'
+                                : 'cursor-not-allowed opacity-50',
+                            )}
+                          >
+                            {buying === p.priceId ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            )}
+                            {t('settings.billing.buy', 'Buy')}
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  {awaitingPayment && (
+                    <p className="border-t border-dashed border-border-soft px-4 py-2.5 text-[11.5px] text-muted-foreground">
+                      {t('settings.billing.processing', 'Payment continues in your browser. Credits usually land within seconds of it completing — this page refreshes when you come back.')}
+                    </p>
+                  )}
+                </>
+              )}
+            </section>
+          )}
 
           {/* This period's usage, by tier */}
           {usage && (

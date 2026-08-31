@@ -392,6 +392,9 @@ export function registerStripe(router) {
 2. 加价逻辑集中在 Stripe 后台一处，不散落在代码里 —— 与 §4.4.1「credits 锚成本、加价只发生在充值那一次换算」完全一致。
 3. **币种变得无关**：credits 锚的是元的上游成本，Stripe 收什么币种都不影响这张映射表。
 
+⚠️ **Price 挂靠的 Product 还必须有 `tax_code`**（账号开着 Managed Payments 时；默认就是开的）。缺了它，`/credits/packages` 照常列出套餐，**只有下单会炸** ——「the product tax code is missing」发生在建 Session 那一步，不是列表那一步，所以症状是「看得见买不了」。实际账号用的是 `txcd_10105002`（AI as a Service, cloud-based, business use）。
+**不要**用 `managed_payments[enabled]=false` 绕过：那是在悄悄改变谁承担税务责任。
+
 #### 4.9.4 幂等键用 Session id，不要用 event id
 
 ```
@@ -425,6 +428,20 @@ Stripe 从境外主动回调 `api.<domain>/v1/stripe/webhook`，而该域名解�
 #### 4.9.7 客户端
 
 Tauri 内嵌 webview **不要**用来打开 Checkout（3DS 与钱包会出问题，用户也看不到地址栏），走系统浏览器。返回后不阻塞 UI 等 webhook —— 显示「处理中」，让余额自行刷新。
+
+刷新的触发点是**窗口重新获得焦点**，不是定时轮询：支付发生在另一个应用里，用户切回来这一刻是唯一有意义的信号，而轮询要为一笔可能永远不会完成的支付一直跑。
+
+#### 4.9.8 落地时补的三处
+
+实现时补进契约的东西，记在这里免得下次照着 §4.9 找不到：
+
+| 补充 | 为什么 |
+|---|---|
+| `GET /v1/teams/:teamId/credits/packages` | 充值卡要显示「买什么、多少钱、给多少积分」。三者都只能来自 Stripe Price + `metadata.credits`（§4.9.3），客户端硬编码价格在调价当天就是错的。**任何成员可读**（看得见但买不了），下单才是 owner-only |
+| `GET /v1/stripe/return` | Checkout 完成后浏览器要有地方落。一张静态 HTML：桌面端本来就不依赖这次跳转（§4.9.7），这页只需要告诉人可以关掉。复用 `AUTH_BASE_URL` 作公网 origin，不为同一个含义再引入一个变量 |
+| `stripe-reconcile` cron 任务 | §4.9.6 的第二层兜底。**不查账本**：重复 top-up 靠唯一索引变成空操作，返回的 `applied` 就是「这笔本地是不是缺了」的答案，比自己 join 一次账本少一条会腐化的查询路径 |
+
+对账任务的 Stripe client 是**可注入的**。第一版不是，于是 `npm test` 直接打到了 api.stripe.com —— 一个测试套件能对着生产支付账号发请求，这本身就是缺陷。
 
 ---
 
@@ -863,6 +880,7 @@ daemon 侧同样必须逐 chunk 转发、不 buffer。已有的 `/v1/sessions/:i
 | **2** | Credits 闭环：预留 + 结算 + quota 强制；FC credits 端点；设置页；openapi 的 `litellmTeamId` 松绑；保留策略 + 对账任务。**打开强制之前先给存量团队补发起始额度（§4.8.1）。** 设置页：新建账单页 + 现有 Token 用量页迁移数据源（§12）。 | 存量团队补发完成且余额行齐全；并发压测不超发；对账连续 7 天零差异 |
 | **3** | 全部团队切完 + **两个部署目标都切完** + 观察期 ≥ 2 周后：删 LiteLLM 容器 / FC 代码 / openapi 条目 / Caddy 三段 / CI 四处 / smoke。 | 见 §11.5 |
 | **4** | **Stripe 充值**（§4.9）：FC 的 checkout-session + webhook 路由、Price metadata 换算表、`stripe.checkout.sessions.list` 补账任务、桌面端走系统浏览器。**不动任何表结构** —— 幂等键从 Phase 2 起就在表里，余额表也从 Phase 0 起就没有非负约束（§4.9.5）。 | 跨境 webhook 投递实测通过；断开 webhook 后补账任务能独立把额度发对；重复投递同一 Session 不重复入账；退款能把余额打成负数而不报错 |
+| | ⚠️ 代码已完成（路由 / webhook / 对账 / 充值卡 / env 三处声明 / openapi）。**卡在 Stripe 账号侧**：Price（带 `metadata.credits`）与 webhook endpoint 都还没建，`STRIPE_PRICE_IDS` 和 `STRIPE_WEBHOOK_SECRET` 因此为空 —— 三个变量全空时充值卡显示「未开通」，计量与手工充值不受影响 | 定价决策（附录 F）落地后才能建 Price |
 
 ### 11.1 Phase 1 的灰度开关
 
