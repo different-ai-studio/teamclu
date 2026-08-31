@@ -122,7 +122,6 @@ push 到 `main` 且改动 `deploy/self-host/**`、`services/fc/**` 或
 | `APNS_*` | iOS 推送（生产必需则填真实值） |
 | `CRON_TRIGGER_SECRET` | cron profile 调用 `/internal/cron` |
 | `LITELLM_MASTER_KEY` | 团队 LiteLLM 开通 |
-| `AUTH_SECRET` | Better Auth（phone/OAuth 等） |
 
 完整变量清单以 [`deploy/self-host/.env.example`](../../deploy/self-host/.env.example)
 与 [`deploy/self-host/docker-compose.yml`](../../deploy/self-host/docker-compose.yml) 为准。
@@ -189,11 +188,12 @@ docker compose build fc && docker compose up -d fc
 | `SUPABASE_ANON_KEY` | Auth proxy |
 | `MQTT_BROKER_URL` | 发布 MQTT ping |
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | 服务账号 |
-| `DATABASE_URL` | `BACKEND_KIND=postgres` 时用 |
-| `AUTH_BASE_URL` | OAuth / Better Auth 对外 base；**应显式设为 `https://api.teamclu-dev.ucar.cc`** |
+| `DATABASE_URL` | FC 直连 Postgres 的旁路：cron 任务、LiteLLM 用量、Apps 每应用库。`/v1` 业务 API 不用它 |
+| `AUTH_BASE_URL` | Apps 平台登录所签 JWT 的 issuer/audience；**应显式设为 `https://api.teamclu-dev.ucar.cc`** |
 
-> ⚠️ `AUTH_BASE_URL` 在 `services/fc/src/auth/` 里的代码内置默认值仍是**已下线**的
-> `https://cloud.ucar.cc`。留空会落到这个死地址，务必显式配置。
+> ⚠️ `services/fc/src/auth/base-url.ts` 对 `AUTH_BASE_URL` 是 fail-closed 的：留空
+> 会直接抛错而不是回落到默认值。但 `services/fc/s.yaml` 那一层仍带着**已下线**的
+> `https://cloud.ucar.cc` 默认值，所以走阿里云 FC 部署时必须显式配置。
 
 **运行时功能开关（feature flags）：** `/v1/config/public` 与 `/v1/config/bootstrap`
 会把一部分开关下发给客户端，客户端拿它覆盖自己 `build.config*.json` 里烘死的默认值
