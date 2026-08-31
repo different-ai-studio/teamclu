@@ -5,6 +5,17 @@ import { pickRoute } from "./catalog.js";
 import { TokenCache, bearer } from "./auth.js";
 import { resolveActor, recordUsage, getBalance, type Sql } from "./db.js";
 import { computeCredits, prepareUpstream, readUsage, teeSseUsage } from "./proxy.js";
+import { creditLedger, usageReport, type UsageRange } from "./report.js";
+import {
+  backfillSignupGrants,
+  pruneUsage,
+  reconcile,
+  release,
+  reserve,
+  settle,
+  topUp,
+  SIGNUP_GRANT_CREDITS,
+} from "./credits.js";
 
 export type Deps = {
   cfg: Config;
@@ -17,6 +28,24 @@ export type Deps = {
 
 const err = (code: string, message: string, status: number) =>
   ({ error: { code, message } }) as const;
+
+const RANGES = new Set(["day", "week", "month", "year"]);
+const parseRange = (v: string | undefined): UsageRange =>
+  (RANGES.has(v ?? "") ? v : "month") as UsageRange;
+
+/**
+ * Output ceiling to size a hold with when the request names none. Takes the
+ * largest across the tier's routes: the hold has to cover whichever backend the
+ * request actually lands on.
+ */
+function defaultMaxOutput(catalog: Catalog, publicId: string): number {
+  const tier = catalog.public_models[publicId];
+  if (!tier) return 16_000;
+  const caps = tier.routes.map(
+    (r) => catalog.backend_models[r.backend]?.default_max_output_tokens ?? 16_000,
+  );
+  return caps.length ? Math.max(...caps) : 16_000;
+}
 
 export function createApp(deps: Deps) {
   const { cfg, catalog, sql, tokens } = deps;
@@ -68,6 +97,13 @@ export function createApp(deps: Deps) {
     });
   });
 
+  app.get("/v1/teams/:teamId/credits/usage", async (c) => {
+    const a = await authed(c);
+    if ("error" in a) return a.error;
+    const anchor = c.req.query("date") ? new Date(`${c.req.query("date")}T00:00:00+08:00`) : undefined;
+    return c.json(await usageReport(sql, a.teamId, parseRange(c.req.query("range")), anchor));
+  });
+
   app.get("/v1/teams/:teamId/credits/balance", async (c) => {
     const a = await authed(c);
     if ("error" in a) return a.error;
@@ -97,7 +133,35 @@ export function createApp(deps: Deps) {
       );
     }
 
+    // Conservative hold: the tier's own price against an upper bound on the
+    // request. Input is estimated from raw byte length rather than tokenised —
+    // over-estimating is free (the hold is released) while under-estimating
+    // lets a request through that the balance cannot cover.
+    //
+    // Output is estimated at the full ceiling because reasoning tokens count
+    // toward completion_tokens and can consume the entire budget on their own.
     const wantsStream = body.stream === true;
+    const estInput = Math.ceil(JSON.stringify(body.messages ?? "").length / 3);
+    const estOutput = Number(body.max_tokens ?? 0) || defaultMaxOutput(catalog, publicId);
+    const hold = computeCredits(tier.pricing, estInput, estOutput);
+
+    let reservationId: string | null = null;
+    if (cfg.creditsEnforced) {
+      const held = await reserve(sql, {
+        teamId: a.teamId,
+        actorId: a.actor.id,
+        actorType: a.actor.actorType,
+        holdCredits: hold,
+      });
+      if (!held.ok) {
+        // Distinct codes on purpose: `insufficient_credits` stops the whole
+        // team and is fixed by topping up, `quota_exceeded` stops one member
+        // and is fixed by raising their limit. Collapsing them into one
+        // message sends people to the wrong remedy.
+        return c.json(err(held.code, held.message, 402), 402);
+      }
+      reservationId = held.reservationId;
+    }
     const clientAskedForUsage =
       (body.stream_options as { include_usage?: boolean } | undefined)?.include_usage === true;
 
@@ -129,15 +193,22 @@ export function createApp(deps: Deps) {
         // problem and retrying it just burns another call.
         if (tier.routing === "failover" && res.status >= 500) continue;
         // Pass the upstream error through verbatim — agent runtimes depend on
-        // these semantics — and do not settle anything.
+        // these semantics — and do not settle anything. The hold has to go
+        // back, though: the customer got no tokens, so charging or holding
+        // against a failed call is money they never spent.
+        await release(sql, reservationId).catch(() => {});
         return new Response(lastText, {
           status: res.status,
           headers: { "Content-Type": res.headers.get("content-type") ?? "application/json" },
         });
       }
 
-      const log = (u: { inputTokens: number; cachedInputTokens: number; outputTokens: number } | null, source: "upstream" | "estimated") =>
-        recordUsage(sql, {
+      const log = async (
+        u: { inputTokens: number; cachedInputTokens: number; outputTokens: number } | null,
+        source: "upstream" | "estimated",
+      ) => {
+        const credits = u ? computeCredits(tier.pricing, u.inputTokens, u.outputTokens) : 0;
+        const usageLogId = await recordUsage(sql, {
           teamId: a.teamId,
           actorId: a.actor.id,
           publicModelId: publicId,
@@ -146,13 +217,28 @@ export function createApp(deps: Deps) {
           inputTokens: u?.inputTokens ?? 0,
           cachedInputTokens: u?.cachedInputTokens ?? 0,
           outputTokens: u?.outputTokens ?? 0,
-          credits: u ? computeCredits(tier.pricing, u.inputTokens, u.outputTokens) : 0,
+          credits,
           usageSource: source,
           statusCode: res.status,
           stream: wantsStream,
           latencyMs: Date.now() - started,
           requestId: c.req.header("x-request-id") ?? null,
         });
+        if (!cfg.creditsEnforced) return;
+        // No usage row means the charge cannot be attributed, so release the
+        // hold rather than debit something the ledger cannot point at.
+        if (usageLogId) {
+          await settle(sql, {
+            reservationId,
+            teamId: a.teamId,
+            actorId: a.actor.id,
+            credits,
+            usageLogId,
+          }).catch((e) => console.error("[credits] settle failed", e));
+        } else {
+          await release(sql, reservationId).catch(() => {});
+        }
+      };
 
       if (!wantsStream || !res.body) {
         const json = await res.json().catch(() => null);
@@ -180,6 +266,7 @@ export function createApp(deps: Deps) {
       });
     }
 
+    await release(sql, reservationId).catch(() => {});
     return c.json(err("upstream_error", lastText.slice(0, 500), lastStatus), lastStatus as any);
   });
 
@@ -211,6 +298,131 @@ export function createApp(deps: Deps) {
   internal.get("/teams/:teamId/credits/summary", async (c) => {
     const teamId = c.req.param("teamId");
     return c.json({ teamId, balanceCredits: await getBalance(sql, teamId) });
+  });
+
+  // Adding credits. FC calls this for manual top-ups today and for payment
+  // webhooks later; the gateway stays the ledger's only writer either way.
+  internal.post("/teams/:teamId/credits/top-up", async (c) => {
+    const teamId = c.req.param("teamId");
+    const body = (await c.req.json().catch(() => null)) as {
+      amountCredits?: number;
+      kind?: string;
+      idempotencyKey?: string;
+      note?: string;
+    } | null;
+    const amount = Number(body?.amountCredits);
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      return c.json(err("invalid_request", "amountCredits must be a positive integer", 400), 400);
+    }
+    // Required, not optional: without it a retried delivery credits twice, and
+    // a payment provider retrying is normal rather than exceptional.
+    if (!body?.idempotencyKey) {
+      return c.json(err("invalid_request", "idempotencyKey is required", 400), 400);
+    }
+    const kind = (body.kind ?? "top_up") as "top_up" | "grant" | "adjustment" | "refund";
+    if (!["top_up", "grant", "adjustment", "refund"].includes(kind)) {
+      return c.json(err("invalid_request", `unknown kind "${kind}"`, 400), 400);
+    }
+    const result = await topUp(sql, {
+      teamId,
+      amountCredits: amount,
+      kind,
+      idempotencyKey: body.idempotencyKey,
+      note: body.note ?? null,
+    });
+    // 200 either way: a duplicate delivery is a success from the caller's side,
+    // and `applied` says which happened.
+    return c.json({ teamId, ...result });
+  });
+
+  // The gate on turning enforcement on (§4.8.1). Idempotent, so it can be run
+  // ahead of time, re-run after new teams appear, and re-run if it half-fails.
+  internal.post("/credits/backfill", async (c) => {
+    const amount = Number(c.req.query("amountCredits") ?? SIGNUP_GRANT_CREDITS);
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      return c.json(err("invalid_request", "amountCredits must be a positive integer", 400), 400);
+    }
+    return c.json(await backfillSignupGrants(sql, amount));
+  });
+
+  internal.get("/teams/:teamId/credits/usage", async (c) => {
+    const anchor = c.req.query("date") ? new Date(`${c.req.query("date")}T00:00:00+08:00`) : undefined;
+    return c.json(await usageReport(sql, c.req.param("teamId"), parseRange(c.req.query("range")), anchor));
+  });
+
+  // Top-up history. FC has already checked that the caller owns the team —
+  // the internal surface is not where membership is decided.
+  internal.get("/teams/:teamId/credits/ledger", async (c) =>
+    c.json({ items: await creditLedger(sql, c.req.param("teamId"), Number(c.req.query("limit") ?? 50)) }),
+  );
+
+  internal.get("/teams/:teamId/quotas", async (c) => {
+    const rows = await sql<any[]>`
+      select actor_id, limit_credits::text as limit_credits
+        from amux.member_credit_quota where team_id = ${c.req.param("teamId")}::uuid`;
+    const [settings] = await sql<any[]>`
+      select period, default_limit_credits::text as default_limit_credits, low_balance_credits::text as low_balance_credits
+        from amux.team_credit_settings where team_id = ${c.req.param("teamId")}::uuid`;
+    return c.json({
+      period: settings?.period ?? "month",
+      defaultLimitCredits: settings?.default_limit_credits === undefined || settings?.default_limit_credits === null
+        ? null : Number(settings.default_limit_credits),
+      lowBalanceCredits: settings?.low_balance_credits === undefined || settings?.low_balance_credits === null
+        ? null : Number(settings.low_balance_credits),
+      members: rows.map((r) => ({
+        actorId: r.actor_id,
+        limitCredits: r.limit_credits === null ? null : Number(r.limit_credits),
+      })),
+    });
+  });
+
+  internal.put("/teams/:teamId/quotas", async (c) => {
+    const teamId = c.req.param("teamId");
+    const body = (await c.req.json().catch(() => null)) as {
+      period?: string;
+      defaultLimitCredits?: number | null;
+      lowBalanceCredits?: number | null;
+      members?: Array<{ actorId: string; limitCredits: number | null }>;
+    } | null;
+    if (body?.period && body.period !== "week" && body.period !== "month") {
+      return c.json(err("invalid_request", 'period must be "week" or "month"', 400), 400);
+    }
+    await sql.begin(async (tx) => {
+      if (body?.period || body?.defaultLimitCredits !== undefined || body?.lowBalanceCredits !== undefined) {
+        await tx`
+          insert into amux.team_credit_settings
+            (team_id, period, default_limit_credits, low_balance_credits)
+          values (${teamId}::uuid, ${body?.period ?? "month"},
+                  ${body?.defaultLimitCredits ?? null}, ${body?.lowBalanceCredits ?? null})
+          on conflict (team_id) do update set
+            period = coalesce(${body?.period ?? null}, amux.team_credit_settings.period),
+            default_limit_credits = ${body?.defaultLimitCredits ?? null},
+            low_balance_credits = ${body?.lowBalanceCredits ?? null},
+            updated_at = now()`;
+      }
+      for (const m of body?.members ?? []) {
+        await tx`
+          insert into amux.member_credit_quota (team_id, actor_id, limit_credits)
+          values (${teamId}::uuid, ${m.actorId}::uuid, ${m.limitCredits})
+          on conflict (team_id, actor_id) do update
+            set limit_credits = ${m.limitCredits}, updated_at = now()`;
+      }
+    });
+    return c.json({ ok: true });
+  });
+
+  // On-demand audit; also runs on a timer (see server.ts).
+  internal.get("/credits/reconcile", async (c) => {
+    const findings = await reconcile(sql);
+    return c.json({ ok: findings.length === 0, findings });
+  });
+
+  internal.post("/usage/prune", async (c) => {
+    const months = Number(c.req.query("months") ?? 13);
+    if (!Number.isSafeInteger(months) || months < 1) {
+      return c.json(err("invalid_request", "months must be a positive integer", 400), 400);
+    }
+    return c.json({ deleted: await pruneUsage(sql, months) });
   });
   app.route("/internal", internal);
 

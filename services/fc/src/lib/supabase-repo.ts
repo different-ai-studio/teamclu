@@ -7,6 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { createClient as defaultCreateClient } from "@supabase/supabase-js";
 import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
+import { aiGateway } from "./ai-gateway.js";
 import { ApiError } from "./http-utils.js";
 import { DEFAULT_LIST_LIMIT, DEFAULT_MESSAGE_LIST_LIMIT } from "./routing-utils.js";
 
@@ -1118,6 +1119,91 @@ export function createSupabaseBusinessRepository(options) {
     // `tc-${teamId}`. If the team has never provisioned LiteLLM, throws 409
     // litellm_not_provisioned rather than implicitly setting it up — owner
     // intent must be explicit (call /litellm/setup first).
+
+    // ── team credits ────────────────────────────────────────────────────────
+    // Every read and write goes through the AI gateway rather than these
+    // tables directly: it is the ledger's only writer (design §4.9.1), and
+    // routing reads the same way keeps period boundaries and shapes identical
+    // on both sides of the billing screen.
+    //
+    // Permission split per §12.6: balance and usage are visible to every
+    // member — an exhausted wallet stops their work, so they must be able to
+    // see why — while the ledger and every mutation are owner-only.
+
+    /**
+     * Resolve actor ids in a usage report to display names.
+     *
+     * Done here rather than in the gateway: the gateway owns spend, not how a
+     * person is presented. It also has no business reading the actor directory
+     * — its grant is deliberately narrow.
+     */
+    async _nameUsageActors(teamId: string, report: any) {
+      const ids = (report?.byActor ?? []).map((r: any) => r.actorId).filter(Boolean);
+      if (!ids.length) return report;
+      const names = await (async () => {
+        const { data } = await supabase
+          .from("actors").select("id, display_name")
+          .eq("team_id", teamId).in("id", ids);
+        return new Map((data ?? []).map((r: any) => [r.id, r.display_name]));
+      })();
+      return {
+        ...report,
+        byActor: report.byActor.map((r: any) => ({
+          ...r,
+          // null display name = the unattributed bucket; the UI renders a
+          // localized label rather than a raw uuid.
+          displayName: r.actorId ? (names.get(r.actorId) ?? null) : null,
+        })),
+      };
+    },
+    async getTeamCredits(teamId: string) {
+      await requireCallerTeamMember(teamId);
+      const [summary, usage] = await Promise.all([
+        aiGateway.creditsSummary(teamId),
+        aiGateway.usage(teamId, { range: "month" }),
+      ]);
+      return {
+        teamId,
+        balanceCredits: summary.balanceCredits ?? 0,
+        period: { range: usage.range, startUtc: usage.startUtc, endUtc: usage.endUtc },
+        usedCredits: usage.summary?.credits ?? 0,
+      };
+    },
+    async getCreditUsage(teamId: string, opts: { range?: string; date?: string } = {}) {
+      await requireCallerTeamMember(teamId);
+      return this._nameUsageActors(teamId, await aiGateway.usage(teamId, opts));
+    },
+    async getCreditLedger(teamId: string, opts: { limit?: number } = {}) {
+      await requireCallerTeamOwner(teamId);
+      return aiGateway.ledger(teamId, opts.limit);
+    },
+    async topUpCredits(teamId: string, input: any) {
+      await requireCallerTeamOwner(teamId);
+      const amount = Number(input?.amountCredits);
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        throw new ApiError(400, "invalid_request", "amountCredits must be a positive integer");
+      }
+      // Required rather than generated here: an idempotency key the server
+      // invents is a new key on every retry, which defeats the point.
+      if (!input?.idempotencyKey) {
+        throw new ApiError(400, "invalid_request", "idempotencyKey is required");
+      }
+      return aiGateway.topUp(teamId, {
+        amountCredits: amount,
+        kind: input.kind ?? "top_up",
+        idempotencyKey: input.idempotencyKey,
+        note: input.note ?? null,
+      });
+    },
+    async getMemberQuotas(teamId: string) {
+      await requireCallerTeamMember(teamId);
+      return aiGateway.quotas(teamId);
+    },
+    async setMemberQuotas(teamId: string, input: any) {
+      await requireCallerTeamOwner(teamId);
+      return aiGateway.setQuotas(teamId, input ?? {});
+    },
+
     async setLiteLlmBudget(teamId, { maxBudget }: { maxBudget?: unknown } = {}) {
       await requireCallerTeamOwner(teamId);
 

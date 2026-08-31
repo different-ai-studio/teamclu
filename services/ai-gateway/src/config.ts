@@ -11,6 +11,16 @@ export type Config = {
   authBaseUrl: string;
   /** How long a verified token -> sub mapping is trusted. */
   tokenCacheTtlMs: number;
+  /**
+   * Whether a request can be REFUSED for lack of credits.
+   *
+   * Off by default, and that is the safe direction. Metering runs either way;
+   * this only decides whether an empty balance blocks. Turning it on before
+   * existing teams are back-filled with a starting grant 402s every team at
+   * once, so the rollout order is: deploy metering, back-fill, then flip this.
+   * See §4.8.1 of the design.
+   */
+  creditsEnforced: boolean;
 };
 
 function req(name: string): string {
@@ -33,5 +43,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     supabaseAnonKey: backendKind === "supabase" ? req("SUPABASE_ANON_KEY") : "",
     authBaseUrl: env.AUTH_BASE_URL?.trim() || "",
     tokenCacheTtlMs: Number(env.TOKEN_CACHE_TTL_MS || 60_000),
+    creditsEnforced: env.CREDITS_ENFORCED === "true" || env.CREDITS_ENFORCED === "1",
   };
 }

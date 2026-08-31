@@ -1420,7 +1420,8 @@
       "automation": "自动化",
       "roles": "角色",
       "rolesSkills": "角色与技能",
-      "deps": "依赖"
+      "deps": "依赖",
+      "billing": "账单"
     },
     "general": {
       "title": "通用",
@@ -2445,18 +2446,19 @@
       "prevPeriod": "上一周期",
       "nextPeriod": "下一周期",
       "unavailable": "团队 AI 用量尚不可用，请先开通团队 AI 网关（LiteLLM）。",
-      "totalCost": "总费用",
-      "totalTokens": "总 Token 数",
       "requests": "请求数",
-      "budget": "预算",
       "leaderboard": "成员排行榜",
       "noUsage": "本周期暂无用量。",
       "unattributed": "未归属",
-      "byModel": "按模型",
       "colName": "名称",
       "colTokens": "Token",
       "colRequests": "请求",
-      "colCost": "费用"
+      "pointsUsed": "消耗积分",
+      "inputTokens": "输入 tokens",
+      "outputTokens": "输出 tokens",
+      "byTier": "按档位",
+      "colPoints": "积分",
+      "beforeStats": "{{date}} 之前没有统计数据。用量统计自新账单系统上线起开始记录；更早的记录停留在旧网关，口径不同，没有迁移。"
     },
     "privacy": {
       "title": "隐私与遥测",
@@ -2823,6 +2825,37 @@
       "daemonDeliveryFailed": "已保存到本地，但 daemon 未接收 —— 在重试成功前，共享环境变量不可用。",
       "updateSectionTitle": "更新团队密钥",
       "updateSectionDesc": "成员需使用相同密钥才能解密共享环境变量。"
+    },
+    "billing": {
+      "title": "账单",
+      "description": "团队共享钱包。所有成员的 AI 用量都从这里扣。",
+      "loading": "正在加载账单…",
+      "unavailable": "团队账单尚不可用 —— 本部署未配置 AI 网关。",
+      "balance": "当前余额",
+      "periodLabel": "本结算周期",
+      "available": "可用余额",
+      "usedThisPeriod": "本周期已消耗",
+      "runway": "按当前速度可用",
+      "points": "积分",
+      "days": "天",
+      "emptyTitle": "余额已用完，团队的 AI 请求已停止",
+      "emptyBody": "充值后立即恢复，不需要重启。已经在跑的会话会停在当前一步。",
+      "usageTitle": "本周期用量",
+      "usageSub": "{{tokens}} tokens · {{requests}} 次请求",
+      "noUsage": "本周期暂无用量。",
+      "tier": "档位",
+      "pointsUsed": "消耗积分",
+      "share": "占比",
+      "shareNote": "占比按积分计，不按 token 数 —— 不同档位每 token 的成本差一个数量级。",
+      "ledger": "充值历史",
+      "ownerOnly": "仅所有者可见",
+      "noLedger": "暂无充值记录。",
+      "kind": {
+        "top_up": "充值",
+        "grant": "赠送",
+        "adjustment": "调整",
+        "refund": "退款"
+      }
     }
   },
   "skillssh": {

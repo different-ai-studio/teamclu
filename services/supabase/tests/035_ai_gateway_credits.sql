@@ -4,7 +4,7 @@
 -- shape of the DDL: getting any of them wrong produces wrong money, silently.
 begin;
 
-select plan(11);
+select plan(13);
 
 -- The reservation path takes `select ... for update` on this row, so it has to
 -- be one row per team.
@@ -65,6 +65,19 @@ select has_function('amux', 'ai_gateway_resolve_actor', array['uuid','uuid'],
 select ok(
   not has_table_privilege('authenticated', 'amux.credit_ledger', 'SELECT'),
   'the authenticated role cannot read the credit ledger directly'
+);
+
+-- The signup-grant backfill is the gate on enabling enforcement. amux.teams
+-- carries RLS, so without this function the backfill enumerates zero teams and
+-- reports success -- and the next step is turning enforcement on for everyone.
+select has_function('amux', 'ai_gateway_teams_missing_signup_grant', array[]::text[],
+  'backfill can enumerate teams past RLS on amux.teams');
+
+-- ai_usage_logs is append-only on the request path, but the gateway also owns
+-- the 13-month retention window, and that needs delete.
+select ok(
+  has_table_privilege('ai_gateway', 'amux.ai_usage_logs', 'DELETE'),
+  'the gateway role can enforce usage retention'
 );
 
 select * from finish();

@@ -1420,7 +1420,8 @@
       "automation": "Automation",
       "roles": "Roles",
       "rolesSkills": "Roles & Skills",
-      "deps": "Dependencies"
+      "deps": "Dependencies",
+      "billing": "Billing"
     },
     "general": {
       "title": "General",
@@ -2445,18 +2446,19 @@
       "prevPeriod": "Previous period",
       "nextPeriod": "Next period",
       "unavailable": "Team AI usage is not available yet. Enable the team AI gateway (LiteLLM) first.",
-      "totalCost": "Total Cost",
-      "totalTokens": "Total Tokens",
       "requests": "Requests",
-      "budget": "Budget",
       "leaderboard": "Member Leaderboard",
       "noUsage": "No usage in this period.",
       "unattributed": "Unattributed",
-      "byModel": "By Model",
       "colName": "Name",
       "colTokens": "Tokens",
       "colRequests": "Reqs",
-      "colCost": "Cost"
+      "pointsUsed": "Points used",
+      "inputTokens": "Input tokens",
+      "outputTokens": "Output tokens",
+      "byTier": "By tier",
+      "colPoints": "Points",
+      "beforeStats": "No statistics before {{date}}. Usage recording began with the new billing system; earlier records stayed with the old gateway and measure a different thing, so they were not carried over."
     },
     "privacy": {
       "title": "Privacy & Telemetry",
@@ -2823,6 +2825,37 @@
       "daemonDeliveryFailed": "Saved locally, but the daemon didn't accept it — shared env vars stay unavailable until you retry.",
       "updateSectionTitle": "Update team secret",
       "updateSectionDesc": "Members must use the same secret to decrypt shared environment variables."
+    },
+    "billing": {
+      "title": "Billing",
+      "description": "A shared team wallet. Every member's AI usage is deducted from it.",
+      "loading": "Loading billing…",
+      "unavailable": "Team billing is not available yet — the AI gateway is not configured for this deployment.",
+      "balance": "Current balance",
+      "periodLabel": "This billing period",
+      "available": "Available",
+      "usedThisPeriod": "Used this period",
+      "runway": "At current pace",
+      "points": "points",
+      "days": "days",
+      "emptyTitle": "Balance is used up — the team's AI requests have stopped",
+      "emptyBody": "Topping up restores service immediately; no restart needed. Sessions already running stop at their current step.",
+      "usageTitle": "This period's usage",
+      "usageSub": "{{tokens}} tokens · {{requests}} requests",
+      "noUsage": "No usage in this period.",
+      "tier": "Tier",
+      "pointsUsed": "Points",
+      "share": "Share",
+      "shareNote": "Share is measured in points, not tokens — per-token cost differs by an order of magnitude across tiers.",
+      "ledger": "Top-up history",
+      "ownerOnly": "Owners only",
+      "noLedger": "No top-ups yet.",
+      "kind": {
+        "top_up": "Top-up",
+        "grant": "Grant",
+        "adjustment": "Adjustment",
+        "refund": "Refund"
+      }
     }
   },
   "skillssh": {
