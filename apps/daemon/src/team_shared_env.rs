@@ -162,12 +162,17 @@ fn load_team_env_from_secrets_dir_detailed(
                 continue;
             }
         };
-        // `tc_api_key` is no longer sourced from team `_secrets`: it is derived
-        // locally from `actor_id` at env-assembly time (`merge_env_maps`), so the
-        // managed LLM works on first install without waiting for the git clone
-        // that populates `_secrets`. Skip any stale copy so it can't shadow the
-        // local derivation. Other shared secrets flow through unchanged.
-        if secret.key_id.eq_ignore_ascii_case("tc_api_key") {
+        // The team LLM credential is never sourced from team `_secrets`, under
+        // either name. It is per-device — today a daemon session token minted
+        // locally, previously a key derived from `actor_id` — so a copy shared
+        // across the team is meaningless and, worse, would shadow the real one.
+        //
+        // `tc_api_key` stays in this list because a stale copy can still be
+        // sitting in a team's `_secrets` from before the gateway cutover.
+        // Other shared secrets flow through unchanged.
+        if secret.key_id.eq_ignore_ascii_case("tc_api_key")
+            || secret.key_id.eq_ignore_ascii_case("tc_gateway_token")
+        {
             continue;
         }
         loaded

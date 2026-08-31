@@ -12,6 +12,7 @@ use axum::{
 };
 use std::net::SocketAddr;
 
+use super::ai;
 use super::apps;
 use super::auth;
 use super::config;
@@ -30,6 +31,21 @@ use crate::mqtt::MqttRecoveryReason;
 
 pub fn build(state: HttpState) -> Router {
     let body_cap = state.config.max_body_bytes;
+    let ai_body_cap = state.config.ai_max_body_bytes;
+
+    // Its own sub-router so it can carry a different body cap: a layer applies
+    // to the router it is attached to, and the control-plane cap would 413 a
+    // long conversation before it ever left the machine.
+    let ai_routes = Router::new()
+        .route(
+            "/v1/ai/teams/:team_id/*path",
+            get(ai::proxy)
+                .post(ai::proxy)
+                .put(ai::proxy)
+                .delete(ai::proxy),
+        )
+        .layer(body_limit_layer(ai_body_cap));
+
     Router::new()
         .route("/v1/healthz", healthz_route())
         .route("/v1/info", info_route())
@@ -274,6 +290,10 @@ pub fn build(state: HttpState) -> Router {
         .route("/v1/team/changed", get(team_sync::list_changed))
         .route("/v1/team/remote-pending", get(team_sync::remote_pending))
         .layer(body_limit_layer(body_cap))
+        // Merged AFTER the control-plane body cap so `/v1/ai/*` keeps its own.
+        // Rate limiting and request ids stay global; the AI bucket is selected
+        // inside the limiter by path.
+        .merge(ai_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_layer,

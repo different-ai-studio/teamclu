@@ -37,7 +37,7 @@ pub fn sync_global_team_provider(
     secrets: &HashMap<String, String>,
 ) -> anyhow::Result<bool> {
     let changed = team_provider::ensure_global_team_provider(managed_llm)?;
-    let Some(api_key) = secrets.get("tc_api_key") else {
+    let Some(gateway_token) = secrets.get("tc_gateway_token") else {
         return Ok(changed);
     };
     let resolved = crate::opencode_config::OpencodeConfigStore::apply_global(|config| {
@@ -50,11 +50,19 @@ pub fn sync_global_team_provider(
         else {
             return Ok(false);
         };
-        let next = key.replace("${tc_api_key}", api_key);
-        if next == key {
+        // Write the current token outright rather than only substituting the
+        // placeholder. Session tokens live in daemon memory, so the value on
+        // disk is dead after a restart -- a placeholder-only substitution would
+        // leave that stale value in place forever. The caller mints once per
+        // process and reuses it, so this is a no-op in the steady state.
+        //
+        // It also clears a `sk-tc-*` LiteLLM key left over from before the
+        // cutover, which nothing else would.
+        if key == *gateway_token {
             return Ok(false);
         }
-        config["provider"]["team"]["options"]["apiKey"] = serde_json::Value::String(next);
+        config["provider"]["team"]["options"]["apiKey"] =
+            serde_json::Value::String(gateway_token.clone());
         Ok(true)
     })?;
     Ok(changed || resolved)
@@ -136,7 +144,7 @@ mod tests {
             r#"{
   "provider": {
     "team": {
-      "options": { "apiKey": "${tc_api_key}" },
+      "options": { "apiKey": "${tc_gateway_token}" },
       "models": { "model-a": { "name": "Model A" } }
     }
   },
@@ -149,7 +157,7 @@ mod tests {
         )
         .unwrap();
 
-        let secrets = secrets_for_team_provider("actor-123");
+        let secrets = secrets_for_team_provider("tok_actor_123");
         sync_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), &secrets).unwrap();
         resolve_workspace_runtime_config(
             dir.path(),
@@ -160,7 +168,7 @@ mod tests {
 
         let on_disk = read_opencode(dir.path());
         let global = fs::read_to_string(global_config_path(&global_dir)).unwrap();
-        assert!(global.contains("sk-tc-actor-123"));
+        assert!(global.contains("tok_actor_123"));
         assert!(!on_disk.contains("provider.team"));
         assert!(
             on_disk.contains("${GITHUB_TOKEN}"),
@@ -175,7 +183,7 @@ mod tests {
     #[test]
     fn sync_preserves_resolved_api_key_on_reconcile() {
         let (_lock, dir, _home) = global_config_dir();
-        let resolved = "sk-tc-actor-xyz";
+        let resolved = "tok_actor_xyz";
         fs::write(
             global_config_path(&dir),
             serde_json::json!({
@@ -195,7 +203,7 @@ mod tests {
 
         sync_global_team_provider(
             &ManagedLlmState::Enabled(sample_provider()),
-            &secrets_for_team_provider("actor-xyz"),
+            &secrets_for_team_provider("tok_actor_xyz"),
         )
         .unwrap();
 
@@ -241,7 +249,7 @@ mod tests {
             dir.path().join("opencode.json"),
             r#"{
   "provider": {
-    "team": { "options": { "apiKey": "${tc_api_key}" } }
+    "team": { "options": { "apiKey": "${tc_gateway_token}" } }
   },
   "mcp": {
     "github": { "environment": { "TOKEN": "${API_TOKEN}" } }
@@ -251,7 +259,10 @@ mod tests {
         .unwrap();
 
         let mut secrets = HashMap::new();
-        secrets.insert("tc_api_key".to_string(), "sk-tc-spawn-actor".to_string());
+        secrets.insert(
+            "tc_gateway_token".to_string(),
+            "tok_spawn_actor".to_string(),
+        );
         secrets.insert("API_TOKEN".to_string(), "ghp_spawn".to_string());
 
         sync_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), &secrets).unwrap();
@@ -260,15 +271,23 @@ mod tests {
 
         let on_disk = read_opencode(dir.path());
         let global = fs::read_to_string(global_config_path(&global_dir)).unwrap();
-        assert!(global.contains("sk-tc-spawn-actor"));
+        assert!(global.contains("tok_spawn_actor"));
         assert!(on_disk.contains("ghp_spawn"));
-        assert!(!global.contains("${tc_api_key}"));
+        assert!(!global.contains("${tc_gateway_token}"));
         assert!(!on_disk.contains("${API_TOKEN}"));
         assert!(dir.path().join(".teamclu/opencode.runtime.json").exists());
+        // The model list is pinned client-side (TEAM_MODEL_TIERS), so the
+        // cloud's `model-a` must NOT appear -- what the gateway routes each
+        // tier to is a server-side concern the client never sees.
         let parsed: serde_json::Value = serde_json::from_str(&global).unwrap();
-        assert_eq!(
-            parsed["provider"]["team"]["models"]["model-a"]["name"].as_str(),
-            Some("Model A")
+        let models = parsed["provider"]["team"]["models"].as_object().unwrap();
+        assert_eq!(models.len(), 3, "exactly the three tiers");
+        for (id, label) in crate::team_provider::TEAM_MODEL_TIERS {
+            assert_eq!(models[id]["name"].as_str(), Some(label), "tier {id}");
+        }
+        assert!(
+            !models.contains_key("model-a"),
+            "cloud model list is not used"
         );
     }
 }

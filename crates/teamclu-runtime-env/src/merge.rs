@@ -2,20 +2,25 @@ use std::collections::HashMap;
 
 use crate::SystemEnvContext;
 
-/// Locally derived LiteLLM virtual key for the given actor (empty → none).
-pub fn tc_api_key_for_actor(actor_id: &str) -> Option<String> {
-    if actor_id.is_empty() {
-        return None;
-    }
-    let suffix: String = actor_id.chars().take(40).collect();
-    Some(format!("sk-tc-{suffix}"))
-}
+/// Placeholder written into `provider.team.options.apiKey` before resolution.
+pub const GATEWAY_TOKEN_PLACEHOLDER: &str = "${tc_gateway_token}";
 
-/// Secrets map for reconcile / lightweight provider.team sync (tc_api_key only).
-pub fn secrets_for_team_provider(actor_id: &str) -> HashMap<String, String> {
+/// Prefix of the credential this replaced: a LiteLLM virtual key derived
+/// locally as `sk-tc-{actor_id[..40]}`. A value with this prefix on disk is a
+/// leftover from before the gateway cutover and must be overwritten — it names
+/// a key the new gateway will never accept, and nothing else would clear it.
+pub const LEGACY_VIRTUAL_KEY_PREFIX: &str = "sk-tc-";
+
+/// Secrets map for reconcile / lightweight `provider.team` sync.
+///
+/// The credential is supplied by the caller rather than derived here: it is a
+/// daemon session token scoped to `ai:invoke`, and only the daemon can mint
+/// one. Deriving a value from the actor id (which is what this did for LiteLLM)
+/// cannot produce a token anything is willing to verify.
+pub fn secrets_for_team_provider(gateway_token: &str) -> HashMap<String, String> {
     let mut secrets = HashMap::new();
-    if let Some(key) = tc_api_key_for_actor(actor_id) {
-        secrets.insert("tc_api_key".to_string(), key);
+    if !gateway_token.is_empty() {
+        secrets.insert("tc_gateway_token".to_string(), gateway_token.to_string());
     }
     secrets
 }
@@ -61,6 +66,7 @@ mod tests {
             actor_id: actor_id.to_string(),
             display_name: display_name.to_string(),
             cloud_token_file: None,
+            gateway_token: None,
         }
     }
 
@@ -109,17 +115,25 @@ mod tests {
     }
 
     #[test]
-    fn secrets_for_team_provider_derives_tc_api_key() {
-        let secrets = secrets_for_team_provider("actor-123");
+    fn secrets_for_team_provider_carries_the_caller_supplied_token() {
+        // The credential is passed in, not derived: it is a daemon session
+        // token, and no function of the actor id produces one anything will
+        // verify.
+        let secrets = secrets_for_team_provider("tok_abc");
         assert_eq!(
-            secrets.get("tc_api_key").map(String::as_str),
-            Some("sk-tc-actor-123")
+            secrets.get("tc_gateway_token").map(String::as_str),
+            Some("tok_abc")
         );
+        // No token (no HTTP layer to mint one) leaves the placeholder in place
+        // rather than writing an empty credential.
         assert!(secrets_for_team_provider("").is_empty());
     }
 
     #[test]
-    fn tc_api_key_from_actor_id() {
+    fn actor_id_no_longer_yields_a_credential() {
+        // It used to: `sk-tc-{actor_id[..40]}` was a LiteLLM virtual key derived
+        // from the actor id. The gateway token cannot be derived, so a context
+        // without one binds no credential rather than a guessable string.
         let actor_id = "a".repeat(50);
         let out = merge_env_maps(HashMap::new(), HashMap::new(), &ctx(&actor_id, ""));
 
@@ -127,11 +141,8 @@ mod tests {
             out.get("actor_id").map(String::as_str),
             Some(actor_id.as_str())
         );
-        let expected_key = format!("sk-tc-{}", &actor_id[..40]);
-        assert_eq!(
-            out.get("tc_api_key").map(String::as_str),
-            Some(expected_key.as_str())
-        );
+        assert!(!out.contains_key("tc_gateway_token"));
+        assert!(!out.contains_key("tc_api_key"));
     }
 
     #[test]
@@ -159,11 +170,11 @@ mod tests {
     }
 
     #[test]
-    fn skips_tc_api_key_when_actor_id_empty() {
+    fn skips_actor_bindings_when_actor_id_empty() {
         let out = merge_env_maps(HashMap::new(), HashMap::new(), &ctx("", "host"));
 
         assert!(!out.contains_key("actor_id"));
-        assert!(!out.contains_key("tc_api_key"));
+        assert!(!out.contains_key("tc_gateway_token"));
         assert_eq!(out.get("display_name").map(String::as_str), Some("host"));
     }
 
@@ -173,21 +184,17 @@ mod tests {
 
         assert_eq!(out.get("actor_id").map(String::as_str), Some("actor-123"));
         assert_eq!(out.get("display_name").map(String::as_str), Some("My Mac"));
-        assert_eq!(
-            out.get("tc_api_key").map(String::as_str),
-            Some("sk-tc-actor-123")
-        );
     }
 
     #[test]
     fn adds_uppercase_alias_for_lowercase_key() {
         let mut personal = HashMap::new();
-        personal.insert("tc_api_key".to_string(), "secret".to_string());
+        personal.insert("some_api_key".to_string(), "secret".to_string());
 
         let out = merge_env_maps(personal, HashMap::new(), &ctx("", ""));
 
-        assert_eq!(out.get("tc_api_key").map(String::as_str), Some("secret"));
-        assert_eq!(out.get("TC_API_KEY").map(String::as_str), Some("secret"));
+        assert_eq!(out.get("some_api_key").map(String::as_str), Some("secret"));
+        assert_eq!(out.get("SOME_API_KEY").map(String::as_str), Some("secret"));
     }
 
     #[test]

@@ -6,6 +6,20 @@ use crate::opencode_config::OpencodeConfigStore;
 use crate::storage_namespace::{brand_short_name_from_env, resolve_workspace_config_path};
 use crate::DEFAULT_TEAM_REPO_DIR;
 
+/// The three capability tiers the team gateway exposes, pinned client-side.
+///
+/// These ids are the whole public contract. What changes is which upstream each
+/// one resolves to, and that mapping lives in the gateway's catalog — so the
+/// backend, the price, and the vendor can all move without shipping a client.
+/// Adding a fourth tier does need a release, which is the intended trade: a new
+/// tier is a product decision, not a config tweak.
+///
+/// Sourcing this list from the cloud instead (which is what it used to do) made
+/// every member's model menu depend on a network round-trip that could return
+/// stale or empty, for a list that has not changed in the product's lifetime.
+pub const TEAM_MODEL_TIERS: [(&str, &str); 3] =
+    [("default", "标准"), ("pro", "高级"), ("max", "旗舰")];
+
 /// One model exposed by the team's managed LLM gateway.
 #[derive(Debug, Clone)]
 pub struct ManagedLlmModel {
@@ -95,16 +109,13 @@ pub fn mutate_team_provider(
 
     match state {
         ManagedLlmState::Enabled(provider) => {
+            // Pinned, not read from `provider.models` (see TEAM_MODEL_TIERS).
             let mut models_out = serde_json::Map::new();
-            for m in &provider.models {
-                if m.id.is_empty() {
-                    continue;
-                }
-                let mname = if m.name.is_empty() { &m.id } else { &m.name };
+            for (id, label) in TEAM_MODEL_TIERS {
                 models_out.insert(
-                    m.id.clone(),
+                    id.to_string(),
                     serde_json::json!({
-                        "name": mname,
+                        "name": label,
                         "limit": { "context": 256000, "output": 16000 }
                     }),
                 );
@@ -115,10 +126,15 @@ pub fn mutate_team_provider(
             } else {
                 &provider.name
             };
-            // Keep a resolved `sk-tc-*` key across reconciles. `ensure_global_team_provider`
-            // runs on every provider read (including after wake); always writing the
-            // `${tc_api_key}` placeholder would clobber spawn-time resolution and
-            // break LiteLLM auth for a live opencode serve instance.
+            // Preserve an already-resolved credential so this reconcile (which
+            // runs on every provider read, including after wake) does not
+            // clobber it with a placeholder and break a live opencode serve.
+            //
+            // Two values are NOT worth preserving, and both are rewritten by
+            // `sync_global_team_provider` right after this:
+            //   - a `sk-tc-*` LiteLLM virtual key left over from before the
+            //     gateway cutover, which the new gateway will never accept
+            //   - any placeholder
             let api_key = obj
                 .get("provider")
                 .and_then(|p| p.get("team"))
@@ -126,7 +142,8 @@ pub fn mutate_team_provider(
                 .and_then(|o| o.get("apiKey"))
                 .and_then(|v| v.as_str())
                 .filter(|k| !k.contains("${"))
-                .unwrap_or("${tc_api_key}");
+                .filter(|k| !k.starts_with(crate::merge::LEGACY_VIRTUAL_KEY_PREFIX))
+                .unwrap_or(crate::merge::GATEWAY_TOKEN_PLACEHOLDER);
             let team_entry = serde_json::json!({
                 "npm": "@ai-sdk/openai-compatible",
                 "name": name,
@@ -255,7 +272,10 @@ pub fn team_provider_env_payload(provider: &ManagedLlmProvider) -> String {
     serde_json::json!({
         "name": name,
         "baseUrl": provider.base_url,
-        "apiKeyEnv": "tc_api_key",
+        // Names the env binding a runtime that registers the provider
+        // itself (pi) should read the credential from. Must track the key
+        // bound in resolved_env.rs — a stale name here is a silent 401.
+        "apiKeyEnv": "tc_gateway_token",
         "models": models,
     })
     .to_string()
@@ -358,6 +378,40 @@ mod tests {
     }
 
     #[test]
+    fn materializes_exactly_the_three_pinned_tiers_ignoring_the_cloud_list() {
+        // The cloud used to drive this list. It no longer does: whatever the
+        // backend reports, the client writes default/pro/max. Which upstream a
+        // tier resolves to is the gateway's business, and changing it must not
+        // require a client release.
+        let state = ManagedLlmState::Enabled(ManagedLlmProvider {
+            name: "Team".into(),
+            base_url: "https://gw.example/v1/teams/t1".into(),
+            models: vec![ManagedLlmModel {
+                id: "some-cloud-model".into(),
+                name: "Cloud Model".into(),
+            }],
+        });
+        let mut config = serde_json::json!({});
+        assert!(mutate_team_provider(&mut config, &state).unwrap());
+
+        let models = config["provider"]["team"]["models"].as_object().unwrap();
+        assert_eq!(models.len(), 3);
+        for (id, label) in TEAM_MODEL_TIERS {
+            assert_eq!(models[id]["name"].as_str(), Some(label), "tier {id}");
+        }
+        assert!(
+            !models.contains_key("some-cloud-model"),
+            "a model advertised by the cloud must not reach the runtime"
+        );
+        // The base URL still comes from the cloud -- that is the cutover lever
+        // (design §11.1), and pinning it would remove the rollback path.
+        assert_eq!(
+            config["provider"]["team"]["options"]["baseURL"].as_str(),
+            Some("https://gw.example/v1/teams/t1")
+        );
+    }
+
+    #[test]
     fn ensure_global_team_provider_adds_team_when_enabled() {
         let (_lock, dir, _home) = global_config_dir();
         ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
@@ -367,17 +421,48 @@ mod tests {
     }
 
     #[test]
-    fn ensure_global_team_provider_preserves_resolved_api_key() {
+    fn ensure_global_team_provider_preserves_a_live_resolved_token() {
+        // Reconcile runs on every provider read. Overwriting a resolved
+        // credential with the placeholder would break a live opencode serve
+        // mid-session, so a real token has to survive.
         let (_lock, dir, _home) = global_config_dir();
-        let resolved_key = "sk-tc-actor-123";
+        let resolved = "tok_live_session";
+        write_team_provider_with_key(&dir, resolved);
+        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
+        assert_eq!(
+            read_team_api_key(&dir).as_deref(),
+            Some(resolved),
+            "a live token must survive reconcile"
+        );
+    }
+
+    #[test]
+    fn ensure_global_team_provider_drops_a_legacy_litellm_key() {
+        // The opposite case, and the reason the filter is not just "keep
+        // anything already resolved": a `sk-tc-*` LiteLLM virtual key left over
+        // from before the gateway cutover names a credential the new gateway
+        // will never accept. Preserving it would strand the device on a dead
+        // key with no self-healing path -- the symptom is a permanent 401 that
+        // no amount of reconciling clears.
+        let (_lock, dir, _home) = global_config_dir();
+        write_team_provider_with_key(&dir, "sk-tc-actor-123");
+        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
+        assert_eq!(
+            read_team_api_key(&dir).as_deref(),
+            Some(crate::merge::GATEWAY_TOKEN_PLACEHOLDER),
+            "a legacy virtual key is replaced by the placeholder, which sync_global_team_provider then fills"
+        );
+    }
+
+    fn write_team_provider_with_key(dir: &tempfile::TempDir, api_key: &str) {
         fs::write(
-            global_config_path(&dir),
+            global_config_path(dir),
             serde_json::json!({
                 "provider": {
                     "team": {
                         "options": {
                             "baseURL": "https://gateway.example/v1",
-                            "apiKey": resolved_key
+                            "apiKey": api_key
                         },
                         "models": { "old-model": { "name": "Old" } }
                     }
@@ -386,14 +471,14 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
+    }
+
+    fn read_team_api_key(dir: &tempfile::TempDir) -> Option<String> {
         let parsed: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(global_config_path(&dir)).unwrap()).unwrap();
-        assert_eq!(
-            parsed["provider"]["team"]["options"]["apiKey"].as_str(),
-            Some(resolved_key),
-            "reconcile must not clobber a resolved LiteLLM key with the tc_api_key placeholder"
-        );
+            serde_json::from_str(&fs::read_to_string(global_config_path(dir)).unwrap()).unwrap();
+        parsed["provider"]["team"]["options"]["apiKey"]
+            .as_str()
+            .map(str::to_owned)
     }
 
     #[test]
@@ -478,7 +563,7 @@ mod tests {
     fn stabilize_unknown_with_disk_team_becomes_enabled() {
         let disk = serde_json::json!({
             "name": "Team",
-            "options": { "baseURL": "https://gateway.example/v1", "apiKey": "${tc_api_key}" },
+            "options": { "baseURL": "https://gateway.example/v1", "apiKey": "${tc_gateway_token}" },
             "models": {
                 "gpt-4": { "name": "GPT-4" }
             }
@@ -498,7 +583,7 @@ mod tests {
         let provider = sample_provider();
         let disk = serde_json::json!({
             "name": provider.name,
-            "options": { "baseURL": provider.base_url, "apiKey": "${tc_api_key}" },
+            "options": { "baseURL": provider.base_url, "apiKey": "${tc_gateway_token}" },
             "models": {
                 "gpt-4": { "name": "GPT-4" }
             }

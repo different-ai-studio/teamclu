@@ -99,12 +99,23 @@ pub async fn rate_limit_layer(
     req: Request,
     next: Next,
 ) -> Response {
-    let key = key_for(&req);
-    match state.limiter.check(
-        &key,
-        state.config.rate_limit_rps,
-        state.config.rate_limit_burst,
-    ) {
+    // `/v1/ai/*` gets its own bucket, keyed separately so a busy agent cannot
+    // exhaust the control-plane allowance that the UI watching it depends on.
+    let is_ai = req.uri().path().starts_with("/v1/ai/");
+    let key = if is_ai {
+        format!("ai:{}", key_for(&req))
+    } else {
+        key_for(&req)
+    };
+    let (rps, burst) = if is_ai {
+        (
+            state.config.ai_rate_limit_rps,
+            state.config.ai_rate_limit_burst,
+        )
+    } else {
+        (state.config.rate_limit_rps, state.config.rate_limit_burst)
+    };
+    match state.limiter.check(&key, rps, burst) {
         Ok(()) => next.run(req).await,
         Err(retry_after) => HttpError::rate_limited(retry_after).into_response(),
     }

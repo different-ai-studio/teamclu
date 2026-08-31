@@ -17,6 +17,7 @@ pub mod context_registry;
 pub mod context_service;
 mod handle;
 mod instruction_delivery;
+pub mod gateway_token;
 pub mod managed_llm;
 mod manager;
 mod native_skill_fallback_guard;

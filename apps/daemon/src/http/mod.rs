@@ -26,6 +26,7 @@
 //! - [`events`] — typed event schema + ring buffer + replay (PR5/7)
 //! - [`limit`] — rate limiting + body limits (PR8)
 
+pub mod ai;
 pub mod apps;
 pub mod auth;
 pub mod config;

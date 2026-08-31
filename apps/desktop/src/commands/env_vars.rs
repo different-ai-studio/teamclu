@@ -236,23 +236,18 @@ pub(crate) struct SystemEnvVarDef {
 
 /// Registry of all system env vars.
 /// To add a new one: append an entry here — nothing else changes.
-pub(crate) const SYSTEM_ENV_VARS: &[SystemEnvVarDef] = &[SystemEnvVarDef {
-    key: "tc_api_key",
-    description: "Team LLM API Key",
-    default_fn: |ctx| {
-        if ctx.actor_id.is_empty() {
-            return None;
-        }
-        // 40 chars: matches the LiteLLM virtual key suffix length limit.
-        // Use char-based truncation so a non-ASCII actor_id can't panic on a
-        // mid-codepoint byte boundary (actor_id is ASCII in practice, but the
-        // type no longer guarantees it the way the old hex device_id did).
-        let suffix: String = ctx.actor_id.chars().take(40).collect();
-        Some(format!("sk-tc-{suffix}"))
-    },
-    policy: DefaultPolicy::RegenerateAlways,
-    shared_default: false,
-}];
+///
+/// Empty since the team-gateway cutover. It held exactly one entry,
+/// `tc_api_key`, whose default was `sk-tc-{actor_id[..40]}` — a LiteLLM virtual
+/// key the desktop could derive because it was guessable. Its replacement is a
+/// daemon session token scoped to `ai:invoke`, which only the daemon can mint,
+/// so there is nothing for the desktop to seed.
+///
+/// Seeding the old value would be worse than useless now: personal env takes
+/// precedence over system env when the runtime env is merged, so a leftover
+/// `tc_api_key` in the keychain blob would shadow the credential the daemon
+/// writes.
+pub(crate) const SYSTEM_ENV_VARS: &[SystemEnvVarDef] = &[];
 
 /// A single environment variable entry (key + description, no value).
 #[derive(Debug, Clone, Serialize, Deserialize)]
