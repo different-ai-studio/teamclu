@@ -305,8 +305,21 @@ jobs:
             done
             upsert_env ADDITIONAL_REDIRECT_URLS "$redirects"
 
-            echo "=== build fc ==="
-            docker compose build fc
+            echo "=== build fc + ai-gateway ==="
+            # BOTH locally-built services. `up` runs with --pull never and no
+            # --build, so anything omitted here keeps whatever image it was
+            # first created from — silently, and forever.
+            #
+            # ai-gateway was missing from this line when it was introduced, so
+            # every gateway change after the first deploy ran against stale
+            # code. The symptom is a 404 on a route that demonstrably exists in
+            # the repo, which sends you looking at routing rather than at the
+            # image. Add any new locally-built service here.
+            #
+            # amuxd also has a `build:` in compose but is deliberately NOT here:
+            # that build is for local dev, while this box receives amuxd as a
+            # prebuilt image via daemon-deploy.yml's `docker load`.
+            docker compose build fc ai-gateway
 
             echo "=== pull litellm (up --pull never will not fetch it) ==="
             # Same flaky path to ghcr.io as the git fetch above; the image is
