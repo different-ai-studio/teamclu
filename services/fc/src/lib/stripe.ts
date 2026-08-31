@@ -135,6 +135,8 @@ export interface CheckoutSessionInput {
   priceId: string;
   /** Who clicked buy — recorded on the Session for support, never trusted for authz. */
   actorId?: string | null;
+  /** Injectable so tests can assert the params we send without a live account. */
+  stripe?: Stripe;
 }
 
 /**
@@ -153,7 +155,7 @@ export interface CheckoutSessionInput {
 export async function createCheckoutSession(
   input: CheckoutSessionInput,
 ): Promise<{ sessionId: string; url: string }> {
-  const stripe = stripeClient();
+  const stripe = input.stripe ?? stripeClient();
   if (!allowedPriceIds().includes(input.priceId)) {
     throw new ApiError(400, "invalid_price", "priceId is not an offered credit package");
   }
@@ -164,6 +166,21 @@ export async function createCheckoutSession(
   const session = await stripe.checkout.sessions.create(
     {
       mode: "payment",
+      // We are the merchant of record, not Link.
+      //
+      // Managed Payments is ON by default on this account and changes who
+      // sells: the hosted page reads "sold through Link — you authorise Link to
+      // charge you", Link owns the tax treatment (a 9% GST line turned an
+      // HK$98 order into HK$106.82), and the payment runs on Link's own rails.
+      // That last part is not cosmetic — a real Apple Pay attempt failed there
+      // and left NO PaymentIntent and no event on our account, so there was
+      // nothing to debug from. Turning it off also switches automatic_tax back
+      // off, which is correct: being the merchant of record means owning the
+      // tax question rather than having one silently answered for us.
+      //
+      // Cast: the API accepts this (its own error message recommends it) but it
+      // is absent from the SDK's typed surface as of v22.6.0.
+      ...({ managed_payments: { enabled: false } } as Record<string, unknown>),
       line_items: [{ price: input.priceId, quantity: 1 }],
       client_reference_id: input.teamId,
       metadata: {
