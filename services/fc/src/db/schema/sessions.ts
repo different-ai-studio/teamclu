@@ -23,8 +23,14 @@ export const sessions = pgTable("sessions", {
    *  Written at create time from the binding and never cleared, so a chat can
    *  still enumerate the sessions it detached from (`/sessions` → `/sessions n`). */
   gatewayKey: text("gateway_key"),
-  /** How the session was created: 'user' (default) | 'cron' | 'gateway'. */
+  /** How the session was created: 'user' (default) | 'cron' | 'gateway' | 'thread'. */
   source: text("source").notNull().default("user"),
+  /** Parent session when source='thread' (forked agent-reply thread). */
+  parentSessionId: uuid("parent_session_id").references((): typeof sessions.id => sessions.id, {
+    onDelete: "cascade",
+  }),
+  /** Anchor agent_reply message when source='thread'. */
+  threadRootMessageId: uuid("thread_root_message_id"),
   /** For source='cron': the desktop-local cron job id that created it
    *  (a daemon-local string id, not a cloud FK). */
   cronJobId: text("cron_job_id"),

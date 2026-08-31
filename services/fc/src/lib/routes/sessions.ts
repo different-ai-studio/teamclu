@@ -123,6 +123,22 @@ export function registerSessions(router) {
     return { body: out };
   });
 
+  router.post("/v1/sessions/:sessionId/threads", async (ctx) => {
+    const parentSessionId = decodeURIComponent(ctx.params.sessionId);
+    const body = ctx.json ?? {};
+    requireString(body.rootMessageId, "rootMessageId");
+    const out = await ctx.repository.createThread(parentSessionId, {
+      rootMessageId: body.rootMessageId,
+    });
+    return { statusCode: 201, body: out };
+  });
+
+  router.get("/v1/sessions/:sessionId/thread-summaries", async (ctx) => {
+    const parentSessionId = decodeURIComponent(ctx.params.sessionId);
+    const items = await ctx.repository.listThreadSummaries(parentSessionId);
+    return { body: { items } };
+  });
+
   // GET /v1/teams/:teamId/sessions is gone — it fetched a team's entire session
   // list unpaginated, then filtered participants with an `.in(<every id>)` that
   // outgrew the gateway's URI limit and surfaced as an opaque 500. Use
