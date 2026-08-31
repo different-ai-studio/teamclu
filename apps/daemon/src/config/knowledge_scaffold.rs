@@ -115,7 +115,7 @@ pub fn domain_index_template() -> &'static str {
     template_source("_index.md")
 }
 
-/// Today as `YYYY-MM-DD` (UTC). Exposed for the knowledge MCP handlers
+/// Today as `YYYY-MM-DD` (local). Exposed for the knowledge MCP handlers
 /// (template stamping in `daemon::server::knowledge`).
 pub(crate) fn today_iso() -> String {
     // Local date, not UTC. These stamps are read by people — a salvage filename
