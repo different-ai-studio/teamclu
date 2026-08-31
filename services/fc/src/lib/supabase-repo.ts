@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { createClient as defaultCreateClient } from "@supabase/supabase-js";
 import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
+import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
 import { DEFAULT_LIST_LIMIT, DEFAULT_MESSAGE_LIST_LIMIT } from "./routing-utils.js";
 
@@ -1194,6 +1195,18 @@ export function createSupabaseBusinessRepository(options) {
         idempotencyKey: input.idempotencyKey,
         note: input.note ?? null,
       });
+    },
+    async listCreditPackages(teamId: string) {
+      await requireCallerTeamMember(teamId);
+      return { items: await listCreditPackages() };
+    },
+    async createCreditCheckoutSession(teamId: string, input: any) {
+      await requireCallerTeamOwner(teamId);
+      const priceId = String(input?.priceId ?? "").trim();
+      if (!priceId) {
+        throw new ApiError(400, "invalid_request", "priceId is required");
+      }
+      return createCheckoutSession({ teamId, priceId });
     },
     async getMemberQuotas(teamId: string) {
       await requireCallerTeamMember(teamId);

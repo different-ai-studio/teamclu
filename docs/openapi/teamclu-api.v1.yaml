@@ -2812,6 +2812,83 @@ paths:
                   balanceCredits: { type: integer }
         '403': { description: Only team owners may top up }
 
+  /v1/teams/{teamId}/credits/packages:
+    get:
+      operationId: listCreditPackages
+      tags: [teams]
+      summary: Credit packages a team can buy
+      description: |
+        Resolved from the deployment's Stripe Price allowlist, so amounts and
+        the credits each grants live in exactly one place (the Price and its
+        `metadata.credits`) rather than being duplicated client-side.
+
+        Readable by any member — the top-up screen shows what is on offer even
+        to someone who cannot buy it. Empty when the deployment has no Stripe
+        configured, which the client renders as "top-up unavailable" rather
+        than as an error.
+
+        `unitAmount` is in Stripe's MINOR units (cents, 分) and is passed
+        through unconverted.
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+      responses:
+        '200':
+          description: Offered packages
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/CreditPackage' }
+        '403': { description: Not a member of this team }
+
+  /v1/teams/{teamId}/credits/checkout-session:
+    post:
+      operationId: createCreditCheckoutSession
+      tags: [teams]
+      summary: Open a Stripe Checkout Session for a credit package (owner only)
+      description: |
+        Returns a hosted Checkout URL. Open it in the SYSTEM browser, not an
+        embedded webview: 3DS and wallet flows break there, and a payment page
+        with no address bar is not something to ask a user to trust.
+
+        Do not block the UI waiting for the credits. They arrive over the
+        Stripe webhook (or the reconciliation pass behind it), so the client
+        shows "processing" and lets the balance refresh.
+
+        The team is taken from the path, never from the body — the Session is
+        the only thing a payment can be attributed by.
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [priceId]
+              properties:
+                priceId:
+                  type: string
+                  description: Must be one of the ids from `/credits/packages`
+      responses:
+        '200':
+          description: Hosted Checkout Session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessionId, url]
+                properties:
+                  sessionId: { type: string }
+                  url: { type: string, format: uri }
+        '400': { description: priceId missing or not an offered package }
+        '403': { description: Only team owners may buy credits }
+        '503': { description: Stripe is not configured for this deployment }
+
   /v1/teams/{teamId}/quotas:
     get:
       operationId: getMemberQuotas
@@ -7046,6 +7123,19 @@ components:
         amountCredits: { type: integer, description: Signed; refunds are negative }
         note: { type: ["string", "null"] }
         createdAt: { type: string }
+    CreditPackage:
+      type: object
+      required: [priceId, credits, currency, name]
+      properties:
+        priceId: { type: string }
+        credits:
+          type: integer
+          description: Credits granted on purchase, from the Price's metadata.credits
+        unitAmount:
+          type: ["integer", "null"]
+          description: Price in MINOR currency units (cents, 分); null for a Price with no fixed amount
+        currency: { type: string }
+        name: { type: string }
     TeamQuotas:
       type: object
       properties:
