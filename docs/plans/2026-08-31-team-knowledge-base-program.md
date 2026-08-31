@@ -559,3 +559,486 @@ knowledge_health            freshness / 覆盖度统计
 - 打捞 = 一次工具调用，不建 UI 流水线。
 - UI 快捷入口（右键「存到知识库」）调同一 handler，与 agent 共用
   一套后端，不分裂。
+
+---
+
+## 附录 E：两个示例团队的最终知识库（完整内容）
+
+以下分别是附录 A（用户增长运营组）和附录 B（供应链履约组）三周后的
+最终 vault 状态。每篇文档都是真实可落地的完整内容，不是骨架。
+
+### 增长运营组的最终 vault
+
+```
+knowledge/
+├── 00-home.md
+├── 10-onboarding/
+│   └── first-week.md
+├── 20-domains/
+│   ├── campaigns/
+│   │   ├── _index.md
+│   │   ├── 2026-618-retro.md
+│   │   └── push-copy-formula.md
+│   ├── channels/
+│   │   ├── _index.md
+│   │   └── cpi-benchmark.md
+│   └── metrics/
+│       ├── _index.md
+│       └── new-user-definition.md
+├── 30-decisions/
+│   └── 0001-unified-campaign-retro-template.md
+├── 40-runbooks/
+│   └── push-channel-outage.md
+├── 50-glossary.md
+├── 90-archive/
+│   └── 2025-q4-campaign-old-format.md
+├── attachments/
+│   └── 618-retro-chart.png
+├── 00-salvage/
+│   └── 2026-09-03-ai-push-hook.md
+└── knowledge.manifest.yaml
+```
+
+#### `00-home.md`
+
+```markdown
+---
+type: home
+updated: 2026-09-04
+---
+
+# 用户增长运营组知识库 / Growth Ops Knowledge Base
+
+我们负责拉新、激活、留存活动。新人先看 onboarding，出事查 runbooks，
+黑话不懂查 glossary。
+
+## 快速入口 / Quick Links
+
+- 新人入职 / Onboarding → [[10-onboarding/first-week]]
+- 活动打法 / Campaigns → [[20-domains/campaigns/_index]]
+- 渠道基准 / Channel Benchmarks → [[20-domains/channels/_index]]
+- 数据口径 / Metrics Definitions → [[20-domains/metrics/_index]]
+- 应急手册 / Runbooks → [[40-runbooks/]]
+- 术语表 / Glossary → [[50-glossary]]
+
+## 值班 / On-call
+
+每周一人，排班表在飞书日历。值班期间 runbook 是第二责任人。
+```
+
+#### `20-domains/metrics/new-user-definition.md`
+
+```markdown
+---
+type: domain-knowledge
+owner: 老周
+updated: 2026-09-02
+---
+
+# 新客定义 / New User Definition
+
+## 结论 / Definition
+
+**新客 = 注册后 7 天内完成首次核心行为的用户。**
+
+核心行为按业务线定义：
+- 电商：首单支付成功
+- 内容：首次发布或首次互动（点赞/评论/分享）
+
+## 为什么是这个定义 / Rationale
+
+之前有五版口径（注册即新客、注册 3 天、注册 7 天有活跃、
+首单、首互动），每次周会都对不齐。2026-08-28 周会定为
+「7 天 + 首次核心行为」，理由：
+- 3 天太短，周末注册的用户还没到活跃高峰
+- 纯注册太宽，羊毛党占比失真
+- 首单/首互动是真实价值动作
+
+## 历史口径对照 / Legacy Mappings
+
+| 旧口径 | 与新口径差异 | 数据修正系数 |
+|---|---|---|
+| 注册即新客 | 高估 ~40% | ×0.6 |
+| 注册 7 天有活跃 | 高估 ~15% | ×0.85 |
+| 首单（电商） | 基本一致 | ×1.0 |
+```
+
+#### `40-runbooks/push-channel-outage.md`
+
+```markdown
+---
+type: runbook
+owner: 老周
+last-verified: 2026-09-04
+---
+
+# Push 渠道大面积失败应急手册 / Push Channel Outage Runbook
+
+**触发条件**：push 送达率 5 分钟内下降 >50%，或多个渠道同时告警。
+
+## 前置确认 / Prerequisites
+
+1. 确认是渠道侧还是我们侧：先看 [渠道状态页](https://status.example.com)
+2. 拿到值班权限：push 后台 + 降级开关权限
+3. 通知链路：@值班群 → @渠道对接群
+
+## 步骤 / Steps
+
+1. **确认影响面**：后台「渠道健康」看板，确认是哪个渠道（个推/极光/FCM）
+2. **切降级通道**：后台 → 推送管理 → 降级开关 → 选备用渠道
+3. **验证恢复**：发一条测试 push 给测试机组，确认送达
+4. **观察 10 分钟**：送达率恢复到 >90% 才算稳定
+5. **回填记录**：在本文档末尾追加本次事件（时间、渠道、原因、耗时）
+
+## 验证 / Verification
+
+- 测试机收到 push
+- 渠道健康看板送达率 >90%
+- 无新增告警
+
+## 回滚 / Rollback
+
+如果备用渠道也失败：关闭 push 全量推送，只保留事务性 push
+（订单通知、安全验证码），等渠道恢复后逐步放开。
+
+## 历史事件 / Past Incidents
+
+| 日期 | 渠道 | 原因 | 耗时 |
+|---|---|---|---|
+| 2026-09-03 | 个推 | 渠道证书过期 | 42min |
+
+## 相关链接 / Related
+
+- [[30-decisions/0001-unified-campaign-retro-template]]
+- [渠道状态页](https://status.example.com)
+```
+
+#### `30-decisions/0001-unified-campaign-retro-template.md`
+
+```markdown
+---
+type: adr
+status: accepted
+updated: 2026-09-01
+---
+
+# ADR-0001: 活动复盘统一模板 / Unified Campaign Retrospective Template
+
+## 背景 / Context
+
+过去五份活动复盘格式各异：有的只写数据，有的只写感受，
+有的连目标都没对齐。无法横向对比，也无法沉淀方法论。
+
+## 选项 / Options Considered
+
+### A. 自由格式，只做内容清单
+- 优点：写起来快
+- 缺点：无法对比，信息密度参差
+
+### B. 固定模板：目标 → 数据 → 打法 → 问题 → 沉淀
+- 优点：可横向对比，强制对齐目标
+- 缺点：写起来多花 20 分钟
+
+### C. 用 AI 自动生成初稿，人工改
+- 优点：最快
+- 缺点：依赖数据接入，一期做不到
+
+## 结论 / Decision
+
+选 B。模板固定为五段：目标回顾 → 核心数据 → 打法拆解 →
+问题与原因 → 可复用沉淀。从 2026-09 起所有活动复盘必须使用。
+
+## 后果 / Consequences
+
+- 复盘平均耗时从 1h → 1.5h，但可读性和复用性显著提升
+- 新模板已沉淀到 [[20-domains/campaigns/_index]] 作为默认模板
+```
+
+#### `00-salvage/2026-09-03-ai-push-hook.md`
+
+```markdown
+---
+type: salvage
+source: chat
+session-id: sess_20260903_1847
+salvaged: 2026-09-03
+---
+
+# AI 生成的 push 文案钩子公式 / AI Push Hook Formula
+
+在会话中测试出效果较好的 push 文案结构：
+
+**公式**：场景钩子 + 利益点 + 紧迫感 + 行动指令
+
+**示例**：
+> 「睡前刷手机的你，今晚 8 点限时折扣最后 2 小时 → 点我抢购」
+
+**效果**：A/B 测试点击率比平铺直叙版高 34%。
+
+**注意**：紧迫感只对价格敏感型用户有效，品牌型用户会反感。
+```
+
+#### `knowledge.manifest.yaml`
+
+```yaml
+version: 1
+team: growth-ops
+title: 用户增长运营组知识库 / Growth Ops Knowledge Base
+summary: 拉新、激活、留存活动的打法、渠道基准与数据口径 / Growth tactics, channel benchmarks, metrics definitions
+visibility: org
+domains: [活动运营, 渠道投放, 数据口径, Growth, Marketing]
+entry: 00-home.md
+collections:
+  - name: 新人必读 / Onboarding
+    paths: [00-home.md, 10-onboarding/, 50-glossary.md]
+  - name: 活动运营手册 / Campaign Playbook
+    paths: [20-domains/campaigns/, 40-runbooks/]
+```
+
+### 供应链履约组的最终 vault
+
+```
+knowledge/
+├── 00-home.md
+├── 10-onboarding/
+│   └── first-week.md
+├── 20-domains/
+│   ├── procurement/
+│   │   └── _index.md
+│   ├── warehouse/
+│   │   ├── _index.md
+│   │   └── wms-degradation.md
+│   └── logistics/
+│       ├── _index.md
+│       └── carrier-failover.md
+├── 30-decisions/
+│   └── 0001-add-vendors-directory.md
+├── 40-runbooks/
+│   ├── daily/
+│   │   └── logistics-exception.md
+│   └── peak-season/
+│       ├── double-11-checklist.md
+│       ├── logistics-failover.md
+│       └── wms-degradation.md
+├── 50-glossary.md
+├── 70-vendors/
+│   ├── _index.md
+│   ├── huadong-packaging.md
+│   └── payment-terms-public.md
+├── 90-archive/
+├── attachments/
+│   └── wms-degradation-flow.png
+├── 00-salvage/
+│   └── 2026-09-04-drill-findings.md
+└── knowledge.manifest.yaml
+```
+
+#### `00-home.md`
+
+```markdown
+---
+type: home
+updated: 2026-09-05
+---
+
+# 供应链履约组知识库 / Supply Chain Fulfillment Knowledge Base
+
+我们管采购、仓储、物流履约。出事查 runbooks，大促看 peak-season，
+供应商信息在 70-vendors。
+
+## 快速入口 / Quick Links
+
+- 新人入职 / Onboarding → [[10-onboarding/first-week]]
+- 大促手册 / Peak Season → [[40-runbooks/peak-season/]]
+- 日常异常 / Daily Ops → [[40-runbooks/daily/]]
+- 供应商档案 / Vendor Profiles → [[70-vendors/]]
+- 术语表 / Glossary → [[50-glossary]]
+
+## 值班 / On-call
+
+7×24 轮值，交接班必须过一遍当天的异常记录。
+```
+
+#### `40-runbooks/peak-season/double-11-checklist.md`
+
+```markdown
+---
+type: runbook
+owner: 老韩
+last-verified: 2026-09-05
+---
+
+# 双 11 大促备战清单 / Double 11 Peak Season Checklist
+
+**时间线**：T-30 天启动，T-1 天封网。
+
+## T-30 至 T-14：准备期 / Preparation
+
+- [ ] 各仓扩容方案确认（仓储组）
+- [ ] 物流商运力锁定 + 备用物流商协议签署（物流组）
+- [ ] 压测完成：WMS、OMS、TMS 峰值 3 倍（技术组）
+- [ ] 客服工单分流规则更新（客服组）
+- [ ] 供应商备货计划确认（采购组）
+
+## T-14 至 T-1：演练期 / Drill
+
+- [ ] 全链路压测（含降级切换）
+- [ ] 值班表确认 + 值班权限检查
+- [ ] 应急预案演练：[[logistics-failover]]、[[wms-degradation]]
+- [ ] 封网：禁止非紧急变更
+
+## T-0：大促当天 / Peak Day
+
+- [ ] 0:00-2:00 高峰值班双人在岗
+- [ ] 每 30 分钟巡检一次核心指标
+- [ ] 异常处理：先查本目录 runbook，处理完回填
+
+## T+1 至 T+7：复盘期 / Retrospective
+
+- [ ] 异常事件逐条回填到对应 runbook
+- [ ] 复盘会议输出 ADR（如有流程变更）
+```
+
+#### `40-runbooks/peak-season/logistics-failover.md`
+
+```markdown
+---
+type: runbook
+owner: 小赵
+last-verified: 2026-09-05
+---
+
+# 主力物流商瘫痪切换手册 / Primary Carrier Failover Runbook
+
+**触发条件**：主力物流商（默认中通）分拨中心瘫痪，预计恢复 >4 小时。
+
+## 前置确认 / Prerequisites
+
+1. 确认瘫痪范围：联系物流商区域经理，确认是分拨中心还是全网
+2. 备用物流商协议已签署且运力确认（平时维护）
+3. WMS 切换权限（值班组长以上）
+
+## 步骤 / Steps
+
+1. **锁定受影响订单**：WMS → 订单查询 → 筛选「已发货未揽收」+
+   物流商=中通 → 导出清单
+2. **通知客服**：[[40-runbooks/daily/logistics-exception]] 同步话术，
+   客服侧提前准备应对用户咨询
+3. **切换备用物流商**：WMS → 物流配置 → 切换默认物流商为「韵达」
+4. **补发滞留订单**：对步骤 1 的清单逐单打回 → 重新分配韵达 → 重新发货
+5. **监控切换后指标**：揽收率、妥投率 30 分钟内应恢复到基线 90%
+
+## 验证 / Verification
+
+- 新订单物流商已切换为韵达
+- 滞留订单全部补发完毕
+- 揽收率/妥投率恢复基线
+
+## 回滚 / Rollback
+
+主力物流商恢复后，切回默认配置。已发出的韵达订单不召回，
+让两个物流商并行消化存量。
+
+## 历史事件 / Past Incidents
+
+| 日期 | 场景 | 耗时 | 备注 |
+|---|---|---|---|
+| 2026-09-04 | 演练：模拟中通瘫痪 | 30min | 小赵首次独立操作 |
+
+## 相关链接 / Related
+
+- [[double-11-checklist]]
+- [[40-runbooks/daily/logistics-exception]]
+```
+
+#### `70-vendors/huadong-packaging.md`
+
+```markdown
+---
+type: vendor-profile
+owner: 仓储组
+updated: 2026-09-02
+---
+
+# 华东纸箱厂 / Huadong Packaging Co.
+
+## 基本信息 / Basic Info
+
+- 对接人：张经理 / Manager Zhang
+- 联系方式：138-xxxx-xxxx
+- 账期：月结 60 天 / Net 60
+- 起订量：5000 个 / MOQ 5000 units
+
+## 历史合作记录 / History
+
+- 2025-03 至今，供应各仓纸箱
+- 2026-06 大促期间交货延迟 3 天，原因是原材料涨价排产紧张
+
+## 注意事项 / Notes
+
+- **旺季会偷偷降克重**：2025 年双 11 期间发现纸箱克重从 250g 降到 230g，
+  未通知。旺季收货必须抽检克重。
+- 交期承诺偏乐观，实际按承诺 +2 天做安全库存。
+```
+
+#### `30-decisions/0001-add-vendors-directory.md`
+
+```markdown
+---
+type: adr
+status: accepted
+updated: 2026-09-01
+---
+
+# ADR-0001: 新增 70-vendors 目录 / Add 70-vendors Directory
+
+## 背景 / Context
+
+供应商对接信息（联系人、账期、历史坑点）散在微信聊天记录和
+老员工脑子里。人一走，信息就丢。标准知识库骨架里没有合适的
+位置放这类内容。
+
+## 结论 / Decision
+
+新增 `70-vendors/` 目录，一家供应商一页。这个目录不发布到公司
+目录（manifest 里 visibility 保持 private），因为涉及商务条款。
+
+## 后果 / Consequences
+
+- 供应商信息有了唯一存放点
+- 结构偏离标准骨架，但在本目录有 ADR 留痕
+- 后续如有通用需求，可以推动骨架标准更新
+```
+
+#### `knowledge.manifest.yaml`
+
+```yaml
+version: 1
+team: sc-fulfillment
+title: 供应链履约组知识库 / Supply Chain Fulfillment Knowledge Base
+summary: 采购、仓储、物流履约的 SOP、应急手册与供应商档案 / SOPs, runbooks, and vendor profiles for fulfillment
+visibility: org
+domains: [供应链, 仓储, 物流, 大促, Supply Chain, Logistics]
+entry: 00-home.md
+collections:
+  - name: 新人必读 / Onboarding
+    paths: [00-home.md, 10-onboarding/, 50-glossary.md]
+  - name: 大促手册 / Peak Season Playbook
+    paths: [40-runbooks/peak-season/]
+  - name: 日常异常处理 / Daily Operations
+    paths: [40-runbooks/daily/, 50-glossary.md]
+# 注意：70-vendors/ 不在任何 collection 中 — 商务条款保密，
+# 仅 payment-terms-public.md 单独发布
+```
+
+### 两个 vault 的对照速览
+
+| 维度 | 增长运营组 | 供应链履约组 |
+|---|---|---|
+| 页面总数 | 12 篇 | 14 篇 |
+| 最厚目录 | `20-domains/`（打法沉淀） | `40-runbooks/`（SOP 密集） |
+| 特色目录 | 标准骨架够用 | 加了 `70-vendors/`（ADR 留痕） |
+| 打捞频率 | 低（周 1-2 次） | 高（演练/大促期间每天） |
+| 跨团队被引用 | 新客定义（CRM 组） | 物流异常手册（客服组）、术语表（大促运营组） |
+| visibility | org（全部） | org（除 vendor 档案外） |
+| freshness 驱动 | 季度数据更新 | 演练验证 + 大促实战 |
