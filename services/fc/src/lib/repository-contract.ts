@@ -1,12 +1,8 @@
 /**
- * Shared behavioral contract for BOTH repository backends.
+ * Behavioural contract the business repository must satisfy.
  *
- * Every method added here must be implemented in:
- *   - lib/supabase-repo.ts (Path A — production default)
- *   - lib/pg-repo/*       (Path B — BACKEND_KIND=postgres)
- *
- * Gates: test/repository-contract.test.ts (supabase stub),
- *        test/pg-repo-contract.test.ts (pglite).
+ * Implemented by lib/supabase-repo.ts; gated by
+ * test/repository-contract.test.ts against a stub client.
  */
 export function runBusinessRepositoryContract({ test, assert, createRepository }) {
   test("repository contract: sessions keep canonical fields and ordering", async () => {

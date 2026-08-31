@@ -1,8 +1,7 @@
 /**
- * Path A business repository — PostgREST + caller JWT + RLS (default production).
+ * The business repository — PostgREST + caller JWT + RLS.
  *
- * Parity target: lib/pg-repo/* (Path B). New methods belong here AND in pg-repo
- * unless explicitly supabase-only. See README.md § Dual backend paths.
+ * Contract: lib/repository-contract.ts.
  */
 import { randomUUID } from "node:crypto";
 import { createClient as defaultCreateClient } from "@supabase/supabase-js";
@@ -87,8 +86,7 @@ import { normalizePhone } from "./supabase-repo/phone-auth.js";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Map spending actor ids → the accountable human (supabase/PostgREST twin of
- * pg-repo's resolveOwnersForTeam; kept behaviourally identical).
+ * Map spending actor ids → the accountable human.
  *
  * Three flat queries rather than one embedded select: PostgREST resource
  * embedding would need the actors→agents FK relationship spelled by name, and
@@ -898,7 +896,7 @@ export function createSupabaseBusinessRepository(options) {
       // legacy POST /ai/remove-member endpoint). Never blocks/fails actor
       // removal — deleteMemberKey swallows its own errors, and we also guard
       // the dynamic import itself so a module-resolution failure can't throw
-      // out of an already-committed removal (parity with pg-repo).
+      // out of an already-committed removal.
       try {
         const { deleteMemberKey } = await import("./team-provisioning.js");
         await deleteMemberKey(actorId);
@@ -1400,7 +1398,7 @@ export function createSupabaseBusinessRepository(options) {
       // or by (team, agent, name) — the table's unique constraint is
       // (team_id, agent_id, name), and onConflict:"id" alone mints a fresh
       // UUID that collides with that constraint when re-adding an existing /
-      // archived workspace. Mirrors pg-repo/workspaces.ts.
+      // archived workspace.
       let targetId = input.id ?? null;
       const normalizedPath = normalizeWorkspacePath(input.path ?? input.slug ?? null);
       let resolvedName = input.name;
@@ -2348,7 +2346,7 @@ export function createSupabaseBusinessRepository(options) {
         created_by_actor_id: createdByActorId,
       };
       // App-linked sessions carry app_id so listAppSessions / the app workspace
-      // can resolve them (mirrors pg-repo createSession). Omitted for plain
+      // can resolve them. Omitted for plain
       // sessions so the column stays NULL.
       if (input.appId) insertRow.app_id = input.appId;
       if (input.primaryAgentId) insertRow.primary_agent_id = input.primaryAgentId;
@@ -2457,8 +2455,7 @@ export function createSupabaseBusinessRepository(options) {
         // and uses it as the logical ACP session id it later looks up via
         // getSessionByAcp (which queries the acp_session_id column) — so it must
         // equal acp_session_id to round-trip. Omitting it made WeCom inbound
-        // messages fail with "missing field gatewaySessionId". The pg-repo
-        // backend already returns this field; this keeps the two in lockstep.
+        // messages fail with "missing field gatewaySessionId".
         gatewaySessionId: acpSessionId,
         acpSessionId,
         created: row.created === true,
@@ -2886,7 +2883,7 @@ export function createSupabaseBusinessRepository(options) {
       })
         .filter((row) => typeof row.id === "string" && row.id.length > 0)
         // The list_connected_agents RPC has no status predicate, so the filter
-        // lands here rather than in a migration — same rule as the pg-repo twin.
+        // lands here rather than in a migration.
         .filter((row) => isListableAgentStatus(row.agentStatus));
       return { items };
     },
@@ -3037,9 +3034,8 @@ export function createSupabaseBusinessRepository(options) {
     // --- Apps domain (production passthrough) ---
     //
     // With the caller's bearer forwarded, RLS already enforces visibility on
-    // amux.apps / amux.sessions, so these methods are THINNER than pg-repo:
-    // no manual visibility WHERE clause. Status transitions in createApp mirror
-    // pg-repo exactly. mapApp exposes the canonical 12-key contract shape.
+    // amux.apps / amux.sessions, so these methods carry no manual visibility
+    // WHERE clause. mapApp exposes the canonical 12-key contract shape.
 
     async listApps({ teamId, limit = 100 }: { teamId: string; limit?: number }) {
       const { data, error } = await supabase
@@ -3851,9 +3847,8 @@ export function createSupabaseBusinessRepository(options) {
     // docs/architecture/team-skills-registry.md
     //
     // Authz lives in RLS here (see 20260806000000_team_skills_registry.sql), so
-    // these are thin. The pg-repo twin re-implements the same three install
-    // gates in application code because that backend has no RLS to lean on —
-    // when you change one, change the other.
+    // these are thin. The three install gates below re-state RLS's decisions as
+    // API-shaped errors; see assertCanInstallTeamSkillFor.
 
     async listTeamSkills(teamId, opts: any = {}) {
       let subjectActorId = opts.actorId ?? null;
@@ -4057,8 +4052,16 @@ export function createSupabaseBusinessRepository(options) {
       return mapTeamSkillVersionRow(version);
     },
 
-    /** See the pg-repo twin for why a revert publishes forward instead of
-     * moving latest_version back. */
+    /**
+     * Re-publish an earlier version's content as the new latest.
+     *
+     * Rolling `latest_version` backwards would be the obvious alternative and
+     * is deliberately not offered — it would leave members whose
+     * `installed_version` exceeds `latest_version`, at which point "is there an
+     * update" has no answer and the reconcile cannot tell whether to move them
+     * forward or back. Versions only ever go up; a revert is a new one carrying
+     * old content.
+     */
     async revertTeamSkillVersion(teamId, slug, targetVersion: number, body: any = {}) {
       const { data: skill, error } = await supabase
         .from("team_skills")
@@ -4337,9 +4340,8 @@ export function createSupabaseBusinessRepository(options) {
 
     /**
      * The three install gates. RLS already refuses the bad cases, but its
-     * message is a raw Postgres string — this turns them into the same answers
-     * the pg-repo backend gives, so a client sees one behaviour regardless of
-     * which backend is deployed.
+     * message is a raw Postgres string — this turns them into API-shaped
+     * answers a client can act on.
      */
     async assertCanInstallTeamSkillFor(teamId, targetActorId) {
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id ?? null;
@@ -4540,13 +4542,16 @@ export function createSupabaseBusinessRepository(options) {
     //
     // Authz lives in RLS here (20260806020000_team_mcp_and_env.sql), so these
     // are thin. The *validation* is not authz and must not be left to RLS: the
-    // secret-literal gate and the transport invariants are imported from the
-    // pg-repo twin rather than restated, because two copies of a security rule
-    // is exactly how one of them ends up weaker.
+    // secret-literal gate and the transport invariants live in
+    // lib/validation/team-mcp.ts and are imported rather than restated, because
+    // two copies of a security rule is exactly how one of them ends up weaker.
 
     // `actorId` defaults to the caller; passing another actor's id reads their
-    // install state. Writes still refuse it — see the pg-repo twin for why the
-    // read and the write are deliberately asymmetric.
+    // install state, which is how a client shows what a given agent has
+    // installed. Reading is deliberately not symmetric with writing:
+    // install/uninstall still refuse `actorId`, because you cannot install on
+    // anyone else's behalf. Membership in the team is the only gate — an actor
+    // id from outside the team simply matches no installs.
     async listTeamMcpServers(teamId, opts: { actorId?: string } = {}) {
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id ?? null;
       const subjectActorId = opts.actorId ?? callerActorId;
@@ -4835,10 +4840,10 @@ export function createSupabaseBusinessRepository(options) {
 
 // ─── Team MCP / env helpers ──────────────────────────────────────────────────
 //
-// Validation is imported from the pg-repo twin rather than restated: these are
-// security rules (what may hold a literal secret) and correctness rules (which
-// transport needs which fields), and a second copy is how the two backends
-// drift into disagreeing about what is allowed.
+// Validation is imported from lib/validation/ rather than restated here: these
+// are security rules (what may hold a literal secret) and correctness rules
+// (which transport needs which fields), and a second copy is how the route
+// layer and the repository drift into disagreeing about what is allowed.
 
 function mapTeamMcpServerRow(row: any, installed: boolean) {
   return {
@@ -4885,8 +4890,7 @@ const TEAM_SKILL_STATUSES = ["draft", "published", "deprecated"];
 /**
  * The publish gate: every one of these is required because the registry exists
  * to stop "who owns this / when to use it / when NOT to use it" from living in
- * one free-text description blob. Kept behaviourally identical to
- * pg-repo/team-skills.ts requirePublishFields.
+ * one free-text description blob.
  */
 function requireTeamSkillFields(body: any, { partial = false } = {}): any {
   const out: any = {};

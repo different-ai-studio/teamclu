@@ -3,21 +3,12 @@ import { REALTIME_TRANSPORT_OPTS } from './supabase-repo/shared.js';
 import { createApnsJwtCache } from './apns-jwt.js';
 import { createApnsClient, createHttp2Transport } from './apns.js';
 import { createMqttPublisher } from './mqtt-client.js';
-import { getDb } from '../db/client.js';
-import {
-  pushIdempotencyClaim,
-  listSessionPushTargets,
-  revokeDeviceToken,
-} from './pg-repo/push-targets.js';
 
 // ---------------------------------------------------------------------------
 // Push-notification dependency wiring (APNS + MQTT + token store).
 //
 // Extracted from admin-handlers.ts. `dispatchPush` (push-dispatch.ts) consumes
-// one of these dep bundles. Two flavors exist: a Supabase service-role backed
-// one (`pushDeps`) and a Postgres-backed one (`pgPushDeps`) that avoids the
-// service-role key. Both are lazily built and cached so the cold path stays
-// cheap.
+// this dep bundle. It is lazily built and cached so the cold path stays cheap.
 // ---------------------------------------------------------------------------
 
 const SUPABASE_URL_FN       = () => process.env.SUPABASE_URL || '';
@@ -55,9 +46,6 @@ function buildMqtt() {
     : null;
 }
 
-// ---------------------------------------------------------------------------
-// Supabase service-role backed push deps
-// ---------------------------------------------------------------------------
 let _pushDeps: ReturnType<typeof buildPushDeps> | null = null;
 function buildPushDeps() {
   // realtime: the transport is mandatory on Node 20 — see REALTIME_TRANSPORT_OPTS.
@@ -85,36 +73,4 @@ export function pushDeps() {
   if (_pushDeps) return _pushDeps;
   _pushDeps = buildPushDeps();
   return _pushDeps;
-}
-
-// ---------------------------------------------------------------------------
-// Pg-backed push deps (no Supabase service-role)
-// ---------------------------------------------------------------------------
-let _pgPushDeps: ReturnType<typeof buildPgPushDeps> | null = null;
-function buildPgPushDeps() {
-  const sb = {
-    rpc: async (name: string, args: Record<string, unknown>) => {
-      if (name === 'push_idempotency_claim') {
-        const messageId = args['p_message_id'] as string;
-        const claimed = await pushIdempotencyClaim(getDb(), messageId);
-        return { data: [{ claimed }] };
-      }
-      if (name === 'list_session_push_targets') {
-        const sessionId = args['p_session_id'] as string;
-        const excludeActorId = args['p_exclude_actor_id'] as string;
-        const targets = await listSessionPushTargets(getDb(), sessionId, excludeActorId);
-        return { data: targets };
-      }
-      throw new Error(`[pg-push] unknown rpc: ${name}`);
-    },
-    revokeToken: async (token: string) => {
-      await revokeDeviceToken(getDb(), token);
-    },
-  };
-  return { sb, apns: buildApns(), mqtt: buildMqtt() };
-}
-export function pgPushDeps() {
-  if (_pgPushDeps) return _pgPushDeps;
-  _pgPushDeps = buildPgPushDeps();
-  return _pgPushDeps;
 }

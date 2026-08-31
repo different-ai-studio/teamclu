@@ -41,7 +41,7 @@ export interface CronDeps {
 // all that remained.
 //
 // Deleting them is safe because a completed row has exactly one job left. Both
-// complete paths look a session up BY ID (`sync-handlers.ts`, `pg-repo/oss-sync.ts`)
+// complete path looks a session up BY ID (`sync-handlers.ts`)
 // and answer 410 `session is completed` instead of 404 when a client retries a
 // `complete` that already succeeded. Nothing else reads the row: the durable
 // record of what was uploaded is `amuxc_file_versions`.

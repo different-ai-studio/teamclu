@@ -97,9 +97,6 @@ jobs:
               fi
               upsert_env "$1" "$2"
             }
-            # Self-host runs against its bundled Supabase data plane. Set this
-            # explicitly so a stale server .env cannot select the postgres mode.
-            upsert_env BACKEND_KIND "supabase"
             upsert_env TRUSTED_EXTERNAL_JWT_SECRET "$TRUSTED_EXTERNAL_JWT_SECRET"
             # Deliberately NOT defaulted to TRUSTED_EXTERNAL_JWT_SECRET. That
             # secret is shared with the external login provider, and this one

@@ -73,7 +73,7 @@ export function open(kind: string, ciphertext: string, env: Env = process.env): 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DbLike = any;
 
-/** Upsert one encrypted app secret row (pg-repo / Drizzle). */
+/** Upsert one encrypted app secret row (Drizzle). */
 export async function putAppSecret(
   db: DbLike,
   appId: string,

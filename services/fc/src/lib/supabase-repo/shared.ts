@@ -80,7 +80,7 @@ export const WORKSPACE_COLUMNS =
   "id, team_id, name, path, agent_id, created_by_member_id, archived, created_at, updated_at";
 
 // Translate the SQLSTATE codes raised by get/set_member_default_agent into the
-// same ApiError statuses pg-repo returns, so both backends behave identically.
+// ApiError statuses rather than raw PostgREST errors.
 // 42501 (insufficient privilege) -> 403; 23514 (check violation) -> 409;
 // 23503 (foreign-key/not-found) -> 404. Anything else propagates unchanged.
 export function mapDefaultAgentError(error: any) {
@@ -97,7 +97,7 @@ export function mapDefaultAgentError(error: any) {
 }
 
 
-// --- Apps helpers (mirror pg-repo/apps.ts) ---
+// --- Apps helpers ---
 
 // `org_id` is selected but intentionally NOT mapped: it is the server's
 // deployment ledger (which database the schema was created in), not part of
@@ -253,7 +253,7 @@ export function outgoingMessageRow(sessionId, input) {
     content: input.content,
     // Column is `jsonb not null default '{}'`. An explicit NULL bypasses the
     // default and trips the not-null constraint, so default to {} here (mirrors
-    // the pg-repo backend). iOS sends no metadata when a message has no mentions.
+    // iOS sends no metadata when a message has no mentions.
     metadata: input.metadata ?? {},
     model: input.model ?? null,
     turn_id: input.turnId ?? null,

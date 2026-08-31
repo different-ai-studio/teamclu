@@ -237,15 +237,11 @@ test("the supabase lookup surfaces a query error instead of reporting 'no such a
   );
 });
 
-test("the backend picks the client, and neither is built for a non-app host", async () => {
-  // getDb() throws outright when DATABASE_URL is unset — the normal state of a
-  // self-host box on the supabase backend — so choosing eagerly, or choosing
-  // wrong, takes down every request that merely passes through.
-  let dbBuilt = 0;
+test("the client is not built for a non-app host", async () => {
+  // Building eagerly would make every request that merely passes through pay
+  // for — and potentially fail on — a client that host will never use.
   let srBuilt = 0;
   const lookup = makeVanityLookup({
-    backendKind: () => "supabase",
-    getDb: () => { dbBuilt++; throw new Error("DATABASE_URL is not set"); },
     getServiceRoleClient: () => {
       srBuilt++;
       return { from: () => ({ select: () => ({ eq: () => ({ limit: async () => ({ data: [], error: null }) }) }) }) };
@@ -254,11 +250,10 @@ test("the backend picks the client, and neither is built for a non-app host", as
 
   await withDomain(async () => {
     assert.equal(await lookup("api.teamclu-dev.ucar.cc"), null);
-    assert.equal(dbBuilt + srBuilt, 0, "a non-app host must not build any client");
+    assert.equal(srBuilt, 0, "a non-app host must not build any client");
 
     assert.equal(await lookup(`ghost-18e4ecad.${DOMAIN}`), null);
-    assert.equal(srBuilt, 1, "supabase backend must use the service-role client");
-    assert.equal(dbBuilt, 0, "and must never touch getDb()");
+    assert.equal(srBuilt, 1, "an app host builds the service-role client");
   });
 });
 

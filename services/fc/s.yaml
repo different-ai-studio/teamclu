@@ -183,7 +183,6 @@ resources:
         POSTGRES_PORT: ${env('POSTGRES_PORT', '')}
         POSTGRES_USERNAME: ${env('POSTGRES_USERNAME', '')}
         POSTGRES_PASSWORD: ${env('POSTGRES_PASSWORD', '')}
-        BACKEND_KIND: ${env('BACKEND_KIND', 'supabase')}
         # Phone login (partner-aligned). DEFAULT_ORG_ID = the default tenant new
         # users join; PHONE_EMAIL_DOMAIN = domain of the synthetic auth email
         # (`<phone>@<domain>`) and therefore half the account identity — it must
@@ -196,19 +195,8 @@ resources:
         PHONE_EMAIL_DOMAIN: ${env('PHONE_EMAIL_DOMAIN', '')}
         PHONE_AUTH_ENCRYPTION_KEY: ${env('PHONE_AUTH_ENCRYPTION_KEY', '')}
         SMS_DEBUG_MODE: ${env('SMS_DEBUG_MODE', '')}
-        AUTH_SECRET: ${env('AUTH_SECRET', '')}
         AUTH_BASE_URL: ${env('AUTH_BASE_URL', 'https://cloud.ucar.cc')}
         PG_POOL_MAX: ${env('PG_POOL_MAX', '1')}
-        OTP_EMAIL_SMTP_HOST: ${env('OTP_EMAIL_SMTP_HOST', '')}
-        OTP_EMAIL_SMTP_PORT: ${env('OTP_EMAIL_SMTP_PORT', '')}
-        OTP_EMAIL_SMTP_USER: ${env('OTP_EMAIL_SMTP_USER', '')}
-        OTP_EMAIL_SMTP_PASS: ${env('OTP_EMAIL_SMTP_PASS', '')}
-        OTP_EMAIL_SMTP_SECURE: ${env('OTP_EMAIL_SMTP_SECURE', '')}
-        OTP_EMAIL_FROM: ${env('OTP_EMAIL_FROM', '')}
-        APPLE_CLIENT_ID: ${env('APPLE_CLIENT_ID', '')}
-        APPLE_CLIENT_SECRET: ${env('APPLE_CLIENT_SECRET', '')}
-        GOOGLE_CLIENT_ID: ${env('GOOGLE_CLIENT_ID', '')}
-        GOOGLE_CLIENT_SECRET: ${env('GOOGLE_CLIENT_SECRET', '')}
       triggers:
         # Trigger name is parameterized so we can adopt a pre-existing function's
         # http trigger (FC console default is `defaultTrigger`). Defaults to

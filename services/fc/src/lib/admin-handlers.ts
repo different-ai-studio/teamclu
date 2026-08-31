@@ -7,7 +7,7 @@ import { sharedSecretMatches } from "./shared-secret.js";
 
 // Re-exported for index.ts (push webhook wiring) and any legacy importers.
 export { json } from "./responses.js";
-export { pushDeps, pgPushDeps } from "./push-deps.js";
+export { pushDeps } from "./push-deps.js";
 
 const PUSH_WEBHOOK_SECRET = () => process.env.PUSH_WEBHOOK_SECRET;
 

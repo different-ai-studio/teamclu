@@ -1,4 +1,4 @@
-/** Path A contract gate — supabase-repo behavior (production default). Path B: pg-repo-contract.test.ts */
+/** Contract gate — supabase-repo behaviour against a stub client. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

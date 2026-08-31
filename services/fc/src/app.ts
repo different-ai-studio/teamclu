@@ -1,12 +1,10 @@
 import { sharedSecretMatches } from "./lib/shared-secret.js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { getAuth } from "./auth/better-auth.js";
 import { registerAllRoutes } from "./lib/routes/index.js";
 import { createHonoRouterAdapter } from "./lib/hono-adapter.js";
 import { isRateLimited, resolveClientIp } from "./lib/rate-limit.js";
 import { handleSyncRequest } from "./lib/legacy-sync.js";
-import { resolveBackendKind } from "./lib/backend-kind.js";
 import * as admin from "./lib/admin-handlers.js";
 import { isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
 import { parseAppPublicHost } from "./lib/apps-public-host.js";
@@ -102,13 +100,6 @@ export function createApp(deps: AppDeps): Hono {
 
   // Container liveness/readiness probe — no DB access.
   app.get("/healthz", (c) => c.json({ ok: true }));
-
-  // Better-Auth HTTP surface (JWKS, OAuth callbacks, session API). Required for
-  // BACKEND_KIND=postgres: verifyAccessToken reads JWKS in-process, but OAuth
-  // and external callers still need these routes on /api/auth/*.
-  if (resolveBackendKind() === "postgres") {
-    app.on(["POST", "GET"], "/api/auth/*", (c) => getAuth().handler(c.req.raw));
-  }
 
   // HTTP-triggered cron (replaces FC timer for the Docker/self-host path).
   // Guarded by a shared secret; an external scheduler POSTs { task }.

@@ -134,11 +134,10 @@ GLOBAL_S3_BUCKET=stub
 ENABLE_IMAGE_TRANSFORMATION=false
 EOF_STORAGE
 
-# ---- FC Cloud API (:9000) — SUPABASE backend ------------------------------
+# ---- FC Cloud API (:9000) -------------------------------------------------
 cat > "$RUN_DIR/fc/env" <<EOF_FC
 PORT=9000
 HOST=127.0.0.1
-BACKEND_KIND=supabase
 SUPABASE_URL=$PUBLIC_BASE_URL
 SUPABASE_PUBLIC_URL=$PUBLIC_BASE_URL
 SUPABASE_ANON_KEY=$ANON_KEY

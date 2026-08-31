@@ -1,5 +1,10 @@
 /**
- * Better-Auth required tables for Drizzle adapter.
+ * The five Better-Auth tables (user/session/account/verification/jwks).
+ *
+ * FC no longer runs Better-Auth — GoTrue owns login. These declarations stay
+ * because the tables themselves were deliberately NOT retired from the shared
+ * saas-mono database, and because the migration set here is what bootstraps the
+ * pglite test database, which still creates them.
  *
  * Source: @better-auth/core dist/db/get-tables.mjs (core tables) +
  *         better-auth dist/plugins/anonymous/schema.mjs (isAnonymous on user) +

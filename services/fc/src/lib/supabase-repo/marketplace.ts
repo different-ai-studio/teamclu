@@ -61,7 +61,7 @@ function mapCatalogVersion(r: any) {
   };
 }
 
-/** Mirrors MARKET_STATUSES in pg-repo/marketplace.ts and the DB CHECK. */
+/** Mirrors the market_status DB CHECK. */
 const MARKET_STATUSES: readonly string[] = ["draft", "published", "delisted"];
 
 function requireFields(body: any) {

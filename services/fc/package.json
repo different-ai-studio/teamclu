@@ -19,7 +19,6 @@
     "@aws-sdk/s3-request-presigner": "^3.600.0",
     "@hono/node-server": "^1.19.14",
     "@supabase/supabase-js": "^2.45.0",
-    "better-auth": "^1.6.12",
     "drizzle-orm": "^0.36.4",
     "hono": "^4.12.23",
     "jose": "^5.9.0",

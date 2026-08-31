@@ -1,7 +1,5 @@
 import { handle } from "hono/aws-lambda";
 import { createApp } from "./app.js";
-export { resolveBackendKind } from "./lib/backend-kind.js";
-import { resolveBackendKind } from "./lib/backend-kind.js";
 import { runCronTask } from "./lib/cron.js";
 import {
   createSupabaseAuthRepository,
@@ -9,12 +7,9 @@ import {
   publishableKeyFromEnv,
 } from "./lib/supabase-repo.js";
 import { getDb } from "./db/client.js";
-import { createPgBusinessRepository } from "./lib/pg-repo/index.js";
-import { createPgAuthRepository } from "./lib/pg-repo/auth.js";
 import { queryParams } from "./lib/routing-utils.js";
 import { dispatchPush } from "./lib/push-dispatch.js";
-import { pushDeps, pgPushDeps } from "./lib/admin-handlers.js";
-import { verifyAccessToken } from "./auth/verify.js";
+import { pushDeps } from "./lib/admin-handlers.js";
 import { ApiError } from "./lib/http-utils.js";
 import {
   getFcClient,
@@ -33,7 +28,6 @@ import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
 import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
 import { createServiceRoleClient } from "./lib/supabase.js";
-import type { JWTVerifyGetKey } from "jose";
 
 // ---------------------------------------------------------------------------
 // Environment (used only for /v1 business API). Read lazily inside the deps
@@ -193,24 +187,15 @@ export { makeGiteaDeps };
  * the proxy nor the `ask` endpoint and answered a plain 404.
  */
 export function vanityLookup() {
-  return makeVanityLookup({
-    backendKind: () => resolveBackendKind(),
-    getDb,
-    getServiceRoleClient: createServiceRoleClient,
-  });
+  return makeVanityLookup({ getServiceRoleClient: createServiceRoleClient });
 }
 
 // ---------------------------------------------------------------------------
-// Repository factories — dual backend (see README.md § Dual backend paths).
-// make*RepoFactory(kind) must stay symmetric: new deps wired into BOTH
-// createSupabaseBusinessRepository and createPgBusinessRepository unless
-// documented supabase-only.
+// Repository factories. Built lazily per request so importing this module
+// needs no environment.
 // ---------------------------------------------------------------------------
 
-export function makeAuthRepoFactory(kind: "supabase" | "postgres") {
-  if (kind === "postgres") {
-    return () => createPgAuthRepository();
-  }
+export function makeAuthRepoFactory() {
   return () =>
     createSupabaseAuthRepository({
       supabaseUrl: SUPABASE_URL_FN(),
@@ -227,50 +212,7 @@ export function makeAuthRepoFactory(kind: "supabase" | "postgres") {
     });
 }
 
-export function makeBusinessRepoFactory(
-  kind: "supabase" | "postgres",
-  // Tests may inject a local JWKS + issuer/audience baseURL so verifyAccessToken
-  // can validate tokens signed by an in-memory key. Production omits this and
-  // uses the remote JWKS at AUTH_BASE_URL.
-  verifyOpts?: { keyset?: JWTVerifyGetKey; baseURL?: string },
-) {
-  if (kind === "postgres") {
-    // ROOT-CAUSE FIX: verify the bearer JWT and resolve the authenticated
-    // user id (claims.sub) BEFORE constructing the repo, so every authz check
-    // gated on ctx.userId actually has an identity. A bad/expired token makes
-    // verifyAccessToken reject; the hono adapter's try/catch maps it to 401.
-    return async ({ accessToken }: { accessToken: string }) => {
-      let claims;
-      try {
-        claims = await verifyAccessToken(accessToken, verifyOpts ?? {});
-      } catch (cause) {
-        // Bad / expired / unverifiable token → fail closed as 401 (not an opaque
-        // 500). errorResponse passes ApiError through verbatim.
-        throw new ApiError(401, "invalid_token", "Invalid or expired access token", { cause });
-      }
-      return createPgBusinessRepository({
-        db: getDb(),
-        userId: claims.sub,
-        accessToken,
-        // Lazy push hook: pgPushDeps() is constructed on first call and reused.
-        // push_idempotency_claim and list_session_push_targets are now served
-        // by Drizzle queries via buildPgPushDeps() — no Supabase service-role.
-        dispatchPush: async (record) => { await dispatchPush(record, pgPushDeps()); },
-        ...makeDeployDeps(),
-        ...makeTeardownDeps(),
-      ...makeAppDataDeps(),
-        ...makeAppDataDeps(),
-        ...makeGiteaDeps(),
-        ...makeGotrueOAuthDeps(),
-        publishReadEvent: async ({ userId, sessionId }) => {
-          const { mqtt } = pgPushDeps();
-          if (!mqtt) return;
-          const payload = JSON.stringify({ type: "read", session_id: sessionId, ts: Date.now() });
-          await mqtt.publish(`inbox/${userId}`, payload);
-        },
-      });
-    };
-  }
+export function makeBusinessRepoFactory() {
   return ({ accessToken }: { accessToken: string }) =>
     createSupabaseBusinessRepository({
       supabaseUrl: SUPABASE_URL_FN(),
@@ -287,16 +229,7 @@ export function makeBusinessRepoFactory(
 }
 
 /** System/admin repository — no user JWT (marketplace admin shared-secret routes). */
-export function makeSystemRepoFactory(kind: "supabase" | "postgres") {
-  if (kind === "postgres") {
-    return () =>
-      createPgBusinessRepository({
-        db: getDb(),
-        // Admin marketplace methods do not call requireUser().
-        userId: undefined,
-        ...makeDeployDeps(),
-      });
-  }
+export function makeSystemRepoFactory() {
   return () => {
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
     if (!serviceKey) {
@@ -323,9 +256,9 @@ export function makeSystemRepoFactory(kind: "supabase" | "postgres") {
 // The single Hono app owns ALL routing (OPTIONS, /v1, /sync, admin, 404, 500,
 // rate-limiting). The repository deps build lazily per-request.
 const app = createApp({
-  createRepository: makeBusinessRepoFactory(resolveBackendKind()),
-  createAuthRepository: makeAuthRepoFactory(resolveBackendKind()),
-  createSystemRepository: makeSystemRepoFactory(resolveBackendKind()),
+  createRepository: makeBusinessRepoFactory(),
+  createAuthRepository: makeAuthRepoFactory(),
+  createSystemRepository: makeSystemRepoFactory(),
   runCron: (task: string) => runCronTask(getDb(), task),
   lookupVanityApp: vanityLookup(),
 });
