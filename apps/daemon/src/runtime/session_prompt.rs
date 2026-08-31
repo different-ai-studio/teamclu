@@ -27,8 +27,8 @@ pub struct SessionPromptResponse {
     pub agent_display_name: String,
     pub participants: Vec<SessionPromptParticipant>,
     pub append_system_prompt: String,
-    /// False when the Cloud roster could not be loaded; callers must not cache
-    /// the degraded prompt for the whole host generation.
+    /// False when roster data was unavailable or incomplete; callers must not
+    /// cache or inject a prompt for this host generation.
     pub roster_resolved: bool,
 }
 
@@ -55,6 +55,15 @@ impl SessionPromptService {
         };
         let owner_trimmed = owner_actor_id.trim();
 
+        let base = SessionPromptResponse {
+            teamclu_session_id: teamclu_session_id.to_string(),
+            runtime_id: runtime_id.to_string(),
+            agent_display_name: agent_display_name_fallback(owner_trimmed),
+            participants: Vec::new(),
+            append_system_prompt: String::new(),
+            roster_resolved: false,
+        };
+
         let roster = match self.backend.get_session_roster(teamclu_session_id).await {
             Ok(roster) => roster,
             Err(err) => {
@@ -63,36 +72,46 @@ impl SessionPromptService {
                     teamclu_session_id,
                     runtime_id,
                     error = %err,
-                    "session roster fetch failed; continuing with empty roster"
+                    "session roster fetch failed; skipping session prompt injection"
                 );
-                let agent_display_name = agent_display_name_fallback(owner_trimmed);
-                let append_system_prompt =
-                    build_session_prompt(&agent_display_name, &[]);
-                return SessionPromptResponse {
-                    teamclu_session_id: teamclu_session_id.to_string(),
-                    runtime_id: runtime_id.to_string(),
-                    agent_display_name,
-                    participants: Vec::new(),
-                    append_system_prompt,
-                    roster_resolved: false,
-                };
+                return base;
             }
         };
 
-        let agent_display_name =
-            resolve_agent_display_name_from_roster(&roster, owner_trimmed);
+        let Some(agent_display_name) =
+            resolve_agent_display_name_from_roster(&roster, owner_trimmed)
+        else {
+            warn!(
+                event = "runtime_context_session_prompt",
+                teamclu_session_id,
+                runtime_id,
+                "session roster missing agent display name; skipping session prompt injection"
+            );
+            return base;
+        };
+
         let participants =
             roster_to_participants(&roster, owner_trimmed, &agent_display_name);
+        if participants.is_empty() {
+            warn!(
+                event = "runtime_context_session_prompt",
+                teamclu_session_id,
+                runtime_id,
+                "session roster empty; skipping session prompt injection"
+            );
+            return base;
+        }
+
+        let brand = teamclu_runtime_env::brand_display_name_from_env();
         let append_system_prompt =
-            build_session_prompt(&agent_display_name, &participants);
+            build_session_prompt(&brand, &agent_display_name, &participants);
 
         SessionPromptResponse {
-            teamclu_session_id: teamclu_session_id.to_string(),
-            runtime_id: runtime_id.to_string(),
             agent_display_name,
             participants,
             append_system_prompt,
             roster_resolved: true,
+            ..base
         }
     }
 }
@@ -100,9 +119,9 @@ impl SessionPromptService {
 fn resolve_agent_display_name_from_roster(
     roster: &SessionRoster,
     owner_actor_id: &str,
-) -> String {
+) -> Option<String> {
     if let Some(name) = roster_entry_display_name(roster.items.iter().find(|item| item.is_self)) {
-        return name;
+        return Some(name);
     }
     if !owner_actor_id.is_empty() {
         if let Some(item) = roster
@@ -111,11 +130,11 @@ fn resolve_agent_display_name_from_roster(
             .find(|item| item.actor_id == owner_actor_id)
         {
             if let Some(name) = roster_entry_display_name(Some(item)) {
-                return name;
+                return Some(name);
             }
         }
     }
-    agent_display_name_fallback(owner_actor_id)
+    None
 }
 
 fn roster_to_participants(
@@ -190,41 +209,34 @@ fn kind_label(kind: Option<&str>) -> &str {
 }
 
 pub fn build_session_prompt(
+    brand_name: &str,
     agent_display_name: &str,
     participants: &[SessionPromptParticipant],
 ) -> String {
-    let mut out = String::from(
-        "[TeamClu Session Context]\n\n\
-You are participating in a TeamClu group chat, not a one-to-one private conversation.\n\n\
-Your display name is \"",
-    );
+    let brand = brand_name.trim();
+    let brand = if brand.is_empty() { "this app" } else { brand };
+
+    let mut out = String::from("[");
+    out.push_str(brand);
+    out.push_str(" Session Context]\n\nYou are an AI assistant in a ");
+    out.push_str(brand);
+    out.push_str(" session.\n\nYour display name is \"");
     out.push_str(agent_display_name.trim());
     out.push_str(
         "\". This is the name users assigned you in the UI; when someone @mentions you, \
-they usually use this name or a close variant.\n\n",
+they usually use this name or a close variant.\n\nParticipants:\n",
     );
 
-    if participants.is_empty() {
-        out.push_str("Participants: no roster available.\n\n");
-    } else {
-        out.push_str("Participants:\n");
-        for p in participants {
-            let role = kind_label(p.kind.as_deref());
-            if p.is_self {
-                out.push_str(&format!(
-                    "- {} ({}, you)\n",
-                    p.display_name, role
-                ));
-            } else {
-                out.push_str(&format!("- {} ({})\n", p.display_name, role));
-            }
+    for p in participants {
+        let role = kind_label(p.kind.as_deref());
+        if p.is_self {
+            out.push_str(&format!("- {} ({}, you)\n", p.display_name, role));
+        } else {
+            out.push_str(&format!("- {} ({})\n", p.display_name, role));
         }
-        out.push('\n');
     }
-
-    out.push_str(
-        "@mentions in messages indicate who the sender is addressing.",
-    );
+    out.push('\n');
+    out.push_str("@mentions in messages indicate who the sender is addressing.");
     out
 }
 
@@ -255,14 +267,18 @@ mod tests {
     }
 
     #[test]
-    fn build_session_prompt_includes_agent_name_and_roster() {
+    fn build_session_prompt_uses_brand_and_roster() {
         let text = build_session_prompt(
+            "Copilot361",
             "小助手",
             &[
                 participant("agent-1", "小助手", Some("agent"), true),
                 participant("human-1", "Alice", Some("member"), false),
             ],
         );
+        assert!(text.starts_with("[Copilot361 Session Context]"));
+        assert!(text.contains("You are an AI assistant in a Copilot361 session."));
+        assert!(!text.contains("group chat"));
         assert!(text.contains("Your display name is \"小助手\""));
         assert!(text.contains("- Alice (member)"));
         assert!(text.contains("- 小助手 (agent, you)"));
@@ -294,7 +310,7 @@ mod tests {
         ]);
         assert_eq!(
             resolve_agent_display_name_from_roster(&roster, "agent-mdc"),
-            "MDC"
+            Some("MDC".to_string())
         );
     }
 
@@ -308,16 +324,16 @@ mod tests {
         }]);
         assert_eq!(
             resolve_agent_display_name_from_roster(&roster, "agent-mdc"),
-            "MDC"
+            Some("MDC".to_string())
         );
     }
 
     #[test]
-    fn resolve_agent_display_name_from_roster_falls_back_to_owner_prefix() {
+    fn resolve_agent_display_name_from_roster_returns_none_without_display_name() {
         let roster = roster(vec![]);
         assert_eq!(
             resolve_agent_display_name_from_roster(&roster, "abcdef123456"),
-            "abcdef12"
+            None
         );
     }
 

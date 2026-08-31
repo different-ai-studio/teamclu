@@ -145,7 +145,10 @@ test("before_agent_start appends session prompt and caches by generation plus ba
   const ctx = { ui: makeUiContext("pi:/tmp/session-a.json") };
   const fetchPrompt = async (id) => {
     fetchCount += 1;
-    return { append: `[TeamClu]\nbackend=${id}`, rosterResolved: true };
+    return {
+      append: `[Acme Session Context]\nbackend=${id}`,
+      rosterResolved: true,
+    };
   };
 
   const first = await appendSystemPromptForTurn(
@@ -153,7 +156,7 @@ test("before_agent_start appends session prompt and caches by generation plus ba
     ctx,
     { cache, fetchPrompt, generationId: "gen-1" },
   );
-  assert.match(first.systemPrompt, /^base prompt\n\n\[TeamClu\]/);
+  assert.match(first.systemPrompt, /^base prompt\n\n\[Acme Session Context\]/);
   assert.equal(fetchCount, 1);
 
   await appendSystemPromptForTurn({ systemPrompt: "turn two" }, ctx, {
@@ -188,29 +191,28 @@ test("before_agent_start fail-open when fetch returns nothing", async () => {
   assert.equal(result, undefined);
 });
 
-test("before_agent_start does not cache degraded roster prompts", async () => {
+test("before_agent_start skips injection when roster is unresolved", async () => {
   const cache = new Map();
   let fetchCount = 0;
-  const ctx = { ui: makeUiContext("pi:/tmp/degraded.json") };
+  const ctx = { ui: makeUiContext("pi:/tmp/unresolved.json") };
   const fetchPrompt = async () => {
     fetchCount += 1;
-    return {
-      append: "[TeamClu Session Context]\n\nParticipants: no roster available.",
-      rosterResolved: false,
-    };
+    return { append: "", rosterResolved: false };
   };
 
-  await appendSystemPromptForTurn({ systemPrompt: "turn one" }, ctx, {
+  const first = await appendSystemPromptForTurn({ systemPrompt: "turn one" }, ctx, {
     cache,
     fetchPrompt,
     generationId: "gen-1",
   });
+  assert.equal(first, undefined);
+
   await appendSystemPromptForTurn({ systemPrompt: "turn two" }, ctx, {
     cache,
     fetchPrompt,
     generationId: "gen-1",
   });
-  assert.equal(fetchCount, 2, "degraded prompt must refetch each turn");
+  assert.equal(fetchCount, 2, "unresolved roster must refetch each turn");
   assert.equal(cache.size, 0);
 });
 
