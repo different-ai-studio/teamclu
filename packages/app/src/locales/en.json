@@ -860,8 +860,7 @@
     "unsupportedNativeSkill": {
       "failedTitle": "Skill not created",
       "statusLabel": "unsupported directory",
-      "description": "A skill was written under a native agent directory instead of through manage_skills. Remove the native copy and recreate with manage_skills action=create.",
-      "violationLine": "{{slug}} in {{root}}"
+      "description": "A skill was written under a native agent directory instead of through manage_skills. Remove the native copy and recreate with manage_skills action=create."
     },
     "acpDebug": {
       "title": "ACP stream debug",

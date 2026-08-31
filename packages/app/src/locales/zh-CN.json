@@ -860,8 +860,7 @@
     "unsupportedNativeSkill": {
       "failedTitle": "技能未创建",
       "statusLabel": "unsupported directory",
-      "description": "技能被写入了原生 agent 目录，而不是通过 manage_skills。请删除原生副本，并用 manage_skills action=create 重新创建。",
-      "violationLine": "{{slug}} · {{root}}"
+      "description": "技能被写入了原生 agent 目录，而不是通过 manage_skills。请删除原生副本，并用 manage_skills action=create 重新创建。"
     },
     "acpDebug": {
       "title": "ACP 流调试",
