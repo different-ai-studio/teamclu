@@ -90,8 +90,8 @@ importers:
         specifier: ~57.0.11
         version: 57.0.11(92591a3b420fda4db4b7565b00db634f)
       expo-sqlite:
-        specifier: ~57.0.1
-        version: 57.0.1(expo@57.0.11)(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.8)(supports-color@8.1.1))(react@19.2.8)
+        specifier: ~57.0.2
+        version: 57.0.2(expo@57.0.11)(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.8)(supports-color@8.1.1))(react@19.2.8)
       expo-status-bar:
         specifier: ~57.0.1
         version: 57.0.1(expo@57.0.11)(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.8)(supports-color@8.1.1))(react@19.2.8)
@@ -3843,6 +3843,7 @@ packages:
     engines: {node: '>= 20'}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@tailwindcss/oxide-linux-arm64-gnu@4.3.3':
     resolution: {integrity: sha512-nDxldcEENOxZRzC2uu9jrutZdAAQtb+8WWDCSnWL1zvBk1+FN+x6MtDViPB5AJMfttVCUhehGWus3XBPgatM/w==}
@@ -3863,6 +3864,7 @@ packages:
     engines: {node: '>= 20'}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@tailwindcss/oxide-linux-x64-gnu@4.3.3':
     resolution: {integrity: sha512-tx7us1muwOKAKWao2v/GaafFeQboE6aj88vC6ziN2NCGcRm8gWUhwjzg+YdVB1e4boAtdtma4L43onunI6NS4w==}
@@ -5688,8 +5690,8 @@ packages:
     resolution: {integrity: sha512-sBfVDH6dmKVHZxqUxbfkzS00PZELMZt1IpnHKxcOTMZtR/t7CtRAFrbXcisG+EyzeqHSVDacZT+1tbYfZt5D8w==}
     engines: {node: '>=20.16.0'}
 
-  expo-sqlite@57.0.1:
-    resolution: {integrity: sha512-I6KoUvfGIiROTKxr5D3H+jRIGA/iEvWEtqHK4XMukAA7tVTinz/YdS8zOz6/DdG6vgrNmvF7gyOcbhLinlfxzQ==}
+  expo-sqlite@57.0.2:
+    resolution: {integrity: sha512-5KVbT7BQFZlIcQBXKWvwBERK3ODF6PSqct27GQKukZzAjsx2B97R+mwtYqrTUtUbw71VJrQrdr9Yl2OWYC7UpA==}
     peerDependencies:
       expo: '*'
       react: '*'
@@ -14293,7 +14295,7 @@ snapshots:
 
   expo-server@57.0.1: {}
 
-  expo-sqlite@57.0.1(expo@57.0.11)(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.8)(supports-color@8.1.1))(react@19.2.8):
+  expo-sqlite@57.0.2(expo@57.0.11)(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.8)(supports-color@8.1.1))(react@19.2.8):
     dependencies:
       await-lock: 2.2.2
       expo: 57.0.11(0c436e1b63bc6325df63addf536c0852)

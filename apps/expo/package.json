@@ -33,7 +33,7 @@
     "expo-localization": "~57.0.1",
     "expo-notifications": "~57.0.9",
     "expo-router": "~57.0.11",
-    "expo-sqlite": "~57.0.1",
+    "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
     "expo-web-browser": "~57.0.2",
     "i18next": "^26.3.6",
