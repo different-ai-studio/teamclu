@@ -1591,11 +1591,25 @@ impl RuntimeSupervisor {
         );
         prepare_workspace(workspace_path)?;
 
-        let stopped = if self.host_pool.is_some() {
+        let stopped = if let Some(pool) = self.host_pool.as_ref() {
             if evict_provider_hosts {
                 self.request_workspace_host_refresh(workspace_id, workspace_path)
                     .await
             } else {
+                // Skills/MCP/opencode.json-class changes don't need a
+                // serve-process restart, but opencode memoizes config and
+                // skills per directory instance inside the long-running serve
+                // process — a freshly created session on the same directory
+                // keeps reading the stale cache. Dropping that cached instance
+                // (not the process) is what makes the next session re-read the
+                // files `prepare_workspace` just rewrote.
+                pool.dispose_workspace_instance(&workspace_path.to_string_lossy())
+                    .await
+                    .map_err(|e| {
+                        WorkspaceControlError::Io(format!(
+                            "dispose opencode instance for workspace: {e}"
+                        ))
+                    })?;
                 0
             }
         } else {
@@ -1797,10 +1811,20 @@ impl RuntimeSupervisor {
     }
 }
 
-fn auto_applicable_refresh(_state: &WorkspaceRefreshState) -> bool {
-    // Capability config changes activate on the next runtime start; nothing
+fn auto_applicable_refresh(state: &WorkspaceRefreshState) -> bool {
+    // Skills are the one change kind that is both cheap and safe to apply
+    // automatically: applying one disposes the workspace's cached opencode
+    // instance (see `reload_workspace`), which never interrupts a running
+    // turn — the busy check in `auto_apply_pending_refresh_state` and the
+    // ActiveTurn refusal in `reload_workspace` see to that — and lets the next
+    // session re-read the skill dirs. Everything heavier (MCP, env, provider
+    // auth) keeps the "next runtime start" semantics and stays manual: nothing
     // pending in the coordinator should trigger reload/stop via the scheduler.
-    false
+    !state.change_kinds.is_empty()
+        && state
+            .change_kinds
+            .iter()
+            .all(|kind| matches!(kind, RefreshChangeKind::Skills))
 }
 
 #[cfg(test)]
@@ -2225,13 +2249,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skills_refresh_stays_pending_without_auto_apply() {
+    async fn skills_refresh_auto_applies_when_workspace_is_idle() {
         let dir = tempfile::tempdir().unwrap();
         let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let supervisor = RuntimeSupervisor::new(Arc::new(AsyncMutex::new(RuntimeManager::new(
-            RuntimeManager::default_launch_configs(),
-            None,
-        ))));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            crate::runtime::test_support::test_host_pool(),
+        );
 
         supervisor
             .refresh_coordinator()
@@ -2246,12 +2273,15 @@ mod tests {
 
         let applied = supervisor.auto_apply_pending_refreshes().await;
 
-        assert_eq!(applied, 0);
+        assert_eq!(
+            applied, 1,
+            "a skills-only change is cheap and safe: it should auto-apply"
+        );
         let dto = supervisor
             .refresh_coordinator()
             .runtime_refresh_dto(&workspace_id)
             .await;
-        assert_eq!(dto.status, "pending");
+        assert_eq!(dto.status, "clean");
         assert!(!dto.auto_apply_blocked_by_active_runtime);
         assert_eq!(dto.recommended_action, "none");
     }
@@ -2377,18 +2407,22 @@ mod tests {
             .runtime_refresh_dto(&workspace_id)
             .await;
         assert_eq!(dto.status, "pending");
-        // Not auto-applicable at all — busy gating must not mark it blocked.
-        assert!(!dto.auto_apply_blocked_by_active_runtime);
+        // Auto-applicable but gated by the active turn — the busy marker is
+        // what makes the deferral visible in the UI.
+        assert!(dto.auto_apply_blocked_by_active_runtime);
     }
 
     #[tokio::test]
-    async fn skills_refresh_stays_pending_after_workspace_becomes_idle() {
+    async fn skills_refresh_auto_applies_after_workspace_becomes_idle() {
         let dir = tempfile::tempdir().unwrap();
         let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let supervisor = RuntimeSupervisor::new(Arc::new(AsyncMutex::new(RuntimeManager::new(
-            RuntimeManager::default_launch_configs(),
-            None,
-        ))));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            crate::runtime::test_support::test_host_pool(),
+        );
         {
             let mut manager = supervisor.agents.lock().await;
             manager.add_test_workspace_runtime(
@@ -2409,7 +2443,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 0);
+        assert_eq!(
+            supervisor.auto_apply_pending_refreshes().await,
+            0,
+            "an active turn defers the apply"
+        );
 
         {
             let mut manager = supervisor.agents.lock().await;
@@ -2418,13 +2456,91 @@ mod tests {
 
         let applied = supervisor.auto_apply_pending_refreshes().await;
 
-        assert_eq!(applied, 0);
+        assert_eq!(applied, 1, "once idle, the pending skills change applies");
         let dto = supervisor
             .refresh_coordinator()
             .runtime_refresh_dto(&workspace_id)
             .await;
-        assert_eq!(dto.status, "pending");
+        assert_eq!(dto.status, "clean");
         assert_eq!(dto.recommended_action, "none");
+    }
+
+    /// Factory whose serve supervisors answer HTTP through a mock server, so
+    /// dispose calls are observable without a real opencode process.
+    struct BaseUrlFactory {
+        base_url: String,
+    }
+
+    #[async_trait]
+    impl GenerationFactory for BaseUrlFactory {
+        async fn start(
+            &self,
+            generation_id: String,
+            _domain: IsolationDomainKey,
+            revision: ProcessEnvRevision,
+            _env: HashMap<String, String>,
+        ) -> Result<Arc<ServeSupervisor>, String> {
+            Ok(Arc::new(ServeSupervisor::test_with_base_url(
+                generation_id,
+                revision,
+                self.base_url.clone(),
+            )))
+        }
+
+        fn stop(&self, _generation: &HostGeneration) -> ShutdownOutcome {
+            ShutdownOutcome::Stopped
+        }
+    }
+
+    #[tokio::test]
+    async fn skills_auto_apply_disposes_workspace_instance_through_pool() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let directory = dir.path().to_string_lossy().into_owned();
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param("directory", directory))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        // A live host generation is serving this workspace.
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "clean");
+        // The mock's `expect(1)` verifies on server drop that the dispose
+        // request actually reached the serve process.
     }
 
     #[tokio::test]
@@ -2497,13 +2613,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_applier_loop_leaves_idle_pending_skills_refresh() {
+    async fn auto_applier_loop_applies_idle_skills_refresh() {
         let dir = tempfile::tempdir().unwrap();
         let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let supervisor = RuntimeSupervisor::new(Arc::new(AsyncMutex::new(RuntimeManager::new(
-            RuntimeManager::default_launch_configs(),
-            None,
-        ))));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            crate::runtime::test_support::test_host_pool(),
+        );
         let handle = supervisor
             .clone()
             .start_refresh_auto_applier_with_interval(std::time::Duration::from_millis(20));
@@ -2524,7 +2643,10 @@ mod tests {
             .refresh_coordinator()
             .runtime_refresh_dto(&workspace_id)
             .await;
-        assert_eq!(dto.status, "pending");
+        assert_eq!(
+            dto.status, "clean",
+            "a skills-only change auto-applies on the first idle tick"
+        );
         assert_eq!(dto.recommended_action, "none");
 
         handle.abort();

@@ -273,6 +273,31 @@ impl ServeSupervisor {
         self.spawn().await
     }
 
+    /// Client for the currently-running serve process, or `None` when the
+    /// process is not up. Never spawns.
+    ///
+    /// Cache-invalidation paths (instance dispose after a skills change) use
+    /// this: a serve process that is not running holds no cached instance, so
+    /// there is nothing to invalidate — spawning one just to dispose would be
+    /// pure cost.
+    pub(crate) fn running_client(&self) -> Option<ServeClient> {
+        #[cfg(test)]
+        if let Some(client) = self.test_client.clone() {
+            return Some(client);
+        }
+        match self.client_if_running() {
+            Ok(client) => client,
+            Err(error) => {
+                warn!(
+                    generation_id = %self.generation_id,
+                    %error,
+                    "serve process state unreadable; treating as not running"
+                );
+                None
+            }
+        }
+    }
+
     fn client_if_running(&self) -> crate::error::Result<Option<ServeClient>> {
         let mut guard = self.state.lock();
         let Some(inst) = guard.as_mut() else {
