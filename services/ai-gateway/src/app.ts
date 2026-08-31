@@ -311,17 +311,33 @@ export function createApp(deps: Deps) {
       note?: string;
     } | null;
     const amount = Number(body?.amountCredits);
-    if (!Number.isSafeInteger(amount) || amount <= 0) {
-      return c.json(err("invalid_request", "amountCredits must be a positive integer", 400), 400);
+    if (!Number.isSafeInteger(amount) || amount === 0) {
+      return c.json(err("invalid_request", "amountCredits must be a non-zero integer", 400), 400);
     }
     // Required, not optional: without it a retried delivery credits twice, and
     // a payment provider retrying is normal rather than exceptional.
     if (!body?.idempotencyKey) {
       return c.json(err("invalid_request", "idempotencyKey is required", 400), 400);
     }
-    const kind = (body.kind ?? "top_up") as "top_up" | "grant" | "adjustment" | "refund";
+    const kind = (body?.kind ?? "top_up") as "top_up" | "grant" | "adjustment" | "refund";
     if (!["top_up", "grant", "adjustment", "refund"].includes(kind)) {
       return c.json(err("invalid_request", `unknown kind "${kind}"`, 400), 400);
+    }
+    // The SIGN belongs to the kind, and this endpoint used to demand a positive
+    // amount for every one of them — which made §4.9.5 unreachable: the design
+    // says a refund is a negative ledger row and a balance may legally go
+    // below zero (which is why the table carries no non-negative CHECK), but
+    // the only writer refused to write one. A real refund webhook 400'd here,
+    // threw in FC, and had Stripe retrying for three days.
+    //
+    // Checked per kind rather than dropped entirely: a POSITIVE refund, or a
+    // negative top_up, is a bug in the caller, and money paths should not
+    // quietly accept a sign they cannot mean.
+    if ((kind === "top_up" || kind === "grant") && amount < 0) {
+      return c.json(err("invalid_request", `${kind} must be positive`, 400), 400);
+    }
+    if (kind === "refund" && amount > 0) {
+      return c.json(err("invalid_request", "refund must be negative", 400), 400);
     }
     const result = await topUp(sql, {
       teamId,
