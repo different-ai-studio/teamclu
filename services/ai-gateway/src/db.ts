@@ -1,6 +1,8 @@
 import postgres from "postgres";
 
 export type Sql = postgres.Sql<{}>;
+/** Either a pool handle or an open transaction — query helpers accept both. */
+export type Queryable = postgres.Sql<{}> | postgres.TransactionSql<{}>;
 
 export function connect(url: string): Sql {
   return postgres(url, { max: 10, prepare: false });
@@ -54,9 +56,9 @@ export type UsageRow = {
  * Never allowed to fail the request: the customer already got their tokens, and
  * losing one usage row is cheaper than 500-ing a completed completion.
  */
-export async function recordUsage(sql: Sql, u: UsageRow): Promise<void> {
+export async function recordUsage(sql: Sql, u: UsageRow): Promise<string | null> {
   try {
-    await sql`
+    const rows = await sql<{ id: string }[]>`
       insert into amux.ai_usage_logs
         (team_id, actor_id, public_model_id, backend_model_id, provider_id,
          input_tokens, cached_input_tokens, output_tokens, credits,
@@ -65,9 +67,12 @@ export async function recordUsage(sql: Sql, u: UsageRow): Promise<void> {
         (${u.teamId}::uuid, ${u.actorId}::uuid, ${u.publicModelId}, ${u.backendModelId},
          ${u.providerId}, ${u.inputTokens}, ${u.cachedInputTokens}, ${u.outputTokens},
          ${u.credits}, ${u.usageSource}, ${u.statusCode}, ${u.stream},
-         ${u.latencyMs}, ${u.requestId})`;
+         ${u.latencyMs}, ${u.requestId})
+      returning id`;
+    return rows[0]?.id ?? null;
   } catch (err) {
     console.error("[usage] failed to record usage row", err);
+    return null;
   }
 }
 

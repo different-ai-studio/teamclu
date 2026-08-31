@@ -35,6 +35,8 @@ let admin: Sql;    // fixture role
 let app: ReturnType<typeof createApp>;
 let teamId: string;
 let otherTeamId: string;
+let cfg: Config;
+let tokens: TokenCache;
 
 const CATALOG = readFileSync(
   new URL("../../../deploy/self-host/ai/catalog.example.yaml", import.meta.url),
@@ -56,7 +58,7 @@ before(async () => {
   await admin`insert into amux.actors (team_id, actor_type, display_name, user_id)
             values (${teamId}::uuid, 'member', 'E2E Member', ${MEMBER_SUB})`;
 
-  const cfg = {
+  cfg = {
     port: 0, databaseUrl: DB, catalogPath: "", serviceToken: SERVICE_TOKEN,
     backendKind: "supabase", supabaseUrl: "", supabaseAnonKey: "",
     authBaseUrl: "", tokenCacheTtlMs: 60_000,
@@ -64,7 +66,7 @@ before(async () => {
 
   // Stubbed verifier: "token-<sub>" resolves to that subject, anything else is
   // rejected the way an expired JWT would be.
-  const tokens = new TokenCache(60_000, async (t) => {
+  tokens = new TokenCache(60_000, async (t) => {
     if (!t.startsWith("token-")) throw new Error("invalid_token");
     return t.slice("token-".length);
   });
@@ -204,3 +206,37 @@ test("streaming completion relays SSE and still records usage", { skip: !DB || !
     "DeepSeek returns usage unconditionally — falling back to estimated means the tee broke");
   assert.ok(Number(row.output_tokens) > 0, "output tokens recorded from the streamed usage frame");
 });
+
+test("with enforcement on, an empty balance refuses the request before any upstream call",
+  { skip: !DB }, async () => {
+  // The whole point of the flag: metering runs either way, but only an enforced
+  // gateway turns an exhausted wallet into a refusal. Deliberately asserts the
+  // 402 arrives WITHOUT a provider key configured -- if the request had reached
+  // upstream it would have failed differently.
+  const enforced = createApp({
+    cfg: { ...cfg, creditsEnforced: true },
+    sql, tokens,
+    catalog: parseCatalog(CATALOG, { DEEPSEEK_API_KEY: "x", OPENAI_API_KEY: "x" } as NodeJS.ProcessEnv),
+    env: {} as NodeJS.ProcessEnv,
+  });
+  const r = await enforced.fetch(new Request(`http://gw/v1/teams/${teamId}/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer token-${MEMBER_SUB}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "default", messages: [{ role: "user", content: "hi" }] }),
+  }));
+  assert.equal(r.status, 402);
+  assert.equal((await r.json() as any).error.code, "insufficient_credits");
+});
+
+test("with enforcement OFF, the same empty balance does not block", { skip: !DB || !KEY },
+  async () => {
+    // Phase 0/1 behaviour, and the reason the flag defaults off: turning
+    // enforcement on before existing teams are back-filled would 402 everyone
+    // at once (design §4.8.1).
+    const r = await req(`/v1/teams/${teamId}/chat/completions`, {
+      method: "POST",
+      headers: asMember({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ model: "default", messages: [{ role: "user", content: "只回复:好" }], max_tokens: 16 }),
+    });
+    assert.equal(r.status, 200);
+  });

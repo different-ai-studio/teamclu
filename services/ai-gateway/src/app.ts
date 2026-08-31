@@ -5,6 +5,7 @@ import { pickRoute } from "./catalog.js";
 import { TokenCache, bearer } from "./auth.js";
 import { resolveActor, recordUsage, getBalance, type Sql } from "./db.js";
 import { computeCredits, prepareUpstream, readUsage, teeSseUsage } from "./proxy.js";
+import { release, reserve, settle } from "./credits.js";
 
 export type Deps = {
   cfg: Config;
@@ -17,6 +18,20 @@ export type Deps = {
 
 const err = (code: string, message: string, status: number) =>
   ({ error: { code, message } }) as const;
+
+/**
+ * Output ceiling to size a hold with when the request names none. Takes the
+ * largest across the tier's routes: the hold has to cover whichever backend the
+ * request actually lands on.
+ */
+function defaultMaxOutput(catalog: Catalog, publicId: string): number {
+  const tier = catalog.public_models[publicId];
+  if (!tier) return 16_000;
+  const caps = tier.routes.map(
+    (r) => catalog.backend_models[r.backend]?.default_max_output_tokens ?? 16_000,
+  );
+  return caps.length ? Math.max(...caps) : 16_000;
+}
 
 export function createApp(deps: Deps) {
   const { cfg, catalog, sql, tokens } = deps;
@@ -97,7 +112,35 @@ export function createApp(deps: Deps) {
       );
     }
 
+    // Conservative hold: the tier's own price against an upper bound on the
+    // request. Input is estimated from raw byte length rather than tokenised —
+    // over-estimating is free (the hold is released) while under-estimating
+    // lets a request through that the balance cannot cover.
+    //
+    // Output is estimated at the full ceiling because reasoning tokens count
+    // toward completion_tokens and can consume the entire budget on their own.
     const wantsStream = body.stream === true;
+    const estInput = Math.ceil(JSON.stringify(body.messages ?? "").length / 3);
+    const estOutput = Number(body.max_tokens ?? 0) || defaultMaxOutput(catalog, publicId);
+    const hold = computeCredits(tier.pricing, estInput, estOutput);
+
+    let reservationId: string | null = null;
+    if (cfg.creditsEnforced) {
+      const held = await reserve(sql, {
+        teamId: a.teamId,
+        actorId: a.actor.id,
+        actorType: a.actor.actorType,
+        holdCredits: hold,
+      });
+      if (!held.ok) {
+        // Distinct codes on purpose: `insufficient_credits` stops the whole
+        // team and is fixed by topping up, `quota_exceeded` stops one member
+        // and is fixed by raising their limit. Collapsing them into one
+        // message sends people to the wrong remedy.
+        return c.json(err(held.code, held.message, 402), 402);
+      }
+      reservationId = held.reservationId;
+    }
     const clientAskedForUsage =
       (body.stream_options as { include_usage?: boolean } | undefined)?.include_usage === true;
 
@@ -129,15 +172,22 @@ export function createApp(deps: Deps) {
         // problem and retrying it just burns another call.
         if (tier.routing === "failover" && res.status >= 500) continue;
         // Pass the upstream error through verbatim — agent runtimes depend on
-        // these semantics — and do not settle anything.
+        // these semantics — and do not settle anything. The hold has to go
+        // back, though: the customer got no tokens, so charging or holding
+        // against a failed call is money they never spent.
+        await release(sql, reservationId).catch(() => {});
         return new Response(lastText, {
           status: res.status,
           headers: { "Content-Type": res.headers.get("content-type") ?? "application/json" },
         });
       }
 
-      const log = (u: { inputTokens: number; cachedInputTokens: number; outputTokens: number } | null, source: "upstream" | "estimated") =>
-        recordUsage(sql, {
+      const log = async (
+        u: { inputTokens: number; cachedInputTokens: number; outputTokens: number } | null,
+        source: "upstream" | "estimated",
+      ) => {
+        const credits = u ? computeCredits(tier.pricing, u.inputTokens, u.outputTokens) : 0;
+        const usageLogId = await recordUsage(sql, {
           teamId: a.teamId,
           actorId: a.actor.id,
           publicModelId: publicId,
@@ -146,13 +196,28 @@ export function createApp(deps: Deps) {
           inputTokens: u?.inputTokens ?? 0,
           cachedInputTokens: u?.cachedInputTokens ?? 0,
           outputTokens: u?.outputTokens ?? 0,
-          credits: u ? computeCredits(tier.pricing, u.inputTokens, u.outputTokens) : 0,
+          credits,
           usageSource: source,
           statusCode: res.status,
           stream: wantsStream,
           latencyMs: Date.now() - started,
           requestId: c.req.header("x-request-id") ?? null,
         });
+        if (!cfg.creditsEnforced) return;
+        // No usage row means the charge cannot be attributed, so release the
+        // hold rather than debit something the ledger cannot point at.
+        if (usageLogId) {
+          await settle(sql, {
+            reservationId,
+            teamId: a.teamId,
+            actorId: a.actor.id,
+            credits,
+            usageLogId,
+          }).catch((e) => console.error("[credits] settle failed", e));
+        } else {
+          await release(sql, reservationId).catch(() => {});
+        }
+      };
 
       if (!wantsStream || !res.body) {
         const json = await res.json().catch(() => null);
@@ -180,6 +245,7 @@ export function createApp(deps: Deps) {
       });
     }
 
+    await release(sql, reservationId).catch(() => {});
     return c.json(err("upstream_error", lastText.slice(0, 500), lastStatus), lastStatus as any);
   });
 
