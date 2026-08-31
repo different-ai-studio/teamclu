@@ -119,12 +119,25 @@ pub struct SessionRosterEntry {
     pub is_self: bool,
 }
 
+/// Caller agent identity metadata from `GET /v1/sessions/{sessionId}/roster`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRosterSelfAgent {
+    pub visibility: Option<String>,
+    pub owner_member_id: Option<String>,
+    pub owner_display_name: Option<String>,
+}
+
 /// Session-scoped participant labels from `GET /v1/sessions/{sessionId}/roster`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRoster {
     pub session_id: String,
     pub caller_actor_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub self_agent: Option<SessionRosterSelfAgent>,
     pub items: Vec<SessionRosterEntry>,
 }
 

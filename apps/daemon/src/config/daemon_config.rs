@@ -254,6 +254,13 @@ fn default_scopes() -> Vec<String> {
 /// by the operator and is preserved across re-onboarding.
 pub const BOOTSTRAP_ACTOR_NAME: &str = "amuxd (unclaimed)";
 
+/// Human-friendly label for this daemon host (`daemon.toml` `[actor].name`).
+pub fn daemon_host_label() -> String {
+    DaemonConfig::load(&DaemonConfig::default_path())
+        .map(|c| c.actor.name)
+        .unwrap_or_else(|_| BOOTSTRAP_ACTOR_NAME.to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActorConfig {
     /// Actor id — the routing identity for this daemon. Used in topic

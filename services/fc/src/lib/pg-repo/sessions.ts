@@ -28,6 +28,7 @@ import {
   sessionReadMarkers,
   actors,
   agentMemberAccess,
+  agents,
   teams,
   teamMembers,
 } from "../../db/schema/index.js";
@@ -864,7 +865,7 @@ export function makeSessionsRepo(db: DbLike, ctx: SessionsCtx = {}, deps: Sessio
      */
     async listSessionRoster(sessionId: string) {
       const [s] = await db
-        .select({ id: sessions.id, teamId: sessions.teamId })
+        .select({ id: sessions.id, teamId: sessions.teamId, title: sessions.title })
         .from(sessions)
         .where(eq(sessions.id, sessionId))
         .limit(1);
@@ -900,9 +901,49 @@ export function makeSessionsRepo(db: DbLike, ctx: SessionsCtx = {}, deps: Sessio
               .where(inArray(actors.id, actorIds));
       const actorsById = new Map(actorRows.map((row: any) => [row.id, row]));
 
+      let selfAgent: {
+        visibility: string;
+        ownerMemberId: string | null;
+        ownerDisplayName: string | null;
+      } | null = null;
+      const callerActor = actorsById.get(callerActorId);
+      if (callerActor?.actorType === "agent") {
+        const [agentRow] = await db
+          .select({
+            visibility: agents.visibility,
+            ownerMemberId: agents.ownerMemberId,
+          })
+          .from(agents)
+          .where(eq(agents.id, callerActorId))
+          .limit(1);
+        if (agentRow) {
+          let ownerDisplayName: string | null = null;
+          if (agentRow.ownerMemberId) {
+            const ownerFromRoster = actorsById.get(agentRow.ownerMemberId);
+            if (ownerFromRoster?.displayName) {
+              ownerDisplayName = ownerFromRoster.displayName;
+            } else {
+              const [ownerRow] = await db
+                .select({ displayName: actors.displayName })
+                .from(actors)
+                .where(eq(actors.id, agentRow.ownerMemberId))
+                .limit(1);
+              ownerDisplayName = ownerRow?.displayName ?? null;
+            }
+          }
+          selfAgent = {
+            visibility: agentRow.visibility,
+            ownerMemberId: agentRow.ownerMemberId ?? null,
+            ownerDisplayName,
+          };
+        }
+      }
+
       return {
         sessionId,
         callerActorId,
+        title: s.title ?? null,
+        selfAgent,
         items: seats.map((seat: any) => {
           const actor = actorsById.get(seat.actorId);
           return {

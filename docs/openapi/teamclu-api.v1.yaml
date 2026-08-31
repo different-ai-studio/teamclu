@@ -7093,6 +7093,33 @@ components:
         callerActorId:
           type: string
           format: uuid
+        title:
+          type:
+            - string
+            - "null"
+          description: Session title for async context anchoring.
+        selfAgent:
+          type:
+            - object
+            - "null"
+          description: Caller agent ownership metadata (present when caller is an agent).
+          properties:
+            visibility:
+              type:
+                - string
+                - "null"
+              description: Agent visibility (`personal` or `team`).
+            ownerMemberId:
+              type:
+                - string
+                - "null"
+              format: uuid
+              description: Member actor id of the personal agent owner.
+            ownerDisplayName:
+              type:
+                - string
+                - "null"
+              description: Display name of the personal agent owner.
         items:
           type: array
           items:

@@ -55,7 +55,8 @@ pub mod deferred;
 pub mod records;
 pub use records::{
     ActorDirectoryRow, BackendParticipantRow, BackendSessionAndParticipants, BackendSessionRow,
-    ClaimResult, GatewaySessionRow, SessionRoster, SessionRosterEntry, StoredMessage, WorkspaceRow,
+    ClaimResult, GatewaySessionRow, SessionRoster, SessionRosterEntry, SessionRosterSelfAgent,
+    StoredMessage, WorkspaceRow,
     WorkspaceUpsert,
 };
 

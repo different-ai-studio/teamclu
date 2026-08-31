@@ -507,6 +507,8 @@ impl Backend for MockBackend {
         Ok(super::SessionRoster {
             session_id: session_id.to_string(),
             caller_actor_id,
+            title: Some(snap.session.title.clone()).filter(|t| !t.trim().is_empty()),
+            self_agent: None,
             items,
         })
     }
