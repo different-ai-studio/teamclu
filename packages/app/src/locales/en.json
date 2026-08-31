@@ -1420,7 +1420,8 @@
       "roles": "Roles",
       "rolesSkills": "Roles & Skills",
       "deps": "Dependencies",
-      "billing": "Billing"
+      "billing": "Billing",
+      "knowledgeAcl": "Knowledge Access"
     },
     "general": {
       "title": "General",
@@ -2860,6 +2861,21 @@
         "adjustment": "Adjustment",
         "refund": "Refund"
       }
+    },
+    "knowledgeAcl": {
+      "title": "Knowledge Access",
+      "description": "Restrict a knowledge directory to specific members. Anyone not listed stops receiving it.",
+      "ownerOnly": "Only the team owner or an admin can manage knowledge directory access.",
+      "scopeNotice": "This controls who on your team receives a directory. Knowledge is stored unencrypted on the server, so it is not hidden from whoever operates it. Removing access stops future syncing — it cannot take back copies already on someone’s device.",
+      "empty": "No restricted directories. Every member receives the whole knowledge vault.",
+      "grantedCount": "{{count}} member(s) have access",
+      "removeRule": "Remove restriction",
+      "addTitle": "Restrict a directory",
+      "impactTitle": "This will restrict {{prefix}}.",
+      "impactBody": "{{members}} member(s) will lose access. {{files}} already-synced file(s) will be removed from their devices on the next sync.",
+      "impactCaveat": "Server content is not deleted, and copies already taken cannot be recalled.",
+      "check": "Check impact",
+      "confirm": "Restrict directory"
     }
   },
   "skillssh": {

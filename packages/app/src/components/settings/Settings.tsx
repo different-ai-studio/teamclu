@@ -8,6 +8,7 @@ import {
   Sparkles,
   UserRound,
   Users,
+  Lock,
   Package,
   Clock,
   Coins,
@@ -67,6 +68,7 @@ const daemonSections: Section[] = [
 const localAgentSections: Section[] = [
   { id: 'llm', label: 'LLM Model', labelKey: 'settings.nav.llm', icon: Brain },
   { id: 'teamLlm', label: 'Team LLM', labelKey: 'settings.nav.teamLlm', icon: Users },
+  { id: 'knowledgeAcl', label: 'Knowledge Access', labelKey: 'settings.nav.knowledgeAcl', icon: Lock },
   { id: 'prompt', label: 'Prompt', labelKey: 'settings.nav.prompt', icon: MessageSquareText },
   { id: 'roles', label: 'Roles', labelKey: 'settings.nav.roles', icon: UserRound },
   { id: 'rolesSkills', label: 'Role Skills', labelKey: 'settings.nav.rolesSkills', icon: Sparkles },

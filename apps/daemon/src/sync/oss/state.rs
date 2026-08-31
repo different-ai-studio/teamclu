@@ -54,6 +54,36 @@ pub struct QuarantinedPull {
     pub attempts: u32,
 }
 
+/// A path the server refuses to serve this device: the team restricted the
+/// directory and this actor is not granted it.
+///
+/// Not an error and not a quarantine. A quarantined pull is "try again every
+/// tick, something might have changed"; this is "stop asking". A restricted
+/// directory only opens when an administrator grants access, which no amount of
+/// retrying brings closer, and retrying it every tick would hold the file dirty
+/// and keep a red count in front of the user forever.
+///
+/// It is retried, rarely, because a grant CAN arrive: see
+/// `FORBIDDEN_RETRY_SECS`. There is deliberately no push notification for a
+/// grant — one would have to name the directory, and telling someone a
+/// restricted directory exists is the thing the design withholds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForbiddenPath {
+    /// Unix seconds of the last attempt. Retry is time-based, not count-based.
+    pub last_tried_at: u64,
+    /// Server's message, kept for the log and for support.
+    pub reason: String,
+}
+
+/// How long to leave a forbidden path alone before trying once more.
+///
+/// A day, because the only thing that changes the answer is an administrator
+/// action, and an admin who has just granted access can tell the person to
+/// restart the app rather than wait. Polling more often would be a request per
+/// file per interval, buying nothing.
+pub const FORBIDDEN_RETRY_SECS: u64 = 24 * 60 * 60;
+
 /// Full local sync state file (schema v1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +100,21 @@ pub struct LocalSyncState {
     /// on purpose, since old daemons can read the new file too (they ignore it).
     #[serde(default)]
     pub quarantined: HashMap<String, QuarantinedPull>,
+    /// Paths the server has refused as restricted, by path. `serde(default)` so
+    /// a state file written by an older daemon still loads, and an older daemon
+    /// still reads a newer file — the schema version is unchanged on purpose,
+    /// exactly as it was when `quarantined` was added.
+    #[serde(default)]
+    pub forbidden: HashMap<String, ForbiddenPath>,
+    /// Unix seconds of the last FULL manifest drain (from seq 0).
+    ///
+    /// The ordinary tick asks for `afterSeq = last_server_seq`, which can only
+    /// ever tell us about changes. Losing access to a directory is not a change
+    /// the server can send us — the rows simply stop being returned — so it is
+    /// invisible to an incremental sync. Periodically widening the window to the
+    /// whole manifest is what makes revocation observable at all.
+    #[serde(default)]
+    pub last_reconcile_at: u64,
 }
 
 impl LocalSyncState {
@@ -117,6 +162,8 @@ impl LocalSyncState {
             last_sync_at: String::new(),
             files: HashMap::new(),
             quarantined: HashMap::new(),
+            forbidden: HashMap::new(),
+            last_reconcile_at: 0,
         };
         let body = match std::fs::read_to_string(&path) {
             Ok(body) => body,
@@ -171,6 +218,8 @@ impl LocalSyncState {
             last_sync_at: "".to_string(),
             files: HashMap::new(),
             quarantined: HashMap::new(),
+            forbidden: HashMap::new(),
+            last_reconcile_at: 0,
         }
     }
 
@@ -218,6 +267,43 @@ impl LocalSyncState {
                 deleted_local: false,
             },
         );
+    }
+
+    /// Remember that the server refuses this path, so the push side stops
+    /// offering it.
+    ///
+    /// Also clears `dirty`: a file we are never allowed to upload is not
+    /// "pending upload", and leaving the flag set keeps it in every scan's
+    /// changed set and in the user's error count forever.
+    pub fn mark_forbidden(&mut self, path: &str, reason: &str, now_secs: u64) {
+        self.quarantined.remove(path);
+        self.forbidden.insert(
+            path.to_string(),
+            ForbiddenPath {
+                last_tried_at: now_secs,
+                reason: reason.to_string(),
+            },
+        );
+        if let Some(f) = self.files.get_mut(path) {
+            f.dirty = false;
+        }
+    }
+
+    /// Whether the push side should skip this path right now.
+    ///
+    /// False once `FORBIDDEN_RETRY_SECS` have passed, which is what lets a
+    /// later grant heal on its own without anyone being told the directory
+    /// exists.
+    pub fn is_forbidden_now(&self, path: &str, now_secs: u64) -> bool {
+        match self.forbidden.get(path) {
+            None => false,
+            Some(f) => now_secs.saturating_sub(f.last_tried_at) < FORBIDDEN_RETRY_SECS,
+        }
+    }
+
+    /// Drop the refusal — the server accepted this path again.
+    pub fn clear_forbidden(&mut self, path: &str) {
+        self.forbidden.remove(path);
     }
 
     /// Record a tombstone for a path that was deleted (locally pushed, or pulled
