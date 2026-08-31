@@ -450,7 +450,6 @@ docker volume rm teamclaw-self-host_caddy_config   # 保留 caddy_data 可留证
 | `caddy` | `caddy:2` | Reverse proxy + automatic TLS; **only service with host ports** |
 | `cron` _(opt-in)_ | `curlimages/curl` | Polls FC cron endpoints every 15 min |
 | `gitea` | `gitea/gitea:1.22` | Per-app private git repos (Apps module); HTTP via Caddy, SSH on host `GITEA_SSH_PORT` |
-| `postgres` _(opt-in)_ | `postgres:15-alpine` | Standalone Postgres backend for FC when `BACKEND_KIND=postgres` |
 
 **Host ports（因运行时而异）：**
 
@@ -644,20 +643,6 @@ Adds the `cron` service, which POSTs to FC's `/internal/cron` endpoint every
 15 minutes for OSS-related maintenance tasks. Requires `CRON_TRIGGER_SECRET`
 to be set in `.env` (gen-secrets does **not** generate this; pick any random
 string).
-
-### Standalone Postgres backend
-
-```bash
-# In .env:
-BACKEND_KIND=postgres
-DATABASE_URL=postgres://postgres:postgres@postgres:5432/postgres
-
-docker compose --profile postgres up -d
-```
-
-Adds a dedicated `postgres:15-alpine` container for FC to use directly instead
-of routing through the Supabase stack. Useful for minimal deployments that do
-not need GoTrue auth or PostgREST.
 
 ### Running the daemon (opt-in)
 
@@ -895,10 +880,8 @@ All variables live in `.env` (copied from `.env.example`).
 | `CADDY_HTTPS_PORT` | no | Host HTTPS port (default `443`; Podman `8443` via `up.sh`) |
 | `ACME_EMAIL` | for acme | Let's Encrypt contact |
 | `DOCKER_SOCKET_LOCATION` | no | Docker socket path (default: `/var/run/docker.sock`); used by the `vector` log collector |
-| `BACKEND_KIND` | no | `supabase` (default) or `postgres` |
 | `CRON_TRIGGER_SECRET` | for cron | Shared secret for `/internal/cron` |
-| `DATABASE_URL` | for postgres profile | Postgres connection string |
-| `POSTGRES_BACKEND_PASSWORD` | no | Password for the opt-in standalone `postgres` service (default: `postgres`) |
+| `DATABASE_URL` | for cron / LiteLLM usage / Apps | Postgres connection string for the bundled `db` |
 | `ACCESS_KEY_ID` | no | Alibaba OSS key ID |
 | `ACCESS_KEY_SECRET` | no | Alibaba OSS key secret |
 | `ROLE_ARN` | no | Alibaba RAM role ARN for OSS |

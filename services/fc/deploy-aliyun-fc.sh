@@ -129,7 +129,6 @@ fi
 
 # Tell s.yaml which function to deploy.
 export FC_FUNCTION_NAME="$FUNCTION_NAME"
-export BACKEND_KIND="${BACKEND_KIND:-supabase}"
 # Adopt a pre-existing function's http trigger by name (FC console default is
 # `defaultTrigger`). Override via FC_HTTP_TRIGGER_NAME=... in the environment.
 export FC_HTTP_TRIGGER_NAME="${FC_HTTP_TRIGGER_NAME:-http-trigger}"
@@ -140,7 +139,6 @@ echo "  function : $FUNCTION_NAME"
 echo "  region   : ${FC_REGION:-cn-shenzhen}"
 echo "  vpc      : ${FC_VPC_ID} / ${FC_VSWITCH_ID}"
 echo "  bucket   : ${BUCKET}"
-echo "  backend  : $BACKEND_KIND"
 echo "  http trig: $FC_HTTP_TRIGGER_NAME"
 echo "  env file : $ENV_FILE"
 echo "  supabase : ${SUPABASE_URL:-<unset>}"

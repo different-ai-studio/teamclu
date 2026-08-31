@@ -22,43 +22,39 @@ curl http://127.0.0.1:9000/healthz   # {"ok":true}
 | `PORT` | `9000` | Listen port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `CRON_TRIGGER_SECRET` | (unset) | Shared secret required by `/internal/cron` |
-| `BACKEND_KIND` | `supabase` | `supabase` or `postgres` (via `resolveBackendKind`) |
 
 All other vars (DB, Supabase, OSS, LiteLLM, APNs, MQTT, CodeUp) match `s.yaml`.
 
-## Dual backend paths (read before changing FC data access)
+## Data access (read before changing FC data access)
 
-Production self-host uses **`BACKEND_KIND=supabase`** (default). The codebase
-also carries a parallel **`postgres`** path (Drizzle + Better-Auth) for the same
-`/v1` repository contract. Treat them as **two implementations of one API**,
-not as “main vs dead code”, until the postgres path is removed.
+All `/v1` business data goes through **`lib/supabase-repo.ts`** (plus
+`lib/supabase-repo/*`): PostgREST with the caller's bearer forwarded, so RLS
+and auth semantics are preserved. Login is GoTrue, via
+`createSupabaseAuthRepository`.
 
-| Path | Switch | Business `/v1/*` | Auth |
-|------|--------|------------------|------|
-| **A — Supabase** | default / `supabase` | `lib/supabase-repo.ts` → PostgREST + RLS | GoTrue via `createSupabaseAuthRepository` |
-| **B — Postgres** | `BACKEND_KIND=postgres` | `lib/pg-repo/*` → Drizzle + `authz.ts` | Better-Auth via `createPgAuthRepository` |
+Drizzle is also present, but it is **not** a second business backend — it is
+how the tokenless side paths reach Postgres directly: `lib/cron.ts`,
+`lib/litellm-usage.ts`, `lib/apps-vanity.ts`, `lib/provisioning/app-secrets.ts`
+and `lib/provisioning/app-postgres.ts`. Those need `DATABASE_URL`; the business
+API does not.
 
-**Not Path B** (Drizzle exists on supabase deployments too): `lib/cron.ts`,
-`lib/litellm-usage.ts`, `lib/provisioning/app-postgres.ts` — tokenless or
-separate DB; always wired regardless of `BACKEND_KIND`.
+`src/db/migrations/` is **not applied to any deployment**. The live schema is
+`services/supabase/migrations/`, applied by `deploy/self-host/init/apply-migrations.sh`.
+The Drizzle set exists so `test/db/pglite.ts` can build an in-memory database
+for the tests that need real SQL (cron, oss-sync schema, app data browser) —
+keep it in step with the real migrations for that reason, not for deployment.
 
 ### Developer checklist (new Cloud API work)
 
 1. **Contract first** — `lib/repository-contract.ts`, then OpenAPI.
-2. **Implement both** — `supabase-repo.ts` (or `supabase-repo/*`) **and**
-   `pg-repo/<domain>.ts`, unless the feature is explicitly supabase-only.
-3. **Branching modules** — if you touch `sync-handlers.ts`, `sync-auth.ts`,
-   `push-deps.ts`, or `apps-vanity.ts`, update **both** the `postgres` and
-   `supabase` blocks (grep `resolveBackendKind()`).
-4. **Shared validation** — pure helpers imported from `pg-repo/` into
-   supabase-repo (e.g. `app-status`, `team-mcp`, `team-env-secrets`) must stay
-   backend-neutral; do not put PostgREST calls there.
-5. **Tests** — `test/repository-contract.test.ts` (supabase stub gate) and
-   `test/pg-repo-contract.test.ts` (pglite gate); domain tests often have
-   `pg-repo-*.test.ts` twins.
+2. **Implement** in `supabase-repo.ts` (or `supabase-repo/*`).
+3. **Shared validation** — request-shape and security rules that the route
+   layer and the repository both apply live in `lib/validation/`; keep them free
+   of PostgREST/Drizzle calls.
+4. **Tests** — `test/repository-contract.test.ts` is the contract gate; domain
+   tests sit alongside it.
 
 Entry wiring: `src/index.ts` (`makeBusinessRepoFactory` / `makeAuthRepoFactory`).
-Switch: `src/lib/backend-kind.ts`.
 
 ### Cron (HTTP-triggered)
 
