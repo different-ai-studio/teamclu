@@ -105,6 +105,9 @@ describe('Settings navigation', () => {
     ).toEqual([
       'LLM Model',
       'Team LLM',
+      // Team-scoped, like 'Team LLM' above, and grouped with it for that reason
+      // rather than because it configures the local agent.
+      'Knowledge Access',
       'Prompt',
       // 'Roles' and 'Role Skills' are temporarily hidden — see
       // HIDDEN_LOCAL_AGENT_SECTIONS in Settings.tsx. 'Knowledge Base' is gone
