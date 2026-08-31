@@ -27,7 +27,7 @@ beforeEach(() => {
   process.env.STRIPE_SECRET_KEY = "sk_test_placeholder";
   process.env.STRIPE_WEBHOOK_SECRET = WEBHOOK_SECRET;
   process.env.STRIPE_PRICE_IDS = "price_a, price_b";
-  process.env.AUTH_BASE_URL = "https://api.example.com";
+  process.env.STRIPE_RETURN_URL_BASE = "https://api.example.com";
   // The gateway is the ledger's only writer, so intercepting this one call is
   // the whole surface between Stripe and the money.
   (aiGateway as any).topUp = async (teamId: string, body: any) => {

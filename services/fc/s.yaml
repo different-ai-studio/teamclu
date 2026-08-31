@@ -66,6 +66,7 @@ resources:
         STRIPE_SECRET_KEY: ${env('STRIPE_SECRET_KEY', '')}
         STRIPE_WEBHOOK_SECRET: ${env('STRIPE_WEBHOOK_SECRET', '')}
         STRIPE_PRICE_IDS: ${env('STRIPE_PRICE_IDS', '')}
+        STRIPE_RETURN_URL_BASE: ${env('STRIPE_RETURN_URL_BASE', '')}
         LITELLM_URL: ${env('LITELLM_URL', 'https://ai.ucar.cc')}
         LITELLM_MASTER_KEY: ${env('LITELLM_MASTER_KEY', '')}
         # Blank = no cap, matching the compose default. Keep the two targets in
