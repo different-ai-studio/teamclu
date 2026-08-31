@@ -110,18 +110,64 @@ test("an unhandled event type is reported, not thrown", async () => {
   assert.match(String(r.reason), /customer\.created/);
 });
 
-test("a refund debits the team and is keyed by refund id", async () => {
-  const charge = {
+/** A charge as the live API actually returns it: NO `refunds` key. */
+function charge(over: Record<string, any> = {}) {
+  return {
     id: "ch_1",
-    metadata: { team_id: "team-1", credits: "5000000" },
-    refunds: { data: [{ id: "re_1", metadata: { credits: "2000000" } }] },
-  };
-  const r = await handleStripeEvent({} as any, event("charge.refunded", charge));
+    amount: 500,
+    metadata: { team_id: "team-1", credits: "1500000" },
+    ...over,
+  } as any;
+}
+
+function stripeWithRefunds(data: any[]) {
+  return { refunds: { list: async () => ({ data }) } } as any;
+}
+
+test("a refund debits the team and is keyed by refund id", async () => {
+  const stripe = stripeWithRefunds([{ id: "re_1", amount: 500, status: "succeeded" }]);
+  const r = await handleStripeEvent(stripe, event("charge.refunded", charge()));
   assert.equal(r.handled, true);
   assert.equal(topUps.length, 1);
-  assert.equal(topUps[0].body.amountCredits, -2000000, "refunds are negative — the balance may legally go below zero");
+  assert.equal(topUps[0].body.amountCredits, -1500000, "refunds are negative — the balance may legally go below zero");
   assert.equal(topUps[0].body.kind, "refund");
   assert.equal(topUps[0].body.idempotencyKey, idempotency.refund("re_1"));
+});
+
+test("refunds are FETCHED, not read off the event payload", async () => {
+  // Regression guard for a silent-loss bug. `charge.refunds` is absent from the
+  // charge object on current API versions, so reading `charge.refunds?.data ??
+  // []` produced an empty list: the loop never ran, the handler answered 200,
+  // Stripe stopped retrying, and the customer kept the credits they had been
+  // refunded for. Verified against the live API — a retrieved charge has no
+  // `refunds` key at all.
+  assert.equal("refunds" in charge(), false, "the fixture must match the live shape");
+  const stripe = stripeWithRefunds([{ id: "re_1", amount: 500, status: "succeeded" }]);
+  await handleStripeEvent(stripe, event("charge.refunded", charge()));
+  assert.equal(topUps.length, 1, "the refund must be applied even though the event carried no refunds list");
+});
+
+test("a PARTIAL refund debits a proportional share, rounded against the customer", async () => {
+  const stripe = stripeWithRefunds([{ id: "re_partial", amount: 200, status: "succeeded" }]);
+  await handleStripeEvent(stripe, event("charge.refunded", charge()));
+  // 1,500,000 credits * 200/500 = 600,000 — not the whole purchase.
+  assert.equal(topUps[0].body.amountCredits, -600000);
+});
+
+test("a pending refund is not debited yet", async () => {
+  const stripe = stripeWithRefunds([{ id: "re_pending", amount: 500, status: "pending" }]);
+  const r = await handleStripeEvent(stripe, event("charge.refunded", charge()));
+  assert.equal(topUps.length, 0);
+  assert.equal(r.applied, false);
+});
+
+test("a charge with no team id fails loudly rather than dropping the refund", async () => {
+  const stripe = stripeWithRefunds([{ id: "re_1", amount: 500, status: "succeeded" }]);
+  await assert.rejects(
+    () => handleStripeEvent(stripe, event("charge.refunded", charge({ metadata: {} }))),
+    (err: any) => err?.code === "stripe_refund_unattributed",
+  );
+  assert.equal(topUps.length, 0);
 });
 
 // --- credits resolution ----------------------------------------------------
