@@ -392,6 +392,9 @@ export function registerStripe(router) {
 2. 加价逻辑集中在 Stripe 后台一处，不散落在代码里 —— 与 §4.4.1「credits 锚成本、加价只发生在充值那一次换算」完全一致。
 3. **币种变得无关**：credits 锚的是元的上游成本，Stripe 收什么币种都不影响这张映射表。
 
+⚠️ **Price 挂靠的 Product 还必须有 `tax_code`**（账号开着 Managed Payments 时；默认就是开的）。缺了它，`/credits/packages` 照常列出套餐，**只有下单会炸** ——「the product tax code is missing」发生在建 Session 那一步，不是列表那一步，所以症状是「看得见买不了」。实际账号用的是 `txcd_10105002`（AI as a Service, cloud-based, business use）。
+**不要**用 `managed_payments[enabled]=false` 绕过：那是在悄悄改变谁承担税务责任。
+
 #### 4.9.4 幂等键用 Session id，不要用 event id
 
 ```
