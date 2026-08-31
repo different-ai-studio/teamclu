@@ -1,0 +1,104 @@
+{
+  "schema": "teamclu-knowledge-mcp/v1",
+  "comment": "Tool manifest for the knowledge-base MCP bridge. Each entry maps one MCP tool to a daemon control-socket call. The bridge (sidecar / pi extension / any MCP host adapter) reads this and exposes the tools; the daemon handler at daemon::server::knowledge executes them against the active team's shared/knowledge/ vault.",
+  "socket": {
+    "path": "~/.amuxd/amuxd.sock",
+    "envelope": { "cmd": "knowledge", "action": "<action>", "...": "<tool args>" }
+  },
+  "tools": [
+    {
+      "name": "knowledge_scaffold",
+      "description": "Initialize the team knowledge vault with the standard directory tree (00-home, 10-onboarding, 20-domains, 30-decisions, 40-runbooks, 50-glossary, 90-archive, attachments) and bilingual (zh/en) templates. Idempotent — existing files are never overwritten. 初始化团队知识库的标准目录结构和双语模板；已存在的文件不会被覆盖。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "team_name": { "type": "string", "description": "Display name stamped into 00-home.md / 写入 00-home.md 的团队显示名" }
+        }
+      },
+      "maps_to": { "action": "scaffold" }
+    },
+    {
+      "name": "knowledge_create",
+      "description": "Create a new vault page from a template. Refuses to overwrite an existing path — use knowledge_write to edit. 从模板新建页面；已存在则拒绝，改请用 knowledge_write。",
+      "inputSchema": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "description": "Vault-relative path, e.g. 40-runbooks/push-outage.md" },
+          "template": { "type": "string", "enum": ["adr", "runbook", "domain-index", "page"] },
+          "title": { "type": "string" },
+          "content": { "type": "string", "description": "Page body; overrides the template when given / 提供时覆盖模板正文" }
+        }
+      },
+      "maps_to": { "action": "create" }
+    },
+    {
+      "name": "knowledge_write",
+      "description": "Write or replace a vault page. All paths are validated to stay inside the vault. 写入/覆盖页面，路径被限制在 vault 内。",
+      "inputSchema": {
+        "type": "object",
+        "required": ["path", "content"],
+        "properties": {
+          "path": { "type": "string" },
+          "content": { "type": "string" },
+          "title": { "type": "string" }
+        }
+      },
+      "maps_to": { "action": "write" }
+    },
+    {
+      "name": "knowledge_salvage",
+      "description": "Capture a conclusion from the current conversation into the vault as a salvage draft (00-salvage/<date>-<slug>.md with provenance frontmatter). Use when the user says something is worth keeping. 把对话中值得固化的结论存入知识库（打捞草稿）。",
+      "inputSchema": {
+        "type": "object",
+        "required": ["title", "content"],
+        "properties": {
+          "title": { "type": "string" },
+          "content": { "type": "string" },
+          "source": { "type": "string", "description": "Where this came from, e.g. 'chat', 'retro'" },
+          "session_id": { "type": "string" }
+        }
+      },
+      "maps_to": { "action": "salvage" }
+    },
+    {
+      "name": "knowledge_search",
+      "description": "Full-text search across the vault (SQLite FTS5, CJK-aware). Returns path, title and a highlighted snippet per hit. 对知识库全文检索（支持中文），返回路径、标题和高亮摘要。",
+      "inputSchema": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "description": "Free text; whitespace-separated terms are ANDed / 空格分词，AND 语义" }
+        }
+      },
+      "maps_to": { "action": "search" }
+    },
+    {
+      "name": "knowledge_manifest_get",
+      "description": "Read knowledge.manifest.yaml (publish settings, collections). 读取发布清单。",
+      "inputSchema": { "type": "object", "properties": {} },
+      "maps_to": { "action": "manifest_get" }
+    },
+    {
+      "name": "knowledge_manifest_set",
+      "description": "Update publish settings. Changing visibility to 'org' REQUIRES confirm=true — publishing exposes the vault org-wide and is a considered action. 修改发布设置；把 visibility 改为 org 必须带 confirm=true。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "visibility": { "type": "string", "enum": ["private", "org"] },
+          "summary": { "type": "string" },
+          "team": { "type": "string" },
+          "title": { "type": "string" },
+          "confirm": { "type": "boolean", "description": "Required when changing visibility / 变更可见性时必填" }
+        }
+      },
+      "maps_to": { "action": "manifest_set" }
+    },
+    {
+      "name": "knowledge_health",
+      "description": "Vault health stats: stale runbooks (last-verified overdue), stale pages (updated overdue), coverage checks. 知识库健康度：过期 runbook、过期页面、覆盖度检查。",
+      "inputSchema": { "type": "object", "properties": {} },
+      "maps_to": { "action": "health" }
+    }
+  ]
+}
