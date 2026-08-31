@@ -24,6 +24,7 @@ import { makeAttachmentsRepo } from "./attachments.js";
 import { makeTeamSkillsRepo } from "./team-skills.js";
 import { makeMarketplaceRepo } from "./marketplace.js";
 import { makeTeamMcpRepo } from "./team-mcp.js";
+import { makeKnowledgeAclRepo } from "./knowledge-acl.js";
 import { makeTeamEnvSecretsRepo } from "./team-env-secrets.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -74,6 +75,7 @@ export function createPgBusinessRepository({ db, accessToken, userId, callerActo
   const teamSkillsRepo = makeTeamSkillsRepo(db, ctx);
   const marketplaceRepo = makeMarketplaceRepo(db, ctx);
   const teamMcpRepo = makeTeamMcpRepo(db, ctx);
+  const knowledgeAclRepo = makeKnowledgeAclRepo(db, ctx);
   const teamEnvSecretsRepo = makeTeamEnvSecretsRepo(db, ctx);
   return {
     ...teamsRepo,
@@ -93,6 +95,7 @@ export function createPgBusinessRepository({ db, accessToken, userId, callerActo
     ...teamSkillsRepo,
     ...marketplaceRepo,
     ...teamMcpRepo,
+    ...knowledgeAclRepo,
     ...teamEnvSecretsRepo,
     ...makeAttachmentsRepo(),
     listTeams: (args: { limit?: number } = {}) => teamsRepo.listTeams(args, teamsCtx),

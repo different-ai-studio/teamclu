@@ -2409,6 +2409,163 @@ paths:
       responses:
         "204": { description: Uninstalled. }
         "403": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/knowledge-acl:
+    get:
+      operationId: listKnowledgeAcl
+      summary: List restricted knowledge prefixes
+      description: >
+        Owner/admin only. Returns every restricted prefix in the team with the
+        actors granted access to it.
+
+
+        The rules are NOT exposed to ordinary members and are never sent to sync
+        clients: a directory name is itself sensitive, so a restricted directory
+        is invisible to those without access rather than shown as locked.
+      tags: [KnowledgeAcl]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: Rules with their grants.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/KnowledgeAclRule" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createKnowledgeAcl
+      summary: Restrict a knowledge prefix
+      description: >
+        Owner/admin only. Whitelist semantics — once a prefix has a rule it is
+        closed to every actor not listed in `actorIds`.
+
+
+        Restricting a directory that already holds files removes those files from
+        every unlisted member's device on their next sync. Because that is not
+        reversible for copies already taken, the call returns 409
+        `confirmation_required` (with the affected counts in `details`) unless
+        `confirmRevokeExisting` is true. Use the `preview` endpoint to obtain
+        those counts before asking the user to confirm.
+
+
+        Revocation stops distribution; it does not recall content that was
+        already synced. Knowledge is stored in plaintext server-side — this is
+        in-team access control, not confidentiality from the operator.
+      tags: [KnowledgeAcl]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KnowledgeAclWrite" }
+      responses:
+        "201":
+          description: Created, with the impact of the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeAclRule" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409":
+          description: The prefix already holds files and `confirmRevokeExisting` was not set.
+          $ref: "#/components/responses/Error"
+        "422":
+          description: The team is at its rule limit.
+          $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/knowledge-acl/preview:
+    post:
+      operationId: previewKnowledgeAcl
+      summary: Preview the impact of restricting a prefix
+      description: >
+        Owner/admin only. Dry run — writes nothing. Answers how many live files
+        and how many members a proposed restriction would cut off, so the
+        confirmation screen can show the number before the admin commits.
+
+
+        `affectedMembers` counts member actors only. Agents inherit the
+        permissions of the device owner they run for, so they are not counted.
+      tags: [KnowledgeAcl]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pathPrefix]
+              properties:
+                pathPrefix: { type: string, example: "knowledge/hr/" }
+                actorIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Impact of the proposed rule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeAclImpact" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/knowledge-acl/{aclId}:
+    patch:
+      operationId: updateKnowledgeAcl
+      summary: Change who may see a restricted prefix
+      description: >
+        Owner/admin only. Adding an actor also re-surfaces the prefix's existing
+        files in the manifest, so a newly granted member receives content that
+        predates their grant.
+      tags: [KnowledgeAcl]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: aclId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                addActorIds:
+                  type: array
+                  items: { type: string, format: uuid }
+                removeActorIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Updated rule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeAclRule" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteKnowledgeAcl
+      summary: Remove a restriction
+      description: >
+        Owner/admin only. The prefix reopens to the whole team and its files are
+        re-surfaced so every member receives them on the next sync.
+      tags: [KnowledgeAcl]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: aclId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Removed. }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/teams/{teamId}/mcp-servers:
     get:
       operationId: listTeamMcpServers
@@ -6235,6 +6392,60 @@ components:
         size: { type: integer }
         ownerActorId: { type: string, format: uuid }
         status: { type: string, enum: [draft, published, deprecated] }
+    KnowledgeAclRule:
+      type: object
+      description: >
+        A restricted knowledge prefix and the actors allowed to see it.
+        Whitelist semantics: anyone not in `actorIds` is denied.
+      properties:
+        id: { type: string, format: uuid }
+        pathPrefix:
+          type: string
+          description: >
+            Always starts with `knowledge/` and ends with `/`. The trailing
+            slash is what makes matching happen on a path boundary, so
+            `knowledge/hr/` never covers `knowledge/hr-public/`.
+          example: "knowledge/hr/"
+        actorIds:
+          type: array
+          description: Actors granted access. Members only in practice — agents inherit their device owner.
+          items: { type: string, format: uuid }
+        createdBy: { type: string, format: uuid }
+        createdAt: { type: [string, "null"], format: date-time }
+        updatedAt: { type: [string, "null"], format: date-time }
+        affectedFiles:
+          type: integer
+          description: Present on create — live files the new rule covers.
+        affectedMembers:
+          type: integer
+          description: Present on create — members that lost access.
+    KnowledgeAclWrite:
+      type: object
+      required: [pathPrefix]
+      properties:
+        pathPrefix:
+          type: string
+          description: Must start with `knowledge/` and end with `/`.
+          example: "knowledge/hr/"
+        actorIds:
+          type: array
+          items: { type: string, format: uuid }
+        confirmRevokeExisting:
+          type: boolean
+          default: false
+          description: >
+            Required when the prefix already holds files. Acknowledges that
+            those files will be removed from every unlisted member's device.
+    KnowledgeAclImpact:
+      type: object
+      properties:
+        pathPrefix: { type: string }
+        affectedFiles:
+          type: integer
+          description: Live (non-deleted) files under the prefix.
+        affectedMembers:
+          type: integer
+          description: Member actors that would lose access. Agents are not counted — they inherit their device owner.
     TeamMcpServer:
       type: object
       description: >
