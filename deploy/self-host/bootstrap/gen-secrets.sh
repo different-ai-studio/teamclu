@@ -57,6 +57,15 @@ if [ -z "$LITELLM_MASTER_KEY" ]; then
 fi
 set_kv LITELLM_MASTER_KEY "$LITELLM_MASTER_KEY"
 
+# Shared secret for the AI gateway's /internal/* routes (FC -> gateway). Never
+# handed to a client. Preserved across runs like the key above, so re-running
+# this script does not lock FC out of a gateway that is already deployed.
+AI_GATEWAY_SERVICE_TOKEN="$(grep '^AI_GATEWAY_SERVICE_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)"
+if [ -z "$AI_GATEWAY_SERVICE_TOKEN" ]; then
+  AI_GATEWAY_SERVICE_TOKEN="$(openssl rand -hex 32)"
+fi
+set_kv AI_GATEWAY_SERVICE_TOKEN "$AI_GATEWAY_SERVICE_TOKEN"
+
 LITELLM_UI_PASSWORD="$(grep '^LITELLM_UI_PASSWORD=' "$ENV_FILE" | cut -d= -f2- || true)"
 if [ -z "$LITELLM_UI_PASSWORD" ]; then
   set_kv LITELLM_UI_PASSWORD "$(openssl rand -hex 16)"

@@ -204,6 +204,34 @@ jobs:
           docker exec -e PGUSER=supabase_admin -e PGPASSWORD=postgres -e PGDATABASE=postgres \
             pgtap bash -c 'cd /work/services/supabase/tests && bash run.sh'
 
+      # The gateway suite runs HERE rather than in its own job because its most
+      # valuable tests need this database: "a valid token for a team you are not
+      # in is 403" is the regression test for the authorization hole, and it is
+      # only meaningful against the real actors table with its real RLS.
+      #
+      # The two tests that call a live upstream skip themselves without
+      # DEEPSEEK_API_KEY, so CI proves everything except the upstream round-trip.
+      - name: Expose Postgres to the runner
+        run: |
+          docker exec -e PGPASSWORD=postgres pgtap psql -U supabase_admin -d postgres \
+            -c "alter role ai_gateway login password 'ci';"
+          echo "PGHOST_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' pgtap)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: AI gateway — typecheck, build, tests
+        working-directory: services/ai-gateway
+        env:
+          DATABASE_URL: postgres://ai_gateway:ci@${{ env.PGHOST_IP }}:5432/postgres
+          ADMIN_DATABASE_URL: postgres://supabase_admin:postgres@${{ env.PGHOST_IP }}:5432/postgres
+        run: |
+          npm ci
+          npm run typecheck   # tsconfig.test.json — covers test/ too
+          npm run build       # tsconfig.json — what the image actually compiles
+          npm test
+
   daemon-linux:
     name: Daemon Unit Tests (Linux)
     runs-on: ubuntu-latest
