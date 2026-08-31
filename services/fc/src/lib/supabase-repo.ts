@@ -1129,6 +1129,33 @@ export function createSupabaseBusinessRepository(options) {
     // Permission split per §12.6: balance and usage are visible to every
     // member — an exhausted wallet stops their work, so they must be able to
     // see why — while the ledger and every mutation are owner-only.
+
+    /**
+     * Resolve actor ids in a usage report to display names.
+     *
+     * Done here rather than in the gateway: the gateway owns spend, not how a
+     * person is presented. It also has no business reading the actor directory
+     * — its grant is deliberately narrow.
+     */
+    async _nameUsageActors(teamId: string, report: any) {
+      const ids = (report?.byActor ?? []).map((r: any) => r.actorId).filter(Boolean);
+      if (!ids.length) return report;
+      const names = await (async () => {
+        const { data } = await supabase
+          .from("actors").select("id, display_name")
+          .eq("team_id", teamId).in("id", ids);
+        return new Map((data ?? []).map((r: any) => [r.id, r.display_name]));
+      })();
+      return {
+        ...report,
+        byActor: report.byActor.map((r: any) => ({
+          ...r,
+          // null display name = the unattributed bucket; the UI renders a
+          // localized label rather than a raw uuid.
+          displayName: r.actorId ? (names.get(r.actorId) ?? null) : null,
+        })),
+      };
+    },
     async getTeamCredits(teamId: string) {
       await requireCallerTeamMember(teamId);
       const [summary, usage] = await Promise.all([
@@ -1144,7 +1171,7 @@ export function createSupabaseBusinessRepository(options) {
     },
     async getCreditUsage(teamId: string, opts: { range?: string; date?: string } = {}) {
       await requireCallerTeamMember(teamId);
-      return aiGateway.usage(teamId, opts);
+      return this._nameUsageActors(teamId, await aiGateway.usage(teamId, opts));
     },
     async getCreditLedger(teamId: string, opts: { limit?: number } = {}) {
       await requireCallerTeamOwner(teamId);

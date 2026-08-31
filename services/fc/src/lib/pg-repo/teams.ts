@@ -587,6 +587,34 @@ export function makeTeamsRepo(db: PgDatabase<any, any>, deps: TeamsRepoDeps = {}
     // Permission split per §12.6: balance and usage are visible to every
     // member — an exhausted wallet stops their work, so they must be able to
     // see why — while the ledger and every mutation are owner-only.
+
+    /**
+     * Resolve actor ids in a usage report to display names.
+     *
+     * Done here rather than in the gateway: the gateway owns spend, not how a
+     * person is presented. It also has no business reading the actor directory
+     * — its grant is deliberately narrow.
+     */
+    async _nameUsageActors(teamId: string, report: any) {
+      const ids = (report?.byActor ?? []).map((r: any) => r.actorId).filter(Boolean);
+      if (!ids.length) return report;
+      const names = await (async () => {
+        const rows = await db
+          .select({ id: actors.id, displayName: actors.displayName })
+          .from(actors)
+          .where(and(eq(actors.teamId, teamId), inArray(actors.id, ids)));
+        return new Map(rows.map((r) => [r.id, r.displayName]));
+      })();
+      return {
+        ...report,
+        byActor: report.byActor.map((r: any) => ({
+          ...r,
+          // null display name = the unattributed bucket; the UI renders a
+          // localized label rather than a raw uuid.
+          displayName: r.actorId ? (names.get(r.actorId) ?? null) : null,
+        })),
+      };
+    },
     async getTeamCredits(teamId: string, ctx?: { userId?: string }) {
       await requireActorForTeam(db, requireUser(ctx), teamId);
       const [summary, usage] = await Promise.all([
@@ -602,7 +630,7 @@ export function makeTeamsRepo(db: PgDatabase<any, any>, deps: TeamsRepoDeps = {}
     },
     async getCreditUsage(teamId: string, opts: { range?: string; date?: string } = {}, ctx?: { userId?: string }) {
       await requireActorForTeam(db, requireUser(ctx), teamId);
-      return aiGateway.usage(teamId, opts);
+      return this._nameUsageActors(teamId, await aiGateway.usage(teamId, opts));
     },
     async getCreditLedger(teamId: string, opts: { limit?: number } = {}, ctx?: { userId?: string }) {
       await requireTeamOwner(db, requireUser(ctx), teamId);

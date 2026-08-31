@@ -11,6 +11,7 @@ import {
   Package,
   Clock,
   Coins,
+  Wallet,
   Shield,
   SlidersHorizontal,
   Bookmark,
@@ -47,6 +48,7 @@ interface Section {
 const primarySections: Section[] = [
   { id: 'general', label: 'General', labelKey: 'settings.nav.general', icon: Settings2 },
   { id: 'shortcuts', label: 'Shortcuts', labelKey: 'settings.nav.shortcuts', icon: Bookmark },
+  { id: 'billing', label: 'Billing', labelKey: 'settings.nav.billing', icon: Wallet },
   { id: 'tokenUsage', label: 'Token Usage', labelKey: 'settings.nav.tokenUsage', icon: Coins },
   { id: 'privacy', label: 'Privacy & Telemetry', labelKey: 'settings.nav.privacy', icon: Shield },
   { id: 'cache', label: 'Local Cache', labelKey: 'settings.nav.cache', icon: Database },

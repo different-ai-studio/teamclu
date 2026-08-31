@@ -3,15 +3,29 @@ import { useTranslation } from 'react-i18next'
 import { Loader2, AlertTriangle, Coins, ChevronLeft, ChevronRight, Trophy } from 'lucide-react'
 import { getBackend } from '@/lib/backend'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { formatTokenCount, formatCost } from '@/lib/format-tokens'
+import { formatTokenCount } from '@/lib/format-tokens'
 import { cn } from '@/lib/utils'
 import type { TFunction } from 'i18next'
-import type { LiteLlmUsage, LiteLlmUsageRange } from '@/lib/backend/types'
+import type { CreditUsageReport, CreditUsageRange } from '@/lib/backend/types'
 
-const RANGES: LiteLlmUsageRange[] = ['day', 'week', 'month', 'year']
+/** Points, the display unit for credits. Matches BillingSection. */
+const POINTS_PER_CREDIT = 10_000
+const fmtPoints = (credits: number) =>
+  (credits / POINTS_PER_CREDIT).toLocaleString(undefined, { maximumFractionDigits: 0 })
+
+/**
+ * The date this deployment began recording usage. Periods that start before it
+ * show an explanation instead of a zero: a zero reads as "nobody used AI then",
+ * which is a false statement about a period we simply have no data for. The old
+ * gateway measured USD spend, which has no defined conversion to credits, so
+ * that history is deliberately not carried over (design §11.4).
+ */
+const STATS_START_UTC = import.meta.env.VITE_USAGE_STATS_START ?? ''
+
+const RANGES: CreditUsageRange[] = ['day', 'week', 'month', 'year']
 
 /** Shift an anchor date by one period (range unit), clamped to "not future". */
-function shiftAnchor(anchor: Date, range: LiteLlmUsageRange, dir: -1 | 1): Date {
+function shiftAnchor(anchor: Date, range: CreditUsageRange, dir: -1 | 1): Date {
   const d = new Date(anchor)
   switch (range) {
     case 'day': d.setDate(d.getDate() + dir); break
@@ -31,16 +45,16 @@ export function TokenUsageSection() {
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
 
   // Static references so the i18n dead-key analyzer sees each range label.
-  const rangeLabels: Record<LiteLlmUsageRange, string> = {
+  const rangeLabels: Record<CreditUsageRange, string> = {
     day: t('settings.tokenUsage.range.day', 'Day'),
     week: t('settings.tokenUsage.range.week', 'Week'),
     month: t('settings.tokenUsage.range.month', 'Month'),
     year: t('settings.tokenUsage.range.year', 'Year'),
   }
 
-  const [range, setRange] = useState<LiteLlmUsageRange>('month')
+  const [range, setRange] = useState<CreditUsageRange>('month')
   const [anchor, setAnchor] = useState<Date>(() => new Date())
-  const [data, setData] = useState<LiteLlmUsage | null>(null)
+  const [data, setData] = useState<CreditUsageReport | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [unavailable, setUnavailable] = useState(false)
@@ -57,11 +71,11 @@ export function TokenUsageSection() {
     setError(null)
     setUnavailable(false)
     try {
-      const usage = await getBackend().teams.getLiteLlmUsage(teamId, { range, date: toIsoDate(anchor) })
+      const usage = await getBackend().teams.getCreditUsage(teamId, { range, date: toIsoDate(anchor) })
       setData(usage)
     } catch (e: unknown) {
       const code = (e as { code?: string })?.code
-      if (code === 'litellm_usage_unavailable' || code === 'litellm_unavailable') {
+      if (code === 'ai_gateway_unavailable') {
         setUnavailable(true)
         setData(null)
       } else {
@@ -74,9 +88,10 @@ export function TokenUsageSection() {
 
   useEffect(() => { void load() }, [load])
 
-  const budgetPct = useMemo(() => {
-    if (!data?.maxBudget || data.maxBudget <= 0) return null
-    return Math.min(100, Math.round((data.summary.totalSpend / data.maxBudget) * 100))
+  // A period that predates the statistics start has no data — not zero usage.
+  const predatesStats = useMemo(() => {
+    if (!data || !STATS_START_UTC) return false
+    return new Date(data.endUtc) <= new Date(STATS_START_UTC)
   }, [data])
 
   return (
@@ -117,7 +132,7 @@ export function TokenUsageSection() {
             <ChevronLeft className="h-4 w-4" />
           </button>
           <span className="min-w-[140px] text-center text-[12.5px] font-medium tabular-nums">
-            {data ? (data.startDate === data.endDate ? data.startDate : `${data.startDate} → ${data.endDate}`) : '—'}
+            {data ? `${data.startUtc.slice(0, 10)} → ${data.endUtc.slice(0, 10)}` : '—'}
           </span>
           <button
             onClick={() => setAnchor((a) => shiftAnchor(a, range, 1))}
@@ -147,33 +162,27 @@ export function TokenUsageSection() {
 
       {unavailable && !isLoading && (
         <div className="rounded-lg border border-border bg-panel px-4 py-3 text-[13px] text-muted-foreground">
-          {t('settings.tokenUsage.unavailable', 'Team AI usage is not available yet. Enable the team AI gateway (LiteLLM) first.')}
+          {t('settings.tokenUsage.unavailable', 'Team AI usage is not available yet — the AI gateway is not configured for this deployment.')}
         </div>
       )}
 
       {data && !unavailable && (
         <>
           {/* Summary */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            <SummaryCard label={t('settings.tokenUsage.totalCost', 'Total Cost')} value={formatCost(data.summary.totalSpend)} highlight />
-            <SummaryCard label={t('settings.tokenUsage.totalTokens', 'Total Tokens')} value={formatTokenCount(data.summary.totalTokens)} />
-            <SummaryCard label={t('settings.tokenUsage.requests', 'Requests')} value={data.summary.requestCount.toLocaleString()} />
+          {/* Points, not a currency amount: credits are our own pricing unit
+              and are not anchored to upstream cost. Input and output are shown
+              separately because upstreams price them separately — a single
+              total cannot be reconciled against a bill. */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <SummaryCard label={t('settings.tokenUsage.pointsUsed', 'Points used')} value={fmtPoints(data.summary.credits)} highlight />
+            <SummaryCard label={t('settings.tokenUsage.inputTokens', 'Input tokens')} value={formatTokenCount(data.summary.inputTokens)} />
+            <SummaryCard label={t('settings.tokenUsage.outputTokens', 'Output tokens')} value={formatTokenCount(data.summary.outputTokens)} />
+            <SummaryCard label={t('settings.tokenUsage.requests', 'Requests')} value={data.summary.requests.toLocaleString()} />
           </div>
 
-          {budgetPct !== null && (
-            <div className="space-y-1.5 rounded-lg border border-border bg-paper px-4 py-3">
-              <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">{t('settings.tokenUsage.budget', 'Budget')}</span>
-                <span className="font-medium tabular-nums">
-                  {formatCost(data.summary.totalSpend)} / {formatCost(data.maxBudget ?? 0)} · {budgetPct}%
-                </span>
-              </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-panel">
-                <div
-                  className={cn('h-full rounded-full', budgetPct >= 90 ? 'bg-red-500' : 'bg-coral')}
-                  style={{ width: `${budgetPct}%` }}
-                />
-              </div>
+          {predatesStats && (
+            <div className="rounded-lg border border-border bg-panel px-4 py-3 text-[12.5px] text-muted-foreground">
+              {t('settings.tokenUsage.beforeStats', 'No statistics before {{date}}. Usage recording began with the new billing system; earlier records stayed with the old gateway and measure a different thing, so they were not carried over.', { date: STATS_START_UTC.slice(0, 10) })}
             </div>
           )}
 
@@ -183,21 +192,21 @@ export function TokenUsageSection() {
               <Trophy className="h-4 w-4 text-muted-foreground" />
               {t('settings.tokenUsage.leaderboard', 'Member Leaderboard')}
             </div>
-            {data.members.length === 0 ? (
+            {data.byActor.length === 0 ? (
               <div className="px-4 py-6 text-center text-[12.5px] text-muted-foreground">
                 {t('settings.tokenUsage.noUsage', 'No usage in this period.')}
               </div>
             ) : (
               <BreakdownTable
-                rows={data.members.map((m, i) => ({
+                rows={data.byActor.map((m, i) => ({
                   // Unattributed is a data-quality notice, not a competitor:
                   // no rank, muted, and the server already sorts it last.
                   rank: m.actorId ? i + 1 : undefined,
                   label: m.displayName ?? t('settings.tokenUsage.unattributed', 'Unattributed'),
                   muted: !m.actorId,
                   key: m.actorId ?? '__unattributed__',
-                  tokens: m.tokens,
-                  spend: m.spend,
+                  tokens: m.inputTokens + m.outputTokens,
+                  credits: m.credits,
                   requests: m.requests,
                 }))}
                 t={t}
@@ -209,13 +218,13 @@ export function TokenUsageSection() {
           {data.byModel.length > 0 && (
             <div className="rounded-lg border border-border bg-paper">
               <div className="border-b border-border px-4 py-2.5 text-[13px] font-semibold">
-                {t('settings.tokenUsage.byModel', 'By Model')}
+                {t('settings.tokenUsage.byTier', 'By tier')}
               </div>
               <BreakdownTable
                 rows={data.byModel.map((m) => ({
-                  label: m.model,
-                  tokens: m.tokens,
-                  spend: m.spend,
+                  label: m.publicModelId,
+                  tokens: m.inputTokens + m.outputTokens,
+                  credits: m.credits,
                   requests: m.requests,
                 }))}
                 t={t}
@@ -237,7 +246,7 @@ function SummaryCard({ label, value, highlight }: { label: string; value: string
   )
 }
 
-type Row = { rank?: number; label: string; tokens: number; spend: number; requests: number; muted?: boolean; key?: string }
+type Row = { rank?: number; label: string; tokens: number; credits: number; requests: number; muted?: boolean; key?: string }
 
 function BreakdownTable({ rows, t }: { rows: Row[]; t: TFunction }) {
   return (
@@ -246,7 +255,7 @@ function BreakdownTable({ rows, t }: { rows: Row[]; t: TFunction }) {
         <span>{t('settings.tokenUsage.colName', 'Name')}</span>
         <span className="text-right">{t('settings.tokenUsage.colTokens', 'Tokens')}</span>
         <span className="text-right">{t('settings.tokenUsage.colRequests', 'Reqs')}</span>
-        <span className="text-right">{t('settings.tokenUsage.colCost', 'Cost')}</span>
+        <span className="text-right">{t('settings.tokenUsage.colPoints', 'Points')}</span>
       </div>
       {rows.map((r, i) => (
         <div key={r.key ?? `${r.label}-${i}`} className={cn('grid grid-cols-[1fr_auto_auto_auto] items-center gap-3 px-4 py-2 text-[12.5px]', r.muted && 'text-muted-foreground')}>
@@ -260,7 +269,7 @@ function BreakdownTable({ rows, t }: { rows: Row[]; t: TFunction }) {
           </span>
           <span className="text-right tabular-nums">{formatTokenCount(r.tokens)}</span>
           <span className="text-right tabular-nums text-muted-foreground">{r.requests.toLocaleString()}</span>
-          <span className="text-right font-medium tabular-nums">{formatCost(r.spend)}</span>
+          <span className="text-right font-medium tabular-nums">{fmtPoints(r.credits)}</span>
         </div>
       ))}
     </div>
