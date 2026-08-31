@@ -1792,6 +1792,7 @@
         "checkBotOnline": "把 Bot 状态设为 Online",
         "checkWebSocket": "事件推送方式：WebSocket",
         "checkMentionEvent": "订阅：new_mentioned_message_received_from_group_chat",
+        "checkThreadEvent": "订阅：new_message_received_from_thread（接收 Thread 内消息）",
         "checkDmEvent": "订阅：message_from_bot_subscriber（私聊用）",
         "checkSendGroup": "权限：Send Message to Group Chat（回复必需）",
         "checkSendDm": "权限：Send Message to Bot User（私聊用）",

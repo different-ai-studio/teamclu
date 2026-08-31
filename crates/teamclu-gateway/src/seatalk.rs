@@ -143,13 +143,7 @@ impl SeaTalkClient {
         thread_id: Option<&str>,
     ) -> Result<(), String> {
         for chunk in chunk_text(text, TEXT_CHUNK_LIMIT) {
-            let mut message = json!({
-                "tag": "text",
-                "text": { "format": 1, "content": chunk }
-            });
-            if let Some(tid) = thread_id {
-                message["thread_id"] = json!(tid);
-            }
+            let message = build_text_message(&chunk, thread_id);
             self.api_call(
                 reqwest::Method::POST,
                 "/messaging/v2/group_chat",
@@ -171,13 +165,7 @@ impl SeaTalkClient {
         thread_id: Option<&str>,
     ) -> Result<(), String> {
         for chunk in chunk_text(text, TEXT_CHUNK_LIMIT) {
-            let mut message = json!({
-                "tag": "text",
-                "text": { "format": 1, "content": chunk }
-            });
-            if let Some(tid) = thread_id {
-                message["thread_id"] = json!(tid);
-            }
+            let message = build_text_message(&chunk, thread_id);
             self.api_call(
                 reqwest::Method::POST,
                 "/messaging/v2/single_chat",
@@ -656,6 +644,37 @@ fn seatalk_caps() -> crate::driver::ChannelCaps {
     }
 }
 
+/// Read `thread_id` from a SeaTalk event payload, trying known field paths in priority order.
+fn extract_thread_id(payload: &serde_json::Value) -> Option<&str> {
+    let candidates = [
+        payload["message"]["thread_id"].as_str(),
+        payload["thread_id"].as_str(),
+        payload["thread"]["thread_id"].as_str(),
+        payload["message"]["thread"]["thread_id"].as_str(),
+    ];
+    for candidate in candidates {
+        if let Some(id) = optional_id(candidate) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn short_thread_id(thread_id: &str) -> String {
+    thread_id.trim().chars().take(8).collect()
+}
+
+fn build_text_message(content: &str, thread_id: Option<&str>) -> serde_json::Value {
+    let mut message = json!({
+        "tag": "text",
+        "text": { "format": 1, "content": content }
+    });
+    if let Some(tid) = thread_id {
+        message["thread_id"] = json!(tid);
+    }
+    message
+}
+
 /// Normalize a SeaTalk callback event into the shape the core consumes.
 ///
 /// Pure: no config, no network. Policy (allowlists, thread-per-session) stays
@@ -708,7 +727,10 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    let thread_id = optional_id(message["thread_id"].as_str()).map(str::to_string);
+    let thread_id = extract_thread_id(payload).map(str::to_string);
+    if event_type == "new_message_received_from_thread" && thread_id.is_none() {
+        return None;
+    }
     let text = extract_message_text(message);
     // A bare `@Bot` with nothing after it: the inline path answered so the user
     // could see the bot was alive. `Core::handle` returns `Empty` on blank
@@ -809,9 +831,15 @@ impl crate::driver::ChannelDriver for SeaTalkDriver {
         conversation: &crate::driver::Conversation,
         sender: &crate::driver::ExternalSender,
     ) -> String {
-        let (chat, _) = decode_conv_id(&conversation.id);
+        let (chat, thread) = decode_conv_id(&conversation.id);
         match conversation.kind {
-            crate::driver::ConversationKind::Group => format!("SeaTalk group: {chat}"),
+            crate::driver::ConversationKind::Group => {
+                if let Some(t) = thread {
+                    format!("SeaTalk thread: {chat} · {}", short_thread_id(t))
+                } else {
+                    format!("SeaTalk group: {chat}")
+                }
+            }
             _ => format!(
                 "SeaTalk DM: {}",
                 if sender.display_name.is_empty() {
@@ -921,7 +949,7 @@ async fn handle_callback_event(
                     .send_group_text(
                         group_id,
                         "Sorry, you are not authorized to use this bot.",
-                        optional_id(payload["message"]["thread_id"].as_str()),
+                        extract_thread_id(payload),
                     )
                     .await;
                 false
@@ -934,8 +962,32 @@ async fn handle_callback_event(
         return Ok(());
     }
 
+    if event_type == "new_message_received_from_thread" {
+        let payload = &event["event"];
+        let group_id = payload["group_id"]
+            .as_str()
+            .or_else(|| payload["group"]["group_id"].as_str())
+            .unwrap_or("");
+        if extract_thread_id(payload).is_none() {
+            println!(
+                "[SeaTalk] seatalk thread event missing thread_id event_type={event_type} event_id={event_id} group_id={group_id} thread_id_present=false"
+            );
+            return Ok(());
+        }
+    }
+
     match normalize_event(event) {
         Some(inbound) => {
+            let (chat, thread) = decode_conv_id(&inbound.conversation.id);
+            let route_scope = if thread.is_some() {
+                "thread"
+            } else {
+                "group"
+            };
+            println!(
+                "[SeaTalk] seatalk inbound normalized event_type={event_type} event_id={event_id} group_id={chat} thread_id={} route_scope={route_scope}",
+                thread.unwrap_or("-")
+            );
             sink.accept(inbound).await;
             Ok(())
         }
@@ -1034,7 +1086,343 @@ impl Clone for SeaTalkGateway {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::ChannelDriver;
     use crate::seatalk_config::SeaTalkConfig;
+
+    fn group_event(
+        event_type: &str,
+        event_id: &str,
+        group_id: &str,
+        text: &str,
+        thread_fields: serde_json::Value,
+    ) -> serde_json::Value {
+        let mut payload = json!({
+            "group_id": group_id,
+            "message": {
+                "tag": "text",
+                "text": { "plain_text": text, "content": text },
+                "sender": { "employee_code": "e1", "email": "a@b.com" }
+            }
+        });
+        if let Some(obj) = thread_fields.as_object() {
+            for (k, v) in obj {
+                if k.starts_with("message.") {
+                    let path: Vec<&str> = k.strip_prefix("message.").unwrap().split('.').collect();
+                    let mut target = &mut payload["message"];
+                    for part in &path[..path.len() - 1] {
+                        if target.get(*part).is_none() {
+                            target[*part] = json!({});
+                        }
+                        target = &mut target[*part];
+                    }
+                    target[path[path.len() - 1]] = v.clone();
+                } else if k.starts_with("thread.") {
+                    let path: Vec<&str> = k.strip_prefix("thread.").unwrap().split('.').collect();
+                    if payload.get("thread").is_none() {
+                        payload["thread"] = json!({});
+                    }
+                    let mut target = &mut payload["thread"];
+                    for part in &path[..path.len() - 1] {
+                        if target.get(*part).is_none() {
+                            target[*part] = json!({});
+                        }
+                        target = &mut target[*part];
+                    }
+                    target[path[path.len() - 1]] = v.clone();
+                } else {
+                    payload[k] = v.clone();
+                }
+            }
+        }
+        json!({
+            "event_type": event_type,
+            "event_id": event_id,
+            "event": payload
+        })
+    }
+
+    fn dm_event(event_id: &str, employee_code: &str, text: &str) -> serde_json::Value {
+        json!({
+            "event_type": "message_from_bot_subscriber",
+            "event_id": event_id,
+            "event": {
+                "employee_code": employee_code,
+                "email": "user@example.com",
+                "message": {
+                    "tag": "text",
+                    "text": { "plain_text": text, "content": text }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn extract_thread_id_from_message_field() {
+        let payload = json!({ "message": { "thread_id": "t1" } });
+        assert_eq!(extract_thread_id(&payload), Some("t1"));
+    }
+
+    #[test]
+    fn extract_thread_id_from_event_level() {
+        let payload = json!({ "thread_id": "t2" });
+        assert_eq!(extract_thread_id(&payload), Some("t2"));
+    }
+
+    #[test]
+    fn extract_thread_id_from_thread_object() {
+        let payload = json!({ "thread": { "thread_id": "t3" } });
+        assert_eq!(extract_thread_id(&payload), Some("t3"));
+    }
+
+    #[test]
+    fn extract_thread_id_from_message_thread_object() {
+        let payload = json!({ "message": { "thread": { "thread_id": "t4" } } });
+        assert_eq!(extract_thread_id(&payload), Some("t4"));
+    }
+
+    #[test]
+    fn extract_thread_id_rejects_empty_and_whitespace() {
+        assert_eq!(
+            extract_thread_id(&json!({ "message": { "thread_id": "" } })),
+            None
+        );
+        assert_eq!(
+            extract_thread_id(&json!({ "message": { "thread_id": "   " } })),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_thread_id_rejects_non_string() {
+        assert_eq!(
+            extract_thread_id(&json!({ "message": { "thread_id": 123 } })),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_thread_id_missing_returns_none() {
+        assert_eq!(extract_thread_id(&json!({ "message": {} })), None);
+    }
+
+    #[test]
+    fn extract_thread_id_prefers_message_over_event_level() {
+        let payload = json!({
+            "message": { "thread_id": "from_message" },
+            "thread_id": "from_event"
+        });
+        assert_eq!(extract_thread_id(&payload), Some("from_message"));
+    }
+
+    #[test]
+    fn normalize_group_mention_without_thread() {
+        let event = group_event(
+            "new_mentioned_message_received_from_group_chat",
+            "ev1",
+            "g1",
+            "@Bot hello",
+            json!({}),
+        );
+        let msg = normalize_event(&event).unwrap();
+        assert_eq!(msg.conversation.id, "g1");
+        assert_eq!(msg.text, "hello");
+    }
+
+    #[test]
+    fn normalize_group_mention_with_thread() {
+        let event = group_event(
+            "new_mentioned_message_received_from_group_chat",
+            "ev2",
+            "g1",
+            "@Bot hi thread",
+            json!({ "message.thread_id": "t1" }),
+        );
+        let msg = normalize_event(&event).unwrap();
+        assert_eq!(msg.conversation.id, "g1#t=t1");
+    }
+
+    #[test]
+    fn normalize_thread_event_with_thread_id() {
+        let event = group_event(
+            "new_message_received_from_thread",
+            "ev3",
+            "g1",
+            "thread reply",
+            json!({ "thread.thread_id": "t2" }),
+        );
+        let msg = normalize_event(&event).unwrap();
+        assert_eq!(msg.conversation.id, "g1#t=t2");
+    }
+
+    #[test]
+    fn normalize_thread_event_missing_thread_id_fails_closed() {
+        let event = group_event(
+            "new_message_received_from_thread",
+            "ev4",
+            "g1",
+            "no thread id",
+            json!({}),
+        );
+        assert!(normalize_event(&event).is_none());
+    }
+
+    #[test]
+    fn normalize_dm_unaffected() {
+        let event = dm_event("ev5", "e99", "dm hello");
+        let msg = normalize_event(&event).unwrap();
+        assert_eq!(msg.conversation.id, "e99");
+        assert_eq!(msg.conversation.kind, crate::driver::ConversationKind::Direct);
+    }
+
+    #[test]
+    fn normalize_unknown_event_ignored() {
+        let event = json!({
+            "event_type": "bot_added_to_group_chat",
+            "event_id": "ev6",
+            "event": { "group_id": "g1" }
+        });
+        assert!(normalize_event(&event).is_none());
+    }
+
+    #[test]
+    fn normalize_missing_group_id_rejected() {
+        let event = json!({
+            "event_type": "new_mentioned_message_received_from_group_chat",
+            "event_id": "ev7",
+            "event": {
+                "message": {
+                    "tag": "text",
+                    "text": { "plain_text": "hi" },
+                    "sender": { "employee_code": "e1" }
+                }
+            }
+        });
+        assert!(normalize_event(&event).is_none());
+    }
+
+    #[test]
+    fn binding_group_without_thread() {
+        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
+            .with_thread_sessions(true, true);
+        let conv = crate::driver::Conversation {
+            channel: "seatalk",
+            bot_id: None,
+            kind: crate::driver::ConversationKind::Group,
+            id: "g1".into(),
+        };
+        assert_eq!(driver.binding(&conv), "seatalk://app001/group/g1");
+    }
+
+    #[test]
+    fn binding_group_with_threads() {
+        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
+            .with_thread_sessions(true, true);
+        let conv_t1 = crate::driver::Conversation {
+            channel: "seatalk",
+            bot_id: None,
+            kind: crate::driver::ConversationKind::Group,
+            id: "g1#t=t1".into(),
+        };
+        let conv_t2 = crate::driver::Conversation {
+            channel: "seatalk",
+            bot_id: None,
+            kind: crate::driver::ConversationKind::Group,
+            id: "g1#t=t2".into(),
+        };
+        let conv_g2 = crate::driver::Conversation {
+            channel: "seatalk",
+            bot_id: None,
+            kind: crate::driver::ConversationKind::Group,
+            id: "g2#t=t1".into(),
+        };
+        assert_eq!(
+            driver.binding(&conv_t1),
+            "seatalk://app001/group/g1/thread/t1"
+        );
+        assert_eq!(
+            driver.binding(&conv_t2),
+            "seatalk://app001/group/g1/thread/t2"
+        );
+        assert_eq!(
+            driver.binding(&conv_g2),
+            "seatalk://app001/group/g2/thread/t1"
+        );
+    }
+
+    #[test]
+    fn binding_thread_reply_preserved_when_thread_session_disabled() {
+        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
+            .with_thread_sessions(false, false);
+        let conv = crate::driver::Conversation {
+            channel: "seatalk",
+            bot_id: None,
+            kind: crate::driver::ConversationKind::Group,
+            id: "g1#t=t1".into(),
+        };
+        // Session binding falls back to group, but conv id still carries thread for deliver().
+        assert_eq!(driver.binding(&conv), "seatalk://app001/group/g1");
+    }
+
+    #[test]
+    fn session_title_distinguishes_group_and_thread() {
+        let driver = SeaTalkDriver::new("app".into(), "secret".into());
+        let sender = crate::driver::ExternalSender {
+            display_name: "User".into(),
+            external_id: "e1".into(),
+            email: None,
+        };
+        let group_conv = crate::driver::Conversation {
+            channel: "seatalk",
+            bot_id: None,
+            kind: crate::driver::ConversationKind::Group,
+            id: "987654".into(),
+        };
+        let thread_conv = crate::driver::Conversation {
+            channel: "seatalk",
+            bot_id: None,
+            kind: crate::driver::ConversationKind::Group,
+            id: "987654#t=a16f38c2full".into(),
+        };
+        assert_eq!(
+            driver.session_title(&group_conv, &sender),
+            "SeaTalk group: 987654"
+        );
+        assert_eq!(
+            driver.session_title(&thread_conv, &sender),
+            "SeaTalk thread: 987654 · a16f38c2"
+        );
+    }
+
+    #[test]
+    fn short_thread_id_does_not_panic_on_short_or_unicode() {
+        assert_eq!(short_thread_id("abc"), "abc");
+        assert_eq!(short_thread_id("a16f38c2extra"), "a16f38c2");
+        assert_eq!(short_thread_id("你好世界测试"), "你好世界测试");
+    }
+
+    #[test]
+    fn outbound_group_message_includes_thread_id() {
+        let msg = build_text_message("hello", Some("tA"));
+        assert_eq!(msg["thread_id"], json!("tA"));
+        assert_eq!(msg["text"]["content"], "hello");
+    }
+
+    #[test]
+    fn outbound_group_message_omits_thread_id_for_group_root() {
+        let msg = build_text_message("hello", None);
+        assert!(msg.get("thread_id").is_none());
+    }
+
+    #[test]
+    fn outbound_chunks_all_carry_same_thread_id() {
+        let long = "x".repeat(5000);
+        let chunks = chunk_text(&long, TEXT_CHUNK_LIMIT);
+        assert!(chunks.len() > 1);
+        for chunk in chunks {
+            let msg = build_text_message(&chunk, Some("tB"));
+            assert_eq!(msg["thread_id"], json!("tB"));
+        }
+    }
 
     #[test]
     fn strips_leading_bot_mentions() {

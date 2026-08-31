@@ -1792,6 +1792,7 @@
         "checkBotOnline": "Set Bot status to Online",
         "checkWebSocket": "Event delivery: WebSocket mode",
         "checkMentionEvent": "Subscribe: new_mentioned_message_received_from_group_chat",
+        "checkThreadEvent": "Subscribe: new_message_received_from_thread",
         "checkDmEvent": "Subscribe: message_from_bot_subscriber (for DMs)",
         "checkSendGroup": "Permission: Send Message to Group Chat (required to reply)",
         "checkSendDm": "Permission: Send Message to Bot User (for DMs)",
