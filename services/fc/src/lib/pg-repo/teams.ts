@@ -5,6 +5,7 @@ import { teams, teamWorkspaceConfig, actors, members, teamMembers, teamInvites }
 import { workspaces } from "../../db/schema/workspaces.js";
 import { agentMemberAccess, agents } from "../../db/schema/agents.js";
 import { aiGateway } from "../ai-gateway.js";
+import { createCheckoutSession, listCreditPackages } from "../stripe.js";
 import { ApiError } from "../http-utils.js";
 import { requireActorForTeam, requireTeamOwner, checkAgentOwnership, assertCanRemoveTeamActor, mapActorDeleteFkError } from "./authz.js";
 import { computeRange, getLiteLlmSql, queryTeamUsage, type ComputedRange, type TeamUsage } from "../litellm-usage.js";
@@ -653,6 +654,22 @@ export function makeTeamsRepo(db: PgDatabase<any, any>, deps: TeamsRepoDeps = {}
         idempotencyKey: input.idempotencyKey,
         note: input.note ?? null,
       });
+    },
+    // Readable by any member: the top-up screen shows what is on offer even
+    // when the member cannot buy it, so the owner-only gate is on the purchase.
+    async listCreditPackages(teamId: string, ctx?: { userId?: string }) {
+      await requireActorForTeam(db, requireUser(ctx), teamId);
+      return { items: await listCreditPackages() };
+    },
+    async createCreditCheckoutSession(teamId: string, input: any, ctx?: { userId?: string }) {
+      await requireTeamOwner(db, requireUser(ctx), teamId);
+      const priceId = String(input?.priceId ?? "").trim();
+      if (!priceId) {
+        throw new ApiError(400, "invalid_request", "priceId is required");
+      }
+      // teamId comes from the authorized route, never from the body — see the
+      // note on createCheckoutSession.
+      return createCheckoutSession({ teamId, priceId });
     },
     async getMemberQuotas(teamId: string, ctx?: { userId?: string }) {
       await requireActorForTeam(db, requireUser(ctx), teamId);

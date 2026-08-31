@@ -520,6 +520,20 @@ export interface CreditLedgerEntry {
   createdAt: string;
 }
 
+/** One buyable credit package, resolved server-side from the deployment's
+ *  Stripe Price allowlist. Never hardcoded here: a price baked into a shipped
+ *  client is wrong the day it changes and cannot be corrected without a
+ *  release. */
+export interface CreditPackage {
+  priceId: string;
+  /** Credits granted on purchase. */
+  credits: number;
+  /** MINOR currency units (cents, 分) — Stripe's own unit, unconverted. */
+  unitAmount: number | null;
+  currency: string;
+  name: string;
+}
+
 export interface TeamQuotas {
   /** Team-level, not per-member: mixed periods make "used this period" incomparable. */
   period: "week" | "month";
@@ -615,6 +629,13 @@ export interface TeamsBackend {
   getCreditUsage(teamId: string, opts?: { range?: CreditUsageRange; date?: string }): Promise<CreditUsageReport>;
   getCreditLedger(teamId: string, opts?: { limit?: number }): Promise<{ items: CreditLedgerEntry[] }>;
   topUpCredits(teamId: string, input: { amountCredits: number; idempotencyKey: string; kind?: string; note?: string | null }): Promise<{ applied: boolean; balanceCredits: number }>;
+  /** Empty when the deployment has no Stripe configured — render "top-up
+   *  unavailable", not an error. */
+  listCreditPackages(teamId: string): Promise<{ items: CreditPackage[] }>;
+  /** Owner-only. Returns a hosted Checkout URL to open in the SYSTEM browser
+   *  (the embedded webview breaks 3DS and wallets, and hides the address bar
+   *  on a payment page). */
+  createCreditCheckoutSession(teamId: string, input: { priceId: string }): Promise<{ sessionId: string; url: string }>;
   getMemberQuotas(teamId: string): Promise<TeamQuotas>;
   setMemberQuotas(teamId: string, input: Partial<TeamQuotas>): Promise<{ ok: boolean }>;
 }
