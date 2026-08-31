@@ -21,8 +21,10 @@ pub mod managed_llm;
 mod manager;
 mod native_skill_fallback_guard;
 pub(crate) use native_skill_fallback_guard::{
-    guard_enabled, snapshot_baseline, violations_after_turn, AGENT_REPLY_CONTENT,
-    AGENT_REPLY_METADATA_JSON, NativeSkillBaseline,
+    apply_violations_to_emitted, ensure_turn_guard, event_may_open_implicit_turn,
+    guard_enabled, prepare_guard_for_acp_event, snapshot_baseline,
+    take_violations_for_turn_end, violations_after_turn, AGENT_REPLY_CONTENT,
+    NativeSkillBaseline, NativeSkillTurnGuard, NativeSkillViolation,
 };
 pub mod permission_policy;
 pub mod prompt_attachments;

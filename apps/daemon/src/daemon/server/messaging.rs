@@ -339,20 +339,11 @@ impl DaemonServer {
         if let Some(amux::acp_event::Event::StatusChange(ref sc)) = acp_event.event {
             let became_idle = sc.old_status == amux::AgentStatus::Active as i32
                 && sc.new_status == amux::AgentStatus::Idle as i32;
-            let turn_opened = sc.old_status == amux::AgentStatus::Idle as i32
-                && sc.new_status == amux::AgentStatus::Active as i32;
             {
                 let mut agents = self.agents.lock().await;
                 if let Some(handle) = agents.get_handle_mut(agent_id) {
                     handle.status = amux::AgentStatus::try_from(sc.new_status)
                         .unwrap_or(amux::AgentStatus::Unknown);
-                    if turn_opened && crate::runtime::guard_enabled() {
-                        handle.native_skill_baseline = Some(
-                            crate::runtime::snapshot_baseline(std::path::Path::new(
-                                &handle.worktree,
-                            )),
-                        );
-                    }
                 }
             }
             self.publish_runtime_state_by_id(agent_id).await;
@@ -413,36 +404,39 @@ impl DaemonServer {
                 .aggregator(agent_id)
                 .and_then(|a| a.current_turn_id())
                 .map(str::to_string);
+            let violations = if !is_child_event {
+                agents
+                    .get_handle_mut(agent_id)
+                    .map(|h| {
+                        crate::runtime::prepare_guard_for_acp_event(
+                            &mut h.native_skill_turn_guard,
+                            std::path::Path::new(&h.worktree),
+                            &h.acp_session_id,
+                            is_child_event,
+                            &acp_event,
+                            turn_id_before.as_deref(),
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let mut emitted = match agents.aggregator_mut(agent_id) {
                 Some(agg) if !is_child_event => agg.ingest(&acp_event),
                 _ => Vec::new(),
             };
-            if clear_reply_to {
-                if let Some(handle) = agents.get_handle_mut(agent_id) {
-                    if let Some(baseline) = handle.native_skill_baseline.take() {
-                        let violations = crate::runtime::violations_after_turn(
-                            &baseline,
-                            std::path::Path::new(&handle.worktree),
-                        );
-                        if !violations.is_empty() {
-                            tracing::warn!(
-                                agent_id = %agent_id,
-                                workspace = %handle.worktree,
-                                count = violations.len(),
-                                slugs = ?violations.iter().map(|v| v.slug.as_str()).collect::<Vec<_>>(),
-                                "native skill written to unsupported directory during turn"
-                            );
-                            emitted.push(crate::runtime::turn_aggregator::EmittedMessage {
-                                kind: crate::proto::teamclu::MessageKind::AgentReply,
-                                content: crate::runtime::AGENT_REPLY_CONTENT.to_string(),
-                                metadata_json: crate::runtime::AGENT_REPLY_METADATA_JSON
-                                    .to_string(),
-                                turn_id: turn_id_before.clone().unwrap_or_default(),
-                                cloud_persist: true,
-                            });
-                        }
-                    }
+            if !violations.is_empty() {
+                if let Some(handle) = agents.get_handle(agent_id) {
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        workspace = %handle.worktree,
+                        count = violations.len(),
+                        slugs = ?violations.iter().map(|v| v.slug.as_str()).collect::<Vec<_>>(),
+                        "native skill written to unsupported directory during turn"
+                    );
                 }
+                let tid = turn_id_before.clone().unwrap_or_default();
+                crate::runtime::apply_violations_to_emitted(&mut emitted, &violations, &tid);
             }
             let turn_id = turn_id_before.unwrap_or_default();
             (emitted, turn_id, seq, reply_to_message_id, clear_reply_to)

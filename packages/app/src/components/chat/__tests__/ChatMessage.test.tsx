@@ -339,6 +339,26 @@ describe('ChatMessage', () => {
     expect(text).not.toContain('Turn completed with no final reply');
   });
 
+  it('renders unsupported native skill agent status strip', () => {
+    const message = makeMessage({
+      id: 'msg-native-skill-1',
+      role: 'assistant',
+      content: '',
+      isStreaming: false,
+      senderActorId: 'actor-1',
+      turnStatus: 'skill_created_in_unsupported_directory',
+      nativeSkillViolations: [{ slug: 'demo', root: '.opencode/skills' }],
+    });
+
+    const { container } = render(<ChatMessage message={message} />);
+    const strip = container.querySelector('[data-testid="unsupported-native-skill-reply"]');
+
+    expect(strip).toBeTruthy();
+    expect(container.textContent).toContain('Skill not created');
+    expect(container.textContent).toContain('demo');
+    expect(container.textContent).toContain('.opencode/skills');
+  });
+
   it('does not render hidden synthetic messages', () => {
     const message = makeMessage({
       id: 'msg-hidden',
