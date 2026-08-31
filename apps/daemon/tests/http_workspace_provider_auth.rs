@@ -62,6 +62,7 @@ async fn test_app_with_workspace_store(
         None,
         None,
         None,
+        None,
     )
     .await
     .expect("spawn http server");

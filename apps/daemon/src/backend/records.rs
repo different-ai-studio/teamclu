@@ -109,6 +109,25 @@ pub struct BackendSessionAndParticipants {
     pub participants: Vec<BackendParticipantRow>,
 }
 
+/// One seated actor returned by `GET /v1/sessions/{sessionId}/roster`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRosterEntry {
+    pub actor_id: String,
+    pub display_name: Option<String>,
+    pub kind: Option<String>,
+    pub is_self: bool,
+}
+
+/// Session-scoped participant labels from `GET /v1/sessions/{sessionId}/roster`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRoster {
+    pub session_id: String,
+    pub caller_actor_id: String,
+    pub items: Vec<SessionRosterEntry>,
+}
+
 /// A directory entry for one actor, as `POST /v1/actors/by-ids` returns it.
 ///
 /// Only the two fields a roster needs: `session_participants` stores actor ids
