@@ -10,7 +10,7 @@ import { eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { apps, workspaces, sessions, teams } from "../../db/schema/index.js";
 import { requireActorForTeam, resolveActorForTeam } from "./authz.js";
-import { isLegalStatusTransition } from "./app-status.js";
+import { isLegalStatusTransition } from "../validation/app-status.js";
 import { isLegalFcTransition } from "../provisioning/app-fc-status.js";
 import { appOssObjectName, deployUnavailable, parseOptionalGitCommitSha, parseDeployToken, assertDeployAllowed, checkDeployInProgress } from "../provisioning/app-deploy.js";
 import { giteaUnavailable, GITEA_AUTH_KIND, type GiteaClient } from "../provisioning/gitea.js";

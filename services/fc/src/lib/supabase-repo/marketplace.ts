@@ -7,7 +7,7 @@
  */
 
 import { ApiError } from "../http-utils.js";
-import { marketplaceObjectPath } from "../pg-repo/marketplace.js";
+import { marketplaceObjectPath } from "../validation/marketplace-paths.js";
 import { statSkillObject } from "../skills-storage.js";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;

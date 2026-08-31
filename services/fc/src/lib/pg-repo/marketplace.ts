@@ -19,6 +19,7 @@ import {
 import { ApiError } from "../http-utils.js";
 import { requireActorForTeam } from "./authz.js";
 import { statSkillObject } from "../skills-storage.js";
+import { marketplaceObjectPath } from "../validation/marketplace-paths.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DbLike = PgDatabase<any, any>;
@@ -44,31 +45,6 @@ const CATEGORIES = [
 ] as const;
 
 const MARKET_STATUSES = ["draft", "published", "delisted"] as const;
-
-export function marketplaceObjectPath(contentHash: string): string {
-  const hash = contentHash.toLowerCase();
-  return `marketplace/blobs/sha256/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash}`;
-}
-
-/**
- * Whether blob GC is allowed to consider this object.
- *
- * Design §4.2: marketplace packages share the skills namespace with team
- * packages and are deliberately absent from `amuxc_blobs`, so any collector
- * that walks the whole namespace and deletes what that table does not mention
- * would wipe every marketplace package — silently, surfacing only at some
- * team's next install. Collection is restricted to `teams/<teamId>/`;
- * `marketplace/` is the catalog's own business.
- *
- * Currently asserted by tests rather than called by a collector: no skills-blob
- * GC exists yet. It is here so the one that gets written has the rule to import
- * instead of re-deriving it.
- */
-export function isTeamScopedSkillObjectPath(objectPath: string): boolean {
-  // The old `&& !startsWith("marketplace/")` could never fire — a path cannot
-  // start with both prefixes — which read as a second guard while being none.
-  return objectPath.startsWith("teams/");
-}
 
 function mapCatalogSkill(row: any, extra: Record<string, unknown> = {}) {
   return {

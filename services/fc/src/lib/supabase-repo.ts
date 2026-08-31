@@ -33,18 +33,17 @@ function assertNewOrgAllowed(): void {
 }
 
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
-import { isLegalStatusTransition } from "./pg-repo/app-status.js";
-// Shared with the pg-repo twin on purpose — validation only; keep free of
-// PostgREST/Drizzle calls so both backends can import these helpers.
+import { isLegalStatusTransition } from "./validation/app-status.js";
+// Backend-neutral request validation — keep free of PostgREST/Drizzle calls.
 import {
   assertTransportShape as assertTeamMcpTransportShape,
   readServerFields as readTeamMcpServerFields,
   NAME_RE as TEAM_MCP_NAME_RE,
-} from "./pg-repo/team-mcp.js";
+} from "./validation/team-mcp.js";
 import {
   assertWritableKeyId as assertWritableTeamEnvKeyId,
   readEnvelope as readTeamEnvEnvelope,
-} from "./pg-repo/team-env-secrets.js";
+} from "./validation/team-env-secrets.js";
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
 import { appOssObjectName, deployUnavailable, parseOptionalGitCommitSha, parseDeployToken, assertDeployAllowed, checkDeployInProgress, needsDatabase } from "./provisioning/app-deploy.js";
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
