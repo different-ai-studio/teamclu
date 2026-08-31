@@ -1,7 +1,7 @@
 # Knowledge 目录级权限（Path ACL）设计
 
 - **Date**: 2026-08-31
-- **Status**: DESIGN — 待评审后一次性实现（不分期，见 §9）
+- **Status**: IMPLEMENTED — 服务端、daemon、桌面端设置页均已落地（见 §9 的验收状态）
 - **Scope**: `services/fc/`（判据、五个同步端点、管理 API、审计）、`services/supabase/migrations/`、`apps/daemon/`（`sync/oss/`）、`packages/app/`（设置页授权界面）、`docs/openapi/teamclu-api.v1.yaml`
 - **Extends**: `docs/adr/0008-knowledge-sync-p0-p1-scope.md` —— 本设计**扩大**了该 ADR 冻结的范围，0008 的 freeze 清单必须同批更新（见 §8）
 - **Related**: `docs/architecture/obsidian-compatible-knowledge.md`（忽略规则三层来源）、`docs/architecture/knowledge-sync-push-notify.md`
@@ -366,9 +366,30 @@ engine 判断「文件被本地删除」的依据是「在 sync state 里、但�
 
 **顺序反了就是一次团队级数据丢失。** 实现时这三步必须在同一个函数里，且带一条说明它为什么不能拆的注释。
 
-清理的触发：daemon 无法直接得知「我被撤权了」（D7 决定不下发前缀）。可行的信号是**间接**的——某个本地有、state 里也有的路径，在一次完整的 manifest drain 后再也不出现，且 `/sync/versions` 对它返回 403 `PathForbidden`。
+清理的触发：**每 30 分钟把 manifest 的窗口从增量放宽到全量**
+（`RECONCILE_INTERVAL_SECS`，`engine.rs`）。
 
-> **实现注记**：这条探测必须只在完整 drain（`nextCursor == null`）之后做，且只针对 state 里已有的路径。对「manifest 里没出现」做任何激进推断都很危险——manifest 是增量的（`afterSeq`），一个文件本来就不会每次都出现。判据是「主动对它调 versions 拿到 403」，不是「它没出现在 manifest 里」。
+这一条与本设计初稿不同，实现时换成了更简单也更确定的做法，记录原因：
+
+初稿写的是「对可疑路径调 `/sync/versions`，拿到 403 即判定被撤权」。它需要先有
+一套「哪些路径可疑」的启发式，而任何基于「它没出现在 manifest 里」的推断都很危险
+——manifest 本来就是增量的（`afterSeq`），一个文件本来就不会每次都出现。
+
+**撤权对增量同步是不可见的**：被撤权后那些行不是「带着已删除标记回来」，而是
+干脆不再返回，这跟「什么都没变」在 `afterSeq` 查询下完全无法区分。所以真正需要的
+不是探测，而是**一次完整的 manifest**：从 seq 0 drain 一遍，服务端会返回这个调用者
+**能看到的全部**（包括墓碑行）。本地 state 里有、而这份全量清单里没有的路径，就是
+被撤权的。
+
+代价几乎为零：pull 循环对已持有的版本本来就跳过（`item.version > synced_version`
+不成立），所以放宽窗口只增加 manifest 的分页量，不增加任何实际下载。
+
+半小时这个值是有意的折中：撤权本来就不承诺收回已下发的副本（§0），缩短窗口买到的
+真实保护很有限，而每个 tick 都做全量 drain 会让最热的查询永久正比于整个知识库。
+
+> **实现注记**：`apply_revocations` 必须只在**完整 drain**（`nextCursor == null`）
+> 之后调用，且传入的必须是全量路径集合。拿一页增量结果喂给它，等于把「不在这一页里」
+> 判成「不再有权限」——那会删掉整个知识库。函数的文档注释里写死了这条。
 
 ### 5.4 `LocalSyncState` schema 变更
 
