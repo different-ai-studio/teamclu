@@ -12,7 +12,7 @@ import crypto from "node:crypto";
 import { Hono } from "hono";
 import { createHonoRouterAdapter } from "../src/lib/hono-adapter.js";
 import { aiGateway } from "../src/lib/ai-gateway.js";
-import { allowedPriceIds, creditsForPrice, idempotency } from "../src/lib/stripe.js";
+import { allowedPriceIds, createCheckoutSession, creditsForPrice, idempotency } from "../src/lib/stripe.js";
 import { registerStripe, handleStripeEvent, creditsForSession } from "../src/lib/routes/stripe.js";
 import { stripeReconcileCheckouts } from "../src/lib/stripe-reconcile.js";
 
@@ -144,6 +144,57 @@ test("a session with no stamped credits falls back to the live Price", async () 
     },
   } as any;
   assert.equal(await creditsForSession(stripe, session({ metadata: {} })), 2000);
+});
+
+// --- checkout session params ----------------------------------------------
+
+function captureStripe() {
+  const seen: any = {};
+  return {
+    seen,
+    client: {
+      prices: {
+        retrieve: async (id: string) => ({ id, metadata: { credits: "5000" } }),
+      },
+      checkout: {
+        sessions: {
+          create: async (params: any) => {
+            seen.params = params;
+            return { id: "cs_test_new", url: "https://checkout.stripe.com/c/pay/cs_test_new" };
+          },
+        },
+      },
+    } as any,
+  };
+}
+
+test("checkout opts OUT of Managed Payments — we are the merchant of record", async () => {
+  // Regression guard for a production failure. With Managed Payments on (the
+  // account default), the hosted page sold "through Link", Link owned the tax
+  // treatment (a 9% GST line turned an HK$98 order into HK$106.82), and the
+  // payment ran on Link's rails — where a failed Apple Pay attempt left NO
+  // PaymentIntent and no event on our account, so there was nothing to debug.
+  const { seen, client } = captureStripe();
+  await createCheckoutSession({ teamId: "team-1", priceId: "price_a", stripe: client });
+  assert.deepEqual(seen.params.managed_payments, { enabled: false });
+});
+
+test("the team is stamped where a payment can be attributed by, and nowhere else", async () => {
+  const { seen, client } = captureStripe();
+  await createCheckoutSession({ teamId: "team-1", priceId: "price_b", stripe: client });
+
+  // Both, because the webhook reads client_reference_id first and metadata is
+  // the fallback for Sessions created any other way.
+  assert.equal(seen.params.client_reference_id, "team-1");
+  assert.equal(seen.params.metadata.team_id, "team-1");
+  // Frozen at purchase time: a later price change must not alter an in-flight
+  // order (§4.9.3).
+  assert.equal(seen.params.metadata.credits, "5000");
+  // Copied onto the PaymentIntent -> Charge, the only object a charge.refunded
+  // event carries. Without it a refund has no team to debit.
+  assert.equal(seen.params.payment_intent_data.metadata.team_id, "team-1");
+  assert.equal(seen.params.payment_intent_data.metadata.credits, "5000");
+  assert.equal(seen.params.success_url, "https://api.example.com/v1/stripe/return?status=success");
 });
 
 // --- the webhook route: raw bytes in, signature verified -------------------
