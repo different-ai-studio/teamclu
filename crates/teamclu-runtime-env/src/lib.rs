@@ -68,14 +68,14 @@ pub use workspace_instructions::{
     claude_md_block_present, load_system_prompt, sync_teamclu_claude_md,
 };
 pub use storage_namespace::{
-    amuxd_home_for_brand, amuxd_home_from_env, brand_home_dir, brand_short_name_from_env,
-    is_official_brand, resolve_amuxd_dir_name, resolve_storage_dir_name,
+    amuxd_home_for_brand, amuxd_home_from_env, brand_display_name_from_env, brand_home_dir,
+    brand_short_name_from_env, is_official_brand, resolve_amuxd_dir_name, resolve_storage_dir_name,
     resolve_workspace_config_path, resolve_workspace_config_path_from_env,
     resolve_workspace_meta_path, resolve_workspace_meta_path_from_env, workspace_config_file_name,
     workspace_config_path, workspace_config_path_from_env, workspace_meta_dir,
     workspace_meta_dir_from_env, workspace_meta_dir_name, workspace_meta_read_roots,
     workspace_meta_write_path, workspace_meta_write_path_from_env, AMUXD_HOME_ENV,
-    BRAND_SHORT_NAME_ENV, LEGACY_BRAND_CONFIG_FILE, LEGACY_BRAND_STORAGE_DIR,
+    APP_DISPLAY_NAME_ENV, BRAND_SHORT_NAME_ENV, LEGACY_BRAND_CONFIG_FILE, LEGACY_BRAND_STORAGE_DIR,
     LEGACY_BRAND_TEAM_SHARED_DIR_NAME, LEGACY_BRAND_WORKSPACE_META_DIR,
     LEGACY_OFFICIAL_DEV_CONFIG_FILE, LEGACY_OFFICIAL_DEV_STORAGE_DIR, OFFICIAL_AMUXD_DIR_NAME,
     OFFICIAL_STORAGE_DIR, REBRAND_NAMESPACE_MIGRATION_MARKER, ROOT_ALLOWLIST,

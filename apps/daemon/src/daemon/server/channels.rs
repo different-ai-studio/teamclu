@@ -898,6 +898,9 @@ impl DaemonServer {
     /// when main returns; `amuxd stop` also calls `finalize_stop` as a safety net.
     pub(crate) async fn shutdown_for_exit(&mut self) {
         info!("daemon shutdown: draining channels and local runtimes");
+        if let Some(handle) = self.http_handle.take() {
+            handle.shutdown().await;
+        }
         self.shutdown_channels().await;
         {
             let mut agents = self.agents.lock().await;

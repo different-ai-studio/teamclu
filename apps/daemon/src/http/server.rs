@@ -113,6 +113,10 @@ async fn spawn_dedicated_runtime_context_listener(
             "/internal/runtime-context/resolve",
             post(crate::http::runtime_context::resolve_runtime_context),
         )
+        .route(
+            "/internal/runtime-context/session-prompt",
+            post(crate::http::runtime_context::session_prompt),
+        )
         .with_state(state);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let join = tokio::spawn(async move {
@@ -160,6 +164,7 @@ pub async fn spawn(
     local_live_ingest_tx: Option<crate::http::state::LocalLiveIngestTx>,
     team_skills: Option<Arc<crate::runtime::team_skills::TeamSkillReconciler>>,
     runtime_context: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
+    session_prompt: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
 ) -> anyhow::Result<HttpHandle> {
     // Resolve token + port files (defaults live in DaemonConfig::config_dir).
     let token_path = http
@@ -233,6 +238,7 @@ pub async fn spawn(
     } else {
         state
     };
+    let state = state.with_session_prompt(session_prompt);
 
     let mut runtime_context_join = None;
     let mut runtime_context_shutdown = None;
@@ -371,6 +377,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -400,6 +407,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -456,6 +464,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -661,6 +670,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -735,6 +745,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -824,6 +835,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -925,6 +937,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -1055,6 +1068,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1174,6 +1188,7 @@ mod tests {
             None,
             Some(reconciler),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1290,6 +1305,7 @@ mod tests {
             None,
             None,
             Some(Arc::clone(&service)),
+            None,
         )
         .await
         .unwrap();
@@ -1433,6 +1449,326 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ok["teamcluSessionId"], "teamclu-z");
+
+        let _ = shutdown_tx.send(());
+        let _ = join.await;
+    }
+
+    fn seed_session_prompt_backend(
+        backend: &Arc<crate::backend::mock::MockBackend>,
+        session_id: &str,
+        actors: &[(&str, &str, &str)],
+    ) {
+        use crate::backend::{
+            ActorDirectoryRow, BackendParticipantRow, BackendSessionAndParticipants,
+            BackendSessionRow,
+        };
+        let now = chrono::Utc::now();
+        let mut st = backend.state();
+        st.sessions.insert(
+            session_id.to_string(),
+            BackendSessionAndParticipants {
+                session: BackendSessionRow {
+                    id: session_id.to_string(),
+                    team_id: "team-mock".to_string(),
+                    created_by_actor_id: None,
+                    primary_agent_id: None,
+                    mode: "collab".to_string(),
+                    title: "Test chat".to_string(),
+                    summary: String::new(),
+                    idea_id: None,
+                    created_at: now,
+                },
+                participants: actors
+                    .iter()
+                    .map(|(id, _, _)| BackendParticipantRow {
+                        session_id: session_id.to_string(),
+                        actor_id: id.to_string(),
+                        role: None,
+                        joined_at: now,
+                    })
+                    .collect(),
+            },
+        );
+        for (id, name, kind) in actors {
+            st.actors_by_id.insert(
+                id.to_string(),
+                ActorDirectoryRow {
+                    id: id.to_string(),
+                    display_name: Some(name.to_string()),
+                    kind: Some(kind.to_string()),
+                },
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_context_session_prompt_returns_roster_and_append_text() {
+        use crate::backend::mock::MockBackend;
+        use crate::proto::amux;
+        use crate::runtime::context_registry::ResolveRuntimeContextRequest;
+        use crate::runtime::context_service::RuntimeContextService;
+        use crate::runtime::session_prompt::SessionPromptService;
+        use crate::runtime::RuntimeManager;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = HttpConfig {
+            bind: "127.0.0.1:0".into(),
+            token_file: Some(dir.path().join("token")),
+            port_file: Some(dir.path().join("port")),
+            ..HttpConfig::default()
+        };
+        let service = Arc::new(RuntimeContextService::new());
+        service.register_attached_session(
+            amux::AgentType::Pi,
+            "gen-prompt",
+            "backend-pi",
+            "teamclu-prompt",
+            "runtime-prompt",
+        );
+        let env = service.env_for_generation(amux::AgentType::Pi, "gen-prompt");
+        let token = env
+            .get("TEAMCLU_RUNTIME_CONTEXT_TOKEN")
+            .cloned()
+            .expect("token");
+
+        let backend = Arc::new(MockBackend::default());
+        seed_session_prompt_backend(
+            &backend,
+            "teamclu-prompt",
+            &[
+                ("agent-1", "小助手", "agent"),
+                ("human-1", "Alice", "member"),
+            ],
+        );
+
+        let manager = Arc::new(Mutex::new(RuntimeManager::new(
+            std::collections::HashMap::new(),
+            None,
+        )));
+        {
+            let mut mgr = manager.lock().await;
+            mgr.add_test_runtime("runtime-prompt");
+            mgr.get_handle_mut("runtime-prompt")
+                .unwrap()
+                .owner_actor_id = "agent-1".into();
+        }
+        let prompt_service = Arc::new(SessionPromptService::new(
+            Arc::clone(&manager),
+            backend.clone(),
+        ));
+
+        let meta = metadata("actor-test".into(), "test");
+        let runtime = crate::http::runtime_adapter::StubRuntimeAdapter::new(256);
+        let handle = spawn(
+            cfg,
+            meta,
+            runtime,
+            None,
+            None,
+            None,
+            test_dispatcher(),
+            None,
+            Some(backend),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(Arc::clone(&service)),
+            Some(prompt_service),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", handle.local_addr);
+        let client = reqwest::Client::new();
+        let ok: serde_json::Value = client
+            .post(format!("{base}/internal/runtime-context/session-prompt"))
+            .bearer_auth(&token)
+            .json(&ResolveRuntimeContextRequest {
+                backend_session_id: "backend-pi".into(),
+                host_generation_id: "gen-prompt".into(),
+                backend_kind: "pi".into(),
+            })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(ok["teamcluSessionId"], "teamclu-prompt");
+        assert_eq!(ok["agentDisplayName"], "小助手");
+        assert_eq!(ok["rosterResolved"], true);
+        assert!(ok["appendSystemPrompt"]
+            .as_str()
+            .unwrap()
+            .contains("Your display name is \"小助手\""));
+        let participants = ok["participants"].as_array().unwrap();
+        assert_eq!(participants.len(), 2);
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_context_session_prompt_returns_503_when_service_missing() {
+        use crate::proto::amux;
+        use crate::runtime::context_registry::ResolveRuntimeContextRequest;
+        use crate::runtime::context_service::RuntimeContextService;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = HttpConfig {
+            bind: "127.0.0.1:0".into(),
+            token_file: Some(dir.path().join("token")),
+            port_file: Some(dir.path().join("port")),
+            ..HttpConfig::default()
+        };
+        let service = Arc::new(RuntimeContextService::new());
+        service.register_attached_session(
+            amux::AgentType::Pi,
+            "gen-prompt",
+            "backend-pi",
+            "teamclu-prompt",
+            "runtime-prompt",
+        );
+        let env = service.env_for_generation(amux::AgentType::Pi, "gen-prompt");
+        let token = env
+            .get("TEAMCLU_RUNTIME_CONTEXT_TOKEN")
+            .cloned()
+            .expect("token");
+        let meta = metadata("actor-test".into(), "test");
+        let runtime = crate::http::runtime_adapter::StubRuntimeAdapter::new(256);
+        let handle = spawn(
+            cfg,
+            meta,
+            runtime,
+            None,
+            None,
+            None,
+            test_dispatcher(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(Arc::clone(&service)),
+            None,
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", handle.local_addr);
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base}/internal/runtime-context/session-prompt"))
+            .bearer_auth(&token)
+            .json(&ResolveRuntimeContextRequest {
+                backend_session_id: "backend-pi".into(),
+                host_generation_id: "gen-prompt".into(),
+                backend_kind: "pi".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 503);
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn dedicated_runtime_context_listener_serves_session_prompt() {
+        use crate::backend::mock::MockBackend;
+        use crate::proto::amux;
+        use crate::runtime::context_registry::ResolveRuntimeContextRequest;
+        use crate::runtime::context_service::RuntimeContextService;
+        use crate::runtime::session_prompt::SessionPromptService;
+        use crate::runtime::RuntimeManager;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = HttpConfig {
+            bind: "127.0.0.1:0".into(),
+            token_file: Some(dir.path().join("token")),
+            port_file: Some(dir.path().join("port")),
+            ..HttpConfig::default()
+        };
+        let service = Arc::new(RuntimeContextService::new());
+        service.register_attached_session(
+            amux::AgentType::Pi,
+            "gen-dedicated-prompt",
+            "backend-z",
+            "teamclu-z",
+            "runtime-z",
+        );
+        let env = service.env_for_generation(amux::AgentType::Pi, "gen-dedicated-prompt");
+        let token = env
+            .get("TEAMCLU_RUNTIME_CONTEXT_TOKEN")
+            .cloned()
+            .expect("token");
+
+        let backend = Arc::new(MockBackend::default());
+        seed_session_prompt_backend(
+            &backend,
+            "teamclu-z",
+            &[("agent-z", "Bot", "agent")],
+        );
+        let manager = Arc::new(Mutex::new(RuntimeManager::new(
+            std::collections::HashMap::new(),
+            None,
+        )));
+        {
+            let mut mgr = manager.lock().await;
+            mgr.add_test_runtime("runtime-z");
+            mgr.get_handle_mut("runtime-z")
+                .unwrap()
+                .owner_actor_id = "agent-z".into();
+        }
+        let prompt_service = Arc::new(SessionPromptService::new(
+            Arc::clone(&manager),
+            backend,
+        ));
+
+        let meta = metadata("actor-test".into(), "test");
+        let runtime = crate::http::runtime_adapter::StubRuntimeAdapter::new(256);
+        let state = HttpState::new(
+            cfg,
+            tokens::TokenStore::load_or_init(&dir.path().join("token")).unwrap(),
+            meta,
+            runtime,
+            None,
+            None,
+            None,
+            test_dispatcher(),
+            None,
+        )
+        .with_runtime_context(Arc::clone(&service))
+        .with_session_prompt(Some(prompt_service));
+
+        let (dedicated_base, join, shutdown_tx) =
+            spawn_dedicated_runtime_context_listener(state).await.unwrap();
+        let client = reqwest::Client::new();
+        let ok: serde_json::Value = client
+            .post(format!("{dedicated_base}/internal/runtime-context/session-prompt"))
+            .bearer_auth(&token)
+            .json(&ResolveRuntimeContextRequest {
+                backend_session_id: "backend-z".into(),
+                host_generation_id: "gen-dedicated-prompt".into(),
+                backend_kind: "pi".into(),
+            })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(ok["agentDisplayName"], "Bot");
 
         let _ = shutdown_tx.send(());
         let _ = join.await;

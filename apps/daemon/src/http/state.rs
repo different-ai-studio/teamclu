@@ -182,6 +182,8 @@ pub struct HttpState {
     pub local_live_ingest_tx: Option<LocalLiveIngestTx>,
     /// Backend session → TeamClu session registry for managed MCP adapters.
     pub runtime_context: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
+    /// Per-session group-chat system prompt for managed backends (Pi v1).
+    pub session_prompt: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
 }
 
 impl HttpState {
@@ -227,6 +229,7 @@ impl HttpState {
             local_rpc_tx: None,
             local_live_ingest_tx: None,
             runtime_context: None,
+            session_prompt: None,
         }
     }
 
@@ -235,6 +238,14 @@ impl HttpState {
         service: Arc<crate::runtime::context_service::RuntimeContextService>,
     ) -> Self {
         self.runtime_context = Some(service);
+        self
+    }
+
+    pub fn with_session_prompt(
+        mut self,
+        service: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
+    ) -> Self {
+        self.session_prompt = service;
         self
     }
 

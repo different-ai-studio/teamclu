@@ -87,6 +87,74 @@ fn session_context_error_message(err: &ResolveError) -> &'static str {
     }
 }
 
+pub async fn session_prompt(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<ResolveRuntimeContextRequest>,
+) -> Response {
+    if !runtime_context_peer_allowed(peer) {
+        return problem(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Runtime context resolve is loopback-only",
+        );
+    }
+    let Some(context_service) = state.runtime_context.clone() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "runtime_context_unavailable",
+            "Runtime context service is not configured",
+        );
+    };
+    let Some(prompt_service) = state.session_prompt.clone() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session_prompt_unavailable",
+            "Session prompt service is not configured",
+        );
+    };
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("")
+        .trim();
+    let resolved = match context_service.resolve_with_token(bearer, &body) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            warn!(
+                event = "runtime_context_session_prompt",
+                backend_kind = %body.backend_kind,
+                host_generation_id = %body.host_generation_id,
+                backend_session_id = %body.backend_session_id,
+                result = err.code(),
+                "session prompt resolve failed"
+            );
+            return problem(
+                StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                err.code(),
+                session_context_error_message(&err),
+            );
+        }
+    };
+    let response = prompt_service
+        .build_for_resolved(&resolved.teamclu_session_id, &resolved.runtime_id)
+        .await;
+    tracing::info!(
+        event = "runtime_context_session_prompt",
+        backend_kind = %body.backend_kind,
+        host_generation_id = %body.host_generation_id,
+        backend_session_id = %body.backend_session_id,
+        teamclu_session_id = %response.teamclu_session_id,
+        runtime_id = %response.runtime_id,
+        participant_count = response.participants.len(),
+        result = "built",
+        "session prompt built"
+    );
+    Json(response).into_response()
+}
+
 fn problem(status: StatusCode, code: &str, detail: &str) -> Response {
     (
         status,

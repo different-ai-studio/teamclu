@@ -196,6 +196,10 @@ pub struct DaemonServer {
     rpc_client: Arc<AsyncMutex<crate::teamclu::rpc::RpcClient>>,
     team_skill_reconciler: Arc<crate::runtime::team_skills::TeamSkillReconciler>,
     runtime_context: Arc<crate::runtime::RuntimeContextService>,
+    /// HTTP listener handle; shut down before local runtimes so loopback
+    /// `/internal/runtime-context/*` does not outlive the process or serve
+    /// stale Pi generations after restart.
+    http_handle: Option<crate::http::server::HttpHandle>,
     /// Answered capability-management requests, keyed on the authorized
     /// (requester, request_id) pair. Shared rather than owned so the handler
     /// can run on its own task instead of on the message pump.
@@ -821,6 +825,7 @@ impl DaemonServer {
             rpc_client,
             team_skill_reconciler,
             runtime_context,
+            http_handle: None,
             agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
             cron_turn_done_tx,
             cron_turn_done_rx: Some(cron_turn_done_rx),
@@ -1091,7 +1096,7 @@ impl DaemonServer {
         // once the sock command channel exists (below).
         let mut supervisor_for_prewarm: Option<Arc<crate::runtime::RuntimeSupervisor>> = None;
         let team_skill_reconciler = self.team_skill_reconciler.clone();
-        let _http_handle = {
+        self.http_handle = {
             let mut meta = crate::http::server::metadata(self.actor_id.clone(), "amuxd");
             // Expose configured backends so the model-catalog endpoint can
             // group models per backend (opencode / pi / cursor / claude-code).
@@ -1156,6 +1161,12 @@ impl DaemonServer {
                     ),
                 )
             });
+            let session_prompt = Some(Arc::new(
+                crate::runtime::session_prompt::SessionPromptService::new(
+                    self.agents.clone(),
+                    self.backend.clone(),
+                ),
+            ));
             match crate::http::spawn(
                 http_cfg,
                 meta,
@@ -1176,6 +1187,7 @@ impl DaemonServer {
                 Some(local_live_ingest_tx),
                 Some(team_skill_reconciler.clone()),
                 Some(self.runtime_context.clone()),
+                session_prompt,
             )
             .await
             {
@@ -3839,6 +3851,7 @@ pub(crate) mod tests {
                     crate::runtime::team_skills::TeamSkillReconciler::new(backend),
                 ),
                 runtime_context: Arc::new(crate::runtime::RuntimeContextService::new()),
+                http_handle: None,
                 agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
                 cron_turn_done_tx,
                 cron_turn_done_rx: Some(cron_turn_done_rx),

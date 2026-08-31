@@ -27,6 +27,7 @@ pub(crate) use native_skill_fallback_guard::{
 pub mod permission_policy;
 pub mod prompt_attachments;
 pub mod refresh;
+pub mod session_prompt;
 pub mod sidecar;
 pub mod supervisor;
 pub mod team_cloud_config;
@@ -52,6 +53,7 @@ pub use permission_policy::PermissionPolicy;
 // goes through `AgentBackend`.
 #[allow(unused_imports)]
 pub use opencode_http::OpencodeHost;
+pub use session_prompt::{SessionPromptResponse, SessionPromptService};
 pub use supervisor::RuntimeSupervisor;
 pub use workspace_runtime::{apply_workspace_system_instructions, instruction_plugin_installed};
 

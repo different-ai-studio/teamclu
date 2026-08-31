@@ -148,6 +148,15 @@ fn main() {
     println!("cargo:rustc-env=APP_SHORT_NAME={}", short_name);
     println!("cargo:warning=Using APP_SHORT_NAME={}", short_name);
 
+    let display_name = config["app"]["displayName"]
+        .as_str()
+        .or_else(|| config["app"]["name"].as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("TeamClu");
+    println!("cargo:rustc-env=APP_DISPLAY_NAME={}", display_name);
+    println!("cargo:warning=Using APP_DISPLAY_NAME={}", display_name);
+
     // Resolved by the one brand table, not a second copy of the rule. This file
     // used to carry its own `is_official` list that disagreed with
     // `storage_namespace`'s, which is how a betly build ended up reading secrets
