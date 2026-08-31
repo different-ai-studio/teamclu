@@ -190,3 +190,157 @@ export async function sweepExpired(sql: Sql): Promise<number> {
     returning id`;
   return rows.length;
 }
+
+// ── operator surface ────────────────────────────────────────────────────────
+// Everything below goes through the gateway rather than raw SQL because the
+// gateway is the ledger's only writer (design §4.9.1). Two writers with
+// different idempotency rules is how a money table drifts.
+
+/** Credits granted to a team on first provisioning. See design §4.8. */
+export const SIGNUP_GRANT_CREDITS = 10_000_000;
+
+export type TopUpInput = {
+  teamId: string;
+  amountCredits: number;
+  kind: "top_up" | "grant" | "adjustment" | "refund";
+  idempotencyKey: string;
+  note?: string | null;
+};
+
+export type TopUpResult = { applied: boolean; balanceCredits: number };
+
+/**
+ * Add credits to a team, exactly once per `idempotencyKey`.
+ *
+ * Idempotency is enforced by a unique index rather than a read-then-write, so
+ * two concurrent deliveries of the same payment cannot both pass the check.
+ * `applied: false` means this key was already recorded — the caller retried, or
+ * a payment provider delivered the same purchase twice.
+ */
+export async function topUp(sql: Sql, input: TopUpInput): Promise<TopUpResult> {
+  return sql.begin(async (tx) => {
+    const inserted = await tx<{ id: string }[]>`
+      insert into amux.credit_ledger
+        (team_id, kind, amount_credits, idempotency_key, note)
+      values
+        (${input.teamId}::uuid, ${input.kind}, ${input.amountCredits},
+         ${input.idempotencyKey}, ${input.note ?? null})
+      on conflict (team_id, idempotency_key) where idempotency_key is not null
+        do nothing
+      returning id`;
+
+    if (inserted.length === 0) {
+      const [row] = await tx<{ balance_credits: string }[]>`
+        select balance_credits from amux.team_credit_balance
+         where team_id = ${input.teamId}::uuid`;
+      return { applied: false, balanceCredits: Number(row?.balance_credits ?? 0) };
+    }
+
+    const [row] = await tx<{ balance_credits: string }[]>`
+      insert into amux.team_credit_balance (team_id, balance_credits)
+      values (${input.teamId}::uuid, ${input.amountCredits})
+      on conflict (team_id) do update
+        set balance_credits = amux.team_credit_balance.balance_credits + ${input.amountCredits},
+            updated_at = now()
+      returning balance_credits`;
+    return { applied: true, balanceCredits: Number(row.balance_credits) };
+  });
+}
+
+export type BackfillResult = { scanned: number; granted: number };
+
+/**
+ * Give every team that has never been credited its signup grant.
+ *
+ * This is the gate on turning enforcement on. Phase 0/1 meter without
+ * charging, so every pre-existing team sits at a zero balance; flipping
+ * `CREDITS_ENFORCED` before this runs 402s all of them at once (§4.8.1).
+ *
+ * Safe to re-run: the per-team idempotency key means a second pass grants
+ * nothing. Safe to run while serving, too — each team is its own transaction,
+ * so a large backfill never holds a long lock.
+ */
+export async function backfillSignupGrants(
+  sql: Sql,
+  amountCredits: number = SIGNUP_GRANT_CREDITS,
+): Promise<BackfillResult> {
+  // Through a security-definer function: amux.teams carries RLS, and a plain
+  // select returns zero rows for the gateway's role -- a backfill that grants
+  // nothing and exits 0, right before enforcement is switched on.
+  const teams = await sql<{ team_id: string }[]>`
+    select team_id from amux.ai_gateway_teams_missing_signup_grant()`;
+  let granted = 0;
+  for (const t of teams) {
+    const r = await topUp(sql, {
+      teamId: t.team_id,
+      amountCredits,
+      kind: "grant",
+      idempotencyKey: `signup_grant:${t.team_id}`,
+      note: "signup grant (backfill)",
+    });
+    if (r.applied) granted += 1;
+  }
+  return { scanned: teams.length, granted };
+}
+
+export type ReconcileRow = {
+  teamId: string;
+  balanceCredits: number;
+  ledgerCredits: number;
+  reason: "drift" | "negative";
+};
+
+/**
+ * Daily audit. Materialising the balance is what makes `select ... for update`
+ * possible; this is the price of that choice.
+ *
+ * Two findings, both actionable:
+ *   drift    — balance and ledger disagree, so one of them is wrong
+ *   negative — a balance below zero, which only a refund should ever produce
+ *              (§4.9.5). The non-negative CHECK was deliberately omitted so
+ *              refunds work, and this is what replaces it.
+ */
+export async function reconcile(sql: Sql): Promise<ReconcileRow[]> {
+  const rows = await sql<
+    { team_id: string; balance: string; ledger: string }[]
+  >`
+    select b.team_id,
+           b.balance_credits::text as balance,
+           coalesce((select sum(amount_credits) from amux.credit_ledger l
+                      where l.team_id = b.team_id), 0)::text as ledger
+      from amux.team_credit_balance b`;
+  const out: ReconcileRow[] = [];
+  for (const r of rows) {
+    const balance = Number(r.balance);
+    const ledger = Number(r.ledger);
+    if (balance !== ledger) {
+      out.push({ teamId: r.team_id, balanceCredits: balance, ledgerCredits: ledger, reason: "drift" });
+    } else if (balance < 0) {
+      out.push({ teamId: r.team_id, balanceCredits: balance, ledgerCredits: ledger, reason: "negative" });
+    }
+  }
+  return out;
+}
+
+/**
+ * Usage rows older than the retention window. 13 months keeps a full
+ * year-over-year comparison available and nothing more.
+ *
+ * Deleted in bounded batches: one unbounded DELETE over a table that only ever
+ * grows is how a retention job turns into an outage.
+ */
+export async function pruneUsage(sql: Sql, months = 13, batch = 5000): Promise<number> {
+  let total = 0;
+  for (;;) {
+    const rows = await sql`
+      delete from amux.ai_usage_logs
+       where id in (
+         select id from amux.ai_usage_logs
+          where created_at < now() - ${`${months} months`}::interval
+          limit ${batch}
+       )
+      returning id`;
+    total += rows.length;
+    if (rows.length < batch) return total;
+  }
+}

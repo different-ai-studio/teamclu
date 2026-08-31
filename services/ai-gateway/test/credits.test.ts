@@ -7,7 +7,9 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { connect, type Sql } from "../src/db.js";
-import { release, reserve, settle, sweepExpired } from "../src/credits.js";
+import {
+  backfillSignupGrants, pruneUsage, reconcile, release, reserve, settle, sweepExpired, topUp,
+} from "../src/credits.js";
 
 const DB = process.env.DATABASE_URL;
 const ADMIN_DB = process.env.ADMIN_DATABASE_URL ?? DB;
@@ -241,4 +243,153 @@ test("a team with no balance row at all is refused, not defaulted to unlimited",
   const r = await reserve(sql, { teamId, actorId: memberId, actorType: "member", holdCredits: 1 });
   assert.equal(r.ok, false);
   if (!r.ok) assert.equal(r.code, "insufficient_credits");
+});
+
+// ── operator surface ────────────────────────────────────────────────────────
+
+test("top-up credits the balance and records it in the ledger", { skip: !DB }, async () => {
+  await setBalance(0);
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  const r = await topUp(sql, {
+    teamId, amountCredits: 5000, kind: "top_up", idempotencyKey: "pay-1", note: "test",
+  });
+  assert.equal(r.applied, true);
+  assert.equal(r.balanceCredits, 5000);
+});
+
+test("the same idempotency key never credits twice", { skip: !DB }, async () => {
+  // A payment provider retrying delivery is normal, not exceptional. The unique
+  // index does this, not a read-then-write, so two concurrent deliveries of the
+  // same purchase cannot both pass the check.
+  await setBalance(0);
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  const first = await topUp(sql, { teamId, amountCredits: 5000, kind: "top_up", idempotencyKey: "pay-dup" });
+  const second = await topUp(sql, { teamId, amountCredits: 5000, kind: "top_up", idempotencyKey: "pay-dup" });
+  assert.equal(first.applied, true);
+  assert.equal(second.applied, false, "the retry is a no-op, not a second credit");
+  assert.equal(second.balanceCredits, 5000);
+});
+
+test("concurrent deliveries of the same purchase credit once", { skip: !DB }, async () => {
+  await setBalance(0);
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  const results = await Promise.allSettled(
+    Array.from({ length: 5 }, () =>
+      topUp(sql, { teamId, amountCredits: 1000, kind: "top_up", idempotencyKey: "pay-race" }),
+    ),
+  );
+  const applied = results.filter(
+    (r) => r.status === "fulfilled" && r.value.applied,
+  ).length;
+  assert.equal(applied, 1, "exactly one delivery credits");
+  const [bal] = await sql<{ balance_credits: string }[]>`
+    select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  assert.equal(Number(bal.balance_credits), 1000);
+});
+
+test("backfill grants every team that has never been credited", { skip: !DB }, async () => {
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  const first = await backfillSignupGrants(sql, 777);
+  assert.ok(first.granted >= 1, "the un-credited team was granted");
+
+  const [bal] = await sql<{ balance_credits: string }[]>`
+    select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  assert.equal(Number(bal.balance_credits), 777);
+});
+
+test("backfill is safe to re-run", { skip: !DB }, async () => {
+  // It is the gate on enabling enforcement, so it will be run more than once:
+  // ahead of time, again after new teams appear, again if it half-failed.
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  await backfillSignupGrants(sql, 777);
+  const [before] = await sql<{ balance_credits: string }[]>`
+    select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+
+  const second = await backfillSignupGrants(sql, 777);
+  const [after] = await sql<{ balance_credits: string }[]>`
+    select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+
+  assert.equal(after.balance_credits, before.balance_credits, "a second pass grants nothing");
+  assert.ok(
+    !second.scanned || second.granted < second.scanned || second.scanned === 0,
+    "already-granted teams are not re-scanned into grants",
+  );
+});
+
+test("backfill does not top up a team that already has credit", { skip: !DB }, async () => {
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  await topUp(sql, {
+    teamId, amountCredits: 50, kind: "grant", idempotencyKey: `signup_grant:${teamId}`,
+  });
+  await backfillSignupGrants(sql, 777);
+  const [bal] = await sql<{ balance_credits: string }[]>`
+    select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  assert.equal(Number(bal.balance_credits), 50, "an existing signup grant is left alone");
+});
+
+test("reconcile is silent when balance and ledger agree", { skip: !DB }, async () => {
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  await topUp(sql, { teamId, amountCredits: 1000, kind: "grant", idempotencyKey: "recon-ok" });
+  const findings = (await reconcile(sql)).filter((f) => f.teamId === teamId);
+  assert.deepEqual(findings, []);
+});
+
+test("reconcile reports drift between the balance and the ledger", { skip: !DB }, async () => {
+  // The safety net that replaces the non-negative CHECK the schema omits: a
+  // settlement bug shows up here rather than silently.
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  await topUp(sql, { teamId, amountCredits: 1000, kind: "grant", idempotencyKey: "recon-drift" });
+  await admin`update amux.team_credit_balance set balance_credits = 999
+              where team_id = ${teamId}::uuid`;
+
+  const [finding] = (await reconcile(sql)).filter((f) => f.teamId === teamId);
+  assert.ok(finding, "drift is reported");
+  assert.equal(finding.reason, "drift");
+  assert.equal(finding.balanceCredits, 999);
+  assert.equal(finding.ledgerCredits, 1000);
+});
+
+test("reconcile reports a negative balance", { skip: !DB }, async () => {
+  // Only a refund against already-spent credits should produce one, and the
+  // schema allows it on purpose (§4.9.5) — so it has to be visible.
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  await topUp(sql, { teamId, amountCredits: 100, kind: "grant", idempotencyKey: "recon-neg-1" });
+  await topUp(sql, { teamId, amountCredits: -300, kind: "refund", idempotencyKey: "recon-neg-2" });
+
+  const [finding] = (await reconcile(sql)).filter((f) => f.teamId === teamId);
+  assert.ok(finding, "a negative balance is reported");
+  assert.equal(finding.reason, "negative");
+  assert.equal(finding.balanceCredits, -200);
+});
+
+test("a refund can drive the balance negative without erroring", { skip: !DB }, async () => {
+  // The reason team_credit_balance has no `check (balance_credits >= 0)`:
+  // that constraint would roll back a legitimate refund of already-spent
+  // credits. This is the test that stops someone "tidying up" by adding it.
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  await topUp(sql, { teamId, amountCredits: 10, kind: "grant", idempotencyKey: "neg-a" });
+  const r = await topUp(sql, { teamId, amountCredits: -1000, kind: "refund", idempotencyKey: "neg-b" });
+  assert.equal(r.balanceCredits, -990);
+});
+
+test("retention deletes only rows past the window", { skip: !DB }, async () => {
+  await admin`delete from amux.ai_usage_logs where team_id = ${teamId}::uuid`;
+  await admin`
+    insert into amux.ai_usage_logs
+      (team_id, actor_id, public_model_id, backend_model_id, provider_id, credits, created_at)
+    values
+      (${teamId}::uuid, ${memberId}::uuid, 'default', 'ds-v4-flash', 'deepseek', 1, now() - interval '14 months'),
+      (${teamId}::uuid, ${memberId}::uuid, 'default', 'ds-v4-flash', 'deepseek', 1, now() - interval '12 months'),
+      (${teamId}::uuid, ${memberId}::uuid, 'default', 'ds-v4-flash', 'deepseek', 1, now())`;
+  const deleted = await pruneUsage(sql, 13);
+  assert.ok(deleted >= 1);
+  const [{ n }] = await sql<{ n: number }[]>`
+    select count(*)::int as n from amux.ai_usage_logs where team_id = ${teamId}::uuid`;
+  assert.equal(n, 2, "12-month-old and current rows survive a 13-month window");
 });

@@ -5,7 +5,16 @@ import { pickRoute } from "./catalog.js";
 import { TokenCache, bearer } from "./auth.js";
 import { resolveActor, recordUsage, getBalance, type Sql } from "./db.js";
 import { computeCredits, prepareUpstream, readUsage, teeSseUsage } from "./proxy.js";
-import { release, reserve, settle } from "./credits.js";
+import {
+  backfillSignupGrants,
+  pruneUsage,
+  reconcile,
+  release,
+  reserve,
+  settle,
+  topUp,
+  SIGNUP_GRANT_CREDITS,
+} from "./credits.js";
 
 export type Deps = {
   cfg: Config;
@@ -277,6 +286,65 @@ export function createApp(deps: Deps) {
   internal.get("/teams/:teamId/credits/summary", async (c) => {
     const teamId = c.req.param("teamId");
     return c.json({ teamId, balanceCredits: await getBalance(sql, teamId) });
+  });
+
+  // Adding credits. FC calls this for manual top-ups today and for payment
+  // webhooks later; the gateway stays the ledger's only writer either way.
+  internal.post("/teams/:teamId/credits/top-up", async (c) => {
+    const teamId = c.req.param("teamId");
+    const body = (await c.req.json().catch(() => null)) as {
+      amountCredits?: number;
+      kind?: string;
+      idempotencyKey?: string;
+      note?: string;
+    } | null;
+    const amount = Number(body?.amountCredits);
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      return c.json(err("invalid_request", "amountCredits must be a positive integer", 400), 400);
+    }
+    // Required, not optional: without it a retried delivery credits twice, and
+    // a payment provider retrying is normal rather than exceptional.
+    if (!body?.idempotencyKey) {
+      return c.json(err("invalid_request", "idempotencyKey is required", 400), 400);
+    }
+    const kind = (body.kind ?? "top_up") as "top_up" | "grant" | "adjustment" | "refund";
+    if (!["top_up", "grant", "adjustment", "refund"].includes(kind)) {
+      return c.json(err("invalid_request", `unknown kind "${kind}"`, 400), 400);
+    }
+    const result = await topUp(sql, {
+      teamId,
+      amountCredits: amount,
+      kind,
+      idempotencyKey: body.idempotencyKey,
+      note: body.note ?? null,
+    });
+    // 200 either way: a duplicate delivery is a success from the caller's side,
+    // and `applied` says which happened.
+    return c.json({ teamId, ...result });
+  });
+
+  // The gate on turning enforcement on (§4.8.1). Idempotent, so it can be run
+  // ahead of time, re-run after new teams appear, and re-run if it half-fails.
+  internal.post("/credits/backfill", async (c) => {
+    const amount = Number(c.req.query("amountCredits") ?? SIGNUP_GRANT_CREDITS);
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      return c.json(err("invalid_request", "amountCredits must be a positive integer", 400), 400);
+    }
+    return c.json(await backfillSignupGrants(sql, amount));
+  });
+
+  // On-demand audit; also runs on a timer (see server.ts).
+  internal.get("/credits/reconcile", async (c) => {
+    const findings = await reconcile(sql);
+    return c.json({ ok: findings.length === 0, findings });
+  });
+
+  internal.post("/usage/prune", async (c) => {
+    const months = Number(c.req.query("months") ?? 13);
+    if (!Number.isSafeInteger(months) || months < 1) {
+      return c.json(err("invalid_request", "months must be a positive integer", 400), 400);
+    }
+    return c.json({ deleted: await pruneUsage(sql, months) });
   });
   app.route("/internal", internal);
 
