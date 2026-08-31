@@ -247,7 +247,7 @@ export async function topUp(sql: Sql, input: TopUpInput): Promise<TopUpResult> {
   });
 }
 
-export type BackfillResult = { scanned: number; granted: number };
+export type BackfillResult = { scanned: number; granted: number; vanished: number };
 
 /**
  * Give every team that has never been credited its signup grant.
@@ -270,17 +270,31 @@ export async function backfillSignupGrants(
   const teams = await sql<{ team_id: string }[]>`
     select team_id from amux.ai_gateway_teams_missing_signup_grant()`;
   let granted = 0;
+  let vanished = 0;
   for (const t of teams) {
-    const r = await topUp(sql, {
-      teamId: t.team_id,
-      amountCredits,
-      kind: "grant",
-      idempotencyKey: `signup_grant:${t.team_id}`,
-      note: "signup grant (backfill)",
-    });
-    if (r.applied) granted += 1;
+    try {
+      const r = await topUp(sql, {
+        teamId: t.team_id,
+        amountCredits,
+        kind: "grant",
+        idempotencyKey: `signup_grant:${t.team_id}`,
+        note: "signup grant (backfill)",
+      });
+      if (r.applied) granted += 1;
+    } catch (err) {
+      // The team list is a snapshot; a team deleted between the scan and its
+      // grant fails the ledger's foreign key. Skip it and keep going — this
+      // runs over every team on the deployment, and one deletion mid-run must
+      // not abort the rest. It is the gate on enabling enforcement, so a
+      // partial backfill that reports success is the dangerous outcome.
+      if ((err as { code?: string })?.code === "23503") {
+        vanished += 1;
+        continue;
+      }
+      throw err;
+    }
   }
-  return { scanned: teams.length, granted };
+  return { scanned: teams.length, granted, vanished };
 }
 
 export type ReconcileRow = {

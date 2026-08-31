@@ -290,12 +290,31 @@ test("concurrent deliveries of the same purchase credit once", { skip: !DB }, as
 test("backfill grants every team that has never been credited", { skip: !DB }, async () => {
   await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
   await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
-  const first = await backfillSignupGrants(sql, 777);
-  assert.ok(first.granted >= 1, "the un-credited team was granted");
+  await backfillSignupGrants(sql, 777);
 
+  // Asserts THIS team, not a global count: the backfill sweeps every team on
+  // the deployment, and other suites create and delete their own concurrently.
   const [bal] = await sql<{ balance_credits: string }[]>`
     select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
-  assert.equal(Number(bal.balance_credits), 777);
+  assert.equal(Number(bal.balance_credits), 777, "the un-credited team was granted");
+});
+
+test("a team deleted mid-backfill is skipped, not fatal", { skip: !DB }, async () => {
+  // The list is a snapshot. In production the sweep covers every team on the
+  // deployment, so a deletion during the run is ordinary — and aborting would
+  // leave a PARTIAL backfill right before enforcement is switched on, which is
+  // the one outcome that must not happen quietly.
+  const [{ id: doomed }] = await admin<{ id: string }[]>`
+    insert into amux.teams (slug, name) values (${`doomed-${Date.now()}`}, 'doomed') returning id`;
+  await admin`delete from amux.teams where id = ${doomed}::uuid`;
+
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  // Does not throw, and our team is still granted.
+  await backfillSignupGrants(sql, 555);
+  const [bal] = await sql<{ balance_credits: string }[]>`
+    select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  assert.equal(Number(bal.balance_credits), 555);
 });
 
 test("backfill is safe to re-run", { skip: !DB }, async () => {
