@@ -243,6 +243,13 @@ services:
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     volumes:
+      # ai/catalog.yaml is PER DEPLOYMENT and deliberately not in git; the
+      # deploy creates it from ai/catalog.example.yaml when absent.
+      #
+      # It has to exist before this mount resolves: Docker does not fail on a
+      # missing bind source, it silently creates a DIRECTORY there, and the
+      # gateway then dies with `EISDIR` — an error that names nothing about the
+      # actual cause.
       - ./ai/catalog.yaml:/app/catalog.yaml:ro
     healthcheck:
       test:
