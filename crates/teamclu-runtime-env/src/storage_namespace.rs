@@ -15,6 +15,11 @@ use std::path::{Path, PathBuf};
 /// the same personal secrets store as the brand (`~/.copilot361/secrets`, …).
 pub const BRAND_SHORT_NAME_ENV: &str = "TEAMCLU_BRAND_SHORT_NAME";
 
+/// Human-facing product name for this build (`TeamClu`, `Copilot361`, …).
+/// Set by desktop when it spawns amuxd; used in agent-facing copy such as
+/// session system prompts.
+pub const APP_DISPLAY_NAME_ENV: &str = "TEAMCLU_APP_DISPLAY_NAME";
+
 /// Optional absolute override for the amuxd state directory (`DaemonConfig::config_dir`).
 /// When unset, derived from [`BRAND_SHORT_NAME_ENV`] via [`amuxd_home_from_env`].
 pub const AMUXD_HOME_ENV: &str = "AMUXD_HOME";
@@ -114,6 +119,25 @@ pub fn brand_short_name_from_env() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| OFFICIAL_STORAGE_DIR.to_string())
+}
+
+/// Resolve the user-facing product name for the current process.
+///
+/// Precedence: [`APP_DISPLAY_NAME_ENV`] → official brand default (`TeamClu`) →
+/// [`brand_short_name_from_env`] as a last resort for standalone daemon runs.
+pub fn brand_display_name_from_env() -> String {
+    if let Ok(name) = std::env::var(APP_DISPLAY_NAME_ENV) {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    let short = brand_short_name_from_env();
+    if is_official_brand(&short) {
+        "TeamClu".to_string()
+    } else {
+        short
+    }
 }
 
 /// Local amuxd state folder name under `$HOME` (no leading dot).
@@ -316,6 +340,23 @@ mod tests {
         assert_eq!(LEGACY_BRAND_WORKSPACE_META_DIR, ".teamclaw");
         assert_eq!(LEGACY_BRAND_CONFIG_FILE, "teamclaw.json");
         assert_eq!(LEGACY_BRAND_TEAM_SHARED_DIR_NAME, "teamclaw-team");
+    }
+
+    #[test]
+    fn brand_display_name_from_env_prefers_override() {
+        let _lock = home_env_lock();
+        std::env::remove_var(APP_DISPLAY_NAME_ENV);
+        std::env::remove_var(BRAND_SHORT_NAME_ENV);
+        assert_eq!(brand_display_name_from_env(), "TeamClu");
+
+        std::env::set_var(APP_DISPLAY_NAME_ENV, "Copilot361");
+        assert_eq!(brand_display_name_from_env(), "Copilot361");
+
+        std::env::remove_var(APP_DISPLAY_NAME_ENV);
+        std::env::set_var(BRAND_SHORT_NAME_ENV, "copilot361");
+        assert_eq!(brand_display_name_from_env(), "copilot361");
+
+        std::env::remove_var(BRAND_SHORT_NAME_ENV);
     }
 
     #[test]

@@ -27,10 +27,16 @@ providers:
     #                          when the client did not ask for it.
     # Verified against the live API on 2026-08-28 (§4.4.0.1).
     usage_mode: always
-  openai:
-    api_base: https://api.openai.com/v1
-    api_key_env: OPENAI_API_KEY
-    usage_mode: needs_stream_options
+  # A second provider is opt-in, NOT shipped enabled. Startup validation
+  # requires a key for every provider listed here, so shipping one the
+  # deployment has no key for means the gateway refuses to boot — which is what
+  # happened the first time this file reached production. Uncomment together
+  # with a gpt-4o backend and set OPENAI_API_KEY.
+  #
+  # openai:
+  #   api_base: https://api.openai.com/v1
+  #   api_key_env: OPENAI_API_KEY
+  #   usage_mode: needs_stream_options
 
 # Body keys forwarded upstream. Everything else is dropped with a debug log.
 # Replaces LiteLLM's `litellm_settings.drop_params: true`.
@@ -74,10 +80,10 @@ backend_models:
     upstream_model: deepseek-v4-flash
     default_max_output_tokens: 16000
 
-  gpt-4o:
-    provider: openai
-    upstream_model: gpt-4o
-    default_max_output_tokens: 16000
+  # gpt-4o:
+  #   provider: openai
+  #   upstream_model: gpt-4o
+  #   default_max_output_tokens: 16000
 
 public_models:
   # ── THE public contract: exactly three tiers, and their prices ───────
@@ -116,9 +122,10 @@ public_models:
     routes:
       - backend: ds-v4-pro
 
-  # Failover across two backends whose upstream costs differ by an order of
-  # magnitude — and the customer pays the same either way. That is the whole
-  # point of pricing the tier instead of the backend.
+  # Failover: if the first backend is unavailable the tier still serves, and
+  # the customer pays the same either way — the whole point of pricing the tier
+  # rather than the backend. Point the first route at a second provider once
+  # one is configured above.
   max:
     name: 旗舰
     routing: failover
@@ -126,8 +133,8 @@ public_models:
       input_per_1m_credits: 20000000
       output_per_1m_credits: 80000000
     routes:
-      - backend: gpt-4o
       - backend: ds-v4-pro
+      - backend: ds-v4-flash
 
   # ── transition aliases — REMOVE IN PHASE 3 ───────────────────────────
   # Old clients still send these vendor ids, and they are still sitting in

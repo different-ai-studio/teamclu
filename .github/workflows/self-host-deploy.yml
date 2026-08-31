@@ -215,6 +215,50 @@ jobs:
             # New gateway, alongside litellm. Not a replacement yet: clients
             # keep using litellm until their team's llm_base_url is flipped.
             upsert_env AI_GATEWAY_INTERNAL_URL "http://ai-gateway:4001"
+
+            # Shared secret for the gateway's /internal/* routes (FC -> gateway).
+            # Preserved once set: rotating it locks FC out of an already-running
+            # gateway until both restart together.
+            if ! grep -qE '^AI_GATEWAY_SERVICE_TOKEN=.+' .env; then
+              upsert_env AI_GATEWAY_SERVICE_TOKEN "$(openssl rand -hex 32)"
+            fi
+            # Where the gateway asks GoTrue who a token belongs to. In-network;
+            # it never needs the public hostname.
+            grep -qE '^SUPABASE_URL=.+' .env || upsert_env SUPABASE_URL "http://kong:8000"
+
+            # The gateway's own least-privilege database login.
+            #
+            # The migration creates the `ai_gateway` role NOLOGIN on purpose so
+            # no credential lives in git — which means SOMETHING has to grant it
+            # login, and that something is here. Without this the container
+            # crash-loops on "DATABASE_URL is required" and the deploy's health
+            # wait times out.
+            #
+            # Generated once and preserved: regenerating on every deploy would
+            # invalidate the URL already in .env for the running container.
+            if ! grep -qE '^AI_GATEWAY_DB_URL=.+' .env; then
+              GW_PW="$(openssl rand -hex 24)"
+              docker compose exec -T -e PGPASSWORD="$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)" \
+                db psql -U supabase_admin -d postgres -q \
+                -c "alter role ai_gateway login password '$GW_PW';"
+              upsert_env AI_GATEWAY_DB_URL "postgres://ai_gateway:$GW_PW@db:5432/postgres"
+              echo "  provisioned ai_gateway database login"
+            else
+              echo "  keep AI_GATEWAY_DB_URL (already set)"
+            fi
+
+            # Per-deployment catalog. Deliberately not in git (upstream keys and
+            # prices differ per deployment), so seed it from the example on
+            # first deploy.
+            #
+            # This must run BEFORE `docker compose up`: a missing bind source is
+            # not an error to Docker, it creates a DIRECTORY at that path and
+            # the gateway dies with EISDIR.
+            if [ ! -f ai/catalog.yaml ]; then
+              [ -d ai/catalog.yaml ] && rmdir ai/catalog.yaml
+              cp ai/catalog.example.yaml ai/catalog.yaml
+              echo "  seeded ai/catalog.yaml from the example"
+            fi
             # Admin credential for the gateway. Generated once on the server and then
             # preserved — rotating it would orphan every virtual key already issued
             # to a team in the _litellm database.

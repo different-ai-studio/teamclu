@@ -1,5 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { provisionAppPostgres, readAppsAdminUrl } from "./app-postgres.js";
+import {
+  provisionAppPostgres,
+  readAppsAdminUrl,
+  readAppsAppUrl,
+  resolveAppConnectionString,
+} from "./app-postgres.js";
+import { readAppsFcVpcConfig } from "./fc-client.js";
 import { appPublicUrl } from "../apps-public-host.js";
 import { ApiError } from "../http-utils.js";
 
@@ -188,6 +194,8 @@ export interface FinalizeDeps {
    * Absent → only static apps can finalize; data apps fail naming APPS_DB_ADMIN_URL.
    */
   appsAdminUrl?: string;
+  /** Reachable Postgres base URL for rewriting app DATABASE_URL host. */
+  appsAppUrl?: string;
   /** Optional override of {@link provisionAppPostgres} for tests. */
   provisionDb?: typeof provisionAppPostgres;
   fcOps: {
@@ -225,6 +233,12 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     if (!appsAdminUrl) {
       throw new Error("apps database is not configured (APPS_DB_ADMIN_URL)");
     }
+    const appsAppUrl = deps.appsAppUrl ?? readAppsAppUrl();
+    if (appsAppUrl && !readAppsFcVpcConfig()) {
+      throw new Error(
+        "APPS_FC_VPC_ID, APPS_FC_VSWITCH_ID, and APPS_FC_SECURITY_GROUP_ID are required when APPS_DB_APP_URL is set — deployed app functions must join the App Postgres VPC",
+      );
+    }
     const orgId = input.orgId?.trim();
     if (!orgId) {
       throw new Error("data_app deploy requires the team's org (public.orgs.id)");
@@ -240,7 +254,11 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
       slug: input.slug,
       password,
     });
-    env.DATABASE_URL = conn.connectionString;
+    env.DATABASE_URL = resolveAppConnectionString(
+      conn.connectionString,
+      appsAdminUrl,
+      appsAppUrl,
+    );
   }
 
   if (input.platformOAuthEnv) Object.assign(env, input.platformOAuthEnv);

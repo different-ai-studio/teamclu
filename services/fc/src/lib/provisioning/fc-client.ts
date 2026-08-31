@@ -65,8 +65,54 @@ export function getFcClient(profile?: AppsOssProfile): FcClientInstance {
   }) as any);
 }
 
-export interface FcOpsConfig { bucket: string; role: string | undefined; region: string; }
+/** VPC attachment for deployed app functions (required when APPS_DB_APP_URL is set). */
+export interface AppsFcVpcConfig {
+  vpcId: string;
+  vSwitchIds: string[];
+  securityGroupId: string;
+}
+
+/**
+ * Read APPS_FC_VPC_ID / APPS_FC_VSWITCH_ID / APPS_FC_SECURITY_GROUP_ID.
+ *
+ * Deployed data_app functions run on external FC and reach App Postgres via
+ * APPS_DB_APP_URL (typically an RDS internal endpoint). Without VPC attachment
+ * the function cannot route to that host even when DATABASE_URL is correct.
+ */
+export function readAppsFcVpcConfig(env: NodeJS.ProcessEnv = process.env): AppsFcVpcConfig | undefined {
+  const vpcId = env.APPS_FC_VPC_ID?.trim();
+  const vSwitchId = env.APPS_FC_VSWITCH_ID?.trim();
+  const securityGroupId = env.APPS_FC_SECURITY_GROUP_ID?.trim();
+  const set = [vpcId, vSwitchId, securityGroupId].filter(Boolean);
+  if (set.length === 0) return undefined;
+  if (set.length < 3) {
+    throw new Error(
+      "APPS_FC_VPC_ID, APPS_FC_VSWITCH_ID, and APPS_FC_SECURITY_GROUP_ID must all be set together",
+    );
+  }
+  return { vpcId: vpcId!, vSwitchIds: [vSwitchId!], securityGroupId: securityGroupId! };
+}
+
+export interface FcOpsConfig {
+  bucket: string;
+  role: string | undefined;
+  region: string;
+  /** When set, every app function create/update joins this VPC. */
+  vpc?: AppsFcVpcConfig;
+}
 export interface EnsureFunctionArgs { ossObjectName: string; env: Record<string, string>; }
+
+function functionNetworkInput(vpc: AppsFcVpcConfig | undefined) {
+  if (!vpc) return { internetAccess: true };
+  return {
+    internetAccess: true,
+    vpcConfig: new $fc.VPCConfig({
+      vpcId: vpc.vpcId,
+      vSwitchIds: vpc.vSwitchIds,
+      securityGroupId: vpc.securityGroupId,
+    }),
+  };
+}
 
 /**
  * The custom runtime image ships NO node at all — not merely one that is off
@@ -127,6 +173,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
               command: [NODE_BIN], args: ["server/index.mjs"], port: 9000,
             }),
             code: codeLocation(args.ossObjectName),
+            ...functionNetworkInput(cfg.vpc),
           }),
         }));
       } else {
@@ -139,6 +186,10 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       // `command: ["node"]` against an image that has no node, and a code-only
       // update leaves them broken forever — the redeploy the user reaches for
       // would report success and change nothing about why the page 500s.
+      //
+      // VPC config is re-sent for the same reason: a function created before
+      // APPS_FC_VPC_* was wired would keep an empty vpcConfig through every
+      // redeploy and time out against an internal RDS host forever.
       await client.updateFunction(functionName, new $fc.UpdateFunctionRequest({
         body: new $fc.UpdateFunctionInput({
           environmentVariables: args.env,
@@ -147,6 +198,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
             command: [NODE_BIN], args: ["server/index.mjs"], port: 9000,
           }),
           code: codeLocation(args.ossObjectName),
+          ...functionNetworkInput(cfg.vpc),
         }),
       }));
     },

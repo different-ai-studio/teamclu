@@ -160,6 +160,12 @@ fn models_from_response(response: &serde_json::Value) -> Vec<amux::ModelInfo> {
 /// pi is the only backend that can enumerate its real command set at runtime
 /// (extension commands + prompt templates + pi skills), so unlike opencode
 /// there is no static table to maintain — see `builtin_commands.rs`.
+pub fn commands_from_get_commands_response(
+    response: &serde_json::Value,
+) -> Vec<amux::AcpAvailableCommand> {
+    commands_from_response(response)
+}
+
 fn commands_from_response(response: &serde_json::Value) -> Vec<amux::AcpAvailableCommand> {
     let Some(commands) = response
         .pointer("/data/commands")

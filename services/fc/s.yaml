@@ -75,6 +75,12 @@ resources:
         # only by apps provisioning (CREATE SCHEMA / CREATE ROLE). Never sent
         # to clients.
         APPS_DB_ADMIN_URL: ${env('APPS_DB_ADMIN_URL', '')}
+        APPS_DB_APP_URL: ${env('APPS_DB_APP_URL', '')}
+        # VPC attachment for deployed data_app functions. Required alongside
+        # APPS_DB_APP_URL when the app Postgres host is VPC-internal (RDS).
+        APPS_FC_VPC_ID: ${env('APPS_FC_VPC_ID', '')}
+        APPS_FC_VSWITCH_ID: ${env('APPS_FC_VSWITCH_ID', '')}
+        APPS_FC_SECURITY_GROUP_ID: ${env('APPS_FC_SECURITY_GROUP_ID', '')}
         # FC 3.0 data-plane host for the apps module's own function calls. It is
         # account-scoped (<accountId>.<region>.fc.aliyuncs.com) and unrelated to
         # the OSS ENDPOINT above. Set one of the two.

@@ -384,7 +384,7 @@ impl DaemonServer {
         // emitted messages (cloud `messages.sequence`). The envelope
         // append below uses the same value, keeping a 1:1 link between an
         // ACP event boundary and the messages that flowed from it.
-        let (emitted, turn_id, seq, reply_to_message_id, clear_reply_to) = {
+        let (mut emitted, turn_id, seq, reply_to_message_id, clear_reply_to) = {
             let mut agents = self.agents.lock().await;
             let seq = agents
                 .get_handle_mut(agent_id)
@@ -400,30 +400,46 @@ impl DaemonServer {
                     if sc.old_status == amux::AgentStatus::Active as i32
                         && sc.new_status == amux::AgentStatus::Idle as i32
             );
-            match agents.aggregator_mut(agent_id) {
-                Some(agg) if !is_child_event => {
-                    let emitted = agg.ingest(&acp_event);
-                    let turn_id = agg.current_turn_id().unwrap_or("").to_string();
-                    (emitted, turn_id, seq, reply_to_message_id, clear_reply_to)
+            let turn_id_before = agents
+                .aggregator(agent_id)
+                .and_then(|a| a.current_turn_id())
+                .map(str::to_string);
+            let violations = if !is_child_event {
+                agents
+                    .get_handle_mut(agent_id)
+                    .map(|h| {
+                        crate::runtime::prepare_guard_for_acp_event(
+                            &mut h.native_skill_turn_guard,
+                            std::path::Path::new(&h.worktree),
+                            &h.acp_session_id,
+                            is_child_event,
+                            &acp_event,
+                            turn_id_before.as_deref(),
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let mut emitted = match agents.aggregator_mut(agent_id) {
+                Some(agg) if !is_child_event => agg.ingest(&acp_event),
+                _ => Vec::new(),
+            };
+            if !violations.is_empty() {
+                if let Some(handle) = agents.get_handle(agent_id) {
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        workspace = %handle.worktree,
+                        count = violations.len(),
+                        slugs = ?violations.iter().map(|v| v.slug.as_str()).collect::<Vec<_>>(),
+                        "native skill written to unsupported directory during turn"
+                    );
                 }
-                Some(agg) => {
-                    let turn_id = agg.current_turn_id().unwrap_or("").to_string();
-                    (
-                        Vec::new(),
-                        turn_id,
-                        seq,
-                        reply_to_message_id,
-                        clear_reply_to,
-                    )
-                }
-                None => (
-                    Vec::new(),
-                    String::new(),
-                    seq,
-                    reply_to_message_id,
-                    clear_reply_to,
-                ),
+                let tid = turn_id_before.clone().unwrap_or_default();
+                crate::runtime::apply_violations_to_emitted(&mut emitted, &violations, &tid);
             }
+            let turn_id = turn_id_before.unwrap_or_default();
+            (emitted, turn_id, seq, reply_to_message_id, clear_reply_to)
         };
         if !collab_sessions.is_empty() && !emitted.is_empty() {
             if let Some(tc) = self.teamclu.as_ref() {

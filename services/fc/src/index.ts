@@ -16,7 +16,12 @@ import { dispatchPush } from "./lib/push-dispatch.js";
 import { pushDeps, pgPushDeps } from "./lib/admin-handlers.js";
 import { verifyAccessToken } from "./auth/verify.js";
 import { ApiError } from "./lib/http-utils.js";
-import { getFcClient, makeFcOps, resolveFcEndpoint } from "./lib/provisioning/fc-client.js";
+import {
+  getFcClient,
+  makeFcOps,
+  readAppsFcVpcConfig,
+  resolveFcEndpoint,
+} from "./lib/provisioning/fc-client.js";
 import { startDeploy as startDeployImpl, finalizeDeploy as finalizeDeployImpl } from "./lib/provisioning/app-deploy.js";
 import { readAppsAdminUrl } from "./lib/provisioning/app-postgres.js";
 import { makeAppDataOps, type AppDataOps } from "./lib/provisioning/app-data-db.js";
@@ -87,14 +92,17 @@ function makeDeployDeps() {
     };
   }
   const bucket = profile.bucket;
+  const appsFcVpc = readAppsFcVpcConfig();
   const fcOps = makeFcOps(getFcClient(profile), {
     bucket,
     role: process.env.ROLE_ARN,
     // Region of the function, which is also where its Node layer must come
     // from — a layer ARN is region-scoped.
     region: profile.region,
+    vpc: appsFcVpc,
   });
   const appsAdminUrl = process.env.APPS_DB_ADMIN_URL?.trim() || undefined;
+  const appsAppUrl = process.env.APPS_DB_APP_URL?.trim() || undefined;
   const s3 = getAppsS3Client(profile);
   // 30 min: the daemon runs `pnpm install && pnpm build` between minting this
   // URL and using it, and a cold install on a modest laptop outlasts 15.
@@ -114,7 +122,7 @@ function makeDeployDeps() {
       fcFunctionName: string;
       ossObjectName: string;
       platformOAuthEnv?: Record<string, string>;
-    }) => finalizeDeployImpl({ appsAdminUrl, fcOps }, a),
+    }) => finalizeDeployImpl({ appsAdminUrl, appsAppUrl, fcOps }, a),
   };
 }
 
@@ -152,6 +160,7 @@ function makeTeardownDeps(): { teardownDeps?: TeardownAppDeps } {
     bucket: profile.bucket,
     role: process.env.ROLE_ARN,
     region: profile.region,
+    vpc: readAppsFcVpcConfig(),
   });
   const s3 = getAppsS3Client(profile);
   return { teardownDeps: makeTeardownAppDeps({ bucket: profile.bucket, s3, fcOps }) };

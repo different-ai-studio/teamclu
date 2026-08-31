@@ -35,6 +35,7 @@ use crate::runtime::permission_policy::PermissionPolicy;
 use crate::runtime::sidecar::mcp;
 
 mod events;
+pub use events::available_commands_from_slash_commands_event;
 pub mod permission;
 pub mod process;
 mod types;

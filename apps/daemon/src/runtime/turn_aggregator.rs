@@ -23,6 +23,8 @@
 //!   - `{"turn_status":"interrupted"}` — user abort
 //!   - `{"turn_status":"no_final_reply"}` — Idle with no final prose
 //!     (frontends hide the English notice and render a localized strip)
+//!   - `{"turn_status":"skill_created_in_unsupported_directory", ...}` —
+//!     native-only skill write detected (fail-closed; replaces turn success)
 //!
 //! Always emit all keys for a kind (use empty strings/false rather than
 //! omitting). New keys may be added; existing keys must not be removed
@@ -332,6 +334,7 @@ impl TurnAggregator {
         let trimmed = content.trim_start();
         trimmed.starts_with("[Turn interrupted by user]")
             || trimmed.starts_with("[Turn completed with no final reply]")
+            || trimmed.starts_with("[Skill created in unsupported directory]")
     }
 
     /// Current per-turn correlation id, or `None` between turns. Read by the

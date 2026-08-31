@@ -102,6 +102,8 @@ export const ChatMessage = React.memo(function ChatMessage({
   const isUser = message.role === "user";
   const isInterruptedTurn = !isUser && message.turnStatus === "interrupted";
   const isNoFinalReplyTurn = !isUser && message.turnStatus === "no_final_reply";
+  const isUnsupportedNativeSkillTurn =
+    !isUser && message.turnStatus === "skill_created_in_unsupported_directory";
   const [copied, setCopied] = React.useState(false);
   const [hydratedProcessParts, setHydratedProcessParts] = React.useState<
     MessagePart[] | null
@@ -662,6 +664,43 @@ export const ChatMessage = React.memo(function ChatMessage({
               "No additional written reply was produced.",
             )}
           </p>
+        </div>
+      ) : null}
+
+      {/* Daemon unsupported native skill AGENT_REPLY — fail-closed turn outcome */}
+      {isUnsupportedNativeSkillTurn ? (
+        <div
+          className="mt-1 flex max-w-[520px] flex-wrap items-baseline gap-x-2 gap-y-1 pl-1 text-[12.5px] leading-[1.5] text-ink-2"
+          data-testid="unsupported-native-skill-reply"
+        >
+          <span
+            className="inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-[1px] bg-destructive/80"
+            aria-hidden
+          />
+          <span className="font-semibold">
+            {t("chat.unsupportedNativeSkill.failedTitle", "Skill not created")}
+          </span>
+          <span className="font-mono text-[11px] text-faint">
+            ·{" "}
+            {t(
+              "chat.unsupportedNativeSkill.statusLabel",
+              "unsupported directory",
+            )}
+          </span>
+          <p className="mt-0.5 w-full text-[12.5px] leading-[1.55] text-muted-foreground">
+            {t(
+              "chat.unsupportedNativeSkill.description",
+              "A skill was written under a native agent directory instead of through manage_skills. Remove the native copy and recreate with manage_skills action=create.",
+            )}
+          </p>
+          {(message.nativeSkillViolations ?? []).map((v) => (
+            <p
+              key={`${v.slug}-${v.root}`}
+              className="w-full font-mono text-[11px] text-faint"
+            >
+              {v.slug} · {v.root}
+            </p>
+          ))}
         </div>
       ) : null}
 

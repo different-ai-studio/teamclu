@@ -857,6 +857,12 @@
       "statusLabel": "no final reply",
       "description": "No additional written reply was produced."
     },
+    "unsupportedNativeSkill": {
+      "failedTitle": "Skill not created",
+      "statusLabel": "unsupported directory",
+      "description": "A skill was written under a native agent directory instead of through manage_skills. Remove the native copy and recreate with manage_skills action=create.",
+      "violationLine": "{{slug}} in {{root}}"
+    },
     "acpDebug": {
       "title": "ACP stream debug",
       "lineCount": "{{count}} line",
@@ -1205,12 +1211,17 @@
     "reseed": "Reseed",
     "deploy": "Deploy",
     "deploying": "Deploying…",
+    "deployPhase": {
+      "prepare": "Preparing…",
+      "build": "Building and uploading…",
+      "finalize": "Finalizing…",
+      "done": "Deploy complete"
+    },
+    "preview": "Preview",
+    "deployConfirmTitle": "Confirm deploy",
+    "deployConfirmContinue": "Deploy anyway",
     "deployFailed": "Deploy failed",
     "live": "Live",
-    "openUrl": "Open deployed URL",
-    "copyUrl": "Copy deployed URL",
-    "revealInFinder": "Reveal folder in Finder",
-    "moreActions": "More actions",
     "rename": "Rename",
     "delete": "Delete",
     "create": "New",
@@ -1239,8 +1250,6 @@
     "submit": "Create",
     "cancel": "Cancel",
     "createError": "Failed to create app",
-    "urlCopyFailed": "Failed to copy deployed URL",
-    "urlCopied": "Deployed URL copied",
     "data": {
       "section": "Live data",
       "title": "Live data",
@@ -1263,12 +1272,12 @@
       "deleteFailed": "Failed to delete the row",
       "loadFailed": "Failed to read data",
       "deleteTitle": "Delete this row?",
-      "deleteHint": "This deletes it from the live database and cannot be undone."
+      "deleteHint": "This deletes it from the live database and cannot be undone.",
+      "invalidTarget": "Invalid table address",
+      "appNotFound": "App not found"
     },
     "controlPanel": {
       "title": "App settings",
-      "deployUrl": "Deploy URL",
-      "noDeployUrl": "Not deployed yet — no live URL",
       "reseedHint": "Rewrite the template or clone the repo again. Use only when seeding failed or the folder is empty.",
       "localPath": "Local path",
       "localPathOnDevice": "Device: {{name}}",
@@ -1789,6 +1798,7 @@
         "checkBotOnline": "Set Bot status to Online",
         "checkWebSocket": "Event delivery: WebSocket mode",
         "checkMentionEvent": "Subscribe: new_mentioned_message_received_from_group_chat",
+        "checkThreadEvent": "Subscribe: new_message_received_from_thread",
         "checkDmEvent": "Subscribe: message_from_bot_subscriber (for DMs)",
         "checkSendGroup": "Permission: Send Message to Group Chat (required to reply)",
         "checkSendDm": "Permission: Send Message to Bot User (for DMs)",
