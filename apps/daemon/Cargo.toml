@@ -48,6 +48,7 @@ thiserror = "2"
 rand = "0.8"
 subtle = "2"
 getrandom = "0.2"
+gethostname = "1.1.0"
 flate2 = "1"
 walkdir = "2"
 # gitignore-syntax matching for the sync ignore rules (ripgrep's implementation).

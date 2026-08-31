@@ -283,9 +283,7 @@ pub async fn app_workdir(
 }
 
 fn daemon_device_name() -> String {
-    crate::config::DaemonConfig::load(&crate::config::DaemonConfig::default_path())
-        .map(|c| c.actor.name)
-        .unwrap_or_else(|_| crate::config::BOOTSTRAP_ACTOR_NAME.to_string())
+    crate::config::daemon_host_label()
 }
 
 /// `POST /v1/apps/seed` — put the app's files in place.

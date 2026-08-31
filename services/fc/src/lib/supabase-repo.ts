@@ -2614,7 +2614,7 @@ export function createSupabaseBusinessRepository(options) {
     async listSessionRoster(sessionId) {
       const { data: sessionRow, error: sessionErr } = await supabase
         .from("sessions")
-        .select("id, team_id")
+        .select("id, team_id, title")
         .eq("id", sessionId)
         .maybeSingle();
       if (sessionErr) throw sessionErr;
@@ -2650,9 +2650,44 @@ export function createSupabaseBusinessRepository(options) {
         actorsById = new Map(actorRows.map((row) => [row.id, row]));
       }
 
+      let selfAgent = null;
+      const callerActor = actorsById.get(callerActorId);
+      if (callerActor?.actor_type === "agent") {
+        const { data: agentRow, error: agentErr } = await supabase
+          .from("agents")
+          .select("visibility, owner_member_id")
+          .eq("id", callerActorId)
+          .maybeSingle();
+        if (agentErr) throw agentErr;
+        if (agentRow) {
+          let ownerDisplayName = null;
+          if (agentRow.owner_member_id) {
+            const ownerFromRoster = actorsById.get(agentRow.owner_member_id);
+            if (ownerFromRoster?.display_name) {
+              ownerDisplayName = ownerFromRoster.display_name;
+            } else {
+              const { data: ownerRow, error: ownerErr } = await supabase
+                .from("actors")
+                .select("display_name")
+                .eq("id", agentRow.owner_member_id)
+                .maybeSingle();
+              if (ownerErr) throw ownerErr;
+              ownerDisplayName = ownerRow?.display_name ?? null;
+            }
+          }
+          selfAgent = {
+            visibility: agentRow.visibility ?? null,
+            ownerMemberId: agentRow.owner_member_id ?? null,
+            ownerDisplayName,
+          };
+        }
+      }
+
       return {
         sessionId,
         callerActorId,
+        title: sessionRow.title ?? null,
+        selfAgent,
         items: participantRows.map((seat) => {
           const actor = actorsById.get(seat.actor_id);
           return {

@@ -1,11 +1,11 @@
-//! Per-session group-chat system prompt for managed agent backends (Pi v1).
+//! Per-session system prompt for managed agent backends (Pi v1).
 
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::backend::{Backend, SessionRoster, SessionRosterEntry};
+use crate::backend::{Backend, SessionRoster, SessionRosterEntry, SessionRosterSelfAgent};
 use crate::runtime::RuntimeManager;
 
 /// One seat in the session roster surfaced to the Pi extension.
@@ -103,8 +103,15 @@ impl SessionPromptService {
         }
 
         let brand = teamclu_runtime_env::brand_display_name_from_env();
-        let append_system_prompt =
-            build_session_prompt(&brand, &agent_display_name, &participants);
+        let host_label = crate::config::daemon_machine_hostname();
+        let append_system_prompt = build_session_prompt(
+            &brand,
+            roster.title.as_deref(),
+            &host_label,
+            &agent_display_name,
+            roster.self_agent.as_ref(),
+            &participants,
+        );
 
         SessionPromptResponse {
             agent_display_name,
@@ -208,19 +215,76 @@ fn kind_label(kind: Option<&str>) -> &str {
     }
 }
 
+fn append_holder_relationship(out: &mut String, self_agent: Option<&SessionRosterSelfAgent>) {
+    let Some(meta) = self_agent else {
+        return;
+    };
+    let visibility = meta.visibility.as_deref().unwrap_or("").trim();
+    if visibility.eq_ignore_ascii_case("personal") {
+        if let Some(owner) = meta
+            .owner_display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            out.push_str("You are the personal AI assistant of ");
+            out.push_str(owner);
+            out.push_str(
+                ". You run on their machine and operate on their behalf in this session.\n\n",
+            );
+        } else {
+            out.push_str(
+                "You are a personal AI assistant bound to one member. \
+You run on your holder's machine and operate on their behalf in this session.\n\n",
+            );
+        }
+    } else if visibility.eq_ignore_ascii_case("team") {
+        out.push_str(
+            "You are a team-shared AI assistant available to the whole team. \
+You run on this host machine for the team.\n\n",
+        );
+    }
+}
+
 pub fn build_session_prompt(
     brand_name: &str,
+    session_title: Option<&str>,
+    host_label: &str,
     agent_display_name: &str,
+    self_agent: Option<&SessionRosterSelfAgent>,
     participants: &[SessionPromptParticipant],
 ) -> String {
     let brand = brand_name.trim();
     let brand = if brand.is_empty() { "this app" } else { brand };
+    let host = host_label.trim();
+    let host = if host.is_empty() { "this machine" } else { host };
 
     let mut out = String::from("[");
     out.push_str(brand);
-    out.push_str(" Session Context]\n\nYou are an AI assistant in a ");
+    out.push_str(" Session Context]\n\n");
+
+    if let Some(title) = session_title.map(str::trim).filter(|t| !t.is_empty()) {
+        out.push_str("Topic: \"");
+        out.push_str(title);
+        out.push_str("\"\n\n");
+    }
+
+    out.push_str("You are \"");
+    out.push_str(agent_display_name.trim());
+    out.push_str("\", an AI assistant in a ");
     out.push_str(brand);
-    out.push_str(" session.\n\nYour display name is \"");
+    out.push_str(" session.\n\n");
+
+    out.push_str("Hosting: You run on the machine \"");
+    out.push_str(host);
+    out.push_str(
+        "\". Your workspace files and tools are local to this host; \
+other participants may be on different devices or machines.\n\n",
+    );
+
+    append_holder_relationship(&mut out, self_agent);
+
+    out.push_str("Your display name is \"");
     out.push_str(agent_display_name.trim());
     out.push_str(
         "\". This is the name users assigned you in the UI; when someone @mentions you, \
@@ -262,27 +326,57 @@ mod tests {
         SessionRoster {
             session_id: "session-1".to_string(),
             caller_actor_id: "agent-mdc".to_string(),
+            title: None,
+            self_agent: None,
             items,
         }
     }
 
+    fn personal_self_agent(owner: &str) -> SessionRosterSelfAgent {
+        SessionRosterSelfAgent {
+            visibility: Some("personal".to_string()),
+            owner_member_id: Some("human-1".to_string()),
+            owner_display_name: Some(owner.to_string()),
+        }
+    }
+
     #[test]
-    fn build_session_prompt_uses_brand_and_roster() {
+    fn build_session_prompt_includes_title_hosting_and_holder() {
         let text = build_session_prompt(
-            "Copilot361",
-            "小助手",
+            "TeamClu",
+            Some("Q3 客诉周报"),
+            "MacBook-Pro",
+            "MDC",
+            Some(&personal_self_agent("港爷")),
             &[
-                participant("agent-1", "小助手", Some("agent"), true),
-                participant("human-1", "Alice", Some("member"), false),
+                participant("agent-1", "MDC", Some("agent"), true),
+                participant("human-1", "港爷", Some("member"), false),
             ],
         );
-        assert!(text.starts_with("[Copilot361 Session Context]"));
-        assert!(text.contains("You are an AI assistant in a Copilot361 session."));
-        assert!(!text.contains("group chat"));
-        assert!(text.contains("Your display name is \"小助手\""));
-        assert!(text.contains("- Alice (member)"));
-        assert!(text.contains("- 小助手 (agent, you)"));
-        assert!(text.contains("@mentions in messages indicate who the sender is addressing"));
+        assert!(text.contains("Topic: \"Q3 客诉周报\""));
+        assert!(text.contains("Hosting: You run on the machine \"MacBook-Pro\""));
+        assert!(text.contains("personal AI assistant of 港爷"));
+        assert!(text.contains("operate on their behalf"));
+        assert!(text.contains("- 港爷 (member)"));
+        assert!(text.contains("- MDC (agent, you)"));
+    }
+
+    #[test]
+    fn build_session_prompt_team_agent_skips_personal_holder_wording() {
+        let text = build_session_prompt(
+            "TeamClu",
+            None,
+            "Office-Mini",
+            "研发助手",
+            Some(&SessionRosterSelfAgent {
+                visibility: Some("team".to_string()),
+                owner_member_id: None,
+                owner_display_name: None,
+            }),
+            &[participant("agent-1", "研发助手", Some("agent"), true)],
+        );
+        assert!(text.contains("team-shared AI assistant"));
+        assert!(!text.contains("personal AI assistant"));
     }
 
     #[test]
@@ -308,20 +402,6 @@ mod tests {
                 is_self: false,
             },
         ]);
-        assert_eq!(
-            resolve_agent_display_name_from_roster(&roster, "agent-mdc"),
-            Some("MDC".to_string())
-        );
-    }
-
-    #[test]
-    fn resolve_agent_display_name_from_roster_uses_owner_when_self_missing() {
-        let roster = roster(vec![SessionRosterEntry {
-            actor_id: "agent-mdc".to_string(),
-            display_name: Some("MDC".to_string()),
-            kind: Some("agent".to_string()),
-            is_self: false,
-        }]);
         assert_eq!(
             resolve_agent_display_name_from_roster(&roster, "agent-mdc"),
             Some("MDC".to_string())

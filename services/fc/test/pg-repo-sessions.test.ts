@@ -834,6 +834,11 @@ test("listSessionRoster returns personal agent display name for caller agent", a
 
   assert.equal(out.sessionId, s.id);
   assert.equal(out.callerActorId, personalAgent.id);
+  assert.equal(out.title, "Roster");
+  assert.ok(out.selfAgent, "personal agent caller should include selfAgent metadata");
+  assert.equal(out.selfAgent.visibility, "personal");
+  assert.equal(out.selfAgent.ownerMemberId, member.id);
+  assert.equal(out.selfAgent.ownerDisplayName, "Test Actor");
   const self = out.items.find((item: any) => item.actorId === personalAgent.id);
   assert.ok(self, "personal agent should appear in roster");
   assert.equal(self.displayName, "MDC");
