@@ -131,6 +131,8 @@
     "skillConflictModified": "{{files}} 被改动",
     "skillConflictDeleted": "{{files}} 被删除",
     "skillConflictAdded": "新增 {{files}}",
+    "skillConflictSourceHosted": "修改来源：本机 Hosted Agent",
+    "skillConflictSourceMember": "修改来源：本机成员目录",
     "skillConflictViewDiff": "查看改动",
     "skillConflictPublish": "发布为 v{{v}}",
     "skillConflictFork": "另存为个人",

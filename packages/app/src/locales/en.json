@@ -131,6 +131,8 @@
     "skillConflictModified": "{{files}} changed",
     "skillConflictDeleted": "{{files}} deleted",
     "skillConflictAdded": "{{files}} added",
+    "skillConflictSourceHosted": "Changes from: local Hosted Agent",
+    "skillConflictSourceMember": "Changes from: local member directory",
     "skillConflictViewDiff": "View changes",
     "skillConflictPublish": "Publish as v{{v}}",
     "skillConflictFork": "Save as personal",
