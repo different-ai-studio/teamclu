@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { parseCatalog, pickRoute, REQUIRED_TIERS } from "../src/catalog.js";
 import { readFileSync } from "node:fs";
 
-const ENV = { DEEPSEEK_API_KEY: "k1", OPENAI_API_KEY: "k2" } as NodeJS.ProcessEnv;
+const ENV = { DEEPSEEK_API_KEY: "k1" } as NodeJS.ProcessEnv;
 const SHIPPED = readFileSync(
   new URL("../../../deploy/self-host/ai/catalog.example.yaml", import.meta.url),
   "utf8",
@@ -43,8 +43,16 @@ test("refuses a route pointing at an unknown backend", () => {
 });
 
 test("refuses to start when a provider key is absent from the environment", () => {
-  assert.throws(() => parseCatalog(SHIPPED, { DEEPSEEK_API_KEY: "k" } as NodeJS.ProcessEnv),
-    /needs OPENAI_API_KEY/);
+  assert.throws(() => parseCatalog(SHIPPED, {} as NodeJS.ProcessEnv), /needs DEEPSEEK_API_KEY/);
+});
+
+// The shipped example must boot on a deployment that has configured exactly
+// one upstream. It listed a second provider once, and startup validation —
+// correctly — refused to boot for the missing key, which is how the gateway
+// failed on its first real deploy.
+test("the shipped example needs only the keys it actually lists", () => {
+  const cat = parseCatalog(SHIPPED, { DEEPSEEK_API_KEY: "k" } as NodeJS.ProcessEnv);
+  assert.deepEqual(Object.keys(cat.providers), ["deepseek"]);
 });
 
 test("refuses an unknown usage_mode", () => {
@@ -54,10 +62,10 @@ test("refuses an unknown usage_mode", () => {
 
 test("failover walks the route list by attempt", () => {
   const cat = parseCatalog(SHIPPED, ENV);
-  assert.equal(pickRoute(cat, "max", 0)!.backendId, "gpt-4o");
-  assert.equal(pickRoute(cat, "max", 1)!.backendId, "ds-v4-pro");
+  assert.equal(pickRoute(cat, "max", 0)!.backendId, "ds-v4-pro");
+  assert.equal(pickRoute(cat, "max", 1)!.backendId, "ds-v4-flash");
   // Past the end it clamps rather than throwing.
-  assert.equal(pickRoute(cat, "max", 9)!.backendId, "ds-v4-pro");
+  assert.equal(pickRoute(cat, "max", 9)!.backendId, "ds-v4-flash");
 });
 
 test("unknown public id resolves to nothing (caller turns this into 403)", () => {

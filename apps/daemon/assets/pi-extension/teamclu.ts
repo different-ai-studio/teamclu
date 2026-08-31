@@ -87,6 +87,13 @@ type ExtensionAPI = {
       ctx: ExtensionContext,
     ) => Promise<{ block: boolean; reason?: string } | undefined>,
   ): void;
+  on(
+    event: "before_agent_start",
+    handler: (
+      event: { systemPrompt?: string },
+      ctx: ExtensionContext,
+    ) => Promise<{ systemPrompt?: string } | undefined>,
+  ): void;
   registerTool(tool: {
     name: string;
     label: string;
@@ -164,6 +171,63 @@ async function resolveTeamcluSessionId(backendSessionId: string): Promise<string
     throw new Error("session_context_unavailable");
   }
   return teamcluSessionId;
+}
+
+const sessionPromptAppendByCacheKey = new Map<string, string>();
+
+function sessionPromptCacheKey(backendSessionId: string): string | undefined {
+  const generationId = process.env.TEAMCLU_HOST_GENERATION_ID?.trim();
+  const sessionId = backendSessionId.trim();
+  if (!generationId || !sessionId) return undefined;
+  return `${generationId}:${sessionId}`;
+}
+
+async function fetchSessionPromptAppend(backendSessionId: string): Promise<string | undefined> {
+  const cacheKey = sessionPromptCacheKey(backendSessionId);
+  if (cacheKey) {
+    const cached = sessionPromptAppendByCacheKey.get(cacheKey);
+    if (cached) return cached;
+  }
+
+  const baseUrl = process.env.TEAMCLU_RUNTIME_CONTEXT_URL?.trim()?.replace(/\/$/, "");
+  const token = process.env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim();
+  const generationId = process.env.TEAMCLU_HOST_GENERATION_ID?.trim();
+  const backendKind = process.env.TEAMCLU_AGENT_BACKEND?.trim();
+  const sessionId = backendSessionId.trim();
+  if (!baseUrl || !token || !generationId || !backendKind || !sessionId) {
+    return undefined;
+  }
+  try {
+    const resp = await fetch(`${baseUrl}/internal/runtime-context/session-prompt`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        backendSessionId: sessionId,
+        hostGenerationId: generationId,
+        backendKind,
+      }),
+    });
+    if (!resp.ok) {
+      return undefined;
+    }
+    const body = (await resp.json()) as {
+      appendSystemPrompt?: string;
+      rosterResolved?: boolean;
+    };
+    const append = String(body?.appendSystemPrompt ?? "").trim();
+    if (!append) {
+      return undefined;
+    }
+    if (cacheKey && body.rosterResolved === true) {
+      sessionPromptAppendByCacheKey.set(cacheKey, append);
+    }
+    return append;
+  } catch {
+    return undefined;
+  }
 }
 
 async function injectSessionIdForTool(
@@ -1160,6 +1224,16 @@ export default async function (pi: ExtensionAPI) {
   registerQuestionTool(pi, ownTools);
 
   // -- Permission gate -------------------------------------------------------
+  pi.on("before_agent_start", async (event, ctx) => {
+    const backendSessionId = backendSessionIdFromContext(ctx);
+    if (!backendSessionId) return undefined;
+    const append = await fetchSessionPromptAppend(backendSessionId);
+    if (!append) return undefined;
+    const base = String(event.systemPrompt ?? "").trim();
+    const systemPrompt = base ? `${base}\n\n${append}` : append;
+    return { systemPrompt };
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     if (ownTools.has(event.toolName)) return undefined;
 

@@ -1068,6 +1068,21 @@ test("GET /v1/sessions/:sessionId/participants returns participant list", async 
   assert.deepEqual(repo.calls[0], { method: "listSessionParticipants", sessionId: "session-1" });
 });
 
+test("GET /v1/sessions/:sessionId/roster returns participant display names", async () => {
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "GET",
+    path: "/v1/sessions/session-1/roster",
+    headers: { Authorization: "Bearer token" },
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body);
+  assert.equal(body.sessionId, "session-1");
+  assert.ok(Array.isArray(body.items));
+  assert.deepEqual(repo.calls[0], { method: "listSessionRoster", sessionId: "session-1" });
+});
+
 test("POST /v1/sessions/:sessionId/participants upserts participant", async () => {
   const repo = fakeRepo();
   const response = await handleBusinessApiRequest({
@@ -2022,6 +2037,7 @@ function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, work
     async markSessionUnread(sessionId) { calls.push({ method: "markSessionUnread", sessionId }); if (error) throw error; },
     async listAgentRuntimesForTeam(teamId) { calls.push({ method: "listAgentRuntimesForTeam", teamId }); if (error) throw error; return [{ id: "rt-1", teamId, agentId: "agent-1", sessionId: "session-1", workspaceId: null, backendType: "claude_code", status: "ready", backendSessionId: "bs-1", runtimeId: "rt12abcd", currentModel: "claude-opus-4-7", lastSeenAt: "2026-05-27T01:00:00Z", createdAt: "2026-05-27T00:00:00Z", updatedAt: "2026-05-27T01:00:00Z" }]; },
     async listSessionParticipants(sessionId) { calls.push({ method: "listSessionParticipants", sessionId }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); return { items: s?.participants ?? [] }; },
+    async listSessionRoster(sessionId) { calls.push({ method: "listSessionRoster", sessionId }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); const participants = s?.participants ?? []; return { sessionId, callerActorId: participants[0]?.actorId ?? "actor-1", title: s?.title ?? null, selfAgent: null, items: participants.map(p => ({ actorId: p.actorId, displayName: "Alice", kind: "member", isSelf: p.actorId === (participants[0]?.actorId ?? "actor-1") })) }; },
     async upsertSessionParticipant(sessionId, input) { calls.push({ method: "upsertSessionParticipant", sessionId, input }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); const existing = s?.participants?.find(p => p.actorId === input.actorId); if (existing) { existing.role = input.role ?? existing.role; return existing; } const newP = { sessionId, actorId: input.actorId, role: input.role ?? "member", joinedAt: null }; if (s) s.participants.push(newP); return newP; },
     async updateParticipantModel(sessionId, actorId, input) { calls.push({ method: "updateParticipantModel", sessionId, actorId, input }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); const p = s?.participants?.find(p => p.actorId === actorId); if (p) p.model = input.model; },
     async removeSessionParticipant(sessionId, actorId) { calls.push({ method: "removeSessionParticipant", sessionId, actorId }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); if (s?.participants) s.participants = s.participants.filter(p => p.actorId !== actorId); },

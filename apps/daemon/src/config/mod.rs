@@ -23,7 +23,8 @@ pub use daemon_config::{
     ActorConfig, AgentBackendConfig, AgentsConfig, ChannelsConfig, ClaudeAgentConfig,
     CursorAgentConfig, DaemonConfig, DiscordChannel, EmailChannel, FeishuChannel, HttpConfig,
     KookChannel, MqttConfig, PiAgentConfig, SeaTalkChannel, TeamShareConfig, TransportKind,
-    WeChatChannel, WeComChannel, BOOTSTRAP_ACTOR_NAME,
+    WeChatChannel, WeComChannel, BOOTSTRAP_ACTOR_NAME, daemon_host_label,
+    daemon_machine_hostname,
 };
 pub use member_store::{MemberStore, PendingInvite, StoredMember};
 pub use model_catalog::DeviceModelCatalog;
@@ -42,8 +43,9 @@ pub use skill_creation_policy::{
     SKILL_CREATION_POLICY_VERSION,
 };
 pub use roles_skills::{
-    is_inherent_skill, scan_roles_skills_state, team_skill_roots, ManagedSkillDto, RoleRecordDto,
-    RoleSkillLinkDto, RolesSkillsMetricsDto, RolesSkillsStateDto,
+    find_managed_skill_in_session_inventory, is_inherent_skill, scan_roles_skills_state,
+    team_skill_roots, ManagedSkillDto, RoleRecordDto, RoleSkillLinkDto, RolesSkillsMetricsDto,
+    RolesSkillsStateDto,
 };
 pub use session_store::{SessionBinding, SessionStore};
 pub use workspace_control::{

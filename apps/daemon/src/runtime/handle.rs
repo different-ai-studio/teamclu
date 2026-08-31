@@ -111,6 +111,8 @@ pub struct RuntimeHandle {
     /// Another session on the shared OpenCode host may have dropped MCP; refresh
     /// on the next Idle transition (never detach/resume while Active).
     pub remote_tools_mcp_refresh_pending: bool,
+    /// Turn-scoped native skill baseline for unsupported-directory detection.
+    pub native_skill_turn_guard: Option<crate::runtime::NativeSkillTurnGuard>,
 }
 
 impl RuntimeHandle {
@@ -165,6 +167,7 @@ impl RuntimeHandle {
             env_snapshot: None,
             env_team_id: None,
             remote_tools_mcp_refresh_pending: false,
+            native_skill_turn_guard: None,
         }
     }
 
@@ -445,6 +448,7 @@ impl RuntimeHandle {
             env_snapshot: None,
             env_team_id: None,
             remote_tools_mcp_refresh_pending: false,
+            native_skill_turn_guard: None,
         }
     }
 }

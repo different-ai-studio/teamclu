@@ -1,8 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  Copy,
-  ExternalLink,
   Loader2,
   RefreshCw,
   Save,
@@ -121,7 +119,6 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   }, [app.id, app.authMode])
 
   const status = appStatusMeta(app, deploying)
-  const deployUrl = app.publicUrl ?? app.fcEndpoint
   const showReseed = canReseed(app.provisionStatus)
   const authModeDirty = authModeDraft !== app.authMode
   const showAuthModePending = pendingRedeploy
@@ -193,26 +190,6 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
       setGrantMemberId(grantCandidates[0]?.id ?? '')
     }
   }, [grantCandidates, grantMemberId])
-
-  const handleCopyUrl = async () => {
-    if (!deployUrl) return
-    try {
-      await navigator.clipboard.writeText(deployUrl)
-      toast.success(t('apps.urlCopied', '部署地址已复制'))
-    } catch {
-      toast.error(t('apps.urlCopyFailed', 'Failed to copy deployed URL'))
-    }
-  }
-
-  const handleOpenUrl = async () => {
-    if (!deployUrl) return
-    try {
-      const { open } = await import('@tauri-apps/plugin-shell')
-      await open(deployUrl)
-    } catch {
-      window.open(deployUrl, '_blank', 'noopener,noreferrer')
-    }
-  }
 
   const handleRename = async () => {
     const trimmed = nameDraft.trim()
@@ -382,40 +359,6 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
       </div>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
-        <SectionCard title={t('apps.controlPanel.deployUrl', '部署地址')}>
-          {deployUrl ? (
-            <div className="space-y-2">
-              <p className="break-all font-mono text-[11.5px] text-ink-2">{deployUrl}</p>
-              <div className="flex flex-wrap gap-1.5">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 gap-1 rounded-[7px] text-[12px]"
-                  onClick={() => void handleCopyUrl()}
-                >
-                  <Copy className="h-3 w-3" />
-                  {t('apps.copyUrl', 'Copy deployed URL')}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 gap-1 rounded-[7px] text-[12px]"
-                  onClick={() => void handleOpenUrl()}
-                >
-                  <ExternalLink className="h-3 w-3" />
-                  {t('apps.openUrl', 'Open deployed URL')}
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <p className="text-[12.5px] text-muted-foreground">
-              {t('apps.controlPanel.noDeployUrl', '尚未部署，暂无线上地址')}
-            </p>
-          )}
-        </SectionCard>
-
         <SectionCard title={t('apps.rename', 'Rename')}>
           <div className="flex gap-1.5">
             <Input

@@ -4,6 +4,10 @@ import { buildProvisionStatements } from "../../src/lib/provisioning/app-postgre
 import { PGlite } from "@electric-sql/pglite";
 import { ensureAppSchema } from "../../src/lib/provisioning/app-postgres.js";
 import { getAppsAdminExecutor } from "../../src/lib/provisioning/app-postgres.js";
+import {
+  resolveAppConnectionString,
+  withDbHost,
+} from "../../src/lib/provisioning/app-postgres.js";
 import { appSchemaName } from "../../src/lib/provisioning/pg-name.js";
 
 test("buildProvisionStatements throws on an unsafe schema name", () => {
@@ -119,4 +123,46 @@ test("getAppsAdminExecutor throws a clear error when APPS_DB_ADMIN_URL is unset"
   } finally {
     if (prev !== undefined) process.env.APPS_DB_ADMIN_URL = prev;
   }
+});
+
+test("withDbHost rewrites host while keeping role, database, and search_path", () => {
+  const out = withDbHost(
+    "postgres://app_role:secret@db:5432/tc_org_abc?options=-c%20search_path%3Dapp_demo",
+    "postgres://postgres:pw@192.168.0.23:5432/postgres",
+  );
+  const u = new URL(out);
+  assert.equal(u.hostname, "192.168.0.23");
+  assert.equal(u.port, "5432");
+  assert.equal(u.username, "app_role");
+  assert.equal(u.pathname, "/tc_org_abc");
+  assert.match(u.search, /search_path/);
+});
+
+test("resolveAppConnectionString requires APPS_DB_APP_URL for compose-internal admin host", () => {
+  assert.throws(
+    () =>
+      resolveAppConnectionString(
+        "postgres://app_role:secret@db:5432/tc_org_abc",
+        "postgres://postgres:pw@db:5432/postgres",
+      ),
+    /APPS_DB_APP_URL is required/,
+  );
+});
+
+test("resolveAppConnectionString rewrites when APPS_DB_APP_URL is provided", () => {
+  const out = resolveAppConnectionString(
+    "postgres://app_role:secret@db:5432/tc_org_abc",
+    "postgres://postgres:pw@db:5432/postgres",
+    "postgres://postgres:pw@10.0.0.5:5432/postgres",
+  );
+  assert.match(out, /@10\.0\.0\.5:5432\/tc_org_abc/);
+});
+
+test("resolveAppConnectionString rewrites public admin host to internal app host", () => {
+  const out = resolveAppConnectionString(
+    "postgres://app_role:secret@pgm-public.example:5432/tc_org_abc",
+    "postgres://postgres:pw@pgm-public.example:5432/postgres",
+    "postgres://postgres:pw@pgm-internal.example:5432/postgres",
+  );
+  assert.match(out, /@pgm-internal\.example:5432\/tc_org_abc/);
 });

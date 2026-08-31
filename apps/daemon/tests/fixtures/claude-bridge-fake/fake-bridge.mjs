@@ -5,6 +5,8 @@
  */
 import readline from 'node:readline'
 import { randomBytes } from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 
 /** @type {Map<string, { sessionId: string, model: string }>} */
 const sessions = new Map()
@@ -13,6 +15,50 @@ const pendingPermissions = new Map()
 
 let nextSessionId = 1
 let nextPermissionId = 1
+
+function parseFrontmatterField(text, field) {
+  const match = text.match(new RegExp(`^${field}:\\s*(.+)$`, 'm'))
+  return match ? match[1].trim() : null
+}
+
+function scanProjectSkillCommands(cwd) {
+  const skillsDir = path.join(cwd, '.claude', 'skills')
+  if (!fs.existsSync(skillsDir)) return []
+  const commands = []
+  for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+    const linkPath = path.join(skillsDir, entry.name)
+    let packDir = linkPath
+    try {
+      const stat = fs.lstatSync(linkPath)
+      if (stat.isSymbolicLink()) {
+        packDir = fs.realpathSync(linkPath)
+      } else if (!stat.isDirectory()) {
+        continue
+      }
+    } catch {
+      continue
+    }
+    const skillMd = path.join(packDir, 'SKILL.md')
+    if (!fs.existsSync(skillMd)) continue
+    const text = fs.readFileSync(skillMd, 'utf8')
+    commands.push({
+      name: parseFrontmatterField(text, 'name') ?? entry.name,
+      description: parseFrontmatterField(text, 'description') ?? '',
+      inputHint: '',
+    })
+  }
+  return commands
+}
+
+function emitSlashCommandsForWorkspace(sessionKey, cwd) {
+  const commands = scanProjectSkillCommands(cwd)
+  if (commands.length === 0) return
+  emit({
+    event: 'slash_commands',
+    sessionId: sessionKey,
+    commands,
+  })
+}
 
 function emit(obj) {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
@@ -69,6 +115,8 @@ async function createSession(params, resume) {
     resume || `fake-sdk-${sessionKey}-${randomBytes(4).toString('hex')}`
   const model = params.model || 'claude-opus'
   sessions.set(sessionKey, { sessionId, model })
+  // Defer until after the daemon registers the ACP route for this sessionKey.
+  setTimeout(() => emitSlashCommandsForWorkspace(sessionKey, params.cwd), 50)
   if (params.initialPrompt) void runTurn(sessionKey, params.initialPrompt)
   return { sessionKey, sessionId, model }
 }

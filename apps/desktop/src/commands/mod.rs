@@ -66,6 +66,8 @@ pub fn prefers_zh_locale() -> bool {
 
 /// The short application name, injected at compile time via `build.rs`.
 pub const APP_SHORT_NAME: &str = env!("APP_SHORT_NAME");
+/// User-facing product name (`app.displayName` / `app.name` from build config).
+pub const APP_DISPLAY_NAME: &str = env!("APP_DISPLAY_NAME");
 /// Deep-link scheme for this build (`app.scheme`, default `teamclu`).
 /// Independent of `APP_SHORT_NAME` — betly is short name `teamclaw` on scheme
 /// `teamclu`, copilot361 is `copilot361` on both.
@@ -153,6 +155,7 @@ pub fn with_amuxd_brand_env(
 ) -> tauri_plugin_shell::process::Command {
     command
         .env(teamclu_runtime_env::BRAND_SHORT_NAME_ENV, APP_SHORT_NAME)
+        .env(teamclu_runtime_env::APP_DISPLAY_NAME_ENV, APP_DISPLAY_NAME)
         .env(
             teamclu_runtime_env::AMUXD_HOME_ENV,
             amuxd_home_dir().to_string_lossy().as_ref(),

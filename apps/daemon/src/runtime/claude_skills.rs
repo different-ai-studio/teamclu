@@ -50,6 +50,11 @@ fn claude_bridge_points_to_canonical(
     symlink_points_to(&link, canonical_pack)
 }
 
+/// Whether `.claude/skills/<slug>` is a team-bridge symlink (daemon-managed).
+pub fn is_claude_team_bridge_symlink(link: &Path, workspace_path: &Path) -> bool {
+    is_team_managed_symlink(link, &team_skill_roots(workspace_path))
+}
+
 /// After a managed personal skill mutation, refresh Claude bridge links and report
 /// whether a workspace-local pack still wins for Claude Code.
 pub fn reconcile_after_managed_mutation(

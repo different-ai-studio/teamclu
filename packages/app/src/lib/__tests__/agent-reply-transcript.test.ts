@@ -25,6 +25,11 @@ describe("agent reply transcript", () => {
         "[Turn completed with no final reply] The agent finished this turn",
       ),
     ).toBe(true);
+    expect(
+      isAgentFacingStatusNotice(
+        "[Skill created in unsupported directory] A skill pack was written",
+      ),
+    ).toBe(true);
     const pending = [
       createMessage(MessageSchema, {
         messageId: "nfr-1",

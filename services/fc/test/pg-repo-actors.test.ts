@@ -423,17 +423,46 @@ test("listActorDirectoryByIds scopes to the given team", async () => {
   assert.equal(items[0].id, a.id);
 });
 
-test("listActorDirectoryByIds hides other members' personal agents", async () => {
+test("listActorDirectoryByIds returns explicitly requested personal agents", async () => {
   const { db } = await makeTestDb();
   const team = await seedTeam(db);
   const owner = await seedMemberActor(db, team.id, { userId: "owner-u" });
   const other = await seedMemberActor(db, team.id, { userId: "other-u" });
   const personalAgent = await seedAgentActor(db, team.id, owner.id, "private");
-  // caller = other member, should NOT see owner's private agent
+  // by-ids is a direct id lookup (supabase-repo parity): if the caller already
+  // knows an actor id — e.g. from session participants — return its directory row.
   const repo = createPgBusinessRepository({ db, userId: "other-u" });
 
   const items = await repo.listActorDirectoryByIds([other.id, personalAgent.id], team.id);
   const ids = items.map((i: any) => i.id);
   assert.ok(ids.includes(other.id));
-  assert.ok(!ids.includes(personalAgent.id), "private agent of another owner must be hidden");
+  assert.ok(ids.includes(personalAgent.id), "explicit id lookup must return the row");
+  const personal = items.find((i: any) => i.id === personalAgent.id);
+  assert.equal(personal?.displayName, "Bot");
+});
+
+test("listActorDirectoryByIds returns a personal agent without callerActorId", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const owner = await seedMemberActor(db, team.id, { userId: "owner-u" });
+  const personalAgent = await seedAgentActor(db, team.id, owner.id, "private");
+  const repo = createPgBusinessRepository({ db });
+
+  const items = await repo.listActorDirectoryByIds([personalAgent.id], team.id);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].id, personalAgent.id);
+  assert.equal(items[0].displayName, "Bot");
+});
+
+test("listActorDirectoryByIds returns a personal agent looking up itself", async () => {
+  const { db } = await makeTestDb();
+  const team = await seedTeam(db);
+  const owner = await seedMemberActor(db, team.id, { userId: "owner-u" });
+  const personalAgent = await seedAgentActor(db, team.id, owner.id, "private");
+  const repo = createPgBusinessRepository({ db, callerActorId: personalAgent.id });
+
+  const items = await repo.listActorDirectoryByIds([personalAgent.id], team.id);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].id, personalAgent.id);
+  assert.equal(items[0].displayName, "Bot");
 });

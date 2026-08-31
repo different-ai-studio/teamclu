@@ -745,6 +745,18 @@ pub fn scan_roles_skills_state(
     })
 }
 
+/// OpenCode/gateway session inventory boundary — the merged skill list served by
+/// `agent_handle::list_skills`, not a re-parse of `opencode.json`.
+pub fn find_managed_skill_in_session_inventory(
+    workspace_path: &Path,
+    slug: &str,
+) -> Result<Option<ManagedSkillDto>, WorkspaceControlError> {
+    Ok(scan_roles_skills_state(workspace_path)?
+        .skills
+        .into_iter()
+        .find(|skill| skill.filename == slug))
+}
+
 // ── Write API ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]

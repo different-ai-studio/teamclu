@@ -132,12 +132,10 @@ describe('AppControlPanel', () => {
     storeMocks.deleteApp.mockResolvedValue(true)
   })
 
-  it('renders status and deploy URL', async () => {
+  it('renders status without deploy URL card', async () => {
     render(<AppControlPanel app={baseApp} />)
     expect(screen.getByText('Demo App')).toBeTruthy()
-    await waitFor(() => {
-      expect(screen.getByText('https://demo.apps.example.com')).toBeTruthy()
-    })
+    expect(screen.queryByText('https://demo.apps.example.com')).toBeNull()
   })
 
   it('grants access to a member', async () => {

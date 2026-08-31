@@ -186,6 +186,8 @@ pub fn classify_change_path(
         {
             Some(RefreshChangeKind::EnvVars)
         } else if path.starts_with(workspace.workspace_path.join(".claude/skills"))
+            || path.starts_with(workspace.workspace_path.join(".opencode/skills"))
+            || path.starts_with(workspace.workspace_path.join(".pi/skills"))
             || path.starts_with(workspace.workspace_path.join(".agents/skills"))
             || is_team_skills_path(path, &workspace.workspace_path)
             || is_global_skill_path
@@ -238,6 +240,14 @@ fn watch_roots(workspaces: &[WatchedWorkspace], home: Option<&Path>) -> Vec<Watc
         }
         roots.push(WatchRoot {
             path: workspace.workspace_path.join(".claude/skills"),
+            recursive: true,
+        });
+        roots.push(WatchRoot {
+            path: workspace.workspace_path.join(".opencode/skills"),
+            recursive: true,
+        });
+        roots.push(WatchRoot {
+            path: workspace.workspace_path.join(".pi/skills"),
             recursive: true,
         });
         roots.push(WatchRoot {

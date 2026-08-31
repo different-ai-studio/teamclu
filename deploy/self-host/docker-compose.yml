@@ -243,6 +243,13 @@ services:
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     volumes:
+      # ai/catalog.yaml is PER DEPLOYMENT and deliberately not in git; the
+      # deploy creates it from ai/catalog.example.yaml when absent.
+      #
+      # It has to exist before this mount resolves: Docker does not fail on a
+      # missing bind source, it silently creates a DIRECTORY there, and the
+      # gateway then dies with `EISDIR` — an error that names nothing about the
+      # actual cause.
       - ./ai/catalog.yaml:/app/catalog.yaml:ro
     healthcheck:
       test:
@@ -403,6 +410,16 @@ services:
       # DB. Blank → data_app finalize fails naming APPS_DB_ADMIN_URL; static
       # apps still deploy.
       APPS_DB_ADMIN_URL: "${APPS_DB_ADMIN_URL:-postgres://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-db}:${POSTGRES_PORT:-5432}/postgres}"
+      # Host reachable from external Function Compute for injected DATABASE_URL.
+      # APPS_DB_ADMIN_URL often names compose-internal `db`; deployed data_app
+      # functions run on Alibaba FC and need a routable host here (VPC private IP,
+      # RDS, etc.). Blank with an internal admin URL → finalize fails loudly.
+      APPS_DB_APP_URL: "${APPS_DB_APP_URL:-}"
+      # VPC for deployed data_app functions. Required when APPS_DB_APP_URL names
+      # an internal/RDS host — FC must join the same VPC to reach Postgres.
+      APPS_FC_VPC_ID: "${APPS_FC_VPC_ID:-}"
+      APPS_FC_VSWITCH_ID: "${APPS_FC_VSWITCH_ID:-}"
+      APPS_FC_SECURITY_GROUP_ID: "${APPS_FC_SECURITY_GROUP_ID:-}"
       # The FC 3.0 data-plane host is account-scoped
       # (<accountId>.<region>.fc.aliyuncs.com) and is NOT the OSS ENDPOINT.
       # Set APPS_FC_ENDPOINT, or ALIYUN_ACCOUNT_ID to have it composed.

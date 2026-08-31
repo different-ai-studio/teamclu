@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeFcOps, fcEndpoint, accountIdFromRoleArn, NODE_BIN, nodejsLayerArn } from "../../src/lib/provisioning/fc-client.js";
+import { makeFcOps, fcEndpoint, accountIdFromRoleArn, NODE_BIN, nodejsLayerArn, readAppsFcVpcConfig } from "../../src/lib/provisioning/fc-client.js";
 
 function fakeClient(overrides: Record<string, any> = {}) {
   const calls: any[] = [];
@@ -91,6 +91,56 @@ test("ensureFunction re-sends environmentVariables on the update path", async ()
   const upd = calls.find((c) => c[0] === "updateFunction");
   assert.ok(upd, "updateFunction was called");
   assert.equal(upd[2].body.environmentVariables.DATABASE_URL, "postgres://app_x:new-pw@h/teamclu_apps");
+});
+
+test("ensureFunction attaches VPC config on create and update when configured", async () => {
+  const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
+  const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
+  const vpc = { vpcId: "vpc-apps", vSwitchIds: ["vsw-apps"], securityGroupId: "sg-apps" };
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", vpc });
+  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
+  const create = calls.find((c) => c[0] === "createFunction")[1].body;
+  assert.equal(create.vpcConfig.vpcId, "vpc-apps");
+  assert.deepEqual(create.vpcConfig.vSwitchIds, ["vsw-apps"]);
+  assert.equal(create.vpcConfig.securityGroupId, "sg-apps");
+  assert.equal(create.internetAccess, true);
+
+  const { client: existing, calls: updateCalls } = fakeClient();
+  const ops2 = makeFcOps(existing as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", vpc });
+  await ops2.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
+  const upd = updateCalls.find((c) => c[0] === "updateFunction")[2].body;
+  assert.equal(upd.vpcConfig.vpcId, "vpc-apps");
+});
+
+test("readAppsFcVpcConfig requires all three variables together", () => {
+  const prev = {
+    vpc: process.env.APPS_FC_VPC_ID,
+    vsw: process.env.APPS_FC_VSWITCH_ID,
+    sg: process.env.APPS_FC_SECURITY_GROUP_ID,
+  };
+  delete process.env.APPS_FC_VPC_ID;
+  delete process.env.APPS_FC_VSWITCH_ID;
+  delete process.env.APPS_FC_SECURITY_GROUP_ID;
+  try {
+    assert.equal(readAppsFcVpcConfig(), undefined);
+    process.env.APPS_FC_VPC_ID = "vpc-1";
+    assert.throws(() => readAppsFcVpcConfig(), /must all be set together/);
+    process.env.APPS_FC_VSWITCH_ID = "vsw-1";
+    process.env.APPS_FC_SECURITY_GROUP_ID = "sg-1";
+    assert.deepEqual(readAppsFcVpcConfig(), {
+      vpcId: "vpc-1",
+      vSwitchIds: ["vsw-1"],
+      securityGroupId: "sg-1",
+    });
+  } finally {
+    for (const [k, v] of [
+      ["APPS_FC_VPC_ID", prev.vpc],
+      ["APPS_FC_VSWITCH_ID", prev.vsw],
+      ["APPS_FC_SECURITY_GROUP_ID", prev.sg],
+    ] as const) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
 });
 
 test("accountIdFromRoleArn reads the account out of a RAM role ARN", () => {

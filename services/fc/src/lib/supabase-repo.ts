@@ -2697,6 +2697,95 @@ export function createSupabaseBusinessRepository(options) {
       return { items };
     },
 
+    async listSessionRoster(sessionId) {
+      const { data: sessionRow, error: sessionErr } = await supabase
+        .from("sessions")
+        .select("id, team_id, title")
+        .eq("id", sessionId)
+        .maybeSingle();
+      if (sessionErr) throw sessionErr;
+      if (!sessionRow) throw new ApiError(404, "not_found", "session not found");
+
+      const caller = await this.resolveCallerActorForTeam(sessionRow.team_id);
+      const callerActorId = caller?.id ?? null;
+      if (!callerActorId) {
+        throw new ApiError(401, "missing_identity", "authentication required");
+      }
+
+      const { data: seats, error: seatsErr } = await supabase
+        .from("session_participants")
+        .select("session_id, actor_id")
+        .eq("session_id", sessionId);
+      if (seatsErr) throw seatsErr;
+      const participantRows = seats ?? [];
+      if (!participantRows.some((seat) => seat.actor_id === callerActorId)) {
+        throw new ApiError(403, "forbidden", "not a participant in this session");
+      }
+
+      const actorIds = participantRows.map((seat) => seat.actor_id).filter(Boolean);
+      let actorsById = new Map();
+      if (actorIds.length > 0) {
+        const actorRows = await chunkedIn(actorIds, async (chunk) => {
+          const { data, error } = await supabase
+            .from("actors")
+            .select("id, display_name, actor_type")
+            .in("id", chunk);
+          if (error) throw error;
+          return data ?? [];
+        });
+        actorsById = new Map(actorRows.map((row) => [row.id, row]));
+      }
+
+      let selfAgent = null;
+      const callerActor = actorsById.get(callerActorId);
+      if (callerActor?.actor_type === "agent") {
+        const { data: agentRow, error: agentErr } = await supabase
+          .from("agents")
+          .select("visibility, owner_member_id")
+          .eq("id", callerActorId)
+          .maybeSingle();
+        if (agentErr) throw agentErr;
+        if (agentRow) {
+          let ownerDisplayName = null;
+          if (agentRow.owner_member_id) {
+            const ownerFromRoster = actorsById.get(agentRow.owner_member_id);
+            if (ownerFromRoster?.display_name) {
+              ownerDisplayName = ownerFromRoster.display_name;
+            } else {
+              const { data: ownerRow, error: ownerErr } = await supabase
+                .from("actors")
+                .select("display_name")
+                .eq("id", agentRow.owner_member_id)
+                .maybeSingle();
+              if (ownerErr) throw ownerErr;
+              ownerDisplayName = ownerRow?.display_name ?? null;
+            }
+          }
+          selfAgent = {
+            visibility: agentRow.visibility ?? null,
+            ownerMemberId: agentRow.owner_member_id ?? null,
+            ownerDisplayName,
+          };
+        }
+      }
+
+      return {
+        sessionId,
+        callerActorId,
+        title: sessionRow.title ?? null,
+        selfAgent,
+        items: participantRows.map((seat) => {
+          const actor = actorsById.get(seat.actor_id);
+          return {
+            actorId: seat.actor_id,
+            displayName: actor?.display_name ?? null,
+            kind: actor?.actor_type ?? null,
+            isSelf: seat.actor_id === callerActorId,
+          };
+        }),
+      };
+    },
+
     async upsertSessionParticipant(sessionId, input) {
       const row: any = {
         session_id: sessionId,
