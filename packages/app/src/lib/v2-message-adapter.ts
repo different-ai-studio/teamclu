@@ -55,6 +55,10 @@ export function adaptTeamcluMessageToSdk(m: TeamcluMessage): SdkMessage {
   const turnId = m.turnId?.trim() || undefined;
   const interrupted = isInterruptedReply(m);
   const noFinalReply = isNoFinalReply(m);
+  const unsupportedNativeSkill = isUnsupportedNativeSkillReply(m);
+  const nativeSkillViolations = unsupportedNativeSkill
+    ? parseNativeSkillViolations(m)
+    : undefined;
   const displayContent = displayContentForReply(m);
   return {
     id: m.messageId,
@@ -72,7 +76,10 @@ export function adaptTeamcluMessageToSdk(m: TeamcluMessage): SdkMessage {
       ? "interrupted"
       : noFinalReply
         ? "no_final_reply"
-        : undefined,
+        : unsupportedNativeSkill
+          ? "skill_created_in_unsupported_directory"
+          : undefined,
+    nativeSkillViolations,
     parts: displayContent
       ? [
           {
@@ -105,6 +112,25 @@ function isNoFinalReply(m: TeamcluMessage): boolean {
   return isAgentFacingNoFinalReplyNotice(m.content ?? "");
 }
 
+function isUnsupportedNativeSkillReply(m: TeamcluMessage): boolean {
+  return parseMetadata(m).turn_status === "skill_created_in_unsupported_directory";
+}
+
+function parseNativeSkillViolations(
+  m: TeamcluMessage,
+): { slug: string; root: string; path?: string }[] {
+  const raw = parseMetadata(m).violations;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((v): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v))
+    .map((v) => ({
+      slug: typeof v.slug === "string" ? v.slug : "",
+      root: typeof v.root === "string" ? v.root : "",
+      path: typeof v.path === "string" ? v.path : undefined,
+    }))
+    .filter((v) => v.slug.length > 0 && v.root.length > 0);
+}
+
 /** Daemon English instruction when there was no prose to keep. */
 function isAgentFacingInterruptNotice(content: string): boolean {
   return content.trimStart().startsWith("[Turn interrupted by user]");
@@ -114,10 +140,18 @@ function isAgentFacingNoFinalReplyNotice(content: string): boolean {
   return content.trimStart().startsWith("[Turn completed with no final reply]");
 }
 
+function isAgentFacingUnsupportedNativeSkillNotice(content: string): boolean {
+  return content.trimStart().startsWith("[Skill created in unsupported directory]");
+}
+
 /** User-visible body for an AGENT_REPLY (hide agent-facing status notices). */
 function displayContentForReply(m: TeamcluMessage): string {
   const raw = m.content ?? "";
-  if (isAgentFacingInterruptNotice(raw) || isAgentFacingNoFinalReplyNotice(raw)) {
+  if (
+    isAgentFacingInterruptNotice(raw) ||
+    isAgentFacingNoFinalReplyNotice(raw) ||
+    isAgentFacingUnsupportedNativeSkillNotice(raw)
+  ) {
     return "";
   }
   return raw;
@@ -125,9 +159,28 @@ function displayContentForReply(m: TeamcluMessage): string {
 
 function turnStatusFromReplies(
   replies: TeamcluMessage[],
-): "interrupted" | "no_final_reply" | undefined {
+):
+  | "interrupted"
+  | "no_final_reply"
+  | "skill_created_in_unsupported_directory"
+  | undefined {
   if (replies.some(isInterruptedReply)) return "interrupted";
+  if (replies.some(isUnsupportedNativeSkillReply)) {
+    return "skill_created_in_unsupported_directory";
+  }
   if (replies.some(isNoFinalReply)) return "no_final_reply";
+  return undefined;
+}
+
+function nativeSkillViolationsFromReplies(
+  replies: TeamcluMessage[],
+): { slug: string; root: string; path?: string }[] | undefined {
+  for (const reply of replies) {
+    if (isUnsupportedNativeSkillReply(reply)) {
+      const parsed = parseNativeSkillViolations(reply);
+      if (parsed.length > 0) return parsed;
+    }
+  }
   return undefined;
 }
 
@@ -421,7 +474,7 @@ export function buildFullTurnSdkMessageFromGroup(group: TeamcluMessage[]): SdkMe
     uniqueReplyIds.add(reply.messageId);
   }
   const turnStatus = turnStatusFromReplies(uniqueReplies);
-  // Keep generated prose on interrupted replies; only drop the English notice.
+  const nativeSkillViolations = nativeSkillViolationsFromReplies(uniqueReplies);
   const replyText = uniqueReplies
     .map((r) => displayContentForReply(r))
     .filter((text) => text.trim().length > 0)
@@ -467,6 +520,7 @@ export function buildFullTurnSdkMessageFromGroup(group: TeamcluMessage[]): SdkMe
       replyToMessageId: firstNonEmptyReplyToMessageId(group),
       turnId: group[0]?.turnId?.trim() || undefined,
       turnStatus,
+      nativeSkillViolations,
       timestamp: new Date(Number(group[0].createdAt) * 1000),
     };
   }
@@ -502,6 +556,7 @@ export function buildFullTurnSdkMessageFromGroup(group: TeamcluMessage[]): SdkMe
         replyToMessageId: firstNonEmptyReplyToMessageId(group),
         turnId: group[0]?.turnId?.trim() || undefined,
         turnStatus,
+        nativeSkillViolations,
         timestamp: new Date(Number(group[0].createdAt) * 1000),
       };
     }
@@ -567,6 +622,7 @@ export function buildFullTurnSdkMessageFromGroup(group: TeamcluMessage[]): SdkMe
     replyToMessageId: firstNonEmptyReplyToMessageId(group),
     turnId: group[0]?.turnId?.trim() || undefined,
     turnStatus,
+    nativeSkillViolations,
     timestamp: new Date(Number(group[0].createdAt) * 1000),
   };
 }
@@ -695,6 +751,7 @@ function buildDeferredProcessTurnSdkMessage(group: TeamcluMessage[]): SdkMessage
   }
 
   const turnStatus = turnStatusFromReplies(uniqueReplies);
+  const nativeSkillViolations = nativeSkillViolationsFromReplies(uniqueReplies);
   const finalParts = extractFinalTextPartsForDeferredTurn(group);
   const finalText = finalParts
     .map((p) => p.text || p.content || "")
@@ -723,6 +780,7 @@ function buildDeferredProcessTurnSdkMessage(group: TeamcluMessage[]): SdkMessage
     replyToMessageId: firstNonEmptyReplyToMessageId(group),
     turnId,
     turnStatus,
+    nativeSkillViolations,
     timestamp: new Date(Number(group[0].createdAt) * 1000),
     processDeferred: true,
     processMeta,

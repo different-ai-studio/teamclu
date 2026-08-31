@@ -857,6 +857,12 @@
       "statusLabel": "no final reply",
       "description": "No additional written reply was produced."
     },
+    "unsupportedNativeSkill": {
+      "failedTitle": "Skill not created",
+      "statusLabel": "unsupported directory",
+      "description": "A skill was written under a native agent directory instead of through manage_skills. Remove the native copy and recreate with manage_skills action=create.",
+      "violationLine": "{{slug}} in {{root}}"
+    },
     "acpDebug": {
       "title": "ACP stream debug",
       "lineCount": "{{count}} line",

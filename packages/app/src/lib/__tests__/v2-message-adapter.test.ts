@@ -782,6 +782,28 @@ describe("adaptTeamcluMessages", () => {
     expect(result?.[0]?.parts ?? []).toEqual([]);
   });
 
+  it("maps unsupported native skill AGENT_REPLY metadata to turnStatus and violations", () => {
+    const result = adaptTeamcluMessages([
+      tmsg({
+        kind: MessageKind.AGENT_REPLY,
+        content:
+          "[Skill created in unsupported directory] A skill pack was written under a native agent directory.",
+        turnId: "t-native",
+        metadataJson: JSON.stringify({
+          turn_status: "skill_created_in_unsupported_directory",
+          error_code: "skill_created_in_unsupported_directory",
+          violations: [{ slug: "demo", root: ".opencode/skills", path: "/ws/.opencode/skills/demo" }],
+        }),
+      }),
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result?.[0]?.turnStatus).toBe("skill_created_in_unsupported_directory");
+    expect(result?.[0]?.content).toBe("");
+    expect(result?.[0]?.nativeSkillViolations).toEqual([
+      { slug: "demo", root: ".opencode/skills", path: "/ws/.opencode/skills/demo" },
+    ]);
+  });
+
   it("maps no_final_reply AGENT_REPLY metadata to turnStatus and hides agent-facing body", () => {
     const result = adaptTeamcluMessages([
       tmsg({
