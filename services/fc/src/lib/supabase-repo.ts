@@ -7,6 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { createClient as defaultCreateClient } from "@supabase/supabase-js";
 import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
+import { aiGateway } from "./ai-gateway.js";
 import { ApiError } from "./http-utils.js";
 import { DEFAULT_LIST_LIMIT, DEFAULT_MESSAGE_LIST_LIMIT } from "./routing-utils.js";
 
@@ -1118,6 +1119,64 @@ export function createSupabaseBusinessRepository(options) {
     // `tc-${teamId}`. If the team has never provisioned LiteLLM, throws 409
     // litellm_not_provisioned rather than implicitly setting it up — owner
     // intent must be explicit (call /litellm/setup first).
+
+    // ── team credits ────────────────────────────────────────────────────────
+    // Every read and write goes through the AI gateway rather than these
+    // tables directly: it is the ledger's only writer (design §4.9.1), and
+    // routing reads the same way keeps period boundaries and shapes identical
+    // on both sides of the billing screen.
+    //
+    // Permission split per §12.6: balance and usage are visible to every
+    // member — an exhausted wallet stops their work, so they must be able to
+    // see why — while the ledger and every mutation are owner-only.
+    async getTeamCredits(teamId: string) {
+      await requireCallerTeamMember(teamId);
+      const [summary, usage] = await Promise.all([
+        aiGateway.creditsSummary(teamId),
+        aiGateway.usage(teamId, { range: "month" }),
+      ]);
+      return {
+        teamId,
+        balanceCredits: summary.balanceCredits ?? 0,
+        period: { range: usage.range, startUtc: usage.startUtc, endUtc: usage.endUtc },
+        usedCredits: usage.summary?.credits ?? 0,
+      };
+    },
+    async getCreditUsage(teamId: string, opts: { range?: string; date?: string } = {}) {
+      await requireCallerTeamMember(teamId);
+      return aiGateway.usage(teamId, opts);
+    },
+    async getCreditLedger(teamId: string, opts: { limit?: number } = {}) {
+      await requireCallerTeamOwner(teamId);
+      return aiGateway.ledger(teamId, opts.limit);
+    },
+    async topUpCredits(teamId: string, input: any) {
+      await requireCallerTeamOwner(teamId);
+      const amount = Number(input?.amountCredits);
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        throw new ApiError(400, "invalid_request", "amountCredits must be a positive integer");
+      }
+      // Required rather than generated here: an idempotency key the server
+      // invents is a new key on every retry, which defeats the point.
+      if (!input?.idempotencyKey) {
+        throw new ApiError(400, "invalid_request", "idempotencyKey is required");
+      }
+      return aiGateway.topUp(teamId, {
+        amountCredits: amount,
+        kind: input.kind ?? "top_up",
+        idempotencyKey: input.idempotencyKey,
+        note: input.note ?? null,
+      });
+    },
+    async getMemberQuotas(teamId: string) {
+      await requireCallerTeamMember(teamId);
+      return aiGateway.quotas(teamId);
+    },
+    async setMemberQuotas(teamId: string, input: any) {
+      await requireCallerTeamOwner(teamId);
+      return aiGateway.setQuotas(teamId, input ?? {});
+    },
+
     async setLiteLlmBudget(teamId, { maxBudget }: { maxBudget?: unknown } = {}) {
       await requireCallerTeamOwner(teamId);
 

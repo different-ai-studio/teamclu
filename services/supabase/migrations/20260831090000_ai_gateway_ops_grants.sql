@@ -46,3 +46,11 @@ grant execute on function amux.ai_gateway_teams_missing_signup_grant() to ai_gat
 -- grant was select+insert. Enforcing the 13-month retention window is also the
 -- gateway's job, and that needs delete.
 grant delete on amux.ai_usage_logs to ai_gateway;
+
+-- ── 3. quota administration ─────────────────────────────────────────────────
+-- The original grant gave the gateway read-only access to these two, on the
+-- assumption that limits are set elsewhere. They are set through the gateway:
+-- FC checks that the caller owns the team and then calls the internal API, so
+-- the gateway stays the only writer to the credits schema.
+grant insert, update, delete on amux.member_credit_quota to ai_gateway;
+grant insert, update on amux.team_credit_settings to ai_gateway;

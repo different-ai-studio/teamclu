@@ -5,6 +5,7 @@ import { pickRoute } from "./catalog.js";
 import { TokenCache, bearer } from "./auth.js";
 import { resolveActor, recordUsage, getBalance, type Sql } from "./db.js";
 import { computeCredits, prepareUpstream, readUsage, teeSseUsage } from "./proxy.js";
+import { creditLedger, usageReport, type UsageRange } from "./report.js";
 import {
   backfillSignupGrants,
   pruneUsage,
@@ -27,6 +28,10 @@ export type Deps = {
 
 const err = (code: string, message: string, status: number) =>
   ({ error: { code, message } }) as const;
+
+const RANGES = new Set(["day", "week", "month", "year"]);
+const parseRange = (v: string | undefined): UsageRange =>
+  (RANGES.has(v ?? "") ? v : "month") as UsageRange;
 
 /**
  * Output ceiling to size a hold with when the request names none. Takes the
@@ -90,6 +95,13 @@ export function createApp(deps: Deps) {
         },
       })),
     });
+  });
+
+  app.get("/v1/teams/:teamId/credits/usage", async (c) => {
+    const a = await authed(c);
+    if ("error" in a) return a.error;
+    const anchor = c.req.query("date") ? new Date(`${c.req.query("date")}T00:00:00+08:00`) : undefined;
+    return c.json(await usageReport(sql, a.teamId, parseRange(c.req.query("range")), anchor));
   });
 
   app.get("/v1/teams/:teamId/credits/balance", async (c) => {
@@ -331,6 +343,72 @@ export function createApp(deps: Deps) {
       return c.json(err("invalid_request", "amountCredits must be a positive integer", 400), 400);
     }
     return c.json(await backfillSignupGrants(sql, amount));
+  });
+
+  internal.get("/teams/:teamId/credits/usage", async (c) => {
+    const anchor = c.req.query("date") ? new Date(`${c.req.query("date")}T00:00:00+08:00`) : undefined;
+    return c.json(await usageReport(sql, c.req.param("teamId"), parseRange(c.req.query("range")), anchor));
+  });
+
+  // Top-up history. FC has already checked that the caller owns the team —
+  // the internal surface is not where membership is decided.
+  internal.get("/teams/:teamId/credits/ledger", async (c) =>
+    c.json({ items: await creditLedger(sql, c.req.param("teamId"), Number(c.req.query("limit") ?? 50)) }),
+  );
+
+  internal.get("/teams/:teamId/quotas", async (c) => {
+    const rows = await sql<any[]>`
+      select actor_id, limit_credits::text as limit_credits
+        from amux.member_credit_quota where team_id = ${c.req.param("teamId")}::uuid`;
+    const [settings] = await sql<any[]>`
+      select period, default_limit_credits::text as default_limit_credits, low_balance_credits::text as low_balance_credits
+        from amux.team_credit_settings where team_id = ${c.req.param("teamId")}::uuid`;
+    return c.json({
+      period: settings?.period ?? "month",
+      defaultLimitCredits: settings?.default_limit_credits === undefined || settings?.default_limit_credits === null
+        ? null : Number(settings.default_limit_credits),
+      lowBalanceCredits: settings?.low_balance_credits === undefined || settings?.low_balance_credits === null
+        ? null : Number(settings.low_balance_credits),
+      members: rows.map((r) => ({
+        actorId: r.actor_id,
+        limitCredits: r.limit_credits === null ? null : Number(r.limit_credits),
+      })),
+    });
+  });
+
+  internal.put("/teams/:teamId/quotas", async (c) => {
+    const teamId = c.req.param("teamId");
+    const body = (await c.req.json().catch(() => null)) as {
+      period?: string;
+      defaultLimitCredits?: number | null;
+      lowBalanceCredits?: number | null;
+      members?: Array<{ actorId: string; limitCredits: number | null }>;
+    } | null;
+    if (body?.period && body.period !== "week" && body.period !== "month") {
+      return c.json(err("invalid_request", 'period must be "week" or "month"', 400), 400);
+    }
+    await sql.begin(async (tx) => {
+      if (body?.period || body?.defaultLimitCredits !== undefined || body?.lowBalanceCredits !== undefined) {
+        await tx`
+          insert into amux.team_credit_settings
+            (team_id, period, default_limit_credits, low_balance_credits)
+          values (${teamId}::uuid, ${body?.period ?? "month"},
+                  ${body?.defaultLimitCredits ?? null}, ${body?.lowBalanceCredits ?? null})
+          on conflict (team_id) do update set
+            period = coalesce(${body?.period ?? null}, amux.team_credit_settings.period),
+            default_limit_credits = ${body?.defaultLimitCredits ?? null},
+            low_balance_credits = ${body?.lowBalanceCredits ?? null},
+            updated_at = now()`;
+      }
+      for (const m of body?.members ?? []) {
+        await tx`
+          insert into amux.member_credit_quota (team_id, actor_id, limit_credits)
+          values (${teamId}::uuid, ${m.actorId}::uuid, ${m.limitCredits})
+          on conflict (team_id, actor_id) do update
+            set limit_credits = ${m.limitCredits}, updated_at = now()`;
+      }
+    });
+    return c.json({ ok: true });
   });
 
   // On-demand audit; also runs on a timer (see server.ts).

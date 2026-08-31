@@ -2604,6 +2604,163 @@ paths:
         "204": { description: Deleted. }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/credits:
+    get:
+      operationId: getTeamCredits
+      tags: [teams]
+      summary: Team credit balance and current-period spend
+      description: |
+        Visible to every team member: an exhausted balance stops their work, so
+        they need to be able to see why. The ledger and every mutation are
+        owner-only — see `/credits/ledger` and `/credits/top-up`.
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+      responses:
+        '200':
+          description: Balance plus the current period's usage
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TeamCredits' }
+        '403': { description: Not a member of this team }
+        '503': { description: ai_gateway_unavailable — the gateway is not configured }
+
+  /v1/teams/{teamId}/credits/usage:
+    get:
+      operationId: getCreditUsage
+      tags: [teams]
+      summary: Token and credit usage, grouped by tier and by member
+      description: |
+        Periods are anchored to Asia/Shanghai, the same boundaries the gateway
+        uses to enforce member quotas — a report on a different calendar would
+        show "900 of 1000 used" next to a refusal.
+
+        Grouped by the PUBLIC tier (`default` / `pro` / `max`), never by the
+        upstream model the request actually landed on.
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+        - name: range
+          in: query
+          schema: { type: string, enum: [day, week, month, year], default: month }
+        - name: date
+          in: query
+          description: A yyyy-mm-dd inside the period to report on. Defaults to now.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Usage report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreditUsageReport' }
+        '403': { description: Not a member of this team }
+
+  /v1/teams/{teamId}/credits/ledger:
+    get:
+      operationId: getCreditLedger
+      tags: [teams]
+      summary: Top-up history (owner only)
+      description: |
+        Top-ups, grants, adjustments and refunds. Deliberately excludes `usage`,
+        which is one row per request and belongs in the usage report.
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        '200':
+          description: Ledger entries, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/CreditLedgerEntry' }
+        '403': { description: Only team owners may read the ledger }
+
+  /v1/teams/{teamId}/credits/top-up:
+    post:
+      operationId: topUpCredits
+      tags: [teams]
+      summary: Add credits to a team (owner only)
+      description: |
+        `idempotencyKey` is required, not optional. A retried delivery must not
+        credit twice, and the server cannot invent the key — one generated per
+        request is a new key on every retry, which defeats the purpose.
+
+        Returns 200 for a duplicate as well: from the caller's side the credit
+        is applied either way, and `applied` says which happened.
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amountCredits, idempotencyKey]
+              properties:
+                amountCredits: { type: integer, minimum: 1 }
+                idempotencyKey: { type: string }
+                kind:
+                  type: string
+                  enum: [top_up, grant, adjustment, refund]
+                  default: top_up
+                note: { type: ["string", "null"] }
+      responses:
+        '200':
+          description: Balance after the operation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [teamId, applied, balanceCredits]
+                properties:
+                  teamId: { type: string }
+                  applied:
+                    type: boolean
+                    description: false when this idempotencyKey was already recorded
+                  balanceCredits: { type: integer }
+        '403': { description: Only team owners may top up }
+
+  /v1/teams/{teamId}/quotas:
+    get:
+      operationId: getMemberQuotas
+      tags: [teams]
+      summary: Period and per-member credit limits
+      description: |
+        `period` is TEAM-level, not per-member: members on different periods
+        would make "used this period" incomparable across the roster.
+
+        A member with no entry falls back to `defaultLimitCredits`. An actor of
+        type `agent` with no entry is unlimited — cron runs unattended, and
+        stalling it on a limit nobody is awake to raise turns a spend cap into
+        an outage.
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+      responses:
+        '200':
+          description: Quota settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TeamQuotas' }
+    put:
+      operationId: setMemberQuotas
+      tags: [teams]
+      summary: Update period and member limits (owner only)
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TeamQuotas' }
+      responses:
+        '200': { description: Updated }
+        '403': { description: Only team owners may change limits }
+
   /v1/teams/{teamId}/litellm/setup:
     post:
       operationId: setupTeamLiteLlm
@@ -6717,7 +6874,12 @@ components:
             - "null"
     MergedWorkspaceConfig:
       type: object
-      required: [syncMode, litellmTeamId]
+      # `litellmTeamId` left the required set when the team gateway replaced
+      # LiteLLM. It is still RETURNED (as null where absent) so older desktop
+      # and iOS builds keep parsing the response — those do not update in
+      # lockstep with the server. Removing it from the payload is a separate,
+      # later step, gated on the minimum supported client no longer reading it.
+      required: [syncMode]
       properties:
         syncMode:
           type:
@@ -6727,6 +6889,80 @@ components:
           type:
             - string
             - "null"
+    UsageSummary:
+      type: object
+      required: [credits, inputTokens, outputTokens, requests]
+      properties:
+        credits: { type: integer }
+        inputTokens: { type: integer }
+        cachedInputTokens:
+          type: integer
+          description: |
+            Subset of inputTokens that hit the upstream prompt cache. Recorded
+            for margin analysis; NOT billed differently — the tier price is
+            what the customer pays.
+        outputTokens: { type: integer }
+        requests: { type: integer }
+    TeamCredits:
+      type: object
+      required: [teamId, balanceCredits, usedCredits]
+      properties:
+        teamId: { type: string }
+        balanceCredits: { type: integer }
+        usedCredits: { type: integer, description: Credits spent in the current period }
+        period:
+          type: object
+          properties:
+            range: { type: string }
+            startUtc: { type: string }
+            endUtc: { type: string }
+    CreditUsageReport:
+      type: object
+      required: [range, startUtc, endUtc, summary, byModel, byActor]
+      properties:
+        range: { type: string, enum: [day, week, month, year] }
+        startUtc: { type: string }
+        endUtc: { type: string }
+        summary: { $ref: '#/components/schemas/UsageSummary' }
+        byModel:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/UsageSummary'
+              - type: object
+                properties:
+                  publicModelId: { type: string }
+        byActor:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/UsageSummary'
+              - type: object
+                properties:
+                  actorId: { type: ["string", "null"] }
+    CreditLedgerEntry:
+      type: object
+      required: [id, kind, amountCredits, createdAt]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [top_up, grant, adjustment, refund] }
+        amountCredits: { type: integer, description: Signed; refunds are negative }
+        note: { type: ["string", "null"] }
+        createdAt: { type: string }
+    TeamQuotas:
+      type: object
+      properties:
+        period: { type: string, enum: [week, month] }
+        defaultLimitCredits: { type: ["integer", "null"], description: "null = unlimited" }
+        lowBalanceCredits: { type: ["integer", "null"], description: "null = no alert" }
+        members:
+          type: array
+          items:
+            type: object
+            required: [actorId]
+            properties:
+              actorId: { type: string }
+              limitCredits: { type: ["integer", "null"] }
     LiteLlmSetupResponse:
       type: object
       required: [aiGatewayEndpoint, litellmKey]

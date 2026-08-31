@@ -17,6 +17,7 @@ import { registerConfig } from "./config.js";
 import { registerDirectory } from "./directory.js";
 import { registerSync } from "./sync.js";
 import { registerTeamShare } from "./team-share.js";
+import { registerTeamCredits } from "./team-credits.js";
 import { registerTeamLiteLlm } from "./team-litellm.js";
 import { registerAccount } from "./account.js";
 import { registerTeamSkills } from "./team-skills.js";
@@ -37,6 +38,10 @@ export function registerAllRoutes(router) {
   // the legacy default/pinned-workspace GET in workspaces.mjs. The legacy
   // PUT remains reachable since it's a distinct verb.
   registerTeamShare(router);
+  // Same ordering reason as team-share / team-skills: these own
+  // /v1/teams/:teamId/credits* and must not be shadowed by the broader team
+  // match in workspaces.
+  registerTeamCredits(router);
   registerTeamLiteLlm(router);
   // Before workspaces for the same reason team-share is: these own
   // /v1/teams/:teamId/skills* and must not be shadowed by a broader match.

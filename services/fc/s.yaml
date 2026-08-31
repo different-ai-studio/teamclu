@@ -55,9 +55,10 @@ resources:
         S3_FORCE_PATH_STYLE: ${env('S3_FORCE_PATH_STYLE', '')}
         # Keep in step with the compose `fc` environment map: a var declared on
         # only one target silently goes missing on the other, which is what
-        # deploy-env-parity.test.ts guards. The INTERNAL url and service token
-        # join in Phase 2, when FC starts calling the gateway.
+        # deploy-env-parity.test.ts guards.
         AI_GATEWAY_ENDPOINT: ${env('AI_GATEWAY_ENDPOINT', '')}
+        AI_GATEWAY_INTERNAL_URL: ${env('AI_GATEWAY_INTERNAL_URL', '')}
+        AI_GATEWAY_SERVICE_TOKEN: ${env('AI_GATEWAY_SERVICE_TOKEN', '')}
         LITELLM_URL: ${env('LITELLM_URL', 'https://ai.ucar.cc')}
         LITELLM_MASTER_KEY: ${env('LITELLM_MASTER_KEY', '')}
         # Blank = no cap, matching the compose default. Keep the two targets in

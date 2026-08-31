@@ -472,10 +472,12 @@ services:
       # convenience, not a safety net.
       # Public, client-facing gateway URL. Already read by team-provisioning.ts,
       # so it only needs re-pointing at the new gateway -- no code change.
-      # AI_GATEWAY_INTERNAL_URL / AI_GATEWAY_SERVICE_TOKEN are deliberately NOT
-      # here yet: FC does not call the gateway until the Phase 2 credits routes,
-      # and deploy-env-parity.test.ts fails a var declared but never read.
       AI_GATEWAY_ENDPOINT: "${AI_GATEWAY_ENDPOINT:-}"
+      # FC -> gateway, for the credits/quota routes. Never handed to a client.
+      # Keep in step with services/fc/s.yaml: a var declared on one target only
+      # silently goes missing on the other.
+      AI_GATEWAY_INTERNAL_URL: "${AI_GATEWAY_INTERNAL_URL:-http://ai-gateway:4001}"
+      AI_GATEWAY_SERVICE_TOKEN: "${AI_GATEWAY_SERVICE_TOKEN:-}"
       LITELLM_URL: "${LITELLM_URL:-http://litellm:4000}"
       LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-}"
       # Per-team spend cap written at /team/new. Blank = no cap. This was absent

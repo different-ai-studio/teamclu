@@ -4,6 +4,7 @@ import type { PgDatabase } from "drizzle-orm/pg-core";
 import { teams, teamWorkspaceConfig, actors, members, teamMembers, teamInvites } from "../../db/schema/index.js";
 import { workspaces } from "../../db/schema/workspaces.js";
 import { agentMemberAccess, agents } from "../../db/schema/agents.js";
+import { aiGateway } from "../ai-gateway.js";
 import { ApiError } from "../http-utils.js";
 import { requireActorForTeam, requireTeamOwner, checkAgentOwnership, assertCanRemoveTeamActor, mapActorDeleteFkError } from "./authz.js";
 import { computeRange, getLiteLlmSql, queryTeamUsage, type ComputedRange, type TeamUsage } from "../litellm-usage.js";
@@ -120,6 +121,13 @@ function actorMembershipFilter(db: PgDatabase<any, any>, userId: string) {
 
 // PgDatabase base accepts both postgres-js and pglite drivers
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+/** Every credits route is authenticated; a missing user is a 401, not a crash. */
+function requireUser(ctx?: { userId?: string }): string {
+  const userId = ctx?.userId;
+  if (!userId) throw new ApiError(401, "missing_auth", "authenticated user required");
+  return userId;
+}
+
 export function makeTeamsRepo(db: PgDatabase<any, any>, deps: TeamsRepoDeps = {}) {
   return {
     async listTeams({ limit = 50 }: { limit?: number } = {}, ctx?: { userId?: string }) {
@@ -569,6 +577,64 @@ export function makeTeamsRepo(db: PgDatabase<any, any>, deps: TeamsRepoDeps = {}
      * `tc-${teamId}`. If the team has never provisioned LiteLLM, throws 409
      * litellm_not_provisioned rather than implicitly setting it up.
      */
+
+    // ── team credits ────────────────────────────────────────────────────────
+    // Every read and write goes through the AI gateway rather than these
+    // tables directly: it is the ledger's only writer (design §4.9.1), and
+    // routing reads the same way keeps period boundaries and shapes identical
+    // on both sides of the billing screen.
+    //
+    // Permission split per §12.6: balance and usage are visible to every
+    // member — an exhausted wallet stops their work, so they must be able to
+    // see why — while the ledger and every mutation are owner-only.
+    async getTeamCredits(teamId: string, ctx?: { userId?: string }) {
+      await requireActorForTeam(db, requireUser(ctx), teamId);
+      const [summary, usage] = await Promise.all([
+        aiGateway.creditsSummary(teamId),
+        aiGateway.usage(teamId, { range: "month" }),
+      ]);
+      return {
+        teamId,
+        balanceCredits: summary.balanceCredits ?? 0,
+        period: { range: usage.range, startUtc: usage.startUtc, endUtc: usage.endUtc },
+        usedCredits: usage.summary?.credits ?? 0,
+      };
+    },
+    async getCreditUsage(teamId: string, opts: { range?: string; date?: string } = {}, ctx?: { userId?: string }) {
+      await requireActorForTeam(db, requireUser(ctx), teamId);
+      return aiGateway.usage(teamId, opts);
+    },
+    async getCreditLedger(teamId: string, opts: { limit?: number } = {}, ctx?: { userId?: string }) {
+      await requireTeamOwner(db, requireUser(ctx), teamId);
+      return aiGateway.ledger(teamId, opts.limit);
+    },
+    async topUpCredits(teamId: string, input: any, ctx?: { userId?: string }) {
+      await requireTeamOwner(db, requireUser(ctx), teamId);
+      const amount = Number(input?.amountCredits);
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        throw new ApiError(400, "invalid_request", "amountCredits must be a positive integer");
+      }
+      // Required rather than generated here: an idempotency key the server
+      // invents is a new key on every retry, which defeats the point.
+      if (!input?.idempotencyKey) {
+        throw new ApiError(400, "invalid_request", "idempotencyKey is required");
+      }
+      return aiGateway.topUp(teamId, {
+        amountCredits: amount,
+        kind: input.kind ?? "top_up",
+        idempotencyKey: input.idempotencyKey,
+        note: input.note ?? null,
+      });
+    },
+    async getMemberQuotas(teamId: string, ctx?: { userId?: string }) {
+      await requireActorForTeam(db, requireUser(ctx), teamId);
+      return aiGateway.quotas(teamId);
+    },
+    async setMemberQuotas(teamId: string, input: any, ctx?: { userId?: string }) {
+      await requireTeamOwner(db, requireUser(ctx), teamId);
+      return aiGateway.setQuotas(teamId, input ?? {});
+    },
+
     async setLiteLlmBudget(teamId: string, { maxBudget }: { maxBudget?: unknown }, ctx?: { userId?: string }) {
       const userId = ctx?.userId;
       if (!userId) throw new ApiError(401, "missing_auth", "authenticated user required");
