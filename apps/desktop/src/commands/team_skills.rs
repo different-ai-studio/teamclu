@@ -525,7 +525,11 @@ fn team_skill_install_blocking(
         Some(move_to_trash(
             &target,
             &slug,
-            Some(draft_recovery_context(&target, "replace", req.team_id.as_deref())),
+            Some(draft_recovery_context(
+                &target,
+                "replace",
+                req.team_id.as_deref(),
+            )),
         )?)
     } else {
         None
@@ -1336,26 +1340,26 @@ fn read_text_side(path: &std::path::Path) -> (Option<String>, bool) {
 
 fn stage_installed_pack(req: &TeamSkillInstallRequest) -> Result<tempfile::TempDir, String> {
     let client = build_cloud_api_client()?;
-    let resp = download_request(
-        &client,
-        &req.download_url,
-        req.access_token.as_deref(),
-    )
-    .send()
-    .map_err(|e| format!("Download failed: {}", format_reqwest_error(&e)))?;
+    let resp = download_request(&client, &req.download_url, req.access_token.as_deref())
+        .send()
+        .map_err(|e| format!("Download failed: {}", format_reqwest_error(&e)))?;
     if !resp.status().is_success() {
         return Err(format!("Download failed with status {}", resp.status()));
     }
     let zip_bytes = resp
         .bytes()
         .map_err(|e| format!("Failed to read download body: {}", e))?;
-    let staging = tempfile::tempdir().map_err(|e| format!("Failed to create staging dir: {}", e))?;
+    let staging =
+        tempfile::tempdir().map_err(|e| format!("Failed to create staging dir: {}", e))?;
     extract_zip_to_dir(&zip_bytes, staging.path())?;
     write_install_frontmatter(staging.path(), req)?;
     Ok(staging)
 }
 
-fn diff_staged_trees(from: &std::path::Path, to: &std::path::Path) -> Result<Vec<TeamSkillFileDiff>, String> {
+fn diff_staged_trees(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> Result<Vec<TeamSkillFileDiff>, String> {
     let mut paths = BTreeSet::new();
     for rel in list_managed_paths(from).map_err(|e| format!("Failed to list files: {}", e))? {
         paths.insert(rel);
@@ -1477,7 +1481,11 @@ pub fn team_skill_discard_local(slug: String, team_id: Option<String>) -> Result
     move_to_trash(
         &target,
         &slug,
-        Some(draft_recovery_context(&target, "discard", team_id.as_deref())),
+        Some(draft_recovery_context(
+            &target,
+            "discard",
+            team_id.as_deref(),
+        )),
     )
 }
 
@@ -1547,7 +1555,11 @@ fn record_draft_recovery(rec: &DraftRecoveryRecord) {
         });
 }
 
-fn draft_recovery_context(target: &std::path::Path, reason: &str, team_id: Option<&str>) -> DraftRecoveryContext {
+fn draft_recovery_context(
+    target: &std::path::Path,
+    reason: &str,
+    team_id: Option<&str>,
+) -> DraftRecoveryContext {
     let base_version = read_origin(target).and_then(|o| o.installed_version.parse::<i64>().ok());
     DraftRecoveryContext {
         reason: reason.to_string(),
