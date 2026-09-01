@@ -307,6 +307,8 @@ pub async fn tick_with_progress(
                 }
                 // If dirty: leave local file, do NOT delete. User-local edits survive.
             }
+            // A listed-but-unfetched entry stops being worth listing.
+            state.clear_known(&item.path);
             // Not in local state → nothing to do.
             continue;
         }
@@ -316,6 +318,26 @@ pub async fn tick_with_progress(
             None => continue, // shouldn't happen for non-deleted
         };
 
+        // Documents are listed, not fetched. The manifest already carries
+        // everything needed to show the file and to fetch it later — path,
+        // version, hash, size — so a first sync costs nothing for a root that
+        // may be far larger than the disk.
+        //
+        // Only the FIRST fetch is lazy. Once a documents file is on disk it is
+        // an ordinary synced file and later versions arrive normally, which is
+        // why this checks `local.is_none()` rather than the prefix alone.
+        if local.is_none() && is_lazy_path(&item.path) {
+            if let Some(hash) = &item.content_hash {
+                state.note_known(
+                    &item.path,
+                    item.version,
+                    hash,
+                    item.size.unwrap_or(0) as u64,
+                );
+            }
+            continue;
+        }
+
         let needs_download = match &local {
             None => true,
             Some(ls) => item.version > ls.synced_version,
@@ -324,6 +346,9 @@ pub async fn tick_with_progress(
         if !needs_download {
             continue;
         }
+
+        // Materialized now, so it is no longer merely listed.
+        state.clear_known(&item.path);
 
         // If local file is dirty and remote has a newer version → conflict.
         if let Some(ref ls) = local {
@@ -1829,6 +1854,125 @@ fn plan_push(
 /// tombstone is applied on every member's machine, so a partially sent mass
 /// deletion loses files for everyone AND makes the cause harder to find than if
 /// nothing had gone at all.
+/// Fetch specific listed-but-unfetched paths, on the user's say-so.
+///
+/// Goes through the ordinary `pull_phase`, so the ACL check, the blob
+/// reachability test and every quota apply unchanged. That reuse is the point:
+/// **"not downloaded" is not "not permitted"**. A path the caller has no access
+/// to never reaches the manifest at all, so it is not in `known` either — the
+/// two states are different and must stay so, in the engine and in the UI.
+///
+/// Returns how many landed. Paths that are unknown, or already on disk, are
+/// skipped rather than treated as errors: a second click on something that just
+/// arrived is not a failure.
+pub async fn fetch_known(
+    content_root: &str,
+    team_id: &str,
+    secret: Option<&str>,
+    fc: &FcClient,
+    paths: &[String],
+    progress: &ProgressSink,
+) -> Result<u32, SyncError> {
+    let key = match secret {
+        Some(secret) => Some(
+            crate::team_shared_env::derive_key(secret)
+                .map_err(|e| SyncError::Crypto(e.to_string()))?,
+        ),
+        None => None,
+    };
+    let mut state = LocalSyncState::load_at(team_id).map_err(SyncError::State)?;
+
+    let items: Vec<PullItem> = paths
+        .iter()
+        .filter_map(|path| {
+            let known = state.known.get(path)?;
+            Some(PullItem {
+                path: path.clone(),
+                cipher_hash: known.cipher_hash.clone(),
+                version: known.version,
+            })
+        })
+        .collect();
+    if items.is_empty() {
+        return Ok(0);
+    }
+
+    progress.report(SyncPhase::Pulling, 0, items.len() as u32);
+    let fetched_paths: Vec<String> = items.iter().map(|i| i.path.clone()).collect();
+    let pulled = pull_phase(content_root, key.as_ref(), fc, &mut state, items, progress).await;
+
+    // Only the ones that actually landed stop being merely listed. `pull_phase`
+    // writes `files` for what it wrote to disk, so this reads the result rather
+    // than assuming success.
+    for path in fetched_paths {
+        if state.files.contains_key(&path) {
+            state.clear_known(&path);
+        }
+    }
+    state.save_at(team_id).map_err(SyncError::State)?;
+    Ok(pulled)
+}
+
+/// Give back the disk a documents file occupies, keeping it listed.
+///
+/// # Three refusals, none of them configurable
+///
+/// * **Never `knowledge/`.** It is held eagerly by design; releasing it would
+///   extend laziness to a root nobody agreed to.
+/// * **Never a file with unpushed edits.** That throws away something the user
+///   wrote, which no amount of disk pressure justifies.
+/// * **Never through the tombstone path.** This deliberately does not touch
+///   `locally_deleted_paths` or emit a `delete_batch`: releasing local disk must
+///   not delete the file for every other member. That is also why it does not
+///   simply remove the file and let the next scan notice.
+///
+/// Returns the paths actually released, so the caller can report what it
+/// refused rather than claiming success for all of them.
+pub async fn release_local(
+    content_root: &str,
+    team_id: &str,
+    paths: &[String],
+) -> Result<Vec<String>, SyncError> {
+    let mut state = LocalSyncState::load_at(team_id).map_err(SyncError::State)?;
+    let mut released = Vec::new();
+
+    for path in paths {
+        if !is_lazy_path(path) {
+            tracing::warn!(team_id, path, "refusing to release: not a documents path");
+            continue;
+        }
+        if !state.release_local(path) {
+            // Either not held, or holding edits that were never pushed.
+            tracing::info!(team_id, path, "not released: absent or locally modified");
+            continue;
+        }
+        let abs = Path::new(content_root).join(path);
+        if let Err(e) = tokio::fs::remove_file(&abs).await {
+            tracing::warn!(
+                team_id,
+                path,
+                "release: removing the local copy failed: {e}"
+            );
+        }
+        prune_empty_parents(Path::new(content_root), path).await;
+        released.push(path.clone());
+    }
+
+    state.save_at(team_id).map_err(SyncError::State)?;
+    Ok(released)
+}
+
+/// Whether this path is fetched on demand rather than eagerly.
+///
+/// `documents/` only. `knowledge/` stays eager on purpose: its worth is that
+/// every member holds the same copy, and fetching it lazily would make agents
+/// and search answer differently for different people — which
+/// docs/specs/2026-09-01-lazy-documents-design.md accepts for documents as a
+/// trade and rejects for knowledge as self-defeating.
+fn is_lazy_path(path: &str) -> bool {
+    path.starts_with("documents/")
+}
+
 fn apply_delete_guard(
     dels: Vec<(String, i32)>,
     allow_bulk_delete: bool,
@@ -1931,6 +2075,7 @@ mod tests {
         LocalSyncState {
             quarantined: Default::default(),
             forbidden: Default::default(),
+            known: Default::default(),
             last_reconcile_at: 0,
             schema_version: 1,
             team_id: "t".into(),
@@ -2100,6 +2245,74 @@ mod tests {
             !state.files.get("knowledge/hr/a.md").unwrap().dirty,
             "a file we may never upload is not pending upload"
         );
+    }
+
+    // ── lazy documents ────────────────────────────────────────────────────
+    //
+    // `release_leaves_no_tombstone_candidates` is the one that matters. Giving
+    // back local disk must never look like a deletion, or freeing space on one
+    // machine removes the file from everyone's.
+
+    #[test]
+    fn release_leaves_no_tombstone_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("documents")).unwrap();
+        std::fs::write(dir.path().join("documents/a.pdf"), b"x").unwrap();
+        let rules = IgnoreRules::load(dir.path());
+
+        let mut state = empty_state();
+        state.files.insert("documents/a.pdf".into(), synced_file(3));
+
+        assert!(state.release_local("documents/a.pdf"));
+
+        // The scan no longer sees the file — which is exactly the shape of a
+        // local deletion. It must not be read as one.
+        let tombstones = locally_deleted_paths(&state, &[], &rules);
+        assert!(
+            tombstones.is_empty(),
+            "releasing local disk must never broadcast a deletion: {tombstones:?}"
+        );
+        assert!(state.is_known_only("documents/a.pdf"), "it stays listed");
+    }
+
+    #[test]
+    fn release_refuses_a_file_with_unpushed_edits() {
+        let mut state = empty_state();
+        let mut f = synced_file(1);
+        f.dirty = true;
+        state.files.insert("documents/draft.md".into(), f);
+
+        assert!(
+            !state.release_local("documents/draft.md"),
+            "releasing would throw away something the user wrote"
+        );
+        assert!(state.files.contains_key("documents/draft.md"));
+    }
+
+    #[test]
+    fn only_documents_are_lazy() {
+        assert!(is_lazy_path("documents/hr/a.pdf"));
+        assert!(!is_lazy_path("knowledge/notes/a.md"));
+        // A sibling that merely starts with the same letters is not the root.
+        assert!(!is_lazy_path("documents-archive/a.pdf"));
+    }
+
+    #[test]
+    fn a_listed_file_never_enters_the_materialized_map() {
+        let mut state = empty_state();
+        state.note_known("documents/big.zip", 2, "abc", 4096);
+
+        assert!(state.is_known_only("documents/big.zip"));
+        assert!(
+            !state.files.contains_key("documents/big.zip"),
+            "a listed file in `files` would become a tombstone candidate"
+        );
+        // And it never overwrites a real entry.
+        state
+            .files
+            .insert("documents/big.zip".into(), synced_file(2));
+        state.note_known("documents/big.zip", 3, "def", 4096);
+        assert!(!state.is_known_only("documents/big.zip"));
     }
 
     // ── the delete-side guard ─────────────────────────────────────────────
