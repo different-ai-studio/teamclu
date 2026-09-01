@@ -1,0 +1,13 @@
+# 知识库发布清单 / Knowledge base manifest
+# 详见 / See: docs/plans/2026-08-31-team-knowledge-base-program.md §3.3
+
+version: 1
+team: {{TEAM_ID}}
+title: {{TEAM_NAME}} 知识库 / Knowledge Base
+summary: ""          # 一句话简介 / One-line summary
+visibility: private  # private | org — 默认仅团队可见 / private by default
+domains: []          # 领域标签 / Domain tags, e.g. [支付, 清结算]
+entry: 00-home.md
+collections: []
+#  - name: 新人必读 / Onboarding
+#    paths: [00-home.md, 10-onboarding/, 50-glossary.md]

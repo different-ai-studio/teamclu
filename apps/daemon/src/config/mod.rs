@@ -2,6 +2,7 @@ mod daemon_config;
 pub mod device_mcp;
 pub mod edit;
 pub mod global_team_store;
+pub mod knowledge_scaffold;
 pub mod layout;
 mod member_store;
 mod model_catalog;
