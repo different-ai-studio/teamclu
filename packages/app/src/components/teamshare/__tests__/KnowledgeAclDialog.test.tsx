@@ -1,15 +1,19 @@
 /**
- * The dialog's whole job is to show a set of people that matches what the
- * server will actually enforce. The server denies a path when ANY prefix
- * covering it lacks a grant, so a child directory can never re-open what a
- * parent closed.
+ * The dialog must offer exactly the people the server would actually honour.
  *
- * These tests pin that: the candidate list is the intersection of the ancestor
- * rules, and someone the parent does not allow is offered as disabled rather
- * than as a checkbox that would store a grant with no effect.
+ * The server denies a path when ANY prefix covering it lacks a grant, so a child
+ * folder can never re-open what an ancestor closed. The candidate set is
+ * therefore the intersection of the ancestor rules — and since the roster lives
+ * behind a search box, that set is observable as the count on "Add person".
+ *
+ * The other thing pinned here is the shape at rest: an unrestricted folder shows
+ * a sentence and a button, never a list. A team can have hundreds of members,
+ * and rendering them all was both unusable and — because a rule stores explicit
+ * actor ids — a way to write a 299-name list that silently excludes everyone
+ * hired afterwards.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { KnowledgeAclDialog } from '../KnowledgeAclDialog'
 
 const listKnowledgeAcl = vi.fn()
@@ -35,7 +39,9 @@ vi.mock('@/stores/current-team', () => ({
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_k: string, fallback?: unknown) =>
-      typeof fallback === 'string' ? fallback : (fallback as { defaultValue?: string })?.defaultValue ?? _k,
+      typeof fallback === 'string'
+        ? fallback
+        : ((fallback as { defaultValue?: string })?.defaultValue ?? _k),
   }),
 }))
 
@@ -54,13 +60,14 @@ const rule = (pathPrefix: string, actorIds: string[]) => ({
   updatedAt: null,
 })
 
-/** The checkbox for a person, and whether the UI offers it at all. */
-function personRow(name: string) {
-  const label = screen.getByText(name).closest('label')
-  if (!label) throw new Error(`no row for ${name}`)
-  const box = label.querySelector('button[role="checkbox"]')
-  if (!box) throw new Error(`no checkbox for ${name}`)
-  return { label, box, disabled: box.hasAttribute('disabled') }
+/** How many people the picker would offer — i.e. what the parent chain allows. */
+function addableCount(): number {
+  const button = screen.getByRole('button', { name: /Add person/ })
+  return Number(button.textContent?.match(/(\d+)\s*$/)?.[1] ?? NaN)
+}
+
+async function enterRestrictMode() {
+  fireEvent.click(await screen.findByRole('button', { name: /Restrict to specific people/ }))
 }
 
 beforeEach(() => {
@@ -68,30 +75,40 @@ beforeEach(() => {
   listTeamMembersForAccess.mockResolvedValue(MEMBERS)
 })
 
-describe('KnowledgeAclDialog inheritance', () => {
-  it('offers everyone when no ancestor directory is restricted', async () => {
+describe('KnowledgeAclDialog', () => {
+  it('an unrestricted folder shows a sentence and a button, not a roster', async () => {
     listKnowledgeAcl.mockResolvedValue([])
     render(<KnowledgeAclDialog prefix="knowledge/hr/" open onOpenChange={() => {}} />)
 
-    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy())
-    for (const name of ['Alice', 'Bob', 'Carol']) {
-      const { disabled, box } = personRow(name)
-      expect(disabled, `${name} should be selectable`).toBe(false)
-      expect(box.getAttribute('data-state'), `${name} should start checked`).toBe('checked')
-    }
+    await waitFor(() => expect(screen.getByText(/Everyone on the team can see/)).toBeTruthy())
+    // The point of the redesign: nobody is listed until a restriction is chosen.
+    expect(screen.queryByText('Alice')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Add person/ })).toBeNull()
   })
 
-  it('a person the parent does not allow cannot be added here', async () => {
-    // knowledge/hr/ is limited to Alice; this dialog is for a folder beneath it.
+  it('says new joiners are excluded, because a rule is a list of people', async () => {
+    listKnowledgeAcl.mockResolvedValue([])
+    render(<KnowledgeAclDialog prefix="knowledge/hr/" open onOpenChange={() => {}} />)
+    await enterRestrictMode()
+
+    expect(screen.getByText(/Anyone who joins the team later will not/)).toBeTruthy()
+  })
+
+  it('offers the whole team when no ancestor folder is restricted', async () => {
+    listKnowledgeAcl.mockResolvedValue([])
+    render(<KnowledgeAclDialog prefix="knowledge/hr/" open onOpenChange={() => {}} />)
+    await enterRestrictMode()
+
+    expect(addableCount()).toBe(3)
+  })
+
+  it('offers only the people the parent allows', async () => {
     listKnowledgeAcl.mockResolvedValue([rule('knowledge/hr/', ['alice'])])
     render(<KnowledgeAclDialog prefix="knowledge/hr/salary/" open onOpenChange={() => {}} />)
+    await enterRestrictMode()
 
-    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy())
-    expect(personRow('Alice').disabled).toBe(false)
-    // Checking these would store a grant the server ignores, so they are not
-    // offered — the dialog says why instead.
-    expect(personRow('Bob').disabled, 'Bob is not allowed by the parent').toBe(true)
-    expect(personRow('Carol').disabled, 'Carol is not allowed by the parent').toBe(true)
+    // Bob and Carol would be grants the server ignores, so they are not offered.
+    expect(addableCount()).toBe(1)
   })
 
   it('takes the intersection when several ancestors restrict the path', async () => {
@@ -100,15 +117,13 @@ describe('KnowledgeAclDialog inheritance', () => {
       rule('knowledge/hr/pay/', ['bob', 'carol']),
     ])
     render(<KnowledgeAclDialog prefix="knowledge/hr/pay/2026/" open onOpenChange={() => {}} />)
+    await enterRestrictMode()
 
-    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy())
-    // Only Bob is in both ancestor grants; the strictest rule wins.
-    expect(personRow('Bob').disabled).toBe(false)
-    expect(personRow('Alice').disabled, 'Alice is excluded by knowledge/hr/pay/').toBe(true)
-    expect(personRow('Carol').disabled, 'Carol is excluded by knowledge/hr/').toBe(true)
+    // Only Bob is in both; the strictest rule wins.
+    expect(addableCount()).toBe(1)
   })
 
-  it("starts from this folder's own grants when it already has a rule", async () => {
+  it("lists this folder's own grants, and offers only the rest of the inherited set", async () => {
     listKnowledgeAcl.mockResolvedValue([
       rule('knowledge/hr/', ['alice', 'bob', 'carol']),
       rule('knowledge/hr/salary/', ['alice']),
@@ -116,20 +131,18 @@ describe('KnowledgeAclDialog inheritance', () => {
     render(<KnowledgeAclDialog prefix="knowledge/hr/salary/" open onOpenChange={() => {}} />)
 
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy())
-    // All three are selectable — the parent allows them — but only Alice is
-    // currently granted here.
-    expect(personRow('Alice').box.getAttribute('data-state')).toBe('checked')
-    expect(personRow('Bob').box.getAttribute('data-state')).toBe('unchecked')
-    expect(personRow('Bob').disabled).toBe(false)
+    expect(screen.queryByText('Bob')).toBeNull()
+    // Bob and Carol remain addable; Alice is already on the list.
+    expect(addableCount()).toBe(2)
   })
 
   it('a sibling folder is not treated as an ancestor', async () => {
-    // knowledge/hr-public/ shares a textual prefix with knowledge/hr… only if
-    // the trailing slash is dropped. It must not constrain this folder.
+    // knowledge/hr-public/ only looks like a prefix of knowledge/hr… if the
+    // trailing slash is dropped. It must not constrain this folder.
     listKnowledgeAcl.mockResolvedValue([rule('knowledge/hr-public/', ['alice'])])
     render(<KnowledgeAclDialog prefix="knowledge/hr/" open onOpenChange={() => {}} />)
+    await enterRestrictMode()
 
-    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy())
-    expect(personRow('Bob').disabled, 'a sibling rule must not restrict this folder').toBe(false)
+    expect(addableCount()).toBe(3)
   })
 })
