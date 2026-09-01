@@ -215,6 +215,7 @@ export function SeaTalkChannel() {
           <li>{t('settings.channels.seatalk.checkBotOnline', 'Set Bot status to Online')}</li>
           <li>{t('settings.channels.seatalk.checkWebSocket', 'Event delivery: WebSocket mode')}</li>
           <li>{t('settings.channels.seatalk.checkMentionEvent', 'Subscribe: new_mentioned_message_received_from_group_chat')}</li>
+          <li>{t('settings.channels.seatalk.checkThreadEvent', 'Subscribe: new_message_received_from_thread')}</li>
           <li>{t('settings.channels.seatalk.checkDmEvent', 'Subscribe: message_from_bot_subscriber (for DMs)')}</li>
           <li>{t('settings.channels.seatalk.checkSendGroup', 'Permission: Send Message to Group Chat (required to reply)')}</li>
           <li>{t('settings.channels.seatalk.checkSendDm', 'Permission: Send Message to Bot User (for DMs)')}</li>

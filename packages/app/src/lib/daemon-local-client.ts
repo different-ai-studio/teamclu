@@ -1457,6 +1457,61 @@ export interface DaemonTeamCloudReconcileOutcome {
   envChanged: boolean
 }
 
+/** A documents file the manifest lists that this device has not downloaded. */
+export interface KnownDocument {
+  /** Sync key, e.g. `documents/hr/contract.pdf`. */
+  path: string
+  version: number
+  /** Server-side size, so the UI can say what fetching would cost. */
+  size: number
+}
+
+/**
+ * Documents this device knows about but has not downloaded.
+ *
+ * The tree is drawn from this UNION the disk scan. Nothing is written to disk
+ * for an unfetched file — a zero-byte placeholder would be indistinguishable
+ * from a file somebody emptied — so the scan alone can never reveal one.
+ */
+export async function listKnownDocuments(teamId: string): Promise<KnownDocument[]> {
+  return daemonFetchData<KnownDocument[]>(
+    `/v1/team/documents/known?team_id=${encodeURIComponent(teamId)}`,
+  )
+}
+
+/**
+ * Download listed-but-unfetched documents.
+ *
+ * Fails rather than queueing when offline. A queue would let a click do nothing
+ * visible and produce the file twenty minutes later, when it is no longer
+ * wanted — and fetching on demand is worth having precisely because the thing
+ * is there when you ask for it.
+ */
+export async function fetchDocuments(teamId: string, paths: string[]): Promise<number> {
+  const out = await daemonFetchData<{ fetched: number }>('/v1/team/documents/fetch', {
+    method: 'POST',
+    body: JSON.stringify({ teamId, paths }),
+  })
+  return out.fetched
+}
+
+/**
+ * Give back the disk some documents occupy. They stay listed and can be fetched
+ * again.
+ *
+ * NOT a delete: the server copy is untouched and no other member is affected.
+ * Returns the paths actually released — a file with unpushed local edits is
+ * refused and simply absent, so the caller compares what it asked for against
+ * what came back rather than assuming everything worked.
+ */
+export async function releaseDocuments(teamId: string, paths: string[]): Promise<string[]> {
+  const out = await daemonFetchData<{ released: string[] }>('/v1/team/documents/release', {
+    method: 'POST',
+    body: JSON.stringify({ teamId, paths }),
+  })
+  return out.released ?? []
+}
+
 /** Re-fetch the daemon actor's team MCP/env cache immediately. */
 export async function reconcileDaemonTeamCloudConfig(): Promise<DaemonTeamCloudReconcileOutcome> {
   return daemonFetchData<DaemonTeamCloudReconcileOutcome>(

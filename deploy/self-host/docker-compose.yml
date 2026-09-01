@@ -210,6 +210,67 @@ services:
       retries: 12
       start_period: 60s
 
+  # Team AI gateway. Replaces LiteLLM's role for clients, but ships ALONGSIDE it:
+  # every installed desktop still points at the old gateway until Phase 1 flips
+  # team_workspace_config.llm_base_url, so removing litellm here would break
+  # them all instantly. Deletion is Phase 3, behind the gate in
+  # docs/specs/2026-08-28-team-ai-gateway-design.md §11.5.
+  #
+  # Reached publicly through Caddy at /ai/* ; FC calls it in-network on :4001.
+  ai-gateway:
+    build:
+      context: ../../services/ai-gateway
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: "4001"
+      # Least-privilege role created by 20260828120000_ai_gateway_credits.sql.
+      # The migration makes it NOLOGIN on purpose; the operator grants login and
+      # sets this password out of band, so no credential lives in the repo.
+      DATABASE_URL: "${AI_GATEWAY_DB_URL}"
+      CATALOG_PATH: /app/catalog.yaml
+      AI_GATEWAY_SERVICE_TOKEN: "${AI_GATEWAY_SERVICE_TOKEN}"
+      BACKEND_KIND: "${BACKEND_KIND:-supabase}"
+      # supabase path: identity is established by asking GoTrue, exactly as FC
+      # does. The gateway holds no signing key.
+      SUPABASE_URL: "${SUPABASE_URL:-http://kong:8000}"
+      SUPABASE_ANON_KEY: "${ANON_KEY:-}"
+      AUTH_BASE_URL: "${AUTH_BASE_URL:-}"
+      # Reserve before the upstream call and settle after it (design 4.6).
+      # OFF means metered-only: usage is still recorded, nothing is deducted,
+      # and an exhausted team is never stopped.
+      #
+      # ⚠️ Turning it on 402s every team WITHOUT a credit balance row at once
+      # (4.8.1), and a team created after the last backfill has none — the grant
+      # is only issued by POST /internal/credits/backfill, never automatically.
+      # Run that backfill first, every time.
+      CREDITS_ENFORCED: "${CREDITS_ENFORCED:-false}"
+      # Upstream provider keys, same vars litellm already uses.
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      # ai/catalog.yaml is PER DEPLOYMENT and deliberately not in git; the
+      # deploy creates it from ai/catalog.example.yaml when absent.
+      #
+      # It has to exist before this mount resolves: Docker does not fail on a
+      # missing bind source, it silently creates a DIRECTORY there, and the
+      # gateway then dies with `EISDIR` — an error that names nothing about the
+      # actual cause.
+      - ./ai/catalog.yaml:/app/catalog.yaml:ro
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://127.0.0.1:4001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
   gitea:
     # Per-app private git repos for the Apps module. HTTP is fronted by Caddy on
     # GITEA_DOMAIN; SSH is published to the host on GITEA_SSH_PORT so developer
@@ -421,6 +482,24 @@ services:
       # whole features block there.
       APP_FEATURES_PROFILE: "${APP_FEATURES_PROFILE:-self-host}"
       APP_FEATURES_JSON: "${APP_FEATURES_JSON:-}"
+      # FC -> gateway, for the credits/quota routes. Never handed to a client.
+      # Keep in step with services/fc/s.yaml: a var declared on one target only
+      # silently goes missing on the other.
+      AI_GATEWAY_INTERNAL_URL: "${AI_GATEWAY_INTERNAL_URL:-http://ai-gateway:4001}"
+      AI_GATEWAY_SERVICE_TOKEN: "${AI_GATEWAY_SERVICE_TOKEN:-}"
+      # Stripe credit top-ups (design 4.9). Blank = the top-up UI reports
+      # stripe_unavailable and nothing else changes; metering and manual
+      # admin top-ups are unaffected.
+      # STRIPE_PRICE_IDS is an ALLOWLIST of Price ids, comma-separated: the
+      # checkout endpoint takes a price id from the caller, so without it
+      # anyone could open a Session against an arbitrary Price on the account.
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
+      STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
+      STRIPE_PRICE_IDS: "${STRIPE_PRICE_IDS:-}"
+      # This deployment's own public origin, for the post-checkout landing page.
+      # Its own variable on purpose: API_EXTERNAL_URL belongs to GoTrue.
+      STRIPE_RETURN_URL_BASE: "${STRIPE_RETURN_URL_BASE:-}"
+
       # ── Declared in services/fc/s.yaml but historically absent here, so the
       # container never received them and the features were silently off on the
       # box. This map is an allowlist; the two deploy targets must stay in step

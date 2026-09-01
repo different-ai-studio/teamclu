@@ -129,7 +129,7 @@ Knowledge 同步是**团队 Markdown vault 的云副本**，不是通用网盘�
 直到有用量或独立 RFC 之前：
 
 - 块级 / CDC 同步
-- 按需下载（Smart Sync）
+- 按需下载（Smart Sync）—— **仅 `documents/` 已解冻**，见下
 - Markdown 行级 merge / OT / CRDT
 - 「谁改了什么」活动流 UI（P0 只填 `nodeId` 供协议用）
 - 移动端 knowledge 同步
@@ -137,6 +137,36 @@ Knowledge 同步是**团队 Markdown vault 的云副本**，不是通用网盘�
 - Prepare 限速（见 P1 #2）
 - 重命名补 `.md`、无后缀旧文件的树上提示（单开 issue）
 - 拉长 300s 定时器（另 PR，且仅在推送稳定后）
+
+### 部分解冻：按需下载，仅限 `documents/`
+
+上面 freeze 清单里的「按需下载（Smart Sync）」由
+[`docs/specs/2026-09-01-lazy-documents-design.md`](../specs/2026-09-01-lazy-documents-design.md)
+**对 `documents/` 解冻**——那是两个固定同步根里「有归属的文件」那一个。
+
+**`knowledge/` 的按需下载仍然冻结，而且不是「还没做」，是不该做。** 知识库的价值
+在于全员看到的是同一份东西；惰性会让 agent 和 RAG 的行为因人而异。那份设计在
+documents 上明知地接受了这个代价（它的 D5 写着「同一个问题在不同人机器上会给出
+不同答案」），因为 documents 本来就是有归属的文件。在 knowledge 上同样的代价是
+自毁。
+
+两个方向都别顺手做：不要因为 documents 做了就把 knowledge 也做了，也不要因为
+0008 写着 freeze 就把 documents 那份推回去。
+
+### 已解冻：目录级权限（Path ACL）
+
+本 ADR 冻结时，knowledge 是团队级「全有或全无」，没有按目录分权。该限制已由
+[`docs/specs/2026-08-31-knowledge-path-acl-design.md`](../specs/2026-08-31-knowledge-path-acl-design.md)
+**纳入范围并解冻**——不要再按上面的 freeze 清单把它推回去。
+
+两点与本 ADR 直接相关，改这块前必须知道：
+
+1. 该设计**不改变**本 ADR 的安全叙事。knowledge 内容在服务端仍是明文，ACL 是
+   团队内的访问控制，不防运维、不防我们自己。撤权只承诺「停止同步」，不承诺
+   「收回已下发的副本」。两份文档的措辞必须保持一致。
+2. 「按需下载（Smart Sync）」**仍然冻结**。ACL 的「无权限即不下发」与 Smart Sync
+   看起来相邻，实则无关：前者按人过滤，后者按访问频率延迟拉取。不要因为做了
+   前者就顺手开后者。
 
 ## 与既有实现的关系
 

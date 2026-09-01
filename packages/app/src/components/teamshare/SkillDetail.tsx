@@ -37,8 +37,12 @@ import {
   isSkillDirtyConflict,
   SkillDiscardIncompleteError,
   SkillSlugTakenError,
+  StaleTeamSkillPublishError,
+  StaleDirtySkillPublishError,
   type TeamSkillItem,
   type TeamSkillFileDiff,
+  type TeamSkillDraftMetadata,
+  type DraftRecoveryRecord,
 } from '@/stores/team-share-browser'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend/provider'
@@ -142,7 +146,7 @@ function MetaRow({ item, ownerLabel }: { item: TeamSkillItem; ownerLabel: string
     primary.push(t('teamShare.skillInstalledVersion', 'installed v{{v}}', { v: item.installedVersion }))
   }
   if (item.requires?.length) {
-    primary.push(t('teamShare.skillRequires', 'requires {{list}}', { list: item.requires.join(', ') }))
+    primary.push(t('teamShare.skillRequiresList', 'requires {{list}}', { list: item.requires.join(', ') }))
   }
 
   const secondary: string[] = []
@@ -215,6 +219,11 @@ function VersionHistory({
         <p className="mt-1 whitespace-pre-wrap text-[12.5px] leading-relaxed text-ink-2">
           {latest.changelog || t('teamShare.skillFieldEmpty', '—')}
         </p>
+        {latest.publishedFromVersion != null && (
+          <p className="mt-1 font-mono text-[10.5px] text-faint">
+            {t('teamShare.skillPublishedFrom', 'Based on v{{v}}', { v: latest.publishedFromVersion })}
+          </p>
+        )}
       </div>
       {older.length > 0 && (
         <ul className="mt-2 space-y-1.5">
@@ -463,10 +472,13 @@ function ConflictBar({
   latestVersion,
   busy,
   canPublish,
+  isStaleDirty,
+  source,
   onViewDiff,
   onPublish,
   onFork,
   onDiscard,
+  onRebaseOnLatest,
 }: {
   modified: string[]
   deleted: string[]
@@ -475,10 +487,13 @@ function ConflictBar({
   latestVersion: number | null
   busy: boolean
   canPublish: boolean
+  isStaleDirty: boolean
+  source: 'hosted-agent' | 'member'
   onViewDiff: () => void
   onPublish: () => void
   onFork: () => void
   onDiscard: () => void
+  onRebaseOnLatest: () => void
 }) {
   const { t } = useTranslation()
   const changed = [
@@ -500,7 +515,9 @@ function ConflictBar({
       <div className="rounded-[8px] border border-border border-l-2 border-l-faint bg-paper px-4 py-3">
         <div className="flex items-baseline justify-between gap-3">
           <span className="text-[13px] font-semibold text-foreground">
-            {t('teamShare.skillConflictTitle', 'Local changes — updates paused')}
+            {isStaleDirty
+              ? t('teamShare.skillStaleConflictTitle', 'Your draft is behind the team')
+              : t('teamShare.skillConflictTitle', 'Local changes — updates paused')}
           </span>
           {latestVersion != null && installedVersion != null && (
             <span className="shrink-0 font-mono text-[11px] text-faint">
@@ -511,9 +528,23 @@ function ConflictBar({
             </span>
           )}
         </div>
+        {isStaleDirty && (
+          <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+            {t(
+              'teamShare.skillStaleConflictBody',
+              'Your edits are based on v{{base}}. The team is on v{{latest}} — someone else may have published while you were editing. Drafts stay on this device until you publish.',
+              { base: installedVersion, latest: latestVersion },
+            )}
+          </p>
+        )}
         {changed && (
           <p className="mt-1 break-words text-[12px] leading-relaxed text-muted-foreground">{changed}</p>
         )}
+        <p className="mt-1 text-[11.5px] text-faint">
+          {source === 'hosted-agent'
+            ? t('teamShare.skillConflictSourceHosted', '修改来源：本机 Hosted Agent')
+            : t('teamShare.skillConflictSourceMember', '修改来源：本机成员目录')}
+        </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -524,7 +555,7 @@ function ConflictBar({
             {t('teamShare.skillConflictViewDiff', 'View changes')}
           </button>
           <span className="flex-1" />
-          {canPublish && (
+          {canPublish && !isStaleDirty && (
             <Button
               type="button"
               onClick={onPublish}
@@ -535,6 +566,17 @@ function ConflictBar({
               {t('teamShare.skillConflictPublish', 'Publish as v{{v}}', {
                 v: (latestVersion ?? 0) + 1,
               })}
+            </Button>
+          )}
+          {isStaleDirty && latestVersion != null && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={onRebaseOnLatest}
+              disabled={busy}
+              className="h-8 gap-1.5 text-[13px] text-muted-foreground hover:text-foreground"
+            >
+              {t('teamShare.skillRebaseOnLatest', 'Apply team v{{v}}', { v: latestVersion })}
             </Button>
           )}
           <Button
@@ -555,7 +597,9 @@ function ConflictBar({
             className="h-8 gap-1.5 text-[13px] text-muted-foreground hover:text-foreground"
           >
             <Trash2 className="h-3.5 w-3.5" />
-            {t('teamShare.skillConflictDiscard', 'Discard local changes')}
+            {isStaleDirty
+              ? t('teamShare.skillConflictDiscardStale', 'Discard draft')
+              : t('teamShare.skillConflictDiscard', 'Discard local changes')}
           </Button>
         </div>
       </div>
@@ -569,6 +613,8 @@ function PublishVersionSheet({
   baseVersion,
   open,
   busy,
+  changePreview,
+  onLoadDraftMetadata,
   onClose,
   onSubmit,
 }: {
@@ -578,32 +624,83 @@ function PublishVersionSheet({
   baseVersion: number | null
   open: boolean
   busy: boolean
+  changePreview?: { modified: string[]; deleted: string[]; added: string[] }
+  onLoadDraftMetadata: () => Promise<TeamSkillDraftMetadata>
   onClose: () => void
   onSubmit: (input: {
     changelog: string
-    summary?: string
-    whenToUse?: string
-    whenNotToUse?: string
+    summary: string
+    category: TeamSkillCategory
+    whenToUse: string
+    whenNotToUse: string
+    requires: string[]
   }) => Promise<void>
 }) {
   const { t } = useTranslation()
   const [changelog, setChangelog] = React.useState('')
   const [summary, setSummary] = React.useState(item.summary ?? '')
+  const [category, setCategory] = React.useState<TeamSkillCategory>(
+    (TEAM_SKILL_CATEGORIES.includes(item.category as TeamSkillCategory)
+      ? item.category
+      : 'general') as TeamSkillCategory,
+  )
   const [whenToUse, setWhenToUse] = React.useState(item.whenToUse ?? '')
   const [whenNotToUse, setWhenNotToUse] = React.useState(item.whenNotToUse ?? '')
+  const [requiresText, setRequiresText] = React.useState((item.requires ?? []).join(', '))
+  const [metadataLoading, setMetadataLoading] = React.useState(false)
+  const [metadataReady, setMetadataReady] = React.useState(false)
+  const [metadataError, setMetadataError] = React.useState<string | null>(null)
 
   React.useEffect(() => {
     if (!open) return
     setChangelog('')
     setSummary(item.summary ?? '')
+    setCategory(
+      (TEAM_SKILL_CATEGORIES.includes(item.category as TeamSkillCategory)
+        ? item.category
+        : 'general') as TeamSkillCategory,
+    )
     setWhenToUse(item.whenToUse ?? '')
     setWhenNotToUse(item.whenNotToUse ?? '')
-  }, [open, item])
+    setRequiresText((item.requires ?? []).join(', '))
+    setMetadataLoading(true)
+    setMetadataReady(false)
+    setMetadataError(null)
+    void onLoadDraftMetadata()
+      .then((draft) => {
+        if (typeof draft.summary === 'string') setSummary(draft.summary)
+        if (
+          typeof draft.category === 'string' &&
+          TEAM_SKILL_CATEGORIES.includes(draft.category as TeamSkillCategory)
+        ) {
+          setCategory(draft.category as TeamSkillCategory)
+        }
+        if (typeof draft.whenToUse === 'string') setWhenToUse(draft.whenToUse)
+        if (typeof draft.whenNotToUse === 'string') setWhenNotToUse(draft.whenNotToUse)
+        if (draft.requires !== undefined) setRequiresText((draft.requires ?? []).join(', '))
+        setMetadataReady(true)
+      })
+      .catch((e) => {
+        setMetadataError(e instanceof Error ? e.message : String(e))
+      })
+      .finally(() => setMetadataLoading(false))
+  }, [open, item, onLoadDraftMetadata])
 
   if (!open) return null
 
   const field = 'w-full rounded-[8px] border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-coral/60'
   const label = 'text-[11px] font-semibold uppercase tracking-wide text-faint'
+  const metaHint = (draftValue: string, registryValue: string | null | undefined) =>
+    draftValue.trim() !== (registryValue ?? '').trim() ? (
+      <span className="ml-2 font-normal normal-case text-faint">
+        {t('teamShare.skillPublishDraftDiff', 'differs from registry')}
+      </span>
+    ) : null
+
+  const previewCount =
+    (changePreview?.modified.length ?? 0) +
+    (changePreview?.deleted.length ?? 0) +
+    (changePreview?.added.length ?? 0)
 
   // Publishing sends the directory as it stands, and this directory was built
   // from `baseVersion`. If the team moved on while auto-follow was held back by
@@ -639,19 +736,25 @@ function PublishVersionSheet({
           </Button>
           <Button
             type="button"
-            disabled={!changelog.trim() || busy}
+            disabled={
+              !changelog.trim() ||
+              !summary.trim() ||
+              busy ||
+              metadataLoading ||
+              !metadataReady ||
+              !!metadataError
+            }
             onClick={() =>
-              // Empty fields are omitted, not sent as "". The server rejects a
-              // present-but-empty value, and it does so *after* the package has
-              // already been uploaded — so a blank "when not to use" used to
-              // cost an orphaned blob, no version, and an error naming a field
-              // the dialog never marked as required. Omitted means "keep what
-              // the registry already has", which is what a blank box reads as.
               void onSubmit({
                 changelog: changelog.trim(),
-                summary: summary.trim() || undefined,
-                whenToUse: whenToUse.trim() || undefined,
-                whenNotToUse: whenNotToUse.trim() || undefined,
+                summary: summary.trim(),
+                category,
+                whenToUse: whenToUse.trim(),
+                whenNotToUse: whenNotToUse.trim(),
+                requires: requiresText
+                  .split(',')
+                  .map((part) => part.trim())
+                  .filter(Boolean),
               })
             }
             className="h-8 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90 disabled:opacity-40"
@@ -678,6 +781,26 @@ function PublishVersionSheet({
           </p>
         </div>
       )}
+      {previewCount > 0 && (
+        <div className="rounded-[8px] border border-border-soft bg-paper/60 px-3 py-2 text-[12px] text-muted-foreground">
+          {t('teamShare.skillPublishPreview', 'Publishing {{count}} local file change(s) from disk.', {
+            count: previewCount,
+          })}
+        </div>
+      )}
+      {metadataLoading && (
+        <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          {t('teamShare.skillPublishLoadingDraft', 'Reading draft metadata…')}
+        </div>
+      )}
+      {metadataError && (
+        <div className="rounded-[8px] border border-border border-l-2 border-l-destructive bg-paper px-3 py-2 text-[12px] text-muted-foreground">
+          {t('teamShare.skillPublishDraftMetadataFailed', 'Could not read draft metadata: {{msg}}', {
+            msg: metadataError,
+          })}
+        </div>
+      )}
       <label className="block space-y-1">
         <span className={label}>{t('teamShare.skillShareChangelog', 'Changelog')}</span>
         <textarea
@@ -690,19 +813,58 @@ function PublishVersionSheet({
         />
       </label>
       <label className="block space-y-1">
-        <span className={label}>{t('teamShare.skillShareSummary', 'Summary')}</span>
+        <span className={label}>
+          {t('teamShare.skillShareSummary', 'Summary')}
+          {metaHint(summary, item.summary)}
+        </span>
         <input value={summary} onChange={(e) => setSummary(e.target.value)} maxLength={200} className={field} />
       </label>
       <label className="block space-y-1">
-        <span className={label}>{t('teamShare.skillWhenToUse', 'When to use')}</span>
+        <span className={label}>
+          {t('teamShare.skillShareCategory', 'Category')}
+          {metaHint(category, item.category)}
+        </span>
+        <Select value={category} onValueChange={(v) => setCategory(v as TeamSkillCategory)}>
+          <SelectTrigger className="h-auto w-full rounded-[8px] border-border bg-background px-3 py-2 text-[13px] shadow-none">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {TEAM_SKILL_CATEGORIES.map((c) => (
+              <SelectItem key={c} value={c} className="text-[13px]">
+                {c}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+      <label className="block space-y-1">
+        <span className={label}>
+          {t('teamShare.skillWhenToUse', 'When to use')}
+          {metaHint(whenToUse, item.whenToUse)}
+        </span>
         <textarea value={whenToUse} onChange={(e) => setWhenToUse(e.target.value)} rows={3} className={field} />
       </label>
       <label className="block space-y-1">
-        <span className={label}>{t('teamShare.skillWhenNotToUse', 'When not to use')}</span>
+        <span className={label}>
+          {t('teamShare.skillWhenNotToUse', 'When not to use')}
+          {metaHint(whenNotToUse, item.whenNotToUse)}
+        </span>
         <textarea
           value={whenNotToUse}
           onChange={(e) => setWhenNotToUse(e.target.value)}
           rows={3}
+          className={field}
+        />
+      </label>
+      <label className="block space-y-1">
+        <span className={label}>
+          {t('teamShare.skillRequires', 'Requires')}
+          {metaHint(requiresText, (item.requires ?? []).join(', '))}
+        </span>
+        <input
+          value={requiresText}
+          onChange={(e) => setRequiresText(e.target.value)}
+          placeholder={t('teamShare.skillRequiresHint', 'comma-separated, e.g. git, jq')}
           className={field}
         />
       </label>
@@ -778,25 +940,41 @@ function ForkSheet({
 function DiffSheet({
   slug,
   diffs,
+  teamDiffs,
   loading,
+  teamLoading,
+  showTeamTab,
+  diffTab,
+  onDiffTabChange,
   isDark,
   onClose,
 }: {
   slug: string
   diffs: TeamSkillFileDiff[] | null
+  teamDiffs: TeamSkillFileDiff[] | null
   loading: boolean
+  teamLoading: boolean
+  showTeamTab: boolean
+  diffTab: 'local' | 'team'
+  onDiffTabChange: (tab: 'local' | 'team') => void
   isDark: boolean
   onClose: () => void
 }) {
   const { t } = useTranslation()
+  const activeDiffs = diffTab === 'team' ? teamDiffs : diffs
+  const activeLoading = diffTab === 'team' ? teamLoading : loading
   return (
     <ModalShell
       wide
       title={t('teamShare.skillDiffTitle', 'Your changes to {{slug}}', { slug })}
-      hint={t(
-        'teamShare.skillDiffHint',
-        'Compared against the version you installed, not the newest one.',
-      )}
+      hint={
+        diffTab === 'team'
+          ? t('teamShare.skillTeamDiffHint', 'What the team shipped while your draft was based on an older version.')
+          : t(
+              'teamShare.skillDiffHint',
+              'Compared against the version you installed, not the newest one.',
+            )
+      }
       onClose={onClose}
       footer={
         <Button type="button" variant="ghost" onClick={onClose} className="h-8 text-[13px]">
@@ -804,19 +982,47 @@ function DiffSheet({
         </Button>
       }
     >
-      {loading && (
+      {showTeamTab && (
+        <div className="mb-3 flex gap-2">
+          <button
+            type="button"
+            onClick={() => onDiffTabChange('local')}
+            className={cn(
+              'rounded-[7px] px-2.5 py-1 text-[12px]',
+              diffTab === 'local'
+                ? 'bg-selected text-foreground'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {t('teamShare.skillDiffTabLocal', 'Your edits')}
+          </button>
+          <button
+            type="button"
+            onClick={() => onDiffTabChange('team')}
+            className={cn(
+              'rounded-[7px] px-2.5 py-1 text-[12px]',
+              diffTab === 'team'
+                ? 'bg-selected text-foreground'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {t('teamShare.skillDiffTabTeam', 'Team updates')}
+          </button>
+        </div>
+      )}
+      {activeLoading && (
         <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           {t('common.loading', 'Loading…')}
         </div>
       )}
-      {!loading && diffs?.length === 0 && (
+      {!activeLoading && activeDiffs?.length === 0 && (
         <p className="text-[12px] text-muted-foreground">
           {t('teamShare.skillDiffEmpty', 'Nothing to compare.')}
         </p>
       )}
-      {!loading &&
-        diffs?.map((d) => (
+      {!activeLoading &&
+        activeDiffs?.map((d) => (
           <div key={d.path} className="space-y-1">
             <div className="font-mono text-[11px] text-faint">{d.path}</div>
             {d.binary ? (
@@ -865,6 +1071,11 @@ export function SkillDetail({ slug }: { slug: string }) {
   const allSkills = useTeamShareBrowserStore((s) => s.skills.items)
   const forkSkill = useTeamShareBrowserStore((s) => s.forkSkill)
   const loadSkillDiff = useTeamShareBrowserStore((s) => s.loadSkillDiff)
+  const loadSkillTeamUpdatesDiff = useTeamShareBrowserStore((s) => s.loadSkillTeamUpdatesDiff)
+  const loadSkillDraftMetadata = useTeamShareBrowserStore((s) => s.loadSkillDraftMetadata)
+  const listDraftRecoveries = useTeamShareBrowserStore((s) => s.listDraftRecoveries)
+  const draftRecoveryRevision = useTeamShareBrowserStore((s) => s.draftRecoveryRevision)
+  const rebaseSkillOnLatest = useTeamShareBrowserStore((s) => s.rebaseSkillOnLatest)
   const localState = useTeamShareBrowserStore((s) => s.skillLocalState[slug])
   // Derived, not selected: a selector returning a fresh Set re-renders on every
   // store change, since the reference is new each time it runs.
@@ -901,16 +1112,34 @@ export function SkillDetail({ slug }: { slug: string }) {
   const [forkOpen, setForkOpen] = React.useState(false)
   const [diffOpen, setDiffOpen] = React.useState(false)
   const [diffs, setDiffs] = React.useState<TeamSkillFileDiff[] | null>(null)
+  const [teamDiffs, setTeamDiffs] = React.useState<TeamSkillFileDiff[] | null>(null)
+  const [diffTab, setDiffTab] = React.useState<'local' | 'team'>('local')
   const [diffLoading, setDiffLoading] = React.useState(false)
+  const [teamDiffLoading, setTeamDiffLoading] = React.useState(false)
   const [confirmAction, setConfirmAction] = React.useState<SkillConfirmAction | null>(null)
   const [versions, setVersions] = React.useState<TeamSkillVersion[]>([])
   const [versionsLoading, setVersionsLoading] = React.useState(false)
+  const [recoveries, setRecoveries] = React.useState<DraftRecoveryRecord[]>([])
   const [ownerLabel, setOwnerLabel] = React.useState<string | null>(null)
   const baseline = item?.content ?? ''
 
   React.useEffect(() => {
     setContent(item?.content ?? '')
   }, [slug, item?.content])
+
+  React.useEffect(() => {
+    if (!item || !teamId) {
+      setRecoveries([])
+      return
+    }
+    let cancelled = false
+    void listDraftRecoveries(item.slug).then((rows) => {
+      if (!cancelled) setRecoveries(rows)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [item?.slug, teamId, listDraftRecoveries, draftRecoveryRevision])
 
   React.useEffect(() => {
     if (!item || item.origin !== 'registry' || !teamId) {
@@ -1097,9 +1326,11 @@ export function SkillDetail({ slug }: { slug: string }) {
   const runPublishVersion = React.useCallback(
     async (input: {
       changelog: string
-      summary?: string
-      whenToUse?: string
-      whenNotToUse?: string
+      summary: string
+      category: TeamSkillCategory
+      whenToUse: string
+      whenNotToUse: string
+      requires: string[]
     }) => {
       if (!item || busy) return
       if (item.upstreamSubscribed) {
@@ -1117,6 +1348,24 @@ export function SkillDetail({ slug }: { slug: string }) {
         setPublishOpen(false)
         toast.success(t('teamShare.skillPublished', 'Published'))
       } catch (e) {
+        if (e instanceof StaleDirtySkillPublishError) {
+          toast.error(
+            t(
+              'teamShare.skillPublishStaleDirty',
+              'Your draft is behind the team. Apply the latest version, fork, or discard before publishing.',
+            ),
+          )
+          return
+        }
+        if (e instanceof StaleTeamSkillPublishError) {
+          toast.error(
+            t(
+              'teamShare.skillPublishStaleBase',
+              'Someone else published while you were editing. Your draft is kept — refresh and resolve the conflict.',
+            ),
+          )
+          return
+        }
         toast.error(
           t('teamShare.skillPublishFailed', 'Publish failed: {{msg}}', {
             msg: e instanceof Error ? e.message : String(e),
@@ -1219,18 +1468,28 @@ export function SkillDetail({ slug }: { slug: string }) {
   const runRevert = React.useCallback(
     (version: number) => {
       if (!item || busy) return
+      const expectedLatest = item.latestVersion ?? 0
       setBusy(true)
-      void revertSkillVersion(item.slug, version)
+      void revertSkillVersion(item.slug, version, expectedLatest)
         .then(() =>
           toast.success(t('teamShare.skillReverted', 'Restored v{{v}} as the current version', { v: version })),
         )
-        .catch((e) =>
+        .catch((e) => {
+          if (e instanceof StaleTeamSkillPublishError) {
+            toast.error(
+              t(
+                'teamShare.skillPublishStaleBase',
+                'Someone else published while you were editing. Your draft is kept — refresh and resolve the conflict.',
+              ),
+            )
+            return
+          }
           toast.error(
             t('teamShare.skillRevertFailed', 'Restore failed: {{msg}}', {
               msg: e instanceof Error ? e.message : String(e),
             }),
-          ),
-        )
+          )
+        })
         .finally(() => setBusy(false))
     },
     [item, busy, revertSkillVersion, t],
@@ -1239,8 +1498,20 @@ export function SkillDetail({ slug }: { slug: string }) {
   const openDiff = React.useCallback(() => {
     if (!item) return
     setDiffOpen(true)
+    setDiffTab('local')
     setDiffLoading(true)
+    setTeamDiffLoading(false)
     setDiffs(null)
+    setTeamDiffs(null)
+    const baseVersion = localState?.installedVersion
+      ? Number(localState.installedVersion)
+      : item.installedVersion
+    const latestVersion = item.latestVersion
+    const stale =
+      localState?.state === 'stale_dirty' &&
+      baseVersion != null &&
+      latestVersion != null &&
+      latestVersion > baseVersion
     void loadSkillDiff(item.slug)
       .then(setDiffs)
       .catch((e) => {
@@ -1252,11 +1523,58 @@ export function SkillDetail({ slug }: { slug: string }) {
         )
       })
       .finally(() => setDiffLoading(false))
-  }, [item, loadSkillDiff, t])
+    if (stale && baseVersion != null && latestVersion != null) {
+      setTeamDiffLoading(true)
+      void loadSkillTeamUpdatesDiff(item.slug, baseVersion, latestVersion)
+        .then(setTeamDiffs)
+        .catch(() => setTeamDiffs([]))
+        .finally(() => setTeamDiffLoading(false))
+    }
+  }, [item, localState, loadSkillDiff, loadSkillTeamUpdatesDiff, t])
+
+  const runRebaseOnLatest = React.useCallback(() => {
+    if (!item || busy) return
+    const latest = item.latestVersion
+    const ok = window.confirm(
+      t(
+        'teamShare.skillRebaseConfirm',
+        'Your draft moves to recovery trash and this machine installs team v{{v}}. Continue?',
+        { v: latest },
+      ),
+    )
+    if (!ok) return
+    setBusy(true)
+    void rebaseSkillOnLatest(item.slug)
+      .then((trashedPath) =>
+        toast.success(t('teamShare.skillRebased', 'Applied team v{{v}}', { v: latest }), {
+          action: undoAction(trashedPath, item.slug),
+        }),
+      )
+      .catch((e) => {
+        if (e instanceof SkillDiscardIncompleteError) {
+          toast.error(t('teamShare.skillRebasePartial', 'Draft archived; team copy will sync shortly.'), {
+            action: undoAction(e.trashedPath, item.slug),
+          })
+          return
+        }
+        toast.error(
+          t('teamShare.skillRebaseFailed', 'Could not apply team version: {{msg}}', {
+            msg: e instanceof Error ? e.message : String(e),
+          }),
+        )
+      })
+      .finally(() => setBusy(false))
+  }, [item, busy, rebaseSkillOnLatest, t, undoAction])
+
+  const loadDraftMetadata = React.useCallback(
+    () => loadSkillDraftMetadata(item?.slug ?? slug),
+    [loadSkillDraftMetadata, item?.slug, slug],
+  )
 
   if (!item) return null
 
-  const conflicted = localState?.state === 'dirty'
+  const conflicted =
+    localState?.state === 'dirty' || localState?.state === 'stale_dirty'
   const isRegistry = item.origin === 'registry'
   const isPersonal = item.kind === 'personal'
   const isBuiltin = isPersonal && item.personalSource === 'builtin'
@@ -1268,15 +1586,22 @@ export function SkillDetail({ slug }: { slug: string }) {
   const canEdit = Boolean(item.dirPath && item.filename && (item.kind === 'personal' || item.installed))
   const canShare = isPersonal && Boolean(item.dirPath && item.filename)
   const latestChangelog = [...versions].sort((a, b) => b.version - a.version)[0]?.changelog
+  const baseVersion = localState?.installedVersion
+    ? Number(localState.installedVersion)
+    : item.installedVersion
+  const isStaleDirty = localState?.state === 'stale_dirty'
   // Any team member can publish and revert: the registry is team property, and
   // the gate on a new version is the required fields, not an approver. `owner`
   // stays on the row as the answer to "who is responsible for this" — it is
   // displayed, not enforced (see the member-writes migration and the pg-repo
-  // header).
-  const canPublish = isRegistry
-  const baseVersion = localState?.installedVersion
-    ? Number(localState.installedVersion)
-    : item.installedVersion
+  // header). stale_dirty must rebase/fork/discard first — publishing would
+  // overwrite team versions the author never saw.
+  const canPublish = isRegistry && !isStaleDirty
+  const showTeamDiffTab =
+    isStaleDirty &&
+    baseVersion != null &&
+    item.latestVersion != null &&
+    item.latestVersion > baseVersion
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -1516,6 +1841,55 @@ export function SkillDetail({ slug }: { slug: string }) {
         own, possibly seconds after they signed in on a new machine, so the file
         was set aside instead and they get to decide.
       */}
+      {recoveries.length > 0 && (
+        <div className="border-b border-border px-5 py-3">
+          <div className="rounded-[8px] border border-border border-l-2 border-l-foreground bg-paper px-4 py-3">
+            <span className="text-[13px] font-semibold text-foreground">
+              {t('teamShare.skillDraftRecoveryTitle', 'Recent draft recoveries')}
+            </span>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+              {t(
+                'teamShare.skillDraftRecoveryBody',
+                'Discarded drafts are kept for 7 days. Restore one to pick up where you left off.',
+              )}
+            </p>
+            <ul className="mt-2 space-y-2">
+              {recoveries.map((rec) => (
+                <li
+                  key={rec.path}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-border-soft bg-background px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-[12.5px] font-medium text-foreground">{rec.slug}</p>
+                    <p className="font-mono text-[11px] text-faint">
+                      {new Date(rec.at).toLocaleString()}
+                      {rec.baseVersion != null ? ` · v${rec.baseVersion}` : ''}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() =>
+                      void restoreDiscardedSkill(rec.path, rec.slug).catch((e) =>
+                        toast.error(
+                          t('teamShare.skillRestoreFailed', 'Restore failed: {{msg}}', {
+                            msg: e instanceof Error ? e.message : String(e),
+                          }),
+                        ),
+                      )
+                    }
+                    className="h-8 shrink-0 text-[13px] text-muted-foreground hover:text-foreground"
+                  >
+                    {t('teamShare.skillDraftRecoveryRestore', 'Restore draft')}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {archivedPath && (
         <div className="border-b border-border px-5 py-3">
           <div className="rounded-[8px] border border-border border-l-2 border-l-foreground bg-paper px-4 py-3">
@@ -1565,10 +1939,13 @@ export function SkillDetail({ slug }: { slug: string }) {
           latestVersion={item.latestVersion}
           busy={busy}
           canPublish={canPublish}
+          isStaleDirty={isStaleDirty}
+          source={localState?.source ?? 'member'}
           onViewDiff={openDiff}
           onPublish={() => setPublishOpen(true)}
           onFork={() => setForkOpen(true)}
           onDiscard={() => void runDiscard()}
+          onRebaseOnLatest={() => void runRebaseOnLatest()}
         />
       )}
 
@@ -1682,6 +2059,16 @@ export function SkillDetail({ slug }: { slug: string }) {
         baseVersion={baseVersion}
         open={publishOpen}
         busy={busy}
+        changePreview={
+          conflicted
+            ? {
+                modified: localState?.modified ?? [],
+                deleted: localState?.deleted ?? [],
+                added: localState?.added ?? [],
+              }
+            : undefined
+        }
+        onLoadDraftMetadata={loadDraftMetadata}
         onClose={() => setPublishOpen(false)}
         onSubmit={runPublishVersion}
       />
@@ -1696,7 +2083,12 @@ export function SkillDetail({ slug }: { slug: string }) {
         <DiffSheet
           slug={item.slug}
           diffs={diffs}
+          teamDiffs={teamDiffs}
           loading={diffLoading}
+          teamLoading={teamDiffLoading}
+          showTeamTab={showTeamDiffTab}
+          diffTab={diffTab}
+          onDiffTabChange={setDiffTab}
           isDark={isDark}
           onClose={() => setDiffOpen(false)}
         />

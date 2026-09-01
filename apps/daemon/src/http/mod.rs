@@ -26,6 +26,7 @@
 //! - [`events`] — typed event schema + ring buffer + replay (PR5/7)
 //! - [`limit`] — rate limiting + body limits (PR8)
 
+pub mod ai;
 pub mod apps;
 pub mod auth;
 pub mod config;
@@ -50,4 +51,4 @@ pub mod workspaces;
 mod routes;
 pub mod server;
 
-pub use server::{spawn, HttpHandle};
+pub use server::{spawn, spawn_with_refresh_watch_registry, HttpHandle};

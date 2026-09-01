@@ -45,9 +45,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 
 use teamclu_skillpack::{
-    apply_zip_mode, build_manifest_for, list_managed_paths, read_origin, sanitize_zip_path,
-    swap_managed_files, write_origin, write_registry_frontmatter, RegistryFields, SkillOrigin,
-    ORIGIN_VERSION, SOURCE_TEAM,
+    apply_zip_mode, build_manifest_for, inspect, list_managed_paths, read_origin, sanitize_zip_path,
+    swap_managed_files, write_origin, write_registry_frontmatter, DirtyState, RegistryFields,
+    SkillOrigin, ORIGIN_VERSION, SOURCE_TEAM,
 };
 
 use crate::backend::{Backend, TeamSkillRow};
@@ -170,10 +170,20 @@ impl TeamSkillReconciler {
 
         for row in rows.iter().filter(|r| r.installed) {
             let want = desired_version(row);
+            let target = root.join(&row.slug);
             // A pack whose recorded version we cannot read is reinstalled
             // rather than trusted: one redundant download beats leaving content
             // of unknown provenance in front of an agent.
             if on_disk.get(&row.slug).copied() != Some(want) {
+                if is_dirty_pack(&target) {
+                    tracing::info!(
+                        team_id,
+                        slug = %row.slug,
+                        want,
+                        "team skill auto-follow held back by local draft"
+                    );
+                    continue;
+                }
                 match self.install(team_id, root, row, want).await {
                     Ok(()) => {
                         outcome.installed += 1;
@@ -216,6 +226,15 @@ impl TeamSkillReconciler {
                 continue;
             }
             let dir = root.join(slug);
+            if is_dirty_pack(&dir) {
+                match archive_removed_pack(team_id, &dir, slug) {
+                    Ok(()) => outcome.removed += 1,
+                    Err(e) => {
+                        tracing::warn!(team_id, slug = %slug, error = %e, "team skill archive failed");
+                    }
+                }
+                continue;
+            }
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => outcome.removed += 1,
                 Err(e) => {
@@ -306,6 +325,29 @@ impl TeamSkillReconciler {
     }
 }
 
+/// Same refresh fan-out as [`apply_team_skill_outcome`], but for a local draft
+/// edit that did not change the reconciler's install set.
+pub async fn notify_team_skill_draft_changed(
+    team_id: &str,
+    backend: Option<&Arc<dyn Backend>>,
+    refresh: Option<&Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
+    refresh_watch_registry: Option<
+        &Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>,
+    >,
+) {
+    apply_team_skill_outcome(
+        team_id,
+        TeamSkillReconcileOutcome {
+            installed: 1,
+            removed: 0,
+        },
+        backend,
+        refresh,
+        refresh_watch_registry,
+    )
+    .await;
+}
+
 /// Tell every local workspace of this team that its skill set moved.
 ///
 /// The install root is outside every `refresh_watch` root — deliberately, since
@@ -317,51 +359,81 @@ pub async fn apply_team_skill_outcome(
     outcome: TeamSkillReconcileOutcome,
     backend: Option<&Arc<dyn Backend>>,
     refresh: Option<&Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
+    refresh_watch_registry: Option<
+        &Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>,
+    >,
 ) {
     if !outcome.changed() {
         return;
     }
-    let (Some(refresh), Some(backend)) = (refresh, backend) else {
+    let Some(refresh) = refresh else {
         return;
     };
 
-    let rows = match backend
-        .get_workspaces_by_agent(team_id, backend.actor_id())
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!(
+    let mut cloud_targets = Vec::new();
+    if let Some(backend) = backend {
+        match backend
+            .get_workspaces_by_agent(team_id, backend.actor_id())
+            .await
+        {
+            Ok(rows) => {
+                for row in rows {
+                    let Some((path, _)) =
+                        crate::config::workspace_path::listable_local_workspace(&row)
+                    else {
+                        continue;
+                    };
+                    cloud_targets.push(crate::runtime::refresh::refresh_watch::WatchedWorkspace {
+                        workspace_id: row.id,
+                        workspace_path: PathBuf::from(path),
+                    });
+                }
+            }
+            Err(e) => tracing::warn!(
                 team_id,
                 error = %e,
-                "team skills changed but workspace list failed; skipping refresh fan-out"
-            );
-            return;
+                "team skills changed but cloud workspace list failed; using runtime refresh targets"
+            ),
         }
-    };
+    }
 
-    for row in rows {
-        let Some((path, _)) = crate::config::workspace_path::listable_local_workspace(&row) else {
-            continue;
-        };
-        let workspace_path = PathBuf::from(&path);
-        let workspace_id = row.id;
+    let runtime_targets = match refresh_watch_registry {
+        Some(registry) => registry.snapshot().await,
+        None => Vec::new(),
+    };
+    for target in merge_refresh_targets(cloud_targets, runtime_targets) {
         if let Err(error) = refresh
             .record_change(
-                &workspace_id,
-                &workspace_path,
+                &target.workspace_id,
+                &target.workspace_path,
                 crate::runtime::refresh::RefreshChangeKind::Skills,
                 crate::runtime::refresh::RefreshSource::UiMutation,
             )
             .await
         {
             tracing::warn!(
-                workspace_id,
+                workspace_id = target.workspace_id,
+                workspace_path = %target.workspace_path.display(),
                 error = %error,
                 "failed to record skills refresh after team skill reconcile"
             );
         }
     }
+}
+
+fn merge_refresh_targets(
+    cloud_targets: Vec<crate::runtime::refresh::refresh_watch::WatchedWorkspace>,
+    runtime_targets: Vec<crate::runtime::refresh::refresh_watch::WatchedWorkspace>,
+) -> Vec<crate::runtime::refresh::refresh_watch::WatchedWorkspace> {
+    let mut by_workspace_id = HashMap::new();
+    // Runtime targets are inserted last: RuntimeStart's effective path wins
+    // over a stale cloud path for the same workspace identity.
+    for target in cloud_targets.into_iter().chain(runtime_targets) {
+        by_workspace_id.insert(target.workspace_id.clone(), target);
+    }
+    let mut targets: Vec<_> = by_workspace_id.into_values().collect();
+    targets.sort_by(|a, b| a.workspace_id.cmp(&b.workspace_id));
+    targets
 }
 
 /// Which packs are in this root, and at what version, from each pack's own
@@ -409,6 +481,23 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn is_dirty_pack(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    let baseline = read_origin(path).and_then(|o| o.files);
+    inspect(path, baseline.as_ref()).is_dirty()
+}
+
+fn archive_removed_pack(team_id: &str, dir: &Path, slug: &str) -> Result<(), String> {
+    let archive_root = global_team_cloud_dir(team_id).join("archived-skills");
+    std::fs::create_dir_all(&archive_root)
+        .map_err(|e| format!("create archive dir: {e}"))?;
+    let dest = archive_root.join(format!("{slug}-{}", now_millis()));
+    std::fs::rename(dir, dest).map_err(|e| format!("archive skill {slug}: {e}"))?;
+    Ok(())
 }
 
 /// Unpack a skill archive.
@@ -519,5 +608,53 @@ mod tests {
 
         assert!(target.join("SKILL.md").is_file());
         assert!(!tmp.path().join("escaped.md").exists());
+    }
+
+    #[test]
+    fn runtime_refresh_target_overrides_stale_cloud_path() {
+        use crate::runtime::refresh::refresh_watch::WatchedWorkspace;
+
+        let targets = merge_refresh_targets(
+            vec![WatchedWorkspace {
+                workspace_id: "ws-1".into(),
+                workspace_path: PathBuf::from("/tmp/stale-cloud-path"),
+            }],
+            vec![WatchedWorkspace {
+                workspace_id: "ws-1".into(),
+                workspace_path: PathBuf::from("/tmp/actual-runtime-path"),
+            }],
+        );
+        assert_eq!(
+            targets[0].workspace_path,
+            Path::new("/tmp/actual-runtime-path")
+        );
+    }
+
+    #[tokio::test]
+    async fn team_skill_change_refreshes_runtime_target_without_cloud_inventory() {
+        use crate::runtime::refresh::refresh_watch::{RefreshWatchRegistry, WatchedWorkspace};
+
+        let registry = RefreshWatchRegistry::new(vec![WatchedWorkspace {
+            workspace_id: "ws-runtime".into(),
+            workspace_path: PathBuf::from("/tmp/actual-runtime-path"),
+        }]);
+        let refresh = crate::runtime::refresh::RuntimeRefreshCoordinator::new();
+        apply_team_skill_outcome(
+            "team-1",
+            TeamSkillReconcileOutcome {
+                installed: 1,
+                removed: 0,
+            },
+            None,
+            Some(&refresh),
+            Some(&registry),
+        )
+        .await;
+
+        let state = refresh.workspace_state("ws-runtime").await.unwrap();
+        assert_eq!(state.workspace_path, "/tmp/actual-runtime-path");
+        assert!(state
+            .change_kinds
+            .contains(&crate::runtime::refresh::RefreshChangeKind::Skills));
     }
 }

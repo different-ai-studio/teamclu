@@ -17,7 +17,7 @@ const lazySection = (load: () => Promise<Record<string, unknown>>, name: string)
 
 export const SETTINGS_SECTION_COMPONENTS: Record<SettingsSection, React.ComponentType> = {
   llm: lazySection(() => import('./LLMSectionRouter'), 'LLMSection'),
-  teamLlm: lazySection(() => import('./TeamLlmSection'), 'TeamLlmSection'),
+  knowledgeAcl: lazySection(() => import('./KnowledgeAclSection'), 'KnowledgeAclSection'),
   general: lazySection(() => import('./GeneralSection'), 'GeneralSection'),
   prompt: lazySection(() => import('./PromptSection'), 'PromptSection'),
   channels: lazySection(() => import('./ChannelsSection'), 'ChannelsSection'),
@@ -33,6 +33,8 @@ export const SETTINGS_SECTION_COMPONENTS: Record<SettingsSection, React.Componen
   roles: lazySection(() => import('./RolesSection'), 'RolesSection'),
   rolesSkills: lazySection(() => import('./RolesSkillsSection'), 'RolesSkillsSection'),
   deps: lazySection(() => import('./DependenciesSection'), 'DependenciesSection'),
+  billing: lazySection(() => import('./BillingSection'), 'BillingSection'),
+  tokenUsage: lazySection(() => import('./TokenUsageSection'), 'TokenUsageSection'),
   privacy: lazySection(() => import('./PrivacySection'), 'PrivacySection'),
   permissions: lazySection(() => import('./PermissionManagementSection'), 'PermissionManagementSection'),
   leaderboard: lazySection(() => import('./LeaderboardSection'), 'LeaderboardSection'),

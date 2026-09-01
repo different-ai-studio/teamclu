@@ -1,6 +1,7 @@
 import type { TeamSkillsBackend } from "./cloud-api/team-skills";
 import type { MarketplaceBackend } from "./cloud-api/marketplace";
 import type { TeamMcpBackend } from "./cloud-api/team-mcp";
+import type { KnowledgeAclBackend } from "./cloud-api/knowledge-acl";
 import type { TeamEnvSecretsBackend } from "./cloud-api/team-env-secrets";
 import type { OAuthProvider } from "@/lib/auth";
 
@@ -463,6 +464,86 @@ export type TeamInviteInput =
       teamRole?: null;
     });
 
+
+// ── Team credits (AI gateway) ───────────────────────────────────────────────
+// Replaces the LiteLLM usage shape. The headline number is CREDITS, not a
+// currency amount: credits are our own pricing unit and are not anchored to
+// upstream cost, so a dollar figure here would be a different thing entirely.
+
+export type CreditUsageRange = "day" | "week" | "month" | "year";
+
+export interface CreditUsageSummary {
+  credits: number;
+  inputTokens: number;
+  /**
+   * Subset of inputTokens that hit the upstream prompt cache. Recorded for
+   * margin analysis and NOT billed differently — the tier price is what the
+   * customer pays. Surfaced so support can explain a cost, never as a discount.
+   */
+  cachedInputTokens: number;
+  outputTokens: number;
+  requests: number;
+}
+
+export interface CreditUsageByModel extends CreditUsageSummary {
+  /** The public tier (`default` / `pro` / `max`), never the upstream model. */
+  publicModelId: string;
+}
+
+export interface CreditUsageByActor extends CreditUsageSummary {
+  /** null = the unattributed bucket; render a localized label, never a raw id. */
+  actorId: string | null;
+  displayName: string | null;
+}
+
+export interface CreditUsageReport {
+  range: CreditUsageRange;
+  startUtc: string;
+  endUtc: string;
+  summary: CreditUsageSummary;
+  byModel: CreditUsageByModel[];
+  byActor: CreditUsageByActor[];
+}
+
+export interface TeamCredits {
+  teamId: string;
+  balanceCredits: number;
+  usedCredits: number;
+  period: { range: string; startUtc: string; endUtc: string };
+}
+
+export interface CreditLedgerEntry {
+  id: string;
+  kind: "top_up" | "grant" | "adjustment" | "refund";
+  /** Signed: refunds are negative. */
+  amountCredits: number;
+  note: string | null;
+  createdAt: string;
+}
+
+/** One buyable credit package, resolved server-side from the deployment's
+ *  Stripe Price allowlist. Never hardcoded here: a price baked into a shipped
+ *  client is wrong the day it changes and cannot be corrected without a
+ *  release. */
+export interface CreditPackage {
+  priceId: string;
+  /** Credits granted on purchase. */
+  credits: number;
+  /** MINOR currency units (cents, 分) — Stripe's own unit, unconverted. */
+  unitAmount: number | null;
+  currency: string;
+  name: string;
+}
+
+export interface TeamQuotas {
+  /** Team-level, not per-member: mixed periods make "used this period" incomparable. */
+  period: "week" | "month";
+  /** null = unlimited. */
+  defaultLimitCredits: number | null;
+  lowBalanceCredits: number | null;
+  members: Array<{ actorId: string; limitCredits: number | null }>;
+}
+
 export interface TeamsBackend {
   listCurrentUserTeams(args?: { limit?: number }): Promise<TeamSummary[]>;
   getTeam(teamId: string): Promise<TeamSummary | null>;
@@ -495,6 +576,23 @@ export interface TeamsBackend {
   /** Toggle a team's visibility (public | private) via PATCH /v1/teams/:id. */
   setTeamVisibility(teamId: string, visibility: "public" | "private"): Promise<TeamSummary>;
   activateTeam(teamId: string): Promise<{ actorId: string | null; teamId: string; refreshToken: string }>;
+
+  // Team credits. Balance and usage are readable by any member — an exhausted
+  // wallet stops their work, so they must be able to see why. The ledger and
+  // every mutation are owner-only and 403 otherwise.
+  getTeamCredits(teamId: string): Promise<TeamCredits>;
+  getCreditUsage(teamId: string, opts?: { range?: CreditUsageRange; date?: string }): Promise<CreditUsageReport>;
+  getCreditLedger(teamId: string, opts?: { limit?: number }): Promise<{ items: CreditLedgerEntry[] }>;
+  topUpCredits(teamId: string, input: { amountCredits: number; idempotencyKey: string; kind?: string; note?: string | null }): Promise<{ applied: boolean; balanceCredits: number }>;
+  /** Empty when the deployment has no Stripe configured — render "top-up
+   *  unavailable", not an error. */
+  listCreditPackages(teamId: string): Promise<{ items: CreditPackage[] }>;
+  /** Owner-only. Returns a hosted Checkout URL to open in the SYSTEM browser
+   *  (the embedded webview breaks 3DS and wallets, and hides the address bar
+   *  on a payment page). */
+  createCreditCheckoutSession(teamId: string, input: { priceId: string }): Promise<{ sessionId: string; url: string }>;
+  getMemberQuotas(teamId: string): Promise<TeamQuotas>;
+  setMemberQuotas(teamId: string, input: Partial<TeamQuotas>): Promise<{ ok: boolean }>;
 }
 
 export interface IdeaRow {
@@ -1186,5 +1284,6 @@ export interface TeamCluBackend {
   teamSkills: TeamSkillsBackend;
   marketplace: MarketplaceBackend;
   teamMcp: TeamMcpBackend;
+  knowledgeAcl: KnowledgeAclBackend;
   teamEnvSecrets: TeamEnvSecretsBackend;
 }

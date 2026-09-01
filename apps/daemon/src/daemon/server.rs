@@ -49,6 +49,7 @@ mod peers_workspaces;
 mod remote_tools;
 mod rpc;
 mod skills_manage;
+mod knowledge;
 mod runtime_lifecycle;
 use crate::history::EventHistory;
 #[cfg(test)]
@@ -174,6 +175,8 @@ pub struct DaemonServer {
     refresh_watch_registry:
         Option<std::sync::Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
     refresh_coordinator: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
+    /// Applies skills-only refreshes once the workspace becomes idle.
+    refresh_auto_apply_task: Option<tokio::task::JoinHandle<()>>,
     /// Shared flag written by the MQTT event loop and read by `/v1/info`.
     mqtt_connected_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Recovery signal receiver is installed into the supervisor exactly once.
@@ -196,6 +199,10 @@ pub struct DaemonServer {
     rpc_client: Arc<AsyncMutex<crate::teamclu::rpc::RpcClient>>,
     team_skill_reconciler: Arc<crate::runtime::team_skills::TeamSkillReconciler>,
     runtime_context: Arc<crate::runtime::RuntimeContextService>,
+    /// HTTP listener handle; shut down before local runtimes so loopback
+    /// `/internal/runtime-context/*` does not outlive the process or serve
+    /// stale Pi generations after restart.
+    http_handle: Option<crate::http::server::HttpHandle>,
     /// Answered capability-management requests, keyed on the authorized
     /// (requester, request_id) pair. Shared rather than owned so the handler
     /// can run on its own task instead of on the message pump.
@@ -322,6 +329,12 @@ pub(crate) enum SockCommand {
     },
     /// Agent-managed personal skill create/update/get from teamclu-introspect.
     SkillsManage {
+        payload: serde_json::Value,
+        reply_tx: oneshot::Sender<String>,
+    },
+    /// Knowledge-base MCP tools (scaffold / create / search) from the
+    /// agent-facing MCP bridge. Pure vault file ops on the active team.
+    Knowledge {
         payload: serde_json::Value,
         reply_tx: oneshot::Sender<String>,
     },
@@ -807,6 +820,7 @@ impl DaemonServer {
             cron_sessions: cron::CronSessionCache::new(),
             refresh_watch_registry: None,
             refresh_coordinator: None,
+            refresh_auto_apply_task: None,
             mqtt_connected_flag: None,
             managed_llm: Arc::new(crate::runtime::managed_llm::ManagedLlmResolver::new(
                 backend,
@@ -821,6 +835,7 @@ impl DaemonServer {
             rpc_client,
             team_skill_reconciler,
             runtime_context,
+            http_handle: None,
             agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
             cron_turn_done_tx,
             cron_turn_done_rx: Some(cron_turn_done_rx),
@@ -1091,7 +1106,7 @@ impl DaemonServer {
         // once the sock command channel exists (below).
         let mut supervisor_for_prewarm: Option<Arc<crate::runtime::RuntimeSupervisor>> = None;
         let team_skill_reconciler = self.team_skill_reconciler.clone();
-        let _http_handle = {
+        self.http_handle = {
             let mut meta = crate::http::server::metadata(self.actor_id.clone(), "amuxd");
             // Expose configured backends so the model-catalog endpoint can
             // group models per backend (opencode / pi / cursor / claude-code).
@@ -1125,6 +1140,8 @@ impl DaemonServer {
                 let mut manager = self.agents.lock().await;
                 manager.attach_refresh_coordinator(refresh_coordinator.clone());
             }
+            self.refresh_auto_apply_task =
+                Some(runtime_supervisor.clone().start_refresh_auto_applier());
             let runtime: Arc<dyn crate::http::runtime_adapter::RuntimeAdapter> =
                 crate::http::runtime_adapter::RuntimeManagerAdapter::new_with_execution_context_assembler(
                     self.agents.clone(),
@@ -1156,7 +1173,13 @@ impl DaemonServer {
                     ),
                 )
             });
-            match crate::http::spawn(
+            let session_prompt = Some(Arc::new(
+                crate::runtime::session_prompt::SessionPromptService::new(
+                    self.agents.clone(),
+                    self.backend.clone(),
+                ),
+            ));
+            match crate::http::spawn_with_refresh_watch_registry(
                 http_cfg,
                 meta,
                 runtime,
@@ -1175,7 +1198,9 @@ impl DaemonServer {
                 Some(local_rpc_tx),
                 Some(local_live_ingest_tx),
                 Some(team_skill_reconciler.clone()),
+                self.refresh_watch_registry.clone(),
                 Some(self.runtime_context.clone()),
+                session_prompt,
             )
             .await
             {
@@ -1506,13 +1531,20 @@ impl DaemonServer {
             let reconciler = team_skill_reconciler.clone();
             let backend = Some(self.backend.clone());
             let refresh = self.refresh_coordinator.clone();
+            let refresh_watch_registry = self.refresh_watch_registry.clone();
             tokio::spawn(async move {
                 // Once at startup so a daemon that was offline while an admin
                 // made a change converges immediately rather than after a full
                 // interval.
                 let outcome = reconciler.reconcile_now(&team_id).await;
-                apply_team_skill_outcome(&team_id, outcome, backend.as_ref(), refresh.as_ref())
-                    .await;
+                apply_team_skill_outcome(
+                    &team_id,
+                    outcome,
+                    backend.as_ref(),
+                    refresh.as_ref(),
+                    refresh_watch_registry.as_ref(),
+                )
+                .await;
                 let mut tick = tokio::time::interval(crate::runtime::team_skills::TEAM_SKILLS_TTL);
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
@@ -1524,8 +1556,14 @@ impl DaemonServer {
                     // every tick lands a few seconds short of the TTL and skips,
                     // silently halving the cadence to 20 minutes.
                     let outcome = reconciler.reconcile_now(&team_id).await;
-                    apply_team_skill_outcome(&team_id, outcome, backend.as_ref(), refresh.as_ref())
-                        .await;
+                    apply_team_skill_outcome(
+                        &team_id,
+                        outcome,
+                        backend.as_ref(),
+                        refresh.as_ref(),
+                        refresh_watch_registry.as_ref(),
+                    )
+                    .await;
                 }
             });
         }
@@ -1948,6 +1986,9 @@ impl DaemonServer {
                             }
                             Some(SockCommand::SkillsManage { payload, reply_tx }) => {
                                 self.handle_skills_manage(payload, reply_tx).await;
+                            }
+                            Some(SockCommand::Knowledge { payload, reply_tx }) => {
+                                self.handle_knowledge(payload, reply_tx).await;
                             }
                             Some(SockCommand::CursorPermission { payload, reply_tx }) => {
                                 tokio::spawn(async move {
@@ -2401,6 +2442,9 @@ impl DaemonServer {
                             }
                             Some(SockCommand::SkillsManage { payload, reply_tx }) => {
                                 self.handle_skills_manage(payload, reply_tx).await;
+                            }
+                            Some(SockCommand::Knowledge { payload, reply_tx }) => {
+                                self.handle_knowledge(payload, reply_tx).await;
                             }
                             Some(SockCommand::CursorPermission { payload, reply_tx }) => {
                                 tokio::spawn(async move {
@@ -2905,6 +2949,32 @@ where
                                 }
                                 Err(_) => {
                                     warn!("amuxd.sock: skills-manage reply dropped");
+                                }
+                            }
+                        } else if cmd == "knowledge" {
+                            let (reply_tx, reply_rx) = oneshot::channel();
+                            if tx
+                                .send(SockCommand::Knowledge {
+                                    payload: v,
+                                    reply_tx,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                            match reply_rx.await {
+                                Ok(body) => {
+                                    let mut stream = reader.into_inner();
+                                    if let Err(e) = stream.write_all(body.as_bytes()).await {
+                                        warn!("amuxd.sock: knowledge write failed: {e}");
+                                        return;
+                                    }
+                                    let _ = stream.write_all(b"\n").await;
+                                    let _ = stream.shutdown().await;
+                                }
+                                Err(_) => {
+                                    warn!("amuxd.sock: knowledge reply dropped");
                                 }
                             }
                         } else if cmd == "cursor-permission" {
@@ -3814,6 +3884,7 @@ pub(crate) mod tests {
                 cron_sessions: cron::CronSessionCache::new(),
                 refresh_watch_registry: None,
                 refresh_coordinator: None,
+                refresh_auto_apply_task: None,
                 mqtt_connected_flag: None,
                 mqtt_recovery_rx: None,
                 mqtt_recovery_handle: crate::mqtt::MqttRecoveryHandle::channel().0,
@@ -3839,6 +3910,7 @@ pub(crate) mod tests {
                     crate::runtime::team_skills::TeamSkillReconciler::new(backend),
                 ),
                 runtime_context: Arc::new(crate::runtime::RuntimeContextService::new()),
+                http_handle: None,
                 agent_management_results: Arc::new(AsyncMutex::new(HashMap::new())),
                 cron_turn_done_tx,
                 cron_turn_done_rx: Some(cron_turn_done_rx),
@@ -4219,6 +4291,21 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn all_actual_entry_points_propagate_identical_workspace_env_and_revision() {
+        // Each entry point re-derives OPENCODE_CONFIG from the process-global
+        // amuxd home (`global_opencode_config_path` -> `amuxd_home_from_env`),
+        // once per spawn. This test spawns four times across many awaits, so a
+        // concurrent test moving `HOME` between two of them makes those two
+        // disagree on the path and the comparison fails -- the `daemon::server`
+        // race `test_brand_env` documents. Pin the home and take that lock.
+        let amuxd_home = TempDir::new().unwrap();
+        let _home_guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(amuxd_home.path());
+        // `env_assembly` only emits OPENCODE_CONFIG when the file is there, so
+        // without this the key is absent from all four captures and they agree
+        // for the wrong reason. Materialise it and the assertion covers it.
+        let global_config = teamclu_runtime_env::opencode_config::global_opencode_config_path();
+        std::fs::create_dir_all(global_config.parent().unwrap()).unwrap();
+        std::fs::write(&global_config, "{}").unwrap();
+
         let workspace = TempDir::new().unwrap();
         let backend = Arc::new(crate::backend::mock::MockBackend::with_identity(
             "team-test",
@@ -4329,6 +4416,13 @@ pub(crate) mod tests {
         let captures = captures.lock().unwrap().clone();
         assert_eq!(captures.len(), 4);
         let desktop = &captures[0];
+        // Guards the setup above: if the device config were missing, every
+        // capture would simply lack this key and the comparison would pass
+        // without ever covering it.
+        assert!(
+            desktop.extra_env.contains_key("OPENCODE_CONFIG"),
+            "OPENCODE_CONFIG absent, so the env comparison below covers nothing"
+        );
         for (entry_point, capture) in [
             ("cron", &captures[1]),
             ("resume", &captures[2]),

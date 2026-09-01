@@ -23,6 +23,7 @@ import { useProviderStore } from '@/stores/provider'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useTeamModeStore } from '@/stores/team-mode'
 import { TEAM_SHARED_PROVIDER_ID } from '@/lib/team-provider'
+import { TeamProviderCard } from './llm/TeamProviderCard'
 import {
   catalogModelsForProvider,
   groupCatalogModelsByProvider,
@@ -609,6 +610,9 @@ export const OpenCodeLLMSection = React.memo(function OpenCodeLLMSection() {
         </div>
       </div>
 
+
+      {/* The team gateway is pinned above the connectable providers. */}
+      <TeamProviderCard />
 
       {/* Loading State */}
       {providersLoading && providers.length === 0 && (

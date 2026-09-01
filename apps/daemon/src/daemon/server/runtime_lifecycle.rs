@@ -237,6 +237,24 @@ impl DaemonServer {
             }
         }
 
+        // RuntimeStart's worktree is the directory OpenCode actually uses and
+        // therefore the authoritative target for cache invalidation.
+        if let Some(registry) = self.refresh_watch_registry.as_ref() {
+            let refresh_workspace_id = if ws_id.is_empty() {
+                crate::runtime::refresh::refresh_watch::workspace_runtime_id(Path::new(
+                    &resolved_worktree,
+                ))
+            } else {
+                ws_id.clone()
+            };
+            registry
+                .upsert_workspace(crate::runtime::refresh::refresh_watch::WatchedWorkspace {
+                    workspace_id: refresh_workspace_id,
+                    workspace_path: PathBuf::from(&resolved_worktree),
+                })
+                .await;
+        }
+
         // Invariant: a conversation has at most one live runtime *on this
         // daemon*. The daemon is a single actor/participant in the session, so
         // it must answer an @mention exactly once. Historically each desktop

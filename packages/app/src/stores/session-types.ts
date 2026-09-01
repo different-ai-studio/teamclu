@@ -176,7 +176,13 @@ export interface Message {
   /** ACP turn correlation id when available (debug / grouping). */
   turnId?: string | null;
   /** Daemon AGENT_REPLY metadata.turn_status — e.g. user abort. */
-  turnStatus?: "interrupted" | "no_final_reply" | null;
+  turnStatus?:
+    | "interrupted"
+    | "no_final_reply"
+    | "skill_created_in_unsupported_directory"
+    | null;
+  /** Structured native skill violations when turnStatus is unsupported-directory. */
+  nativeSkillViolations?: { slug: string; root: string; path?: string }[];
   /** Historical turn: process parts omitted until user expands collapsible. */
   processDeferred?: boolean;
   /** Lightweight process summary while {@link processDeferred} is true. */

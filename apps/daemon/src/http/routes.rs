@@ -12,6 +12,7 @@ use axum::{
 };
 use std::net::SocketAddr;
 
+use super::ai;
 use super::apps;
 use super::auth;
 use super::config;
@@ -30,12 +31,31 @@ use crate::mqtt::MqttRecoveryReason;
 
 pub fn build(state: HttpState) -> Router {
     let body_cap = state.config.max_body_bytes;
+    let ai_body_cap = state.config.ai_max_body_bytes;
+
+    // Its own sub-router so it can carry a different body cap: a layer applies
+    // to the router it is attached to, and the control-plane cap would 413 a
+    // long conversation before it ever left the machine.
+    let ai_routes = Router::new()
+        .route(
+            "/v1/ai/teams/:team_id/*path",
+            get(ai::proxy)
+                .post(ai::proxy)
+                .put(ai::proxy)
+                .delete(ai::proxy),
+        )
+        .layer(body_limit_layer(ai_body_cap));
+
     Router::new()
         .route("/v1/healthz", healthz_route())
         .route("/v1/info", info_route())
         .route(
             "/internal/runtime-context/resolve",
             post(crate::http::runtime_context::resolve_runtime_context),
+        )
+        .route(
+            "/internal/runtime-context/session-prompt",
+            post(crate::http::runtime_context::session_prompt),
         )
         .route("/v1/mqtt/recover", post(mqtt_recover))
         // Embedded protocol console. Static zero-dependency HTML inlined into
@@ -231,6 +251,9 @@ pub fn build(state: HttpState) -> Router {
         // Daemon-owned team sync: desktop triggers sync + reads status over loopback.
         .route("/v1/team/sync", post(team_sync::sync_now))
         .route("/v1/team/sync/status", get(team_sync::sync_status))
+        .route("/v1/team/documents/known", get(team_sync::list_known))
+        .route("/v1/team/documents/fetch", post(team_sync::fetch_known))
+        .route("/v1/team/documents/release", post(team_sync::release_local))
         .route("/v1/team/skills", get(team_sync::list_team_skills))
         .route(
             "/v1/team/skills/reconcile",
@@ -239,6 +262,11 @@ pub fn build(state: HttpState) -> Router {
         .route(
             "/v1/team/skills/:slug/install",
             put(team_sync::install_team_skill).delete(team_sync::uninstall_team_skill),
+        )
+        .route(
+            "/v1/team/skills/:slug/draft",
+            get(team_sync::get_team_skill_draft_handler)
+                .put(team_sync::update_team_skill_draft_handler),
         )
         // Pull team MCP / team env from Cloud API into the daemon cache now
         // (desktop calls this after a successful env-secret write/delete).
@@ -270,6 +298,10 @@ pub fn build(state: HttpState) -> Router {
         .route("/v1/team/changed", get(team_sync::list_changed))
         .route("/v1/team/remote-pending", get(team_sync::remote_pending))
         .layer(body_limit_layer(body_cap))
+        // Merged AFTER the control-plane body cap so `/v1/ai/*` keeps its own.
+        // Rate limiting and request ids stay global; the AI bucket is selected
+        // inside the limiter by path.
+        .merge(ai_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_layer,

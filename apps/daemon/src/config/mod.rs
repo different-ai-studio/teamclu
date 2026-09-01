@@ -2,6 +2,7 @@ mod daemon_config;
 pub mod device_mcp;
 pub mod edit;
 pub mod global_team_store;
+pub mod knowledge_scaffold;
 pub mod layout;
 mod member_store;
 mod model_catalog;
@@ -11,6 +12,7 @@ mod managed_skill_writer;
 mod roles_skills;
 mod skill_creation_policy;
 mod session_store;
+mod team_skill_draft;
 pub mod team_config;
 pub mod team_mcp;
 pub mod workspace_control;
@@ -23,7 +25,8 @@ pub use daemon_config::{
     ActorConfig, AgentBackendConfig, AgentsConfig, ChannelsConfig, ClaudeAgentConfig,
     CursorAgentConfig, DaemonConfig, DiscordChannel, EmailChannel, FeishuChannel, HttpConfig,
     KookChannel, MqttConfig, PiAgentConfig, SeaTalkChannel, TeamShareConfig, TransportKind,
-    WeChatChannel, WeComChannel, BOOTSTRAP_ACTOR_NAME,
+    WeChatChannel, WeComChannel, BOOTSTRAP_ACTOR_NAME, daemon_host_label,
+    daemon_machine_hostname,
 };
 pub use member_store::{MemberStore, PendingInvite, StoredMember};
 pub use model_catalog::DeviceModelCatalog;
@@ -40,6 +43,10 @@ pub use managed_skill_writer::{
 pub use skill_creation_policy::{
     append_policy_to_prompt, materialize_policy_file, SKILL_CREATION_POLICY,
     SKILL_CREATION_POLICY_VERSION,
+};
+pub use team_skill_draft::{
+    effective_team_skill_dir, get_team_skill_draft, update_team_skill_draft,
+    EffectiveSkillSource, TeamSkillDraftUpdateResult, TeamSkillDraftView,
 };
 pub use roles_skills::{
     find_managed_skill_in_session_inventory, is_inherent_skill, scan_roles_skills_state,

@@ -21,7 +21,8 @@ export function isAgentFacingStatusNotice(content: string): boolean {
   const trimmed = content.trimStart();
   return (
     trimmed.startsWith("[Turn interrupted by user]") ||
-    trimmed.startsWith("[Turn completed with no final reply]")
+    trimmed.startsWith("[Turn completed with no final reply]") ||
+    trimmed.startsWith("[Skill created in unsupported directory]")
   );
 }
 

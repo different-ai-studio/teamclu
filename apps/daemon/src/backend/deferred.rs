@@ -323,6 +323,13 @@ impl Backend for DeferredBackend {
             .await
     }
 
+    async fn get_session_roster(
+        &self,
+        session_id: &str,
+    ) -> BackendResult<super::records::SessionRoster> {
+        self.inner()?.get_session_roster(session_id).await
+    }
+
     async fn get_actors_by_ids(&self, ids: &[String]) -> BackendResult<Vec<ActorDirectoryRow>> {
         self.inner()?.get_actors_by_ids(ids).await
     }

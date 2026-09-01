@@ -53,6 +53,19 @@ resources:
         SYNC_MAX_BYTES_PER_TEAM: ${env('SYNC_MAX_BYTES_PER_TEAM', '')}
         # OSS addresses buckets virtual-host style; only MinIO needs path style.
         S3_FORCE_PATH_STYLE: ${env('S3_FORCE_PATH_STYLE', '')}
+        # Keep in step with the compose `fc` environment map: a var declared on
+        # only one target silently goes missing on the other, which is what
+        # deploy-env-parity.test.ts guards.
+        AI_GATEWAY_INTERNAL_URL: ${env('AI_GATEWAY_INTERNAL_URL', '')}
+        AI_GATEWAY_SERVICE_TOKEN: ${env('AI_GATEWAY_SERVICE_TOKEN', '')}
+        # Stripe credit top-ups (design 4.9). This target runs against its OWN
+        # database, so it needs its own webhook endpoint (or its own Stripe
+        # account): a payment landing on the wrong environment credits the
+        # wrong team, and nothing downstream can tell.
+        STRIPE_SECRET_KEY: ${env('STRIPE_SECRET_KEY', '')}
+        STRIPE_WEBHOOK_SECRET: ${env('STRIPE_WEBHOOK_SECRET', '')}
+        STRIPE_PRICE_IDS: ${env('STRIPE_PRICE_IDS', '')}
+        STRIPE_RETURN_URL_BASE: ${env('STRIPE_RETURN_URL_BASE', '')}
         CODEUP_ORG_ID: ${env('CODEUP_ORG_ID', '')}
         CODEUP_PAT: ${env('CODEUP_PAT', '')}
         CODEUP_BOT_USERNAME: ${env('CODEUP_BOT_USERNAME', 'teamclu')}

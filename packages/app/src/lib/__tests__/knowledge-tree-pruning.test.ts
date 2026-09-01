@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { pruneKnowledgeNoise } from '../knowledge-tree-pruning'
 import type { FileNode } from '@/stores/workspace'
 
-const KNOWLEDGE = '/home/u/.amuxd/teams/t1/shared/knowledge'
-const opts = { knowledgeDir: KNOWLEDGE, workspacePath: '/work' }
+const SYNC_ROOT = '/home/u/.amuxd/teams/t1/shared/team-sync'
+const KNOWLEDGE = `${SYNC_ROOT}/knowledge`
+const opts = { syncRoot: SYNC_ROOT, workspacePath: '/work' }
 
 function dir(path: string, children: FileNode[] = []): FileNode {
   return { name: path.split('/').pop()!, path, type: 'directory', children }

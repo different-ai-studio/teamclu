@@ -1156,6 +1156,14 @@ impl Backend for CloudApiBackend {
             .collect())
     }
 
+    async fn get_session_roster(
+        &self,
+        session_id: &str,
+    ) -> BackendResult<super::records::SessionRoster> {
+        let path = format!("/v1/sessions/{session_id}/roster");
+        self.get(&path).await
+    }
+
     async fn fetch_session_with_participants(
         &self,
         session_id: &str,
@@ -2712,6 +2720,29 @@ mod tests {
             })))
             .mount(server)
             .await;
+    }
+
+    #[tokio::test]
+    async fn get_session_roster_reads_the_roster_endpoint() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/sessions/session-1/roster"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "sessionId": "session-1",
+                "callerActorId": "agent-1",
+                "items": [
+                    { "actorId": "agent-1", "displayName": "MDC", "kind": "agent", "isSelf": true },
+                    { "actorId": "human-1", "displayName": "Alice", "kind": "member", "isSelf": false }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let backend = CloudApiBackend::new(config(&server));
+        let roster = backend.get_session_roster("session-1").await.unwrap();
+        assert_eq!(roster.session_id, "session-1");
+        assert_eq!(roster.items.len(), 2);
+        assert_eq!(roster.items[0].display_name.as_deref(), Some("MDC"));
     }
 
     #[tokio::test]

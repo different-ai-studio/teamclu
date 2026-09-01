@@ -22,10 +22,10 @@ export function normalizeSessionScopedToolName(name) {
 
   for (const tool of SESSION_SCOPED_TOOL_LIST) {
     if (raw === tool) return tool;
-    if (raw.endsWith(`/${tool}`)) return tool;
-    if (raw.startsWith("mcp__") && raw.endsWith(`__${tool}`)) return tool;
 
     for (const server of MANAGED_INTROSPECT_SERVERS) {
+      if (raw === `${server}/${tool}`) return tool;
+      if (raw === `mcp__${server}__${tool}`) return tool;
       if (raw === `${server}_${tool}`) return tool;
     }
   }

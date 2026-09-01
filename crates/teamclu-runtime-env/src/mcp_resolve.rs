@@ -55,7 +55,7 @@ pub fn resolve_config_secret_refs(
 
 /// Find `provider.<name>.options.apiKey` values that still contain an
 /// unresolved `${...}` placeholder. Returns `(provider_name, placeholder)`
-/// pairs. The placeholder is a variable *name* (e.g. `${tc_api_key}`), never a
+/// pairs. The placeholder is a variable *name* (e.g. `${tc_gateway_token}`), never a
 /// secret value, so it is safe to log. Returns empty on non-JSON content or
 /// when there is no `provider` map.
 pub fn unresolved_provider_api_key_placeholders(content: &str) -> Vec<(String, String)> {
@@ -360,18 +360,18 @@ mod tests {
 
     #[test]
     fn detects_unresolved_provider_api_key_placeholder() {
-        // The #554 failure: tc_api_key was never injected, so the provider
-        // apiKey keeps its literal `${tc_api_key}` placeholder.
+        // The #554 failure: tc_gateway_token was never injected, so the provider
+        // apiKey keeps its literal `${tc_gateway_token}` placeholder.
         let content = r#"{
   "provider": {
-    "team": { "options": { "apiKey": "${tc_api_key}" } },
+    "team": { "options": { "apiKey": "${tc_gateway_token}" } },
     "anthropic": { "options": { "apiKey": "sk-ant-resolved" } }
   }
 }"#;
         let found = unresolved_provider_api_key_placeholders(content);
         assert_eq!(
             found,
-            vec![("team".to_string(), "${tc_api_key}".to_string())]
+            vec![("team".to_string(), "${tc_gateway_token}".to_string())]
         );
     }
 
@@ -379,7 +379,7 @@ mod tests {
     fn no_unresolved_placeholder_when_all_keys_resolved() {
         let content = r#"{
   "provider": {
-    "team": { "options": { "apiKey": "sk-tc-actor-123" } }
+    "team": { "options": { "apiKey": "tok_actor_123" } }
   }
 }"#;
         assert!(unresolved_provider_api_key_placeholders(content).is_empty());
@@ -406,7 +406,7 @@ mod tests {
             dir.path(),
             r#"{
   "provider": {
-    "team": { "options": { "apiKey": "${tc_api_key}" } }
+    "team": { "options": { "apiKey": "${tc_gateway_token}" } }
   },
   "mcp": {
     "github": { "environment": { "TOKEN": "${GITHUB_TOKEN}" } }
@@ -415,13 +415,13 @@ mod tests {
         );
 
         let mut secrets = HashMap::new();
-        secrets.insert("tc_api_key".to_string(), "sk-tc-actor-1".to_string());
+        secrets.insert("tc_gateway_token".to_string(), "tok_actor_1".to_string());
 
         let changed = resolve_provider_api_keys_on_disk(dir.path(), &secrets).unwrap();
         assert!(changed);
 
         let on_disk = read_opencode_json(dir.path());
-        assert!(on_disk.contains("sk-tc-actor-1"));
+        assert!(on_disk.contains("tok_actor_1"));
         assert!(on_disk.contains("${GITHUB_TOKEN}"));
         assert!(!dir.path().join(".teamclu/opencode.runtime.json").exists());
     }

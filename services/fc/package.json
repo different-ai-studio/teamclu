@@ -24,6 +24,7 @@
     "nanoid": "^5.0.0",
     "nodemailer": "^6.9.0",
     "postgres": "^3.4.9",
+    "stripe": "^22.6.0",
     "ws": "^8.21.0"
   },
   "devDependencies": {

@@ -10,7 +10,10 @@ pub const SKILL_CREATION_POLICY: &str = r#"TeamClu skill creation policy:
 - To create a normal reusable skill, call manage_skills with action=create.
 - New normal skills are stored under ~/.agents/skills/<slug>/.
 - Do not create normal skills under .opencode/skills, .pi/skills, or .claude/skills.
-- Do not overwrite an existing, built-in, or team-managed skill.
+- Do not overwrite an existing or built-in skill with manage_skills.
+- To edit an installed team Skill, use manage_team_skills get_draft/update_draft.
+  Draft edits stay on this machine until published from the team Skills page.
+  Tell the user: new sessions use the draft; other members are unaffected until publish.
 - Role-specific skills must continue through the role-management workflow."#;
 
 const POLICY_REL: &str = "instructions/skill-creation-policy.txt";

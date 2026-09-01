@@ -19,10 +19,39 @@ test("normalizeSessionScopedToolName handles slash and mcp__ forms", () => {
     normalizeSessionScopedToolName("mcp__teamclu-introspect__get_session_deeplink"),
     "get_session_deeplink",
   );
-  assert.equal(
-    normalizeSessionScopedToolName("mcp__my_server-with_underscores__archive_session"),
-    "archive_session",
-  );
+});
+
+test("normalizeSessionScopedToolName accepts every managed introspect alias and format", () => {
+  const tools = ["get_session_deeplink", "manage_participants", "archive_session"];
+  const servers = ["teamclu-introspect", "teamclaw-introspect"];
+  for (const tool of tools) {
+    for (const server of servers) {
+      assert.equal(normalizeSessionScopedToolName(tool), tool);
+      assert.equal(normalizeSessionScopedToolName(`${server}/${tool}`), tool);
+      assert.equal(normalizeSessionScopedToolName(`mcp__${server}__${tool}`), tool);
+      assert.equal(normalizeSessionScopedToolName(`${server}_${tool}`), tool);
+    }
+  }
+});
+
+test("normalizeSessionScopedToolName rejects namespaced forms from unmanaged servers", () => {
+  for (const name of [
+    "other-server/get_session_deeplink",
+    "other-server/manage_participants",
+    "other-server/archive_session",
+    "mcp__other-server__get_session_deeplink",
+    "mcp__other-server__manage_participants",
+    "mcp__other-server__archive_session",
+    "mcp__my_server-with_underscores__archive_session",
+    "browser/get_session_deeplink",
+    "mcp__teamclu-introspect__get_session_deeplink_extra",
+    "teamclu-introspect/get_session_deeplink_extra",
+    "teamclu-introspect-extra/get_session_deeplink",
+    "teamclu-introspect-extra_get_session_deeplink",
+  ]) {
+    assert.equal(normalizeSessionScopedToolName(name), name);
+    assert.equal(isSessionScopedTool(name), false);
+  }
 });
 
 test("normalizeSessionScopedToolName handles OpenCode server_tool ids", () => {
@@ -59,6 +88,48 @@ test("isSessionScopedTool recognizes namespaced MCP tool ids", () => {
   assert.equal(isSessionScopedTool("mcp__teamclu-introspect__manage_participants"), true);
   assert.equal(isSessionScopedTool("teamclu-introspect_get_session_deeplink"), true);
   assert.equal(isSessionScopedTool("browser_click"), false);
+});
+
+test("injectSessionIdForTool does not resolve for namespaced ids from unmanaged servers", async () => {
+  let called = false;
+  const deps = {
+    resolveTeamcluSessionId: async () => {
+      called = true;
+      return "teamclu-leaked";
+    },
+  };
+  for (const tool of [
+    "other-server/get_session_deeplink",
+    "mcp__other-server__archive_session",
+    "browser_manage_participants",
+  ]) {
+    const args = { scheme: "copilot361" };
+    const next = await injectSessionIdForTool(tool, args, "backend-a", deps);
+    assert.deepEqual(next, args);
+  }
+  assert.equal(called, false, "resolver must never run for unmanaged server tools");
+});
+
+test("handleToolExecuteBefore ignores namespaced ids from unmanaged servers", async () => {
+  let called = false;
+  for (const tool of [
+    "other-server/get_session_deeplink",
+    "mcp__other-server__archive_session",
+  ]) {
+    const output = { args: { scheme: "copilot361" } };
+    await handleToolExecuteBefore(
+      { tool, sessionID: "backend-a", callID: "c1" },
+      output,
+      {
+        injectSessionIdForTool: async () => {
+          called = true;
+          return { session_id: "teamclu-leaked" };
+        },
+      },
+    );
+    assert.deepEqual(output.args, { scheme: "copilot361" });
+  }
+  assert.equal(called, false);
 });
 
 test("handleToolExecuteBefore injects output.args.session_id using OpenCode hook shape", async () => {

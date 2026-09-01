@@ -479,6 +479,40 @@ impl Backend for MockBackend {
             .collect())
     }
 
+    async fn get_session_roster(&self, session_id: &str) -> BackendResult<super::SessionRoster> {
+        let st = self.state.lock().unwrap();
+        let snap = st
+            .sessions
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| BackendError::Provider {
+                provider: "mock",
+                code: Some("404".into()),
+                message: format!("MockBackend: session {session_id} not seeded"),
+            })?;
+        let caller_actor_id = self.actor_id.clone();
+        let items = snap
+            .participants
+            .iter()
+            .map(|seat| {
+                let dir = st.actors_by_id.get(&seat.actor_id);
+                super::SessionRosterEntry {
+                    actor_id: seat.actor_id.clone(),
+                    display_name: dir.and_then(|row| row.display_name.clone()),
+                    kind: dir.and_then(|row| row.kind.clone()),
+                    is_self: seat.actor_id == caller_actor_id,
+                }
+            })
+            .collect();
+        Ok(super::SessionRoster {
+            session_id: session_id.to_string(),
+            caller_actor_id,
+            title: Some(snap.session.title.clone()).filter(|t| !t.trim().is_empty()),
+            self_agent: None,
+            items,
+        })
+    }
+
     async fn messages_after_cursor(
         &self,
         session_id: &str,

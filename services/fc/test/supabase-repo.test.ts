@@ -780,6 +780,7 @@ test("getWorkspaceConfig merges teams + team_workspace_config rows", async () =>
   // `models` is the stored, authoritative per-team list.
   assert.deepEqual(result, {
     syncMode: "git",
+    litellmTeamId: null,
     llm: {
       enabled: true,
       baseUrl: "https://gateway.example/v1",
@@ -795,6 +796,7 @@ test("getWorkspaceConfig returns nulls when both rows absent", async () => {
   const result = await repo.getWorkspaceConfig("team-7");
   assert.deepEqual(result, {
     syncMode: null,
+    litellmTeamId: null,
     // Absent config means LLM disabled, not "unknown": the client renders the
     // off state from these defaults rather than special-casing a missing block.
     llm: {
@@ -1046,6 +1048,14 @@ function createSelectableQuery(table, calls, data, error) {
     },
     or(expr) {
       calls.push({ table, op: "or", expr });
+      return query;
+    },
+    // listSessionsForTeamSince filters thread forks with
+    // `.is("parent_session_id", null)`. Without this the whole sync-reader test
+    // threw "is is not a function" — the SELECT builder only had `is` on its
+    // UPDATE twin.
+    is(column, value) {
+      calls.push({ table, op: "is", column, value });
       return query;
     },
     gt(column, value) {

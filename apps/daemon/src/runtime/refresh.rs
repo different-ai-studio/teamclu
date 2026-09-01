@@ -558,13 +558,19 @@ impl RefreshChangeKind {
     /// Whether applying this change requires restarting the global
     /// `opencode serve` process so freshly-created sessions pick it up.
     ///
-    /// Only provider-auth / provider-config kinds do. `Skills` and
-    /// `TeamcluConfig` don't touch the serve process; `Mcp` config is merged
+    /// Only provider-auth / provider-config kinds do. `Mcp` config is merged
     /// into the worktree's `opencode.json` at `attach_session(mcp_config_path)`
     /// time rather than baked into the process; `Permissions` are enforced
     /// per-turn. Restarting for those merely discards a warm serve instance
     /// and forces the next session to cold-start the binary again — the exact
     /// regression this predicate guards against.
+    ///
+    /// `Skills` and `TeamcluConfig` don't touch the serve *process* either,
+    /// but opencode memoizes skills per directory instance inside it, so
+    /// applying them does dispose that cached instance (see
+    /// `OpenCodeHostPool::dispose_workspace_instance`, wired from
+    /// `reload_workspace`) — a far cheaper invalidation that leaves the
+    /// process warm.
     pub fn requires_provider_host_evict(self) -> bool {
         matches!(
             self,

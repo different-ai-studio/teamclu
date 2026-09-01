@@ -88,6 +88,8 @@ const DYNAMIC_PREFIXES = [
   'settings.daemonOnboarding.recovery.',
   // Keyed by AppAuthMode / permission level in the app control panel
   // (AppControlPanel.tsx — t(`…${mode}`) / t(`…${level}`)).
+  // Keyed by credit_ledger.kind in BillingSection (t(`…${e.kind}`)).
+  'settings.billing.kind.',
   'apps.controlPanel.authModeOption.',
   'apps.controlPanel.permission.',
 ]

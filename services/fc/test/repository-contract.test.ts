@@ -195,6 +195,8 @@ function contractRepo() {
       return {
         sessionId,
         callerActorId: participants[0]?.actorId ?? "actor-1",
+        title: s?.title ?? null,
+        selfAgent: null,
         items: participants.map((p) => ({
           actorId: p.actorId,
           displayName: p.actorId === "actor-1" ? "Alice" : null,

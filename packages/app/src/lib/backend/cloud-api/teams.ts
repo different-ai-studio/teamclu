@@ -131,5 +131,34 @@ export function createTeamsModule(client: CloudApiClient): TeamsBackend {
       );
       return { actorId: res.actorId ?? null, teamId: res.teamId, refreshToken: res.refreshToken };
     },
+    async getTeamCredits(teamId) {
+      return client.get(`/v1/teams/${encodeURIComponent(teamId)}/credits`);
+    },
+    async getCreditUsage(teamId, opts = {}) {
+      const qs = new URLSearchParams();
+      if (opts.range) qs.set("range", opts.range);
+      if (opts.date) qs.set("date", opts.date);
+      const suffix = qs.toString() ? `?${qs.toString()}` : "";
+      return client.get(`/v1/teams/${encodeURIComponent(teamId)}/credits/usage${suffix}`);
+    },
+    async getCreditLedger(teamId, opts = {}) {
+      const suffix = opts.limit ? `?limit=${opts.limit}` : "";
+      return client.get(`/v1/teams/${encodeURIComponent(teamId)}/credits/ledger${suffix}`);
+    },
+    async topUpCredits(teamId, input) {
+      return client.post(`/v1/teams/${encodeURIComponent(teamId)}/credits/top-up`, input);
+    },
+    async listCreditPackages(teamId) {
+      return client.get(`/v1/teams/${encodeURIComponent(teamId)}/credits/packages`);
+    },
+    async createCreditCheckoutSession(teamId, input) {
+      return client.post(`/v1/teams/${encodeURIComponent(teamId)}/credits/checkout-session`, input);
+    },
+    async getMemberQuotas(teamId) {
+      return client.get(`/v1/teams/${encodeURIComponent(teamId)}/quotas`);
+    },
+    async setMemberQuotas(teamId, input) {
+      return client.put(`/v1/teams/${encodeURIComponent(teamId)}/quotas`, input);
+    },
   };
 }

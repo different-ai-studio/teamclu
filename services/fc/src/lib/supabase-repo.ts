@@ -6,6 +6,8 @@
 import { randomUUID } from "node:crypto";
 import { createClient as defaultCreateClient } from "@supabase/supabase-js";
 import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
+import { aiGateway } from "./ai-gateway.js";
+import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
 import { DEFAULT_LIST_LIMIT, DEFAULT_MESSAGE_LIST_LIMIT } from "./routing-utils.js";
 
@@ -32,8 +34,9 @@ function assertNewOrgAllowed(): void {
 }
 
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
+import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
 import { isLegalStatusTransition } from "./validation/app-status.js";
-// Backend-neutral request validation — keep free of PostgREST/Drizzle calls.
+// Backend-neutral request validation — keep free of PostgREST calls.
 import {
   assertTransportShape as assertTeamMcpTransportShape,
   readServerFields as readTeamMcpServerFields,
@@ -849,7 +852,7 @@ export function createSupabaseBusinessRepository(options) {
     async getWorkspaceConfig(teamId) {
       const { data: configData, error: configError } = await supabase
         .from("team_workspace_config")
-        .select("sync_mode, llm_enabled, llm_base_url, llm_models")
+        .select("sync_mode, litellm_team_id, llm_enabled, llm_base_url, llm_models")
         .eq("team_id", teamId)
         .maybeSingle();
       if (configError) throw configError;
@@ -857,6 +860,12 @@ export function createSupabaseBusinessRepository(options) {
       const storedModels = Array.isArray(configRes.data?.llm_models) ? configRes.data.llm_models : [];
       return {
         syncMode: configRes.data?.sync_mode ?? null,
+        // Nothing provisions this any more, but it is still RETURNED (null where
+        // absent) so already-shipped desktop and iOS builds keep parsing the
+        // response — they do not update in lockstep with the server. Dropping it
+        // from the payload is gated on the minimum supported client, not on this
+        // change. See MergedWorkspaceConfig in the OpenAPI contract.
+        litellmTeamId: configRes.data?.litellm_team_id ?? null,
         llm: {
           enabled: configRes.data?.llm_enabled ?? false,
           baseUrl: configRes.data?.llm_base_url ?? null,
@@ -1873,7 +1882,8 @@ export function createSupabaseBusinessRepository(options) {
       let q = supabase
         .from("sessions")
         .select(SESSION_SYNC_COLUMNS)
-        .eq("team_id", teamId);
+        .eq("team_id", teamId)
+        .is("parent_session_id", null);
       if (updatedAfter) q = q.gt("updated_at", updatedAfter);
       const { data, error } = await applySyncKeyset(q, cursor, limit);
       if (error) throw error;
@@ -1904,6 +1914,189 @@ export function createSupabaseBusinessRepository(options) {
         if (error) throw error;
         return data ?? [];
       });
+    },
+
+    async createThread(parentSessionId, { rootMessageId }) {
+      if (!rootMessageId?.trim()) {
+        throw new ApiError(400, "validation_failed", "rootMessageId is required");
+      }
+
+      const { data: parent, error: parentErr } = await supabase
+        .from("sessions")
+        .select("id, team_id, title, mode, idea_id, primary_agent_id, parent_session_id")
+        .eq("id", parentSessionId)
+        .maybeSingle();
+      if (parentErr) throw parentErr;
+      if (!parent) throw new ApiError(404, "not_found", "parent session not found");
+      if (parent.parent_session_id) {
+        throw new ApiError(400, "validation_failed", "cannot open a thread on a thread session");
+      }
+
+      const callerActorId = (await this.resolveCallerActorForTeam(parent.team_id))?.id ?? null;
+      if (!callerActorId) {
+        throw new ApiError(401, "missing_identity", "authentication required");
+      }
+
+      const { data: callerSeat, error: seatErr } = await supabase
+        .from("session_participants")
+        .select("actor_id")
+        .eq("session_id", parentSessionId)
+        .eq("actor_id", callerActorId)
+        .maybeSingle();
+      if (seatErr) throw seatErr;
+      if (!callerSeat) {
+        throw new ApiError(403, "forbidden", "not a participant in the parent session");
+      }
+
+      const { data: existing, error: existingErr } = await supabase
+        .from("sessions")
+        .select(SESSION_FULL_COLUMNS)
+        .eq("thread_root_message_id", rootMessageId)
+        .maybeSingle();
+      if (existingErr) throw existingErr;
+      if (existing) {
+        const { items } = await this.listSessionParticipants(existing.id);
+        return { ...mapSessionFull(existing), participants: items };
+      }
+
+      const { data: rootMsg, error: rootErr } = await supabase
+        .from("messages")
+        .select("id, session_id, kind, content")
+        .eq("id", rootMessageId)
+        .eq("session_id", parentSessionId)
+        .maybeSingle();
+      if (rootErr) throw rootErr;
+      if (!rootMsg) {
+        throw new ApiError(404, "not_found", "root message not found in parent session");
+      }
+      if (rootMsg.kind !== "agent_reply") {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "rootMessageId must reference an agent_reply message",
+        );
+      }
+
+      const preview = String(rootMsg.content ?? "").trim().slice(0, 80);
+      const threadTitle = preview
+        ? `${parent.title} · ${preview}${preview.length >= 80 ? "…" : ""}`
+        : `${parent.title} · 话题`;
+
+      const childId = randomUUID();
+      const { data: child, error: insertErr } = await supabase
+        .from("sessions")
+        .insert({
+          id: childId,
+          team_id: parent.team_id,
+          title: threadTitle,
+          mode: parent.mode ?? "collab",
+          idea_id: parent.idea_id ?? null,
+          primary_agent_id: parent.primary_agent_id ?? null,
+          created_by_actor_id: callerActorId,
+          source: "thread",
+          parent_session_id: parentSessionId,
+          thread_root_message_id: rootMessageId,
+        })
+        .select(SESSION_FULL_COLUMNS)
+        .single();
+      if (insertErr) throw insertErr;
+
+      const { data: parentSeats, error: parentSeatsErr } = await supabase
+        .from("session_participants")
+        .select("actor_id")
+        .eq("session_id", parentSessionId);
+      if (parentSeatsErr) throw parentSeatsErr;
+
+      const participantIds = Array.from(
+        new Set(
+          (parentSeats ?? [])
+            .map((row) => row.actor_id)
+            .filter((id): id is string => typeof id === "string" && id.length > 0),
+        ),
+      );
+      if (participantIds.length > 0) {
+        const rows = participantIds.map((actorId) => ({
+          session_id: childId,
+          actor_id: actorId,
+        }));
+        const { error: partErr } = await supabase
+          .from("session_participants")
+          .upsert(rows, { onConflict: "session_id,actor_id" });
+        if (partErr) throw partErr;
+      }
+
+      const { items } = await this.listSessionParticipants(childId);
+      return { ...mapSessionFull(child), participants: items };
+    },
+
+    async listThreadSummaries(parentSessionId) {
+      const { data: parent, error: parentErr } = await supabase
+        .from("sessions")
+        .select("id, team_id")
+        .eq("id", parentSessionId)
+        .maybeSingle();
+      if (parentErr) throw parentErr;
+      if (!parent) throw new ApiError(404, "not_found", "parent session not found");
+
+      const callerActorId = (await this.resolveCallerActorForTeam(parent.team_id))?.id ?? null;
+      if (!callerActorId) {
+        throw new ApiError(401, "missing_identity", "authentication required");
+      }
+
+      const { data: callerSeat, error: seatErr } = await supabase
+        .from("session_participants")
+        .select("actor_id")
+        .eq("session_id", parentSessionId)
+        .eq("actor_id", callerActorId)
+        .maybeSingle();
+      if (seatErr) throw seatErr;
+      if (!callerSeat) {
+        throw new ApiError(403, "forbidden", "not a participant in the parent session");
+      }
+
+      const { data: threads, error: threadsErr } = await supabase
+        .from("sessions")
+        .select("id, thread_root_message_id, last_message_at")
+        .eq("parent_session_id", parentSessionId);
+      if (threadsErr) throw threadsErr;
+      if (!threads?.length) return [];
+
+      const threadIds = threads.map((row) => row.id).filter(Boolean);
+      const participantCounts = new Map<string, number>();
+      const messageCounts = new Map<string, number>();
+
+      if (threadIds.length > 0) {
+        const { data: partRows, error: partErr } = await supabase
+          .from("session_participants")
+          .select("session_id")
+          .in("session_id", threadIds);
+        if (partErr) throw partErr;
+        for (const row of partRows ?? []) {
+          if (!row.session_id) continue;
+          participantCounts.set(
+            row.session_id,
+            (participantCounts.get(row.session_id) ?? 0) + 1,
+          );
+        }
+
+        const { data: msgRows, error: msgErr } = await supabase
+          .from("messages")
+          .select("session_id")
+          .in("session_id", threadIds);
+        if (msgErr) throw msgErr;
+        for (const row of msgRows ?? []) {
+          if (!row.session_id) continue;
+          messageCounts.set(row.session_id, (messageCounts.get(row.session_id) ?? 0) + 1);
+        }
+      }
+
+      return threads.map((row) => ({
+        threadSessionId: row.id,
+        rootMessageId: row.thread_root_message_id,
+        messageCount: messageCounts.get(row.id) ?? 0,
+        lastMessageAt: row.last_message_at ?? null,
+        participantCount: participantCounts.get(row.id) ?? 0,
+      }));
     },
 
     async listSessionIdsForActor(actorId) {
@@ -2283,7 +2476,7 @@ export function createSupabaseBusinessRepository(options) {
     async listSessionRoster(sessionId) {
       const { data: sessionRow, error: sessionErr } = await supabase
         .from("sessions")
-        .select("id, team_id")
+        .select("id, team_id, title")
         .eq("id", sessionId)
         .maybeSingle();
       if (sessionErr) throw sessionErr;
@@ -2319,9 +2512,44 @@ export function createSupabaseBusinessRepository(options) {
         actorsById = new Map(actorRows.map((row) => [row.id, row]));
       }
 
+      let selfAgent = null;
+      const callerActor = actorsById.get(callerActorId);
+      if (callerActor?.actor_type === "agent") {
+        const { data: agentRow, error: agentErr } = await supabase
+          .from("agents")
+          .select("visibility, owner_member_id")
+          .eq("id", callerActorId)
+          .maybeSingle();
+        if (agentErr) throw agentErr;
+        if (agentRow) {
+          let ownerDisplayName = null;
+          if (agentRow.owner_member_id) {
+            const ownerFromRoster = actorsById.get(agentRow.owner_member_id);
+            if (ownerFromRoster?.display_name) {
+              ownerDisplayName = ownerFromRoster.display_name;
+            } else {
+              const { data: ownerRow, error: ownerErr } = await supabase
+                .from("actors")
+                .select("display_name")
+                .eq("id", agentRow.owner_member_id)
+                .maybeSingle();
+              if (ownerErr) throw ownerErr;
+              ownerDisplayName = ownerRow?.display_name ?? null;
+            }
+          }
+          selfAgent = {
+            visibility: agentRow.visibility ?? null,
+            ownerMemberId: agentRow.owner_member_id ?? null,
+            ownerDisplayName,
+          };
+        }
+      }
+
       return {
         sessionId,
         callerActorId,
+        title: sessionRow.title ?? null,
+        selfAgent,
         items: participantRows.map((seat) => {
           const actor = actorsById.get(seat.actor_id);
           return {
@@ -3646,6 +3874,7 @@ export function createSupabaseBusinessRepository(options) {
         size: Number(body.size ?? 0),
         changelog,
         summary: fields.summary,
+        category: fields.category,
         when_to_use: fields.whenToUse,
         when_not_to_use: fields.whenNotToUse,
         requires: fields.requires ?? null,
@@ -3661,68 +3890,52 @@ export function createSupabaseBusinessRepository(options) {
       const contentHash = String(body.contentHash ?? "").trim();
       if (!contentHash) throw new ApiError(400, "validation_failed", "contentHash is required");
 
-      let { data: skill, error } = await supabase
-        .from("team_skills")
-        .select("*")
-        .eq("team_id", teamId)
-        .eq("slug", slug)
-        .maybeSingle();
-      if (error) throw error;
-      if (!skill) throw new ApiError(404, "not_found", `skill not found: ${slug}`);
+      if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
+        throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
+      }
+      const expectedLatestVersion = Number(body.expectedLatestVersion);
+      if (!Number.isInteger(expectedLatestVersion) || expectedLatestVersion < 0) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "expectedLatestVersion must be a non-negative integer",
+        );
+      }
 
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id;
       if (!callerActorId) throw new ApiError(403, "forbidden", "not a member of this team");
 
-      if (skill.upstream_subscribed) {
-        const { data: detached, error: dErr } = await supabase
-          .from("team_skills")
-          .update({
-            upstream_subscribed: false,
-            upstream_detached_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", skill.id)
-          .select("*")
-          .single();
-        if (dErr) throw dErr;
-        skill = detached;
+      const patch = requireTeamSkillFields(body, { partial: true });
+
+      const { data, error } = await supabase.rpc("publish_team_skill_version", {
+        p_team_id: teamId,
+        p_slug: slug,
+        p_expected_latest_version: expectedLatestVersion,
+        p_content_hash: contentHash,
+        p_size: Number(body.size ?? 0),
+        p_changelog: changelog,
+        p_summary: patch.summary ?? null,
+        p_category: patch.category ?? null,
+        p_when_to_use: patch.whenToUse !== undefined ? patch.whenToUse : null,
+        p_when_not_to_use: patch.whenNotToUse !== undefined ? patch.whenNotToUse : null,
+        p_requires: patch.requires !== undefined ? patch.requires : null,
+      });
+
+      if (error) {
+        const msg = error.message ?? "publish failed";
+        if (/stale_team_skill_base/i.test(msg)) {
+          throw new ApiError(409, "stale_team_skill_base", msg);
+        }
+        if (error.code === "P0002" || /skill not found/i.test(msg)) {
+          throw new ApiError(404, "not_found", msg);
+        }
+        if (error.code === "42501") {
+          throw new ApiError(403, "forbidden", msg);
+        }
+        throw error;
       }
 
-      const patch = requireTeamSkillFields(body, { partial: true });
-      const merged = {
-        summary: patch.summary ?? skill.summary,
-        when_to_use: patch.whenToUse ?? skill.when_to_use,
-        when_not_to_use: patch.whenNotToUse ?? skill.when_not_to_use,
-        requires: patch.requires !== undefined ? patch.requires : skill.requires,
-        category: patch.category ?? skill.category,
-      };
-      const nextVersion = (skill.latest_version ?? 0) + 1;
-
-      const { data: version, error: vErr } = await supabase
-        .from("team_skill_versions")
-        .insert({
-          skill_id: skill.id,
-          version: nextVersion,
-          content_hash: contentHash,
-          size: Number(body.size ?? 0),
-          changelog,
-          summary: merged.summary,
-          when_to_use: merged.when_to_use,
-          when_not_to_use: merged.when_not_to_use,
-          requires: merged.requires ?? null,
-          created_by: callerActorId,
-          blob_scope: "team",
-        })
-        .select("*")
-        .single();
-      if (vErr) throw vErr;
-
-      const { error: uErr } = await supabase
-        .from("team_skills")
-        .update({ latest_version: nextVersion, ...merged })
-        .eq("id", skill.id);
-      if (uErr) throw uErr;
-      return mapTeamSkillVersionRow(version);
+      return mapTeamSkillVersionRow(data);
     },
 
     /**
@@ -3736,84 +3949,45 @@ export function createSupabaseBusinessRepository(options) {
      * old content.
      */
     async revertTeamSkillVersion(teamId, slug, targetVersion: number, body: any = {}) {
-      const { data: skill, error } = await supabase
-        .from("team_skills")
-        .select("*")
-        .eq("team_id", teamId)
-        .eq("slug", slug)
-        .maybeSingle();
-      if (error) throw error;
-      if (!skill) throw new ApiError(404, "not_found", `skill not found: ${slug}`);
-
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id;
       if (!callerActorId) throw new ApiError(403, "forbidden", "not a member of this team");
 
-      const { data: source, error: sErr } = await supabase
-        .from("team_skill_versions")
-        .select("*")
-        .eq("skill_id", skill.id)
-        .eq("version", targetVersion)
-        .maybeSingle();
-      if (sErr) throw sErr;
-      if (!source) throw new ApiError(404, "not_found", `version ${targetVersion} not found`);
-      if (targetVersion === skill.latest_version) {
-        throw new ApiError(409, "conflict", `v${targetVersion} is already the latest version`);
+      const changelog = String(body.changelog ?? "").trim() || null;
+      if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
+        throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
+      }
+      const expectedLatestVersion = Number(body.expectedLatestVersion);
+      if (!Number.isInteger(expectedLatestVersion) || expectedLatestVersion < 0) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "expectedLatestVersion must be a non-negative integer",
+        );
       }
 
-      // A revert is a team-authored version, so it detaches a subscribed skill
-      // exactly as publishing one does. Without this the new row carries no
-      // upstream_version, the next align reads that as "upstream 0" and
-      // re-projects marketplace latest — undoing the revert on the next list
-      // request, silently. Mirrors createTeamSkillVersion on this backend.
-      if (skill.upstream_subscribed) {
-        const { error: dErr } = await supabase
-          .from("team_skills")
-          .update({
-            upstream_subscribed: false,
-            upstream_detached_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", skill.id);
-        if (dErr) throw dErr;
+      const { data, error } = await supabase.rpc("revert_team_skill_version", {
+        p_team_id: teamId,
+        p_slug: slug,
+        p_target_version: targetVersion,
+        p_expected_latest_version: expectedLatestVersion,
+        p_changelog: changelog,
+      });
+
+      if (error) {
+        const msg = error.message ?? "revert failed";
+        if (/already the latest/i.test(msg) || /stale_team_skill_base/i.test(msg)) {
+          throw new ApiError(409, /stale_team_skill_base/i.test(msg) ? "stale_team_skill_base" : "conflict", msg);
+        }
+        if (error.code === "P0002" || /not found/i.test(msg)) {
+          throw new ApiError(404, "not_found", msg);
+        }
+        if (error.code === "42501") {
+          throw new ApiError(403, "forbidden", msg);
+        }
+        throw error;
       }
 
-      const changelog = String(body.changelog ?? "").trim() || `Reverted to v${targetVersion}`;
-      const nextVersion = (skill.latest_version ?? 0) + 1;
-      const snapshot = {
-        summary: source.summary,
-        when_to_use: source.when_to_use,
-        when_not_to_use: source.when_not_to_use,
-        requires: source.requires ?? null,
-      };
-
-      const { data: version, error: vErr } = await supabase
-        .from("team_skill_versions")
-        .insert({
-          skill_id: skill.id,
-          version: nextVersion,
-          content_hash: source.content_hash,
-          size: source.size ?? 0,
-          changelog,
-          created_by: callerActorId,
-          // Blob ownership travels with the content: a marketplace-sourced
-          // version lives at object_path and is deliberately absent from
-          // amuxc_blobs, so dropping these produced a row whose download fell
-          // into the team-blob branch and 409'd forever.
-          blob_scope: source.blob_scope ?? "team",
-          object_path: source.object_path ?? null,
-          upstream_version: source.upstream_version ?? null,
-          ...snapshot,
-        })
-        .select("*")
-        .single();
-      if (vErr) throw vErr;
-
-      const { error: uErr } = await supabase
-        .from("team_skills")
-        .update({ latest_version: nextVersion, ...snapshot })
-        .eq("id", skill.id);
-      if (uErr) throw uErr;
-      return mapTeamSkillVersionRow(version);
+      return mapTeamSkillVersionRow(data);
     },
 
     async updateTeamSkill(teamId, slug, patch: any = {}) {
@@ -4193,6 +4367,34 @@ export function createSupabaseBusinessRepository(options) {
       supabase,
       serviceRoleClient,
       mapTeamSkillRow,
+      resolveCallerActorForTeam: async (teamId: string) => {
+        const { data: userData, error: userErr } = await supabase.auth.getUser();
+        if (userErr) throw userErr;
+        const userId = userData?.user?.id;
+        if (!userId) return null;
+        const { data, error } = await supabase
+          .from("actors")
+          .select("id")
+          .eq("team_id", teamId)
+          .eq("user_id", userId)
+          .limit(1)
+          .maybeSingle();
+        if (error) throw error;
+        return data ? { id: data.id } : null;
+      },
+    }),
+
+    // ─── Knowledge path ACL ──────────────────────────────────────────────────
+    // docs/specs/2026-08-31-knowledge-path-acl-design.md
+    //
+    // Unlike team MCP above, authz here CANNOT live in RLS: the ACL tables carry
+    // RLS with no policy, because `path_prefix` is a directory name and any
+    // "members may read the rules" policy would hand out exactly the list the
+    // feature exists to withhold. The module checks owner/admin itself and then
+    // uses the service role, the same shape /sync/* already has.
+    ...makeKnowledgeAclRepo({
+      supabase,
+      serviceRoleClient,
       resolveCallerActorForTeam: async (teamId: string) => {
         const { data: userData, error: userErr } = await supabase.auth.getUser();
         if (userErr) throw userErr;
@@ -4654,10 +4856,12 @@ function mapTeamSkillVersionRow(r: any) {
     size: r.size ?? 0,
     changelog: r.changelog,
     summary: r.summary,
+    category: r.category ?? null,
     whenToUse: r.when_to_use,
     whenNotToUse: r.when_not_to_use,
     requires: r.requires ?? null,
     createdBy: r.created_by,
+    publishedFromVersion: r.published_from_version ?? null,
     createdAt: appIso(r.created_at),
   };
 }

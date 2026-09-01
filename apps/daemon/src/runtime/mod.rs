@@ -17,16 +17,20 @@ pub mod context_registry;
 pub mod context_service;
 mod handle;
 mod instruction_delivery;
+pub mod gateway_token;
 pub mod managed_llm;
 mod manager;
 mod native_skill_fallback_guard;
 pub(crate) use native_skill_fallback_guard::{
-    guard_enabled, snapshot_baseline, violations_after_turn, AGENT_REPLY_CONTENT,
-    AGENT_REPLY_METADATA_JSON, NativeSkillBaseline,
+    apply_violations_to_emitted, ensure_turn_guard, event_may_open_implicit_turn,
+    guard_enabled, prepare_guard_for_acp_event, snapshot_baseline,
+    take_violations_for_turn_end, violations_after_turn, AGENT_REPLY_CONTENT,
+    NativeSkillBaseline, NativeSkillTurnGuard, NativeSkillViolation,
 };
 pub mod permission_policy;
 pub mod prompt_attachments;
 pub mod refresh;
+pub mod session_prompt;
 pub mod sidecar;
 pub mod supervisor;
 pub mod team_cloud_config;
@@ -52,6 +56,7 @@ pub use permission_policy::PermissionPolicy;
 // goes through `AgentBackend`.
 #[allow(unused_imports)]
 pub use opencode_http::OpencodeHost;
+pub use session_prompt::{SessionPromptResponse, SessionPromptService};
 pub use supervisor::RuntimeSupervisor;
 pub use workspace_runtime::{apply_workspace_system_instructions, instruction_plugin_installed};
 

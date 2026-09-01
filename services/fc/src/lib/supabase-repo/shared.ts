@@ -167,7 +167,7 @@ export function mapApp(r: any) {
 }
 
 export const SESSION_FULL_COLUMNS =
-  "id, team_id, title, mode, idea_id, primary_agent_id, created_by_actor_id, summary, last_message_preview, last_message_at, acp_session_id, binding, gateway_key, source, cron_job_id, created_at, updated_at";
+  "id, team_id, title, mode, idea_id, primary_agent_id, created_by_actor_id, summary, last_message_preview, last_message_at, acp_session_id, binding, gateway_key, source, cron_job_id, parent_session_id, thread_root_message_id, created_at, updated_at";
 
 // `source` / `source_id` identify the gateway an EXTERNAL actor came in through
 // (wecom / wechat / feishu / discord / kook / seatalk / email + the id in that
@@ -200,6 +200,8 @@ export function mapSessionFull(row) {
     gatewayKey: row?.gateway_key ?? null,
     source: row?.source ?? "user",
     cronJobId: row?.cron_job_id ?? null,
+    parentSessionId: row?.parent_session_id ?? null,
+    threadRootMessageId: row?.thread_root_message_id ?? null,
     createdAt: row?.created_at ?? null,
     updatedAt: row?.updated_at ?? null,
   };

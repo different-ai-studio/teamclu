@@ -266,6 +266,8 @@ pub(crate) struct AgentManagementCtx {
     backend: Arc<dyn crate::backend::Backend>,
     reconciler: Arc<crate::runtime::team_skills::TeamSkillReconciler>,
     refresh: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
+    refresh_watch_registry:
+        Option<Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
     results: Arc<
         AsyncMutex<HashMap<String, (std::time::Instant, crate::proto::teamclu::RpcResponse)>>,
     >,
@@ -386,6 +388,7 @@ impl DaemonServer {
             backend: self.backend.clone(),
             reconciler: self.team_skill_reconciler.clone(),
             refresh: self.refresh_coordinator.clone(),
+            refresh_watch_registry: self.refresh_watch_registry.clone(),
             results: self.agent_management_results.clone(),
         }
     }
@@ -627,6 +630,7 @@ impl DaemonServer {
                         outcome,
                         Some(&ctx.backend),
                         ctx.refresh.as_ref(),
+                        ctx.refresh_watch_registry.as_ref(),
                     )
                     .await;
                 }
@@ -641,6 +645,7 @@ impl DaemonServer {
                         outcome,
                         Some(&ctx.backend),
                         ctx.refresh.as_ref(),
+                        ctx.refresh_watch_registry.as_ref(),
                     )
                     .await;
                 }
@@ -651,6 +656,7 @@ impl DaemonServer {
                         outcome,
                         Some(&ctx.backend),
                         ctx.refresh.as_ref(),
+                        ctx.refresh_watch_registry.as_ref(),
                     )
                     .await;
                 }

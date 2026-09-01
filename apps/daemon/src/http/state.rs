@@ -121,6 +121,11 @@ pub struct HttpState {
     pub session_index: Arc<SessionOwnerIndex>,
     pub idempotency: Arc<IdempotencyCache>,
     pub limiter: Arc<RateLimiter>,
+    /// Shared outbound HTTP client for `/v1/ai/*`. One per state rather than
+    /// one per request: a fresh `reqwest::Client` builds its own connection
+    /// pool and TLS session cache, so per-request construction would add a
+    /// full handshake to every completion.
+    pub http_client: reqwest::Client,
     /// Workspace configuration control (providers, permissions, allowlist).
     /// `None` when the HTTP server is started without a workspace control
     /// store (e.g. in focused unit tests). Workspace routes return 404 in
@@ -129,6 +134,8 @@ pub struct HttpState {
     pub runtime_supervisor: Option<Arc<crate::runtime::RuntimeSupervisor>>,
     /// Workspace refresh state shared with `/v1/workspaces/:id/runtime*`.
     pub runtime_refresh: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
+    pub refresh_watch_registry:
+        Option<Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
     /// Loopback `opencode serve` pool for provider OAuth (settings only).
     pub opencode_settings: Option<Arc<crate::opencode_settings::OpenCodeSettingsService>>,
     /// Daemon-owned team sync dispatcher (drives `/v1/team/sync*`).
@@ -182,6 +189,8 @@ pub struct HttpState {
     pub local_live_ingest_tx: Option<LocalLiveIngestTx>,
     /// Backend session → TeamClu session registry for managed MCP adapters.
     pub runtime_context: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
+    /// Per-session group-chat system prompt for managed backends (Pi v1).
+    pub session_prompt: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
 }
 
 impl HttpState {
@@ -210,9 +219,15 @@ impl HttpState {
             session_index: SessionOwnerIndex::new(),
             idempotency: IdempotencyCache::new(),
             limiter: RateLimiter::new(),
+            // No global timeout: a long completion legitimately streams for
+            // minutes, and the client hanging up is what cancels it.
+            http_client: reqwest::Client::builder()
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             workspace_control,
             runtime_supervisor,
             runtime_refresh,
+            refresh_watch_registry: None,
             opencode_settings,
             sync_dispatcher,
             register_workspace_tx,
@@ -227,6 +242,7 @@ impl HttpState {
             local_rpc_tx: None,
             local_live_ingest_tx: None,
             runtime_context: None,
+            session_prompt: None,
         }
     }
 
@@ -235,6 +251,14 @@ impl HttpState {
         service: Arc<crate::runtime::context_service::RuntimeContextService>,
     ) -> Self {
         self.runtime_context = Some(service);
+        self
+    }
+
+    pub fn with_session_prompt(
+        mut self,
+        service: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
+    ) -> Self {
+        self.session_prompt = service;
         self
     }
 
@@ -284,6 +308,14 @@ impl HttpState {
         team_skills: Option<Arc<crate::runtime::team_skills::TeamSkillReconciler>>,
     ) -> Self {
         self.team_skills = team_skills;
+        self
+    }
+
+    pub fn with_refresh_watch_registry(
+        mut self,
+        registry: Option<Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
+    ) -> Self {
+        self.refresh_watch_registry = registry;
         self
     }
 
