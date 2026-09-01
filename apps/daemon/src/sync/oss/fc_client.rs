@@ -133,9 +133,7 @@ pub struct VersionInfo {
 
 /// Result of POST /v1/teams.
 ///
-/// The Cloud API response shape: `{ id, name, slug, createdAt, aiGatewayEndpoint, litellmKey }`.
-/// `aiGatewayEndpoint` and `litellmKey` are nullable when LiteLLM provisioning
-/// is skipped (e.g. local dev with LITELLM_MASTER_KEY unset).
+/// The Cloud API response shape: `{ id, name, slug, createdAt }`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTeamResult {
@@ -143,10 +141,6 @@ pub struct CreateTeamResult {
     pub team_id: String,
     #[serde(rename = "slug")]
     pub team_slug: String,
-    #[serde(default)]
-    pub ai_gateway_endpoint: Option<String>,
-    #[serde(default)]
-    pub litellm_key: Option<String>,
 }
 
 pub struct FcClient {
@@ -164,7 +158,7 @@ impl FcClient {
         }
     }
 
-    /// POST /v1/teams — unified team creation. Provisions LiteLLM team + key
+    /// POST /v1/teams — unified team creation. Writes the teams row
     /// server-side and seeds team_workspace_config in one call. The legacy
     /// `/sync/create-team` endpoint was removed in 2026-05.
     ///

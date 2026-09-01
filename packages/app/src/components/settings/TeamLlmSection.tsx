@@ -25,7 +25,6 @@ export function TeamLlmSection() {
   const [teamSharedModel, setTeamSharedModel] = React.useState<{
     baseUrl: string
     models: LlmModelEntry[]
-    availableModels: LlmModelEntry[]
   } | null>(null)
   const [refreshing, setRefreshing] = React.useState(false)
   const [localAgent, setLocalAgent] = React.useState<DaemonLocalAgent | null>(null)
@@ -44,7 +43,6 @@ export function TeamLlmSection() {
           ? {
               baseUrl: llm.baseUrl,
               models: llm.models,
-              availableModels: llm.availableModels,
             }
           : null,
       )
@@ -166,10 +164,10 @@ export function TeamLlmSection() {
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {teamSharedModel.availableModels.length > 0
+                  {teamSharedModel.models.length > 0
                     ? t('settings.llm.modelsAvailable', {
-                        count: teamSharedModel.availableModels.length,
-                        defaultValue: `${teamSharedModel.availableModels.length} models available`,
+                        count: teamSharedModel.models.length,
+                        defaultValue: `${teamSharedModel.models.length} models available`,
                       })
                     : t('settings.llm.teamSharedNoModelsDetected', 'No models detected')}
                 </p>
@@ -179,10 +177,10 @@ export function TeamLlmSection() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {teamSharedModel.availableModels.length > 0 ? (
+              {teamSharedModel.models.length > 0 ? (
                 <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
                   <CircleDot className="h-3 w-3" />
-                  {t('settings.llm.connected', 'Connected')}
+                  {t('settings.llm.teamSharedConfigured', 'Configured')}
                 </span>
               ) : (
                 <span className="text-[11px] text-muted-foreground">
@@ -209,16 +207,16 @@ export function TeamLlmSection() {
               )}
             </div>
           </div>
-          {teamSharedModel.availableModels.length > 0 && (
+          {teamSharedModel.models.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5 border-t border-border-soft pt-2">
-              {teamSharedModel.availableModels.slice(0, 8).map((model) => (
+              {teamSharedModel.models.slice(0, 8).map((model) => (
                 <span key={model.id} className="rounded-md border border-border bg-paper px-1.5 py-0.5 font-mono text-[10.5px] text-ink-2">
                   {model.name || model.id}
                 </span>
               ))}
-              {teamSharedModel.availableModels.length > 8 && (
+              {teamSharedModel.models.length > 8 && (
                 <span className="px-1.5 py-0.5 text-[10.5px] text-muted-foreground">
-                  +{teamSharedModel.availableModels.length - 8}
+                  +{teamSharedModel.models.length - 8}
                 </span>
               )}
             </div>

@@ -190,7 +190,6 @@ export function createApp(deps: AppDeps): Hono {
   // Admin/provisioning endpoints (all POST). Each parses JSON body then calls the handler.
   const adminRoutes: Array<[string, (body: any) => Promise<any>]> = [
     ["/reset-secret", (b) => admin.handleResetSecret(b)],
-    ["/managed-git/setup-litellm", (b) => admin.handleManagedGitSetupLitellm(b)],
   ];
   for (const [path, fn] of adminRoutes) {
     app.post(path, async (c) => {

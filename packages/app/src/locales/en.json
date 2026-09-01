@@ -1498,6 +1498,7 @@
       "teamSharedModel": "Team Shared Model",
       "teamSharedModelTooltip": "Configure the team-shared AI model proxy and model list",
       "teamSharedBadge": "Team Shared",
+      "teamSharedConfigured": "Configured",
       "teamSharedNoModelsDetected": "No models detected",
       "teamSharedReadOnly": "Only the team owner can edit",
       "refreshTooltip": "Refresh providers from OpenCode",
@@ -2240,7 +2241,6 @@
         "syncNow": "Sync now"
       },
       "noCurrentTeam": "No team selected",
-      "availableModelsHint": "Gateway models (click to add)",
       "hostLlm": "Host LLM (team shared AI model)",
       "hostLlmPaneDesc": "Configure the shared AI model proxy URL and model list for your team — every member can use them directly.",
       "saveLlm": "Save",

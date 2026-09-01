@@ -1498,6 +1498,7 @@
       "teamSharedModel": "团队共享模型",
       "teamSharedModelTooltip": "配置团队共享 AI 模型的代理地址与模型列表",
       "teamSharedBadge": "团队共享",
+      "teamSharedConfigured": "已配置",
       "teamSharedNoModelsDetected": "未检测到可用模型",
       "teamSharedReadOnly": "仅团队 owner 可编辑",
       "refreshTooltip": "从 OpenCode 刷新提供商",
@@ -2240,7 +2241,6 @@
         "syncNow": "立即同步"
       },
       "noCurrentTeam": "当前没有团队",
-      "availableModelsHint": "网关可用模型（点击添加）",
       "hostLlm": "托管 LLM（团队共享 AI 模型）",
       "hostLlmPaneDesc": "为团队配置共享 AI 模型代理地址与模型列表，所有成员可直接使用。",
       "saveLlm": "保存",

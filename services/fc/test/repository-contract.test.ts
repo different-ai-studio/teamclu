@@ -116,43 +116,16 @@ function contractRepo() {
         enabledAt: row?.shareEnabledAt ?? null,
       };
     },
-    async setupLiteLlm(teamId) {
-      return {
-        aiGatewayEndpoint: `https://litellm.example.com/${teamId}`,
-        litellmKey: `sk-litellm-${teamId}`,
-      };
-    },
-    async ensureMemberKey(teamId) {
-      // Fake caller resolution: contract fixtures use "actor-1" as the caller.
-      return {
-        key: `sk-tc-actor-1-${teamId}`,
-        aiGatewayEndpoint: `https://litellm.example.com/${teamId}`,
-      };
-    },
-    async listLiteLlmKeys(teamId) {
-      return {
-        teamId: `litellm-${teamId}`,
-        keys: [
-          { key: "sk-abcdefghij...", alias: "member-1", spend: 1.5, created_at: "2026-05-27T01:00:00Z" },
-        ],
-      };
-    },
-    async setLiteLlmBudget(teamId, { maxBudget }) {
-      return { maxBudget: Number(maxBudget) };
-    },
     async getWorkspaceConfig(teamId) {
       const row = shareModeStore[teamId];
       const llm = llmConfigStore[teamId];
       return {
         shareMode: row?.shareMode ?? null,
         syncMode: row?.shareMode === "oss" ? "oss" : (row?.shareMode ? "git" : null),
-        litellmTeamId: null,
         llm: {
           enabled: llm?.enabled ?? false,
           baseUrl: llm?.baseUrl ?? null,
           models: llm?.models ?? [],
-          availableModels: [],
-          aiGatewayEndpoint: null,
         },
       };
     },

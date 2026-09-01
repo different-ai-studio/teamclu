@@ -45,8 +45,6 @@ describe('TeamSharedLlmPane', () => {
       enabled: true,
       baseUrl: 'https://proxy.example.com/v1',
       models: [{ id: 'gpt-x', name: 'GPT-X' }],
-      availableModels: [],
-      aiGatewayEndpoint: null,
     })
 
     render(<TeamSharedLlmPane open onOpenChange={() => {}} />)
@@ -67,8 +65,6 @@ describe('TeamSharedLlmPane', () => {
       enabled: true,
       baseUrl: 'https://proxy.example.com/v1',
       models: [{ id: 'gpt-x', name: 'GPT-X' }],
-      availableModels: [],
-      aiGatewayEndpoint: null,
     })
     const onSaved = vi.fn()
     const onOpenChange = vi.fn()
@@ -97,8 +93,6 @@ describe('TeamSharedLlmPane', () => {
       enabled: false,
       baseUrl: null,
       models: [],
-      availableModels: [],
-      aiGatewayEndpoint: null,
     })
 
     render(<TeamSharedLlmPane open onOpenChange={() => {}} />)

@@ -828,16 +828,13 @@ export interface TeamLlmModel {
 
 /**
  * Per-team LLM config block from `GET /v1/teams/:id/workspace-config`'s `llm`
- * field. The cloud is the source of truth. `models` is the team's stored
- * (authoritative) model list; `availableModels` are gateway-listed suggestions
- * for the model picker.
+ * field. The cloud is the source of truth, and `models` is the team's stored
+ * (authoritative) model list.
  */
 export interface TeamLlmConfig {
   enabled: boolean;
   baseUrl: string | null;
   models: TeamLlmModel[];
-  availableModels: TeamLlmModel[];
-  aiGatewayEndpoint: string | null;
 }
 
 /** Body for `PUT /v1/teams/:id/llm-config`. */

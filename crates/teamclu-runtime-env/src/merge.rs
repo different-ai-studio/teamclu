@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::SystemEnvContext;
 
-/// Locally derived LiteLLM virtual key for the given actor (empty → none).
+/// Locally derived AI-gateway key for the given actor (empty → none).
 pub fn tc_api_key_for_actor(actor_id: &str) -> Option<String> {
     if actor_id.is_empty() {
         return None;

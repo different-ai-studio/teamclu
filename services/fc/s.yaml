@@ -53,14 +53,6 @@ resources:
         SYNC_MAX_BYTES_PER_TEAM: ${env('SYNC_MAX_BYTES_PER_TEAM', '')}
         # OSS addresses buckets virtual-host style; only MinIO needs path style.
         S3_FORCE_PATH_STYLE: ${env('S3_FORCE_PATH_STYLE', '')}
-        LITELLM_URL: ${env('LITELLM_URL', 'https://ai.ucar.cc')}
-        LITELLM_MASTER_KEY: ${env('LITELLM_MASTER_KEY', '')}
-        # Blank = no cap, matching the compose default. Keep the two targets in
-        # step: a default that differs per target is how the $1 cap went unnoticed.
-        LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD: ${env('LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD', '')}
-        # LiteLLM usage reads the `litellm` database on the SAME Postgres instance
-        # as the primary FC connection (DATABASE_URL/POSTGRES_*); only the db name
-        # differs. Override the db name here if it is not `litellm`.
         CODEUP_ORG_ID: ${env('CODEUP_ORG_ID', '')}
         CODEUP_PAT: ${env('CODEUP_PAT', '')}
         CODEUP_BOT_USERNAME: ${env('CODEUP_BOT_USERNAME', 'teamclu')}

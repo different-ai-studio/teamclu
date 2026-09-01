@@ -221,10 +221,6 @@ impl Backend for DeferredBackend {
             .await
     }
 
-    async fn ensure_llm_member_key(&self, team_id: &str) -> BackendResult<()> {
-        self.inner()?.ensure_llm_member_key(team_id).await
-    }
-
     async fn get_effective_default_agent(&self, team_id: &str) -> BackendResult<Option<String>> {
         self.inner()?.get_effective_default_agent(team_id).await
     }

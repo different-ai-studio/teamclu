@@ -42,7 +42,6 @@ export function TeamSharedLlmPane({ open, onOpenChange, onSaved }: Props) {
   const [enabled, setEnabled] = React.useState(false)
   const [baseUrl, setBaseUrl] = React.useState('')
   const [models, setModels] = React.useState<LlmModelEntry[]>([])
-  const [availableModels, setAvailableModels] = React.useState<LlmModelEntry[]>([])
   const [loading, setLoading] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -61,12 +60,10 @@ export function TeamSharedLlmPane({ open, onOpenChange, onSaved }: Props) {
           setEnabled(llm.enabled)
           setBaseUrl(llm.baseUrl ?? '')
           setModels(llm.models ?? [])
-          setAvailableModels(llm.availableModels ?? [])
         } else {
           setEnabled(false)
           setBaseUrl('')
           setModels([])
-          setAvailableModels([])
         }
       } catch (err) {
         if (!cancelled) setError(humanizeFcError(err))
@@ -132,31 +129,6 @@ export function TeamSharedLlmPane({ open, onOpenChange, onSaved }: Props) {
                 onModelsChange={setModels}
                 disabled={saving}
               />
-              {enabled && availableModels.length > 0 && (
-                <div className="mt-2 rounded-lg border border-border/40 bg-muted/10 p-2.5">
-                  <p className="mb-1.5 text-xs text-muted-foreground">
-                    {t('settings.team.availableModelsHint', '网关可用模型（点击添加）')}
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {availableModels.map((m) => {
-                      const already = models.some((existing) => existing.id === m.id)
-                      return (
-                        <Button
-                          key={m.id}
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-6 px-2 text-xs"
-                          disabled={saving || already}
-                          onClick={() => setModels((prev) => [...prev, { id: m.id, name: m.name }])}
-                        >
-                          {m.name || m.id}
-                        </Button>
-                      )
-                    })}
-                  </div>
-                </div>
-              )}
             </>
           )}
           {error && <p className="mt-3 text-xs text-red-500">{error}</p>}
