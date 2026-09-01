@@ -8,7 +8,7 @@ Local AI agents — your AI Ally for every role
 
 > **Your Ally. Together.**
 
-- **👥 Built for teams** — share Skills, Knowledge, and MCP config across the whole team via Git or S3/OSS sync; each member keeps their own private context
+- **👥 Built for teams** — share Skills, Knowledge, and MCP config across the whole team; each member keeps their own private context
 - **🎭 Skills × Roles** — a composable role library lets the same agent specialize for sales, support, ops, engineering, or whatever your team needs
 - **🔋 Batteries included** — built-in team knowledge base, Auto UI understanding, speech-to-text, and six channel gateways (WeCom, Feishu, Discord, Kook, WeChat, Email) — no glue code
 - **🧑‍💻 Solo builders to SMBs** — local-first, private by default; scales from a single user to a small company
@@ -27,7 +27,7 @@ English | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [�
 - **Local agent runtime** — agents run on your machine, hosted by the `amuxd` daemon
 - **Channel gateways** — reach your agents from Discord, Feishu, Email, Kook, WeCom, and WeChat
 - **Automation** — scheduled tasks via cron
-- **Team collaboration** — share a team drive (`teamclu-team/`) over OSS or Git; see [Team collaboration](#team-collaboration)
+- **Team collaboration** — sync team knowledge and documents through S3-compatible object storage; see [Team collaboration](#team-collaboration)
 - **MCP support** — connect agents to enterprise systems via the Model Context Protocol
 - **Skills / plugins** — extend agents with workspace-level and global skill sources
 - **Knowledge base** — a Markdown vault synced across the whole team, with path-level ACL and version history
@@ -106,31 +106,23 @@ For the frontend alone (no Rust build), run `pnpm dev`. Build commands, the shar
 
 ## Team collaboration
 
-A team shares a dedicated **team drive** (`teamclu-team/`), not the whole workspace. During onboarding the owner picks one **share mode**, which is then locked server-side:
+A team shares a few dedicated directories, not the whole workspace. Sync goes through S3-compatible object storage (Alibaba OSS / WebDAV) — there is no Git mode.
 
-| Mode | What it does |
-|---|---|
-| `oss` | Syncs through S3-compatible object storage (Alibaba OSS / WebDAV) |
-| `managed_git` | Syncs through a Git repository provisioned for you |
-| `custom_git` | Syncs through a Git repository you host yourself |
-
-Sync is owned by the `amuxd` daemon: it keeps one global copy per team under `~/.amuxd/teams/<team_id>/`, and each linked workspace gets a `teamclu-team` symlink into that copy.
+Sync is owned by the `amuxd` daemon: it keeps one global copy per team under `~/.amuxd/teams/<team_id>/`, and each linked workspace surfaces the synced roots as symlinks.
 
 ### What gets shared
 
-Only the shared layer syncs — a whitelist `.gitignore` keeps everything else local:
+Only the synced roots leave your machine; the rest of the workspace stays local:
 
-- `skills/` — shared agent skills
-- `.mcp/` — MCP server configuration
-- `knowledge/` — team knowledge base documents
+- `team-knowledge/` — the team knowledge base
+- `team-documents/` — team documents (files have an owner and access can be restricted)
 
-Personal files and the rest of the workspace stay local.
+Team skills and team MCP servers no longer travel in this tree: skills come from the skills registry, MCP servers and team env from the Cloud API.
 
 ### Notes
 
-- Git modes need working Git authentication (SSH key or HTTPS token).
-- OSS sync can surface conflicts; resolve them from the team shared-files UI.
-- Sync runs on app startup, and can be triggered manually from **Settings → Team**.
+- Sync runs on app startup, and can be triggered manually from the team share column in the sidebar.
+- Conflicts surface there too, and are resolved in the main panel.
 
 ## Configuration
 

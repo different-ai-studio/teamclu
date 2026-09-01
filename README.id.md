@@ -8,7 +8,7 @@ Agent AI lokal — rekan AI Anda untuk setiap peran
 
 > **Rekan Anda. Bersama.**
 
-- **👥 Dibuat untuk tim** — bagikan Skills, Knowledge, dan konfigurasi MCP ke seluruh tim melalui sinkronisasi Git atau S3/OSS; setiap anggota tetap memiliki konteks pribadinya sendiri
+- **👥 Dibuat untuk tim** — bagikan Skills, Knowledge, dan konfigurasi MCP ke seluruh tim; setiap anggota tetap memiliki konteks pribadinya sendiri
 - **🎭 Skills × Roles** — library peran yang dapat dikombinasikan memungkinkan agent yang sama dikhususkan untuk sales, support, ops, engineering, atau peran apa pun yang dibutuhkan tim Anda
 - **🔋 Lengkap sejak awal** — knowledge base tim, pemahaman Auto UI, speech-to-text, dan enam channel gateway (WeCom, Feishu, Discord, Kook, WeChat, Email) sudah tersedia tanpa perlu glue code
 - **🧑‍💻 Dari developer solo hingga UKM** — local-first dan privat secara default; dapat berkembang dari satu pengguna hingga perusahaan kecil
@@ -27,7 +27,7 @@ Agent AI lokal — rekan AI Anda untuk setiap peran
 - **Runtime agent lokal** — agent berjalan di mesin Anda dan di-host oleh daemon `amuxd`
 - **Channel gateway** — akses agent Anda dari Discord, Feishu, Email, Kook, WeCom, dan WeChat
 - **Otomatisasi** — task terjadwal melalui cron
-- **Kolaborasi tim** — bagikan team drive (`teamclu-team/`) melalui OSS atau Git; lihat [Kolaborasi tim](#kolaborasi-tim)
+- **Kolaborasi tim** — sinkronkan knowledge dan dokumen tim melalui object storage kompatibel S3; lihat [Kolaborasi tim](#kolaborasi-tim)
 - **Dukungan MCP** — hubungkan agent ke sistem enterprise melalui Model Context Protocol
 - **Skills / plugin** — perluas kemampuan agent dengan sumber skill di tingkat workspace dan global
 - **Knowledge base** — vault Markdown yang disinkronkan ke seluruh tim, dengan ACL per-path dan riwayat versi
@@ -106,31 +106,23 @@ Untuk menjalankan frontend saja (tanpa build Rust), jalankan `pnpm dev`. Perinta
 
 ## Kolaborasi tim
 
-Sebuah tim berbagi **team drive** khusus (`teamclu-team/`), bukan seluruh workspace. Saat onboarding, pemilik memilih satu **mode berbagi**, yang kemudian dikunci di sisi server:
+Sebuah tim berbagi beberapa direktori khusus, bukan seluruh workspace. Sinkronisasi berjalan melalui object storage yang kompatibel dengan S3 (Alibaba OSS / WebDAV); tidak ada mode Git.
 
-| Mode | Cara kerja |
-|---|---|
-| `oss` | Sinkronisasi melalui object storage yang kompatibel dengan S3 (Alibaba OSS / WebDAV) |
-| `managed_git` | Sinkronisasi melalui repository Git yang disediakan untuk Anda |
-| `custom_git` | Sinkronisasi melalui repository Git yang Anda host sendiri |
-
-Sinkronisasi ditangani oleh daemon `amuxd`: daemon menyimpan satu salinan global per tim di `~/.amuxd/teams/<team_id>/`, lalu setiap workspace yang terhubung mendapatkan symlink `teamclu-team` ke salinan tersebut.
+Sinkronisasi ditangani oleh daemon `amuxd`: daemon menyimpan satu salinan global per tim di `~/.amuxd/teams/<team_id>/`, lalu setiap workspace yang terhubung menampilkan direktori tersinkron itu sebagai symlink.
 
 ### Yang dibagikan
 
-Hanya layer bersama yang disinkronkan — `.gitignore` berbasis whitelist menjaga semua yang lain tetap lokal:
+Hanya direktori tersinkron yang meninggalkan mesin Anda; sisa workspace tetap lokal:
 
-- `skills/` — skill agent bersama
-- `.mcp/` — konfigurasi server MCP
-- `knowledge/` — dokumen knowledge base tim
+- `team-knowledge/` — knowledge base tim
+- `team-documents/` — dokumen tim (setiap file punya pemilik dan aksesnya dapat dibatasi)
 
-File pribadi dan bagian workspace lainnya tetap berada di lokal.
+Skill tim dan server MCP tim tidak lagi melewati tree ini: skill berasal dari skill registry, sedangkan server MCP dan env tim berasal dari Cloud API.
 
 ### Catatan
 
-- Mode Git memerlukan autentikasi Git yang berfungsi (SSH key atau HTTPS token).
-- Sinkronisasi OSS dapat menimbulkan konflik; selesaikan konflik tersebut dari UI shared files tim.
-- Sinkronisasi berjalan saat aplikasi dimulai dan juga dapat dipicu secara manual dari **Settings → Team**.
+- Sinkronisasi berjalan saat aplikasi dimulai dan dapat dipicu manual dari kolom team share di sidebar.
+- Konflik juga muncul di sana dan diselesaikan di panel utama.
 
 ## Konfigurasi
 

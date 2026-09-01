@@ -148,8 +148,9 @@ Single source of truth principle — **never mix content sources**:
 ## Team Collaboration
 
 Team sync is owned by the amuxd daemon (OSS engine). The legacy iroh-based P2P
-mode has been removed, and so has git share — `git` is not invoked anywhere in
-the product.
+mode has been removed, and so has git share — team sync never invokes `git`.
+(The only `git` left in the product is the per-app Gitea checkout in
+`apps/daemon/src/sync/app_git.rs`, which has nothing to do with team share.)
 
 **There is no share-mode switch any more.** It was a one-shot cloud flag with no
 producer left in the product — nothing shipped a call that set it — so every team
@@ -167,7 +168,12 @@ values cannot be dropped, and dropping the column is a one-way door on
 production data), but no code reads or writes them. Do not reintroduce a branch
 on them.
 
-Shared: `skills/`, `.mcp/`, `knowledge/`
+Shared: the sync content root is `~/.amuxd/teams/<id>/shared/team-sync/`, and
+`global_team_store::SHARED_PREFIXES` is the whole of it — `knowledge/` and
+`documents/`, surfaced in a workspace as the `team-knowledge` and
+`team-documents` symlinks. `skills` moved to the skills registry; `.mcp` and
+`_secrets` moved to the Cloud API. The `teamclu-team` workspace link still
+exists but is daemon-owned and sits *outside* the synced tree.
 
 ## Versioning & Release
 
