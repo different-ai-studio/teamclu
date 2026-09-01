@@ -302,6 +302,11 @@ impl AmuxdAgentHandle {
             &self.spawn_env.actor_name,
             cloud_token_file.as_deref(),
             &managed_llm,
+            // Channels spawn the same runtimes as everything else, so the team
+            // provider needs its credential binding here too. None until this
+            // path has a token source of its own — the gateway runtime does not
+            // hold one, and a wrong token is worse than an absent provider.
+            None,
         )
         .map(|env| SpawnRuntimeEnv {
             is_gateway: true,
@@ -334,11 +339,7 @@ impl AmuxdAgentHandle {
             let map = self.logical_to_acp.lock().await;
             map.get(session).map(|s| s.binding.clone())
         }
-        .unwrap_or_default(
-            // Channels spawn the same runtimes; the team provider needs its
-            // credential binding here too.
-            None,
-        );
+        .unwrap_or_default();
         let (workspace_dir, _) = self.resolve_spawn_target(session, &binding).await?;
         let Some(dir) = workspace_dir else {
             // No resolvable workspace — a spawn would run in a throwaway
