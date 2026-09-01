@@ -126,6 +126,14 @@ pub struct SyncStatus {
     /// turns this into "you added N files at once — send them?".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_new_files: Option<u32>,
+    /// How many deletions were held back pending confirmation, if any. The UI
+    /// turns this into "this would delete N files for everyone — go ahead?".
+    ///
+    /// Worth a sharper prompt than the add-side one: an unexpected pile of
+    /// deletions is more often a scan that came back short — an unmounted
+    /// drive, a moved directory — than an actual intent to delete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_deletes: Option<u32>,
     /// How far the RUNNING tick has got. `None` whenever nothing is running —
     /// it is live state, not a record of the last tick, so a finished sync can
     /// never be left looking like an in-flight one.
@@ -143,6 +151,12 @@ pub struct SyncOptions {
     /// so it must never be set by the timer or by any automatic retry: doing so
     /// turns the guard into a one-tick delay.
     pub allow_bulk_add: bool,
+    /// When `true`, broadcast a set of deletions a previous tick held back.
+    ///
+    /// Same rule as `allow_bulk_add`, and it matters more here: the timer or an
+    /// automatic retry setting this would turn a guard on **other people's**
+    /// files into a one-tick delay.
+    pub allow_bulk_delete: bool,
 }
 
 #[derive(Clone)]
@@ -299,6 +313,7 @@ impl SyncDispatcher {
                         SyncOptions {
                             force: false,
                             allow_bulk_add: false,
+                            allow_bulk_delete: false,
                         },
                     )
                     .await;
@@ -456,6 +471,7 @@ impl SyncDispatcher {
             progress,
             oss::engine::TickOptions {
                 allow_bulk_add: options.allow_bulk_add,
+                allow_bulk_delete: options.allow_bulk_delete,
             },
         )
         .await
@@ -469,6 +485,7 @@ impl SyncDispatcher {
             failed: r.failed,
             oversize: r.oversize,
             blocked_new_files: r.blocked_new_files,
+            blocked_deletes: r.blocked_deletes,
             ..Default::default()
         })
     }

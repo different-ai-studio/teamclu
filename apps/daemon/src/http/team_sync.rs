@@ -34,6 +34,13 @@ pub struct SyncRequest {
     /// never by a retry, or the guard becomes a one-tick delay.
     #[serde(default)]
     pub allow_bulk_add: bool,
+    /// When `true`, broadcast a set of deletions an earlier tick held back.
+    ///
+    /// Same rule as `allow_bulk_add`, and stricter in consequence: a tombstone
+    /// is applied on every member's machine, so a retry setting this on the
+    /// user's behalf would remove a guard that protects other people's files.
+    #[serde(default)]
+    pub allow_bulk_delete: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,6 +73,7 @@ pub async fn sync_now(
             crate::sync::dispatch::SyncOptions {
                 force: body.force_sync,
                 allow_bulk_add: body.allow_bulk_add,
+                allow_bulk_delete: body.allow_bulk_delete,
             },
         )
         .await;

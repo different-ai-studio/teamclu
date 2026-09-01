@@ -70,6 +70,7 @@ pub fn ensure_workspace_link(workspace_root: &Path, team_id: &str) -> LinkStatus
     // Surface the team knowledge dir in the workspace too. Runs on every link
     // so opening/switching a workspace always re-creates a stale link.
     let _ = ensure_team_knowledge_link(workspace_root, team_id);
+    let _ = ensure_team_documents_link(workspace_root, team_id);
 
     // Already a symlink: repoint if stale or dangling, else done.
     if let Ok(meta) = std::fs::symlink_metadata(&link) {
@@ -196,8 +197,23 @@ fn copy_dir_contents(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// Workspace link name surfacing the team's synced knowledge dir
-/// (`shared/knowledge`). Sibling of [`TEAM_LINK_NAME`] (`teamclu-team`).
+/// (`shared/team-sync/knowledge`). Sibling of [`TEAM_LINK_NAME`]
+/// (`teamclu-team`).
 pub const TEAM_KNOWLEDGE_LINK_NAME: &str = "team-knowledge";
+
+/// Workspace link name surfacing the team's synced documents dir
+/// (`shared/team-sync/documents`).
+///
+/// A separate link rather than one pointing at the whole synced tree, because
+/// the two roots are different things: documents are files with an owner and
+/// may be permission-restricted, knowledge is shared consensus. An agent that
+/// wants one should not have to walk past the other.
+///
+/// Permissions on documents need no enforcement here. A device only holds what
+/// its owner is allowed to receive, so an agent running on it sees exactly what
+/// that person sees — which is the same conclusion the ACL design reaches about
+/// agents generally.
+pub const TEAM_DOCUMENTS_LINK_NAME: &str = "team-documents";
 
 /// Remove a workspace link entry regardless of how the platform materialized it.
 ///
@@ -253,9 +269,22 @@ pub fn ensure_team_knowledge_link(workspace_root: &Path, team_id: &str) -> LinkS
     ensure_link_to(&workspace_root.join(TEAM_KNOWLEDGE_LINK_NAME), &target)
 }
 
+/// Surface the team's synced documents dir in a workspace.
+///
+/// Mirrors [`ensure_team_knowledge_link`]; kept as its own function so a caller
+/// that wants only one of the two roots can say so.
+pub fn ensure_team_documents_link(workspace_root: &Path, team_id: &str) -> LinkStatus {
+    if let Err(e) = global_team_store::ensure_initialized(team_id) {
+        tracing::warn!(team_id, "ensure_initialized for team-documents failed: {e}");
+        return LinkStatus::Fallback;
+    }
+    let target = global_team_store::sync_content_root(team_id).join("documents");
+    ensure_link_to(&workspace_root.join(TEAM_DOCUMENTS_LINK_NAME), &target)
+}
+
 /// Workspace-relative variant for call sites with no `team_id` (notably
 /// `prepare_workspace`, which runs on every workspace open/switch). Derives the
-/// team's `shared/knowledge` by following the workspace's `teamclu-team` link.
+/// team's synced roots by following the workspace's `teamclu-team` link.
 ///
 /// The derived path is validated to sit under this build's teams dir before it
 /// is used. `teamclu-team` can be stale — `ensure_workspace_link` has a test
@@ -266,7 +295,9 @@ pub fn ensure_team_knowledge_link_from_workspace(workspace_root: &Path) -> LinkS
     let Ok(team_repo) = std::fs::read_link(workspace_root.join(TEAM_LINK_NAME)) else {
         return LinkStatus::Fallback;
     };
-    // `teamclu-team` -> `<teams>/<id>/shared/teamclu-team`; knowledge is its sibling.
+    // `teamclu-team` -> `<teams>/<id>/shared/teamclu-team`. The synced tree is
+    // its sibling `team-sync/`, NOT `shared/` itself — that separation is what
+    // keeps this very directory out of the tree the scanner walks.
     let Some(shared) = team_repo.parent() else {
         return LinkStatus::Fallback;
     };
@@ -278,9 +309,15 @@ pub fn ensure_team_knowledge_link_from_workspace(workspace_root: &Path) -> LinkS
         );
         return LinkStatus::Fallback;
     }
+    let sync_root = shared.join(global_team_store::SYNC_ROOT_DIR);
+    // Both roots, so a workspace reached this way is not missing one of them.
+    let _ = ensure_link_to(
+        &workspace_root.join(TEAM_DOCUMENTS_LINK_NAME),
+        &sync_root.join("documents"),
+    );
     ensure_link_to(
         &workspace_root.join(TEAM_KNOWLEDGE_LINK_NAME),
-        &shared.join("knowledge"),
+        &sync_root.join("knowledge"),
     )
 }
 

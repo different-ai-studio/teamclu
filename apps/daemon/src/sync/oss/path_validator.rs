@@ -5,7 +5,19 @@ use std::path::Path;
 
 /// Prefixes this client still syncs — what the scanner pushes and what a pull
 /// materializes.
-pub const ALLOWED_PREFIXES: &[&str] = &["knowledge/"];
+/// The two fixed roots of the synced tree.
+///
+/// `documents/` may carry per-directory permissions; `knowledge/` may not —
+/// that split is editorial (files with an owner vs shared consensus), not
+/// technical, and is enforced in the UI rather than here. See
+/// `docs/specs/2026-09-01-team-sync-two-roots-design.md`.
+///
+/// Adding a prefix is a HARD upgrade: `engine::tick` runs manifest rows through
+/// `validate()` with `?`, so a daemon that does not know a prefix aborts the
+/// whole apply, and `InvalidPath` is non-transient so it never self-heals.
+/// A build that predates a new prefix stops syncing entirely, and silently,
+/// the moment anyone creates a file under it.
+pub const ALLOWED_PREFIXES: &[&str] = &["documents/", "knowledge/"];
 
 /// Prefixes the file sync no longer carries.
 ///
