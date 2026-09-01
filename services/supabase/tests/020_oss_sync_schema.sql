@@ -1,6 +1,6 @@
 begin;
 
-select plan(54);
+select plan(62);
 
 -- ---------------------------------------------------------------------------
 -- Test helpers (copied from tests/007 for self-containment)
@@ -820,6 +820,42 @@ begin
 end $$;
 
 select pass('direct authenticated UPDATE on sync_mode still blocked by guard trigger');
+
+-- ---------------------------------------------------------------------------
+-- Knowledge path ACL — table privileges
+--
+-- These exist because their absence was a production outage on 2026-09-01.
+-- The tables were created without service_role grants; `/sync/manifest`
+-- resolves an ACL view on EVERY call, including for the teams that have no
+-- rules, and that resolution fails closed — so a missing GRANT stopped
+-- knowledge sync for the whole deployment, not just the new feature.
+--
+-- BYPASSRLS does not imply table access. `amux` has no ALTER DEFAULT
+-- PRIVILEGES backstop, so a new FC-reachable table without an explicit grant
+-- is silently unreadable until something asks for it in production.
+-- ---------------------------------------------------------------------------
+
+select ok(has_table_privilege('service_role', 'amux.amuxc_path_acl', 'SELECT'),
+          'service_role can SELECT amuxc_path_acl');
+select ok(has_table_privilege('service_role', 'amux.amuxc_path_acl', 'INSERT'),
+          'service_role can INSERT amuxc_path_acl');
+select ok(has_table_privilege('service_role', 'amux.amuxc_path_acl_grants', 'SELECT'),
+          'service_role can SELECT amuxc_path_acl_grants');
+select ok(has_table_privilege('service_role', 'amux.amuxc_path_acl_grants', 'INSERT'),
+          'service_role can INSERT amuxc_path_acl_grants');
+select ok(has_table_privilege('service_role', 'amux.amuxc_access_log', 'SELECT'),
+          'service_role can SELECT amuxc_access_log');
+select ok(has_table_privilege('service_role', 'amux.amuxc_access_log', 'INSERT'),
+          'service_role can INSERT amuxc_access_log');
+
+-- The other half of the design: members must not be able to read the rule list
+-- at all. A prefix is a directory name, and naming a restricted directory to
+-- someone who cannot see it defeats the point. Withheld at the grant level as
+-- well as by RLS-with-no-policy, so a policy added by mistake cannot leak them.
+select ok(not has_table_privilege('authenticated', 'amux.amuxc_path_acl', 'SELECT'),
+          'authenticated cannot SELECT amuxc_path_acl — prefixes are themselves sensitive');
+select ok(not has_table_privilege('authenticated', 'amux.amuxc_path_acl_grants', 'SELECT'),
+          'authenticated cannot SELECT amuxc_path_acl_grants');
 
 -- Reset to alice context for safety.
 set local role postgres;
