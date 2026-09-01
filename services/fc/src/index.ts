@@ -326,7 +326,7 @@ const app = createApp({
   createRepository: makeBusinessRepoFactory(resolveBackendKind()),
   createAuthRepository: makeAuthRepoFactory(resolveBackendKind()),
   createSystemRepository: makeSystemRepoFactory(resolveBackendKind()),
-  runCron: (task: string) => runCronTask(getDb(), task),
+  runCron: (task: string) => runCronTask(getDb, task),
   lookupVanityApp: vanityLookup(),
 });
 
@@ -380,7 +380,7 @@ export async function handler(event: any, context: any) {
     if (!payload.task) {
       return { error: "missing_task", message: "Timer payload must include a task field" };
     }
-    return runCronTask(getDb(), payload.task);
+    return runCronTask(getDb, payload.task);
   }
 
   normalizeFcEvent(event);

@@ -279,18 +279,28 @@ export async function ossSyncGcOrphanBlobs(
 // ---------------------------------------------------------------------------
 export type CronTask = "oss-abandon-sessions" | "oss-gc-blobs" | "stripe-reconcile";
 
+/**
+ * `db` is a THUNK, not a connection.
+ *
+ * It used to be the connection, resolved by the caller as `runCronTask(getDb(),
+ * task)` — which called `getDb()` before dispatch, so every task needed a
+ * database whether or not it touched one. `getDb()` throws when DATABASE_URL is
+ * unset, and it IS unset on the supabase backend path, so `/internal/cron`
+ * answered 500 for EVERY task on the only deployment that runs. Nobody noticed
+ * because the cron compose profile has never been enabled there.
+ */
 export async function runCronTask(
-  db: Db,
+  db: () => Db,
   task: string,
   deps: CronDeps = {}
 ): Promise<{ task: string; result: Record<string, number> }> {
   switch (task) {
     case "oss-abandon-sessions": {
-      const result = await ossSyncAbandonExpiredSessions(db);
+      const result = await ossSyncAbandonExpiredSessions(db());
       return { task, result };
     }
     case "oss-gc-blobs": {
-      const result = await ossSyncGcOrphanBlobs(db, deps);
+      const result = await ossSyncGcOrphanBlobs(db(), deps);
       return { task, result };
     }
     // No `db`: the gateway owns the ledger, so this task talks to Stripe and to
