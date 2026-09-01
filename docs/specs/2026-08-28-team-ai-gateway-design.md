@@ -945,11 +945,34 @@ UPDATE amux.team_workspace_config
 
 删任何东西之前，全部满足：
 
-- [ ] 两个部署目标（self-host + `s.yaml` 那套）都已完成 Phase 1 全量切换
-- [ ] 所有团队的 `llm_base_url` 都已指向新网关（`SELECT count(*) ... WHERE llm_base_url LIKE '%/llm/%'` 为 0）
-- [ ] 观察期 ≥ 2 周，`ai_usage_logs` 有持续流量，LiteLLM 侧流量归零（查 `LiteLLM_SpendLogs` 最近 14 天无新行）
-- [ ] 最低支持的桌面端 / iOS 版本已不读 `litellmTeamId`
-- [ ] 运营已确认不再需要 LiteLLM admin UI（§10.3）
+- [x] 两个部署目标（self-host + `s.yaml` 那套）都已完成 Phase 1 全量切换
+- [x] 所有团队的 `llm_base_url` 都已指向新网关（`SELECT count(*) ... WHERE llm_base_url LIKE '%/llm/%'` 为 0）
+- [x] 观察期 ≥ 2 周，`ai_usage_logs` 有持续流量，LiteLLM 侧流量归零（查 `LiteLLM_SpendLogs` 最近 14 天无新行）
+- [~] 最低支持的桌面端 / iOS 版本已不读 `litellmTeamId` —— **未验证，改为中和**：
+      `litellmTeamId` 继续从 `GET /workspace-config` 返回（缺省 null），所以老客户端
+      解析不到会炸的前提不成立。真正从 payload 里拿掉它仍是后续独立一步。
+- [x] 运营已确认不再需要 LiteLLM admin UI（§10.3）—— 产品决定，非实测
+
+#### 实跑记录（2026-09-01，self-host 生产）
+
+`phase3-gate.sh`（PR #1138）对生产的实测结果，退役决定的依据：
+
+| 检查 | 结果 |
+|---|---|
+| ai-gateway 容器 up + healthy | PASS |
+| 指向 `/llm/` 的团队数 | **0** |
+| `llm_enabled` 且无显式 `llm_base_url` 的团队数 | **0** |
+| 新网关 14 天内请求数 | 3 |
+| LiteLLM 最近一次请求 | **2026-08-25**（8/22 五次、8/25 四次，此后为零；全时段 9409 次） |
+
+两条**在跑门禁时才发现的事**，比清单本身更值得记住：
+
+1. **第二条检查曾是假阳性。** 它只匹配 `llm_base_url LIKE '%/llm/%'`，而当时几乎所有团队那一列是 NULL，靠 `AI_GATEWAY_ENDPOINT` 回退。照字面读会在**一个团队都没切**的情况下报告"可以删"。真正的判据是"`llm_enabled` 且无显式 baseUrl 的团队数为 0"——回退没有对象了，那个 env 才可以删。
+2. **`Curious Cougar` 指向的 `api.teamclaw-dev.ucar.cc` 早已没有 DNS 解析。** 它不是"还在用 LiteLLM"，是从那批旧 `-dev` 域名被删起就一直坏着。字符串匹配看不出域名已经不存在——切换时按 `FC_DOMAIN` 重写，而不是保留原 host。
+
+切换动作：三个 `llm_enabled` 团队的 `llm_base_url` 统一改为
+`https://<FC_DOMAIN>/ai/v1/teams/<teamId>`；25 行残留的 `ai_gateway_endpoint`
+一并清空（已无任何读者）。`litellm_team_id` 列保留：老客户端仍解析它。
 
 ---
 
