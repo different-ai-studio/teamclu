@@ -342,3 +342,138 @@ async fn post_materialize_team_mcp_clears_copies_an_older_build_left_behind() {
         "the user's own server is untouched"
     );
 }
+
+async fn test_app_with_refresh() -> (
+    TestApp,
+    tempfile::TempDir,
+    std::sync::Arc<runtime::RuntimeSupervisor>,
+) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let token_path = dir.path().join("token");
+    let cfg = HttpConfig {
+        bind: "127.0.0.1:0".into(),
+        token_file: Some(token_path.clone()),
+        port_file: Some(dir.path().join("port")),
+        heartbeat_interval: Duration::from_secs(5),
+        ..HttpConfig::default()
+    };
+    let manager = Arc::new(Mutex::new(runtime::RuntimeManager::new(
+        std::collections::HashMap::new(),
+        None,
+    )));
+    let supervisor = runtime::RuntimeSupervisor::new(manager.clone());
+    let runtime = RuntimeManagerAdapter::new(manager, 256, None);
+    let workspace_control: Arc<dyn config::WorkspaceControlStore> =
+        Arc::new(OpenCodeCompatStore::new());
+    let handle = crate::http::spawn(
+        cfg,
+        crate::http::server::metadata("actor".into(), "test"),
+        runtime,
+        Some(workspace_control),
+        Some(supervisor.clone()),
+        None,
+        test_sync_dispatcher(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("spawn http server");
+    let base = format!("http://{}", handle.local_addr);
+    let root = std::fs::read_to_string(&token_path)
+        .expect("read root token")
+        .trim()
+        .to_owned();
+    let client = Client::new();
+    let resp: Value = client
+        .post(format!("{base}/v1/auth/exchange"))
+        .bearer_auth(&root)
+        .json(&serde_json::json!({
+            "ttl_seconds": 3600,
+            "scopes": [
+                "workspace:read",
+                "workspace:write",
+                "sessions:read",
+                "sessions:write",
+                "events:read"
+            ]
+        }))
+        .send()
+        .await
+        .expect("exchange response")
+        .error_for_status()
+        .expect("exchange status")
+        .json()
+        .await
+        .expect("exchange body");
+    let session_token = resp["token"].as_str().expect("session token").to_string();
+    (
+        TestApp {
+            _handle: handle,
+            client,
+            base,
+            session_token,
+        },
+        dir,
+        supervisor,
+    )
+}
+
+#[tokio::test]
+async fn skills_refresh_records_skills_change() {
+    let (app, _dir, supervisor) = test_app_with_refresh().await;
+    let ws = tempfile::tempdir().expect("workspace");
+    let wid = ws_id(ws.path());
+    let body: Value = app
+        .client
+        .post(format!("{}/v1/workspaces/{wid}/skills/refresh", app.base))
+        .bearer_auth(&app.session_token)
+        .send()
+        .await
+        .expect("response")
+        .error_for_status()
+        .expect("status")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(body["ok"], true);
+
+    let dto = supervisor
+        .refresh_coordinator()
+        .runtime_refresh_dto(&wid)
+        .await;
+    assert!(
+        dto.change_kinds.iter().any(|k| k == "skills"),
+        "expected Skills refresh, got {:?}",
+        dto.change_kinds
+    );
+}
+
+#[tokio::test]
+async fn skills_refresh_missing_workspace_is_not_found() {
+    let (app, _dir, _supervisor) = test_app_with_refresh().await;
+    let missing = std::env::temp_dir().join(format!(
+        "teamclu-missing-workspace-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let wid = ws_id(&missing);
+    let resp = app
+        .client
+        .post(format!("{}/v1/workspaces/{wid}/skills/refresh", app.base))
+        .bearer_auth(&app.session_token)
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+}

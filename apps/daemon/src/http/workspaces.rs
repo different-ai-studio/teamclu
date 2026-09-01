@@ -1115,6 +1115,40 @@ pub async fn delete_skill(
     Ok(apply_ok(outcome))
 }
 
+#[derive(Debug, Serialize)]
+pub struct SkillsRefreshResponse {
+    pub ok: bool,
+}
+
+/// `POST /v1/workspaces/:id/skills/refresh`
+///
+/// Does not rewrite files. Registers a Skills refresh so idle auto-apply
+/// disposes the OpenCode workspace instance and the next session re-reads disk.
+pub async fn refresh_skills(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Path(workspace_id): Path<String>,
+) -> Result<Json<SkillsRefreshResponse>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+    let wpath = workspace_path_or_404(&workspace_id).await?;
+    let Some(refresh) = state.runtime_refresh.as_ref() else {
+        return Err(HttpError::runtime_unavailable(
+            "runtime refresh coordinator unavailable",
+        ));
+    };
+    let runtime_workspace_id = resolve_runtime_workspace_id(&state, &workspace_id, &wpath).await;
+    refresh
+        .record_change(
+            &runtime_workspace_id,
+            &wpath,
+            RefreshChangeKind::Skills,
+            RefreshSource::UiMutation,
+        )
+        .await
+        .map_err(|e| HttpError::internal(e.to_string()))?;
+    Ok(Json(SkillsRefreshResponse { ok: true }))
+}
+
 /// `PUT /v1/workspaces/:id/roles/:slug`
 pub async fn put_role(
     principal: Principal,

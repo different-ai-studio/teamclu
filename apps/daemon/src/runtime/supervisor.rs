@@ -34,7 +34,8 @@ const INSTRUCTION_PLUGIN_TEMPLATE: &str = include_str!(
 const SESSION_CONTEXT_PLUGIN_TEMPLATE: &str = include_str!(
     "../../../../packages/app/src/lib/opencode/templates/teamclu-session-context-plugin.mjs.txt"
 );
-const SESSION_CONTEXT_CLIENT_TEMPLATE: &str = include_str!("../../shared/session-context-client.mjs");
+const SESSION_CONTEXT_CLIENT_TEMPLATE: &str =
+    include_str!("../../shared/session-context-client.mjs");
 
 use crate::config::workspace_control::{
     ApplyOutcome, EnvActivationBlocker, EnvActivationDiagnostics, RuntimeStatus,
@@ -593,16 +594,68 @@ fn ensure_extended_inherent_config(
 
 /// Skill paths that moved to the global config — the ones older builds seeded
 /// into every workspace. Both the `~`-prefixed and the expanded form of the
-/// agents dir count: older builds wrote either.
+/// agents dir count: older builds wrote either. Hosted team cloud roots also
+/// belong in the global file; a workspace copy of one would outrank it.
 fn is_migrated_skill_path(path: Option<&str>) -> bool {
     let Some(path) = path else { return false };
     if path == TEAM_SKILLS_PATH || path == "~/.agents/skills" {
+        return true;
+    }
+    if is_hosted_team_skills_path(path) {
         return true;
     }
     dirs::home_dir()
         .map(|home| home.join(".agents").join("skills"))
         .map(|agents| path == agents.to_string_lossy())
         .unwrap_or(false)
+}
+
+/// `…/teams/<id>/state/cloud/skills` — the daemon-owned hosted install root.
+pub(crate) fn is_hosted_team_skills_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let normalized = normalized.trim_end_matches('/');
+    normalized
+        .split("/teams/")
+        .nth(1)
+        .and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(_, suffix)| suffix == "state/cloud/skills")
+}
+
+/// Put the two system-managed skill roots first, in the order OpenCode must
+/// search them, then keep any user-defined extras.
+///
+/// Hosted (current team) before `~/.agents/skills`. Every hosted root for a
+/// *different* team is dropped so a team switch cannot leave the previous
+/// team's packs in the search path.
+pub fn normalize_managed_skill_paths(
+    existing: &[String],
+    hosted: Option<&str>,
+    member: Option<&str>,
+) -> Vec<String> {
+    let path_eq = |a: &str, b: &str| a.replace('\\', "/") == b.replace('\\', "/");
+    let is_member =
+        |path: &str| path_eq(path, "~/.agents/skills") || member.is_some_and(|m| path_eq(path, m));
+    let is_managed = |path: &str| is_hosted_team_skills_path(path) || is_member(path);
+
+    let mut out = Vec::new();
+    if let Some(hosted) = hosted.filter(|p| !p.is_empty()) {
+        out.push(hosted.to_string());
+    }
+    if let Some(member) = member.filter(|p| !p.is_empty()) {
+        if !out.iter().any(|p| path_eq(p, member)) {
+            out.push(member.to_string());
+        }
+    }
+    for path in existing {
+        if path.trim().is_empty() || is_managed(path) {
+            continue;
+        }
+        if out.iter().any(|p| path_eq(p, path)) {
+            continue;
+        }
+        out.push(path.clone());
+    }
+    out
 }
 
 /// Seed the real skill roots into the active team's global config, absolutely —
@@ -624,23 +677,18 @@ fn is_migrated_skill_path(path: Option<&str>) -> bool {
 pub fn ensure_global_skill_paths() -> Result<bool, WorkspaceControlError> {
     use teamclu_runtime_env::opencode_config::{OpencodeConfigError, OpencodeConfigStore};
 
-    let mut wanted: Vec<String> = Vec::new();
-    if let Some(team_id) = crate::config::team_mcp::onboarded_team_id() {
-        wanted.push(
-            crate::runtime::team_skills::team_cloud_skills_dir(&team_id)
-                .to_string_lossy()
-                .into_owned(),
-        );
-    }
-    if let Some(home) = dirs::home_dir() {
-        wanted.push(
-            home.join(".agents")
-                .join("skills")
-                .to_string_lossy()
-                .into_owned(),
-        );
-    }
-    if wanted.is_empty() {
+    let hosted = crate::config::team_mcp::onboarded_team_id().map(|team_id| {
+        crate::runtime::team_skills::team_cloud_skills_dir(&team_id)
+            .to_string_lossy()
+            .into_owned()
+    });
+    let member = dirs::home_dir().map(|home| {
+        home.join(".agents")
+            .join("skills")
+            .to_string_lossy()
+            .into_owned()
+    });
+    if hosted.is_none() && member.is_none() {
         return Ok(false);
     }
 
@@ -666,14 +714,20 @@ pub fn ensure_global_skill_paths() -> Result<bool, WorkspaceControlError> {
                 "global opencode.json skills.paths is not an array".to_string(),
             )
         })?;
-        let mut changed = false;
-        for path in wanted {
-            if !paths.iter().any(|v| v.as_str() == Some(path.as_str())) {
-                paths.push(serde_json::json!(path));
-                changed = true;
-            }
+        let existing: Vec<String> = paths
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        let normalized =
+            normalize_managed_skill_paths(&existing, hosted.as_deref(), member.as_deref());
+        if existing == normalized {
+            return Ok(false);
         }
-        Ok(changed)
+        *paths = normalized
+            .into_iter()
+            .map(serde_json::Value::String)
+            .collect();
+        Ok(true)
     })
     .map_err(map_store_err)
 }
@@ -764,7 +818,9 @@ fn install_instruction_plugin_file(workspace_path: &Path) -> Result<(), Workspac
 }
 
 fn install_session_context_plugin_file(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
-    use crate::runtime::workspace_runtime::{SESSION_CONTEXT_CLIENT_REL, SESSION_CONTEXT_PLUGIN_REL};
+    use crate::runtime::workspace_runtime::{
+        SESSION_CONTEXT_CLIENT_REL, SESSION_CONTEXT_PLUGIN_REL,
+    };
 
     let plugin_path = workspace_path.join(SESSION_CONTEXT_PLUGIN_REL);
     let client_path = workspace_path.join(SESSION_CONTEXT_CLIENT_REL);
@@ -772,17 +828,16 @@ fn install_session_context_plugin_file(workspace_path: &Path) -> Result<(), Work
         std::fs::create_dir_all(parent).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
     }
 
-    let write_if_changed =
-        |path: &Path, template: &str| -> Result<(), WorkspaceControlError> {
-            let should_write = match std::fs::read_to_string(path) {
-                Ok(existing) => existing != template,
-                Err(_) => true,
-            };
-            if should_write {
-                std::fs::write(path, template).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-            }
-            Ok(())
+    let write_if_changed = |path: &Path, template: &str| -> Result<(), WorkspaceControlError> {
+        let should_write = match std::fs::read_to_string(path) {
+            Ok(existing) => existing != template,
+            Err(_) => true,
         };
+        if should_write {
+            std::fs::write(path, template).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
+        }
+        Ok(())
+    };
 
     write_if_changed(&client_path, SESSION_CONTEXT_CLIENT_TEMPLATE)?;
     write_if_changed(&plugin_path, SESSION_CONTEXT_PLUGIN_TEMPLATE)?;
@@ -2888,5 +2943,187 @@ mod tests {
             cfg["mcp"].get("user-server").is_some(),
             "a user's own server must survive the migration"
         );
+    }
+
+    #[test]
+    fn prepare_workspace_strips_managed_skill_paths_from_workspace_config() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let agents = home.path().join(".agents/skills");
+        let hosted = home.path().join(".amuxd/teams/team-a/state/cloud/skills");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("opencode.json"),
+            serde_json::json!({
+                "skills": {
+                    "paths": [
+                        agents.to_string_lossy(),
+                        hosted.to_string_lossy(),
+                        "/opt/custom/skills"
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        prepare_workspace(dir.path()).unwrap();
+
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
+        )
+        .unwrap();
+        let paths = cfg["skills"]["paths"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            paths
+                .iter()
+                .all(|p| p.as_str() != Some(agents.to_string_lossy().as_ref())),
+            "member path must not stay in workspace opencode.json"
+        );
+        assert!(
+            paths
+                .iter()
+                .all(|p| p.as_str() != Some(hosted.to_string_lossy().as_ref())),
+            "hosted path must not stay in workspace opencode.json"
+        );
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.as_str() == Some("/opt/custom/skills")),
+            "user custom paths survive"
+        );
+    }
+}
+
+#[cfg(test)]
+mod skill_path_normalize_tests {
+    use super::*;
+
+    const HOSTED_A: &str = "/Users/me/.amuxd/teams/team-a/state/cloud/skills";
+    const HOSTED_B: &str = "/Users/me/.amuxd/teams/team-b/state/cloud/skills";
+    const MEMBER: &str = "/Users/me/.agents/skills";
+    const CUSTOM: &str = "/opt/company/skills";
+
+    #[test]
+    fn empty_config_emits_hosted_then_member() {
+        assert_eq!(
+            normalize_managed_skill_paths(&[], Some(HOSTED_A), Some(MEMBER)),
+            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+        );
+    }
+
+    #[test]
+    fn member_only_existing_puts_hosted_first() {
+        assert_eq!(
+            normalize_managed_skill_paths(&[MEMBER.to_string()], Some(HOSTED_A), Some(MEMBER)),
+            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+        );
+    }
+
+    #[test]
+    fn reverses_member_before_hosted() {
+        assert_eq!(
+            normalize_managed_skill_paths(
+                &[MEMBER.to_string(), HOSTED_A.to_string()],
+                Some(HOSTED_A),
+                Some(MEMBER)
+            ),
+            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+        );
+    }
+
+    #[test]
+    fn dedupes_repeated_managed_paths() {
+        assert_eq!(
+            normalize_managed_skill_paths(
+                &[
+                    HOSTED_A.to_string(),
+                    MEMBER.to_string(),
+                    HOSTED_A.to_string(),
+                    MEMBER.to_string()
+                ],
+                Some(HOSTED_A),
+                Some(MEMBER)
+            ),
+            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+        );
+    }
+
+    #[test]
+    fn preserves_custom_paths_and_their_order() {
+        let extra = "/home/me/extra-skills";
+        assert_eq!(
+            normalize_managed_skill_paths(
+                &[CUSTOM.to_string(), MEMBER.to_string(), extra.to_string()],
+                Some(HOSTED_A),
+                Some(MEMBER)
+            ),
+            vec![
+                HOSTED_A.to_string(),
+                MEMBER.to_string(),
+                CUSTOM.to_string(),
+                extra.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn switching_teams_drops_previous_hosted_root() {
+        assert_eq!(
+            normalize_managed_skill_paths(
+                &[HOSTED_A.to_string(), MEMBER.to_string()],
+                Some(HOSTED_B),
+                Some(MEMBER)
+            ),
+            vec![HOSTED_B.to_string(), MEMBER.to_string()]
+        );
+    }
+
+    #[test]
+    fn no_active_team_drops_hosted_roots() {
+        assert_eq!(
+            normalize_managed_skill_paths(
+                &[HOSTED_A.to_string(), MEMBER.to_string(), CUSTOM.to_string()],
+                None,
+                Some(MEMBER)
+            ),
+            vec![MEMBER.to_string(), CUSTOM.to_string()]
+        );
+    }
+
+    #[test]
+    fn tilde_member_alias_is_treated_as_managed() {
+        assert_eq!(
+            normalize_managed_skill_paths(
+                &["~/.agents/skills".into(), CUSTOM.to_string()],
+                Some(HOSTED_A),
+                Some(MEMBER)
+            ),
+            vec![HOSTED_A.to_string(), MEMBER.to_string(), CUSTOM.to_string()]
+        );
+    }
+
+    #[test]
+    fn normalize_is_idempotent() {
+        let first = normalize_managed_skill_paths(
+            &[MEMBER.to_string(), HOSTED_A.to_string(), CUSTOM.to_string()],
+            Some(HOSTED_A),
+            Some(MEMBER),
+        );
+        let second = normalize_managed_skill_paths(&first, Some(HOSTED_A), Some(MEMBER));
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn hosted_path_matcher_accepts_windows_separators() {
+        assert!(is_hosted_team_skills_path(
+            r"C:\Users\me\.amuxd\teams\team-a\state\cloud\skills"
+        ));
+        assert!(!is_hosted_team_skills_path(
+            "/Users/me/.amuxd/teams/team-a/shared/skills"
+        ));
     }
 }
