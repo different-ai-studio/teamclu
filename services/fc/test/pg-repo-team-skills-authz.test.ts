@@ -126,6 +126,7 @@ test("a plain member can publish a new version of somebody else's skill", async 
     changelog: "fixed the rollback step",
     contentHash: "b".repeat(64),
     size: 20,
+    expectedLatestVersion: 1,
   });
 
   assert.equal(version.version, 2);
@@ -136,11 +137,32 @@ test("a plain member can publish a new version of somebody else's skill", async 
   assert.equal(after.ownerActorId, ownerActor!.id);
 });
 
+test("publish rejects stale expectedLatestVersion", async () => {
+  const { team, memberRepo } = await scenario();
+
+  await memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+    changelog: "v2",
+    contentHash: "b".repeat(64),
+    expectedLatestVersion: 1,
+  });
+
+  await assert.rejects(
+    () =>
+      memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+        changelog: "stale attempt",
+        contentHash: "c".repeat(64),
+        expectedLatestVersion: 1,
+      }),
+    (e: any) => e.statusCode === 409 && e.code === "stale_team_skill_base",
+  );
+});
+
 test("a plain member can revert to an earlier version", async () => {
   const { team, memberRepo } = await scenario();
   await memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
     changelog: "bad publish",
     contentHash: "c".repeat(64),
+    expectedLatestVersion: 1,
   });
 
   const reverted = await memberRepo.revertTeamSkillVersion(team.id, "deploy-check", 1);

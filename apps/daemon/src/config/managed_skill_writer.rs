@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::roles_skills::is_inherent_skill;
 
 const GLOBAL_SKILLS_REL: &str = ".agents/skills";
-const SKILL_MD: &str = "SKILL.md";
+pub(crate) const SKILL_MD: &str = "SKILL.md";
 const MAX_PACK_FILES: usize = 500;
 const MAX_SINGLE_FILE_BYTES: usize = 1024 * 1024;
 const MAX_PACK_TOTAL_BYTES: usize = 5 * 1024 * 1024;
@@ -65,7 +65,7 @@ pub struct ManagedSkillError {
 }
 
 impl ManagedSkillError {
-    fn new(code: ManagedSkillErrorCode, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: ManagedSkillErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -234,7 +234,7 @@ fn validate_strict_frontmatter(content: &str, slug: &str) -> Result<(), ManagedS
     Ok(())
 }
 
-fn normalize_pack_rel_path(raw: &str) -> Result<PathBuf, ManagedSkillError> {
+pub(crate) fn normalize_pack_rel_path(raw: &str) -> Result<PathBuf, ManagedSkillError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(ManagedSkillError::new(
@@ -277,7 +277,7 @@ fn normalize_pack_rel_path(raw: &str) -> Result<PathBuf, ManagedSkillError> {
     Ok(normalized)
 }
 
-fn decode_pack_file(input: &PackFileInput) -> Result<Vec<u8>, ManagedSkillError> {
+pub(crate) fn decode_pack_file(input: &PackFileInput) -> Result<Vec<u8>, ManagedSkillError> {
     let encoding = input.encoding.as_deref().unwrap_or("utf8");
     if encoding != "utf8" {
         return Err(ManagedSkillError::new(
@@ -288,7 +288,7 @@ fn decode_pack_file(input: &PackFileInput) -> Result<Vec<u8>, ManagedSkillError>
     Ok(input.content.as_bytes().to_vec())
 }
 
-fn reject_symlink(path: &Path) -> Result<(), ManagedSkillError> {
+pub(crate) fn reject_symlink(path: &Path) -> Result<(), ManagedSkillError> {
     if path
         .symlink_metadata()
         .map(|m| m.file_type().is_symlink())
@@ -328,7 +328,7 @@ fn verify_tree_confined(root: &Path) -> Result<(), ManagedSkillError> {
 }
 
 /// Validates size and file-count limits on the final on-disk pack tree.
-fn validate_pack_tree_limits(root: &Path) -> Result<(), ManagedSkillError> {
+pub(crate) fn validate_pack_tree_limits(root: &Path) -> Result<(), ManagedSkillError> {
     verify_tree_confined(root)?;
     let mut file_count = 0usize;
     let mut total_bytes = 0usize;
@@ -448,18 +448,18 @@ fn write_temp_pack(root: &Path, build: &PackBuild) -> Result<(), ManagedSkillErr
     Ok(())
 }
 
-struct TempPackGuard(PathBuf);
+pub(crate) struct TempPackGuard(PathBuf);
 
 impl TempPackGuard {
-    fn new(path: PathBuf) -> Self {
+    pub(crate) fn new(path: PathBuf) -> Self {
         Self(path)
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 
-    fn disarm(mut self) {
+    pub(crate) fn disarm(mut self) {
         self.0 = PathBuf::new();
     }
 }
@@ -472,7 +472,7 @@ impl Drop for TempPackGuard {
     }
 }
 
-fn copy_pack_tree(src: &Path, dst: &Path) -> Result<(), ManagedSkillError> {
+pub(crate) fn copy_pack_tree(src: &Path, dst: &Path) -> Result<(), ManagedSkillError> {
     reject_symlink(src)?;
     for entry in walkdir::WalkDir::new(src)
         .follow_links(false)
@@ -501,12 +501,15 @@ fn copy_pack_tree(src: &Path, dst: &Path) -> Result<(), ManagedSkillError> {
     Ok(())
 }
 
-fn verify_final_skill_md(root: &Path, slug: &str) -> Result<(), ManagedSkillError> {
+pub(crate) fn verify_final_skill_md(root: &Path, slug: &str) -> Result<(), ManagedSkillError> {
     let content = fs::read_to_string(root.join(SKILL_MD)).map_err(io_managed)?;
     validate_strict_frontmatter(&content, slug)
 }
 
-fn apply_patch_files(root: &Path, files: &[(PathBuf, Vec<u8>)]) -> Result<(), ManagedSkillError> {
+pub(crate) fn apply_patch_files(
+    root: &Path,
+    files: &[(PathBuf, Vec<u8>)],
+) -> Result<(), ManagedSkillError> {
     for (rel, bytes) in files {
         let dest = root.join(rel);
         if let Some(parent) = dest.parent() {
@@ -517,7 +520,10 @@ fn apply_patch_files(root: &Path, files: &[(PathBuf, Vec<u8>)]) -> Result<(), Ma
     Ok(())
 }
 
-fn apply_delete_files(root: &Path, delete_files: &[String]) -> Result<(), ManagedSkillError> {
+pub(crate) fn apply_delete_files(
+    root: &Path,
+    delete_files: &[String],
+) -> Result<(), ManagedSkillError> {
     for raw in delete_files {
         let rel = normalize_pack_rel_path(raw)?;
         let path = root.join(&rel);
@@ -574,7 +580,7 @@ fn classify_existing_target(
     ))
 }
 
-fn publish_temp_dir(temp: &Path, target: &Path) -> Result<(), ManagedSkillError> {
+pub(crate) fn publish_temp_dir(temp: &Path, target: &Path) -> Result<(), ManagedSkillError> {
     match fs::rename(temp, target) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(ManagedSkillError::new(

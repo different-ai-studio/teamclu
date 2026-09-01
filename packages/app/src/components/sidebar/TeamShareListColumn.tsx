@@ -648,7 +648,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                     'A skill from another source already owns this name',
                   )}
                 />
-              ) : localState[s.slug]?.state === 'dirty' ? (
+              ) : localState[s.slug]?.state === 'dirty' || localState[s.slug]?.state === 'stale_dirty' ? (
                 <AlertTriangle
                   className="h-[15px] w-[15px] text-foreground"
                   aria-label={t('teamShare.skillConflict', 'Local changes — update paused')}

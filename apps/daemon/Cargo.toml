@@ -65,6 +65,8 @@ zip = { version = "5", default-features = false, features = ["deflate"] }
 # staging dir before swapping it over the installed pack.
 tempfile = "3"
 tar = "0.4"
+# Full-text search for the knowledge vault (SQLite FTS5, no external service)
+rusqlite = { version = "0.31", features = ["bundled"] }
 humantime-serde = "1"
 parking_lot = "0.12"
 

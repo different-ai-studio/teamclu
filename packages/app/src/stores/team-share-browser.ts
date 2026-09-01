@@ -853,6 +853,22 @@ export function isSkillDirtyConflict(e: unknown): boolean {
 
 const isDirtyConflict = isSkillDirtyConflict
 
+/** Cloud API 409 when another member published while this draft was open. */
+export class StaleTeamSkillPublishError extends Error {
+  constructor(readonly slug: string) {
+    super('stale_team_skill_base')
+    this.name = 'StaleTeamSkillPublishError'
+  }
+}
+
+export function isStaleTeamSkillPublish(e: unknown): boolean {
+  if (e instanceof StaleTeamSkillPublishError) return true
+  if (e && typeof e === 'object' && 'code' in e) {
+    return (e as { code?: string }).code === 'stale_team_skill_base'
+  }
+  return String(e instanceof Error ? e.message : e).includes('stale_team_skill_base')
+}
+
 /** The team registry already has this name. Raised before any upload happens. */
 export class SkillSlugTakenError extends Error {
   constructor(readonly slug: string) {
@@ -927,8 +943,14 @@ async function inspectSkill(
   slug: string,
   expectedVersion: number | null,
   teamId: string,
+  registryLatestVersion?: number | null,
 ): Promise<SkillLocalState> {
-  return invoke<SkillLocalState>('team_skill_inspect', { slug, expectedVersion, teamId })
+  return invoke<SkillLocalState>('team_skill_inspect', {
+    slug,
+    expectedVersion,
+    teamId,
+    registryLatestVersion: registryLatestVersion ?? null,
+  })
 }
 
 async function listInstalledPacks(): Promise<OnDiskSkill[]> {
@@ -1490,11 +1512,15 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       contentHash: packed.contentHash,
       size: packed.size,
       changelog: input.changelog,
+      expectedLatestVersion: skill.latestVersion ?? 0,
       ...(input.summary !== undefined ? { summary: input.summary } : {}),
       ...(input.category !== undefined ? { category: input.category } : {}),
       ...(input.whenToUse !== undefined ? { whenToUse: input.whenToUse } : {}),
       ...(input.whenNotToUse !== undefined ? { whenNotToUse: input.whenNotToUse } : {}),
       ...(input.requires !== undefined ? { requires: input.requires } : {}),
+    }).catch((e) => {
+      if (isStaleTeamSkillPublish(e)) throw new StaleTeamSkillPublishError(slug)
+      throw e
     })
 
     // Re-baseline against the version just published. Skipping this leaves the
@@ -1627,12 +1653,19 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     ])
     for (const slug of known) {
       const row = desired.find((s) => s.slug === slug)
-      const state = await inspectSkill(slug, row?.installedVersion ?? null, teamId).catch(() => null)
+      const state = await inspectSkill(
+        slug,
+        row?.installedVersion ?? null,
+        teamId,
+        row?.latestVersion ?? null,
+      ).catch(() => null)
       if (!state) continue
       states[slug] = state
       // A local edit needs a decision; another registry's pack is not ours to
       // touch at all. Both mean "auto-follow stops here".
-      if (state.state === 'dirty' || state.state === 'foreign') blocked.add(slug)
+      if (state.state === 'dirty' || state.state === 'stale_dirty' || state.state === 'foreign') {
+        blocked.add(slug)
+      }
     }
 
     // Re-read the disk after inspection rather than reusing the listing above.
@@ -1647,19 +1680,20 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     let diskChanged = false
 
     for (const { slug, version } of plan.install) {
+      const row = desired.find((s) => s.slug === slug)
       try {
         const { archivedPath } = await materializeSkill(teamId, slug, version, {
           archiveUnmanaged: true,
         })
         if (archivedPath) archived[slug] = archivedPath
-        states[slug] = await inspectSkill(slug, version, teamId)
+        states[slug] = await inspectSkill(slug, version, teamId, row?.latestVersion ?? null)
         delete errors[slug]
         diskChanged = true
       } catch (e) {
         // A pack that turned dirty between the inspect and the install; the
         // backstop in the installer caught it.
         if (isDirtyConflict(e)) {
-          const state = await inspectSkill(slug, version, teamId).catch(() => null)
+          const state = await inspectSkill(slug, version, teamId, row?.latestVersion ?? null).catch(() => null)
           if (state) states[slug] = state
           continue
         }
@@ -1702,6 +1736,18 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       // that one is about *their* edited copy surviving, which the delete
       // confirmation does not cover.
       const bySelf = selfDeleted.delete(slug)
+      if (blocked.has(slug) && !archived[slug]) {
+        try {
+          const trashedPath = await invoke<string>('team_skill_discard_local', { slug, teamId })
+          archived[slug] = trashedPath
+          delete states[slug]
+          diskChanged = true
+          retired[slug] = 'kept'
+        } catch {
+          retired[slug] = 'kept'
+        }
+        continue
+      }
       if (uninstalled.has(slug)) {
         if (!bySelf) retired[slug] = 'removed'
       } else if (blocked.has(slug)) {

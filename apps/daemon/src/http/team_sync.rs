@@ -412,6 +412,91 @@ async fn reconcile_team_skills_for_state(
     Ok(Json(TeamSkillReconcileResponse { team_id, outcome }))
 }
 
+async fn lookup_team_skill_row(
+    backend: &std::sync::Arc<dyn crate::backend::Backend>,
+    team_id: &str,
+    slug: &str,
+) -> Result<crate::backend::TeamSkillRow, HttpError> {
+    let slug = slug.trim();
+    if slug.is_empty() {
+        return Err(HttpError::validation("skill slug must not be empty"));
+    }
+    backend
+        .team_skills(team_id)
+        .await
+        .map_err(|e| HttpError::internal(e.to_string()))?
+        .into_iter()
+        .find(|row| row.slug == slug)
+        .ok_or_else(|| HttpError::not_found(format!("team skill {slug} not found in registry")))
+}
+
+fn managed_skill_error(err: crate::config::ManagedSkillError) -> HttpError {
+    use crate::config::ManagedSkillErrorCode;
+    use crate::http::errors::ErrorCode;
+    match err.code {
+        ManagedSkillErrorCode::SkillChanged => {
+            HttpError::new(ErrorCode::Conflict, err.message)
+        }
+        ManagedSkillErrorCode::SkillNotFound => HttpError::not_found(err.message),
+        ManagedSkillErrorCode::InvalidSkillSlug
+        | ManagedSkillErrorCode::InvalidSkillFrontmatter
+        | ManagedSkillErrorCode::InvalidSkillFilePath
+        | ManagedSkillErrorCode::SkillPackTooLarge => HttpError::validation(err.message),
+        ManagedSkillErrorCode::SkillWriteFailed
+        | ManagedSkillErrorCode::SkillOwnershipUnavailable
+        | ManagedSkillErrorCode::SkillRefreshFailed => HttpError::internal(err.message),
+        ManagedSkillErrorCode::TeamSkillReadOnly
+        | ManagedSkillErrorCode::BuiltinSkillReadOnly
+        | ManagedSkillErrorCode::SkillAlreadyExists => HttpError::forbidden(err.message),
+    }
+}
+
+/// `GET /v1/team/skills/:slug/draft` — read the local working copy of an
+/// installed team Skill for this daemon actor.
+pub async fn get_team_skill_draft_handler(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Path(slug): Path<String>,
+) -> Result<Json<crate::config::TeamSkillDraftView>, HttpError> {
+    require_scope(&principal, "workspace:read")?;
+    let (backend, team_id) = daemon_backend_and_team(&state)?;
+    let row = lookup_team_skill_row(backend, &team_id, &slug).await?;
+    let home = dirs::home_dir().ok_or_else(|| HttpError::internal("home directory not found"))?;
+    let view = crate::config::get_team_skill_draft(&home, &team_id, &row)
+        .map_err(managed_skill_error)?;
+    Ok(Json(view))
+}
+
+/// `PUT /v1/team/skills/:slug/draft` — edit the local working copy without
+/// publishing. Baseline in `origin.json` is preserved so dirty detection works.
+pub async fn update_team_skill_draft_handler(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Path(slug): Path<String>,
+    Json(body): Json<crate::config::UpdatePackRequest>,
+) -> Result<Json<crate::config::TeamSkillDraftUpdateResult>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+    if body.slug.trim().is_empty() {
+        return Err(HttpError::validation("slug is required"));
+    }
+    if slug.trim() != body.slug.trim() {
+        return Err(HttpError::validation("URL slug must match body slug"));
+    }
+    let (backend, team_id) = daemon_backend_and_team(&state)?;
+    let row = lookup_team_skill_row(backend, &team_id, &slug).await?;
+    let home = dirs::home_dir().ok_or_else(|| HttpError::internal("home directory not found"))?;
+    let result = crate::config::update_team_skill_draft(&home, &team_id, &row, &body)
+        .map_err(managed_skill_error)?;
+    crate::runtime::team_skills::notify_team_skill_draft_changed(
+        &team_id,
+        state.backend.as_ref(),
+        state.runtime_refresh.as_ref(),
+        state.refresh_watch_registry.as_ref(),
+    )
+    .await;
+    Ok(Json(result))
+}
+
 fn daemon_backend_and_team(
     state: &HttpState,
 ) -> Result<(&std::sync::Arc<dyn crate::backend::Backend>, String), HttpError> {
