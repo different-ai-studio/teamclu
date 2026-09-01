@@ -352,6 +352,7 @@ mod tests {
                         display_name: "Test".to_string(),
                         cloud_token_file: None,
                 gateway_token: None,
+                        ai_proxy_base: None,
                     },
                 ),
             }

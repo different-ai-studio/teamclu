@@ -1381,12 +1381,16 @@ impl RuntimeSupervisor {
                     .unwrap_or_default(),
                 cloud_token_file: snapshot.bindings.get("TC_ACCESS_TOKEN_FILE").cloned(),
                 gateway_token: None,
+                // Not a spawn path with a listener behind it.
+                ai_proxy_base: None,
             })
             .unwrap_or(teamclu_runtime_env::SystemEnvContext {
                 actor_id: String::new(),
                 display_name: String::new(),
                 cloud_token_file: None,
                 gateway_token: None,
+                // Not a spawn path with a listener behind it.
+                ai_proxy_base: None,
             });
         let resolved = teamclu_runtime_env::resolve_runtime_env(
             personal_env.clone(),
@@ -1810,6 +1814,8 @@ impl RuntimeSupervisor {
                     .unwrap_or_default(),
                 cloud_token_file: previous.bindings.get("TC_ACCESS_TOKEN_FILE").cloned(),
                 gateway_token: None,
+                // Not a spawn path with a listener behind it.
+                ai_proxy_base: None,
             },
         );
         current.fingerprint == previous.fingerprint
@@ -2477,6 +2483,8 @@ mod tests {
                 display_name: "Agent Test".to_string(),
                 cloud_token_file: None,
                 gateway_token: None,
+                // Not a spawn path with a listener behind it.
+                ai_proxy_base: None,
             },
         );
         {

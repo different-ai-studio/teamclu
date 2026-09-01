@@ -44,7 +44,16 @@ pub struct ManagedLlmResolver {
     /// resolves to. `None` in focused tests and wherever no HTTP layer exists —
     /// the provider is then written with the placeholder left in place, which
     /// is correct: there is no local proxy to authenticate against either.
-    tokens: Option<super::gateway_token::GatewayTokenSource>,
+    /// Interior-mutable because the HTTP layer owns the TokenStore and starts
+    /// AFTER this resolver is built. Two stores loaded from the same file are
+    /// NOT interchangeable — the root token is on disk, but minted session
+    /// tokens live only in the instance that minted them, so a token from a
+    /// second store authenticates against nothing.
+    tokens: parking_lot::RwLock<Option<super::gateway_token::GatewayTokenSource>>,
+    /// `http://127.0.0.1:<port>` for this daemon's own listener, set once the
+    /// HTTP layer is up. Runtimes are pointed at `<base>/v1/ai/teams/<id>`
+    /// rather than at the cloud gateway — see `runtime_facing_base_url`.
+    local_http_base: parking_lot::RwLock<Option<String>>,
     cache: AsyncMutex<HashMap<String, CachedManagedLlm>>,
     member_key_kicked: AsyncMutex<HashSet<String>>,
 }
@@ -53,7 +62,8 @@ impl ManagedLlmResolver {
     pub fn new(backend: Arc<dyn Backend>) -> Self {
         Self {
             backend,
-            tokens: None,
+            tokens: parking_lot::RwLock::new(None),
+            local_http_base: parking_lot::RwLock::new(None),
             cache: AsyncMutex::new(HashMap::new()),
             member_key_kicked: AsyncMutex::new(HashSet::new()),
         }
@@ -62,9 +72,42 @@ impl ManagedLlmResolver {
     /// Attach the token source so reconciles can resolve
     /// `provider.team.options.apiKey`. Chained after `new()` because most call
     /// sites (tests, the channel manager) have no HTTP layer to mint from.
-    pub fn with_tokens(mut self, tokens: Option<super::gateway_token::GatewayTokenSource>) -> Self {
-        self.tokens = tokens;
+    pub fn with_tokens(self, tokens: Option<super::gateway_token::GatewayTokenSource>) -> Self {
+        *self.tokens.write() = tokens;
         self
+    }
+
+    /// Attach the token source after construction, for the resolver the daemon
+    /// builds before its HTTP layer exists.
+    pub fn set_tokens(&self, tokens: super::gateway_token::GatewayTokenSource) {
+        *self.tokens.write() = Some(tokens);
+    }
+
+    /// Record this daemon's own HTTP origin, once its listener has an address.
+    pub fn set_local_http_base(&self, base: String) {
+        *self.local_http_base.write() = Some(base);
+    }
+
+    /// The AI proxy URL a runtime should call for `team_id`, or None when this
+    /// daemon has no listener to offer (tests, headless paths).
+    pub fn ai_proxy_base(&self, team_id: &str) -> Option<String> {
+        self.local_http_base
+            .read()
+            .as_ref()
+            .map(|base| format!("{}/v1/ai/teams/{}", base.trim_end_matches('/'), team_id))
+    }
+
+    /// The `ai:invoke` token `provider.team`'s apiKey resolves to.
+    ///
+    /// Needed on the SPAWN path, not just during reconcile: opencode reads the
+    /// resolved key out of `provider.team` in the global config, but every other
+    /// runtime is handed `TEAMCLU_TEAM_PROVIDER`, whose `apiKeyEnv` names an env
+    /// binding it expects to find. Without the binding pi registers the provider
+    /// and then hides every model on it, because a provider with no resolvable
+    /// credential is "loaded but unavailable" — which looks exactly like the
+    /// provider never having been registered at all.
+    pub fn gateway_token(&self) -> Option<String> {
+        self.tokens.read().as_ref().map(|t| t.get_or_mint())
     }
 
     /// Resolve the team's managed (shared) LLM directly from the cloud API, with
@@ -145,11 +188,15 @@ impl ManagedLlmResolver {
         // (and leak a token into the store) on every provider read.
         let token = self
             .tokens
+            .read()
             .as_ref()
             .map(|t| t.get_or_mint())
             .unwrap_or_default();
         let secrets = teamclu_runtime_env::secrets_for_team_provider(&token);
-        if let Err(e) = teamclu_runtime_env::sync_global_team_provider(&state, &secrets) {
+        let proxy_base = self.ai_proxy_base(team_id);
+        if let Err(e) =
+            teamclu_runtime_env::sync_global_team_provider(&state, &secrets, proxy_base.as_deref())
+        {
             tracing::warn!(
                 team_id,
                 error = %e,

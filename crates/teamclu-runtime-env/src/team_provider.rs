@@ -20,6 +20,26 @@ use crate::DEFAULT_TEAM_REPO_DIR;
 pub const TEAM_MODEL_TIERS: [(&str, &str); 3] =
     [("default", "标准"), ("pro", "高级"), ("max", "旗舰")];
 
+/// The base URL a RUNTIME should call, which is not the one the daemon calls.
+///
+/// `provider.base_url` is the cloud `llm_base_url` — the gateway, and the
+/// cutover lever the daemon's own proxy forwards to. A runtime must not use it
+/// directly: the credential it is handed is a daemon `ai:invoke` token, which
+/// the gateway (a GoTrue verifier) rejects. Pointing a runtime there produced
+/// exactly that — `invalid_token` on every team-model call.
+///
+/// The daemon supplies its own loopback proxy URL instead, and that indirection
+/// is what survives a long run: the runtime's token is good for a year, while
+/// the cloud access token behind it expires hourly and is refreshed per request
+/// on the daemon side. Baking a cloud token into a config file cannot do that —
+/// a long-lived agent would simply start failing an hour in.
+///
+/// `None` leaves the cloud URL in place, which is right for callers that have
+/// no proxy to offer (tests, and any process without an HTTP listener).
+fn runtime_facing_base_url<'a>(provider: &'a ManagedLlmProvider, proxy_base: Option<&'a str>) -> &'a str {
+    proxy_base.unwrap_or(&provider.base_url)
+}
+
 /// One model exposed by the team's managed LLM gateway.
 #[derive(Debug, Clone)]
 pub struct ManagedLlmModel {
@@ -83,6 +103,7 @@ fn map_mutate_err(e: anyhow::Error) -> crate::opencode_config::OpencodeConfigErr
 pub fn mutate_team_provider(
     config: &mut serde_json::Value,
     state: &ManagedLlmState,
+    proxy_base: Option<&str>,
 ) -> anyhow::Result<bool> {
     if matches!(state, ManagedLlmState::Unknown) {
         return Ok(false);
@@ -147,7 +168,7 @@ pub fn mutate_team_provider(
             let team_entry = serde_json::json!({
                 "npm": "@ai-sdk/openai-compatible",
                 "name": name,
-                "options": { "baseURL": provider.base_url, "apiKey": api_key },
+                "options": { "baseURL": runtime_facing_base_url(provider, proxy_base), "apiKey": api_key },
                 "models": models_out,
             });
 
@@ -252,7 +273,10 @@ pub fn stabilize_managed_llm_for_spawn(
 }
 
 /// JSON payload for the `TEAMCLU_TEAM_PROVIDER` spawn env (no secret embedded).
-pub fn team_provider_env_payload(provider: &ManagedLlmProvider) -> String {
+pub fn team_provider_env_payload(
+    provider: &ManagedLlmProvider,
+    proxy_base: Option<&str>,
+) -> String {
     let models: Vec<serde_json::Value> = provider
         .models
         .iter()
@@ -271,7 +295,7 @@ pub fn team_provider_env_payload(provider: &ManagedLlmProvider) -> String {
     };
     serde_json::json!({
         "name": name,
-        "baseUrl": provider.base_url,
+        "baseUrl": runtime_facing_base_url(provider, proxy_base),
         // Names the env binding a runtime that registers the provider
         // itself (pi) should read the credential from. Must track the key
         // bound in resolved_env.rs — a stale name here is a silent 401.
@@ -287,12 +311,15 @@ pub fn team_provider_env_payload(provider: &ManagedLlmProvider) -> String {
 /// Returns whether the on-disk config was rewritten. External callers should prefer
 /// [`crate::team_provider_sync::sync_global_team_provider`] so materialization and secret resolution
 /// stay aligned across spawn and reconcile paths.
-pub fn ensure_global_team_provider(state: &ManagedLlmState) -> anyhow::Result<bool> {
+pub fn ensure_global_team_provider(
+    state: &ManagedLlmState,
+    proxy_base: Option<&str>,
+) -> anyhow::Result<bool> {
     if matches!(state, ManagedLlmState::Unknown) {
         return Ok(false);
     }
     OpencodeConfigStore::apply_global(|config| {
-        mutate_team_provider(config, state).map_err(map_mutate_err)
+        mutate_team_provider(config, state, proxy_base).map_err(map_mutate_err)
     })
     .map_err(map_store_err)
 }
@@ -392,7 +419,7 @@ mod tests {
             }],
         });
         let mut config = serde_json::json!({});
-        assert!(mutate_team_provider(&mut config, &state).unwrap());
+        assert!(mutate_team_provider(&mut config, &state, None).unwrap());
 
         let models = config["provider"]["team"]["models"].as_object().unwrap();
         assert_eq!(models.len(), 3);
@@ -414,7 +441,7 @@ mod tests {
     #[test]
     fn ensure_global_team_provider_adds_team_when_enabled() {
         let (_lock, dir, _home) = global_config_dir();
-        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), None).unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(global_config_path(&dir)).unwrap()).unwrap();
         assert!(parsed["provider"]["team"].is_object());
@@ -428,7 +455,7 @@ mod tests {
         let (_lock, dir, _home) = global_config_dir();
         let resolved = "tok_live_session";
         write_team_provider_with_key(&dir, resolved);
-        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), None).unwrap();
         assert_eq!(
             read_team_api_key(&dir).as_deref(),
             Some(resolved),
@@ -446,7 +473,7 @@ mod tests {
         // no amount of reconciling clears.
         let (_lock, dir, _home) = global_config_dir();
         write_team_provider_with_key(&dir, "sk-tc-actor-123");
-        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), None).unwrap();
         assert_eq!(
             read_team_api_key(&dir).as_deref(),
             Some(crate::merge::GATEWAY_TOKEN_PLACEHOLDER),
@@ -494,7 +521,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), None).unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(global_config_path(&dir)).unwrap()).unwrap();
         assert_eq!(
@@ -511,7 +538,7 @@ mod tests {
             serde_json::json!({ "provider": { "team": {} } }).to_string(),
         )
         .unwrap();
-        ensure_global_team_provider(&ManagedLlmState::Disabled).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Disabled, None).unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(global_config_path(&dir)).unwrap()).unwrap();
         assert!(parsed.get("provider").is_none());
@@ -525,7 +552,7 @@ mod tests {
             serde_json::json!({ "provider": { "team": { "keep": true } } }).to_string(),
         )
         .unwrap();
-        ensure_global_team_provider(&ManagedLlmState::Unknown).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Unknown, None).unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(global_config_path(&dir)).unwrap()).unwrap();
         assert_eq!(parsed["provider"]["team"]["keep"], true);
@@ -593,8 +620,8 @@ mod tests {
             panic!("expected Enabled");
         };
         assert_eq!(
-            team_provider_env_payload(&from_disk),
-            team_provider_env_payload(&provider)
+            team_provider_env_payload(&from_disk, None),
+            team_provider_env_payload(&provider, None)
         );
     }
 }
