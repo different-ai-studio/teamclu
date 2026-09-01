@@ -154,6 +154,28 @@ pub struct TeamSkillInstallFromDirRequest {
     pub is_global: bool,
 }
 
+/// Promote the effective runtime copy of an already-installed team Skill to a
+/// newly published version without copying it through the member projection.
+///
+/// Hosted Agent sessions edit the daemon-owned cloud projection, while ordinary
+/// member installs live under `~/.agents/skills`. Re-baselining the latter
+/// unconditionally is what made a successful publish leave the copy OpenCode
+/// actually runs dirty against its previous version.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamSkillRebaselineRequest {
+    pub workspace_path: Option<String>,
+    pub slug: String,
+    pub team_id: Option<String>,
+    pub version: i64,
+    pub owner: Option<String>,
+    pub category: Option<String>,
+    pub summary: Option<String>,
+    pub when_to_use: Option<String>,
+    pub when_not_to_use: Option<String>,
+    pub requires: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamSkillPackResult {
@@ -822,6 +844,81 @@ pub async fn team_skill_install_from_dir(
     .map_err(|e| format!("team skill install_from_dir task failed: {}", e))?
 }
 
+/// Re-baseline the same copy that inspection and publishing resolved.
+///
+/// This intentionally does not download or copy anything: the bytes in this
+/// directory are the bytes that were just uploaded. The desktop reconcile will
+/// independently bring the lower-priority member projection to the new version
+/// when the effective copy is hosted by the daemon.
+#[tauri::command]
+pub fn team_skill_rebaseline(
+    request: TeamSkillRebaselineRequest,
+) -> Result<TeamSkillInstallResult, String> {
+    let slug = request.slug.trim().to_string();
+    validate_slug(&slug)?;
+    let (target, _) = effective_team_skill_dir(&slug, request.team_id.as_deref())?;
+    if !target.is_dir() || !target.join("SKILL.md").is_file() {
+        return Err(format!("{} is not installed", slug));
+    }
+
+    let origin = read_origin(&target)
+        .ok_or_else(|| "Refusing to claim a Skill with no team install record".to_string())?;
+    if origin.registry != SOURCE_TEAM
+        || belongs_to_another_team(&origin, request.team_id.as_deref())
+    {
+        return Err("Refusing to re-baseline a Skill owned by another source".to_string());
+    }
+
+    let frontmatter_written = write_registry_frontmatter_fields(
+        &target,
+        &RegistryFields {
+            slug: &slug,
+            version: request.version,
+            owner: request.owner.as_deref(),
+            category: request.category.as_deref(),
+            summary: request.summary.as_deref(),
+            when_to_use: request.when_to_use.as_deref(),
+            when_not_to_use: request.when_not_to_use.as_deref(),
+            requires: request.requires.as_deref(),
+        },
+    )?;
+    stamp_installed_state(
+        &target,
+        InstalledStamp {
+            slug: &slug,
+            version: request.version,
+            team_id: request.team_id.as_deref(),
+            shipped: None,
+        },
+    )?;
+
+    if let Some(ws) = request
+        .workspace_path
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        let mut lock = read_lockfile(ws);
+        lock.skills.insert(
+            slug.clone(),
+            LockfileEntry {
+                version: Some(request.version.to_string()),
+                installed_at: now_millis(),
+                source: Some(SOURCE_TEAM.to_string()),
+            },
+        );
+        write_lockfile(ws, &lock)?;
+        set_skill_permission_ask(ws, &slug);
+    }
+
+    Ok(TeamSkillInstallResult {
+        slug,
+        version: request.version,
+        path: target.display().to_string(),
+        frontmatter_written,
+        archived_path: None,
+    })
+}
+
 /// Which team-registry packs are on this machine, and at what version.
 ///
 /// This is the left-hand side of the reconcile diff: the server's install rows
@@ -877,15 +974,78 @@ pub fn team_skill_list_installed() -> Result<Vec<InstalledTeamSkill>, String> {
     Ok(out)
 }
 
-/// Where an installed pack lives. The publish-a-new-version flow packs the
-/// installed directory rather than the author's original personal folder —
-/// after the first share those diverge, and the one the team is running is the
-/// one whose edits should ship.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EffectiveSkillSource {
+    HostedAgent,
+    Member,
+}
+
+impl EffectiveSkillSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::HostedAgent => "hosted-agent",
+            Self::Member => "member",
+        }
+    }
+}
+
+fn hosted_team_skills_dir(team_id: &str) -> std::path::PathBuf {
+    crate::commands::amuxd_team_state_dir(team_id)
+        .join("cloud")
+        .join("skills")
+}
+
+/// Resolve the copy OpenCode actually sees for this slug. The daemon registers
+/// its hosted-Agent root before `~/.agents/skills`, so the first existing
+/// directory wins. A cloud directory for another (non-active) team is ignored:
+/// this desktop cannot be running it through the local daemon.
+fn effective_team_skill_dir(
+    slug: &str,
+    team_id: Option<&str>,
+) -> Result<(std::path::PathBuf, EffectiveSkillSource), String> {
+    let hosted = team_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .filter(|id| crate::commands::amuxd_active_team().as_deref() == Some(*id))
+        .map(|id| hosted_team_skills_dir(id).join(slug));
+    if let Some(path) = hosted.filter(|path| path.is_dir()) {
+        return Ok((path, EffectiveSkillSource::HostedAgent));
+    }
+    Ok((
+        global_skills_dir()?.join(slug),
+        EffectiveSkillSource::Member,
+    ))
+}
+
+/// Restore targets differ from reads: after a hosted copy was moved aside its
+/// directory no longer exists, but undo must put it back into the higher-ranked
+/// hosted root rather than silently restoring it as a member copy.
+fn preferred_team_skill_dir(
+    slug: &str,
+    team_id: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    if let Some(id) = team_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .filter(|id| crate::commands::amuxd_active_team().as_deref() == Some(*id))
+    {
+        return Ok(hosted_team_skills_dir(id).join(slug));
+    }
+    Ok(global_skills_dir()?.join(slug))
+}
+
+/// Where the effective installed pack lives. The publish-a-new-version flow
+/// packs this directory rather than a hardcoded member projection — after a
+/// Hosted Agent edits its higher-priority cloud copy, that is the content the
+/// team expects to ship.
 #[tauri::command]
-pub fn team_skill_installed_dir(slug: String) -> Result<String, String> {
+pub fn team_skill_installed_dir(slug: String, team_id: Option<String>) -> Result<String, String> {
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
-    Ok(global_skills_dir()?.join(&slug).display().to_string())
+    Ok(effective_team_skill_dir(&slug, team_id.as_deref())?
+        .0
+        .display()
+        .to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -901,6 +1061,9 @@ pub struct TeamSkillInspectResult {
     /// its own right: the publish path measures the whole directory, so these
     /// ship with the next version.
     pub added: Vec<String>,
+    /// `hosted-agent` when this is the daemon projection OpenCode ranks first;
+    /// `member` for `~/.agents/skills`.
+    pub source: String,
 }
 
 /// Does this pack still look the way we installed it?
@@ -949,7 +1112,7 @@ pub fn team_skill_inspect(
     let _ = expected_version;
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
-    let target = global_skills_dir()?.join(&slug);
+    let (target, source) = effective_team_skill_dir(&slug, team_id.as_deref())?;
 
     let missing = |slug: String| TeamSkillInspectResult {
         slug,
@@ -958,6 +1121,7 @@ pub fn team_skill_inspect(
         modified: Vec::new(),
         deleted: Vec::new(),
         added: Vec::new(),
+        source: source.as_str().to_string(),
     };
 
     if !target.exists() {
@@ -992,6 +1156,7 @@ pub fn team_skill_inspect(
             modified: Vec::new(),
             deleted: Vec::new(),
             added: Vec::new(),
+            source: source.as_str().to_string(),
         });
     }
 
@@ -1014,6 +1179,7 @@ pub fn team_skill_inspect(
             modified,
             deleted,
             added,
+            source: source.as_str().to_string(),
         }),
         _ => Ok(TeamSkillInspectResult {
             slug,
@@ -1022,6 +1188,7 @@ pub fn team_skill_inspect(
             modified: Vec::new(),
             deleted: Vec::new(),
             added: Vec::new(),
+            source: source.as_str().to_string(),
         }),
     }
 }
@@ -1052,7 +1219,7 @@ pub async fn team_skill_diff(
         let mut request = request;
         let slug = request.slug.trim().to_string();
         validate_slug(&slug)?;
-        let target = global_skills_dir()?.join(&slug);
+        let (target, _) = effective_team_skill_dir(&slug, request.team_id.as_deref())?;
 
         let (modified, deleted, added) = match installed_state(&target) {
             DirtyState::Dirty {
@@ -1140,10 +1307,10 @@ pub async fn team_skill_diff(
 /// protect the rare misclick, the undo protects the misclick without
 /// interrupting anyone.
 #[tauri::command]
-pub fn team_skill_discard_local(slug: String) -> Result<String, String> {
+pub fn team_skill_discard_local(slug: String, team_id: Option<String>) -> Result<String, String> {
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
-    let target = global_skills_dir()?.join(&slug);
+    let (target, _) = effective_team_skill_dir(&slug, team_id.as_deref())?;
     if !target.exists() {
         return Err(format!("{} is not installed", slug));
     }
@@ -1239,12 +1406,20 @@ fn resolve_trashed_source(
 /// Undo a discard. The trashed copy wins over whatever is installed now, which
 /// is the point: the user asked for their edits back.
 #[tauri::command]
-pub fn team_skill_restore_trashed(trashed_path: String, slug: String) -> Result<String, String> {
+pub fn team_skill_restore_trashed(
+    trashed_path: String,
+    slug: String,
+    team_id: Option<String>,
+) -> Result<String, String> {
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
     let source = resolve_trashed_source(&trash_dir()?, trashed_path.trim())?;
 
-    let target = global_skills_dir()?.join(&slug);
+    let target = preferred_team_skill_dir(&slug, team_id.as_deref())?;
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create skill root: {}", e))?;
+    }
     if target.exists() {
         std::fs::remove_dir_all(&target)
             .map_err(|e| format!("Failed to clear skill dir: {}", e))?;
@@ -1260,7 +1435,11 @@ pub fn team_skill_restore_trashed(trashed_path: String, slug: String) -> Result<
 /// shadow the team copy and quietly cancel the auto-follow it was supposed to
 /// let the user keep.
 #[tauri::command]
-pub fn team_skill_fork(slug: String, new_slug: String) -> Result<String, String> {
+pub fn team_skill_fork(
+    slug: String,
+    new_slug: String,
+    team_id: Option<String>,
+) -> Result<String, String> {
     let slug = slug.trim().to_string();
     let new_slug = new_slug.trim().to_string();
     validate_slug(&slug)?;
@@ -1270,7 +1449,7 @@ pub fn team_skill_fork(slug: String, new_slug: String) -> Result<String, String>
     }
 
     let skills = global_skills_dir()?;
-    let source = skills.join(&slug);
+    let (source, _) = effective_team_skill_dir(&slug, team_id.as_deref())?;
     if !source.is_dir() {
         return Err(format!("{} is not installed", slug));
     }
@@ -1327,6 +1506,90 @@ mod tests {
             force: false,
             archive_unmanaged: false,
         }
+    }
+
+    fn rebaseline_request(slug: &str, version: i64) -> TeamSkillRebaselineRequest {
+        TeamSkillRebaselineRequest {
+            workspace_path: None,
+            slug: slug.to_string(),
+            team_id: Some("team-a".into()),
+            version,
+            owner: Some("张三".into()),
+            category: Some("devops".into()),
+            summary: Some("发布前检查清单".into()),
+            when_to_use: Some("发布前确认 CI".into()),
+            when_not_to_use: None,
+            requires: None,
+        }
+    }
+
+    fn set_active_team(team_id: &str) {
+        let root = crate::commands::amuxd_home_dir();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("daemon.toml"),
+            format!("active_team = \"{team_id}\"\n"),
+        )
+        .unwrap();
+    }
+
+    fn write_installed_skill(path: &std::path::Path, team_id: &str, version: i64) {
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(path.join("SKILL.md"), "---\nname: say-hello\n---\nhello\n").unwrap();
+        stamp_installed_state(
+            path,
+            InstalledStamp {
+                slug: "say-hello",
+                version,
+                team_id: Some(team_id),
+                shipped: None,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn effective_copy_prefers_the_active_hosted_agent_projection() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_home::HomeGuard::set(home.path());
+        set_active_team("team-a");
+        let member = global_skills_dir().unwrap().join("say-hello");
+        let hosted = hosted_team_skills_dir("team-a").join("say-hello");
+        write_installed_skill(&member, "team-a", 2);
+        write_installed_skill(&hosted, "team-a", 2);
+
+        let (resolved, source) = effective_team_skill_dir("say-hello", Some("team-a")).unwrap();
+        assert_eq!(resolved, hosted);
+        assert_eq!(source, EffectiveSkillSource::HostedAgent);
+    }
+
+    #[test]
+    fn inspection_and_rebaseline_use_the_same_hosted_copy() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_home::HomeGuard::set(home.path());
+        set_active_team("team-a");
+        let member = global_skills_dir().unwrap().join("say-hello");
+        let hosted = hosted_team_skills_dir("team-a").join("say-hello");
+        write_installed_skill(&member, "team-a", 2);
+        write_installed_skill(&hosted, "team-a", 2);
+        std::fs::write(
+            hosted.join("SKILL.md"),
+            "---\nname: say-hello\n---\nhi, arya\n",
+        )
+        .unwrap();
+
+        let before = team_skill_inspect("say-hello".into(), Some(2), Some("team-a".into()))
+            .expect("inspect hosted edit");
+        assert_eq!(before.state, "dirty");
+        assert_eq!(before.source, "hosted-agent");
+        assert_eq!(before.modified, vec!["SKILL.md"]);
+
+        let result = team_skill_rebaseline(rebaseline_request("say-hello", 3))
+            .expect("rebaseline hosted edit");
+        assert_eq!(std::path::PathBuf::from(result.path), hosted);
+        assert_eq!(read_origin(&hosted).unwrap().installed_version, "3");
+        assert_eq!(installed_state(&hosted), DirtyState::Clean);
+        assert_eq!(read_origin(&member).unwrap().installed_version, "2");
     }
 
     /// A workspace `opencode.json` carrying a decision about `deploy-check`.

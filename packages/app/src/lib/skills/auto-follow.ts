@@ -16,6 +16,8 @@
 /** What `team_skill_inspect` reports about one pack on disk. */
 export interface SkillLocalState {
   slug: string
+  /** Which runtime projection was inspected for this slug. */
+  source: 'hosted-agent' | 'member'
   /**
    * `foreign` means the directory carries another registry's `origin.json`.
    * Slugs collide across registries because they all install into the same

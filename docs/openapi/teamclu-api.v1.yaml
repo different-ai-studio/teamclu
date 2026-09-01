@@ -1106,6 +1106,61 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/threads:
+    post:
+      operationId: createSessionThread
+      summary: Fork an agent-reply thread session (idempotent on rootMessageId)
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rootMessageId]
+              properties:
+                rootMessageId:
+                  type: string
+                  format: uuid
+      responses:
+        "201":
+          description: Thread session (new or existing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionWithParticipants"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/thread-summaries:
+    get:
+      operationId: listSessionThreadSummaries
+      summary: Thread badge summaries for a parent session
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Thread summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SessionThreadSummary"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/sessions/{sessionId}/messages:
     get:
       operationId: listMessages
@@ -6980,9 +7035,19 @@ components:
           description: >-
             How the session was created. 'user' for normal sessions, 'cron' for
             sessions auto-created by a scheduled task, 'gateway' for gateway
-            (WeCom etc.) bindings.
+            (WeCom etc.) bindings, 'thread' for agent-reply fork threads.
           type: string
-          enum: [user, cron, gateway]
+          enum: [user, cron, gateway, thread]
+        parentSessionId:
+          description: Parent session when source='thread'.
+          type:
+            - string
+            - "null"
+        threadRootMessageId:
+          description: Anchor agent_reply message when source='thread'.
+          type:
+            - string
+            - "null"
         cronJobId:
           description: >-
             For source='cron', the desktop-local cron job id that created this
@@ -7567,6 +7632,25 @@ components:
           items:
             type: string
             format: uuid
+    SessionThreadSummary:
+      type: object
+      required: [threadSessionId, rootMessageId, messageCount, participantCount]
+      properties:
+        threadSessionId:
+          type: string
+          format: uuid
+        rootMessageId:
+          type: string
+          format: uuid
+        messageCount:
+          type: integer
+        lastMessageAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        participantCount:
+          type: integer
     SessionWithParticipants:
       allOf:
         - $ref: "#/components/schemas/Session"

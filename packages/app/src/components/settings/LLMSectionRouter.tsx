@@ -16,6 +16,11 @@ import { AgentModelDefaults } from './llm/AgentModelDefaults'
  *
  * pi, cursor and claude-code all own their credentials outside opencode.json, so
  * their panes are read-only catalogs; only opencode gets the provider UI.
+ *
+ * The pinned team-gateway card (`TeamProviderCard`) lives in the opencode and pi
+ * panes only. cursor and claude-code drive their own vendor accounts and offer
+ * no hook for pointing a session at our gateway, so the team tiers are not
+ * available there and the card is deliberately absent rather than shown broken.
  */
 export function LLMSection() {
   const [agent, setAgent] = React.useState<DaemonLocalAgent | null>(null)

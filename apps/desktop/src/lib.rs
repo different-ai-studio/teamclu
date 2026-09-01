@@ -439,6 +439,7 @@ pub fn run() {
             commands::team_skills::team_skill_pack,
             commands::team_skills::team_skill_pack_and_upload,
             commands::team_skills::team_skill_install_from_dir,
+            commands::team_skills::team_skill_rebaseline,
             commands::team_skills::team_skill_inspect,
             commands::team_skills::team_skill_installed_dir,
             commands::team_skills::team_skill_diff,

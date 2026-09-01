@@ -463,6 +463,7 @@ function ConflictBar({
   latestVersion,
   busy,
   canPublish,
+  source,
   onViewDiff,
   onPublish,
   onFork,
@@ -475,6 +476,7 @@ function ConflictBar({
   latestVersion: number | null
   busy: boolean
   canPublish: boolean
+  source: 'hosted-agent' | 'member'
   onViewDiff: () => void
   onPublish: () => void
   onFork: () => void
@@ -514,6 +516,11 @@ function ConflictBar({
         {changed && (
           <p className="mt-1 break-words text-[12px] leading-relaxed text-muted-foreground">{changed}</p>
         )}
+        <p className="mt-1 text-[11.5px] text-faint">
+          {source === 'hosted-agent'
+            ? t('teamShare.skillConflictSourceHosted', '修改来源：本机 Hosted Agent')
+            : t('teamShare.skillConflictSourceMember', '修改来源：本机成员目录')}
+        </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -1565,6 +1572,7 @@ export function SkillDetail({ slug }: { slug: string }) {
           latestVersion={item.latestVersion}
           busy={busy}
           canPublish={canPublish}
+          source={localState?.source ?? 'member'}
           onViewDiff={openDiff}
           onPublish={() => setPublishOpen(true)}
           onFork={() => setForkOpen(true)}

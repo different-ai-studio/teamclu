@@ -104,9 +104,8 @@ describe('Settings navigation', () => {
       within(screen.getByTestId('local-agent-subnav')).getAllByRole('button').map((button) => button.textContent),
     ).toEqual([
       'LLM Model',
-      'Team LLM',
-      // Team-scoped, like 'Team LLM' above, and grouped with it for that reason
-      // rather than because it configures the local agent.
+      // 'Team LLM' is gone: the team gateway is now a pinned card inside the
+      // LLM Model pane, not a section of its own.
       'Knowledge Access',
       'Prompt',
       // 'Roles' and 'Role Skills' are temporarily hidden — see

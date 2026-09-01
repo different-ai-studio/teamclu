@@ -105,7 +105,7 @@ export async function handleStripeEvent(
 
     case "charge.refunded": {
       const charge = event.data.object as Stripe.Charge;
-      return refundCharge(charge);
+      return refundCharge(stripe, charge);
     }
 
     default:
@@ -144,17 +144,50 @@ export async function creditCheckoutSession(
   return { handled: true, applied: Boolean(res?.applied) };
 }
 
-async function refundCharge(charge: Stripe.Charge): Promise<{ handled: boolean; applied?: boolean; reason?: string }> {
+/**
+ * Debit a team for the refunds on a charge.
+ *
+ * The refunds are FETCHED, not read off the event. `charge.refunds` is absent
+ * from the charge object on current API versions, so `charge.refunds?.data ??
+ * []` — which is what this did first — silently yielded an empty list: the loop
+ * never ran, the handler answered 200, Stripe stopped retrying, and the
+ * customer got their money back while keeping the credits. A refund path that
+ * fails by doing nothing at all is the worst shape this could take, so it now
+ * asks the API rather than trusting the payload's shape.
+ */
+async function refundCharge(
+  stripe: Stripe,
+  charge: Stripe.Charge,
+): Promise<{ handled: boolean; applied?: boolean; reason?: string }> {
   const teamId = (charge.metadata?.team_id ?? "").trim();
-  if (!teamId) return { handled: false, reason: "refund carries no team id" };
+  if (!teamId) {
+    // Loud: the charge came from a Session we created, so it should carry one.
+    throw new ApiError(
+      500,
+      "stripe_refund_unattributed",
+      `Stripe charge ${charge.id} carries no team id — refund cannot be applied`,
+    );
+  }
 
-  // One event per refund, but a charge can be refunded in parts. Key on the
-  // individual refund so each part lands exactly once.
-  const refunds = charge.refunds?.data ?? [];
+  const chargedCredits = Number(charge.metadata?.credits ?? 0);
+  if (!Number.isSafeInteger(chargedCredits) || chargedCredits <= 0) {
+    throw new ApiError(
+      500,
+      "stripe_refund_unpriced",
+      `Stripe charge ${charge.id} carries no usable metadata.credits`,
+    );
+  }
+
+  const refunds = await stripe.refunds.list({ charge: charge.id, limit: 100 });
   let applied = false;
-  for (const refund of refunds) {
-    const credits = Number(refund.metadata?.credits ?? charge.metadata?.credits ?? 0);
-    if (!Number.isSafeInteger(credits) || credits <= 0) continue;
+  let debited = 0;
+  for (const refund of refunds.data) {
+    if (refund.status !== "succeeded") continue;
+    // Pro-rata, so a PARTIAL refund debits a proportional share rather than the
+    // whole purchase. Rounding up is deliberate: the rounding error should not
+    // be a way to keep credits that were paid for and then refunded.
+    const credits = Math.ceil((chargedCredits * refund.amount) / charge.amount);
+    if (credits <= 0) continue;
     const res = await aiGateway.topUp(teamId, {
       // Negative: the ledger is the truth and a refund is allowed to drive the
       // balance below zero (§4.9.5). The spend gate is `balance - reserved >=
@@ -164,9 +197,15 @@ async function refundCharge(charge: Stripe.Charge): Promise<{ handled: boolean; 
       idempotencyKey: idempotency.refund(refund.id),
       note: `stripe refund ${refund.id}`,
     });
-    applied = applied || Boolean(res?.applied);
+    if (res?.applied) {
+      applied = true;
+      debited += credits;
+    }
   }
-  return { handled: true, applied };
+  if (refunds.data.length === 0) {
+    return { handled: false, reason: `charge ${charge.id} has no refunds to apply` };
+  }
+  return { handled: true, applied, reason: applied ? `debited ${debited}` : "already recorded" };
 }
 
 /** `client_reference_id` is what we set at creation; metadata is the fallback
