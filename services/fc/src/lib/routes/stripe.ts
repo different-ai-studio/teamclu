@@ -155,7 +155,7 @@ export async function creditCheckoutSession(
  * fails by doing nothing at all is the worst shape this could take, so it now
  * asks the API rather than trusting the payload's shape.
  */
-async function refundCharge(
+export async function refundCharge(
   stripe: Stripe,
   charge: Stripe.Charge,
 ): Promise<{ handled: boolean; applied?: boolean; reason?: string }> {

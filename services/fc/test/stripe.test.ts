@@ -14,7 +14,7 @@ import { createHonoRouterAdapter } from "../src/lib/hono-adapter.js";
 import { aiGateway } from "../src/lib/ai-gateway.js";
 import { allowedPriceIds, createCheckoutSession, creditsForPrice, idempotency } from "../src/lib/stripe.js";
 import { registerStripe, handleStripeEvent, creditsForSession } from "../src/lib/routes/stripe.js";
-import { stripeReconcileCheckouts } from "../src/lib/stripe-reconcile.js";
+import { stripeReconcile, stripeReconcileCheckouts, stripeReconcileRefunds } from "../src/lib/stripe-reconcile.js";
 
 const WEBHOOK_SECRET = "whsec_test_secret";
 
@@ -359,6 +359,92 @@ test("one unusable session does not abort the rest of the run", async () => {
   });
   assert.equal(result.failed, 1);
   assert.equal(result.repaired + result.alreadyCredited, 1, "the good session still went through");
+});
+
+function fakeStripeWithRefunds(refunds: any[], charges: Record<string, any>) {
+  return {
+    refunds: {
+      list: (opts: any) =>
+        // The webhook path calls refunds.list({charge}); the reconcile pass
+        // calls it with {created} and iterates. One fake serves both.
+        opts?.charge
+          ? Promise.resolve({ data: refunds.filter((r) => r.charge === opts.charge) })
+          : { [Symbol.asyncIterator]: async function* () { for (const r of refunds) yield r; } },
+    },
+    charges: { retrieve: async (id: string) => charges[id] },
+  } as any;
+}
+
+test("reconcile repairs refunds the webhook never delivered", async () => {
+  // The purchase side had two layers of insurance and the refund side had one.
+  // That is the wrong way round: a missing top-up gets reported by the customer
+  // within minutes, a missing refund debit is silent — they have their money
+  // back and nobody is watching the credits they kept.
+  const missing = new Set(["stripe:re:re_missing"]);
+  (aiGateway as any).topUp = async (teamId: string, body: any) => {
+    topUps.push({ teamId, body });
+    return { teamId, applied: missing.has(body.idempotencyKey), balanceCredits: 1 };
+  };
+
+  const stripe = fakeStripeWithRefunds(
+    [
+      { id: "re_present", charge: "ch_a", amount: 500, status: "succeeded" },
+      { id: "re_missing", charge: "ch_b", amount: 500, status: "succeeded" },
+      { id: "re_pending", charge: "ch_c", amount: 500, status: "pending" },
+      { id: "re_other", charge: "ch_other", amount: 500, status: "succeeded" },
+    ],
+    {
+      ch_a: { id: "ch_a", amount: 500, metadata: { team_id: "team-1", credits: "1500000" } },
+      ch_b: { id: "ch_b", amount: 500, metadata: { team_id: "team-1", credits: "1500000" } },
+      // Someone else's charge on the same account: no team id.
+      ch_other: { id: "ch_other", amount: 500, metadata: {} },
+    },
+  );
+
+  const r = await stripeReconcileRefunds({ stripe });
+  assert.equal(r.scanned, 4);
+  assert.equal(r.succeededRefunds, 3, "the pending refund is not counted");
+  assert.equal(r.repaired, 1);
+  assert.equal(r.alreadyRecorded, 1);
+  assert.equal(r.notOurs, 1, "a charge with no team id is someone else's, not a failure");
+  assert.equal(r.failed, 0);
+});
+
+test("a charge that cannot be retrieved does not abort the refund sweep", async () => {
+  const stripe = {
+    refunds: {
+      list: (opts: any) =>
+        opts?.charge
+          ? Promise.resolve({ data: [{ id: "re_ok", charge: "ch_ok", amount: 500, status: "succeeded" }] })
+          : { [Symbol.asyncIterator]: async function* () {
+              yield { id: "re_boom", charge: "ch_boom", amount: 500, status: "succeeded" };
+              yield { id: "re_ok", charge: "ch_ok", amount: 500, status: "succeeded" };
+            } },
+    },
+    charges: {
+      retrieve: async (id: string) => {
+        if (id === "ch_boom") throw new Error("no such charge");
+        return { id, amount: 500, metadata: { team_id: "team-1", credits: "1500000" } };
+      },
+    },
+  } as any;
+  const r = await stripeReconcileRefunds({ stripe });
+  assert.equal(r.failed, 1);
+  assert.equal(r.repaired + r.alreadyRecorded, 1, "the good charge still went through");
+});
+
+test("the cron task runs BOTH passes", async () => {
+  const stripe = {
+    checkout: { sessions: { list: () => ({ [Symbol.asyncIterator]: async function* () {} }) } },
+    refunds: { list: () => ({ [Symbol.asyncIterator]: async function* () {} }) },
+    charges: { retrieve: async () => ({}) },
+  } as any;
+  const r = await stripeReconcile({ stripe });
+  // Checkout counters and refund counters both present — a task that silently
+  // dropped one half would still "succeed" without this.
+  for (const k of ["scanned", "paid", "repaired", "refundsScanned", "refundsRepaired", "refundsFailed"]) {
+    assert.ok(k in r, `${k} missing from the combined result`);
+  }
 });
 
 test("reconcile is a no-op when Stripe is not configured", async () => {

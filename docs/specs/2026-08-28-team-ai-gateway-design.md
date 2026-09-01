@@ -425,6 +425,10 @@ Stripe 从境外主动回调 `api.<domain>/v1/stripe/webhook`，而该域名解�
 1. Stripe 自身重试最多 3 天。
 2. 一个定时对账任务扫 `stripe.checkout.sessions.list`，把已支付但本地无 ledger 条目的补进来。
 
+⚠️ **退款那一侧同样需要对账，而且更需要。** 第一版只扫 Checkout Session，充值有两层保险（Stripe 重试 + 定时对账），退款只有一层 —— 这个不对称是反的：**一笔没补上的充值，客户几分钟内就会来说；一笔没补上的退款是静默的** —— 钱已经退了，没人在盯他留着的那些额度。
+
+两趟的差别只有一处：webhook 收到的事件本该属于我们，所以 charge 上没有 `team_id` 要**大声报错**；而对账扫的是账号上所有退款，没有 `team_id` 只意味着「这不是我们的单」，按失败计只会把真正的失败淹掉。
+
 #### 4.9.7 客户端
 
 Tauri 内嵌 webview **不要**用来打开 Checkout（3DS 与钱包会出问题，用户也看不到地址栏），走系统浏览器。返回后不阻塞 UI 等 webhook —— 显示「处理中」，让余额自行刷新。
@@ -439,7 +443,7 @@ Tauri 内嵌 webview **不要**用来打开 Checkout（3DS 与钱包会出问题
 |---|---|
 | `GET /v1/teams/:teamId/credits/packages` | 充值卡要显示「买什么、多少钱、给多少积分」。三者都只能来自 Stripe Price + `metadata.credits`（§4.9.3），客户端硬编码价格在调价当天就是错的。**任何成员可读**（看得见但买不了），下单才是 owner-only |
 | `GET /v1/stripe/return` | Checkout 完成后浏览器要有地方落。一张静态 HTML：桌面端本来就不依赖这次跳转（§4.9.7），这页只需要告诉人可以关掉。公网 origin 用**专门的 `STRIPE_RETURN_URL_BASE`** —— 见下方那条 |
-| `stripe-reconcile` cron 任务 | §4.9.6 的第二层兜底。**不查账本**：重复 top-up 靠唯一索引变成空操作，返回的 `applied` 就是「这笔本地是不是缺了」的答案，比自己 join 一次账本少一条会腐化的查询路径 |
+| `stripe-reconcile` cron 任务 | §4.9.6 的第二层兜底，**充值和退款两趟都扫**。**不查账本**：重复写入靠唯一索引变成空操作，返回的 `applied` 就是「这笔本地是不是缺了」的答案，比自己 join 一次账本少一条会腐化的查询路径。退款那趟走的是 webhook 同一个 `refundCharge`，不会漂移 |
 
 ⚠️ **回跳地址不要复用现成变量。** 第一版试过两个，两个都错：
 

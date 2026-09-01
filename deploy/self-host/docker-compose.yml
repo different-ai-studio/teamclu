@@ -690,9 +690,12 @@ services:
             -H "x-cron-secret: ${CRON_TRIGGER_SECRET}" \
             -H "content-type: application/json" \
             -d '{"task":"oss-gc-blobs"}' || true
-          # Repairs top-ups whose webhook never arrived. Stripe calls in from
-          # outside the country to a mainland host, so the delivery link is the
-          # weak point; this pass is idempotent and cheap when nothing is wrong.
+          # Repairs top-ups AND refunds whose webhook never arrived. Stripe
+          # calls in from outside the country to a mainland host, so the
+          # delivery link is the weak point; both passes are idempotent and
+          # cheap when nothing is wrong. The refund half matters more than it
+          # looks: a missing top-up gets reported by the customer within
+          # minutes, a missing refund debit is silent.
           curl -fsS -X POST http://fc:9000/internal/cron \
             -H "x-cron-secret: ${CRON_TRIGGER_SECRET}" \
             -H "content-type: application/json" \
