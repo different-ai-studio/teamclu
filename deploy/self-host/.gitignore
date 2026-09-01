@@ -1,4 +1,5 @@
 .env
+.env.server
 # podman-compose bind-mount shim (see bootstrap/link-volumes.sh)
 volumes
 caddy_data/
