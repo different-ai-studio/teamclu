@@ -60,7 +60,7 @@
 
 1. **客户端不直连 Supabase。** `cloud_api` 是唯一客户端后端，`packages/app/src/lib/backend/__tests__/no-supabase-import.test.ts` 是守卫。表建在 Supabase Postgres，访问一律走 FC `/v1`。
 2. **包体走 Supabase Storage，不进 OSS。**（2026-08-06 反转此前决定：注册表刚合并、生产环境尚无真实 skill 包，改动是干净切换而非数据迁移。）私有 bucket `team-skills`，签名 URL 由 FC 的 service-role 客户端签发（`services/fc/src/lib/skills-storage.ts`）。`amuxc_blobs` 仍是内容哈希去重/记账表，`oss_key` 列复用为 Supabase Storage 的 object path（该表也被 `amuxc_files` 等无关的 OSS 同步功能共用，那部分继续走 OSS，不受影响）。
-3. **只有 registry 是发行面。** `teamclu-team/skills/` 最终退出团队同步（时机见待定 #1），否则两套管线传同一批内容、版本语义作废。
+3. **只有 registry 是发行面。** `teamclu-team/skills/` 已经退出团队同步（待定 #1 已结），否则两套管线传同一批内容、版本语义作废。
 
 ## 4. 数据模型
 
@@ -427,7 +427,7 @@ MQTT 通道是现成的（`crates/teamclu-types/src/mqtt.rs` 的 `actor_notify()
 
 | # | 问题 | 倾向 |
 |---|---|---|
-| 1 | `teamclu-team/skills/` 何时退出团队同步？三处镜像常量（daemon `SHARED_PREFIXES`、desktop `ALLOWED_PREFIXES`、FC `sync-path.ts`）+ 老客户端兼容 + 存量导入 | 存量一次性导入为 v1，退出同步排到 P2；过渡期把目录标为「遗留」并禁止 UI 新增写入 |
+| 1 | ~~`teamclu-team/skills/` 何时退出团队同步？~~ | **已结**：三处镜像常量现在都是 `documents/` + `knowledge/`。`skills/` 进了客户端两侧的 `RETIRED_PREFIXES`——扫描器不再推送、pull 循环直接跳过，但 `validate` 仍然接受它：老团队 manifest 里还有这些行，而 pull 循环里是硬 `?`，拒绝就会从第一条老行中断整次 apply、把 `knowledge/` 一起带下去，且 `InvalidPath` 是非瞬时错误永不自愈。服务端 `validateSyncPath` 则直接拒收新上传 |
 | 2 | 安装作用域：全局跟人走，还是 workspace 跟项目走 | 默认全局（`is_global=true`），高级选项允许装到 workspace |
 | 3 | 撞名优先级：团队市场 / ClawHub / 本地手写，同名谁赢 | 沿用现有 `source_priority`，本地 > 团队 > ClawHub；被盖住的要**显式报告**而不是静默丢弃 |
 | 4 | ~~管理员推送语义~~ | **已定**：管理员对 `visibility='team'` 的 agent actor 直接装，见 §4 / §5 / §8.1。成员的 member actor 仍是自助，管理员不能代装 |
