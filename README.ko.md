@@ -10,7 +10,7 @@
 
 - **👥 팀을 위한 설계** — Skills, 지식 베이스, MCP 설정을 Git 또는 S3/OSS 동기화를 통해 팀 전체에서 공유하면서도, 구성원별 개인 컨텍스트는 그대로 유지
 - **🎭 Skills × 역할** — 조합 가능한 역할 라이브러리로 동일한 에이전트를 영업·지원·운영·엔지니어링 등 팀에 필요한 어떤 직무에도 특화
-- **🔋 기본 탑재** — RAG 지식 베이스, Auto UI 이해, 음성 인식(STT), 6 개 채널 게이트웨이(WeCom, Feishu, Discord, Kook, WeChat, Email) 내장. 글루 코드 불필요
+- **🔋 기본 탑재** — 팀 지식 베이스, Auto UI 이해, 음성 인식(STT), 6 개 채널 게이트웨이(WeCom, Feishu, Discord, Kook, WeChat, Email) 내장. 글루 코드 불필요
 - **🧑‍💻 개인 개발자부터 중소기업까지** — 로컬 우선, 기본 비공개; 1 인 사용자부터 소규모 기업까지 확장 가능
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | 한국어 | [Bahasa Indonesia](README.id.md)
@@ -30,7 +30,7 @@
 - **팀 협업** — OSS 또는 Git 으로 팀 드라이브(`teamclu-team/`) 공유. [팀 협업](#팀-협업) 참조
 - **MCP 지원** — Model Context Protocol 을 통해 에이전트를 엔터프라이즈 시스템에 연결
 - **Skills / 플러그인** — 워크스페이스 수준 및 전역 스킬 소스로 에이전트 확장
-- **지식 베이스** — 전문 검색 및 임베딩 기반 인덱싱과 검색
+- **지식 베이스** — 팀 전체에 동기화되는 Markdown 지식 베이스, 경로 단위 ACL 과 버전 기록 지원
 - **내장 에디터** — Markdown 및 HTML(Tiptap), 코드(CodeMirror 6), 에이전트 우선 diff 리뷰어
 - **로컬 파일 작업** — 작업 단위 권한 관리 지원
 
@@ -186,7 +186,6 @@ Cloud API 구현은 `services/fc/` (Node.js 20)에 있으며, Supabase 를 백�
 - **프론트엔드**: React 19 + TypeScript, Tailwind CSS 4, Zustand
 - **iOS**: SwiftUI + SwiftPM (`AMUXCore`)
 - **에디터**: Tiptap (Markdown / HTML), CodeMirror 6 (코드), Shiki (구문 강조)
-- **검색**: Tantivy 전문 검색 + 임베딩
 
 ## License
 

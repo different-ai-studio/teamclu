@@ -10,7 +10,7 @@ Local AI agents — your AI Ally for every role
 
 - **👥 Built for teams** — share Skills, Knowledge, and MCP config across the whole team via Git or S3/OSS sync; each member keeps their own private context
 - **🎭 Skills × Roles** — a composable role library lets the same agent specialize for sales, support, ops, engineering, or whatever your team needs
-- **🔋 Batteries included** — built-in RAG knowledge base, Auto UI understanding, speech-to-text, and six channel gateways (WeCom, Feishu, Discord, Kook, WeChat, Email) — no glue code
+- **🔋 Batteries included** — built-in team knowledge base, Auto UI understanding, speech-to-text, and six channel gateways (WeCom, Feishu, Discord, Kook, WeChat, Email) — no glue code
 - **🧑‍💻 Solo builders to SMBs** — local-first, private by default; scales from a single user to a small company
 
 English | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Bahasa Indonesia](README.id.md)
@@ -30,7 +30,7 @@ English | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [�
 - **Team collaboration** — share a team drive (`teamclu-team/`) over OSS or Git; see [Team collaboration](#team-collaboration)
 - **MCP support** — connect agents to enterprise systems via the Model Context Protocol
 - **Skills / plugins** — extend agents with workspace-level and global skill sources
-- **Knowledge base** — full-text and embedding-based indexing and search
+- **Knowledge base** — a Markdown vault synced across the whole team, with path-level ACL and version history
 - **Built-in editors** — Markdown and HTML (Tiptap), code (CodeMirror 6), and an agent-first diff reviewer
 - **Local file operations** — with per-operation permission management
 
@@ -186,7 +186,6 @@ We welcome contributions! See the [Contributing Guide](CONTRIBUTING.md) for deta
 - **Frontend**: React 19 + TypeScript, Tailwind CSS 4, Zustand
 - **iOS**: SwiftUI + SwiftPM (`AMUXCore`)
 - **Editors**: Tiptap (Markdown / HTML), CodeMirror 6 (code), Shiki (highlighting)
-- **Search**: Tantivy full-text + embeddings
 
 ## License
 

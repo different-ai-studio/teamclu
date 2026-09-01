@@ -10,7 +10,7 @@
 
 - **👥 チーム向け設計** — Skills・ナレッジ・MCP 設定を Git または S3/OSS 同期でチーム全体に共有しつつ、メンバーごとのプライベートなコンテキストも維持
 - **🎭 Skills × ロール** — 合成可能なロールライブラリにより、同じエージェントを営業・サポート・運用・エンジニアリングなど、チームに必要な職務へ特化させられます
-- **🔋 標準搭載** — RAG ナレッジベース、Auto UI 理解、音声認識、6 つのチャンネルゲートウェイ（WeCom / Feishu / Discord / Kook / WeChat / Email）を内蔵。糊付けコードは不要です
+- **🔋 標準搭載** — チームナレッジベース、Auto UI 理解、音声認識、6 つのチャンネルゲートウェイ（WeCom / Feishu / Discord / Kook / WeChat / Email）を内蔵。糊付けコードは不要です
 - **🧑‍💻 個人開発者から中小企業まで** — ローカル優先、デフォルトで非公開。一人での利用から小規模企業までスケールします
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | 日本語 | [한국어](README.ko.md) | [Bahasa Indonesia](README.id.md)
@@ -30,7 +30,7 @@
 - **チーム協力** — OSS または Git 経由でチームドライブ（`teamclu-team/`）を共有。[チーム協力](#チーム協力)を参照
 - **MCP サポート** — Model Context Protocol でエージェントをエンタープライズシステムに接続
 - **Skills / プラグイン** — ワークスペースレベルおよびグローバルなスキルソースでエージェントを拡張
-- **ナレッジベース** — 全文検索と埋め込みベースのインデックス作成・検索
+- **ナレッジベース** — チーム全体で同期される Markdown ナレッジベース。パス単位の ACL とバージョン履歴に対応
 - **内蔵エディター** — Markdown / HTML（Tiptap）、コード（CodeMirror 6）、エージェントファーストの Diff レビューア
 - **ローカルファイル操作** — 操作単位の権限管理付き
 
@@ -186,7 +186,6 @@ Cloud API の実装は `services/fc/`（Node.js 20）にあり、Supabase をバ
 - **フロントエンド**: React 19 + TypeScript、Tailwind CSS 4、Zustand
 - **iOS**: SwiftUI + SwiftPM (`AMUXCore`)
 - **エディター**: Tiptap（Markdown / HTML）、CodeMirror 6（コード）、Shiki（ハイライト）
-- **検索**: Tantivy 全文検索 + 埋め込み
 
 ## License
 

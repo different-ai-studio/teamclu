@@ -10,7 +10,7 @@
 
 - **👥 为团队而生** — 通过 Git 或 S3/OSS 同步，在整个团队内共享技能、知识库与 MCP 配置；每位成员仍保留自己的私有上下文
 - **🎭 技能 × 角色** — 可组合的角色库，让同一个智能体适配销售、客服、运营、研发，或团队所需的任何岗位
-- **🔋 开箱即用** — 内置 RAG 知识库、Auto UI 视觉识别、语音转文字，以及六大渠道网关（企业微信、飞书、Discord、Kook、微信、邮件），无需胶水代码
+- **🔋 开箱即用** — 内置团队知识库、Auto UI 视觉识别、语音转文字，以及六大渠道网关（企业微信、飞书、Discord、Kook、微信、邮件），无需胶水代码
 - **🧑‍💻 从个人开发者到中小企业** — 本地优先、默认私有；可从单人使用扩展到小型公司
 
 [English](README.md) | 简体中文 | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Bahasa Indonesia](README.id.md)
@@ -30,7 +30,7 @@
 - **团队协作** — 通过 OSS 或 Git 共享团队盘（`teamclu-team/`）；详见[团队协作](#团队协作)
 - **MCP 支持** — 通过 Model Context Protocol 将智能体接入企业系统
 - **技能 / 插件** — 使用工作区级与全局技能源扩展智能体
-- **知识库** — 全文与向量嵌入索引及检索
+- **知识库** — 全团队同步的 Markdown 知识库，支持路径级 ACL 与版本历史
 - **内置编辑器** — Markdown 与 HTML（Tiptap）、代码（CodeMirror 6），以及智能体优先的 diff 审查器
 - **本地文件操作** — 带逐操作权限管理
 
@@ -186,7 +186,6 @@ Cloud API 的实现位于 `services/fc/`（Node.js 20），由 Supabase 提供�
 - **前端**：React 19 + TypeScript、Tailwind CSS 4、Zustand
 - **iOS**：SwiftUI + SwiftPM (`AMUXCore`)
 - **编辑器**：Tiptap（Markdown / HTML）、CodeMirror 6（代码）、Shiki（语法高亮）
-- **搜索**：Tantivy 全文检索 + 向量嵌入
 
 ## License
 

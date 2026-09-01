@@ -10,7 +10,7 @@
 
 - **👥 為團隊而生** — 透過 Git 或 S3/OSS 同步，在整個團隊間共享 Skills、知識庫與 MCP 設定；同時保留每位成員的私有上下文
 - **🎭 Skills × 角色** — 可組合的角色庫，讓同一個智慧體適配銷售、客服、營運、研發，或任何團隊需要的職位
-- **🔋 開箱即用** — 內建 RAG 知識庫、Auto UI 視覺理解、語音轉文字，以及六大通道閘道（企業微信、飛書、Discord、Kook、微信、Email），無需膠水程式碼
+- **🔋 開箱即用** — 內建團隊知識庫、Auto UI 視覺理解、語音轉文字，以及六大通道閘道（企業微信、飛書、Discord、Kook、微信、Email），無需膠水程式碼
 - **🧑‍💻 個人開發者到中小企業** — 本地優先、預設私有；從單人使用擴展到小型公司
 
 [English](README.md) | [简体中文](README.zh-CN.md) | 繁體中文 | [日本語](README.ja.md) | [한국어](README.ko.md) | [Bahasa Indonesia](README.id.md)
@@ -30,7 +30,7 @@
 - **團隊協作** — 透過 OSS 或 Git 共享團隊碟（`teamclu-team/`）；詳見 [團隊協作](#團隊協作)
 - **MCP 支援** — 透過 Model Context Protocol 將智慧體連接到企業系統
 - **Skills / 外掛** — 以工作區層級與全域技能來源擴充智慧體
-- **知識庫** — 全文與嵌入向量的索引及搜尋
+- **知識庫** — 全團隊同步的 Markdown 知識庫，支援路徑層級 ACL 與版本歷史
 - **內建編輯器** — Markdown 與 HTML（Tiptap）、程式碼（CodeMirror 6），以及智慧體優先的 diff 審查器
 - **本地檔案操作** — 具備逐項操作的權限管理
 
@@ -186,7 +186,6 @@ Cloud API 的實作位於 `services/fc/`（Node.js 20），以 Supabase 為後�
 - **前端**：React 19 + TypeScript、Tailwind CSS 4、Zustand
 - **iOS**：SwiftUI + SwiftPM (`AMUXCore`)
 - **編輯器**：Tiptap（Markdown / HTML）、CodeMirror 6（程式碼）、Shiki（語法高亮）
-- **搜尋**：Tantivy 全文檢索 + 嵌入向量
 
 ## License
 

@@ -10,7 +10,7 @@ Agent AI lokal — rekan AI Anda untuk setiap peran
 
 - **👥 Dibuat untuk tim** — bagikan Skills, Knowledge, dan konfigurasi MCP ke seluruh tim melalui sinkronisasi Git atau S3/OSS; setiap anggota tetap memiliki konteks pribadinya sendiri
 - **🎭 Skills × Roles** — library peran yang dapat dikombinasikan memungkinkan agent yang sama dikhususkan untuk sales, support, ops, engineering, atau peran apa pun yang dibutuhkan tim Anda
-- **🔋 Lengkap sejak awal** — knowledge base RAG, pemahaman Auto UI, speech-to-text, dan enam channel gateway (WeCom, Feishu, Discord, Kook, WeChat, Email) sudah tersedia tanpa perlu glue code
+- **🔋 Lengkap sejak awal** — knowledge base tim, pemahaman Auto UI, speech-to-text, dan enam channel gateway (WeCom, Feishu, Discord, Kook, WeChat, Email) sudah tersedia tanpa perlu glue code
 - **🧑‍💻 Dari developer solo hingga UKM** — local-first dan privat secara default; dapat berkembang dari satu pengguna hingga perusahaan kecil
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | Bahasa Indonesia
@@ -30,7 +30,7 @@ Agent AI lokal — rekan AI Anda untuk setiap peran
 - **Kolaborasi tim** — bagikan team drive (`teamclu-team/`) melalui OSS atau Git; lihat [Kolaborasi tim](#kolaborasi-tim)
 - **Dukungan MCP** — hubungkan agent ke sistem enterprise melalui Model Context Protocol
 - **Skills / plugin** — perluas kemampuan agent dengan sumber skill di tingkat workspace dan global
-- **Knowledge base** — indexing dan pencarian berbasis full-text serta embedding
+- **Knowledge base** — vault Markdown yang disinkronkan ke seluruh tim, dengan ACL per-path dan riwayat versi
 - **Editor bawaan** — Markdown dan HTML (Tiptap), code (CodeMirror 6), serta diff reviewer yang dirancang untuk agent
 - **Operasi file lokal** — dengan pengelolaan izin untuk setiap operasi
 
@@ -186,7 +186,6 @@ Kami menyambut kontribusi! Lihat [Panduan Kontribusi](CONTRIBUTING.md) untuk det
 - **Frontend**: React 19 + TypeScript, Tailwind CSS 4, Zustand
 - **iOS**: SwiftUI + SwiftPM (`AMUXCore`)
 - **Editor**: Tiptap (Markdown / HTML), CodeMirror 6 (code), Shiki (highlighting)
-- **Search**: Tantivy full-text + embeddings
 
 ## License
 
