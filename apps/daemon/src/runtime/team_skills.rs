@@ -45,9 +45,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 
 use teamclu_skillpack::{
-    apply_zip_mode, build_manifest_for, inspect, list_managed_paths, read_origin, sanitize_zip_path,
-    swap_managed_files, write_origin, write_registry_frontmatter, DirtyState, RegistryFields,
-    SkillOrigin, ORIGIN_VERSION, SOURCE_TEAM,
+    apply_zip_mode, build_manifest_for, commit_staged_pack, inspect, list_managed_paths,
+    read_origin, sanitize_zip_path, sha256_hex, write_origin, write_registry_frontmatter,
+    RegistryFields, SkillOrigin, ORIGIN_VERSION, SOURCE_TEAM,
 };
 
 use crate::backend::{Backend, TeamSkillRow};
@@ -126,21 +126,10 @@ impl TeamSkillReconciler {
     /// which only exists to pull the next tick forward.
     pub async fn reconcile_now(&self, team_id: &str) -> TeamSkillReconcileOutcome {
         let _guard = self.reconcile_lock.lock().await;
-        let rows = match self.backend.team_skills(team_id).await {
-            Ok(rows) => rows,
-            Err(e) => {
-                // Leave the disk exactly as it is. An unreachable registry must
-                // never read as "the team removed everything" — that would
-                // strip a working agent of its skills every time the network
-                // blinked, and the packs would only come back on the next
-                // successful fetch.
-                tracing::warn!(team_id, error = %e, "team skills fetch failed; keeping the installed set");
-                return TeamSkillReconcileOutcome::default();
-            }
-        };
-
         let root = team_cloud_skills_dir(team_id);
-        let outcome = self.apply(team_id, &root, &rows).await;
+        let Some(outcome) = self.fetch_and_apply(team_id, &root).await else {
+            return TeamSkillReconcileOutcome::default();
+        };
 
         self.last_fetch
             .lock()
@@ -157,6 +146,31 @@ impl TeamSkillReconciler {
             );
         }
         outcome
+    }
+
+    /// Fetch the desired set and make `root` match it.
+    ///
+    /// `None` means the fetch failed (401 / 404 / 5xx / decode). The disk is
+    /// left alone and the TTL is not advanced, so the next tick retries.
+    /// Empty desired set is `Some` of an apply against `[]`.
+    async fn fetch_and_apply(
+        &self,
+        team_id: &str,
+        root: &Path,
+    ) -> Option<TeamSkillReconcileOutcome> {
+        let rows = match self.backend.team_skills(team_id).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                // Leave the disk exactly as it is. An unreachable registry must
+                // never read as "the team removed everything" — that would
+                // strip a working agent of its skills every time the network
+                // blinked, and the packs would only come back on the next
+                // successful fetch.
+                tracing::warn!(team_id, error = %e, "team skills fetch failed; keeping the installed set");
+                return None;
+            }
+        };
+        Some(self.apply(team_id, root, &rows).await)
     }
 
     async fn apply(
@@ -275,20 +289,37 @@ impl TeamSkillReconciler {
             .await
             .map_err(|e| format!("read download body: {e}"))?;
 
+        if !download.content_hash.is_empty() {
+            let actual = sha256_hex(&bytes);
+            if actual != download.content_hash {
+                return Err(format!(
+                    "zip content_hash mismatch: expected {}, got {actual}",
+                    download.content_hash
+                ));
+            }
+        }
+        if download.size > 0 && download.size as usize != bytes.len() {
+            return Err(format!(
+                "zip size mismatch: expected {}, got {}",
+                download.size,
+                bytes.len()
+            ));
+        }
+
         let target = root.join(&row.slug);
         let staging = tempfile::tempdir().map_err(|e| format!("staging dir: {e}"))?;
         extract_zip_to_dir(&bytes, staging.path())?;
 
-        // Deletions are authorised only by a baseline we recorded ourselves.
-        let baseline = read_origin(&target).and_then(|o| o.files);
-        swap_managed_files(&target, staging.path(), baseline.as_ref())
-            .map_err(|e| format!("install files: {e}"))?;
+        // Finish the new tree in staging — frontmatter then origin — and only
+        // then make it live. Swap-then-origin left vN files next to a vN-1
+        // baseline when origin write failed, which inspect reads as Dirty and
+        // auto-follow never retries. See hosted-skill-reconcile-fail-closed.md.
         let shipped =
             list_managed_paths(staging.path()).map_err(|e| format!("list package files: {e}"))?;
 
         let requires = requires_list(row.requires.as_ref());
         write_registry_frontmatter(
-            &target,
+            staging.path(),
             &RegistryFields {
                 slug: &row.slug,
                 version,
@@ -302,13 +333,10 @@ impl TeamSkillReconciler {
         )
         .map_err(|e| format!("frontmatter: {e}"))?;
 
-        // Baseline last, and only after the frontmatter rewrite: it describes
-        // the directory as installed, not the archive as shipped. Scoped to the
-        // files the package shipped, so anything a script writes beside itself
-        // stays outside the set the pack claims to own.
-        let files = build_manifest_for(&target, &shipped).map_err(|e| format!("manifest: {e}"))?;
+        let files =
+            build_manifest_for(staging.path(), &shipped).map_err(|e| format!("manifest: {e}"))?;
         write_origin(
-            &target,
+            staging.path(),
             &SkillOrigin {
                 version: ORIGIN_VERSION,
                 registry: SOURCE_TEAM.to_string(),
@@ -320,6 +348,8 @@ impl TeamSkillReconciler {
             },
         )
         .map_err(|e| format!("origin.json: {e}"))?;
+
+        commit_staged_pack(&target, staging.path()).map_err(|e| format!("install files: {e}"))?;
 
         Ok(())
     }
@@ -493,8 +523,7 @@ fn is_dirty_pack(path: &Path) -> bool {
 
 fn archive_removed_pack(team_id: &str, dir: &Path, slug: &str) -> Result<(), String> {
     let archive_root = global_team_cloud_dir(team_id).join("archived-skills");
-    std::fs::create_dir_all(&archive_root)
-        .map_err(|e| format!("create archive dir: {e}"))?;
+    std::fs::create_dir_all(&archive_root).map_err(|e| format!("create archive dir: {e}"))?;
     let dest = archive_root.join(format!("{slug}-{}", now_millis()));
     std::fs::rename(dir, dest).map_err(|e| format!("archive skill {slug}: {e}"))?;
     Ok(())
@@ -656,5 +685,290 @@ mod tests {
         assert!(state
             .change_kinds
             .contains(&crate::runtime::refresh::RefreshChangeKind::Skills));
+    }
+
+    fn seed_installed_pack(root: &Path, slug: &str, version: i64, body: &str) {
+        let skill = root.join(slug);
+        write(
+            &skill,
+            "SKILL.md",
+            &format!("---\nname: {slug}\n---\n{body}\n"),
+        );
+        let files = teamclu_skillpack::build_manifest(&skill).unwrap();
+        write_origin(
+            &skill,
+            &SkillOrigin {
+                version: ORIGIN_VERSION,
+                registry: SOURCE_TEAM.to_string(),
+                slug: slug.into(),
+                installed_version: version.to_string(),
+                installed_at: 1,
+                team_id: Some("team-1".into()),
+                files: Some(files),
+            },
+        )
+        .unwrap();
+    }
+
+    fn skill_zip(body: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts: zip::write::SimpleFileOptions = Default::default();
+            zip.start_file("SKILL.md", opts).unwrap();
+            zip.write_all(format!("---\nname: deploy-check\n---\n{body}\n").as_bytes())
+                .unwrap();
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    fn cloud_config(server: &wiremock::MockServer) -> crate::provider_config::CloudApiConfig {
+        crate::provider_config::CloudApiConfig {
+            url: server.uri(),
+            refresh_token: "refresh".to_string(),
+            team_id: "team-1".to_string(),
+            actor_id: "agent-1".to_string(),
+        }
+    }
+
+    async fn mount_refresh(server: &wiremock::MockServer) {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        Mock::given(method("POST"))
+            .and(path("/v1/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "accessToken": "access-token",
+                "refreshToken": "rt-2",
+                "expiresAt": 9999999999_i64
+            })))
+            .mount(server)
+            .await;
+    }
+
+    async fn reconciler_for(server: &wiremock::MockServer) -> TeamSkillReconciler {
+        use crate::backend::cloud_api::CloudApiBackend;
+        TeamSkillReconciler::new(std::sync::Arc::new(CloudApiBackend::new(cloud_config(
+            server,
+        ))))
+    }
+
+    #[tokio::test]
+    async fn list_401_keeps_installed_packs() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed_installed_pack(root, "deploy-check", 1, "v1");
+
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/teams/team-1/skills"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": { "code": "unauthorized", "message": "JWT expired" }
+            })))
+            .mount(&server)
+            .await;
+
+        assert!(reconciler_for(&server)
+            .await
+            .fetch_and_apply("team-1", root)
+            .await
+            .is_none());
+        assert!(root.join("deploy-check/SKILL.md").is_file());
+        assert_eq!(
+            read_origin(&root.join("deploy-check"))
+                .unwrap()
+                .installed_version,
+            "1"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_404_keeps_installed_packs() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed_installed_pack(root, "deploy-check", 1, "v1");
+
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/teams/team-1/skills"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": { "code": "not_found", "message": "no such team" }
+            })))
+            .mount(&server)
+            .await;
+
+        assert!(reconciler_for(&server)
+            .await
+            .fetch_and_apply("team-1", root)
+            .await
+            .is_none());
+        assert!(root.join("deploy-check/SKILL.md").is_file());
+    }
+
+    #[tokio::test]
+    async fn list_200_empty_items_uninstalls_clean_packs() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed_installed_pack(root, "deploy-check", 1, "v1");
+
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/teams/team-1/skills"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": []
+            })))
+            .mount(&server)
+            .await;
+
+        let outcome = reconciler_for(&server)
+            .await
+            .fetch_and_apply("team-1", root)
+            .await
+            .expect("200 empty list is a desired set");
+        assert_eq!(outcome.removed, 1);
+        assert!(!root.join("deploy-check").exists());
+    }
+
+    #[tokio::test]
+    async fn list_200_items_installs_pack() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let zip = skill_zip("v3 body");
+        let hash = sha256_hex(&zip);
+
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/teams/team-1/skills"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{
+                    "slug": "deploy-check",
+                    "summary": "check",
+                    "category": "devops",
+                    "whenToUse": "before release",
+                    "whenNotToUse": "not locally",
+                    "latestVersion": 3,
+                    "installed": true,
+                    "installedVersion": 1
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/v1/teams/team-1/skills/deploy-check/versions/3/download",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": format!("{}/zip/deploy-check.zip", server.uri()),
+                "contentHash": hash,
+                "size": zip.len()
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zip/deploy-check.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(zip.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/teams/team-1/skills/deploy-check/install"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let outcome = reconciler_for(&server)
+            .await
+            .fetch_and_apply("team-1", root)
+            .await
+            .expect("200 items is a desired set");
+        assert_eq!(outcome.installed, 1);
+        let installed = root.join("deploy-check");
+        assert!(installed.join("SKILL.md").is_file());
+        let origin = read_origin(&installed).expect("origin");
+        assert_eq!(origin.installed_version, "3");
+        assert_eq!(
+            inspect(&installed, origin.files.as_ref()),
+            teamclu_skillpack::DirtyState::Clean
+        );
+    }
+
+    #[tokio::test]
+    async fn zip_content_hash_mismatch_does_not_touch_disk() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed_installed_pack(root, "deploy-check", 1, "v1");
+        let before = std::fs::read_to_string(root.join("deploy-check/SKILL.md")).unwrap();
+
+        let zip = skill_zip("tampered");
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/teams/team-1/skills"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{
+                    "slug": "deploy-check",
+                    "summary": "check",
+                    "category": "devops",
+                    "whenToUse": "x",
+                    "whenNotToUse": "y",
+                    "latestVersion": 2,
+                    "installed": true
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/v1/teams/team-1/skills/deploy-check/versions/2/download",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": format!("{}/zip/deploy-check.zip", server.uri()),
+                "contentHash": "0".repeat(64),
+                "size": zip.len()
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zip/deploy-check.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(zip))
+            .mount(&server)
+            .await;
+
+        let outcome = reconciler_for(&server)
+            .await
+            .fetch_and_apply("team-1", root)
+            .await
+            .expect("hash mismatch is an install failure, not a fetch failure");
+        assert_eq!(outcome.installed, 0);
+        assert_eq!(
+            std::fs::read_to_string(root.join("deploy-check/SKILL.md")).unwrap(),
+            before
+        );
+        assert_eq!(
+            read_origin(&root.join("deploy-check"))
+                .unwrap()
+                .installed_version,
+            "1"
+        );
     }
 }

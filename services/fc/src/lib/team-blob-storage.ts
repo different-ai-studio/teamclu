@@ -9,6 +9,7 @@ import {
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { createHash } from "node:crypto";
 import { createServiceRoleClient } from "./supabase.js";
 import { getS3Client, OSS_BUCKET } from "./oss.js";
 
@@ -135,6 +136,12 @@ export interface BlobStorage {
   /** `null` when the object does not exist. */
   stat(objectPath: string): Promise<{ size: number } | null>;
   /**
+   * SHA-256 hex of the object bytes. `null` when the object does not exist.
+   * Used by skill-package complete to prove the uploaded zip is the claimed
+   * contentHash, not merely the claimed size.
+   */
+  hashSha256(objectPath: string): Promise<string | null>;
+  /**
    * Remove the bytes. Idempotent: an object that is already gone is a success,
    * because the only caller is a collector and "not there" is the outcome it
    * wanted. Real failures (credentials, network, bucket gone) still throw.
@@ -209,6 +216,15 @@ export function supabaseBlobStorage(bucket: () => string): BlobStorage {
       return { size: (entry as { metadata?: { size?: number } }).metadata?.size ?? 0 };
     },
 
+    async hashSha256(objectPath) {
+      const { data, error } = await createServiceRoleClient()
+        .storage.from(bucket())
+        .download(objectPath);
+      if (error || !data) return null;
+      const buf = Buffer.from(await data.arrayBuffer());
+      return createHash("sha256").update(buf).digest("hex");
+    },
+
     async remove(objectPath) {
       const { error } = await createServiceRoleClient()
         .storage.from(bucket())
@@ -267,6 +283,23 @@ export function s3BlobStorage(bucket: () => string, prefix: () => string): BlobS
           new HeadObjectCommand({ Bucket: bucket(), Key: key(objectPath) }),
         );
         return { size: head.ContentLength ?? 0 };
+      } catch (e) {
+        if (isMissingObject(e)) return null;
+        throw e;
+      }
+    },
+
+    async hashSha256(objectPath) {
+      try {
+        const obj = await getS3Client().send(
+          new GetObjectCommand({ Bucket: bucket(), Key: key(objectPath) }),
+        );
+        if (!obj.Body) return null;
+        const hash = createHash("sha256");
+        for await (const chunk of obj.Body as AsyncIterable<Uint8Array>) {
+          hash.update(chunk);
+        }
+        return hash.digest("hex");
       } catch (e) {
         if (isMissingObject(e)) return null;
         throw e;

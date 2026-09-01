@@ -534,11 +534,21 @@ ${skillContent.trim()}`
     try {
       const wid = encodeWorkspaceId(workspacePath)
       const updated: SkillPermissionMap = { ...skillPermissions, '*': value }
-      await putDaemonPermissions(wid, updated)
+      const saved = await putDaemonPermissions(wid, updated)
+      if (saved === null) {
+        throw new Error(
+          t(
+            'settings.skills.permissionSaveFailed',
+            'Could not save permission. Is the daemon running?',
+          ),
+        )
+      }
       setSkillPermissions(updated)
       setHasChanges(true)
+      setError(null)
     } catch (err) {
       console.error('[SkillsSection] Failed to update default permission:', err)
+      setError(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -553,11 +563,21 @@ ${skillContent.trim()}`
       } else {
         updated = { ...skillPermissions, [skillName]: value as SkillPermission }
       }
-      await putDaemonPermissions(wid, updated)
+      const saved = await putDaemonPermissions(wid, updated)
+      if (saved === null) {
+        throw new Error(
+          t(
+            'settings.skills.permissionSaveFailed',
+            'Could not save permission. Is the daemon running?',
+          ),
+        )
+      }
       setSkillPermissions(updated)
       setHasChanges(true)
+      setError(null)
     } catch (err) {
       console.error('[SkillsSection] Failed to update skill permission:', err)
+      setError(err instanceof Error ? err.message : String(err))
     }
   }
 

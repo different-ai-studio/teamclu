@@ -56,8 +56,7 @@ pub mod records;
 pub use records::{
     ActorDirectoryRow, BackendParticipantRow, BackendSessionAndParticipants, BackendSessionRow,
     ClaimResult, GatewaySessionRow, SessionRoster, SessionRosterEntry, SessionRosterSelfAgent,
-    StoredMessage, WorkspaceRow,
-    WorkspaceUpsert,
+    StoredMessage, WorkspaceRow, WorkspaceUpsert,
 };
 
 /// MQTT settings delivered by `/v1/config/bootstrap`. The full broker URL

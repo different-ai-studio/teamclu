@@ -1834,6 +1834,12 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+        - name: limit
+          in: query
+          description: >
+            Page size. Default 100, max 200. Pass 1 to probe whether the
+            catalog is non-empty (sidebar entry, design §10.1).
+          schema: { type: integer, minimum: 1, maximum: 200 }
       responses:
         "200":
           description: Catalog entries.
@@ -2354,7 +2360,7 @@ paths:
   /v1/teams/{teamId}/skills/{slug}/versions/{version}:
     get:
       operationId: getTeamSkillVersion
-      summary: Resolve a version's package blob
+      summary: Version record (metadata, not the package bytes)
       tags: [TeamSkills]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -2370,6 +2376,57 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/TeamSkillVersion" }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/skills/{slug}/versions/{version}/download:
+    get:
+      operationId: downloadTeamSkillVersion
+      summary: Short-lived signed URL for the package zip
+      description: >
+        Does not proxy bytes. Resolves the version's package location and
+        returns a signed GET URL (expires in 900 seconds).
+
+
+        `blob_scope=marketplace` signs the `object_path` snapshotted on
+        the version row and never looks up `amuxc_blobs` — marketplace
+        packages are deliberately absent from that table. `blob_scope=team`
+        (default) resolves `contentHash → amuxc_blobs.oss_key` for this
+        team. Clients never see `object_path` / `oss_key`; the response
+        is always `{ url, contentHash, size }`.
+
+
+        The signed URL carries its own credentials. Do not attach the
+        caller's bearer token when fetching it.
+
+
+        Design: docs/architecture/team-skill-package-download-contract.md
+      tags: [TeamSkills]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/TeamSkillSlug"
+        - name: version
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Signed download URL for this version's package.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url, contentHash, size]
+                properties:
+                  url: { type: string, format: uri }
+                  contentHash: { type: string }
+                  size: { type: integer }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Package blob is not uploaded yet (`blob_missing`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/teams/{teamId}/skills/{slug}/versions/{version}/revert:
     post:
       operationId: revertTeamSkillVersion
@@ -2435,10 +2492,14 @@ paths:
       operationId: installTeamSkill
       summary: Record an install
       description: >
-        Three gates. Installing for yourself is always allowed. Installing onto
-        a `visibility=team` agent actor requires a team admin. Installing onto
-        another member's actor is always refused — an admin owns the team's
-        shared agents, not a teammate's personal setup.
+        Four gates. (1) Installing for yourself (the caller's member actor) is
+        always allowed. (2) Installing onto an agent the caller owns — personal
+        or team — is allowed: a member's own machine is an agent, not a member
+        actor, and the install has to be recorded against the actor the daemon
+        will be asked "what do you have installed". (3) Installing onto a
+        `visibility=team` agent the caller does not own requires a team admin.
+        (4) Installing onto another member's actor is always refused — an admin
+        owns the team's shared agents, not a teammate's personal setup.
       tags: [TeamSkills]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -6256,8 +6317,9 @@ components:
         whenNotToUse:
           type: string
           description: >
-            Required, and shown next to whenToUse rather than folded away —
-            two overlapping skills can only be told apart by their boundaries.
+            Optional; empty is a real answer (stored as ""). Shown next to
+            whenToUse rather than folded away — two overlapping skills can
+            only be told apart by their boundaries.
         requires:
           type: [array, "null"]
           items: { type: string }

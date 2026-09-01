@@ -7,6 +7,7 @@ import { frontmatterString } from '@/lib/skills/frontmatter'
 import { resolveTeamSyncRoot } from '@/lib/team-skill-paths'
 import { invoke } from '@tauri-apps/api/core'
 import { getBackend } from '@/lib/backend/provider'
+import { isCloudAuthError } from '@/lib/backend/cloud-api/http'
 import { getFreshAccessToken } from '@/lib/auth/session-store'
 import { ensureAgentsSkillsPaths } from '@/lib/skills/ensure-agents-paths'
 import {
@@ -1764,9 +1765,12 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
           : backend.teamSkills.listTeamSkills(teamId),
         listInstalledPacks(),
       ])
-    } catch {
+    } catch (e) {
       // Offline, or the registry is unreachable. Leave disk exactly as it is —
       // a failed fetch must never be read as "the team removed everything".
+      // Auth is the exception: the next tick will fail the same way, so the
+      // caller has to surface an expired session instead of looking idle.
+      if (isCloudAuthError(e)) throw e
       return
     }
     // Only ever holds removal back — see `planReconcile`.

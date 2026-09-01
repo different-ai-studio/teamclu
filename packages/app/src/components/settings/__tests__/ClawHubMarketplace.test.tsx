@@ -15,6 +15,7 @@ type ExploreItem = { slug: string; displayName: string; summary?: string | null 
 type ExploreResult = { items: ExploreItem[]; nextCursor: null }
 
 let exploreResponses: Array<ReturnType<typeof deferred<ExploreResult>>> = []
+let installedLock: { skills: Record<string, { version: string | null; installedAt: number; source?: string }> } = { skills: {} }
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string, d?: string) => d ?? k, i18n: { language: 'en', changeLanguage: vi.fn() } }),
@@ -27,7 +28,7 @@ vi.mock('@/stores/workspace', () => ({
 }))
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
-    if (cmd === 'clawhub_list_installed') return { skills: {} }
+    if (cmd === 'clawhub_list_installed') return installedLock
     if (cmd === 'clawhub_explore') {
       const next = exploreResponses.shift()
       return next?.promise ?? { items: [], nextCursor: null }
@@ -36,7 +37,10 @@ vi.mock('@tauri-apps/api/core', () => ({
   }),
 }))
 vi.mock('@/lib/utils', () => ({ cn: (...a: string[]) => a.join(' ') }))
-vi.mock('@/lib/clawhub/types', () => ({ parseStats: () => ({}) }))
+vi.mock('@/lib/clawhub/types', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/clawhub/types')>()
+  return { ...actual, parseStats: () => ({}) }
+})
 vi.mock('../shared', () => ({
   SettingCard: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }))
@@ -46,6 +50,7 @@ import { ClawHubMarketplace } from '../ClawHubMarketplace'
 describe('ClawHubMarketplace', () => {
   beforeEach(() => {
     exploreResponses = []
+    installedLock = { skills: {} }
   })
 
   afterEach(() => {
@@ -100,5 +105,36 @@ describe('ClawHubMarketplace', () => {
     })
 
     expect(screen.getByText('Alpha')).toBeTruthy()
+  })
+
+  it('does not treat team lockfile rows as ClawHub-installed', async () => {
+    installedLock = {
+      skills: {
+        alpha: { version: '3', installedAt: 1, source: 'team' },
+        beta: { version: '1', installedAt: 1, source: 'clawhub' },
+      },
+    }
+    const first = deferred<ExploreResult>()
+    exploreResponses.push(first)
+
+    render(<ClawHubMarketplace />)
+
+    await act(async () => {
+      first.resolve({
+        items: [
+          { slug: 'alpha', displayName: 'Alpha', summary: 'Team pack colliding' },
+          { slug: 'beta', displayName: 'Beta', summary: 'ClawHub pack' },
+        ],
+        nextCursor: null,
+      })
+    })
+
+    expect(await screen.findByText('Alpha')).toBeTruthy()
+    expect(screen.getByText('Beta')).toBeTruthy()
+    // Team slug still offers Install; ClawHub slug shows Installed.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Installed/ })).toBeTruthy()
+    })
+    expect(screen.getAllByRole('button', { name: 'Install' })).toHaveLength(1)
   })
 })

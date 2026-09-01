@@ -29,16 +29,18 @@
 //!    help someone decide; "SKILL.md and scripts/check.sh changed, refs/old.md
 //!    was deleted" does.
 
+pub mod commit;
 pub mod frontmatter;
 pub mod manifest;
 pub mod origin;
 pub mod swap;
 pub mod zip_path;
 
+pub use commit::commit_staged_pack;
 pub use frontmatter::{write_registry_frontmatter, RegistryFields, SOURCE_TEAM};
 pub use manifest::{
-    build_manifest, build_manifest_for, inspect, list_managed_paths, DirtyState, FileManifest,
-    ManagedFile,
+    build_manifest, build_manifest_for, inspect, list_managed_paths, sha256_hex, DirtyState,
+    FileManifest, ManagedFile,
 };
 pub use origin::{read_origin, write_origin, SkillOrigin, ORIGIN_DIR, ORIGIN_VERSION};
 pub use swap::{remove_managed_files, swap_managed_files};

@@ -3833,11 +3833,28 @@ export function createSupabaseBusinessRepository(options) {
       }
       const changelog = String(body.changelog ?? "").trim();
       if (!changelog) throw new ApiError(400, "validation_failed", "changelog is required");
-      const contentHash = String(body.contentHash ?? "").trim();
-      if (!contentHash) throw new ApiError(400, "validation_failed", "contentHash is required");
+      const contentHash = String(body.contentHash ?? "").trim().toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(contentHash)) {
+        throw new ApiError(400, "validation_failed", "contentHash must be a sha256 hex digest");
+      }
 
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id;
       if (!callerActorId) throw new ApiError(403, "forbidden", "not a member of this team");
+
+      const { data: blob, error: blobErr } = await supabase
+        .from("amuxc_blobs")
+        .select("verified, size")
+        .eq("team_id", teamId)
+        .eq("content_hash", contentHash)
+        .maybeSingle();
+      if (blobErr) throw blobErr;
+      if (!blob?.verified) {
+        throw new ApiError(
+          422,
+          "blob_unverified",
+          "package blob must be uploaded and verified before publish",
+        );
+      }
 
       const { data, error } = await supabase
         .from("team_skills")
@@ -3847,8 +3864,8 @@ export function createSupabaseBusinessRepository(options) {
           owner_actor_id: body.ownerActorId ?? callerActorId,
           summary: fields.summary,
           category: fields.category,
-          when_to_use: fields.whenToUse,
-          when_not_to_use: fields.whenNotToUse,
+          when_to_use: fields.whenToUse ?? "",
+          when_not_to_use: fields.whenNotToUse ?? "",
           requires: fields.requires ?? null,
           status: TEAM_SKILL_STATUSES.includes(body.status) ? body.status : "published",
           latest_version: 1,
@@ -3871,24 +3888,34 @@ export function createSupabaseBusinessRepository(options) {
         skill_id: data.id,
         version: 1,
         content_hash: contentHash,
-        size: Number(body.size ?? 0),
+        size: Number(body.size ?? blob.size ?? 0),
         changelog,
         summary: fields.summary,
         category: fields.category,
-        when_to_use: fields.whenToUse,
-        when_not_to_use: fields.whenNotToUse,
+        when_to_use: fields.whenToUse ?? "",
+        when_not_to_use: fields.whenNotToUse ?? "",
         requires: fields.requires ?? null,
         created_by: callerActorId,
       });
-      if (vErr) throw vErr;
+      if (vErr) {
+        // No transactions over PostgREST. Same compensating delete adopt uses:
+        // a skill row without v1 is stuck, and the slug is taken so retry dies.
+        const { error: cleanupErr } = await supabase.from("team_skills").delete().eq("id", data.id);
+        if (cleanupErr) {
+          console.error("[createTeamSkill] orphan team_skills row left behind:", data.id, cleanupErr);
+        }
+        throw vErr;
+      }
       return mapTeamSkillRow(data);
     },
 
     async createTeamSkillVersion(teamId, slug, body: any = {}) {
       const changelog = String(body.changelog ?? "").trim();
       if (!changelog) throw new ApiError(400, "validation_failed", "changelog is required");
-      const contentHash = String(body.contentHash ?? "").trim();
-      if (!contentHash) throw new ApiError(400, "validation_failed", "contentHash is required");
+      const contentHash = String(body.contentHash ?? "").trim().toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(contentHash)) {
+        throw new ApiError(400, "validation_failed", "contentHash must be a sha256 hex digest");
+      }
 
       if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
         throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
@@ -3905,6 +3932,21 @@ export function createSupabaseBusinessRepository(options) {
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id;
       if (!callerActorId) throw new ApiError(403, "forbidden", "not a member of this team");
 
+      const { data: blob, error: blobErr } = await supabase
+        .from("amuxc_blobs")
+        .select("verified, size")
+        .eq("team_id", teamId)
+        .eq("content_hash", contentHash)
+        .maybeSingle();
+      if (blobErr) throw blobErr;
+      if (!blob?.verified) {
+        throw new ApiError(
+          422,
+          "blob_unverified",
+          "package blob must be uploaded and verified before publish",
+        );
+      }
+
       const patch = requireTeamSkillFields(body, { partial: true });
 
       const { data, error } = await supabase.rpc("publish_team_skill_version", {
@@ -3912,7 +3954,7 @@ export function createSupabaseBusinessRepository(options) {
         p_slug: slug,
         p_expected_latest_version: expectedLatestVersion,
         p_content_hash: contentHash,
-        p_size: Number(body.size ?? 0),
+        p_size: Number(body.size ?? blob.size ?? 0),
         p_changelog: changelog,
         p_summary: patch.summary ?? null,
         p_category: patch.category ?? null,
@@ -4152,7 +4194,22 @@ export function createSupabaseBusinessRepository(options) {
         { onConflict: "team_id,content_hash", ignoreDuplicates: true },
       );
       if (error) throw error;
-      return { contentHash, size, ossKey };
+      // Re-read so a previously verified blob is returned as verified:true.
+      // ignoreDuplicates keeps that flag; without this SELECT the route treats
+      // missing `verified` as needs-upload and content-addressed dedupe dies.
+      const { data: row, error: rErr } = await admin
+        .from("amuxc_blobs")
+        .select("oss_key, size, verified")
+        .eq("team_id", teamId)
+        .eq("content_hash", contentHash)
+        .maybeSingle();
+      if (rErr) throw rErr;
+      return {
+        contentHash,
+        size: row?.size ?? size,
+        ossKey: row?.oss_key ?? ossKey,
+        verified: !!row?.verified,
+      };
     },
 
     async completeTeamSkillBlob(teamId, body: any = {}) {
@@ -4780,8 +4837,13 @@ function requireTeamSkillFields(body: any, { partial = false } = {}): any {
     out[key] = value.trim();
   };
   // Present-but-empty is a real answer here, and it is stored as one.
+  // Omitted on a full publish (not a patch) defaults to "" so the NOT NULL
+  // columns without a DB default do not 23502. Matches marketplace tables.
   const optional = (key: string, value: unknown) => {
-    if (value === undefined) return;
+    if (value === undefined) {
+      if (!partial) out[key] = "";
+      return;
+    }
     out[key] = typeof value === "string" ? value.trim() : "";
   };
   // `summary` and `category` stay required: one is the list subtitle, the other

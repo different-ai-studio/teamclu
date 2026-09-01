@@ -11,76 +11,15 @@
 //! import. It keeps the parallel (rayon) directory walk, because a zip can
 //! carry its `SKILL.md` at any depth.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use teamclu_skillpack::{build_manifest, write_origin, SkillOrigin, ORIGIN_VERSION};
+
+use super::clawhub::{extract_zip_to_dir, now_millis};
+
+const SOURCE_IMPORT: &str = "import";
+
 // ─── Import skill from local .zip (manual upload) ─────────────────────────────
-
-/// Sanitize a relative path inside a zip (same rules as ClawHub).
-fn sanitize_skill_zip_path(raw: &str) -> Option<String> {
-    let normalized = raw.trim_start_matches("./").trim_start_matches('/');
-    if normalized.is_empty() || normalized.ends_with('/') {
-        return None;
-    }
-    if normalized.contains("..") || normalized.contains('\\') {
-        return None;
-    }
-    Some(normalized.to_string())
-}
-
-fn extract_skill_zip_to_dir(zip_path: &Path, target_dir: &Path) -> Result<(), String> {
-    let file = std::fs::File::open(zip_path).map_err(|e| format!("Failed to open zip: {}", e))?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip archive: {}", e))?;
-
-    std::fs::create_dir_all(target_dir)
-        .map_err(|e| format!("Failed to create extract dir: {}", e))?;
-
-    let canonical_target = target_dir
-        .canonicalize()
-        .unwrap_or_else(|_| target_dir.to_path_buf());
-
-    for i in 0..archive.len() {
-        let mut file = archive
-            .by_index(i)
-            .map_err(|e| format!("Failed to read zip entry {}: {}", i, e))?;
-
-        let raw_name = file.name().to_string();
-        let safe_path = match sanitize_skill_zip_path(&raw_name) {
-            Some(p) => p,
-            None => continue,
-        };
-
-        let out_path = target_dir.join(&safe_path);
-
-        if let Ok(canonical_out) = out_path.canonicalize() {
-            if !canonical_out.starts_with(&canonical_target) {
-                eprintln!(
-                    "[Skills] Skipping zip entry with path traversal: {}",
-                    raw_name
-                );
-                continue;
-            }
-        }
-
-        if let Some(parent) = out_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!(
-                    "Failed to create parent dir for zip entry {}: {}",
-                    safe_path, e
-                )
-            })?;
-        }
-
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)
-            .map_err(|e| format!("Failed to read zip entry bytes {}: {}", safe_path, e))?;
-        std::fs::write(&out_path, &buf)
-            .map_err(|e| format!("Failed to write extracted file {}: {}", safe_path, e))?;
-    }
-
-    Ok(())
-}
 
 fn skill_md_paths_under(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
@@ -147,6 +86,7 @@ pub fn import_skill_from_zip(
     workspace_path: Option<String>,
     zip_path: String,
     is_global: bool,
+    force: Option<bool>,
 ) -> Result<String, String> {
     use std::fs;
 
@@ -169,7 +109,8 @@ pub fn import_skill_from_zip(
     }
 
     let import_result = (|| -> Result<String, String> {
-        extract_skill_zip_to_dir(&zip_path, &temp_dir)?;
+        let zip_bytes = fs::read(&zip_path).map_err(|e| format!("Failed to read zip: {}", e))?;
+        extract_zip_to_dir(&zip_bytes, &temp_dir)?;
 
         let extract_root = temp_dir
             .canonicalize()
@@ -209,14 +150,38 @@ pub fn import_skill_from_zip(
         let home = dirs::home_dir().ok_or_else(|| "HOME directory not found".to_string())?;
         let target_dir = home.join(".agents").join("skills").join(&slug);
 
+        let force = force.unwrap_or(false);
+        if target_dir.exists() && !force {
+            return Err(format!(
+                "Already installed: {} (use force=true to overwrite)",
+                target_dir.display()
+            ));
+        }
         if target_dir.exists() {
-            let _ = fs::remove_dir_all(&target_dir);
+            fs::remove_dir_all(&target_dir)
+                .map_err(|e| format!("Failed to remove existing skill dir: {}", e))?;
         }
 
         fs::create_dir_all(&target_dir)
             .map_err(|e| format!("Failed to create target directory: {}", e))?;
 
         copy_skill_directory(&skill_src_dir.to_path_buf(), &target_dir)?;
+
+        let files = build_manifest(&target_dir)
+            .map_err(|e| format!("Failed to measure imported skill: {}", e))?;
+        write_origin(
+            &target_dir,
+            &SkillOrigin {
+                version: ORIGIN_VERSION,
+                registry: SOURCE_IMPORT.to_string(),
+                slug: slug.clone(),
+                installed_version: "1".to_string(),
+                installed_at: now_millis(),
+                team_id: None,
+                files: Some(files),
+            },
+        )
+        .map_err(|e| format!("Failed to write origin.json: {}", e))?;
 
         Ok(format!(
             "Imported skill '{}' to {}",
@@ -475,4 +440,83 @@ fn copy_skill_directory(src: &std::path::PathBuf, dst: &std::path::PathBuf) -> R
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_home::HomeGuard;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    fn write_zip(path: &std::path::Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = SimpleFileOptions::default();
+        for (name, bytes) in entries {
+            zip.start_file(*name, opts).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn import(zip: &std::path::Path, force: Option<bool>) -> Result<String, String> {
+        import_skill_from_zip(None, zip.display().to_string(), true, force)
+    }
+
+    #[test]
+    fn import_refuses_overwrite_unless_force() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = HomeGuard::set(home.path());
+        let skill_dir = home.path().join(".agents/skills/my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "ORIGINAL\n").unwrap();
+
+        let zip_dir = tempfile::tempdir().expect("tempdir");
+        let zip_path = zip_dir.path().join("pack.zip");
+        write_zip(
+            &zip_path,
+            &[("my-skill/SKILL.md", b"---\nname: my-skill\n---\nNEW\n")],
+        );
+
+        let err = import(&zip_path, None).expect_err("must refuse");
+        assert!(err.contains("Already installed"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
+            "ORIGINAL\n"
+        );
+
+        import(&zip_path, Some(true)).expect("force overwrite");
+        assert_eq!(
+            std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
+            "---\nname: my-skill\n---\nNEW\n"
+        );
+        let origin = teamclu_skillpack::read_origin(&skill_dir).expect("origin");
+        assert_eq!(origin.registry, SOURCE_IMPORT);
+        assert_eq!(origin.slug, "my-skill");
+    }
+
+    #[test]
+    fn import_skips_zip_path_traversal() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = HomeGuard::set(home.path());
+
+        let zip_dir = tempfile::tempdir().expect("tempdir");
+        let zip_path = zip_dir.path().join("safe-skill.zip");
+        write_zip(
+            &zip_path,
+            &[
+                ("SKILL.md", b"---\nname: safe-skill\n---\nbody\n"),
+                ("../../outside.txt", b"pwned\n"),
+            ],
+        );
+
+        import(&zip_path, None).expect("import");
+
+        assert!(!home.path().join("outside.txt").exists());
+        assert!(!zip_dir.path().join("outside.txt").exists());
+        let installed = home.path().join(".agents/skills/safe-skill/SKILL.md");
+        assert!(installed.is_file(), "skill should still install");
+        assert!(!home.path().join(".agents/skills/outside.txt").exists());
+    }
 }

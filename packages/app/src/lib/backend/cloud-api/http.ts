@@ -15,6 +15,11 @@ export class CloudApiError extends Error {
   }
 }
 
+/** 401 / missing session -- not a transient blip the next tick will heal. */
+export function isCloudAuthError(error: unknown): boolean {
+  return error instanceof CloudApiError && (error.status === 401 || error.code === "missing_auth")
+}
+
 export type CloudApiClient = {
   get<T>(path: string): Promise<T>;
   post<T>(path: string, body: unknown, options?: { idempotencyKey?: string }): Promise<T>;

@@ -2,6 +2,7 @@ import * as React from 'react'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import { isTauri } from '@/lib/utils'
+import { isCloudAuthError } from '@/lib/backend/cloud-api/http'
 import { RECONCILE_INTERVAL_MS } from '@/lib/skills/auto-follow'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
 
@@ -23,7 +24,11 @@ import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
  * transient failure to retry, it is a pack that left this machine because of
  * somebody else's decision, and unlike a conflict it has no row left to surface
  * in. See the effect below.
+ *
+ * Auth (401 / expired session) is not transient: the next tick fails the same
+ * way. Toast once per team so the 10-minute timer does not spam.
  */
+
 const NO_RETIREMENTS: Record<string, never> = {}
 
 export function TeamSkillAutoFollow({ teamId }: { teamId: string | null }) {
@@ -38,12 +43,14 @@ export function TeamSkillAutoFollow({ teamId }: { teamId: string | null }) {
   // because `kept` has to stay in the store for the detail pane to explain it —
   // clearing it on announce would take the explanation with it.
   const announced = React.useRef(new Set<string>())
+  const authToastShown = React.useRef(false)
 
   // Paired with the store dropping `skillRetired` on the same switch: slugs are
   // unique per team, not globally, so team A's notices must not be announced
   // while the user is looking at team B.
   React.useEffect(() => {
     announced.current = new Set()
+    authToastShown.current = false
   }, [teamId])
 
   /*
@@ -84,7 +91,16 @@ export function TeamSkillAutoFollow({ teamId }: { teamId: string | null }) {
 
     const run = () => {
       if (cancelled) return
-      void reconcile().catch(() => {})
+      void reconcile().catch((e) => {
+        if (!isCloudAuthError(e) || authToastShown.current) return
+        authToastShown.current = true
+        toast.error(
+          t(
+            'teamShare.skillAutoFollowSessionExpired',
+            '登录已过期，团队技能无法自动同步。请重新登录。',
+          ),
+        )
+      })
     }
 
     run()
@@ -93,7 +109,7 @@ export function TeamSkillAutoFollow({ teamId }: { teamId: string | null }) {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [teamId, reconcile])
+  }, [teamId, reconcile, t])
 
   return null
 }

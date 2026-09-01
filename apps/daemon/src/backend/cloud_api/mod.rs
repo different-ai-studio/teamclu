@@ -774,18 +774,18 @@ impl Backend for CloudApiBackend {
     }
 
     async fn team_skills(&self, team_id: &str) -> BackendResult<Vec<TeamSkillRow>> {
+        // `items` is required. A missing field must not deserialize as `[]` —
+        // empty desired set is HTTP 200 with an items array, including `[]`.
+        // 404 / 5xx / auth / decode stay Err so reconcile keeps the installed
+        // set. Mapping NotFound to Ok([]) used to wipe every hosted pack on a
+        // proxy misroute. See docs/architecture/hosted-skill-reconcile-fail-closed.md.
         #[derive(serde::Deserialize)]
         struct Resp {
-            #[serde(default)]
             items: Vec<TeamSkillRow>,
         }
         let path = format!("/v1/teams/{team_id}/skills");
-        match self.get::<Resp>(&path).await {
-            Ok(r) => Ok(r.items),
-            // A team with no registry is not an error, same as team MCP's 404.
-            Err(BackendError::NotFound(_)) => Ok(Vec::new()),
-            Err(e) => Err(e),
-        }
+        let resp: Resp = self.get(&path).await?;
+        Ok(resp.items)
     }
 
     async fn team_skill_download(
@@ -3076,6 +3076,111 @@ mod tests {
         let backend = CloudApiBackend::new(config(&server));
         let result = backend.get_effective_default_agent("team-1").await.unwrap();
         assert_eq!(result, Some("agent-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn team_skills_401_is_auth_err_not_empty_list() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/teams/team-1/skills"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(unauthorized_envelope("JWT expired")),
+            )
+            .mount(&server)
+            .await;
+        let backend = CloudApiBackend::new(config(&server));
+        let err = backend.team_skills("team-1").await.unwrap_err();
+        assert!(matches!(err, BackendError::Auth(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn team_skills_404_is_not_found_err_not_empty_list() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/teams/team-1/skills"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": { "code": "not_found", "message": "team not found" }
+            })))
+            .mount(&server)
+            .await;
+        let backend = CloudApiBackend::new(config(&server));
+        let err = backend.team_skills("team-1").await.unwrap_err();
+        assert!(matches!(err, BackendError::NotFound(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn team_skills_500_is_provider_err_not_empty_list() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/teams/team-1/skills"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let backend = CloudApiBackend::new(config(&server));
+        let err = backend.team_skills("team-1").await.unwrap_err();
+        assert!(matches!(err, BackendError::Provider { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn team_skills_200_without_items_is_decode_err() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/teams/team-1/skills"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+        let backend = CloudApiBackend::new(config(&server));
+        let err = backend.team_skills("team-1").await.unwrap_err();
+        assert!(matches!(err, BackendError::Serde(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn team_skills_200_empty_items_is_empty_desired_set() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/teams/team-1/skills"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": []
+            })))
+            .mount(&server)
+            .await;
+        let backend = CloudApiBackend::new(config(&server));
+        let rows = backend.team_skills("team-1").await.unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn team_skills_200_with_items_is_desired_set() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/teams/team-1/skills"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{
+                    "slug": "deploy-check",
+                    "summary": "check",
+                    "category": "devops",
+                    "whenToUse": "before release",
+                    "whenNotToUse": "not locally",
+                    "latestVersion": 3,
+                    "installed": true,
+                    "installedVersion": 2
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let backend = CloudApiBackend::new(config(&server));
+        let rows = backend.team_skills("team-1").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].slug, "deploy-check");
+        assert_eq!(rows[0].latest_version, 3);
+        assert!(rows[0].installed);
+        assert_eq!(rows[0].installed_version, Some(2));
     }
 
     #[tokio::test]

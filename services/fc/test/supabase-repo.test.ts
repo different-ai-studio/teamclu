@@ -839,6 +839,7 @@ test("prepareTeamSkillBlob writes amuxc_blobs with the service-role client", asy
   const out = await repo.prepareTeamSkillBlob("team-1", { contentHash: hash, size: 42 });
 
   assert.equal(out.ossKey, `teams/team-1/blobs/sha256/aa/aa/${hash}`);
+  assert.equal(out.verified, false);
   const write = adminCalls.find((c) => c.table === "amuxc_blobs" && c.op === "upsert");
   assert.ok(write, "the placeholder row must be upserted with the service-role client");
   assert.equal(write.row.verified, false);
@@ -877,6 +878,26 @@ test("completeTeamSkillBlob checks as the caller and flips verified as service_r
     callerCalls.some((c) => c.table === "amuxc_blobs" && c.op === "update"),
     false,
   );
+});
+
+test("prepareTeamSkillBlob returns verified from the existing amuxc_blobs row", async () => {
+  const hash = "c".repeat(64);
+  const adminCalls = [];
+  const caller = fakeSupabase({
+    ...BLOB_CALLER_AUTH,
+    tableData: { actors: [{ id: "actor-1" }] },
+  });
+  const admin = fakeSupabase({
+    tableCalls: adminCalls,
+    tableData: {
+      amuxc_blobs: [{ oss_key: `teams/team-1/blobs/sha256/cc/cc/${hash}`, size: 42, verified: true }],
+    },
+  });
+  const repo = createRepo(caller, { createServiceRoleClient: () => admin });
+  const out = await repo.prepareTeamSkillBlob("team-1", { contentHash: hash, size: 42 });
+  assert.equal(out.verified, true);
+  assert.equal(out.ossKey, `teams/team-1/blobs/sha256/cc/cc/${hash}`);
+  assert.ok(adminCalls.some((c) => c.table === "amuxc_blobs" && c.op === "select"));
 });
 
 function fakeSupabase({
@@ -1040,6 +1061,10 @@ function createSelectableQuery(table, calls, data, error) {
     },
     eq(column, value) {
       calls.push({ table, op: "eq", column, value });
+      return query;
+    },
+    is(column, value) {
+      calls.push({ table, op: "is", column, value });
       return query;
     },
     in(column, values) {
