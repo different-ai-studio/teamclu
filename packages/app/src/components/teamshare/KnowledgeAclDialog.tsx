@@ -182,20 +182,39 @@ export function KnowledgeAclDialog({
     }
   }
 
-  const checkImpact = () =>
-    run(async () => {
-      if (!teamId) return
+  /**
+   * Dry run. Deliberately NOT routed through `run`, which reloads the rules
+   * afterwards: the reload replaces `rules`, which recomputes `inherited`,
+   * which fires the effect that resets `impact` to null. The panel would appear
+   * and vanish in the same tick, the button would flip back to "check impact",
+   * and there would be no way to ever reach save — which is exactly what
+   * happened.
+   *
+   * Nothing here writes, so there is nothing to reload for.
+   */
+  const checkImpact = async () => {
+    if (!teamId) return
+    setBusy(true)
+    setError(null)
+    try {
       setImpact(
         await getBackend().knowledgeAcl.previewKnowledgeAcl(teamId, {
           pathPrefix: prefix,
           actorIds: selected,
         }),
       )
-    })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const save = () =>
     run(async () => {
-      if (!teamId) return
+      // Closing is the only signal that a save worked, so it must never happen
+      // on a path that wrote nothing.
+      if (!teamId) throw new Error('No team selected.')
       if (ownRule) {
         const add = selected.filter((id) => !ownRule.actorIds.includes(id))
         const removed = ownRule.actorIds.filter((id) => !selected.includes(id))

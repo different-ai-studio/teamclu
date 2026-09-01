@@ -19,12 +19,15 @@ import { KnowledgeAclDialog } from '../KnowledgeAclDialog'
 const listKnowledgeAcl = vi.fn()
 const listTeamMembersForAccess = vi.fn()
 
+const previewKnowledgeAcl = vi.fn()
+const createKnowledgeAcl = vi.fn()
+
 vi.mock('@/lib/backend', () => ({
   getBackend: () => ({
     knowledgeAcl: {
       listKnowledgeAcl,
-      previewKnowledgeAcl: vi.fn(),
-      createKnowledgeAcl: vi.fn(),
+      previewKnowledgeAcl,
+      createKnowledgeAcl,
       updateKnowledgeAcl: vi.fn(),
       deleteKnowledgeAcl: vi.fn(),
     },
@@ -36,12 +39,19 @@ vi.mock('@/stores/current-team', () => ({
   useCurrentTeamStore: (sel: (s: unknown) => unknown) => sel({ team: { id: 'team-1' } }),
 }))
 
+// Interpolates {{placeholders}} the way i18next does. Without it the component
+// renders raw templates, and an assertion on user-visible text passes or fails
+// for the wrong reason.
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (_k: string, fallback?: unknown) =>
-      typeof fallback === 'string'
-        ? fallback
-        : ((fallback as { defaultValue?: string })?.defaultValue ?? _k),
+    t: (key: string, fallback?: unknown) => {
+      if (typeof fallback === 'string') return fallback
+      const opts = (fallback ?? {}) as Record<string, unknown>
+      const template = (opts.defaultValue as string | undefined) ?? key
+      return template.replace(/\{\{(\w+)\}\}/g, (_m: string, name: string) =>
+        name in opts ? String(opts[name]) : `{{${name}}}`,
+      )
+    },
   }),
 }))
 
@@ -73,6 +83,12 @@ async function enterRestrictMode() {
 beforeEach(() => {
   vi.clearAllMocks()
   listTeamMembersForAccess.mockResolvedValue(MEMBERS)
+  previewKnowledgeAcl.mockResolvedValue({
+    pathPrefix: 'knowledge/hr/',
+    affectedFiles: 1,
+    affectedMembers: 1,
+  })
+  createKnowledgeAcl.mockResolvedValue({})
 })
 
 describe('KnowledgeAclDialog', () => {
@@ -154,6 +170,43 @@ describe('KnowledgeAclDialog', () => {
       dialog?.contains(input),
       'the picker must render inside the dialog, or it is unreachable',
     ).toBe(true)
+  })
+
+  it('the impact panel survives, so save is actually reachable', async () => {
+    // The preview used to run through the same helper as a write, which
+    // reloaded the rules afterwards — and the reload reset `impact` in the same
+    // tick. The panel appeared and vanished, the button flipped back to "check
+    // impact", and there was no way to ever reach save.
+    listKnowledgeAcl.mockResolvedValue([])
+    render(<KnowledgeAclDialog prefix="knowledge/hr/" open onOpenChange={() => {}} />)
+    await enterRestrictMode()
+    fireEvent.click(screen.getByRole('button', { name: /Add person/ }))
+    fireEvent.click(await screen.findByText('Alice'))
+
+    fireEvent.click(screen.getByRole('button', { name: /Check impact/ }))
+
+    // Still there a tick later, and the button is now Save.
+    expect(await screen.findByText(/1 member\(s\) will lose access/)).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole('button', { name: /Save/ })).toBeTruthy())
+    expect(screen.queryByRole('button', { name: /Check impact/ })).toBeNull()
+  })
+
+  it('save sends the confirmation the server requires', async () => {
+    listKnowledgeAcl.mockResolvedValue([])
+    render(<KnowledgeAclDialog prefix="knowledge/hr/" open onOpenChange={() => {}} />)
+    await enterRestrictMode()
+    fireEvent.click(screen.getByRole('button', { name: /Add person/ }))
+    fireEvent.click(await screen.findByText('Alice'))
+    fireEvent.click(screen.getByRole('button', { name: /Check impact/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Save/ }))
+
+    await waitFor(() => expect(createKnowledgeAcl).toHaveBeenCalledTimes(1))
+    expect(createKnowledgeAcl.mock.calls[0][1]).toMatchObject({
+      pathPrefix: 'knowledge/hr/',
+      actorIds: ['alice'],
+      // Without this the server answers 409 and nothing is written.
+      confirmRevokeExisting: true,
+    })
   })
 
   it('a sibling folder is not treated as an ancestor', async () => {
