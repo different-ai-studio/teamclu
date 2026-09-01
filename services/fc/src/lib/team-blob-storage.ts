@@ -1,8 +1,12 @@
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createServiceRoleClient } from "./supabase.js";
@@ -79,6 +83,51 @@ function toPublicUrl(signedUrl: string): string {
   }
 }
 
+/** One finished part, as the client reports it back. */
+export interface MultipartPart {
+  partNumber: number;
+  etag: string;
+}
+
+/**
+ * Chunked upload, for backends that have it.
+ *
+ * The single presigned PUT the rest of this module deals in is one request for
+ * the whole object: the client must hold every byte in memory to sign nothing
+ * and send it once, and a connection that drops at 90% starts again at 0. This
+ * splits one object across N independently-retryable PUTs.
+ *
+ * `minPartBytes` is not a tuning knob, it is what the store rejects below.
+ * S3 refuses any part but the last under 5 MiB at CompleteMultipartUpload time
+ * — `EntityTooSmall`, after every byte has already been sent — and MinIO, which
+ * is what self-host runs, enforces the same floor. So the number has to travel
+ * to the client: a daemon configured for 1 MiB parts must learn that it cannot
+ * have them BEFORE it uploads, not from a failed complete.
+ */
+export interface MultipartSupport {
+  /** Smallest non-final part the backend accepts. */
+  minPartBytes: number;
+  /** Hard ceiling on part count for one object. */
+  maxParts: number;
+  /** Begin an upload; returns the backend's upload id. */
+  create(objectPath: string): Promise<string>;
+  /** Presign the PUT for one part. The client reads the ETag off the response. */
+  signPart(
+    objectPath: string,
+    uploadId: string,
+    partNumber: number,
+    expiresIn?: number,
+  ): Promise<string>;
+  /** Assemble the parts into the final object. */
+  complete(objectPath: string, uploadId: string, parts: MultipartPart[]): Promise<void>;
+  /**
+   * Discard an upload and its parts. Idempotent for the same reason `remove`
+   * is: the only callers are error paths, and "already gone" is the outcome
+   * they wanted. Unaborted uploads keep billing for storage nobody can read.
+   */
+  abort(objectPath: string, uploadId: string): Promise<void>;
+}
+
 /** What sync-handlers and the skills routes need from a blob store. */
 export interface BlobStorage {
   createUploadUrl(objectPath: string): Promise<string>;
@@ -91,7 +140,26 @@ export interface BlobStorage {
    * wanted. Real failures (credentials, network, bucket gone) still throw.
    */
   remove(objectPath: string): Promise<void>;
+  /**
+   * Chunked upload, or `undefined` on a backend without it.
+   *
+   * Optional rather than a throwing stub: "does this deployment do multipart"
+   * is a question the sync handler has to answer before it starts, so the
+   * client can be told to fall back to a single PUT rather than discovering it
+   * halfway through an upload.
+   */
+  multipart?: MultipartSupport;
 }
+
+/**
+ * S3's floor on every part but the last, and its ceiling on part count.
+ *
+ * Both are protocol facts rather than settings: AWS S3, MinIO and Alibaba OSS
+ * all reject a short non-final part at complete time. They are exported so the
+ * sync handler can hand them to the client instead of restating them.
+ */
+export const S3_MIN_PART_BYTES = 5 * 1024 * 1024;
+export const S3_MAX_PARTS = 10_000;
 
 export const TEAM_BLOBS_BUCKET = () => process.env.TEAM_BLOBS_STORAGE_BUCKET || "team-blobs";
 export const SKILLS_BUCKET = () => process.env.SKILLS_STORAGE_BUCKET || "team-skills";
@@ -216,6 +284,67 @@ export function s3BlobStorage(bucket: () => string, prefix: () => string): BlobS
         if (isMissingObject(e)) return;
         throw e;
       }
+    },
+
+    multipart: {
+      minPartBytes: S3_MIN_PART_BYTES,
+      maxParts: S3_MAX_PARTS,
+
+      async create(objectPath) {
+        const out = await getS3Client().send(
+          new CreateMultipartUploadCommand({ Bucket: bucket(), Key: key(objectPath) }),
+        );
+        if (!out.UploadId) throw new Error("createMultipartUpload returned no UploadId");
+        return out.UploadId;
+      },
+
+      async signPart(objectPath, uploadId, partNumber, expiresIn = 3600) {
+        // Longer-lived than the single-PUT URL by design: a multipart upload is
+        // N sequential transfers of a large object, and the last part's URL has
+        // to still be valid after the first N-1 have gone up.
+        return getSignedUrl(
+          getS3Client() as any,
+          new UploadPartCommand({
+            Bucket: bucket(),
+            Key: key(objectPath),
+            UploadId: uploadId,
+            PartNumber: partNumber,
+          }),
+          { expiresIn },
+        );
+      },
+
+      async complete(objectPath, uploadId, parts) {
+        await getS3Client().send(
+          new CompleteMultipartUploadCommand({
+            Bucket: bucket(),
+            Key: key(objectPath),
+            UploadId: uploadId,
+            // S3 requires ascending part numbers; the client assembles this
+            // list from concurrent uploads, so sort rather than trust order.
+            MultipartUpload: {
+              Parts: [...parts]
+                .sort((a, b) => a.partNumber - b.partNumber)
+                .map((pt) => ({ PartNumber: pt.partNumber, ETag: pt.etag })),
+            },
+          }),
+        );
+      },
+
+      async abort(objectPath, uploadId) {
+        try {
+          await getS3Client().send(
+            new AbortMultipartUploadCommand({
+              Bucket: bucket(),
+              Key: key(objectPath),
+              UploadId: uploadId,
+            }),
+          );
+        } catch (e) {
+          if (isMissingObject(e)) return;
+          throw e;
+        }
+      },
     },
   };
 }
