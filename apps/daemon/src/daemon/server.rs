@@ -822,9 +822,29 @@ impl DaemonServer {
             refresh_coordinator: None,
             refresh_auto_apply_task: None,
             mqtt_connected_flag: None,
-            managed_llm: Arc::new(crate::runtime::managed_llm::ManagedLlmResolver::new(
-                backend,
-            )),
+            // With a token source, not bare.
+            //
+            // There are two resolvers: this one, on the SPAWN path, and the
+            // HTTP layer's, which reconciles `provider.team` and resolves its
+            // apiKey into the file opencode reads. Only the second had a token
+            // source, which was sufficient for exactly as long as opencode was
+            // the only consumer. Every other runtime is handed
+            // `TEAMCLU_TEAM_PROVIDER` and looks its credential up from the env
+            // by the name in `apiKeyEnv` — so this resolver has to be able to
+            // mint one too, or `tc_gateway_token` is never bound and pi hides
+            // every team model behind an unresolvable credential.
+            //
+            // The store is file-backed and shared, so a token minted here is
+            // the same secret the HTTP layer validates against.
+            managed_llm: Arc::new(
+                crate::runtime::managed_llm::ManagedLlmResolver::new(backend).with_tokens(
+                    crate::http::tokens::TokenStore::load_or_init(
+                        &crate::config::DaemonConfig::http_token_path(),
+                    )
+                    .ok()
+                    .map(crate::runtime::gateway_token::GatewayTokenSource::new),
+                ),
+            ),
             live_tee,
             session_remote_targets: Arc::new(AsyncMutex::new(
                 crate::remote_tools::SessionRemoteTargetStore::default(),
