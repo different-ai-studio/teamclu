@@ -98,10 +98,12 @@ impl RefreshWatchRegistry {
     }
 
     pub async fn upsert_workspace(&self, workspace: WatchedWorkspace) {
-        self.workspaces
-            .write()
-            .await
-            .insert(workspace.workspace_path.clone(), workspace);
+        let mut workspaces = self.workspaces.write().await;
+        workspaces.retain(|path, existing| {
+            path == &workspace.workspace_path || existing.workspace_id != workspace.workspace_id
+        });
+        workspaces.insert(workspace.workspace_path.clone(), workspace);
+        drop(workspaces);
         self.changed.notify_one();
     }
 
@@ -110,7 +112,7 @@ impl RefreshWatchRegistry {
         self.changed.notify_one();
     }
 
-    async fn snapshot(&self) -> Vec<WatchedWorkspace> {
+    pub(crate) async fn snapshot(&self) -> Vec<WatchedWorkspace> {
         self.workspaces.read().await.values().cloned().collect()
     }
 
@@ -186,8 +188,6 @@ pub fn classify_change_path(
         {
             Some(RefreshChangeKind::EnvVars)
         } else if path.starts_with(workspace.workspace_path.join(".claude/skills"))
-            || path.starts_with(workspace.workspace_path.join(".opencode/skills"))
-            || path.starts_with(workspace.workspace_path.join(".pi/skills"))
             || path.starts_with(workspace.workspace_path.join(".agents/skills"))
             || is_team_skills_path(path, &workspace.workspace_path)
             || is_global_skill_path
@@ -238,16 +238,13 @@ fn watch_roots(workspaces: &[WatchedWorkspace], home: Option<&Path>) -> Vec<Watc
                 recursive: false,
             });
         }
+        // `.opencode/skills` and `.pi/skills` are deliberately absent, here and
+        // in `classify_change_path`. `native_skill_fallback_guard` does watch
+        // those directories, but it reads them itself at turn open and turn
+        // close (`scan_native_skills`) and never consults this watcher, so
+        // subscribing here buys it nothing and breaks the mirror above.
         roots.push(WatchRoot {
             path: workspace.workspace_path.join(".claude/skills"),
-            recursive: true,
-        });
-        roots.push(WatchRoot {
-            path: workspace.workspace_path.join(".opencode/skills"),
-            recursive: true,
-        });
-        roots.push(WatchRoot {
-            path: workspace.workspace_path.join(".pi/skills"),
             recursive: true,
         });
         roots.push(WatchRoot {
@@ -568,6 +565,7 @@ mod tests {
         for retired in [
             Path::new("/tmp/ws-1/.teamclu/skills/demo-skill/SKILL.md"),
             Path::new("/tmp/ws-1/.opencode/skills/demo-skill/SKILL.md"),
+            Path::new("/tmp/ws-1/.pi/skills/demo-skill/SKILL.md"),
             Path::new("/Users/tester/.config/teamclu/skills/global-skill/SKILL.md"),
             Path::new("/Users/tester/.config/opencode/skills/global-skill/SKILL.md"),
         ] {
@@ -868,6 +866,22 @@ mod tests {
         assert_eq!(
             registry.workspace_paths().await,
             vec![PathBuf::from("/tmp/ws-2")]
+        );
+    }
+
+    #[tokio::test]
+    async fn watch_registry_replaces_stale_path_for_same_workspace_id() {
+        let registry = RefreshWatchRegistry::new(Vec::new());
+        registry
+            .upsert_workspace(watched_workspace("ws-1", "/tmp/cloud-path"))
+            .await;
+        registry
+            .upsert_workspace(watched_workspace("ws-1", "/tmp/runtime-path"))
+            .await;
+
+        assert_eq!(
+            registry.workspace_paths().await,
+            vec![PathBuf::from("/tmp/runtime-path")]
         );
     }
 

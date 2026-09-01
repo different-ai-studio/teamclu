@@ -104,6 +104,5 @@ Postgres 会先写不进去。
 ## 范围之外
 
 本次只保证 **`/sync/*` 路径零依赖阿里云**。attachments、apps provisioning
-仍在用 `services/fc/src/lib/oss.ts`；`/reset-secret` 和
-`/managed-git/setup-litellm` 仍读写阿里云上的 `teams/<id>/_registry/auth.json`，
-后者还读 `_meta/team.json`。那个 bucket 还没空。
+仍在用 `services/fc/src/lib/oss.ts`；`/reset-secret` 仍读写阿里云上的
+`teams/<id>/_registry/auth.json`。那个 bucket 还没空。

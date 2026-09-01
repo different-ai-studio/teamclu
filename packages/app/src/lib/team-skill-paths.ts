@@ -84,8 +84,17 @@ export async function resolveTeamDir(_workspacePath: string): Promise<string | n
   return (await exists(globalDir)) ? globalDir : null
 }
 
-async function globalTeamKnowledgeDir(teamId: string): Promise<string> {
-  return `${await amuxdRoot()}/teams/${teamId}/shared/knowledge`
+/**
+ * The synced tree's root — `~/.amuxd[-<brand>]/teams/<id>/shared/team-sync`.
+ *
+ * Its children are the two fixed roots, `documents/` and `knowledge/`. Note it
+ * is NOT `shared/`: everything the daemon owns for itself (`teamclu-team/`,
+ * `state/`, the workspace symlinks) is a sibling of this, which is what keeps
+ * those out of the tree the sync engine scans. Must match `SYNC_ROOT_DIR` in
+ * `apps/daemon/src/config/global_team_store.rs`.
+ */
+async function globalTeamSyncRoot(teamId: string): Promise<string> {
+  return `${await amuxdRoot()}/teams/${teamId}/shared/team-sync`
 }
 
 /**
@@ -100,18 +109,42 @@ async function globalTeamKnowledgeDir(teamId: string): Promise<string> {
 export const TEAM_KNOWLEDGE_LINK_DIR = 'team-knowledge'
 
 /**
+ * Workspace symlink surfacing the team's synced documents dir. Must match
+ * `TEAM_DOCUMENTS_LINK_NAME` in `apps/daemon/src/config/workspace_link.rs`.
+ */
+export const TEAM_DOCUMENTS_LINK_DIR = 'team-documents'
+
+/** The two fixed roots, paired with the workspace symlink that surfaces each. */
+const SYNC_ROOT_LINKS: ReadonlyArray<readonly [linkDir: string, prefix: string]> = [
+  [TEAM_KNOWLEDGE_LINK_DIR, 'knowledge'],
+  [TEAM_DOCUMENTS_LINK_DIR, 'documents'],
+]
+
+/**
  * Last resolved global knowledge dir. Cached because mapping a path to its sync
  * key happens inside renders, where awaiting the daemon config is not an option.
  */
-let lastKnownKnowledgeDir: string | null = null
+let lastKnownSyncRoot: string | null = null
 
-/** Active team global knowledge dir (~/.amuxd[-<brand>]/teams/<id>/shared/knowledge). */
-export async function globalTeamKnowledgeShareDir(): Promise<string | null> {
+/** Active team synced-tree root (`~/.amuxd[-<brand>]/teams/<id>/shared/team-sync`). */
+export async function globalTeamSyncShareRoot(): Promise<string | null> {
   const teamId = await readOnboardedTeamId()
   if (!teamId) return null
-  const dir = await globalTeamKnowledgeDir(teamId)
-  lastKnownKnowledgeDir = dir
+  const dir = await globalTeamSyncRoot(teamId)
+  lastKnownSyncRoot = dir
   return dir
+}
+
+/**
+ * The knowledge root specifically — `<sync root>/knowledge`.
+ *
+ * Obsidian opens this rather than the tree root: a vault spanning both roots
+ * would put permission-restricted documents inside the notes app, and documents
+ * are deliberately not part of what every member sees identically.
+ */
+export async function globalTeamKnowledgeShareDir(): Promise<string | null> {
+  const root = await globalTeamSyncShareRoot()
+  return root ? `${root}/knowledge` : null
 }
 
 function isUnder(root: string | null | undefined, path: string): boolean {
@@ -121,46 +154,92 @@ function isUnder(root: string | null | undefined, path: string): boolean {
 }
 
 /**
- * The knowledge tree root that contains `absPath`, or null when it holds no
- * team knowledge.
+ * The synced-tree root that contains `absPath`, or null when it holds none.
  *
  * Two spellings reach the same bytes: the real directory under the amuxd home —
- * what the Knowledge column browses and what the sync engine owns — and
- * `<workspace>/team-knowledge`, the daemon-managed symlink the workspace file
- * panel renders. Both have to be recognised, or a document opened from one
- * surface loses the history the same document has when opened from the other.
+ * what the team column browses and what the sync engine owns — and the
+ * daemon-managed workspace symlinks the file panel renders. Both have to be
+ * recognised, or a document opened from one surface loses the history the same
+ * document has when opened from the other.
  */
-export function teamKnowledgeRootForPath(
+export function teamSyncRootForPath(
   absPath: string,
-  opts: { knowledgeDir?: string | null; workspacePath?: string | null } = {},
+  opts: { syncRoot?: string | null; workspacePath?: string | null } = {},
 ): string | null {
-  const knowledgeDir = opts.knowledgeDir ?? lastKnownKnowledgeDir
-  if (isUnder(knowledgeDir, absPath)) return trimTrailingPathSeparators(knowledgeDir as string)
-  const linkDir = opts.workspacePath
-    ? `${trimTrailingPathSeparators(opts.workspacePath)}/${TEAM_KNOWLEDGE_LINK_DIR}`
-    : null
-  if (isUnder(linkDir, absPath)) return linkDir
+  const syncRoot = opts.syncRoot ?? lastKnownSyncRoot
+  if (isUnder(syncRoot, absPath)) return trimTrailingPathSeparators(syncRoot as string)
+  for (const [linkDir] of SYNC_ROOT_LINKS) {
+    const link = opts.workspacePath
+      ? `${trimTrailingPathSeparators(opts.workspacePath)}/${linkDir}`
+      : null
+    if (isUnder(link, absPath)) return link
+  }
   return null
 }
 
 /**
- * The key the team sync engine addresses a file by: its path relative to the
- * sync content root (`~/.amuxd[-<brand>]/teams/<id>/shared`), e.g.
- * `knowledge/onboarding.md`. Null when the file is not team-synced content.
+ * The sync key for a path — `knowledge/notes/a.md`, `documents/hr/b.md` — or
+ * null when the path is not synced content.
  *
- * Version history, baseline diffs and conflict resolution all take this key —
- * never an absolute path, and never a workspace-relative one.
+ * Under the real root the relative path already begins with a root name, so
+ * nothing is prepended. Reached through a workspace symlink it does not, since
+ * each link points *into* one root, so that root's name is supplied here. The
+ * two spellings therefore produce the same key for the same file, which is the
+ * whole point: the key is what the manifest, the ACL prefixes and the version
+ * history are all addressed by.
  */
 export function teamSyncKeyForPath(
   absPath: string,
-  opts: { knowledgeDir?: string | null; workspacePath?: string | null } = {},
+  opts: { syncRoot?: string | null; workspacePath?: string | null } = {},
 ): string | null {
-  const root = teamKnowledgeRootForPath(absPath, opts)
-  if (!root || absPath === root) return null
-  return `knowledge/${absPath.slice(root.length + 1)}`
+  const syncRoot = opts.syncRoot ?? lastKnownSyncRoot
+  if (syncRoot) {
+    const root = trimTrailingPathSeparators(syncRoot)
+    if (absPath.startsWith(`${root}/`)) return absPath.slice(root.length + 1)
+  }
+  for (const [linkDir, prefix] of SYNC_ROOT_LINKS) {
+    if (!opts.workspacePath) break
+    const link = `${trimTrailingPathSeparators(opts.workspacePath)}/${linkDir}`
+    if (absPath.startsWith(`${link}/`)) return `${prefix}/${absPath.slice(link.length + 1)}`
+  }
+  return null
 }
 
-/** Where to read this workspace team knowledge: the global shared/knowledge dir. */
+/**
+ * The single root directory (`…/knowledge` or `…/documents`) that `absPath`
+ * sits in, or null when it is not synced content.
+ *
+ * Distinct from {@link teamSyncRootForPath}, which returns their shared parent.
+ * Anything that resolves a name *within* a body of content — a `[[wiki link]]`,
+ * a relative attachment — wants this one: a knowledge note linking into
+ * documents would be a link Obsidian cannot follow (its vault is knowledge
+ * alone) and one that points across a permission boundary, since documents can
+ * be restricted and knowledge cannot.
+ */
+export function teamContentRootForPath(
+  absPath: string,
+  opts: { syncRoot?: string | null; workspacePath?: string | null } = {},
+): string | null {
+  const key = teamSyncKeyForPath(absPath, opts)
+  if (!key) return null
+  const rootName = key.split('/')[0]
+  const syncRoot = opts.syncRoot ?? lastKnownSyncRoot
+  if (syncRoot) return `${trimTrailingPathSeparators(syncRoot)}/${rootName}`
+  // Reached through a workspace symlink: the link IS that root.
+  const link = SYNC_ROOT_LINKS.find(([, prefix]) => prefix === rootName)
+  if (link && opts.workspacePath) {
+    return `${trimTrailingPathSeparators(opts.workspacePath)}/${link[0]}`
+  }
+  return null
+}
+
+export async function resolveTeamSyncRoot(): Promise<string | null> {
+  const globalDir = await globalTeamSyncShareRoot()
+  if (!globalDir) return null
+  return (await exists(globalDir)) ? globalDir : null
+}
+
+/** The knowledge root on disk, for Obsidian and the RAG index. */
 export async function resolveTeamKnowledgeDir(): Promise<string | null> {
   const globalDir = await globalTeamKnowledgeShareDir()
   if (!globalDir) return null

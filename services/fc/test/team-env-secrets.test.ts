@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handleBusinessApiRequest } from "../src/lib/business-api.js";
-import { assertWritableKeyId, readEnvelope } from "../src/lib/pg-repo/team-env-secrets.js";
+import { assertWritableKeyId, readEnvelope } from "../src/lib/validation/team-env-secrets.js";
 
 // Route-level coverage for team env secrets.
 // Design: docs/architecture/team-mcp-and-env-cloud.md

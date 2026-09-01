@@ -146,6 +146,57 @@ test("internal routes reject an end-user token and accept the service token", { 
   assert.ok((await ok.json() as any).data.length >= 3);
 });
 
+test("a refund is accepted as a NEGATIVE amount and may drive the balance below zero", { skip: !DB }, async () => {
+  // §4.9.5 says a refund is a negative ledger row and that a balance is allowed
+  // to go negative — which is why the table carries no non-negative CHECK. This
+  // endpoint used to demand `amount > 0` for every kind, so that design was
+  // unreachable through the only writer: a real Stripe refund 400'd here and
+  // had the webhook retrying for three days while the customer kept the credits.
+  const svc = { Authorization: `Bearer ${SERVICE_TOKEN}`, "Content-Type": "application/json" };
+  const key = `refund-test-${Date.now()}`;
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  // Upsert, not update: the row may not exist yet (a team is only credited on
+  // first contact), and an update that matches nothing leaves the starting
+  // balance at whatever the previous test left behind.
+  await admin`
+    insert into amux.team_credit_balance (team_id, balance_credits)
+    values (${teamId}::uuid, 1000)
+    on conflict (team_id) do update set balance_credits = 1000`;
+
+  const r = await req(`/internal/teams/${teamId}/credits/top-up`, {
+    method: "POST",
+    headers: svc,
+    body: JSON.stringify({ amountCredits: -5000, kind: "refund", idempotencyKey: key }),
+  });
+  // Read the body ONCE: passing `await r.text()` as the assertion message
+  // consumes it even when the assertion passes, and the next read throws
+  // "Body has already been read".
+  const body = await r.json() as any;
+  assert.equal(r.status, 200, JSON.stringify(body));
+  assert.equal(body.applied, true);
+  assert.equal(body.balanceCredits, -4000, "the spend gate refuses at a negative balance; the ledger still records the truth");
+});
+
+test("the sign has to match the kind", { skip: !DB }, async () => {
+  // Dropping the check entirely would let a positive refund or a negative
+  // top_up through, and a money path should not silently accept a sign the
+  // caller cannot have meant.
+  const svc = { Authorization: `Bearer ${SERVICE_TOKEN}`, "Content-Type": "application/json" };
+  const post = (b: unknown) =>
+    req(`/internal/teams/${teamId}/credits/top-up`, { method: "POST", headers: svc, body: JSON.stringify(b) });
+
+  const positiveRefund = await post({ amountCredits: 500, kind: "refund", idempotencyKey: `x-${Date.now()}` });
+  assert.equal(positiveRefund.status, 400);
+  assert.match((await positiveRefund.json() as any).error.message, /refund must be negative/);
+
+  const negativeTopUp = await post({ amountCredits: -500, kind: "top_up", idempotencyKey: `y-${Date.now()}` });
+  assert.equal(negativeTopUp.status, 400);
+  assert.match((await negativeTopUp.json() as any).error.message, /top_up must be positive/);
+
+  const zero = await post({ amountCredits: 0, kind: "adjustment", idempotencyKey: `z-${Date.now()}` });
+  assert.equal(zero.status, 400);
+});
+
 test("non-streaming completion round-trips and writes a usage row", { skip: !DB || !KEY }, async () => {
   const before = await sql`select count(*)::int as n from amux.ai_usage_logs where team_id = ${teamId}::uuid`;
   const r = await req(`/v1/teams/${teamId}/chat/completions`, {

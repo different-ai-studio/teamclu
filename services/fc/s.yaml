@@ -56,18 +56,16 @@ resources:
         # Keep in step with the compose `fc` environment map: a var declared on
         # only one target silently goes missing on the other, which is what
         # deploy-env-parity.test.ts guards.
-        AI_GATEWAY_ENDPOINT: ${env('AI_GATEWAY_ENDPOINT', '')}
         AI_GATEWAY_INTERNAL_URL: ${env('AI_GATEWAY_INTERNAL_URL', '')}
         AI_GATEWAY_SERVICE_TOKEN: ${env('AI_GATEWAY_SERVICE_TOKEN', '')}
-        LITELLM_URL: ${env('LITELLM_URL', 'https://ai.ucar.cc')}
-        LITELLM_MASTER_KEY: ${env('LITELLM_MASTER_KEY', '')}
-        # Blank = no cap, matching the compose default. Keep the two targets in
-        # step: a default that differs per target is how the $1 cap went unnoticed.
-        LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD: ${env('LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD', '')}
-        # LiteLLM usage reads the `litellm` database on the SAME Postgres instance
-        # as the primary FC connection (DATABASE_URL/POSTGRES_*); only the db name
-        # differs. Override the db name here if it is not `litellm`.
-        LITELLM_DB_NAME: ${env('LITELLM_DB_NAME', 'litellm')}
+        # Stripe credit top-ups (design 4.9). This target runs against its OWN
+        # database, so it needs its own webhook endpoint (or its own Stripe
+        # account): a payment landing on the wrong environment credits the
+        # wrong team, and nothing downstream can tell.
+        STRIPE_SECRET_KEY: ${env('STRIPE_SECRET_KEY', '')}
+        STRIPE_WEBHOOK_SECRET: ${env('STRIPE_WEBHOOK_SECRET', '')}
+        STRIPE_PRICE_IDS: ${env('STRIPE_PRICE_IDS', '')}
+        STRIPE_RETURN_URL_BASE: ${env('STRIPE_RETURN_URL_BASE', '')}
         CODEUP_ORG_ID: ${env('CODEUP_ORG_ID', '')}
         CODEUP_PAT: ${env('CODEUP_PAT', '')}
         CODEUP_BOT_USERNAME: ${env('CODEUP_BOT_USERNAME', 'teamclu')}
@@ -113,7 +111,6 @@ resources:
         PUSH_WEBHOOK_SECRET: ${env('PUSH_WEBHOOK_SECRET')}
         MARKETPLACE_ADMIN_SECRET: ${env('MARKETPLACE_ADMIN_SECRET', '')}
         AGENT_MANAGEMENT_GRANT_SECRET: ${env('AGENT_MANAGEMENT_GRANT_SECRET', '')}
-        CRON_TRIGGER_SECRET: ${env('CRON_TRIGGER_SECRET', '')}
         # Raw-TCP address for clients whose MQTT stack can't do WebSocket (iOS
         # CocoaMQTT, Expo). Keep in step with the compose `environment:` map —
         # a var declared on only one target silently drops `mqtt.tcpUrl` from
@@ -179,17 +176,6 @@ resources:
         # Set to true when a reverse proxy (Caddy/FC gateway) handles CORS so
         # Hono's own CORS middleware is skipped — prevents duplicate headers.
         CORS_HANDLED_BY_PROXY: ${env('CORS_HANDLED_BY_PROXY', '')}
-        DATABASE_URL: ${env('DATABASE_URL', '')}
-        # Parts-based fallback for the same primary Postgres connection.
-        # `resolveLiteLlmConnString` (lib/litellm-usage.ts) prefers DATABASE_URL
-        # and falls back to these. Without them declared here that fallback was
-        # unreachable in production: LiteLLM usage 503s the moment DATABASE_URL
-        # is blank instead of degrading to the parts it already knows how to use.
-        POSTGRES_HOST: ${env('POSTGRES_HOST', '')}
-        POSTGRES_PORT: ${env('POSTGRES_PORT', '')}
-        POSTGRES_USERNAME: ${env('POSTGRES_USERNAME', '')}
-        POSTGRES_PASSWORD: ${env('POSTGRES_PASSWORD', '')}
-        BACKEND_KIND: ${env('BACKEND_KIND', 'supabase')}
         # Phone login (partner-aligned). DEFAULT_ORG_ID = the default tenant new
         # users join; PHONE_EMAIL_DOMAIN = domain of the synthetic auth email
         # (`<phone>@<domain>`) and therefore half the account identity — it must
@@ -202,19 +188,8 @@ resources:
         PHONE_EMAIL_DOMAIN: ${env('PHONE_EMAIL_DOMAIN', '')}
         PHONE_AUTH_ENCRYPTION_KEY: ${env('PHONE_AUTH_ENCRYPTION_KEY', '')}
         SMS_DEBUG_MODE: ${env('SMS_DEBUG_MODE', '')}
-        AUTH_SECRET: ${env('AUTH_SECRET', '')}
         AUTH_BASE_URL: ${env('AUTH_BASE_URL', 'https://cloud.ucar.cc')}
         PG_POOL_MAX: ${env('PG_POOL_MAX', '1')}
-        OTP_EMAIL_SMTP_HOST: ${env('OTP_EMAIL_SMTP_HOST', '')}
-        OTP_EMAIL_SMTP_PORT: ${env('OTP_EMAIL_SMTP_PORT', '')}
-        OTP_EMAIL_SMTP_USER: ${env('OTP_EMAIL_SMTP_USER', '')}
-        OTP_EMAIL_SMTP_PASS: ${env('OTP_EMAIL_SMTP_PASS', '')}
-        OTP_EMAIL_SMTP_SECURE: ${env('OTP_EMAIL_SMTP_SECURE', '')}
-        OTP_EMAIL_FROM: ${env('OTP_EMAIL_FROM', '')}
-        APPLE_CLIENT_ID: ${env('APPLE_CLIENT_ID', '')}
-        APPLE_CLIENT_SECRET: ${env('APPLE_CLIENT_SECRET', '')}
-        GOOGLE_CLIENT_ID: ${env('GOOGLE_CLIENT_ID', '')}
-        GOOGLE_CLIENT_SECRET: ${env('GOOGLE_CLIENT_SECRET', '')}
       triggers:
         # Trigger name is parameterized so we can adopt a pre-existing function's
         # http trigger (FC console default is `defaultTrigger`). Defaults to
@@ -230,15 +205,3 @@ resources:
               - PATCH
               - DELETE
               - OPTIONS
-        - triggerName: oss-abandon-sessions
-          triggerType: timer
-          triggerConfig:
-            cronExpression: '0 */15 * * * *'
-            enable: true
-            payload: '{"task":"oss-abandon-sessions"}'
-        - triggerName: oss-gc-blobs
-          triggerType: timer
-          triggerConfig:
-            cronExpression: '0 17 4 * * *'
-            enable: true
-            payload: '{"task":"oss-gc-blobs"}'

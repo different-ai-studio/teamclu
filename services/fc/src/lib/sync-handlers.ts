@@ -4,26 +4,26 @@
 // Each export is a standalone async function; the router in index.mjs
 // dispatches here after JWT/actor auth.
 //
-// DUAL PATH: each handler branches on resolveBackendKind() — keep postgres AND
-// supabase blocks in sync when changing OSS sync metadata (README § Dual backend).
-//   postgres → makeOssSyncRepo(getDb())
-//   supabase → createServiceRoleClient() + .from() / .rpc()  (production default)
-// Blob bytes live in Supabase Storage under both (see team-blob-storage.ts).
+// Sync metadata lives in Supabase (createServiceRoleClient + .from() / .rpc());
+// blob bytes live in Supabase Storage (see team-blob-storage.ts).
 
 import { createHash, randomUUID } from 'node:crypto';
 import { createServiceRoleClient } from './supabase.js';
 import { validateSyncPath } from './sync-path.js';
 import { isOverByteQuota, isOverFileQuota, isRejectedSyncPath, liveByteSum, liveFileCount, maxBytesPerTeam, maxFilesPerTeam } from './sync-guards.js';
-import { resolveBackendKind } from './backend-kind.js';
+import {
+  aclViewFor,
+  auditIfRestricted,
+  auditManifest,
+  isDenied,
+  matchPrefix,
+  pathForbiddenResponse,
+  recordAccess,
+  type AclView,
+} from './sync-acl.js';
 import { getTeamBlobStorage, type BlobStorage } from './team-blob-storage.js';
-import { makeOssSyncRepo, type OssSyncRepo } from './pg-repo/oss-sync.js';
-import { resolveActorForTeam } from './pg-repo/authz.js';
-import { getDb, type Db } from '../db/client.js';
-import { ApiError } from './http-utils.js';
-import { teamWorkspaceConfig, amuxcUploadSessions } from '../db/schema/index.js';
-import { eq } from 'drizzle-orm';
 import { syncTopic } from './mqtt-topics.js';
-import { pgPushDeps, pushDeps } from './push-deps.js';
+import { pushDeps } from './push-deps.js';
 
 const DOWNLOAD_TTL_SEC = 900;
 
@@ -44,8 +44,6 @@ export interface SyncMqttPublisher {
 }
 
 export interface SyncHandlerDeps {
-  db?: Db;
-  repo?: OssSyncRepo;
   storage?: BlobStorage;
   /** Override the live-file count. Tests only — production reads the table. */
   countLiveFiles?: (teamId: string) => Promise<number | null>;
@@ -58,6 +56,12 @@ export interface SyncHandlerDeps {
   mqtt?: SyncMqttPublisher | null;
   /** Clock override for hint `at` (tests). */
   now?: () => Date;
+  /**
+   * Clock override for the ACL cache (tests), in epoch milliseconds. This whole
+   * object is passed straight through to sync-acl.ts, which is why the two
+   * clocks have different names — see SyncAclDeps.
+   */
+  nowMs?: () => number;
   /**
    * When true, skip the per-call hint — batch wrappers publish once after
    * all items finish.
@@ -125,20 +129,13 @@ async function countLiveFiles(
 /**
  * Sum of live (non-deleted) file sizes for a team, or `null` when unknown.
  *
- * Postgres: drizzle `sum(size)`. Supabase: RPC `amux.amuxc_team_live_bytes`.
+ * Reads the `amux.amuxc_team_live_bytes` RPC.
  */
 async function sumLiveBytes(
   teamId: string,
   deps: SyncHandlerDeps = {},
 ): Promise<number | null> {
   if (deps.sumLiveBytes) return deps.sumLiveBytes(teamId);
-  if (resolveBackendKind() === 'postgres') {
-    try {
-      return await resolveRepo(deps).sumLiveBytes(teamId);
-    } catch {
-      return null;
-    }
-  }
   try {
     const supabase = createServiceRoleClient();
     const { data, error } = await supabase
@@ -168,12 +165,6 @@ async function blobRequiresUpload(
   }
 }
 
-function resolveRepo(deps: SyncHandlerDeps): OssSyncRepo {
-  if (deps.repo) return deps.repo;
-  const db = deps.db ?? getDb();
-  return makeOssSyncRepo(db);
-}
-
 /** Resolved once per process: `undefined` = not tried yet, `null` = unavailable. */
 let cachedSyncMqtt: SyncMqttPublisher | null | undefined;
 
@@ -181,7 +172,7 @@ function resolveMqtt(deps: SyncHandlerDeps): SyncMqttPublisher | null {
   if (deps.mqtt !== undefined) return deps.mqtt;
   if (cachedSyncMqtt !== undefined) return cachedSyncMqtt;
   try {
-    const bundle = resolveBackendKind() === 'postgres' ? pgPushDeps() : pushDeps();
+    const bundle = pushDeps();
     cachedSyncMqtt = bundle.mqtt ?? null;
   } catch (e: any) {
     // Memoize the failure too. The push bundle also builds a service-role
@@ -390,57 +381,18 @@ export async function handleSyncManifest(
   const { afterSeq = 0, limit = 200, cursor = null, snapshotSeq: clientSnapshotSeq } = body || {};
   const teamId = caller.teamId;
 
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    const pageLimit = Math.min(Math.max(1, Number(limit) || 200), 1000);
-
-    // For postgres, the repo.manifest handles pagination via cursor.
-    // snapshotSeq: for first page, we read oss_change_seq from teamWorkspaceConfig;
-    // for subsequent pages, caller supplies snapshotSeq.
-    let snapshotSeq: number;
-    if (typeof clientSnapshotSeq === 'number') {
-      snapshotSeq = clientSnapshotSeq;
-    } else {
-      // Read snapshotSeq from DB
-      const db = deps.db ?? getDb();
-      const [twc] = await db
-        .select({ ossChangeSeq: teamWorkspaceConfig.ossChangeSeq })
-        .from(teamWorkspaceConfig)
-        .where(eq(teamWorkspaceConfig.teamId, teamId))
-        .limit(1);
-      if (!twc) {
-        return json(404, { error: 'team not found or not configured for OSS sync' });
-      }
-      snapshotSeq = twc.ossChangeSeq;
-    }
-
-    const result = await repo.manifest({
-      teamId,
-      afterSeq: Number(afterSeq) || 0,
-      snapshotSeq,
-      cursor: cursor as string | undefined,
-      limit: pageLimit,
-    });
-
-    const items = result.files.map(r => ({
-      path:        r.path,
-      version:     r.currentVersion,
-      contentHash: r.contentHash,
-      size:        r.size,
-      deleted:     r.deleted,
-      changeSeq:   r.changeSeq,
-      updatedAt:   r.updatedAt,
-      updatedBy:   r.updatedBy,
-    }));
-
-    return json(200, {
-      snapshotSeq,
-      items,
-      nextCursor: result.nextCursor ?? null,
-    });
-  }
+  // Per-directory ACL. `denied` is empty for every team that has not configured
+  // a rule — the overwhelmingly common case — and both branches below then build
+  // exactly the query they built before this feature existed. Manifest is the
+  // hottest endpoint in the product; keep it that way.
+  //
+  // NOTE: the deny list is NEVER returned to the caller. Directory names are
+  // themselves sensitive, so a restricted prefix is invisible rather than
+  // locked-looking (design D7). The client learns a path is off-limits only by
+  // being told `PathForbidden` when it tries to write one it made up itself.
+  const aclView = await aclViewFor(teamId, caller.actorId, deps);
+  const denied = aclView.denied;
+  await auditManifest(aclView, { teamId, actorId: caller.actorId }, deps);
 
   // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();
@@ -476,13 +428,28 @@ export async function handleSyncManifest(
 
   const pageLimit = Math.min(Math.max(1, Number(limit) || 200), 1000);
 
-  const { data: rows, error } = await supabase
+  let manifestQuery = supabase
     .from('amuxc_files')
     .select('id, path, current_version, content_hash, size, deleted, change_seq, updated_at, updated_by')
     .eq('team_id', teamId)
     .gt('change_seq', afterSeq)
     .lte('change_seq', snapshotSeq)
-    .or(`change_seq.gt.${cursorSeq},and(change_seq.eq.${cursorSeq},id.gt.${cursorId})`)
+    .or(`change_seq.gt.${cursorSeq},and(change_seq.eq.${cursorSeq},id.gt.${cursorId})`);
+
+  // One `NOT LIKE` per restricted prefix the caller cannot see. The loop does
+  // not execute at all for an unrestricted team, which is why this feature costs
+  // nothing on the hot path. `MAX_ACL_RULES_PER_TEAM` bounds how many can ever
+  // stack up here.
+  //
+  // Note the prefixes are stored with a trailing slash, so `knowledge/hr/%`
+  // cannot swallow `knowledge/hr-public/`. See sync-acl.ts `matchPrefix` — the
+  // SQL and the in-process matcher have to agree, and the trailing slash is what
+  // makes both of them right.
+  for (const prefix of denied) {
+    manifestQuery = manifestQuery.not('path', 'like', `${prefix}%`);
+  }
+
+  const { data: rows, error } = await manifestQuery
     .order('change_seq', { ascending: true })
     .order('id', { ascending: true })
     .limit(pageLimit + 1);
@@ -546,6 +513,22 @@ export async function handleSyncUploadPrepare(
     });
   }
 
+  // Per-directory ACL. Sits beside the guard above because they are the same
+  // kind of thing — a server-side refusal of a path — but they answer to
+  // different owners: `IgnoredPath` is a list nobody can edit, this one is the
+  // team's own rules. See sync-acl.ts.
+  {
+    const view = await aclViewFor(caller.teamId, caller.actorId, deps);
+    if (isDenied(path as string, view)) {
+      await auditIfRestricted(
+        view,
+        { teamId: caller.teamId, actorId: caller.actorId, path: path as string, action: 'upload', allowed: false },
+        deps,
+      );
+      return pathForbiddenResponse(path as string);
+    }
+  }
+
   if (!contentHash || typeof contentHash !== 'string') {
     return json(400, { error: 'contentHash is required' });
   }
@@ -584,41 +567,6 @@ export async function handleSyncUploadPrepare(
 
   const ossKey = ossKeyForHash(teamId, contentHash);
   const storage = resolveStorage(deps);
-
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    const known = await repo.download({ teamId, contentHash });
-
-    const expiresAt = new Date(Date.now() + 3600_000);
-    const sessionId = await repo.uploadPrepare({
-      teamId,
-      actorId,
-      nodeId: (nodeId as string | undefined) ?? null,
-      path: path as string,
-      parentVersion,
-      contentHash,
-      size,
-      ossKey,
-      expiresAt,
-    });
-
-    const requiresUpload = await blobRequiresUpload(
-      storage,
-      ossKey,
-      size,
-      Boolean(known?.verified),
-    );
-    const presignedPut = requiresUpload ? await storage.createUploadUrl(ossKey) : null;
-
-    return json(200, {
-      uploadSessionId: sessionId,
-      ossKey,
-      requiresUpload,
-      presignedPut,
-    });
-  }
 
   // --- supabase path ---
   const supabase = createServiceRoleClient();
@@ -697,60 +645,6 @@ export async function handleSyncUploadComplete(
 
   const { teamId, actorId } = caller;
   const storage = resolveStorage(deps);
-
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    // We need to fetch the session first to get oss_key + size for HEAD check.
-    // The repo.completeUpload will re-fetch + lock inside the transaction.
-    const db = deps.db ?? getDb();
-    const [session] = await db
-      .select()
-      .from(amuxcUploadSessions)
-      .where(eq(amuxcUploadSessions.id, uploadSessionId as string))
-      .limit(1);
-
-    if (!session) return json(404, { error: 'upload session not found' });
-    if (session.teamId !== teamId) return json(403, { error: 'session does not belong to this team' });
-
-    // Verify the bytes actually landed before marking the version live.
-    try {
-      const stat = await storage.stat(session.ossKey);
-      if (!stat || stat.size !== session.size) {
-        return json(422, {
-          error: 'BlobMissingOrSizeMismatch',
-          expected: session.size,
-          actual: stat?.size ?? null,
-        });
-      }
-    } catch (e: any) {
-      return json(422, { error: 'BlobMissingOrSizeMismatch', detail: e.message });
-    }
-
-    try {
-      const result = await repo.completeUpload(uploadSessionId as string, actorId);
-      return publishHintAfterSingle(
-        caller,
-        body,
-        json(200, {
-          version:     result.version,
-          contentHash: result.contentHash,
-          changeSeq:   result.changeSeq,
-        }),
-        deps,
-      );
-    } catch (e: any) {
-      if (e instanceof ApiError) {
-        if (e.statusCode === 409) return json(409, { reason: 'cas-mismatch', remoteVersion: undefined, remoteHash: undefined });
-        if (e.statusCode === 403) return json(403, { error: e.message });
-        if (e.statusCode === 410) return json(410, { error: e.message });
-        if (e.statusCode === 404) return json(404, { error: e.message });
-      }
-      console.error('[sync/complete] pg error:', e);
-      return json(500, { error: `complete failed: ${e.message}` });
-    }
-  }
 
   // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();
@@ -841,6 +735,84 @@ export async function handleSyncUploadComplete(
  * @param {{ userId, teamId, actorId }} caller
  * @param {object} body - { teamId, contentHash }
  */
+/**
+ * Every path in this team that has ever pointed at `contentHash`.
+ *
+ * Downloads are content-addressed: `/sync/download` takes a hash, not a path, so
+ * filtering the manifest alone would hide restricted documents without actually
+ * withholding them — anyone who learned a hash could still fetch the bytes.
+ * Reachability turns the hash back into paths so the ACL has something to judge.
+ *
+ * Both tables are consulted. `amuxc_files` holds current pointers; a hash whose
+ * only reference is a superseded version lives on in `amuxc_file_versions`, and
+ * that is exactly the blob a history view or a quarantined retry asks for.
+ *
+ * Called ONLY when the caller has a non-empty deny list. An unrestricted team
+ * never pays for it.
+ */
+async function pathsForContentHash(
+  teamId: string,
+  contentHash: string,
+  deps: SyncHandlerDeps,
+): Promise<string[]> {
+  // --- supabase path ---
+  const supabase = createServiceRoleClient();
+  const { data: current } = await supabase
+    .from('amuxc_files')
+    .select('id, path')
+    .eq('team_id', teamId)
+    .eq('content_hash', contentHash);
+  const paths = new Set<string>((current ?? []).map((r: { path: string }) => r.path));
+
+  // Two hops rather than a PostgREST embed: the embed name depends on the FK
+  // alias and breaks quietly if the constraint is ever renamed, while these two
+  // queries fail loudly.
+  const { data: versions } = await supabase
+    .from('amuxc_file_versions')
+    .select('file_id')
+    .eq('content_hash', contentHash);
+  const fileIds = [...new Set((versions ?? []).map((v: { file_id: string }) => v.file_id))];
+  if (fileIds.length > 0) {
+    const { data: files } = await supabase
+      .from('amuxc_files')
+      .select('path')
+      .eq('team_id', teamId)
+      .in('id', fileIds);
+    for (const f of (files ?? []) as { path: string }[]) paths.add(f.path);
+  }
+  return [...paths];
+}
+
+/**
+ * Whether this caller may fetch the bytes behind `contentHash`, plus the
+ * restricted prefix to audit against.
+ *
+ * A hash is allowed when AT LEAST ONE path referencing it is visible to the
+ * caller. Same content under both a restricted and an open path is therefore
+ * downloadable — which is correct: they can already read those bytes through the
+ * open path, and refusing here would only tell them the restricted copy exists.
+ */
+async function blobAccessDecision(
+  teamId: string,
+  actorId: string,
+  contentHash: string,
+  view: AclView,
+  deps: SyncHandlerDeps,
+): Promise<{ allowed: boolean; auditPath: string | null; auditPrefix: string | null }> {
+  const paths = await pathsForContentHash(teamId, contentHash, deps);
+  // A hash with no path at all is not an ACL question — the blob lookup below
+  // answers it with a 404.
+  if (paths.length === 0) return { allowed: true, auditPath: null, auditPrefix: null };
+
+  const visible = paths.filter((p) => !isDenied(p, view));
+  const restricted = paths.find((p) => matchPrefix(p, view.allPrefixes) !== null) ?? null;
+  return {
+    allowed: visible.length > 0,
+    auditPath: restricted,
+    auditPrefix: restricted ? matchPrefix(restricted, view.allPrefixes) : null,
+  };
+}
+
 export async function handleSyncDownload(
   caller: { userId: string; teamId: string; actorId: string },
   body: Record<string, unknown> | undefined,
@@ -854,17 +826,36 @@ export async function handleSyncDownload(
   const { teamId } = caller;
   const storage = resolveStorage(deps);
 
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-    const blob = await repo.download({ teamId, contentHash });
-
-    if (!blob) return json(404, { error: 'blob not found' });
-    if (!blob.verified) return json(404, { error: 'blob not yet verified (upload not completed)' });
-
-    const downloadUrl = await storage.createDownloadUrl(blob.ossKey, DOWNLOAD_TTL_SEC);
-
-    return json(200, { downloadUrl, size: blob.size, ttlSec: DOWNLOAD_TTL_SEC });
+  {
+    const view = await aclViewFor(teamId, caller.actorId, deps);
+    if (view.denied.length > 0 || view.allPrefixes.length > 0) {
+      const decision = await blobAccessDecision(
+        teamId,
+        caller.actorId,
+        contentHash,
+        view,
+        deps,
+      );
+      if (decision.auditPrefix) {
+        await recordAccess(
+          {
+            teamId,
+            actorId: caller.actorId,
+            pathPrefix: decision.auditPrefix,
+            path: decision.auditPath,
+            action: 'download',
+            allowed: decision.allowed,
+          },
+          deps,
+        );
+      }
+      if (!decision.allowed) {
+        // Deliberately the same shape as a path rejection. The caller asked with
+        // a hash, so naming the path back to them would hand over the one thing
+        // the deny list exists to keep from them.
+        return json(403, { error: 'blob is not accessible', code: 'PathForbidden' });
+      }
+    }
   }
 
   // --- supabase path (unchanged) ---
@@ -914,31 +905,16 @@ export async function handleSyncDelete(
 
   const { teamId, actorId } = caller;
 
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    try {
-      const result = await repo.completeDelete({
-        teamId,
-        path: path as string,
-        parentVersion,
-        actorId,
-        nodeId: (nodeId as string | undefined) ?? null,
-      });
-      return publishHintAfterSingle(
-        caller,
-        body,
-        json(200, { version: result.version, changeSeq: result.changeSeq }),
+  // Deleting is a write to a restricted path just as much as uploading is.
+  {
+    const view = await aclViewFor(teamId, actorId, deps);
+    if (isDenied(path as string, view)) {
+      await auditIfRestricted(
+        view,
+        { teamId, actorId, path: path as string, action: 'delete', allowed: false },
         deps,
       );
-    } catch (e: any) {
-      if (e instanceof ApiError) {
-        if (e.statusCode === 409) return json(409, { reason: 'cas-mismatch', remoteVersion: undefined, remoteHash: undefined });
-        if (e.statusCode === 404) return json(404, { error: 'file not found' });
-      }
-      console.error('[sync/delete] pg error:', e);
-      return json(500, { error: `delete failed: ${e.message}` });
+      return pathForbiddenResponse(path as string);
     }
   }
 
@@ -1008,36 +984,18 @@ export async function handleSyncVersions(
 
   const { teamId } = caller;
 
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    const pageLimit = Math.min(Math.max(1, Number(limit) || 50), 500);
-    const result = await repo.versions({
-      teamId,
-      path,
-      cursor: cursor as string | undefined,
-      limit: pageLimit,
-    });
-
-    if (result.versions.length === 0) {
-      // versions() returns [] if file not found — disambiguate with not found
-      return json(404, { error: 'file not found' });
-    }
-
-    const versions = result.versions.map(r => ({
-      version:          r.version,
-      parentVersion:    r.parentVersion,
-      contentHash:      r.contentHash,
-      size:             r.size,
-      deleted:          r.deleted,
-      createdAt:        r.createdAt,
-      createdBy:        r.createdBy,
-      createdByNodeId:  r.createdByNodeId,
-      message:          null, // pg schema doesn't store message field yet
-    }));
-
-    return json(200, { versions, nextCursor: result.nextCursor ?? null });
+  // Version history leaks content hashes and sizes for a path, and the hashes
+  // are what /sync/download takes. Filtering the manifest without filtering this
+  // would leave the front door locked and this window open.
+  {
+    const view = await aclViewFor(teamId, caller.actorId, deps);
+    const denied = isDenied(path, view);
+    await auditIfRestricted(
+      view,
+      { teamId, actorId: caller.actorId, path, action: 'versions', allowed: !denied },
+      deps,
+    );
+    if (denied) return pathForbiddenResponse(path);
   }
 
   // --- supabase path (unchanged) ---
@@ -1121,27 +1079,6 @@ export async function handleSyncSetMode(
   if (!mode) return json(400, { error: 'mode is required' });
   if (mode !== 'git' && mode !== 'oss') return json(400, { error: `invalid mode: ${mode}` });
 
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const db = deps.db ?? getDb();
-    const repo = resolveRepo(deps);
-
-    // Resolve userId → actorId (ownership checked inside repo)
-    const actorId = await resolveActorForTeam(db, userId, teamId as string);
-    if (!actorId) return json(403, { error: 'caller is not a member of this team' });
-
-    try {
-      await repo.setTeamSyncMode(teamId as string, mode as 'git' | 'oss', actorId);
-      return json(200, { mode });
-    } catch (e: any) {
-      if (e instanceof ApiError) {
-        if (e.statusCode === 400) return json(400, { error: e.message });
-        if (e.statusCode === 403) return json(403, { error: e.message });
-      }
-      return json(500, { error: e.message });
-    }
-  }
-
   // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();
 
@@ -1173,18 +1110,6 @@ export async function handleSyncTeamMode(
 ) {
   const { teamId } = body ?? {};
   if (!teamId) return json(400, { error: 'teamId is required' });
-
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    try {
-      const mode = await repo.getTeamSyncMode(teamId as string);
-      return json(200, { mode });
-    } catch (e: any) {
-      return json(500, { error: e.message });
-    }
-  }
 
   // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();

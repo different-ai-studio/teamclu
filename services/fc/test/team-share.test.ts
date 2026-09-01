@@ -12,13 +12,10 @@ function makeRepo(overrides: any = {}) {
       if (overrides.getWorkspaceConfigError) throw overrides.getWorkspaceConfigError;
       return overrides.getWorkspaceConfigResult ?? {
         syncMode: "oss",
-        litellmTeamId: "lt-1",
         llm: {
           enabled: true,
           baseUrl: "https://proxy.example.com/v1",
           models: [{ id: "gpt-4o", name: "GPT-4o" }],
-          availableModels: [{ id: "gpt-4o", name: "GPT-4o" }, { id: "o3", name: "o3" }],
-          aiGatewayEndpoint: "https://ai.example.com/v1",
         },
       };
     },
@@ -29,14 +26,6 @@ function makeRepo(overrides: any = {}) {
         enabled: input.enabled,
         baseUrl: input.baseUrl,
         models: input.models,
-      };
-    },
-    async setupLiteLlm(teamId) {
-      calls.push({ method: "setupLiteLlm", teamId });
-      if (overrides.setupLiteLlmError) throw overrides.setupLiteLlmError;
-      return overrides.setupLiteLlmResult ?? {
-        aiGatewayEndpoint: "https://gw.example.com",
-        litellmKey: "sk-test",
       };
     },
   };
@@ -59,13 +48,10 @@ test("GET /v1/teams/:id/workspace-config → 200 with merged shape", async () =>
   const body = JSON.parse(res.body);
   assert.deepEqual(body, {
     syncMode: "oss",
-    litellmTeamId: "lt-1",
     llm: {
       enabled: true,
       baseUrl: "https://proxy.example.com/v1",
       models: [{ id: "gpt-4o", name: "GPT-4o" }],
-      availableModels: [{ id: "gpt-4o", name: "GPT-4o" }, { id: "o3", name: "o3" }],
-      aiGatewayEndpoint: "https://ai.example.com/v1",
     },
   });
 });

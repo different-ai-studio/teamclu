@@ -82,6 +82,24 @@ const MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
 /// `git clone` lands ten times that in one second.
 const MAX_NEW_FILES_PER_TICK: usize = 2000;
 
+/// Most tombstones one tick may broadcast before it stops and asks.
+///
+/// The add-side guard above protects the team's cloud from one person's
+/// mistake. This one protects **every member's disk** from it, which is the
+/// more expensive direction: a tombstone is applied by everyone, and the file
+/// is gone from all of their machines before anyone notices.
+///
+/// The engine infers "deleted locally" from `in state, absent from the scan`,
+/// so anything that makes the scan come back short reads as a mass delete —
+/// an external drive that did not mount, a directory moved out from under us,
+/// a sync plugin mid-write, a content-root change that ran in the wrong order.
+/// None of those are deletions, and all of them look exactly like one.
+///
+/// Deliberately far lower than the add-side limit. Deleting two hundred notes
+/// in one sitting is already unusual enough to be worth one confirmation;
+/// creating two thousand files is merely someone dropping a repo in.
+const MAX_DELETES_PER_TICK: usize = 200;
+
 /// Per-tick knobs a caller can set. A tick with `Default` values is the
 /// autonomous one the timer runs.
 #[derive(Debug, Clone, Copy, Default)]
@@ -92,6 +110,13 @@ pub struct TickOptions {
     /// the acknowledgement, so defaulting it to `true` anywhere would quietly
     /// remove the guard.
     pub allow_bulk_add: bool,
+    /// Broadcast a set of deletions an earlier tick refused to send.
+    ///
+    /// Same contract as [`TickOptions::allow_bulk_add`]: only ever set after a
+    /// person has been shown the count and agreed. Defaulting it to `true`
+    /// anywhere removes the guard, and this is the guard whose failure mode
+    /// reaches other people's machines.
+    pub allow_bulk_delete: bool,
 }
 
 /// Max concurrent direct-to-OSS blob transfers (PUT on push, GET on pull). OSS
@@ -125,6 +150,13 @@ pub struct TickResult {
     /// cloud is worse than none of it, and the user has to make one decision,
     /// not watch a partial upload.
     pub blocked_new_files: Option<u32>,
+    /// How many deletions this tick refused to broadcast, when
+    /// [`MAX_DELETES_PER_TICK`] was exceeded. `None` on a normal tick.
+    ///
+    /// Nothing was deleted in that case — not even the first
+    /// [`MAX_DELETES_PER_TICK`]. A partially applied mass deletion is the worst
+    /// of both: the files are gone for everyone AND the cause is harder to see.
+    pub blocked_deletes: Option<u32>,
 }
 
 /// Run a full sync tick: PULL then PUSH (spec §4.3), reporting how far it has
@@ -178,7 +210,16 @@ pub async fn tick_with_progress(
     let mut snapshot_seq: Option<i64> = None;
     let mut all_items: Vec<ManifestItem> = Vec::new();
 
-    let since_seq = state.last_server_seq;
+    // Periodically ask for the WHOLE manifest rather than just what changed, so
+    // access that was taken away becomes visible (see RECONCILE_INTERVAL_SECS).
+    // Costs nothing extra in applied work: the pull loop skips every item whose
+    // version it already holds.
+    let reconciling = now_secs().saturating_sub(state.last_reconcile_at) >= RECONCILE_INTERVAL_SECS;
+    let since_seq = if reconciling {
+        0
+    } else {
+        state.last_server_seq
+    };
     progress.report(SyncPhase::Checking, 0, 0);
     loop {
         // Retry transient failures (429 rate-limit / 503) in-call: a single
@@ -235,6 +276,12 @@ pub async fn tick_with_progress(
             let _ = parent; // ensure compiler doesn't strip the validation
         }
 
+        // The server is offering this path again, so whatever refusal we
+        // recorded is stale — a grant landed. Clearing here (rather than waiting
+        // for the 24h retry) is what makes a new grant take effect on the very
+        // next tick.
+        state.clear_forbidden(&item.path);
+
         let local = state.files.get(&item.path).cloned();
 
         if item.deleted {
@@ -260,6 +307,8 @@ pub async fn tick_with_progress(
                 }
                 // If dirty: leave local file, do NOT delete. User-local edits survive.
             }
+            // A listed-but-unfetched entry stops being worth listing.
+            state.clear_known(&item.path);
             // Not in local state → nothing to do.
             continue;
         }
@@ -269,6 +318,26 @@ pub async fn tick_with_progress(
             None => continue, // shouldn't happen for non-deleted
         };
 
+        // Documents are listed, not fetched. The manifest already carries
+        // everything needed to show the file and to fetch it later — path,
+        // version, hash, size — so a first sync costs nothing for a root that
+        // may be far larger than the disk.
+        //
+        // Only the FIRST fetch is lazy. Once a documents file is on disk it is
+        // an ordinary synced file and later versions arrive normally, which is
+        // why this checks `local.is_none()` rather than the prefix alone.
+        if local.is_none() && is_lazy_path(&item.path) {
+            if let Some(hash) = &item.content_hash {
+                state.note_known(
+                    &item.path,
+                    item.version,
+                    hash,
+                    item.size.unwrap_or(0) as u64,
+                );
+            }
+            continue;
+        }
+
         let needs_download = match &local {
             None => true,
             Some(ls) => item.version > ls.synced_version,
@@ -277,6 +346,9 @@ pub async fn tick_with_progress(
         if !needs_download {
             continue;
         }
+
+        // Materialized now, so it is no longer merely listed.
+        state.clear_known(&item.path);
 
         // If local file is dirty and remote has a newer version → conflict.
         if let Some(ref ls) = local {
@@ -327,6 +399,20 @@ pub async fn tick_with_progress(
     let pull_failures = expected_pulls.saturating_sub(pulled as usize);
 
     state.last_server_seq = next_high_water(state.last_server_seq, snapshot_seq);
+
+    // Revocation is only observable against a COMPLETE manifest — see
+    // RECONCILE_INTERVAL_SECS and `apply_revocations`. Running this on an
+    // incremental page would read "not in this page" as "no longer allowed" and
+    // wipe the vault.
+    //
+    // Placed after the pull and before the push on purpose: `locally_deleted_paths`
+    // runs in the push phase, and it must not see a half-applied revocation.
+    if reconciling {
+        let manifest_paths: std::collections::HashSet<String> =
+            all_items.iter().map(|i| i.path.clone()).collect();
+        apply_revocations(content_root, &mut state, &manifest_paths, &rules);
+        state.last_reconcile_at = now_secs();
+    }
     if !state.quarantined.is_empty() {
         tracing::warn!(
             team_id,
@@ -373,7 +459,7 @@ pub async fn tick_with_progress(
     let sizes: std::collections::HashMap<&str, u64> =
         scan.iter().map(|s| (s.rel_path.as_str(), s.size)).collect();
     let PushPlan {
-        to_push: all_dirty,
+        to_push: mut all_dirty,
         oversize,
         blocked_new_files,
     } = plan_push(
@@ -383,6 +469,28 @@ pub async fn tick_with_progress(
         &sizes,
         opts.allow_bulk_add,
     );
+
+    // Drop paths the server has already told us are restricted. Filtered AFTER
+    // plan_push so the bulk-add guard still counts what the user actually
+    // created — a person who drops a repo into a restricted directory should be
+    // asked the same question as anyone else, not have the count quietly
+    // shrunk.
+    //
+    // The entry expires (`is_forbidden_now`), which is what lets a later grant
+    // heal without anyone being notified that the directory exists.
+    {
+        let now = now_secs();
+        let before = all_dirty.len();
+        all_dirty.retain(|p| !state.is_forbidden_now(p, now));
+        let skipped = before - all_dirty.len();
+        if skipped > 0 {
+            tracing::debug!(
+                team_id,
+                skipped,
+                "push: skipping paths the server restricts"
+            );
+        }
+    }
     if let Some(count) = blocked_new_files {
         tracing::warn!(
             team_id,
@@ -418,6 +526,26 @@ pub async fn tick_with_progress(
     // current scan was deleted locally → emit a server-side tombstone so other
     // nodes pull the deletion. Each tombstone is a parentVersion CAS.
     let dels = locally_deleted_paths(&state, &scan, &rules);
+
+    // A tombstone reaches every member's disk, so an unexpected pile of them is
+    // stopped and reported rather than sent. `locally_deleted_paths` cannot tell
+    // a real deletion from a scan that came back short — an unmounted drive, a
+    // moved directory, a content root that changed under us all read the same —
+    // and by the time the difference is visible the files are gone everywhere.
+    //
+    // All or nothing, matching the add-side guard: a half-applied mass deletion
+    // is the worst outcome, because the files are gone AND the cause is harder
+    // to see.
+    let (dels, blocked_deletes) = apply_delete_guard(dels, opts.allow_bulk_delete);
+    if let Some(count) = blocked_deletes {
+        tracing::warn!(
+            team_id,
+            deletions = count,
+            limit = MAX_DELETES_PER_TICK,
+            "push held back: refusing to broadcast this many deletions without confirmation"
+        );
+    }
+
     progress.report(SyncPhase::Deleting, 0, dels.len() as u32);
     let del_stats = delete_phase(content_root, team_id, fc, &mut state, dels).await;
 
@@ -456,6 +584,7 @@ pub async fn tick_with_progress(
         failed: state.quarantined.len() as u32,
         oversize,
         blocked_new_files,
+        blocked_deletes,
     };
     let _ = pull_failures;
 
@@ -570,6 +699,110 @@ where
 
 /// Classify a per-item batch error: transient (429/503/timeout) → defer for the
 /// next tick; anything else → log and drop (the file stays dirty and retries).
+/// Unix seconds. Only used for the forbidden-path retry clock, which is a
+/// once-a-day decision, so a clock that jumps is not a problem worth solving.
+/// Remove local copies of files this device may no longer have.
+///
+/// # The ordering here is load-bearing
+///
+/// The engine decides "the user deleted this file" from `in state, absent from
+/// the scan` (`locally_deleted_paths`). Deleting a revoked file from disk while
+/// its state entry survives is indistinguishable from that, so the very next
+/// push would tombstone it — and a tombstone is team-wide. **Deleting one
+/// person's revoked copies would delete the directory off every teammate who
+/// still has access.**
+///
+/// So the state entry is removed FIRST, and the entry is removed rather than
+/// tombstoned: a path with no entry can never become a tombstone candidate,
+/// which is a stronger guarantee than relying on a filter. `mark_forbidden`
+/// comes before both so the push side skips the path even if this returns early.
+///
+/// Do not reorder these three steps. Do not "simplify" this by reusing the
+/// tombstone path.
+///
+/// # Why only after a full drain
+///
+/// `manifest_paths` must be the caller's ENTIRE visible manifest, not an
+/// incremental page. An incremental query returns only what changed, so almost
+/// every path would look absent and this would delete the whole vault.
+fn apply_revocations(
+    content_root: &str,
+    state: &mut LocalSyncState,
+    manifest_paths: &std::collections::HashSet<String>,
+    rules: &IgnoreRules,
+) -> Vec<String> {
+    let revoked: Vec<String> = state
+        .files
+        .iter()
+        .filter(|(path, f)| {
+            // Never synced, or already gone locally — nothing was distributed.
+            f.synced_version > 0
+                && !f.deleted_local
+                && !manifest_paths.contains(path.as_str())
+                // Paths the pull loop skips by design never appear in the
+                // manifest set, and treating them as revoked would delete them.
+                && !super::path_validator::is_retired(path)
+                && !super::conflict::is_under_conflicts_dir(path)
+                && !rules.is_ignored_with_ancestors(path)
+        })
+        .map(|(path, _)| path.clone())
+        .collect();
+
+    for path in &revoked {
+        // 1. Stop offering it. Done first so an early return below still leaves
+        //    the push side quiet.
+        state.mark_forbidden(path, "no longer accessible", now_secs());
+        // 2. Forget it, BEFORE touching the disk. See the ordering note above.
+        state.files.remove(path);
+        // 3. Only now remove the bytes.
+        let abs = Path::new(content_root).join(path);
+        let _ = std::fs::remove_file(&abs);
+    }
+    if !revoked.is_empty() {
+        // Count only — naming the paths would write a restricted directory's
+        // contents into the log of a machine that is no longer allowed to see it.
+        tracing::info!(
+            count = revoked.len(),
+            "removed local copies of files this device no longer has access to"
+        );
+    }
+    revoked
+}
+
+/// How often to drain the whole manifest instead of just the changes.
+///
+/// This is the only way a device learns it has LOST access to a directory: the
+/// rows stop being returned rather than arriving marked as gone, which an
+/// incremental `afterSeq` query cannot distinguish from "nothing changed".
+///
+/// Half an hour is a deliberate trade. Revocation cannot recall copies that were
+/// already taken (see the design's §0), so shortening this window buys very
+/// little real protection, while a full drain on every tick would make the
+/// manifest query proportional to the whole knowledge base forever.
+const RECONCILE_INTERVAL_SECS: u64 = 30 * 60;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The server refuses this path: the team restricted the directory and this
+/// device's actor is not granted it.
+///
+/// Recorded, not counted. It is not a failure the user can act on and not one
+/// that clears by retrying, so it must not land in `stats` — a permanent red
+/// count next to a directory somebody deliberately does not have access to is
+/// noise, and worse, it hints at the directory's existence.
+///
+/// Logged at debug for the same reason: `warn` would put a restricted path in
+/// the log of a machine whose owner is not supposed to know about it.
+fn record_forbidden(state: &mut LocalSyncState, label: &str, path: &str, message: &str) {
+    tracing::debug!("[oss_sync] {label} {path}: not accessible; will not retry today");
+    state.mark_forbidden(path, message, now_secs());
+}
+
 fn record_item_error(stats: &mut PhaseStats, label: &str, path: &str, status: u16, message: &str) {
     let e = SyncError::Internal(format!("FC item HTTP {status}: {message}"));
     if is_transient(&e) {
@@ -738,6 +971,12 @@ async fn pull_phase(
                     dl.download_url,
                 )),
                 BatchItemOutcome::Conflict { .. } => {}
+                // Quarantining would be wrong here: quarantine means "retry
+                // every tick", and this blob will not become available by
+                // asking again.
+                BatchItemOutcome::Forbidden { message } => {
+                    record_forbidden(state, "download", &it.path, &message);
+                }
                 BatchItemOutcome::Err { status, message } => {
                     tracing::warn!("[oss_sync] download {} HTTP {status}: {message}", it.path);
                     state.quarantine(
@@ -952,6 +1191,9 @@ async fn push_phase(
                     }
                 }
                 BatchItemOutcome::Conflict { .. } => { /* prepare does not CAS */ }
+                BatchItemOutcome::Forbidden { message } => {
+                    record_forbidden(state, "prepare", &pu.path, &message)
+                }
                 BatchItemOutcome::Err { status, message } => {
                     record_item_error(&mut stats, "prepare", &pu.path, status, &message)
                 }
@@ -1060,6 +1302,12 @@ async fn push_phase(
                         &mut stats,
                     )
                     .await
+                }
+                // Unreachable in practice — prepare would have refused first —
+                // but the arm has to exist and silently dropping it would hide
+                // a real change in server behaviour.
+                BatchItemOutcome::Forbidden { message } => {
+                    record_forbidden(state, "complete", &pu.path, &message)
                 }
                 BatchItemOutcome::Err { status, message } => {
                     record_item_error(&mut stats, "complete", &pu.path, status, &message)
@@ -1285,6 +1533,9 @@ async fn delete_phase(
                 // Remote advanced since our last sync; leave the entry so the next
                 // pull reconciles rather than deleting a file someone else changed.
                 BatchItemOutcome::Conflict { .. } => stats.conflicts += 1,
+                BatchItemOutcome::Forbidden { message } => {
+                    record_forbidden(state, "delete", p, &message)
+                }
                 BatchItemOutcome::Err { status, message } => {
                     record_item_error(&mut stats, "delete", p, status, &message)
                 }
@@ -1597,6 +1848,142 @@ fn plan_push(
 /// them off every teammate's disk — a client-side change silently destroying
 /// server-side data. Ignoring means "stop managing", never "delete": the state
 /// entries stay put, so relaxing the rule later lets the files resume syncing.
+/// Hold back a tombstone batch that is too large to send unasked.
+///
+/// All or nothing, matching the add-side guard and for a sharper reason: a
+/// tombstone is applied on every member's machine, so a partially sent mass
+/// deletion loses files for everyone AND makes the cause harder to find than if
+/// nothing had gone at all.
+/// Fetch specific listed-but-unfetched paths, on the user's say-so.
+///
+/// Goes through the ordinary `pull_phase`, so the ACL check, the blob
+/// reachability test and every quota apply unchanged. That reuse is the point:
+/// **"not downloaded" is not "not permitted"**. A path the caller has no access
+/// to never reaches the manifest at all, so it is not in `known` either — the
+/// two states are different and must stay so, in the engine and in the UI.
+///
+/// Returns how many landed. Paths that are unknown, or already on disk, are
+/// skipped rather than treated as errors: a second click on something that just
+/// arrived is not a failure.
+pub async fn fetch_known(
+    content_root: &str,
+    team_id: &str,
+    secret: Option<&str>,
+    fc: &FcClient,
+    paths: &[String],
+    progress: &ProgressSink,
+) -> Result<u32, SyncError> {
+    let key = match secret {
+        Some(secret) => Some(
+            crate::team_shared_env::derive_key(secret)
+                .map_err(|e| SyncError::Crypto(e.to_string()))?,
+        ),
+        None => None,
+    };
+    let mut state = LocalSyncState::load_at(team_id).map_err(SyncError::State)?;
+
+    let items: Vec<PullItem> = paths
+        .iter()
+        .filter_map(|path| {
+            let known = state.known.get(path)?;
+            Some(PullItem {
+                path: path.clone(),
+                cipher_hash: known.cipher_hash.clone(),
+                version: known.version,
+            })
+        })
+        .collect();
+    if items.is_empty() {
+        return Ok(0);
+    }
+
+    progress.report(SyncPhase::Pulling, 0, items.len() as u32);
+    let fetched_paths: Vec<String> = items.iter().map(|i| i.path.clone()).collect();
+    let pulled = pull_phase(content_root, key.as_ref(), fc, &mut state, items, progress).await;
+
+    // Only the ones that actually landed stop being merely listed. `pull_phase`
+    // writes `files` for what it wrote to disk, so this reads the result rather
+    // than assuming success.
+    for path in fetched_paths {
+        if state.files.contains_key(&path) {
+            state.clear_known(&path);
+        }
+    }
+    state.save_at(team_id).map_err(SyncError::State)?;
+    Ok(pulled)
+}
+
+/// Give back the disk a documents file occupies, keeping it listed.
+///
+/// # Three refusals, none of them configurable
+///
+/// * **Never `knowledge/`.** It is held eagerly by design; releasing it would
+///   extend laziness to a root nobody agreed to.
+/// * **Never a file with unpushed edits.** That throws away something the user
+///   wrote, which no amount of disk pressure justifies.
+/// * **Never through the tombstone path.** This deliberately does not touch
+///   `locally_deleted_paths` or emit a `delete_batch`: releasing local disk must
+///   not delete the file for every other member. That is also why it does not
+///   simply remove the file and let the next scan notice.
+///
+/// Returns the paths actually released, so the caller can report what it
+/// refused rather than claiming success for all of them.
+pub async fn release_local(
+    content_root: &str,
+    team_id: &str,
+    paths: &[String],
+) -> Result<Vec<String>, SyncError> {
+    let mut state = LocalSyncState::load_at(team_id).map_err(SyncError::State)?;
+    let mut released = Vec::new();
+
+    for path in paths {
+        if !is_lazy_path(path) {
+            tracing::warn!(team_id, path, "refusing to release: not a documents path");
+            continue;
+        }
+        if !state.release_local(path) {
+            // Either not held, or holding edits that were never pushed.
+            tracing::info!(team_id, path, "not released: absent or locally modified");
+            continue;
+        }
+        let abs = Path::new(content_root).join(path);
+        if let Err(e) = tokio::fs::remove_file(&abs).await {
+            tracing::warn!(
+                team_id,
+                path,
+                "release: removing the local copy failed: {e}"
+            );
+        }
+        prune_empty_parents(Path::new(content_root), path).await;
+        released.push(path.clone());
+    }
+
+    state.save_at(team_id).map_err(SyncError::State)?;
+    Ok(released)
+}
+
+/// Whether this path is fetched on demand rather than eagerly.
+///
+/// `documents/` only. `knowledge/` stays eager on purpose: its worth is that
+/// every member holds the same copy, and fetching it lazily would make agents
+/// and search answer differently for different people — which
+/// docs/specs/2026-09-01-lazy-documents-design.md accepts for documents as a
+/// trade and rejects for knowledge as self-defeating.
+fn is_lazy_path(path: &str) -> bool {
+    path.starts_with("documents/")
+}
+
+fn apply_delete_guard(
+    dels: Vec<(String, i32)>,
+    allow_bulk_delete: bool,
+) -> (Vec<(String, i32)>, Option<u32>) {
+    if !allow_bulk_delete && dels.len() > MAX_DELETES_PER_TICK {
+        let count = dels.len() as u32;
+        return (Vec::new(), Some(count));
+    }
+    (dels, None)
+}
+
 fn locally_deleted_paths(
     state: &LocalSyncState,
     scan: &[ScannedFile],
@@ -1687,6 +2074,9 @@ mod tests {
     fn empty_state() -> LocalSyncState {
         LocalSyncState {
             quarantined: Default::default(),
+            forbidden: Default::default(),
+            known: Default::default(),
+            last_reconcile_at: 0,
             schema_version: 1,
             team_id: "t".into(),
             last_server_seq: 0,
@@ -1720,6 +2110,246 @@ mod tests {
 
     fn sizes_of(pairs: &[(&'static str, u64)]) -> std::collections::HashMap<&'static str, u64> {
         pairs.iter().copied().collect()
+    }
+
+    // ── revocation cleanup ────────────────────────────────────────────────
+    //
+    // The assertion that matters most in this file is
+    // `apply_revocations_drops_the_state_entry_so_it_can_never_tombstone`.
+    // If that regresses, one member losing access deletes the directory off
+    // every teammate who still has it.
+
+    fn revocation_fixture() -> (tempfile::TempDir, LocalSyncState) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("knowledge/hr")).unwrap();
+        std::fs::create_dir_all(dir.path().join("knowledge/open")).unwrap();
+        std::fs::write(dir.path().join("knowledge/hr/salary.md"), b"secret\n").unwrap();
+        std::fs::write(dir.path().join("knowledge/open/notes.md"), b"public\n").unwrap();
+
+        let mut state = empty_state();
+        state
+            .files
+            .insert("knowledge/hr/salary.md".into(), synced_file(1));
+        state
+            .files
+            .insert("knowledge/open/notes.md".into(), synced_file(1));
+        (dir, state)
+    }
+
+    #[test]
+    fn apply_revocations_removes_only_what_the_manifest_no_longer_offers() {
+        let (dir, mut state) = revocation_fixture();
+        let root = dir.path().to_str().unwrap();
+        let rules = IgnoreRules::load(dir.path());
+
+        let visible: std::collections::HashSet<String> = ["knowledge/open/notes.md".to_string()]
+            .into_iter()
+            .collect();
+        let revoked = apply_revocations(root, &mut state, &visible, &rules);
+
+        assert_eq!(revoked, vec!["knowledge/hr/salary.md".to_string()]);
+        assert!(!dir.path().join("knowledge/hr/salary.md").exists());
+        assert!(
+            dir.path().join("knowledge/open/notes.md").exists(),
+            "a path still in the manifest must be untouched"
+        );
+    }
+
+    #[test]
+    fn apply_revocations_drops_the_state_entry_so_it_can_never_tombstone() {
+        let (dir, mut state) = revocation_fixture();
+        let root = dir.path().to_str().unwrap();
+        let rules = IgnoreRules::load(dir.path());
+
+        let visible: std::collections::HashSet<String> = ["knowledge/open/notes.md".to_string()]
+            .into_iter()
+            .collect();
+        apply_revocations(root, &mut state, &visible, &rules);
+
+        assert!(
+            !state.files.contains_key("knowledge/hr/salary.md"),
+            "the entry must be gone, not tombstoned"
+        );
+
+        // The real proof: the very next push must not offer a delete for it.
+        // With the entry still present this returns the path and the tombstone
+        // goes out to the whole team.
+        let scan: Vec<ScannedFile> = vec![scanned("knowledge/open/notes.md")];
+        let tombstones = locally_deleted_paths(&state, &scan, &rules);
+        assert!(
+            tombstones.is_empty(),
+            "revoked files must never be broadcast as deletions: {tombstones:?}"
+        );
+    }
+
+    #[test]
+    fn apply_revocations_marks_the_path_forbidden_so_push_skips_it() {
+        let (dir, mut state) = revocation_fixture();
+        let root = dir.path().to_str().unwrap();
+        let rules = IgnoreRules::load(dir.path());
+
+        let visible: std::collections::HashSet<String> = ["knowledge/open/notes.md".to_string()]
+            .into_iter()
+            .collect();
+        apply_revocations(root, &mut state, &visible, &rules);
+
+        assert!(state.is_forbidden_now("knowledge/hr/salary.md", now_secs()));
+    }
+
+    #[test]
+    fn apply_revocations_leaves_never_synced_and_ignored_paths_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("knowledge")).unwrap();
+        std::fs::write(dir.path().join("knowledge/pending.md"), b"x").unwrap();
+        let root = dir.path().to_str().unwrap();
+        let rules = IgnoreRules::load(dir.path());
+
+        let mut state = empty_state();
+        // Never synced: nothing was ever distributed, so nothing to revoke.
+        state
+            .files
+            .insert("knowledge/pending.md".into(), synced_file(0));
+
+        let revoked = apply_revocations(root, &mut state, &Default::default(), &rules);
+        assert!(revoked.is_empty());
+        assert!(dir.path().join("knowledge/pending.md").exists());
+    }
+
+    #[test]
+    fn forbidden_expires_so_a_later_grant_heals_without_a_notification() {
+        let mut state = empty_state();
+        state.mark_forbidden("knowledge/hr/a.md", "nope", 1_000);
+        assert!(state.is_forbidden_now("knowledge/hr/a.md", 1_000));
+        assert!(state.is_forbidden_now(
+            "knowledge/hr/a.md",
+            1_000 + crate::sync::oss::state::FORBIDDEN_RETRY_SECS - 1
+        ));
+        assert!(
+            !state.is_forbidden_now(
+                "knowledge/hr/a.md",
+                1_000 + crate::sync::oss::state::FORBIDDEN_RETRY_SECS
+            ),
+            "the entry must expire, or a grant could never take effect"
+        );
+    }
+
+    #[test]
+    fn marking_forbidden_clears_dirty_so_it_leaves_the_pending_set() {
+        let mut state = empty_state();
+        let mut f = synced_file(1);
+        f.dirty = true;
+        state.files.insert("knowledge/hr/a.md".into(), f);
+
+        state.mark_forbidden("knowledge/hr/a.md", "nope", 1_000);
+        assert!(
+            !state.files.get("knowledge/hr/a.md").unwrap().dirty,
+            "a file we may never upload is not pending upload"
+        );
+    }
+
+    // ── lazy documents ────────────────────────────────────────────────────
+    //
+    // `release_leaves_no_tombstone_candidates` is the one that matters. Giving
+    // back local disk must never look like a deletion, or freeing space on one
+    // machine removes the file from everyone's.
+
+    #[test]
+    fn release_leaves_no_tombstone_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("documents")).unwrap();
+        std::fs::write(dir.path().join("documents/a.pdf"), b"x").unwrap();
+        let rules = IgnoreRules::load(dir.path());
+
+        let mut state = empty_state();
+        state.files.insert("documents/a.pdf".into(), synced_file(3));
+
+        assert!(state.release_local("documents/a.pdf"));
+
+        // The scan no longer sees the file — which is exactly the shape of a
+        // local deletion. It must not be read as one.
+        let tombstones = locally_deleted_paths(&state, &[], &rules);
+        assert!(
+            tombstones.is_empty(),
+            "releasing local disk must never broadcast a deletion: {tombstones:?}"
+        );
+        assert!(state.is_known_only("documents/a.pdf"), "it stays listed");
+    }
+
+    #[test]
+    fn release_refuses_a_file_with_unpushed_edits() {
+        let mut state = empty_state();
+        let mut f = synced_file(1);
+        f.dirty = true;
+        state.files.insert("documents/draft.md".into(), f);
+
+        assert!(
+            !state.release_local("documents/draft.md"),
+            "releasing would throw away something the user wrote"
+        );
+        assert!(state.files.contains_key("documents/draft.md"));
+    }
+
+    #[test]
+    fn only_documents_are_lazy() {
+        assert!(is_lazy_path("documents/hr/a.pdf"));
+        assert!(!is_lazy_path("knowledge/notes/a.md"));
+        // A sibling that merely starts with the same letters is not the root.
+        assert!(!is_lazy_path("documents-archive/a.pdf"));
+    }
+
+    #[test]
+    fn a_listed_file_never_enters_the_materialized_map() {
+        let mut state = empty_state();
+        state.note_known("documents/big.zip", 2, "abc", 4096);
+
+        assert!(state.is_known_only("documents/big.zip"));
+        assert!(
+            !state.files.contains_key("documents/big.zip"),
+            "a listed file in `files` would become a tombstone candidate"
+        );
+        // And it never overwrites a real entry.
+        state
+            .files
+            .insert("documents/big.zip".into(), synced_file(2));
+        state.note_known("documents/big.zip", 3, "def", 4096);
+        assert!(!state.is_known_only("documents/big.zip"));
+    }
+
+    // ── the delete-side guard ─────────────────────────────────────────────
+    //
+    // `locally_deleted_paths` cannot tell a deletion from a scan that came back
+    // short. These pin the arithmetic the guard applies to its result; the
+    // all-or-nothing decision itself lives in `tick` and is asserted through
+    // the counts below.
+
+    #[test]
+    fn delete_guard_threshold_is_all_or_nothing() {
+        // Under the limit: everything goes.
+        let under: Vec<(String, i32)> = (0..MAX_DELETES_PER_TICK)
+            .map(|i| (format!("knowledge/{i}.md"), 1))
+            .collect();
+        let (kept, blocked) = apply_delete_guard(under.clone(), false);
+        assert_eq!(kept.len(), MAX_DELETES_PER_TICK);
+        assert_eq!(blocked, None);
+
+        // One over: NOTHING goes. A half-applied mass deletion is the worst
+        // outcome — the files are gone for everyone and the cause is harder to
+        // see than if none had been.
+        let mut over = under.clone();
+        over.push(("knowledge/extra.md".into(), 1));
+        let (kept, blocked) = apply_delete_guard(over.clone(), false);
+        assert!(kept.is_empty(), "a partial mass delete is not an option");
+        assert_eq!(blocked, Some(over.len() as u32));
+    }
+
+    #[test]
+    fn delete_guard_yields_to_an_explicit_confirmation() {
+        let over: Vec<(String, i32)> = (0..MAX_DELETES_PER_TICK + 5)
+            .map(|i| (format!("knowledge/{i}.md"), 1))
+            .collect();
+        let (kept, blocked) = apply_delete_guard(over.clone(), true);
+        assert_eq!(kept.len(), over.len(), "a person said yes");
+        assert_eq!(blocked, None);
     }
 
     #[test]

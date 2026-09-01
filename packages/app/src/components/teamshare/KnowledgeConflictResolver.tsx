@@ -51,7 +51,7 @@ async function readText(path: string): Promise<string | null> {
 export function KnowledgeConflictResolver({ path }: { path: string }) {
   const { t } = useTranslation()
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
-  const knowledgeDir = useTeamConflictsStore((s) => s.knowledgeDir)
+  const syncRoot = useTeamConflictsStore((s) => s.syncRoot)
   const bySyncKey = useTeamConflictsStore((s) => s.bySyncKey)
   const absPathFor = useTeamConflictsStore((s) => s.absPathFor)
   const load = useTeamConflictsStore((s) => s.load)
@@ -59,8 +59,8 @@ export function KnowledgeConflictResolver({ path }: { path: string }) {
   const closeWhere = useTabsStore((s) => s.closeWhere)
 
   const syncKey = React.useMemo(
-    () => teamSyncKeyForPath(path, { knowledgeDir, workspacePath }),
-    [path, knowledgeDir, workspacePath],
+    () => teamSyncKeyForPath(path, { syncRoot, workspacePath }),
+    [path, syncRoot, workspacePath],
   )
   const conflicts = React.useMemo(
     () => (syncKey ? (bySyncKey[syncKey] ?? []) : []),

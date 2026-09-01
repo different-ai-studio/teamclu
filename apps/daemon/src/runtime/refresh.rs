@@ -459,6 +459,31 @@ impl RuntimeRefreshCoordinator {
         }
     }
 
+    /// Drop one pending kind after it has been applied independently.
+    ///
+    /// Skills can be cache-invalidated without applying MCP/env/provider
+    /// changes. When `kind` is the last remaining kind the workspace is
+    /// removed (clean); otherwise other kinds stay pending.
+    pub async fn clear_change_kind(&self, workspace_id: &str, kind: RefreshChangeKind) {
+        let mut guard = self.inner.write().await;
+        let Some(state) = guard.workspaces.get_mut(workspace_id) else {
+            return;
+        };
+        state.change_kinds.remove(&kind);
+        if state.change_kinds.is_empty() {
+            guard.workspaces.remove(workspace_id);
+            return;
+        }
+        state.strongest_impact = strongest_impact(state.change_kinds.iter().copied());
+        state.recommended_action = recommended_action_for_kinds(&state.change_kinds);
+        if state.status == WorkspaceRefreshStatus::Applying {
+            state.status = WorkspaceRefreshStatus::Pending;
+        }
+        state.apply_attempt_id = None;
+        state.auto_apply_blocked_by_active_runtime = false;
+        state.last_error = None;
+    }
+
     pub async fn mark_apply_failed(
         &self,
         workspace_id: &str,
@@ -775,6 +800,39 @@ mod tests {
         let dto = coordinator.runtime_refresh_dto("ws-apply-race").await;
         assert_eq!(dto.status, "pending");
         assert!(dto.change_kinds.contains(&"skills".to_string()));
+        assert!(dto.change_kinds.contains(&"mcp".to_string()));
+    }
+
+    #[tokio::test]
+    async fn clear_change_kind_keeps_other_pending_kinds() {
+        let coordinator = RuntimeRefreshCoordinator::new();
+        let workspace = ws_path("ws-clear-kind");
+        coordinator
+            .record_change(
+                "ws-clear-kind",
+                &workspace,
+                RefreshChangeKind::Skills,
+                RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+        coordinator
+            .record_change(
+                "ws-clear-kind",
+                &workspace,
+                RefreshChangeKind::Mcp,
+                RefreshSource::FilesystemWatch,
+            )
+            .await
+            .unwrap();
+
+        coordinator
+            .clear_change_kind("ws-clear-kind", RefreshChangeKind::Skills)
+            .await;
+
+        let dto = coordinator.runtime_refresh_dto("ws-clear-kind").await;
+        assert_eq!(dto.status, "pending");
+        assert!(!dto.change_kinds.iter().any(|k| k == "skills"));
         assert!(dto.change_kinds.contains(&"mcp".to_string()));
     }
 

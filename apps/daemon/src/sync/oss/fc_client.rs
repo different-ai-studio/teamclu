@@ -114,6 +114,14 @@ pub enum BatchItemOutcome<T> {
         status: u16,
         message: String,
     },
+    /// The team has restricted this path and the caller is not granted it.
+    ///
+    /// Its own variant rather than an `Err { status: 403 }` because the engine
+    /// treats it as terminal-and-quiet: no retry, no error counter, no red UI.
+    /// Every other `Err` is something that might work next tick.
+    Forbidden {
+        message: String,
+    },
 }
 
 /// One version history entry.
@@ -133,9 +141,7 @@ pub struct VersionInfo {
 
 /// Result of POST /v1/teams.
 ///
-/// The Cloud API response shape: `{ id, name, slug, createdAt, aiGatewayEndpoint, litellmKey }`.
-/// `aiGatewayEndpoint` and `litellmKey` are nullable when LiteLLM provisioning
-/// is skipped (e.g. local dev with LITELLM_MASTER_KEY unset).
+/// The Cloud API response shape: `{ id, name, slug, createdAt }`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTeamResult {
@@ -143,10 +149,6 @@ pub struct CreateTeamResult {
     pub team_id: String,
     #[serde(rename = "slug")]
     pub team_slug: String,
-    #[serde(default)]
-    pub ai_gateway_endpoint: Option<String>,
-    #[serde(default)]
-    pub litellm_key: Option<String>,
 }
 
 pub struct FcClient {
@@ -164,7 +166,7 @@ impl FcClient {
         }
     }
 
-    /// POST /v1/teams — unified team creation. Provisions LiteLLM team + key
+    /// POST /v1/teams — unified team creation. Writes the teams row
     /// server-side and seeds team_workspace_config in one call. The legacy
     /// `/sync/create-team` endpoint was removed in 2026-05.
     ///
@@ -618,6 +620,18 @@ async fn map_fc_response<T: serde::de::DeserializeOwned>(
             });
         }
 
+        // A restricted knowledge directory. Checked before the generic 403 so
+        // it is not mistaken for an auth failure — the two want opposite
+        // retry behaviour.
+        if code == "PathForbidden" {
+            return Err(SyncError::PathForbidden(
+                body["error"]
+                    .as_str()
+                    .unwrap_or("path forbidden")
+                    .to_string(),
+            ));
+        }
+
         // Auth errors
         if status.as_u16() == 403 || code == "P0403" {
             return Err(SyncError::Auth(
@@ -683,6 +697,14 @@ fn parse_batch_item<T: serde::de::DeserializeOwned>(v: &Value) -> BatchItemOutco
                     .get("remoteHash")
                     .and_then(|x| x.as_str())
                     .map(|s| s.to_string()),
+            }
+        } else if v.get("code").and_then(|c| c.as_str()) == Some("PathForbidden") {
+            BatchItemOutcome::Forbidden {
+                message: v
+                    .get("error")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("path forbidden")
+                    .to_string(),
             }
         } else {
             BatchItemOutcome::Err {
@@ -777,6 +799,35 @@ mod tests {
                 assert_eq!(status, 410);
                 assert_eq!(message, "session expired");
             }
+            other => panic!("expected Err, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_batch_item_path_forbidden_is_its_own_outcome() {
+        // Must NOT come back as `Err { status: 403 }`: the engine retries an
+        // Err and deliberately does not retry this.
+        let v = json!({
+            "ok": false,
+            "status": 403,
+            "code": "PathForbidden",
+            "error": "path is not accessible: knowledge/hr/a.md",
+        });
+        match parse_batch_item::<CompleteResult>(&v) {
+            BatchItemOutcome::Forbidden { message } => {
+                assert!(message.contains("not accessible"));
+            }
+            other => panic!("expected Forbidden, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_batch_item_plain_403_is_still_an_error() {
+        // A 403 without the code is an auth problem, which DOES clear by
+        // retrying. Collapsing the two would make real auth failures permanent.
+        let v = json!({ "ok": false, "status": 403, "error": "forbidden" });
+        match parse_batch_item::<CompleteResult>(&v) {
+            BatchItemOutcome::Err { status, .. } => assert_eq!(status, 403),
             other => panic!("expected Err, got {other:?}"),
         }
     }

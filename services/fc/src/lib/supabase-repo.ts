@@ -1,8 +1,7 @@
 /**
- * Path A business repository — PostgREST + caller JWT + RLS (default production).
+ * The business repository — PostgREST + caller JWT + RLS.
  *
- * Parity target: lib/pg-repo/* (Path B). New methods belong here AND in pg-repo
- * unless explicitly supabase-only. See README.md § Dual backend paths.
+ * Contract: lib/repository-contract.ts.
  */
 import { randomUUID } from "node:crypto";
 import { createClient as defaultCreateClient } from "@supabase/supabase-js";
@@ -35,18 +34,18 @@ function assertNewOrgAllowed(): void {
 }
 
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
-import { isLegalStatusTransition } from "./pg-repo/app-status.js";
-// Shared with the pg-repo twin on purpose — validation only; keep free of
-// PostgREST/Drizzle calls so both backends can import these helpers.
+import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
+import { isLegalStatusTransition } from "./validation/app-status.js";
+// Backend-neutral request validation — keep free of PostgREST calls.
 import {
   assertTransportShape as assertTeamMcpTransportShape,
   readServerFields as readTeamMcpServerFields,
   NAME_RE as TEAM_MCP_NAME_RE,
-} from "./pg-repo/team-mcp.js";
+} from "./validation/team-mcp.js";
 import {
   assertWritableKeyId as assertWritableTeamEnvKeyId,
   readEnvelope as readTeamEnvEnvelope,
-} from "./pg-repo/team-env-secrets.js";
+} from "./validation/team-env-secrets.js";
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
 import { appOssObjectName, deployUnavailable, parseOptionalGitCommitSha, parseDeployToken, assertDeployAllowed, checkDeployInProgress, needsDatabase } from "./provisioning/app-deploy.js";
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
@@ -66,9 +65,6 @@ import {
 } from "./provisioning/app-secrets.js";
 import { normalizeAgentTypes } from "./agent-types.js";
 import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-status.js";
-import { computeRange, getLiteLlmSql, queryTeamUsage } from "./litellm-usage.js";
-import { rollUpUsageByOwner, type UsageOwner } from "./usage-attribution.js";
-import { litellmFetch as sharedLitellmFetch } from "./litellm.js";
 import {
   REALTIME_TRANSPORT_OPTS, requiredRow, requiredString, requiredInteger,
   DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
@@ -81,84 +77,6 @@ import {
 export { publishableKeyFromEnv } from "./supabase-repo/shared.js";
 export { createSupabaseAuthRepository } from "./supabase-repo/auth.js";
 import { normalizePhone } from "./supabase-repo/phone-auth.js";
-
-/**
- * `actors.id` is a uuid column: a non-uuid in the `.in()` list makes PostgREST
- * reject the whole request (22P02), which would take the usage screen down over
- * one malformed LiteLLM user_id. Unmatched ids just report as "unattributed".
- */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Map spending actor ids → the accountable human (supabase/PostgREST twin of
- * pg-repo's resolveOwnersForTeam; kept behaviourally identical).
- *
- * Three flat queries rather than one embedded select: PostgREST resource
- * embedding would need the actors→agents FK relationship spelled by name, and
- * a rename there fails at runtime, not build time.
- *
- * Team-scoped on purpose — ids come from LiteLLM, so an unscoped lookup would
- * let any key surface an unrelated team's member name.
- */
-async function resolveOwnersForTeam(supabase, teamId, actorIds): Promise<Map<string, UsageOwner>> {
-  const ids = actorIds.filter((id) => UUID_RE.test(id));
-  const out = new Map<string, UsageOwner>();
-  if (!ids.length) return out;
-
-  const actorRows = await chunkedIn(ids, async (chunk) => {
-    const { data, error } = await supabase
-      .from("actors")
-      .select("id, actor_type, display_name")
-      .eq("team_id", teamId)
-      .in("id", chunk);
-    if (error) throw error;
-    return data ?? [];
-  });
-  if (!actorRows.length) return out;
-
-  const agentIds = actorRows.filter((a) => a.actor_type === "agent").map((a) => a.id);
-  const ownerOf = new Map<string, string>();
-  if (agentIds.length) {
-    const agentRows = await chunkedIn(agentIds, async (chunk) => {
-      const { data, error } = await supabase
-        .from("agents")
-        .select("id, owner_member_id")
-        .in("id", chunk);
-      if (error) throw error;
-      return data ?? [];
-    });
-    for (const r of agentRows) if (r.owner_member_id) ownerOf.set(r.id, r.owner_member_id);
-  }
-
-  // Owner display names: an agent's owner need not be among the spending actors
-  // (a human can own a daemon and never spend under their own key), so their
-  // actor row may not be in actorRows and has to be fetched separately.
-  const nameOf = new Map<string, string>(actorRows.map((a) => [a.id, a.display_name]));
-  const missing = [...new Set([...ownerOf.values()])].filter((id) => !nameOf.has(id));
-  if (missing.length) {
-    const ownerRows = await chunkedIn(missing, async (chunk) => {
-      const { data, error } = await supabase
-        .from("actors")
-        .select("id, display_name")
-        .eq("team_id", teamId)
-        .in("id", chunk);
-      if (error) throw error;
-      return data ?? [];
-    });
-    for (const r of ownerRows) nameOf.set(r.id, r.display_name);
-  }
-
-  for (const a of actorRows) {
-    if (a.actor_type === "agent") {
-      const ownerId = ownerOf.get(a.id);
-      const ownerName = ownerId ? nameOf.get(ownerId) : undefined;
-      if (ownerId && ownerName) out.set(a.id, { actorId: ownerId, displayName: ownerName });
-      continue;
-    }
-    out.set(a.id, { actorId: a.id, displayName: a.display_name });
-  }
-  return out;
-}
 
 /**
  * Longest PostgREST URL we let out of this process.
@@ -358,9 +276,6 @@ export function createSupabaseBusinessRepository(options) {
     accessToken,
     createClient = defaultCreateClient,
     createServiceRoleClient: createServiceRoleClientOpt,
-    provisionLiteLlm,
-    // Injectable for tests; defaults to proxying the LiteLLM gateway /v1/models.
-    fetchLiteLlmModels: fetchLiteLlmModelsOpt,
     startDeploy,
     finalizeDeploy,
     // Set when the two above are absent: names the environment variable that
@@ -376,10 +291,6 @@ export function createSupabaseBusinessRepository(options) {
     // reason names the variable so the 503 is actionable.
     appData,
     appDataUnavailableReason,
-    // Injectable for tests; defaults to querying the LiteLLM RDS directly.
-    queryLiteLlmUsage = (litellmTeamId, range) => queryTeamUsage(getLiteLlmSql(), litellmTeamId, range),
-    // Injectable for tests; defaults to the shared LiteLLM HTTP client.
-    litellmFetch: litellmFetchOpt,
     trustedExternalJwtSecret = process.env.TRUSTED_EXTERNAL_JWT_SECRET,
     // Optional push hook — called after every successful message INSERT. Best-effort:
     // errors are logged and swallowed so insert outcome is never affected.
@@ -481,39 +392,6 @@ export function createSupabaseBusinessRepository(options) {
       throw new ApiError(403, "forbidden", "not a member of this team");
     }
     return actor.id as string;
-  }
-
-  // Shared by setupLiteLlm() and ensureMemberKey(): provisions a LiteLLM team
-  // (if not already configured) and persists litellm_team_id +
-  // ai_gateway_endpoint via the update_team_litellm RPC. Returns the FULL
-  // provisioning result (including the LiteLLM-generated litellmTeamId) so
-  // callers never need to reconstruct/guess the id — provisionTeamLiteLLM
-  // persists whatever team_id LiteLLM's own POST /team/new assigns, NOT a
-  // deterministic `tc-${teamId}` value, so any code that assumed the latter
-  // would silently talk to the wrong (or a non-existent) LiteLLM team.
-  async function provisionLiteLlmForTeam(teamId) {
-    const provisioner = provisionLiteLlm ?? (await import("./team-provisioning.js")).provisionTeamLiteLLM;
-    const { data: teamRow, error: teamErr } = await supabase
-      .from("teams")
-      .select("id, name")
-      .eq("id", teamId)
-      .single();
-    if (teamErr) throw teamErr;
-    const provisioning = await provisioner(teamRow?.name ?? teamId);
-    if (!provisioning) {
-      throw new ApiError(
-        503,
-        "litellm_unavailable",
-        "LiteLLM provisioning is not configured (LITELLM_MASTER_KEY missing)",
-      );
-    }
-    const { error: rpcErr } = await supabase.rpc("update_team_litellm", {
-      p_team_id: teamId,
-      p_litellm_team_id: provisioning.litellmTeamId,
-      p_ai_gateway_endpoint: provisioning.aiGatewayEndpoint,
-    });
-    if (rpcErr) throw rpcErr;
-    return provisioning;
   }
 
   // Escalation hatch for the handful of writes the caller's own token cannot
@@ -708,8 +586,10 @@ export function createSupabaseBusinessRepository(options) {
         p_name: input.name ?? null,
         p_slug: input.slug ?? null,
         p_display_name: input.displayName ?? null,
-        p_litellm_team_id: input.litellmTeamId ?? null,
-        p_ai_gateway_endpoint: input.aiGatewayEndpoint ?? null,
+        // Still on create_team's signature; the AI gateway is configured
+        // per-team via setLlmConfig instead, so these are always null.
+        p_litellm_team_id: null,
+        p_ai_gateway_endpoint: null,
         p_oid: fallbackOrg,
       });
       if (error) throw error;
@@ -896,18 +776,6 @@ export function createSupabaseBusinessRepository(options) {
         .schema("amux")
         .rpc("remove_team_actor", { p_actor_id: actorId });
       if (error) throw error;
-
-      // Best-effort: delete the removed actor's LiteLLM key (replaces the
-      // legacy POST /ai/remove-member endpoint). Never blocks/fails actor
-      // removal — deleteMemberKey swallows its own errors, and we also guard
-      // the dynamic import itself so a module-resolution failure can't throw
-      // out of an already-committed removal (parity with pg-repo).
-      try {
-        const { deleteMemberKey } = await import("./team-provisioning.js");
-        await deleteMemberKey(actorId);
-      } catch (e) {
-        console.warn("[removeTeamActor] LiteLLM key cleanup skipped:", (e as any)?.message);
-      }
     },
 
     async updateCurrentActorProfile(actorId, { displayName, avatarUrl }) {
@@ -981,315 +849,27 @@ export function createSupabaseBusinessRepository(options) {
     },
 
 
-    async setupLiteLlm(teamId) {
-      // Lazy import keeps the LiteLLM client out of cold-path repo constructors
-      // and makes it trivial to inject in tests via options.provisionLiteLlm.
-      // Persist litellm_team_id + ai_gateway_endpoint via SECURITY DEFINER
-      // RPC because team_workspace_config.litellm_team_id is guarded against
-      // direct authenticated UPDATEs (see 20260527000004 guard trigger).
-      const provisioning = await provisionLiteLlmForTeam(teamId);
-      return {
-        aiGatewayEndpoint: provisioning.aiGatewayEndpoint,
-        litellmKey: provisioning.litellmKey,
-      };
-    },
-
-    // Idempotently issues the CALLER's own per-member LiteLLM virtual key,
-    // auto-provisioning the team's LiteLLM team first if it hasn't been set
-    // up yet (A2-1). There is intentionally NO actorId parameter: the caller
-    // can only ever provision a key for themselves, resolved team-scoped via
-    // requireCallerTeamMemberActor (401 if unauthenticated, 403 if not a
-    // member of teamId).
-    async ensureMemberKey(teamId) {
-      const actorId = await requireCallerTeamMemberActor(teamId);
-
-      const { data: cfg, error: cfgErr } = await supabase
-        .from("team_workspace_config")
-        .select("litellm_team_id")
-        .eq("team_id", teamId)
-        .maybeSingle();
-      if (cfgErr) throw cfgErr;
-
-      let litellmTeamId = cfg?.litellm_team_id ?? null;
-      if (!litellmTeamId) {
-        // provisionLiteLlmForTeam persists the LiteLLM-generated team_id (from
-        // provisionTeamLiteLLM's POST /team/new) into team_workspace_config —
-        // NOT a deterministic `tc-${teamId}` value — so we take the id
-        // straight from its return value rather than reconstructing it.
-        const provisioning = await provisionLiteLlmForTeam(teamId);
-        litellmTeamId = provisioning.litellmTeamId;
-      }
-      if (!litellmTeamId) {
-        throw new ApiError(
-          502,
-          "litellm_team_id_missing",
-          "LiteLLM team id was not persisted after setup",
-        );
-      }
-
-      const { ensureMemberKeyFor } = await import("./team-provisioning.js");
-      return ensureMemberKeyFor(litellmTeamId, actorId);
-    },
-
-    // Team-wide LiteLLM token + spend usage from the migrated LiteLLM RDS.
-    // Any team member may read. The LiteLLM team id is NOT a deterministic
-    // `tc-${teamId}` value — it's provisioner-generated and persisted into
-    // team_workspace_config.litellm_team_id by setupLiteLlm/ensureMemberKey
-    // (see the read pattern mirrored from ensureMemberKey above). If the team
-    // has never provisioned LiteLLM, return an empty usage shape without
-    // querying LiteLLM.
-    async getLiteLlmUsage(teamId, opts: { range?: string; date?: string } = {}) {
-      await requireCallerTeamMember(teamId);
-      const range = computeRange((opts.range ?? "month") as any, opts.date);
-
-      const { data: cfg, error: cfgErr } = await supabase
-        .from("team_workspace_config")
-        .select("litellm_team_id")
-        .eq("team_id", teamId)
-        .maybeSingle();
-      if (cfgErr) throw cfgErr;
-
-      const litellmTeamId = cfg?.litellm_team_id ?? null;
-      if (!litellmTeamId) {
-        return {
-          litellmTeamId: null,
-          range: range.range,
-          startDate: range.startDate,
-          endDate: range.endDate,
-          startUtc: range.startUtc,
-          endUtc: range.endUtc,
-          summary: {
-            totalTokens: 0,
-            promptTokens: 0,
-            completionTokens: 0,
-            totalSpend: 0,
-            requestCount: 0,
-          },
-          maxBudget: null,
-          members: [],
-          byModel: [],
-        };
-      }
-
-      const usage = await queryLiteLlmUsage(litellmTeamId, range);
-      return {
-        ...usage,
-        members: await rollUpUsageByOwner(usage.members ?? [], (ids) => resolveOwnersForTeam(supabase, teamId, ids)),
-      };
-    },
-
-    // Lists the team's LiteLLM virtual keys (masked). Any team member may
-    // read — resolved via requireCallerTeamMemberActor (401/403). The
-    // LiteLLM team id is NOT a deterministic `tc-${teamId}` value; it's
-    // provisioner-generated and persisted into
-    // team_workspace_config.litellm_team_id (see ensureMemberKey/getLiteLlmUsage
-    // above). If the team has never provisioned LiteLLM, return an empty
-    // keys list without calling LiteLLM.
-    async listLiteLlmKeys(teamId) {
-      await requireCallerTeamMemberActor(teamId);
-
-      const { data: cfg, error: cfgErr } = await supabase
-        .from("team_workspace_config")
-        .select("litellm_team_id")
-        .eq("team_id", teamId)
-        .maybeSingle();
-      if (cfgErr) throw cfgErr;
-
-      const litellmTeamId = cfg?.litellm_team_id ?? null;
-      if (!litellmTeamId) {
-        return { teamId: null, keys: [] };
-      }
-
-      const fetcher = litellmFetchOpt ?? sharedLitellmFetch;
-      const res = await fetcher(`/team/info?team_id=${litellmTeamId}`, "GET");
-      if (!res.ok) {
-        throw new ApiError(502, "litellm_error", "Failed to fetch team info from LiteLLM");
-      }
-      const keys = ((res.data as any)?.keys || []).map((k: any) => ({
-        key: k.token ? `${k.token.slice(0, 10)}...` : "",
-        alias: k.key_alias || "",
-        spend: k.spend || 0,
-        created_at: k.created_at || "",
-      }));
-      return { teamId: litellmTeamId, keys };
-    },
-
-    // Sets the team's LiteLLM max budget. Owner-only — resolved via
-    // requireCallerTeamOwner (401/403). The LiteLLM team id is read from the
-    // persisted team_workspace_config.litellm_team_id, NEVER reconstructed as
-    // `tc-${teamId}`. If the team has never provisioned LiteLLM, throws 409
-    // litellm_not_provisioned rather than implicitly setting it up — owner
-    // intent must be explicit (call /litellm/setup first).
-
-    // ── team credits ────────────────────────────────────────────────────────
-    // Every read and write goes through the AI gateway rather than these
-    // tables directly: it is the ledger's only writer (design §4.9.1), and
-    // routing reads the same way keeps period boundaries and shapes identical
-    // on both sides of the billing screen.
-    //
-    // Permission split per §12.6: balance and usage are visible to every
-    // member — an exhausted wallet stops their work, so they must be able to
-    // see why — while the ledger and every mutation are owner-only.
-
-    /**
-     * Resolve actor ids in a usage report to display names.
-     *
-     * Done here rather than in the gateway: the gateway owns spend, not how a
-     * person is presented. It also has no business reading the actor directory
-     * — its grant is deliberately narrow.
-     */
-    async _nameUsageActors(teamId: string, report: any) {
-      const ids = (report?.byActor ?? []).map((r: any) => r.actorId).filter(Boolean);
-      if (!ids.length) return report;
-      const names = await (async () => {
-        const { data } = await supabase
-          .from("actors").select("id, display_name")
-          .eq("team_id", teamId).in("id", ids);
-        return new Map((data ?? []).map((r: any) => [r.id, r.display_name]));
-      })();
-      return {
-        ...report,
-        byActor: report.byActor.map((r: any) => ({
-          ...r,
-          // null display name = the unattributed bucket; the UI renders a
-          // localized label rather than a raw uuid.
-          displayName: r.actorId ? (names.get(r.actorId) ?? null) : null,
-        })),
-      };
-    },
-    async getTeamCredits(teamId: string) {
-      await requireCallerTeamMember(teamId);
-      const [summary, usage] = await Promise.all([
-        aiGateway.creditsSummary(teamId),
-        aiGateway.usage(teamId, { range: "month" }),
-      ]);
-      return {
-        teamId,
-        balanceCredits: summary.balanceCredits ?? 0,
-        period: { range: usage.range, startUtc: usage.startUtc, endUtc: usage.endUtc },
-        usedCredits: usage.summary?.credits ?? 0,
-      };
-    },
-    async getCreditUsage(teamId: string, opts: { range?: string; date?: string } = {}) {
-      await requireCallerTeamMember(teamId);
-      return this._nameUsageActors(teamId, await aiGateway.usage(teamId, opts));
-    },
-    async getCreditLedger(teamId: string, opts: { limit?: number } = {}) {
-      await requireCallerTeamOwner(teamId);
-      return aiGateway.ledger(teamId, opts.limit);
-    },
-    async topUpCredits(teamId: string, input: any) {
-      await requireCallerTeamOwner(teamId);
-      const amount = Number(input?.amountCredits);
-      if (!Number.isSafeInteger(amount) || amount <= 0) {
-        throw new ApiError(400, "invalid_request", "amountCredits must be a positive integer");
-      }
-      // Required rather than generated here: an idempotency key the server
-      // invents is a new key on every retry, which defeats the point.
-      if (!input?.idempotencyKey) {
-        throw new ApiError(400, "invalid_request", "idempotencyKey is required");
-      }
-      return aiGateway.topUp(teamId, {
-        amountCredits: amount,
-        kind: input.kind ?? "top_up",
-        idempotencyKey: input.idempotencyKey,
-        note: input.note ?? null,
-      });
-    },
-    async listCreditPackages(teamId: string) {
-      await requireCallerTeamMember(teamId);
-      return { items: await listCreditPackages() };
-    },
-    async createCreditCheckoutSession(teamId: string, input: any) {
-      await requireCallerTeamOwner(teamId);
-      const priceId = String(input?.priceId ?? "").trim();
-      if (!priceId) {
-        throw new ApiError(400, "invalid_request", "priceId is required");
-      }
-      return createCheckoutSession({ teamId, priceId });
-    },
-    async getMemberQuotas(teamId: string) {
-      await requireCallerTeamMember(teamId);
-      return aiGateway.quotas(teamId);
-    },
-    async setMemberQuotas(teamId: string, input: any) {
-      await requireCallerTeamOwner(teamId);
-      return aiGateway.setQuotas(teamId, input ?? {});
-    },
-
-    async setLiteLlmBudget(teamId, { maxBudget }: { maxBudget?: unknown } = {}) {
-      await requireCallerTeamOwner(teamId);
-
-      if (maxBudget === undefined || maxBudget === null || Number.isNaN(Number(maxBudget))) {
-        throw new ApiError(400, "missing_maxBudget", "maxBudget is required and must be numeric");
-      }
-
-      const { data: cfg, error: cfgErr } = await supabase
-        .from("team_workspace_config")
-        .select("litellm_team_id")
-        .eq("team_id", teamId)
-        .maybeSingle();
-      if (cfgErr) throw cfgErr;
-
-      const litellmTeamId = cfg?.litellm_team_id ?? null;
-      if (!litellmTeamId) {
-        throw new ApiError(409, "litellm_not_provisioned", "team has not provisioned LiteLLM");
-      }
-
-      const fetcher = litellmFetchOpt ?? sharedLitellmFetch;
-      const res = await fetcher("/team/update", "POST", {
-        team_id: litellmTeamId,
-        max_budget: Number(maxBudget),
-      });
-      if (!res.ok) {
-        throw new ApiError(502, "litellm_error", "Failed to update LiteLLM budget");
-      }
-
-      return { maxBudget: Number(maxBudget) };
-    },
-
     async getWorkspaceConfig(teamId) {
       const { data: configData, error: configError } = await supabase
         .from("team_workspace_config")
-        .select("sync_mode, litellm_team_id, ai_gateway_endpoint, llm_enabled, llm_base_url, llm_models")
+        .select("sync_mode, litellm_team_id, llm_enabled, llm_base_url, llm_models")
         .eq("team_id", teamId)
         .maybeSingle();
       if (configError) throw configError;
       const configRes = { data: configData };
-      const aiGatewayEndpoint = configRes.data?.ai_gateway_endpoint ?? null;
-      // availableModels proxies the LiteLLM gateway GET /v1/models (the gateway
-      // authoritatively lists its models) and degrades to [] whenever the
-      // dep/endpoint/credential is missing or the call throws — it must never
-      // fail the workspace-config request. FC does not persist a per-team
-      // LiteLLM key, so the FC-level LITELLM_MASTER_KEY is used (same credential
-      // setupLiteLlm/provisioning uses; the catalogue is gateway-wide).
-      let availableModels: Array<{ id: string; name: string }> = [];
-      try {
-        if (aiGatewayEndpoint) {
-          const fetcher =
-            fetchLiteLlmModelsOpt ??
-            (await import("./team-provisioning.js")).fetchLiteLlmModels;
-          const key = process.env.LITELLM_MASTER_KEY || "";
-          if (fetcher && key) {
-            const out = await fetcher(aiGatewayEndpoint, key);
-            if (Array.isArray(out)) availableModels = out;
-          }
-        }
-      } catch {
-        availableModels = [];
-      }
       const storedModels = Array.isArray(configRes.data?.llm_models) ? configRes.data.llm_models : [];
       return {
         syncMode: configRes.data?.sync_mode ?? null,
+        // Nothing provisions this any more, but it is still RETURNED (null where
+        // absent) so already-shipped desktop and iOS builds keep parsing the
+        // response — they do not update in lockstep with the server. Dropping it
+        // from the payload is gated on the minimum supported client, not on this
+        // change. See MergedWorkspaceConfig in the OpenAPI contract.
         litellmTeamId: configRes.data?.litellm_team_id ?? null,
-        // `models` is the STORED, authoritative per-team list; `availableModels`
-        // is the optional gateway picker source.
         llm: {
           enabled: configRes.data?.llm_enabled ?? false,
           baseUrl: configRes.data?.llm_base_url ?? null,
           models: storedModels,
-          availableModels,
-          aiGatewayEndpoint,
         },
       };
     },
@@ -1500,7 +1080,7 @@ export function createSupabaseBusinessRepository(options) {
       // or by (team, agent, name) — the table's unique constraint is
       // (team_id, agent_id, name), and onConflict:"id" alone mints a fresh
       // UUID that collides with that constraint when re-adding an existing /
-      // archived workspace. Mirrors pg-repo/workspaces.ts.
+      // archived workspace.
       let targetId = input.id ?? null;
       const normalizedPath = normalizeWorkspacePath(input.path ?? input.slug ?? null);
       let resolvedName = input.name;
@@ -2632,7 +2212,7 @@ export function createSupabaseBusinessRepository(options) {
         created_by_actor_id: createdByActorId,
       };
       // App-linked sessions carry app_id so listAppSessions / the app workspace
-      // can resolve them (mirrors pg-repo createSession). Omitted for plain
+      // can resolve them. Omitted for plain
       // sessions so the column stays NULL.
       if (input.appId) insertRow.app_id = input.appId;
       if (input.primaryAgentId) insertRow.primary_agent_id = input.primaryAgentId;
@@ -2741,8 +2321,7 @@ export function createSupabaseBusinessRepository(options) {
         // and uses it as the logical ACP session id it later looks up via
         // getSessionByAcp (which queries the acp_session_id column) — so it must
         // equal acp_session_id to round-trip. Omitting it made WeCom inbound
-        // messages fail with "missing field gatewaySessionId". The pg-repo
-        // backend already returns this field; this keeps the two in lockstep.
+        // messages fail with "missing field gatewaySessionId".
         gatewaySessionId: acpSessionId,
         acpSessionId,
         created: row.created === true,
@@ -3205,7 +2784,7 @@ export function createSupabaseBusinessRepository(options) {
       })
         .filter((row) => typeof row.id === "string" && row.id.length > 0)
         // The list_connected_agents RPC has no status predicate, so the filter
-        // lands here rather than in a migration — same rule as the pg-repo twin.
+        // lands here rather than in a migration.
         .filter((row) => isListableAgentStatus(row.agentStatus));
       return { items };
     },
@@ -3356,9 +2935,8 @@ export function createSupabaseBusinessRepository(options) {
     // --- Apps domain (production passthrough) ---
     //
     // With the caller's bearer forwarded, RLS already enforces visibility on
-    // amux.apps / amux.sessions, so these methods are THINNER than pg-repo:
-    // no manual visibility WHERE clause. Status transitions in createApp mirror
-    // pg-repo exactly. mapApp exposes the canonical 12-key contract shape.
+    // amux.apps / amux.sessions, so these methods carry no manual visibility
+    // WHERE clause. mapApp exposes the canonical 12-key contract shape.
 
     async listApps({ teamId, limit = 100 }: { teamId: string; limit?: number }) {
       const { data, error } = await supabase
@@ -4170,9 +3748,8 @@ export function createSupabaseBusinessRepository(options) {
     // docs/architecture/team-skills-registry.md
     //
     // Authz lives in RLS here (see 20260806000000_team_skills_registry.sql), so
-    // these are thin. The pg-repo twin re-implements the same three install
-    // gates in application code because that backend has no RLS to lean on —
-    // when you change one, change the other.
+    // these are thin. The three install gates below re-state RLS's decisions as
+    // API-shaped errors; see assertCanInstallTeamSkillFor.
 
     async listTeamSkills(teamId, opts: any = {}) {
       let subjectActorId = opts.actorId ?? null;
@@ -4297,6 +3874,7 @@ export function createSupabaseBusinessRepository(options) {
         size: Number(body.size ?? 0),
         changelog,
         summary: fields.summary,
+        category: fields.category,
         when_to_use: fields.whenToUse,
         when_not_to_use: fields.whenNotToUse,
         requires: fields.requires ?? null,
@@ -4312,151 +3890,104 @@ export function createSupabaseBusinessRepository(options) {
       const contentHash = String(body.contentHash ?? "").trim();
       if (!contentHash) throw new ApiError(400, "validation_failed", "contentHash is required");
 
-      let { data: skill, error } = await supabase
-        .from("team_skills")
-        .select("*")
-        .eq("team_id", teamId)
-        .eq("slug", slug)
-        .maybeSingle();
-      if (error) throw error;
-      if (!skill) throw new ApiError(404, "not_found", `skill not found: ${slug}`);
+      if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
+        throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
+      }
+      const expectedLatestVersion = Number(body.expectedLatestVersion);
+      if (!Number.isInteger(expectedLatestVersion) || expectedLatestVersion < 0) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "expectedLatestVersion must be a non-negative integer",
+        );
+      }
 
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id;
       if (!callerActorId) throw new ApiError(403, "forbidden", "not a member of this team");
-
-      if (skill.upstream_subscribed) {
-        const { data: detached, error: dErr } = await supabase
-          .from("team_skills")
-          .update({
-            upstream_subscribed: false,
-            upstream_detached_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", skill.id)
-          .select("*")
-          .single();
-        if (dErr) throw dErr;
-        skill = detached;
-      }
 
       const patch = requireTeamSkillFields(body, { partial: true });
-      const merged = {
-        summary: patch.summary ?? skill.summary,
-        when_to_use: patch.whenToUse ?? skill.when_to_use,
-        when_not_to_use: patch.whenNotToUse ?? skill.when_not_to_use,
-        requires: patch.requires !== undefined ? patch.requires : skill.requires,
-        category: patch.category ?? skill.category,
-      };
-      const nextVersion = (skill.latest_version ?? 0) + 1;
 
-      const { data: version, error: vErr } = await supabase
-        .from("team_skill_versions")
-        .insert({
-          skill_id: skill.id,
-          version: nextVersion,
-          content_hash: contentHash,
-          size: Number(body.size ?? 0),
-          changelog,
-          summary: merged.summary,
-          when_to_use: merged.when_to_use,
-          when_not_to_use: merged.when_not_to_use,
-          requires: merged.requires ?? null,
-          created_by: callerActorId,
-          blob_scope: "team",
-        })
-        .select("*")
-        .single();
-      if (vErr) throw vErr;
+      const { data, error } = await supabase.rpc("publish_team_skill_version", {
+        p_team_id: teamId,
+        p_slug: slug,
+        p_expected_latest_version: expectedLatestVersion,
+        p_content_hash: contentHash,
+        p_size: Number(body.size ?? 0),
+        p_changelog: changelog,
+        p_summary: patch.summary ?? null,
+        p_category: patch.category ?? null,
+        p_when_to_use: patch.whenToUse !== undefined ? patch.whenToUse : null,
+        p_when_not_to_use: patch.whenNotToUse !== undefined ? patch.whenNotToUse : null,
+        p_requires: patch.requires !== undefined ? patch.requires : null,
+      });
 
-      const { error: uErr } = await supabase
-        .from("team_skills")
-        .update({ latest_version: nextVersion, ...merged })
-        .eq("id", skill.id);
-      if (uErr) throw uErr;
-      return mapTeamSkillVersionRow(version);
+      if (error) {
+        const msg = error.message ?? "publish failed";
+        if (/stale_team_skill_base/i.test(msg)) {
+          throw new ApiError(409, "stale_team_skill_base", msg);
+        }
+        if (error.code === "P0002" || /skill not found/i.test(msg)) {
+          throw new ApiError(404, "not_found", msg);
+        }
+        if (error.code === "42501") {
+          throw new ApiError(403, "forbidden", msg);
+        }
+        throw error;
+      }
+
+      return mapTeamSkillVersionRow(data);
     },
 
-    /** See the pg-repo twin for why a revert publishes forward instead of
-     * moving latest_version back. */
+    /**
+     * Re-publish an earlier version's content as the new latest.
+     *
+     * Rolling `latest_version` backwards would be the obvious alternative and
+     * is deliberately not offered — it would leave members whose
+     * `installed_version` exceeds `latest_version`, at which point "is there an
+     * update" has no answer and the reconcile cannot tell whether to move them
+     * forward or back. Versions only ever go up; a revert is a new one carrying
+     * old content.
+     */
     async revertTeamSkillVersion(teamId, slug, targetVersion: number, body: any = {}) {
-      const { data: skill, error } = await supabase
-        .from("team_skills")
-        .select("*")
-        .eq("team_id", teamId)
-        .eq("slug", slug)
-        .maybeSingle();
-      if (error) throw error;
-      if (!skill) throw new ApiError(404, "not_found", `skill not found: ${slug}`);
-
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id;
       if (!callerActorId) throw new ApiError(403, "forbidden", "not a member of this team");
 
-      const { data: source, error: sErr } = await supabase
-        .from("team_skill_versions")
-        .select("*")
-        .eq("skill_id", skill.id)
-        .eq("version", targetVersion)
-        .maybeSingle();
-      if (sErr) throw sErr;
-      if (!source) throw new ApiError(404, "not_found", `version ${targetVersion} not found`);
-      if (targetVersion === skill.latest_version) {
-        throw new ApiError(409, "conflict", `v${targetVersion} is already the latest version`);
+      const changelog = String(body.changelog ?? "").trim() || null;
+      if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
+        throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
+      }
+      const expectedLatestVersion = Number(body.expectedLatestVersion);
+      if (!Number.isInteger(expectedLatestVersion) || expectedLatestVersion < 0) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "expectedLatestVersion must be a non-negative integer",
+        );
       }
 
-      // A revert is a team-authored version, so it detaches a subscribed skill
-      // exactly as publishing one does. Without this the new row carries no
-      // upstream_version, the next align reads that as "upstream 0" and
-      // re-projects marketplace latest — undoing the revert on the next list
-      // request, silently. Mirrors createTeamSkillVersion on this backend.
-      if (skill.upstream_subscribed) {
-        const { error: dErr } = await supabase
-          .from("team_skills")
-          .update({
-            upstream_subscribed: false,
-            upstream_detached_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", skill.id);
-        if (dErr) throw dErr;
+      const { data, error } = await supabase.rpc("revert_team_skill_version", {
+        p_team_id: teamId,
+        p_slug: slug,
+        p_target_version: targetVersion,
+        p_expected_latest_version: expectedLatestVersion,
+        p_changelog: changelog,
+      });
+
+      if (error) {
+        const msg = error.message ?? "revert failed";
+        if (/already the latest/i.test(msg) || /stale_team_skill_base/i.test(msg)) {
+          throw new ApiError(409, /stale_team_skill_base/i.test(msg) ? "stale_team_skill_base" : "conflict", msg);
+        }
+        if (error.code === "P0002" || /not found/i.test(msg)) {
+          throw new ApiError(404, "not_found", msg);
+        }
+        if (error.code === "42501") {
+          throw new ApiError(403, "forbidden", msg);
+        }
+        throw error;
       }
 
-      const changelog = String(body.changelog ?? "").trim() || `Reverted to v${targetVersion}`;
-      const nextVersion = (skill.latest_version ?? 0) + 1;
-      const snapshot = {
-        summary: source.summary,
-        when_to_use: source.when_to_use,
-        when_not_to_use: source.when_not_to_use,
-        requires: source.requires ?? null,
-      };
-
-      const { data: version, error: vErr } = await supabase
-        .from("team_skill_versions")
-        .insert({
-          skill_id: skill.id,
-          version: nextVersion,
-          content_hash: source.content_hash,
-          size: source.size ?? 0,
-          changelog,
-          created_by: callerActorId,
-          // Blob ownership travels with the content: a marketplace-sourced
-          // version lives at object_path and is deliberately absent from
-          // amuxc_blobs, so dropping these produced a row whose download fell
-          // into the team-blob branch and 409'd forever.
-          blob_scope: source.blob_scope ?? "team",
-          object_path: source.object_path ?? null,
-          upstream_version: source.upstream_version ?? null,
-          ...snapshot,
-        })
-        .select("*")
-        .single();
-      if (vErr) throw vErr;
-
-      const { error: uErr } = await supabase
-        .from("team_skills")
-        .update({ latest_version: nextVersion, ...snapshot })
-        .eq("id", skill.id);
-      if (uErr) throw uErr;
-      return mapTeamSkillVersionRow(version);
+      return mapTeamSkillVersionRow(data);
     },
 
     async updateTeamSkill(teamId, slug, patch: any = {}) {
@@ -4656,9 +4187,8 @@ export function createSupabaseBusinessRepository(options) {
 
     /**
      * The three install gates. RLS already refuses the bad cases, but its
-     * message is a raw Postgres string — this turns them into the same answers
-     * the pg-repo backend gives, so a client sees one behaviour regardless of
-     * which backend is deployed.
+     * message is a raw Postgres string — this turns them into API-shaped
+     * answers a client can act on.
      */
     async assertCanInstallTeamSkillFor(teamId, targetActorId) {
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id ?? null;
@@ -4854,18 +4384,49 @@ export function createSupabaseBusinessRepository(options) {
       },
     }),
 
+    // ─── Knowledge path ACL ──────────────────────────────────────────────────
+    // docs/specs/2026-08-31-knowledge-path-acl-design.md
+    //
+    // Unlike team MCP above, authz here CANNOT live in RLS: the ACL tables carry
+    // RLS with no policy, because `path_prefix` is a directory name and any
+    // "members may read the rules" policy would hand out exactly the list the
+    // feature exists to withhold. The module checks owner/admin itself and then
+    // uses the service role, the same shape /sync/* already has.
+    ...makeKnowledgeAclRepo({
+      supabase,
+      serviceRoleClient,
+      resolveCallerActorForTeam: async (teamId: string) => {
+        const { data: userData, error: userErr } = await supabase.auth.getUser();
+        if (userErr) throw userErr;
+        const userId = userData?.user?.id;
+        if (!userId) return null;
+        const { data, error } = await supabase
+          .from("actors")
+          .select("id")
+          .eq("team_id", teamId)
+          .eq("user_id", userId)
+          .limit(1)
+          .maybeSingle();
+        if (error) throw error;
+        return data ? { id: data.id } : null;
+      },
+    }),
+
     // ─── Team MCP catalog ────────────────────────────────────────────────────
     // docs/architecture/team-mcp-and-env-cloud.md
     //
     // Authz lives in RLS here (20260806020000_team_mcp_and_env.sql), so these
     // are thin. The *validation* is not authz and must not be left to RLS: the
-    // secret-literal gate and the transport invariants are imported from the
-    // pg-repo twin rather than restated, because two copies of a security rule
-    // is exactly how one of them ends up weaker.
+    // secret-literal gate and the transport invariants live in
+    // lib/validation/team-mcp.ts and are imported rather than restated, because
+    // two copies of a security rule is exactly how one of them ends up weaker.
 
     // `actorId` defaults to the caller; passing another actor's id reads their
-    // install state. Writes still refuse it — see the pg-repo twin for why the
-    // read and the write are deliberately asymmetric.
+    // install state, which is how a client shows what a given agent has
+    // installed. Reading is deliberately not symmetric with writing:
+    // install/uninstall still refuse `actorId`, because you cannot install on
+    // anyone else's behalf. Membership in the team is the only gate — an actor
+    // id from outside the team simply matches no installs.
     async listTeamMcpServers(teamId, opts: { actorId?: string } = {}) {
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id ?? null;
       const subjectActorId = opts.actorId ?? callerActorId;
@@ -5154,10 +4715,10 @@ export function createSupabaseBusinessRepository(options) {
 
 // ─── Team MCP / env helpers ──────────────────────────────────────────────────
 //
-// Validation is imported from the pg-repo twin rather than restated: these are
-// security rules (what may hold a literal secret) and correctness rules (which
-// transport needs which fields), and a second copy is how the two backends
-// drift into disagreeing about what is allowed.
+// Validation is imported from lib/validation/ rather than restated here: these
+// are security rules (what may hold a literal secret) and correctness rules
+// (which transport needs which fields), and a second copy is how the route
+// layer and the repository drift into disagreeing about what is allowed.
 
 function mapTeamMcpServerRow(row: any, installed: boolean) {
   return {
@@ -5204,8 +4765,7 @@ const TEAM_SKILL_STATUSES = ["draft", "published", "deprecated"];
 /**
  * The publish gate: every one of these is required because the registry exists
  * to stop "who owns this / when to use it / when NOT to use it" from living in
- * one free-text description blob. Kept behaviourally identical to
- * pg-repo/team-skills.ts requirePublishFields.
+ * one free-text description blob.
  */
 function requireTeamSkillFields(body: any, { partial = false } = {}): any {
   const out: any = {};
@@ -5296,10 +4856,12 @@ function mapTeamSkillVersionRow(r: any) {
     size: r.size ?? 0,
     changelog: r.changelog,
     summary: r.summary,
+    category: r.category ?? null,
     whenToUse: r.when_to_use,
     whenNotToUse: r.when_not_to_use,
     requires: r.requires ?? null,
     createdBy: r.created_by,
+    publishedFromVersion: r.published_from_version ?? null,
     createdAt: appIso(r.created_at),
   };
 }

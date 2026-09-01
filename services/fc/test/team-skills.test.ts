@@ -113,7 +113,11 @@ test("POST versions publishes a new version", async () => {
     {
       httpMethod: "POST",
       path: "/v1/teams/team-1/skills/deploy-check/versions",
-      body: JSON.stringify({ contentHash: "sha256:def", changelog: "fix typo" }),
+      body: JSON.stringify({
+        contentHash: "sha256:def",
+        changelog: "fix typo",
+        expectedLatestVersion: 1,
+      }),
     },
     repo,
   );
@@ -121,7 +125,7 @@ test("POST versions publishes a new version", async () => {
   assert.deepEqual(repo.calls[0].args, [
     "team-1",
     "deploy-check",
-    { contentHash: "sha256:def", changelog: "fix typo" },
+    { contentHash: "sha256:def", changelog: "fix typo", expectedLatestVersion: 1 },
   ]);
 });
 
@@ -131,7 +135,10 @@ test("POST versions/:v/revert rolls forward with the old content", async () => {
     {
       httpMethod: "POST",
       path: "/v1/teams/team-1/skills/deploy-check/versions/3/revert",
-      body: JSON.stringify({ changelog: "v5 broke the migration check" }),
+      body: JSON.stringify({
+        changelog: "v5 broke the migration check",
+        expectedLatestVersion: 4,
+      }),
     },
     repo,
   );
@@ -141,7 +148,7 @@ test("POST versions/:v/revert rolls forward with the old content", async () => {
     "team-1",
     "deploy-check",
     3,
-    { changelog: "v5 broke the migration check" },
+    { changelog: "v5 broke the migration check", expectedLatestVersion: 4 },
   ]);
   // The result is a *new* version, not the old number coming back: installs
   // auto-follow latestVersion, and that only ever moves forward.

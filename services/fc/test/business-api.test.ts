@@ -1295,37 +1295,25 @@ test("DELETE /v1/sessions/:sessionId/mute unmutes session", async () => {
   });
 });
 
-test("POST /v1/teams creates team without LiteLLM (provisioning extracted)", async () => {
-  // Post Task 3 of the share-onboarding refactor: POST /v1/teams no longer
-  // provisions LiteLLM. The route just writes the teams row; the client must
-  // call POST /v1/teams/:id/litellm/setup explicitly to provision later.
-  // aiGatewayEndpoint + litellmKey are still in the response for back-compat
-  // with the Rust client (Option<String>) but are always null here.
-  const prevMaster = process.env.LITELLM_MASTER_KEY;
-  process.env.LITELLM_MASTER_KEY = "would-have-provisioned-pre-refactor";
-  try {
-    const repo = fakeRepo();
-    const response = await handleBusinessApiRequest({
-      httpMethod: "POST",
-      path: "/v1/teams",
-      headers: { Authorization: "Bearer token" },
-      body: JSON.stringify({ name: "Acme" }),
-    }, { createRepository: () => repo });
+test("POST /v1/teams writes only the teams row", async () => {
+  // The route provisions no gateway: it forwards name/slug/displayName and
+  // nothing else, and the response is the plain team shape.
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "POST",
+    path: "/v1/teams",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ name: "Acme" }),
+  }, { createRepository: () => repo });
 
-    assert.equal(response.statusCode, 200);
-    const body = JSON.parse(response.body);
-    assert.equal(body.id, "team-1");
-    assert.equal(body.name, "Acme");
-    assert.equal(body.aiGatewayEndpoint, null);
-    assert.equal(body.litellmKey, null);
-    assert.deepEqual(repo.calls[0], {
-      method: "createTeam",
-      input: { name: "Acme", slug: null, displayName: null, litellmTeamId: null, aiGatewayEndpoint: null },
-    });
-  } finally {
-    if (prevMaster === undefined) delete process.env.LITELLM_MASTER_KEY;
-    else process.env.LITELLM_MASTER_KEY = prevMaster;
-  }
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body);
+  assert.equal(body.id, "team-1");
+  assert.equal(body.name, "Acme");
+  assert.deepEqual(repo.calls[0], {
+    method: "createTeam",
+    input: { name: "Acme", slug: null, displayName: null },
+  });
 });
 
 test("PATCH /v1/teams/:teamId renames team", async () => {

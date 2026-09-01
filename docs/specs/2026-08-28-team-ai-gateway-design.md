@@ -344,6 +344,16 @@ SELECT id FROM amux.teams t
 
 顺序不能反：**先补发、再打开强制**。这条进 §11 Phase 2 的完成判据。
 
+⚠️ **补发只覆盖「跑的那一刻已经存在」的团队，之后新建的一个都没有。** 上线时这条被漏掉了：补发跑完到打开强制之间新注册了 9 个团队，它们没有余额行，而 `reserve()` 把「没有余额行」读成余额 0 —— 强制一开，这些人一条消息都发不出去。
+
+所以赠额改成 **`reserve()` 里首次接触时自动发放**，补发退化成一次性的迁移工具：
+
+- **判据是「没有余额行」，不是「余额为 0」。** `topUp` 会 upsert 余额行，所以行不存在精确等价于「从未记过账」。用余额为 0 判断，等于给每个花光额度的团队无限续杯。
+- 幂等键仍是 `signup_grant:<team_id>`，和补发同一个，两条路径不可能互相重复发放。
+- **不在建团队时发**：那要求建团队的服务调用网关，凭空多出一种失败方式（团队建好了、发放请求丢了、团队卡在零余额），而网关本来就不该出现在注册链路上。首次接触发放是自愈的 —— 无论团队怎么创建出来的，第一次用就有。
+
+
+
 ### 4.9 Stripe 充值（Phase 4）
 
 #### 4.9.1 放 FC，不放 ai-gateway
@@ -392,6 +402,9 @@ export function registerStripe(router) {
 2. 加价逻辑集中在 Stripe 后台一处，不散落在代码里 —— 与 §4.4.1「credits 锚成本、加价只发生在充值那一次换算」完全一致。
 3. **币种变得无关**：credits 锚的是元的上游成本，Stripe 收什么币种都不影响这张映射表。
 
+⚠️ **Price 挂靠的 Product 还必须有 `tax_code`**（账号开着 Managed Payments 时；默认就是开的）。缺了它，`/credits/packages` 照常列出套餐，**只有下单会炸** ——「the product tax code is missing」发生在建 Session 那一步，不是列表那一步，所以症状是「看得见买不了」。实际账号用的是 `txcd_10105002`（AI as a Service, cloud-based, business use）。
+**不要**用 `managed_payments[enabled]=false` 绕过：那是在悄悄改变谁承担税务责任。
+
 #### 4.9.4 幂等键用 Session id，不要用 event id
 
 ```
@@ -422,9 +435,34 @@ Stripe 从境外主动回调 `api.<domain>/v1/stripe/webhook`，而该域名解�
 1. Stripe 自身重试最多 3 天。
 2. 一个定时对账任务扫 `stripe.checkout.sessions.list`，把已支付但本地无 ledger 条目的补进来。
 
+⚠️ **退款那一侧同样需要对账，而且更需要。** 第一版只扫 Checkout Session，充值有两层保险（Stripe 重试 + 定时对账），退款只有一层 —— 这个不对称是反的：**一笔没补上的充值，客户几分钟内就会来说；一笔没补上的退款是静默的** —— 钱已经退了，没人在盯他留着的那些额度。
+
+两趟的差别只有一处：webhook 收到的事件本该属于我们，所以 charge 上没有 `team_id` 要**大声报错**；而对账扫的是账号上所有退款，没有 `team_id` 只意味着「这不是我们的单」，按失败计只会把真正的失败淹掉。
+
 #### 4.9.7 客户端
 
 Tauri 内嵌 webview **不要**用来打开 Checkout（3DS 与钱包会出问题，用户也看不到地址栏），走系统浏览器。返回后不阻塞 UI 等 webhook —— 显示「处理中」，让余额自行刷新。
+
+刷新的触发点是**窗口重新获得焦点**，不是定时轮询：支付发生在另一个应用里，用户切回来这一刻是唯一有意义的信号，而轮询要为一笔可能永远不会完成的支付一直跑。
+
+#### 4.9.8 落地时补的三处
+
+实现时补进契约的东西，记在这里免得下次照着 §4.9 找不到：
+
+| 补充 | 为什么 |
+|---|---|
+| `GET /v1/teams/:teamId/credits/packages` | 充值卡要显示「买什么、多少钱、给多少积分」。三者都只能来自 Stripe Price + `metadata.credits`（§4.9.3），客户端硬编码价格在调价当天就是错的。**任何成员可读**（看得见但买不了），下单才是 owner-only |
+| `GET /v1/stripe/return` | Checkout 完成后浏览器要有地方落。一张静态 HTML：桌面端本来就不依赖这次跳转（§4.9.7），这页只需要告诉人可以关掉。公网 origin 用**专门的 `STRIPE_RETURN_URL_BASE`** —— 见下方那条 |
+| `stripe-reconcile` cron 任务 | §4.9.6 的第二层兜底，**充值和退款两趟都扫**。**不查账本**：重复写入靠唯一索引变成空操作，返回的 `applied` 就是「这笔本地是不是缺了」的答案，比自己 join 一次账本少一条会腐化的查询路径。退款那趟走的是 webhook 同一个 `refundCharge`，不会漂移 |
+
+⚠️ **回跳地址不要复用现成变量。** 第一版试过两个，两个都错：
+
+- `AUTH_BASE_URL` 是 Better-Auth 的 issuer / JWKS origin。`BACKEND_KIND=supabase` 这条路上没人调它，所以它在**唯一真正在跑的部署上是空的** —— 上线后点「购买」直接报 `AUTH_BASE_URL is not set`。而且为了喂 Stripe 把它填上，等于在 BACKEND_KIND 哪天切到 postgres 时，悄悄把它变成了 JWT 的签发者。
+- `API_EXTERNAL_URL` 是 **GoTrue 的**变量（`deploy/self-host/supabase/docker-compose.yml`）。它在这台机器上碰巧是 Cloud API 的地址 —— 这本身就是个反直觉的本地配置；谁哪天按名字把它「修正」成 Supabase 的地址，回跳地址就静默指错了。
+
+教训不是「少加变量」，是**别把语义挂在自己不拥有的变量上**。桌面端不依赖这次跳转，不等于它的 origin 可以含糊。
+
+对账任务的 Stripe client 是**可注入的**。第一版不是，于是 `npm test` 直接打到了 api.stripe.com —— 一个测试套件能对着生产支付账号发请求，这本身就是缺陷。
 
 ---
 
@@ -863,6 +901,7 @@ daemon 侧同样必须逐 chunk 转发、不 buffer。已有的 `/v1/sessions/:i
 | **2** | Credits 闭环：预留 + 结算 + quota 强制；FC credits 端点；设置页；openapi 的 `litellmTeamId` 松绑；保留策略 + 对账任务。**打开强制之前先给存量团队补发起始额度（§4.8.1）。** 设置页：新建账单页 + 现有 Token 用量页迁移数据源（§12）。 | 存量团队补发完成且余额行齐全；并发压测不超发；对账连续 7 天零差异 |
 | **3** | 全部团队切完 + **两个部署目标都切完** + 观察期 ≥ 2 周后：删 LiteLLM 容器 / FC 代码 / openapi 条目 / Caddy 三段 / CI 四处 / smoke。 | 见 §11.5 |
 | **4** | **Stripe 充值**（§4.9）：FC 的 checkout-session + webhook 路由、Price metadata 换算表、`stripe.checkout.sessions.list` 补账任务、桌面端走系统浏览器。**不动任何表结构** —— 幂等键从 Phase 2 起就在表里，余额表也从 Phase 0 起就没有非负约束（§4.9.5）。 | 跨境 webhook 投递实测通过；断开 webhook 后补账任务能独立把额度发对；重复投递同一 Session 不重复入账；退款能把余额打成负数而不报错 |
+| | ⚠️ 代码已完成（路由 / webhook / 对账 / 充值卡 / env 三处声明 / openapi）。**卡在 Stripe 账号侧**：Price（带 `metadata.credits`）与 webhook endpoint 都还没建，`STRIPE_PRICE_IDS` 和 `STRIPE_WEBHOOK_SECRET` 因此为空 —— 三个变量全空时充值卡显示「未开通」，计量与手工充值不受影响 | 定价决策（附录 F）落地后才能建 Price |
 
 ### 11.1 Phase 1 的灰度开关
 

@@ -13,6 +13,17 @@ pub enum SyncError {
     #[error("auth: {0}")]
     Auth(String),
 
+    /// The server refuses this PATH for this caller — a knowledge directory the
+    /// team has restricted (`code: "PathForbidden"`).
+    ///
+    /// Distinct from [`SyncError::Auth`] on purpose. An auth failure is about
+    /// the caller and clears when they re-authenticate, so retrying is right.
+    /// This one is about the path and will not change until an admin grants
+    /// access, so retrying it every tick would burn a request forever and hold
+    /// the file dirty. See `docs/specs/2026-08-31-knowledge-path-acl-design.md`.
+    #[error("path forbidden: {0}")]
+    PathForbidden(String),
+
     #[error("session expired: {0}")]
     SessionExpired(String),
 

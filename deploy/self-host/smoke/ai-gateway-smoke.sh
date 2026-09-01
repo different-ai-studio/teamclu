@@ -1,10 +1,10 @@
 #!/bin/sh
-# Post-deploy smoke for services/ai-gateway. Runs alongside litellm-smoke.sh --
+# Post-deploy smoke for services/ai-gateway. It is the only AI gateway now --
 # both gateways are live until Phase 3.
 #
 # Reached two ways, on purpose:
 #   * in-network, by exec'ing into the container — the gateway publishes NO host
-#     port (unlike litellm on 127.0.0.1:4000), so curling the host would only
+#     port, so curling the host would only
 #     ever prove that nothing listens there. It did, the first time this ran.
 #   * through Caddy on the public path, which is what clients actually dial and
 #     the only check that covers the /ai/* route mapping.

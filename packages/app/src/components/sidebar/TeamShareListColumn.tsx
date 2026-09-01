@@ -14,8 +14,6 @@ import {
   ArrowUpCircle,
   Plus,
   AlertTriangle,
-  FilePlus,
-  FolderPlus,
   RefreshCw,
   ChevronRight,
   Store,
@@ -65,6 +63,7 @@ import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
 import {
   useTeamShareBrowserStore,
+  SkillMutationRefreshError,
   type TeamMcpKind,
   type TeamShareSection,
   type TeamSkillKind,
@@ -73,6 +72,7 @@ import { detailSelectionForSection } from '@/lib/tabs/teamshare-target'
 import type { ConnectedAgentRow } from '@/lib/backend/types'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
+import { encodeWorkspaceId, notifyDaemonSkillsChanged } from '@/lib/daemon-local-client'
 import { SkillScanPaths } from './SkillScanPaths'
 import { KnowledgeSyncFooter } from '@/components/teamshare/KnowledgeSyncFooter'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
@@ -84,6 +84,7 @@ import {
   withDefaultExtension,
 } from '@/lib/knowledge-file-names'
 import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
+import { toastSkillMutationRefreshFailed } from '@/components/teamshare/skillMutationRefreshToast'
 
 const SECTION_META: Record<
   TeamShareSection,
@@ -349,6 +350,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
   const setCreating = useTeamShareBrowserStore((s) => s.setCreating)
   const deleteTeamSkill = useTeamShareBrowserStore((s) => s.deleteTeamSkill)
+  const retrySkillsRuntimeRefresh = useTeamShareBrowserStore((s) => s.retrySkillsRuntimeRefresh)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
 
@@ -364,6 +366,11 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       setDeleteTarget(null)
       toast.success(t('teamShare.skillDeleteTeamDone', '已从团队移除'))
     } catch (e) {
+      if (e instanceof SkillMutationRefreshError) {
+        setDeleteTarget(null)
+        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+        return
+      }
       toast.error(
         t('teamShare.skillDeleteTeamFailed', '移除失败：{{msg}}', {
           msg: e instanceof Error ? e.message : String(e),
@@ -372,7 +379,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     } finally {
       setDeleting(false)
     }
-  }, [deleteTarget, deleting, deleteTeamSkill, t])
+  }, [deleteTarget, deleting, deleteTeamSkill, retrySkillsRuntimeRefresh, t])
 
   // Which skill packages are showing their files, and which one is being added
   // to. View state, not persisted: it says nothing about the skill itself.
@@ -401,7 +408,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const mcp = useTeamShareBrowserStore((s) => s.mcp)
   const knowledge = useTeamShareBrowserStore((s) => s.knowledge)
   const teamSecrets = useEnvVarsStore((s) => s.teamSecrets)
-  const knowledgeRoot = useTeamShareBrowserStore((s) => s.knowledgeRoot)
+  const syncRoot = useTeamShareBrowserStore((s) => s.syncRoot)
   const personalEnv = useEnvVarsStore((s) => s.envVars)
 
   // Inline "name this thing" row at the top of the knowledge tree.
@@ -478,14 +485,18 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
 
   // Knowledge only: the bottom bar already runs the sync and reports its state,
   // so this slot carries the other thing a person wants from a folder of notes.
-  const obsidian = useObsidianStatus(section === 'knowledge' ? knowledgeRoot : null)
+  // Obsidian gets the knowledge directory, never the tree root: a vault
+  // spanning both roots would pull permission-restricted documents into the
+  // notes app, and documents are deliberately not what every member sees.
+  const knowledgeVaultPath = syncRoot ? `${syncRoot}/knowledge` : null
+  const obsidian = useObsidianStatus(section === 'knowledge' ? knowledgeVaultPath : null)
   const handleOpenInObsidian = React.useCallback(async () => {
-    if (!knowledgeRoot) return
+    if (!knowledgeVaultPath) return
     try {
       // The backend registers the directory as a vault on first use, so there
       // is nothing for the user to set up — except in the one case it cannot
       // work around: Obsidian reads its vault registry at startup only.
-      const outcome = await openVaultInObsidian(knowledgeRoot)
+      const outcome = await openVaultInObsidian(knowledgeVaultPath)
       if (outcome === 'registeredNeedsRestart') {
         toast.info(
           t(
@@ -502,7 +513,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         }),
       )
     }
-  }, [knowledgeRoot, t])
+  }, [knowledgeVaultPath, t])
 
   // Opening the column is the other moment the list has to be current: a
   // conflict may have been created by the daemon's own timer while this session
@@ -531,8 +542,8 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       void loadLocalChanges()
     },
     500,
-    section === 'knowledge' && !!knowledgeRoot,
-    (event) => !!knowledgeRoot && event.payload.path.startsWith(`${knowledgeRoot}/`),
+    section === 'knowledge' && !!syncRoot,
+    (event) => !!syncRoot && event.payload.path.startsWith(`${syncRoot}/`),
   )
 
   // Reload after any successful cloud sync, ours or another surface's.
@@ -646,7 +657,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                     'A skill from another source already owns this name',
                   )}
                 />
-              ) : localState[s.slug]?.state === 'dirty' ? (
+              ) : localState[s.slug]?.state === 'dirty' || localState[s.slug]?.state === 'stale_dirty' ? (
                 <AlertTriangle
                   className="h-[15px] w-[15px] text-foreground"
                   aria-label={t('teamShare.skillConflict', 'Local changes — update paused')}
@@ -667,13 +678,15 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       })
   }, [section, q, skills.items, localState, t])
 
+  /** Team and personal are different trust boundaries, so they get their own groups. */
   const skillGroups = React.useMemo(() => {
+    const team = skillRows.filter(
+      (r) => r.kind === 'team-installed' || r.kind === 'team-available',
+    )
+    const personal = skillRows.filter((r) => r.kind === 'personal')
     return [
-      {
-        key: 'installed' as const,
-        label: t('teamShare.skillGroupAgentInstalled', 'Agent 已安装'),
-        rows: skillRows,
-      },
+      { key: 'team' as const, label: t('teamShare.scope.team', '团队'), rows: team },
+      { key: 'personal' as const, label: t('teamShare.scope.personal', '个人'), rows: personal },
     ].filter((g) => g.rows.length > 0 || !q)
   }, [skillRows, t, q])
 
@@ -872,17 +885,17 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         ? name.trim()
         : withDefaultExtension(name, KNOWLEDGE_DEFAULT_EXTENSION)
     setRootCreating(null)
-    if (!trimmed || !knowledgeRoot) return
+    if (!trimmed || !syncRoot) return
     const ok =
       rootCreating === 'folder'
-        ? await createNewFolder(knowledgeRoot, trimmed)
-        : await createNewFile(knowledgeRoot, trimmed)
+        ? await createNewFolder(syncRoot, trimmed)
+        : await createNewFile(syncRoot, trimmed)
     if (!ok) return
     // The knowledge tree is its own root in the store — re-list THAT. The
     // workspace tree has nothing to do with this column any more.
-    await openExternalRoot(knowledgeRoot)
+    await openExternalRoot(syncRoot)
     void loadSection('knowledge', { force: true })
-    if (rootCreating !== 'folder') selectFile(`${knowledgeRoot}/${trimmed}`)
+    if (rootCreating !== 'folder') selectFile(`${syncRoot}/${trimmed}`)
   }
 
   return (
@@ -939,7 +952,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
               variant="ghost"
               size="icon"
               className="h-7 w-7 text-muted-foreground hover:text-foreground"
-              disabled={!obsidian.installed || !knowledgeRoot}
+              disabled={!obsidian.installed || !syncRoot}
               onClick={() => void handleOpenInObsidian()}
               title={
                 obsidian.installed
@@ -976,31 +989,13 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
               />
             </Button>
           )}
-          {section === 'knowledge' && knowledgeRoot && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                  title={t('teamShare.knowledgeAdd', 'New document or folder')}
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-44">
-                <DropdownMenuItem onSelect={() => setRootCreating('file')}>
-                  <FilePlus className="mr-2 h-3.5 w-3.5" />
-                  {t('teamShare.knowledgeNewFile', 'New document')}
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setRootCreating('folder')}>
-                  <FolderPlus className="mr-2 h-3.5 w-3.5" />
-                  {t('teamShare.knowledgeNewFolder', 'New folder')}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          {/*
+            No "new document / new folder" here any more. This header acts on
+            the tree root, and the root now holds exactly two fixed directories
+            — a third would never sync, since the scanner only descends into
+            the fixed prefixes. Creating happens inside 资料库 or 知识库, from
+            the folder's own context menu.
+          */}
           {(section === 'mcp' || section === 'env') && (
             <Button
               type="button"
@@ -1222,8 +1217,22 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                             onSelectFile={(rel) => selectSkillFile(row.id, rel)}
                             onFileRemoved={(rel) => closeSkillFiles(row.id, rel)}
                             onMutated={() => {
-                              void loadSection('skills', { force: true })
-                              void reconcileSkills().catch(() => {})
+                              void (async () => {
+                                if (workspacePath) {
+                                  try {
+                                    await notifyDaemonSkillsChanged(encodeWorkspaceId(workspacePath))
+                                  } catch {
+                                    toast.error(
+                                      t(
+                                        'teamShare.skillSavedRefreshFailed',
+                                        'Skill 已保存，但新会话可能暂时仍使用旧缓存。',
+                                      ),
+                                    )
+                                  }
+                                }
+                                void loadSection('skills', { force: true })
+                                void reconcileSkills().catch(() => {})
+                              })()
                             }}
                             refreshKey={treeRefreshKey}
                             rootCreate={rootCreate?.rowId === row.id ? rootCreate.kind : null}
@@ -1238,13 +1247,13 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             ))
           )
         ) : section === 'knowledge' ? (
-          knowledgeRoot ? (
+          syncRoot ? (
             // The whole shared root, not just knowledge/ — create / rename /
             // delete / move all come from FileBrowser's existing context menu,
             // and clicking a file opens it exactly as it does in the workspace.
             <FileBrowser
               variant="panel"
-              rootPath={knowledgeRoot}
+              rootPath={syncRoot}
               hideFileActions={false}
               hideToolbar
               filterText={query}

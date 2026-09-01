@@ -11,6 +11,10 @@ import { useOssSyncStore } from "@/stores/oss-sync";
 import { useTeamConflictsStore } from "@/stores/team-conflicts";
 import { withDefaultExtension } from "@/lib/knowledge-file-names";
 import { pruneKnowledgeNoise } from "@/lib/knowledge-tree-pruning";
+import { useTeamPermissions } from "@/lib/team-permissions";
+import { KnowledgeAclDialog } from "@/components/teamshare/KnowledgeAclDialog";
+import { getBackend } from "@/lib/backend";
+import { useCurrentTeamStore } from "@/stores/current-team";
 import { isIgnoredSyncKey } from "@/lib/knowledge-ignored";
 import { useTeamSyncStatusStore } from "@/stores/team-sync-status";
 import { buildBadgeMap, badgeForDirectory } from "@/lib/team-sync-badges";
@@ -202,7 +206,8 @@ export function FileTree({
   // Team-knowledge conflicts. `bySyncKey` is empty in the overwhelmingly common
   // case, which is what keeps the per-row lookup below free.
   const conflictsBySyncKey = useTeamConflictsStore(s => s.bySyncKey);
-  const knowledgeDir = useTeamConflictsStore(s => s.knowledgeDir);
+  const syncRoot = useTeamConflictsStore(s => s.syncRoot);
+
   const ignoredRoots = useTeamSyncStatusStore(s => s.ignoredRoots);
   const localBySyncKey = useTeamSyncStatusStore(s => s.localBySyncKey);
   const remoteBySyncKey = useTeamSyncStatusStore(s => s.remoteBySyncKey);
@@ -211,6 +216,85 @@ export function FileTree({
   const selectedFile = useWorkspaceStore(s => s.selectedFile);
   const selectedFiles = useWorkspaceStore(s => s.selectedFiles);
   const workspacePath = useWorkspaceStore(s => s.workspacePath);
+  // "Who can see this folder", opened from a directory's context menu.
+  // `canManageTeam` is the same owner/admin gate the API enforces; this only
+  // decides whether the menu item is worth showing.
+  const { canManageTeam } = useTeamPermissions();
+  const [aclPrefix, setAclPrefix] = useState<string | null>(null);
+
+  /**
+   * Prefixes that carry a permission rule of their own, so the tree can mark
+   * them with a lock.
+   *
+   * Loaded only for owner/admin: the endpoint refuses everyone else, and that
+   * refusal is the point — a rule's prefix is a directory name, and telling
+   * someone which folders are restricted is the thing the design withholds.
+   * For everyone else this stays empty and no lock is ever drawn.
+   */
+  const aclTeamId = useCurrentTeamStore((s) => s.team?.id) ?? null;
+  const [restrictedPrefixes, setRestrictedPrefixes] = useState<Set<string>>(new Set());
+  const refreshRestricted = useCallback(async () => {
+    if (!canManageTeam || !aclTeamId || !syncRoot) {
+      setRestrictedPrefixes(new Set());
+      return;
+    }
+    try {
+      const rules = await getBackend().knowledgeAcl.listKnowledgeAcl(aclTeamId);
+      setRestrictedPrefixes(new Set(rules.map((r) => r.pathPrefix)));
+    } catch {
+      // A tree that cannot say which folders are restricted is still a usable
+      // tree; the dialog is where an error about permissions belongs.
+      setRestrictedPrefixes(new Set());
+    }
+  }, [canManageTeam, aclTeamId, syncRoot]);
+  useEffect(() => {
+    void refreshRestricted();
+  }, [refreshRestricted]);
+  /**
+   * Display name for a node that is one of the two fixed roots.
+   *
+   * On disk they are `documents` and `knowledge` — ASCII, stable, safe on every
+   * filesystem — and 资料库 / 知识库 to read. Only the top level is translated:
+   * a `knowledge` directory three levels down is an ordinary folder.
+   *
+   * The compacted case is why this takes `compactName` rather than reading the
+   * node alone. When a root has a single expanded child the tree collapses the
+   * chain into one row, and `node` is then the END of that chain — so asking
+   * what the node is never identifies the root. The name being drawn is the
+   * joined path, and it is that name's first segment that has to be swapped.
+   */
+  const localizedRootName = useCallback(
+    (node: FileNode, compactName?: string): string | undefined => {
+      if (node.type !== 'directory' || !syncRoot) return undefined;
+      const rootLabel = (name: string): string | undefined => {
+        if (name === 'knowledge') return t('teamSync.knowledgeRoot', 'Knowledge');
+        if (name === 'documents') return t('teamSync.documentsRoot', 'Documents');
+        return undefined;
+      };
+      if (compactName) {
+        const [head, ...rest] = compactName.split('/');
+        // Only when the chain actually starts at a root — a compacted chain
+        // deeper in the tree keeps every segment as it is on disk.
+        const key = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
+        if (key === compactName) {
+          const label = rootLabel(head);
+          if (label) return [label, ...rest].join('/');
+        }
+        return undefined;
+      }
+      const key = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
+      return key ? rootLabel(key) : undefined;
+    },
+    [syncRoot, workspacePath, t],
+  );
+
+  const handleManagePermissions = useCallback((path: string) => {
+    const syncKey = teamSyncKeyForPath(path, { syncRoot, workspacePath });
+    // A rule prefix must end in `/` — that trailing slash is what stops
+    // `knowledge/hr/` from also covering `knowledge/hr-public/`, on the server
+    // and in the client matcher alike.
+    if (syncKey) setAclPrefix(`${syncKey}/`);
+  }, [syncRoot, workspacePath]);
   const focusedPath = useWorkspaceStore(s => s.focusedPath);
   const selectFile = useWorkspaceStore(s => s.selectFile);
   const selectFileRange = useWorkspaceStore(s => s.selectFileRange);
@@ -219,8 +303,8 @@ export function FileTree({
   const collapseDirectory = useWorkspaceStore(s => s.collapseDirectory);
   const setFocusedPath = useWorkspaceStore(s => s.setFocusedPath);
   const fileTree = useMemo(
-    () => pruneKnowledgeNoise(rawFileTree, { knowledgeDir, workspacePath }),
-    [rawFileTree, knowledgeDir, workspacePath],
+    () => pruneKnowledgeNoise(rawFileTree, { syncRoot, workspacePath }),
+    [rawFileTree, syncRoot, workspacePath],
   );
   // One badge per document, folded from the three things that can be true of
   // it: a conflict sidecar on disk, a local change not yet pushed, a cloud
@@ -546,6 +630,224 @@ export function FileTree({
     setSystemClipboardHasFiles(true);
     void writeSystemClipboardFiles(paths);
   }, [setClipboard]);
+
+  /**
+   * Documents listed by the manifest but not on this device.
+   *
+   * Keyed by sync key (`documents/…`). Nothing is written to disk for these, so
+   * the scan cannot reveal them — this is the only thing that makes them
+   * visible at all.
+   */
+  const [knownDocs, setKnownDocs] = useState<Map<string, number>>(new Map());
+  const [failedDownloads, setFailedDownloads] = useState<Set<string>>(new Set());
+
+  const refreshKnown = useCallback(async () => {
+    if (!isTauri() || !aclTeamId || !syncRoot) {
+      setKnownDocs(new Map());
+      return;
+    }
+    try {
+      const { listKnownDocuments } = await import('@/lib/daemon-local-client');
+      const items = await listKnownDocuments(aclTeamId);
+      setKnownDocs(new Map(items.map((i) => [i.path, i.size])));
+    } catch {
+      // A tree that cannot list unfetched documents is still a usable tree; it
+      // simply shows what is on disk, which is the pre-lazy behaviour.
+      setKnownDocs(new Map());
+    }
+  }, [aclTeamId, syncRoot]);
+
+  useEffect(() => {
+    void refreshKnown();
+  }, [refreshKnown]);
+
+  /**
+   * Cancel flag for an in-flight folder download.
+   *
+   * A ref rather than state: the loop below reads it between chunks, and a
+   * state update would not be visible to a closure already running.
+   */
+  const downloadCancelRef = useRef(false);
+
+  /**
+   * Fetch a path, or everything listed under it when it is a directory.
+   *
+   * Sent in chunks so a folder of several hundred files reports progress and
+   * can be stopped. Stopping leaves what already arrived: each file is either
+   * complete on disk or still merely listed, and the rest stay listed — so a
+   * partial download is a smaller download, not a broken state.
+   *
+   * That asymmetry is worth naming, because the delete path deliberately does
+   * the opposite. A partially applied mass DELETE loses files for everyone and
+   * hides the cause, so that one is all-or-nothing; a partial fetch costs
+   * nothing but the bytes not yet fetched.
+   *
+   * Reports failure rather than queueing: offline means "not now", and a hidden
+   * queue would deliver the file long after the person stopped wanting it.
+   */
+  const handleDownload = useCallback(async (path: string) => {
+    if (!aclTeamId) return;
+    const key = teamSyncKeyForPath(path, { syncRoot, workspacePath });
+    if (!key) return;
+    // A directory has no entry of its own; everything listed beneath it does.
+    const targets = knownDocs.has(key)
+      ? [key]
+      : [...knownDocs.keys()].filter((k) => k.startsWith(`${key}/`));
+    if (targets.length === 0) return;
+
+    const { fetchDocuments } = await import('@/lib/daemon-local-client');
+
+    // One file needs no progress reporting; the row's own state is enough.
+    if (targets.length === 1) {
+      try {
+        await fetchDocuments(aclTeamId, targets);
+        setFailedDownloads((prev) => {
+          const next = new Set(prev);
+          next.delete(targets[0]);
+          return next;
+        });
+      } catch {
+        setFailedDownloads((prev) => new Set([...prev, targets[0]]));
+        toast.error(t('fileExplorer.downloadFailedToast', 'Download failed — check your connection'));
+      }
+      await refreshKnown();
+      await refreshFileTree();
+      return;
+    }
+
+    const toastId = `download-${key}`;
+    downloadCancelRef.current = false;
+    // Small enough that cancelling feels immediate, large enough that a few
+    // hundred files do not become a few hundred round trips.
+    const CHUNK = 20;
+    let done = 0;
+    let failed = 0;
+
+    const report = () =>
+      toast.loading(
+        t('fileExplorer.downloadProgress', {
+          defaultValue: 'Downloading {{done}} of {{total}}…',
+          done,
+          total: targets.length,
+        }),
+        {
+          id: toastId,
+          action: {
+            label: t('common.cancel', 'Cancel'),
+            onClick: () => { downloadCancelRef.current = true; },
+          },
+        },
+      );
+    report();
+
+    for (let i = 0; i < targets.length; i += CHUNK) {
+      if (downloadCancelRef.current) break;
+      const chunk = targets.slice(i, i + CHUNK);
+      try {
+        await fetchDocuments(aclTeamId, chunk);
+        setFailedDownloads((prev) => {
+          const next = new Set(prev);
+          for (const c of chunk) next.delete(c);
+          return next;
+        });
+      } catch {
+        failed += chunk.length;
+        setFailedDownloads((prev) => new Set([...prev, ...chunk]));
+      }
+      done += chunk.length;
+      report();
+    }
+
+    toast.dismiss(toastId);
+    if (downloadCancelRef.current) {
+      // Says what was kept, not just that it stopped: the files already
+      // fetched are real and staying.
+      toast.info(
+        t('fileExplorer.downloadCancelled', {
+          defaultValue: 'Stopped. {{done}} file(s) were downloaded and kept.',
+          done: done - failed,
+        }),
+      );
+    } else if (failed > 0) {
+      toast.error(t('fileExplorer.downloadFailedToast', 'Download failed — check your connection'));
+    }
+
+    await refreshKnown();
+    await refreshFileTree();
+  }, [aclTeamId, syncRoot, workspacePath, knownDocs, refreshKnown, refreshFileTree, t]);
+
+  /**
+   * Give back the local copy. The server keeps it and nobody else is affected;
+   * the wording has to carry that, because "remove" and "delete" are one word
+   * apart in a user's head and only one of them is team-wide.
+   */
+  const handleReleaseLocal = useCallback(async (path: string) => {
+    if (!aclTeamId) return;
+    const key = teamSyncKeyForPath(path, { syncRoot, workspacePath });
+    if (!key) return;
+    try {
+      const { releaseDocuments } = await import('@/lib/daemon-local-client');
+      const released = await releaseDocuments(aclTeamId, [key]);
+      if (released.length === 0) {
+        // Refused — almost always because the file holds unpushed edits.
+        toast.error(
+          t('fileExplorer.releaseRefused', 'Not removed — this file has unsaved changes to sync'),
+        );
+      }
+    } catch {
+      toast.error(t('fileExplorer.releaseFailed', 'Could not remove the local copy'));
+    }
+    await refreshKnown();
+    await refreshFileTree();
+  }, [aclTeamId, syncRoot, workspacePath, refreshKnown, refreshFileTree, t]);
+
+  /**
+   * Copy local files or folders into a documents directory.
+   *
+   * A copy, never a move: the source is somewhere the user chose and probably
+   * still wants — a Downloads folder, a shared drive — and taking it away would
+   * be a surprise no dialog warned about.
+   *
+   * `copyItem` already handles recursion and name collisions (it appends
+   * " copy"), so nothing here needs to know about either.
+   */
+  const handleImportLocal = useCallback(async (targetDir: string) => {
+    if (!isTauri()) return;
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const picked = await open({ multiple: true, directory: false });
+      const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+      if (paths.length === 0) return;
+
+      const { copyItem } = await import('@/components/workspace/file-tree-operations');
+      let failed = 0;
+      for (const source of paths) {
+        // Copying a directory into itself or its own subtree would recurse
+        // until the disk fills. The same guard the paste path applies.
+        if (targetDir === source || targetDir.startsWith(`${source}/`)) {
+          failed++;
+          continue;
+        }
+        if (!(await copyItem(source, targetDir))) failed++;
+      }
+
+      await expandDirectory(targetDir);
+      await refreshFileTree();
+      if (failed > 0) {
+        toast.error(
+          t('fileExplorer.importFailed', {
+            defaultValue: '{{count}} item(s) could not be added',
+            count: failed,
+          }),
+        );
+      }
+    } catch (e) {
+      toast.error(
+        t('fileExplorer.importFailedGeneric', 'Could not add the selected files'),
+      );
+      console.error('[FileTree] import failed', e);
+    }
+  }, [expandDirectory, refreshFileTree, t]);
 
   const handlePaste = useCallback(async (targetDir: string) => {
     const success = await pasteFiles(targetDir);
@@ -1162,7 +1464,7 @@ export function FileTree({
     // spellings of the same file, and `teamSyncKeyForPath` maps both.
     syncStatus: (() => {
       if (!anyBadges) return null;
-      const syncKey = teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath });
+      const syncKey = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
       if (!syncKey) return null;
       return node.type === 'directory'
         ? badgeForDirectory(syncKey, badges)
@@ -1173,14 +1475,14 @@ export function FileTree({
     // alongside the five that make up the sync-status scale.
     syncIgnored: (() => {
       if (ignoredRoots.size === 0) return false;
-      const syncKey = teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath });
+      const syncKey = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
       return syncKey !== null && isIgnoredSyncKey(syncKey, ignoredRoots);
     })(),
     // Whether the row has a cloud counterpart at all — which is what decides
     // if "show the cloud version" is a meaningful thing to offer on it.
     isTeamKnowledge:
       node.type !== 'directory' &&
-      teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath }) !== null,
+      teamSyncKeyForPath(node.path, { syncRoot, workspacePath }) !== null,
     onSelectFile: selectFile,
     onSelectFileRange: selectFileRange,
     onToggleFileSelection: toggleFileSelection,
@@ -1198,6 +1500,68 @@ export function FileTree({
     onOpenDefault: handleOpenDefault,
     onOpenTerminal: handleOpenTerminal,
     onAddToAgent: handleAddToAgent,
+    // Supplied only for directories that are actually part of the synced
+    // knowledge tree, and only to someone who can manage the team. Undefined
+    // everywhere else, which is what keeps the item out of the ordinary
+    // workspace file browser.
+    // Only the two fixed roots, and only at the top level: a `knowledge`
+    // directory nested three deep is an ordinary folder and keeps its name.
+    // The on-disk names stay ASCII everywhere else — manifest keys, ACL
+    // prefixes and logs are all addressed by them.
+    // The sync root holds exactly two directories and no third one would ever
+    // sync, so it offers no create action. `teamSyncKeyForPath` returns null
+    // for the root itself while returning a key for everything inside it,
+    // which is precisely the distinction needed.
+    disallowCreate:
+      node.type === 'directory' &&
+      syncRoot != null &&
+      node.path.replace(/[/\\]+$/, '') === syncRoot.replace(/[/\\]+$/, ''),
+    localizedName: localizedRootName(node, compactName),
+    // Documents only. Knowledge is shared consensus — everyone on the team sees
+    // the same thing — so it is never offered a restriction. That split is
+    // editorial rather than technical, which is why it lives here and not in a
+    // database constraint.
+    ...(() => {
+      const key = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
+      if (!key || !key.startsWith('documents/')) return {};
+      const listedOnly = knownDocs.has(key);
+      // A directory is offered a download when anything beneath it is listed.
+      const hasListedBelow =
+        node.type === 'directory' && [...knownDocs.keys()].some((k) => k.startsWith(`${key}/`));
+      return {
+        isNotDownloaded: listedOnly,
+        downloadFailed: failedDownloads.has(key),
+        onDownload: listedOnly || hasListedBelow ? handleDownload : undefined,
+        // Only what is actually held locally can be given back. A directory is
+        // not offered it: releasing a whole subtree in one click is too easy to
+        // do by accident for something that looks like deleting.
+        onReleaseLocal:
+          node.type !== 'directory' && !listedOnly ? handleReleaseLocal : undefined,
+      };
+    })(),
+    // 资料库 only — see the prop's own note for why 知识库 does not get this.
+    onImportLocal:
+      node.type === 'directory' &&
+      (teamSyncKeyForPath(node.path, { syncRoot, workspacePath })?.startsWith('documents/') ??
+        false)
+        ? handleImportLocal
+        : undefined,
+    onManagePermissions:
+      canManageTeam &&
+      node.type === 'directory' &&
+      (teamSyncKeyForPath(node.path, { syncRoot, workspacePath })?.startsWith('documents/') ??
+        false)
+        ? handleManagePermissions
+        : undefined,
+    // Its OWN rule, not one inherited from an ancestor: descendants are drawn
+    // nested under the folder that is already marked.
+    isPermissionRestricted:
+      node.type === 'directory' &&
+      restrictedPrefixes.size > 0 &&
+      (() => {
+        const key = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
+        return key !== null && restrictedPrefixes.has(`${key}/`);
+      })(),
     onDragStart: handleDragStart,
     onDragOver: handleDragOver,
     onDragLeave: handleDragLeave,
@@ -1315,6 +1679,23 @@ export function FileTree({
       >
         {treeContent}
       </div>
+
+      {/*
+        Mounted only once a folder has actually been right-clicked, so the
+        ordinary workspace tree never pays for it.
+      */}
+      {aclPrefix && (
+        <KnowledgeAclDialog
+          prefix={aclPrefix}
+          open={aclPrefix !== null}
+          onOpenChange={(open) => {
+            if (open) return;
+            setAclPrefix(null);
+            // The dialog may have added or dropped a rule.
+            void refreshRestricted();
+          }}
+        />
+      )}
 
       {/* Delete confirmation dialog */}
       <AlertDialog

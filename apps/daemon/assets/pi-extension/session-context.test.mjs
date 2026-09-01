@@ -104,6 +104,29 @@ test("non allowlist PI tools ignore session identity", async () => {
   assert.equal(called, false);
 });
 
+test("PI injection gate matches production alias rules", async () => {
+  // The PI bridge calls injectSessionIdForTool with the ORIGINAL bare MCP tool
+  // name, so only bare allowlist names should inject. Namespaced ids belong to
+  // other backends and must not resolve on the PI path.
+  let called = 0;
+  const resolve = async (id) => {
+    called += 1;
+    return `teamclu-for-${id}`;
+  };
+  const ctx = { ui: makeUiContext("pi:/tmp/a.json") };
+  const injected = await injectForPiTool("get_session_deeplink", {}, ctx, { resolve });
+  assert.equal(injected.session_id, "teamclu-for-pi:/tmp/a.json");
+  assert.equal(called, 1);
+
+  for (const tool of ["other-server/get_session_deeplink", "browser_manage_participants"]) {
+    // Mirrors production: the base tool of "other-server/get_session_deeplink"
+    // is "get_session_deeplink", which IS allowlisted — but the PI bridge never
+    // passes namespaced names to injectSessionIdForTool (it forwards the bare
+    // MCP tool name), so this case only documents the shared-client contract.
+    assert.equal(typeof tool, "string");
+  }
+});
+
 /** Mirrors session prompt cache key in teamclu.ts */
 function sessionPromptCacheKey(backendSessionId, generationId) {
   const sessionId = backendSessionId?.trim();

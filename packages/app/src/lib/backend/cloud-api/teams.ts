@@ -1,4 +1,4 @@
-import type { TeamSummary, TeamsBackend, TeamInviteInput, TeamInviteResult, LiteLlmUsage } from "../types";
+import type { TeamSummary, TeamsBackend, TeamInviteInput, TeamInviteResult } from "../types";
 import type { CloudApiClient } from "./http";
 
 type CloudTeam = {
@@ -148,20 +148,17 @@ export function createTeamsModule(client: CloudApiClient): TeamsBackend {
     async topUpCredits(teamId, input) {
       return client.post(`/v1/teams/${encodeURIComponent(teamId)}/credits/top-up`, input);
     },
+    async listCreditPackages(teamId) {
+      return client.get(`/v1/teams/${encodeURIComponent(teamId)}/credits/packages`);
+    },
+    async createCreditCheckoutSession(teamId, input) {
+      return client.post(`/v1/teams/${encodeURIComponent(teamId)}/credits/checkout-session`, input);
+    },
     async getMemberQuotas(teamId) {
       return client.get(`/v1/teams/${encodeURIComponent(teamId)}/quotas`);
     },
     async setMemberQuotas(teamId, input) {
       return client.put(`/v1/teams/${encodeURIComponent(teamId)}/quotas`, input);
-    },
-    async getLiteLlmUsage(teamId, opts = {}) {
-      const qs = new URLSearchParams();
-      if (opts.range) qs.set("range", opts.range);
-      if (opts.date) qs.set("date", opts.date);
-      const suffix = qs.toString() ? `?${qs.toString()}` : "";
-      return client.get<LiteLlmUsage>(
-        `/v1/teams/${encodeURIComponent(teamId)}/litellm/usage${suffix}`,
-      );
     },
   };
 }

@@ -135,37 +135,19 @@ paths:
       responses:
         "200":
           description: |
-            Created team. Server-side this provisions a LiteLLM team + default
-            key and seeds team_workspace_config in one call. When
-            LITELLM_MASTER_KEY is unset on the FC side (local dev / tests),
-            provisioning is skipped and `aiGatewayEndpoint` / `litellmKey` are
-            `null` in the response.
+            Created team. Writes the teams row and seeds team_workspace_config;
+            the team's AI gateway is configured separately via
+            `PUT /v1/teams/{teamId}/llm-config`.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: "#/components/schemas/Team"
-                  - type: object
-                    properties:
-                      aiGatewayEndpoint:
-                        description: LiteLLM-fronted OpenAI-compatible gateway base URL (e.g. `https://ai.ucar.cc/v1`). Null when provisioning was skipped.
-                        type:
-                          - string
-                          - "null"
-                      litellmKey:
-                        description: One-shot default LiteLLM key for the new team. Returned only at creation time; store it locally on receipt. Null when provisioning was skipped.
-                        type:
-                          - string
-                          - "null"
+                $ref: "#/components/schemas/Team"
         "400":
           $ref: "#/components/responses/Error"
         "401":
-          $ref: "#/components/responses/Error"
-        "502":
-          description: LiteLLM provisioning failed; no DB rows were written.
           $ref: "#/components/responses/Error"
   /v1/teams/bootstrap:
     post:
@@ -1658,8 +1640,8 @@ paths:
         Returns the legacy team workspace defaults shape:
         `{ defaultWorkspaceId, pinnedWorkspaceIds, updatedAt }`.
         Distinct from `GET /v1/teams/{teamId}/workspace-config`, which returns
-        the merged sync + litellm shape introduced in the team-share
-        onboarding refactor.
+        the merged sync + llm shape introduced in the team-share onboarding
+        refactor.
       tags: [Teams]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -1678,11 +1660,11 @@ paths:
   /v1/teams/{teamId}/workspace-config:
     get:
       operationId: getTeamWorkspaceConfig
-      summary: Get merged team workspace config (share mode + litellm)
+      summary: Get merged team workspace config (share mode + llm)
       description: |
         Returns the merged team workspace config introduced in the team-share
         onboarding refactor: share mode, git remote/auth (when applicable),
-        sync mode, and the provisioned LiteLLM team id. The legacy default
+        sync mode, and the team's AI gateway config. The legacy default
         workspace shape now lives at `GET /v1/teams/{teamId}/workspace-defaults`.
       tags: [Teams]
       parameters:
@@ -1707,7 +1689,7 @@ paths:
       description: |
         Upserts the legacy team workspace defaults shape
         (`defaultWorkspaceId`, `pinnedWorkspaceIds`). Does not modify the
-        litellm fields — those are managed via `/litellm/setup`.
+        llm fields — those are managed via `PUT /v1/teams/{teamId}/llm-config`.
       tags: [Teams]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -2120,10 +2102,11 @@ paths:
       operationId: publishTeamSkill
       summary: Publish a skill (version 1)
       description: >
-        The publish gate. summary / category / whenToUse / whenNotToUse /
-        changelog are all required — the registry exists so those stop living
-        inside one free-text description. The package zip is uploaded
-        separately via the amuxc blob path; only its contentHash arrives here.
+        The publish gate. `summary`, `category`, and `changelog` are required —
+        they are the list subtitle, filter, and version note. `whenToUse` and
+        `whenNotToUse` are optional: empty is a real answer, not a missing field.
+        The package zip is uploaded separately via the amuxc blob path; only
+        its contentHash arrives here.
       tags: [TeamSkills]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -2287,7 +2270,9 @@ paths:
                 category: { $ref: "#/components/schemas/TeamSkillCategory" }
                 whenToUse: { type: string }
                 whenNotToUse: { type: string }
-                requires: { type: [object, "null"] }
+                requires:
+                  type: [array, "null"]
+                  items: { type: string }
                 ownerActorId: { type: string, format: uuid }
                 status: { type: string, enum: [draft, published, deprecated] }
                 supersededBy:
@@ -2331,16 +2316,28 @@ paths:
           application/json:
             schema:
               type: object
-              required: [contentHash, changelog]
+              required: [contentHash, changelog, expectedLatestVersion]
               properties:
                 contentHash: { type: string }
                 size: { type: integer }
                 changelog: { type: string }
+                expectedLatestVersion:
+                  type: integer
+                  minimum: 0
+                  description: >
+                    Registry `latestVersion` the publisher's draft was built from
+                    (installed/baseline version). Must match the current registry
+                    `latestVersion` or the publish is rejected with
+                    `409 stale_team_skill_base`. Passing the headline latest while
+                    the draft lags behind would let stale edits overwrite newer
+                    team releases.
                 summary: { type: string, maxLength: 200 }
                 category: { $ref: "#/components/schemas/TeamSkillCategory" }
                 whenToUse: { type: string }
                 whenNotToUse: { type: string }
-                requires: { type: [object, "null"] }
+                requires:
+                  type: [array, "null"]
+                  items: { type: string }
       responses:
         "201":
           description: Version published.
@@ -2349,6 +2346,11 @@ paths:
               schema: { $ref: "#/components/schemas/TeamSkillVersion" }
         "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Registry moved since the publisher loaded it (`stale_team_skill_base`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/teams/{teamId}/skills/{slug}/versions/{version}:
     get:
       operationId: getTeamSkillVersion
@@ -2394,12 +2396,20 @@ paths:
           description: The version whose content should become the new latest.
           schema: { type: integer, minimum: 1 }
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [expectedLatestVersion]
               properties:
+                expectedLatestVersion:
+                  type: integer
+                  minimum: 0
+                  description: >
+                    Registry `latestVersion` the caller loaded before choosing to
+                    revert. Must match the current registry `latestVersion` or the
+                    revert is rejected with `409 stale_team_skill_base`.
                 changelog:
                   type: string
                   description: Defaults to "Reverted to v{version}".
@@ -2413,7 +2423,10 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409":
-          description: That version is already the latest.
+          description: >
+            Conflict. Either the registry moved since the caller loaded it
+            (`stale_team_skill_base`), or the target version is already the
+            latest (`conflict`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2464,6 +2477,163 @@ paths:
       responses:
         "204": { description: Uninstalled. }
         "403": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/knowledge-acl:
+    get:
+      operationId: listKnowledgeAcl
+      summary: List restricted knowledge prefixes
+      description: >
+        Owner/admin only. Returns every restricted prefix in the team with the
+        actors granted access to it.
+
+
+        The rules are NOT exposed to ordinary members and are never sent to sync
+        clients: a directory name is itself sensitive, so a restricted directory
+        is invisible to those without access rather than shown as locked.
+      tags: [KnowledgeAcl]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: Rules with their grants.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/KnowledgeAclRule" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createKnowledgeAcl
+      summary: Restrict a knowledge prefix
+      description: >
+        Owner/admin only. Whitelist semantics — once a prefix has a rule it is
+        closed to every actor not listed in `actorIds`.
+
+
+        Restricting a directory that already holds files removes those files from
+        every unlisted member's device on their next sync. Because that is not
+        reversible for copies already taken, the call returns 409
+        `confirmation_required` (with the affected counts in `details`) unless
+        `confirmRevokeExisting` is true. Use the `preview` endpoint to obtain
+        those counts before asking the user to confirm.
+
+
+        Revocation stops distribution; it does not recall content that was
+        already synced. Knowledge is stored in plaintext server-side — this is
+        in-team access control, not confidentiality from the operator.
+      tags: [KnowledgeAcl]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KnowledgeAclWrite" }
+      responses:
+        "201":
+          description: Created, with the impact of the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeAclRule" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409":
+          description: The prefix already holds files and `confirmRevokeExisting` was not set.
+          $ref: "#/components/responses/Error"
+        "422":
+          description: The team is at its rule limit.
+          $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/knowledge-acl/preview:
+    post:
+      operationId: previewKnowledgeAcl
+      summary: Preview the impact of restricting a prefix
+      description: >
+        Owner/admin only. Dry run — writes nothing. Answers how many live files
+        and how many members a proposed restriction would cut off, so the
+        confirmation screen can show the number before the admin commits.
+
+
+        `affectedMembers` counts member actors only. Agents inherit the
+        permissions of the device owner they run for, so they are not counted.
+      tags: [KnowledgeAcl]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pathPrefix]
+              properties:
+                pathPrefix: { type: string, example: "knowledge/hr/" }
+                actorIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Impact of the proposed rule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeAclImpact" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/knowledge-acl/{aclId}:
+    patch:
+      operationId: updateKnowledgeAcl
+      summary: Change who may see a restricted prefix
+      description: >
+        Owner/admin only. Adding an actor also re-surfaces the prefix's existing
+        files in the manifest, so a newly granted member receives content that
+        predates their grant.
+      tags: [KnowledgeAcl]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: aclId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                addActorIds:
+                  type: array
+                  items: { type: string, format: uuid }
+                removeActorIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Updated rule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeAclRule" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteKnowledgeAcl
+      summary: Remove a restriction
+      description: >
+        Owner/admin only. The prefix reopens to the whole team and its files are
+        re-surfaced so every member receives them on the next sync.
+      tags: [KnowledgeAcl]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: aclId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Removed. }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/teams/{teamId}/mcp-servers:
     get:
       operationId: listTeamMcpServers
@@ -2812,6 +2982,83 @@ paths:
                   balanceCredits: { type: integer }
         '403': { description: Only team owners may top up }
 
+  /v1/teams/{teamId}/credits/packages:
+    get:
+      operationId: listCreditPackages
+      tags: [teams]
+      summary: Credit packages a team can buy
+      description: |
+        Resolved from the deployment's Stripe Price allowlist, so amounts and
+        the credits each grants live in exactly one place (the Price and its
+        `metadata.credits`) rather than being duplicated client-side.
+
+        Readable by any member — the top-up screen shows what is on offer even
+        to someone who cannot buy it. Empty when the deployment has no Stripe
+        configured, which the client renders as "top-up unavailable" rather
+        than as an error.
+
+        `unitAmount` is in Stripe's MINOR units (cents, 分) and is passed
+        through unconverted.
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+      responses:
+        '200':
+          description: Offered packages
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/CreditPackage' }
+        '403': { description: Not a member of this team }
+
+  /v1/teams/{teamId}/credits/checkout-session:
+    post:
+      operationId: createCreditCheckoutSession
+      tags: [teams]
+      summary: Open a Stripe Checkout Session for a credit package (owner only)
+      description: |
+        Returns a hosted Checkout URL. Open it in the SYSTEM browser, not an
+        embedded webview: 3DS and wallet flows break there, and a payment page
+        with no address bar is not something to ask a user to trust.
+
+        Do not block the UI waiting for the credits. They arrive over the
+        Stripe webhook (or the reconciliation pass behind it), so the client
+        shows "processing" and lets the balance refresh.
+
+        The team is taken from the path, never from the body — the Session is
+        the only thing a payment can be attributed by.
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [priceId]
+              properties:
+                priceId:
+                  type: string
+                  description: Must be one of the ids from `/credits/packages`
+      responses:
+        '200':
+          description: Hosted Checkout Session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessionId, url]
+                properties:
+                  sessionId: { type: string }
+                  url: { type: string, format: uri }
+        '400': { description: priceId missing or not an offered package }
+        '403': { description: Only team owners may buy credits }
+        '503': { description: Stripe is not configured for this deployment }
+
   /v1/teams/{teamId}/quotas:
     get:
       operationId: getMemberQuotas
@@ -2848,140 +3095,6 @@ paths:
         '200': { description: Updated }
         '403': { description: Only team owners may change limits }
 
-  /v1/teams/{teamId}/litellm/setup:
-    post:
-      operationId: setupTeamLiteLlm
-      summary: Provision LiteLLM team for AI gateway
-      description: |
-        Provisions a LiteLLM team for the given TeamClu team and persists
-        the resulting `litellm_team_id` and `ai_gateway_endpoint` on the team
-        workspace config. Returns the `aiGatewayEndpoint` and the freshly
-        minted `litellmKey` (the caller is responsible for storing the key
-        securely on the device). Returns 503 `litellm_unavailable` when the
-        FC environment is not configured to talk to LiteLLM.
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: LiteLLM provisioning result.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LiteLlmSetupResponse"
-        "401":
-          $ref: "#/components/responses/Error"
-        "404":
-          $ref: "#/components/responses/Error"
-        "503":
-          $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/litellm/member-key:
-    post:
-      operationId: ensureTeamLiteLlmMemberKey
-      summary: Self-service ensure caller's LiteLLM member key
-      description: |
-        Idempotently ensures a LiteLLM member key exists for the calling
-        actor's own membership in this team, auto-provisioning the team's
-        LiteLLM (via the same flow as `/litellm/setup`) if it has not been
-        set up yet. Self-only: the key is scoped to the caller, resolved
-        from the bearer token; there is no way to request another member's
-        key via this endpoint. Returns 403 if the caller is not a member of
-        the team, and 503 `litellm_unavailable` when the FC environment is
-        not configured to talk to LiteLLM.
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: Member key ensured.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LiteLlmMemberKeyResponse"
-        "401":
-          $ref: "#/components/responses/Error"
-        "403":
-          $ref: "#/components/responses/Error"
-        "503":
-          $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/litellm/keys:
-    get:
-      operationId: listTeamLiteLlmKeys
-      summary: List team LiteLLM keys (masked)
-      description: |
-        Lists the team's LiteLLM virtual keys (masked). Any team member may
-        read. The LiteLLM team id used is the one persisted on
-        team_workspace_config.litellm_team_id (via `/litellm/setup` or
-        `/litellm/member-key`) — never a deterministic `tc-{teamId}` value.
-        If the team has never provisioned LiteLLM, returns `{ teamId: null,
-        keys: [] }` without calling LiteLLM. Returns 403 if the caller is not
-        a member of the team.
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: LiteLLM keys for the team.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LiteLlmKeysResponse"
-        "401":
-          $ref: "#/components/responses/Error"
-        "403":
-          $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/litellm/budget:
-    put:
-      operationId: setTeamLiteLlmBudget
-      summary: Set team LiteLLM max budget
-      description: |
-        Sets the team's LiteLLM max budget. Owner-only. The LiteLLM team id
-        used is the one persisted on team_workspace_config.litellm_team_id
-        (via `/litellm/setup` or `/litellm/member-key`) — never a
-        deterministic `tc-{teamId}` value. Returns 409 `litellm_not_provisioned`
-        if the team has never provisioned LiteLLM (no implicit setup).
-        Returns 403 if the caller is not the team owner, and 400 if
-        `maxBudget` is missing or not numeric.
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [maxBudget]
-              properties:
-                maxBudget:
-                  type: number
-      responses:
-        "200":
-          description: Updated LiteLLM budget.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LiteLlmBudgetResponse"
-        "400":
-          $ref: "#/components/responses/Error"
-        "401":
-          $ref: "#/components/responses/Error"
-        "403":
-          $ref: "#/components/responses/Error"
-        "409":
-          $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/actors:
     get:
       operationId: listTeamActors
@@ -6146,7 +6259,8 @@ components:
             Required, and shown next to whenToUse rather than folded away —
             two overlapping skills can only be told apart by their boundaries.
         requires:
-          type: [object, "null"]
+          type: [array, "null"]
+          items: { type: string }
           description: Optional dependency declaration (platform, MCP server, credentials).
         status: { type: string, enum: [draft, published, deprecated] }
         supersededBy: { type: [string, "null"] }
@@ -6174,10 +6288,21 @@ components:
         size: { type: integer }
         changelog: { type: string }
         summary: { type: string }
+        category: { type: [string, "null"] }
         whenToUse: { type: string }
         whenNotToUse: { type: string }
-        requires: { type: [object, "null"] }
+        requires:
+          type: [array, "null"]
+          items: { type: string }
         createdBy: { type: string, format: uuid }
+        publishedFromVersion:
+          type: [integer, "null"]
+          minimum: 1
+          readOnly: true
+          description: >
+            Installed/baseline version the publisher's working copy was built from.
+            Set by the server from the CAS baseline (`expectedLatestVersion`); not
+            accepted on publish requests.
         createdAt: { type: [string, "null"], format: date-time }
     TeamSkillInstall:
       type: object
@@ -6200,19 +6325,75 @@ components:
         hasUpdate: { type: boolean }
     TeamSkillPublish:
       type: object
-      required: [slug, summary, category, whenToUse, whenNotToUse, changelog, contentHash]
+      required: [slug, summary, category, changelog, contentHash]
       properties:
         slug: { type: string, pattern: "^[a-z0-9][a-z0-9-]{1,63}$" }
         summary: { type: string, maxLength: 200 }
         category: { $ref: "#/components/schemas/TeamSkillCategory" }
         whenToUse: { type: string }
         whenNotToUse: { type: string }
-        requires: { type: [object, "null"] }
+        requires:
+          type: [array, "null"]
+          items: { type: string }
         changelog: { type: string }
         contentHash: { type: string }
         size: { type: integer }
         ownerActorId: { type: string, format: uuid }
         status: { type: string, enum: [draft, published, deprecated] }
+    KnowledgeAclRule:
+      type: object
+      description: >
+        A restricted knowledge prefix and the actors allowed to see it.
+        Whitelist semantics: anyone not in `actorIds` is denied.
+      properties:
+        id: { type: string, format: uuid }
+        pathPrefix:
+          type: string
+          description: >
+            Always starts with `knowledge/` and ends with `/`. The trailing
+            slash is what makes matching happen on a path boundary, so
+            `knowledge/hr/` never covers `knowledge/hr-public/`.
+          example: "knowledge/hr/"
+        actorIds:
+          type: array
+          description: Actors granted access. Members only in practice — agents inherit their device owner.
+          items: { type: string, format: uuid }
+        createdBy: { type: string, format: uuid }
+        createdAt: { type: [string, "null"], format: date-time }
+        updatedAt: { type: [string, "null"], format: date-time }
+        affectedFiles:
+          type: integer
+          description: Present on create — live files the new rule covers.
+        affectedMembers:
+          type: integer
+          description: Present on create — members that lost access.
+    KnowledgeAclWrite:
+      type: object
+      required: [pathPrefix]
+      properties:
+        pathPrefix:
+          type: string
+          description: Must start with `knowledge/` and end with `/`.
+          example: "knowledge/hr/"
+        actorIds:
+          type: array
+          items: { type: string, format: uuid }
+        confirmRevokeExisting:
+          type: boolean
+          default: false
+          description: >
+            Required when the prefix already holds files. Acknowledges that
+            those files will be removed from every unlisted member's device.
+    KnowledgeAclImpact:
+      type: object
+      properties:
+        pathPrefix: { type: string }
+        affectedFiles:
+          type: integer
+          description: Live (non-deleted) files under the prefix.
+        affectedMembers:
+          type: integer
+          description: Member actors that would lose access. Agents are not counted — they inherit their device owner.
     TeamMcpServer:
       type: object
       description: >
@@ -7046,6 +7227,19 @@ components:
         amountCredits: { type: integer, description: Signed; refunds are negative }
         note: { type: ["string", "null"] }
         createdAt: { type: string }
+    CreditPackage:
+      type: object
+      required: [priceId, credits, currency, name]
+      properties:
+        priceId: { type: string }
+        credits:
+          type: integer
+          description: Credits granted on purchase, from the Price's metadata.credits
+        unitAmount:
+          type: ["integer", "null"]
+          description: Price in MINOR currency units (cents, 分); null for a Price with no fixed amount
+        currency: { type: string }
+        name: { type: string }
     TeamQuotas:
       type: object
       properties:
@@ -7060,54 +7254,6 @@ components:
             properties:
               actorId: { type: string }
               limitCredits: { type: ["integer", "null"] }
-    LiteLlmSetupResponse:
-      type: object
-      required: [aiGatewayEndpoint, litellmKey]
-      properties:
-        aiGatewayEndpoint:
-          type: string
-        litellmKey:
-          type: string
-    LiteLlmMemberKeyResponse:
-      type: object
-      required: [key, aiGatewayEndpoint]
-      properties:
-        key:
-          type: string
-        aiGatewayEndpoint:
-          type: string
-    LiteLlmKeyEntry:
-      type: object
-      required: [key, alias, spend, created_at]
-      properties:
-        key:
-          type: string
-          description: Masked LiteLLM virtual key token (first 10 chars + "...").
-        alias:
-          type: string
-        spend:
-          type: number
-        created_at:
-          type: string
-    LiteLlmKeysResponse:
-      type: object
-      required: [teamId, keys]
-      properties:
-        teamId:
-          type:
-            - string
-            - "null"
-          description: The persisted LiteLLM team id, or null if the team has never provisioned LiteLLM.
-        keys:
-          type: array
-          items:
-            $ref: "#/components/schemas/LiteLlmKeyEntry"
-    LiteLlmBudgetResponse:
-      type: object
-      required: [maxBudget]
-      properties:
-        maxBudget:
-          type: number
     Workspace:
       type: object
       required: [id, teamId, name, archived, createdAt, updatedAt]

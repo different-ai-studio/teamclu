@@ -37,13 +37,68 @@ const DEFAULT_TTL_MS = 10 * 60 * 1000;
  * requests. Everything inside the transaction is bounded work; the upstream
  * call happens after it commits.
  */
+/**
+ * The signup grant, applied inside a caller's transaction.
+ *
+ * Mirrors `topUp` rather than calling it, because `topUp` opens its own
+ * transaction and this has to run inside the one already holding the balance
+ * row. Concurrency is handled by the same unique index: two first requests for
+ * one team both reach the insert, one wins, and the loser's `do nothing` blocks
+ * until the winner commits and then reads the committed balance.
+ */
+async function grantSignupInTx(tx: Queryable, teamId: string): Promise<void> {
+  try {
+    const inserted = await tx<{ id: string }[]>`
+      insert into amux.credit_ledger
+        (team_id, kind, amount_credits, idempotency_key, note)
+      values
+        (${teamId}::uuid, 'grant', ${SIGNUP_GRANT_CREDITS},
+         ${`signup_grant:${teamId}`}, 'signup grant (first use)')
+      on conflict (team_id, idempotency_key) where idempotency_key is not null
+        do nothing
+      returning id`;
+    if (inserted.length === 0) return; // already granted; balance is authoritative
+
+    await tx`
+      insert into amux.team_credit_balance (team_id, balance_credits)
+      values (${teamId}::uuid, ${SIGNUP_GRANT_CREDITS})
+      on conflict (team_id) do update
+        set balance_credits = amux.team_credit_balance.balance_credits + ${SIGNUP_GRANT_CREDITS},
+            updated_at = now()`;
+  } catch (err) {
+    // The team vanished between the membership check and here. Fall through
+    // with no balance, which reads as `insufficient_credits` — refusing to
+    // serve a deleted team is right, and 500ing on it is not.
+    if ((err as { code?: string })?.code === "23503") return;
+    throw err;
+  }
+}
+
 export async function reserve(sql: Sql, input: ReserveInput): Promise<ReserveResult> {
   const ttl = input.ttlMs ?? DEFAULT_TTL_MS;
   return sql.begin(async (tx) => {
-    const [balanceRow] = await tx<{ balance_credits: string }[]>`
+    let [balanceRow] = await tx<{ balance_credits: string }[]>`
       select balance_credits from amux.team_credit_balance
        where team_id = ${input.teamId}::uuid
          for update`;
+
+    // No row at all means this team has never been credited — `topUp` upserts
+    // the balance, so the row's absence is exactly "no ledger entry ever".
+    // Grant on first contact rather than making team creation call us: that
+    // would add a failure mode (team created, grant call lost, team stuck at
+    // zero) for a service that has no business being on the signup path.
+    //
+    // A team that SPENT down to zero has a row, so it is never re-granted, and
+    // the `signup_grant:<team_id>` key is the same one the backfill uses — the
+    // two cannot double-grant each other.
+    if (!balanceRow) {
+      await grantSignupInTx(tx, input.teamId);
+      [balanceRow] = await tx<{ balance_credits: string }[]>`
+        select balance_credits from amux.team_credit_balance
+         where team_id = ${input.teamId}::uuid
+           for update`;
+    }
+
     const balance = balanceRow ? Number(balanceRow.balance_credits) : 0;
 
     const [heldRow] = await tx<{ held: string }[]>`

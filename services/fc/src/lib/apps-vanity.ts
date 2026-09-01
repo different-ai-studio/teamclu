@@ -1,5 +1,3 @@
-import { and, eq, sql } from "drizzle-orm";
-import { apps } from "../db/schema/index.js";
 import { parseAppPublicHost } from "./apps-public-host.js";
 
 /**
@@ -27,9 +25,6 @@ export interface VanityApp {
   fcStatus: string | null;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type DbLike = any;
-
 export type LookupVanityApp = (host: string) => Promise<VanityApp | null>;
 
 /**
@@ -44,28 +39,9 @@ export function selectByIdPrefix(rows: VanityApp[], idPrefix: string): VanityApp
   return hits.length === 1 ? hits[0] : null;
 }
 
-/** Postgres backend: read the control-plane tables directly. */
-export function makePgVanityLookup(getDb: () => DbLike): LookupVanityApp {
-  return async (host: string) => {
-    const parsed = parseAppPublicHost(host);
-    if (!parsed) return null;
-    const rows = await getDb()
-      .select({
-        id: apps.id,
-        slug: apps.slug,
-        fcEndpoint: apps.fcEndpoint,
-        fcStatus: apps.fcStatus,
-      })
-      .from(apps)
-      .where(and(eq(apps.slug, parsed.slug), sql`${apps.id}::text like ${parsed.idPrefix + "%"}`))
-      .limit(2);
-    return selectByIdPrefix(rows as VanityApp[], parsed.idPrefix);
-  };
-}
-
 /**
- * Supabase backend: PostgREST with the service-role key, which is how every
- * other tokenless path here reads the database.
+ * Reads via PostgREST with the service-role key, which is how every other
+ * tokenless path here reads the database.
  *
  * Filters on slug alone and matches the id prefix in memory rather than asking
  * PostgREST for `id like '…%'`: `id` is a uuid column, and Postgres has no
@@ -90,24 +66,16 @@ export function makeSupabaseVanityLookup(getClient: () => any): LookupVanityApp 
 }
 
 /**
- * The lookup this deployment can actually perform.
- *
- * Chosen per call rather than at wiring time so neither client is constructed
- * on a deployment that never serves a vanity host — and `getDb()` in
- * particular throws outright when DATABASE_URL is unset, which is the normal
- * state of a self-host box running the supabase backend.
+ * The lookup, with the client built per call rather than at wiring time so a
+ * deployment that never serves a vanity host never constructs one.
  */
 export function makeVanityLookup(deps: {
-  backendKind: () => string;
-  getDb: () => DbLike;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getServiceRoleClient: () => any;
 }): LookupVanityApp {
   return async (host: string) => {
     if (!parseAppPublicHost(host)) return null;
-    const impl = deps.backendKind() === "postgres"
-      ? makePgVanityLookup(deps.getDb)
-      : makeSupabaseVanityLookup(deps.getServiceRoleClient);
-    return impl(host);
+    return makeSupabaseVanityLookup(deps.getServiceRoleClient)(host);
   };
 }
 
