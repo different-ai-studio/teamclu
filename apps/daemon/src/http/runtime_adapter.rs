@@ -547,6 +547,7 @@ pub struct RuntimeManagerAdapter {
     backlog_cap: usize,
     refresh: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
     execution_context_assembler: Option<Arc<dyn RuntimeExecutionContextAssembler>>,
+    runtime_supervisor: std::sync::OnceLock<Arc<crate::runtime::RuntimeSupervisor>>,
 }
 
 struct ManagedSession {
@@ -582,9 +583,14 @@ impl RuntimeManagerAdapter {
             backlog_cap,
             refresh,
             execution_context_assembler,
+            runtime_supervisor: std::sync::OnceLock::new(),
         });
         Self::spawn_event_pump(&adapter);
         adapter
+    }
+
+    pub fn set_runtime_supervisor(&self, supervisor: Arc<crate::runtime::RuntimeSupervisor>) {
+        let _ = self.runtime_supervisor.set(supervisor);
     }
 
     fn spawn_event_pump(this: &Arc<Self>) {
@@ -802,6 +808,20 @@ impl RuntimeManagerAdapter {
         prepare_workspace(std::path::Path::new(&worktree)).map_err(|e| {
             HttpError::internal(format!("prepare workspace for runtime spawn: {e}"))
         })?;
+        if let Some(supervisor) = self.runtime_supervisor.get() {
+            let workspace_id = workspace_id.as_deref().unwrap_or("");
+            if let Err(error) = supervisor
+                .apply_pending_skills_refresh(workspace_id, std::path::Path::new(&worktree))
+                .await
+            {
+                tracing::warn!(
+                    workspace_id,
+                    worktree,
+                    error = %error,
+                    "pending skills refresh before session attach failed"
+                );
+            }
+        }
         let mut manager = self.manager.lock().await;
         manager
             .start_runtime_with_model(
@@ -1536,6 +1556,7 @@ mod tests {
             backlog_cap,
             refresh: None,
             execution_context_assembler: None,
+            runtime_supervisor: std::sync::OnceLock::new(),
         })
     }
 

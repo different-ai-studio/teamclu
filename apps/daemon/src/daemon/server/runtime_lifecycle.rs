@@ -528,8 +528,7 @@ impl DaemonServer {
 
         if !session_id.is_empty() && !ws_id.is_empty() {
             if reset_backend_binding {
-                self.sessions
-                    .delete(session_id, &ws_id, agent_type as i32);
+                self.sessions.delete(session_id, &ws_id, agent_type as i32);
                 let _ = self.sessions.save(&self.sessions_path);
             } else if self
                 .sessions
@@ -575,6 +574,20 @@ impl DaemonServer {
         // `amuxd-remote-tools` is paused. Re-enable via write_remote_tools_mcp_config.
         let mcp_config_path = None;
         let should_bind_remote_target = !session_id.is_empty() && !requester_actor_id.is_empty();
+
+        if let Some(supervisor) = self.runtime_supervisor.as_ref() {
+            if let Err(error) = supervisor
+                .apply_pending_skills_refresh(&ws_id, std::path::Path::new(&resolved_worktree))
+                .await
+            {
+                tracing::warn!(
+                    workspace_id = %ws_id,
+                    worktree = %resolved_worktree,
+                    error = %error,
+                    "pending skills refresh before session attach failed"
+                );
+            }
+        }
 
         // Spawn.
         let spawn_res = self
@@ -743,12 +756,7 @@ impl DaemonServer {
         }
 
         // Terminate via RuntimeManager (same path as AcpCommand::StopAgent).
-        let stopped_handle = self
-            .agents
-            .lock()
-            .await
-            .stop_runtime(&runtime_id)
-            .await;
+        let stopped_handle = self.agents.lock().await.stop_runtime(&runtime_id).await;
         if stopped_handle.is_none() {
             return reject_stop(
                 request,
@@ -765,11 +773,8 @@ impl DaemonServer {
             let cloud_session_id = runtime_id.clone();
             if !stop.workspace_id.trim().is_empty() {
                 let agent_type = stopped_handle.unwrap().agent_type as i32;
-                self.sessions.delete(
-                    &cloud_session_id,
-                    stop.workspace_id.trim(),
-                    agent_type,
-                );
+                self.sessions
+                    .delete(&cloud_session_id, stop.workspace_id.trim(), agent_type);
             } else {
                 self.sessions.delete_for_session(&cloud_session_id);
             }
