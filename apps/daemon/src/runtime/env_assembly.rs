@@ -101,6 +101,25 @@ pub fn assemble_spawn_runtime_env_for_execution(
             "TEAMCLU_TEAM_PROVIDER".to_string(),
             teamclu_runtime_env::team_provider_env_payload(provider),
         );
+        tracing::info!(
+            target: "amuxd::team_provider_probe",
+            base_url = %provider.base_url,
+            models = provider.models.len(),
+            "injected TEAMCLU_TEAM_PROVIDER"
+        );
+    } else {
+        // The state AFTER stabilize_managed_llm_for_spawn, so this also says
+        // whether the on-disk provider.team fallback fired.
+        tracing::info!(
+            target: "amuxd::team_provider_probe",
+            state = match &managed_llm {
+                ManagedLlmState::Disabled => "Disabled",
+                ManagedLlmState::Unknown => "Unknown",
+                ManagedLlmState::Enabled(_) => unreachable!(),
+            },
+            disk_fallback_present = disk_team.is_some(),
+            "NOT injecting TEAMCLU_TEAM_PROVIDER"
+        );
     }
     // #742: point opencode at the daemon-owned device-level config, which is
     // where user-configured providers now live. `OPENCODE_CONFIG` loads it as an
