@@ -555,8 +555,13 @@ impl DaemonServer {
             })?;
 
         if let Some((parent_session_id, root_message_id)) = fork_from {
-            // After reset_backend_binding the store lookup is empty; still fork when
-            // fork_from is present so the thread re-branches from the parent anchor.
+            // Lazy fork runs only when runtimes.toml has no binding for this thread.
+            // Normal path: first start forks; later starts resume via try_resume above.
+            //
+            // Risk (accepted): if a binding row exists but try_resume returned None
+            // (soft failure — workspace resolve, etc.), needs_fork stays false and
+            // spawn may attach a blank backend instead of re-forking. Rare; same class
+            // as main-session fall-through. Recovery: client resetBackendBinding + forkFrom.
             let needs_fork = !session_id.is_empty()
                 && !ws_id.is_empty()
                 && self

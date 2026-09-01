@@ -132,6 +132,8 @@ pub(crate) struct OfflineRestartPlan {
     pub backend: amux::AgentType,
     pub local_workspace_id: String,
     pub unread_count: usize,
+    /// Thread sessions: lazy fork anchor when local binding is missing.
+    pub fork_from: Option<(String, String)>,
 }
 
 pub struct DaemonServer {
@@ -2608,7 +2610,7 @@ impl DaemonServer {
                     None,
                     "",
                     false,
-                    None,
+                    entry.fork_from,
                 )
                 .await
             {
@@ -2728,11 +2730,28 @@ impl DaemonServer {
                 .unwrap_or_default()
                 .unwrap_or_default();
 
+            let fork_from = match self
+                .backend
+                .fetch_session_with_participants(&session_id)
+                .await
+            {
+                Ok(sp) => sp.session.thread_fork_from(),
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        session_id = %session_id,
+                        "plan_auto_restart_offline_sessions: fetch_session_with_participants failed"
+                    );
+                    None
+                }
+            };
+
             plan.push(OfflineRestartPlan {
                 session_id,
                 backend,
                 local_workspace_id,
                 unread_count,
+                fork_from,
             });
         }
         plan
@@ -4208,6 +4227,8 @@ pub(crate) mod tests {
                     title: "Desktop".into(),
                     summary: String::new(),
                     idea_id: None,
+                    parent_session_id: None,
+                    thread_root_message_id: None,
                     created_at: chrono::Utc::now(),
                 },
                 participants: Vec::new(),
@@ -4279,6 +4300,8 @@ pub(crate) mod tests {
                     title: "Cross entry".into(),
                     summary: String::new(),
                     idea_id: None,
+                    parent_session_id: None,
+                    thread_root_message_id: None,
                     created_at: chrono::Utc::now(),
                 },
                 participants: Vec::new(),
@@ -4442,6 +4465,36 @@ pub(crate) mod tests {
                 "id": format!("row-{session_id}"),
                 "backendSessionId": format!("acp-{session_id}"),
                 "lastProcessedMessageId": last_processed_message_id,
+            })))
+            .mount(srv)
+            .await;
+    }
+
+    /// `fetch_session_with_participants` reads session detail + participants.
+    pub(crate) async fn mock_session_detail(
+        srv: &MockServer,
+        session_id: &str,
+        extra: serde_json::Value,
+    ) {
+        let mut body = serde_json::json!({
+            "id": session_id,
+            "teamId": "team-test",
+            "title": session_id,
+        });
+        if let Some(obj) = extra.as_object() {
+            for (k, v) in obj {
+                body[k] = v.clone();
+            }
+        }
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/sessions/{session_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(srv)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/sessions/{session_id}/participants")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [],
             })))
             .mount(srv)
             .await;
@@ -4621,6 +4674,7 @@ pub(crate) mod tests {
             ]),
         )
         .await;
+        mock_session_detail(&srv, "sess-mention", serde_json::json!({})).await;
 
         let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
         add_membership(&mut fixture, "sess-mention").await;
@@ -4633,6 +4687,50 @@ pub(crate) mod tests {
         // helper falls back to empty (apply_start_runtime will then
         // resolve via the registered workspace lookup or current dir).
         assert!(plan[0].local_workspace_id.is_empty());
+        assert!(plan[0].fork_from.is_none());
+    }
+
+    #[tokio::test]
+    pub(crate) async fn plan_includes_thread_fork_from_for_thread_sessions() {
+        let srv = MockServer::start().await;
+        auth_token_mock(&srv).await;
+        mock_agent_runtime_row(&srv, "sess-thread", None, None, "opencode").await;
+        mock_messages_response(
+            &srv,
+            "sess-thread",
+            serde_json::json!([
+                {
+                    "id": "msg-human",
+                    "session_id": "sess-thread",
+                    "sender_actor_id": "human-actor",
+                    "kind": "text",
+                    "content": "follow up in thread",
+                    "metadata": { "mention_actor_ids": ["agent-actor"] },
+                    "created_at": "2025-05-22T01:00:00Z"
+                }
+            ]),
+        )
+        .await;
+        mock_session_detail(
+            &srv,
+            "sess-thread",
+            serde_json::json!({
+                "source": "thread",
+                "parentSessionId": "parent-sess",
+                "threadRootMessageId": "msg-anchor",
+            }),
+        )
+        .await;
+
+        let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
+        add_membership(&mut fixture, "sess-thread").await;
+
+        let plan = fixture.server.plan_auto_restart_offline_sessions().await;
+        assert_eq!(plan.len(), 1);
+        assert_eq!(
+            plan[0].fork_from,
+            Some(("parent-sess".into(), "msg-anchor".into()))
+        );
     }
 
     #[tokio::test]
