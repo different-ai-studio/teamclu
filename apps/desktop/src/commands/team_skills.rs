@@ -1489,6 +1489,54 @@ fn recovery_record_for_path(source: &std::path::Path) -> Option<DraftRecoveryRec
         })
 }
 
+/// Load recovery records from trash sidecars and the JSONL index.
+///
+/// Sidecars are authoritative; JSONL is a rebuildable cache for fast listing.
+fn load_draft_recovery_records(trash: &std::path::Path) -> Vec<DraftRecoveryRecord> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+
+    let mut push = |rec: DraftRecoveryRecord| {
+        if !std::path::Path::new(&rec.path).is_dir() {
+            return;
+        }
+        if seen.insert(rec.path.clone()) {
+            out.push(rec);
+        }
+    };
+
+    if let Ok(entries) = std::fs::read_dir(trash) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let sidecar = path.join(".clawhub").join("recovery.json");
+            if !sidecar.is_file() {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&sidecar) {
+                if let Ok(rec) = serde_json::from_str::<DraftRecoveryRecord>(&text) {
+                    push(rec);
+                }
+            }
+        }
+    }
+
+    let log = trash.join("recovery.jsonl");
+    if log.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&log) {
+            for line in content.lines() {
+                if let Ok(rec) = serde_json::from_str::<DraftRecoveryRecord>(line) {
+                    push(rec);
+                }
+            }
+        }
+    }
+
+    out
+}
+
 /// Recent draft recovery records (discarded packs moved to trash).
 #[tauri::command]
 pub fn team_skill_list_draft_recoveries(
@@ -1497,20 +1545,13 @@ pub fn team_skill_list_draft_recoveries(
     limit: Option<usize>,
 ) -> Result<Vec<DraftRecoveryRecord>, String> {
     let trash = trash_dir()?;
-    let log = trash.join("recovery.jsonl");
-    if !log.is_file() {
-        return Ok(Vec::new());
-    }
-    let content = std::fs::read_to_string(&log).unwrap_or_default();
     let cap = limit.unwrap_or(20).min(50);
     let slug_filter = slug.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let team_filter = team_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let mut out: Vec<DraftRecoveryRecord> = content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<DraftRecoveryRecord>(line).ok())
+    let mut out: Vec<DraftRecoveryRecord> = load_draft_recovery_records(&trash)
+        .into_iter()
         .filter(|rec| slug_filter.is_none_or(|s| rec.slug == s))
         .filter(|rec| team_filter.is_none_or(|t| rec.team_id.as_deref() == Some(t)))
-        .filter(|rec| std::path::Path::new(&rec.path).is_dir())
         .collect();
     out.sort_by_key(|a| std::cmp::Reverse(a.at));
     out.truncate(cap);
@@ -1567,7 +1608,16 @@ fn move_to_trash(
             base_version: ctx.base_version,
             team_id: ctx.team_id,
         };
-        record_draft_recovery(&dest, &rec)?;
+        if let Err(e) = record_draft_recovery(&dest, &rec) {
+            // Undo depends on recovery metadata; without it the pack would sit in
+            // trash invisibly. Put it back where the user left it.
+            if let Err(rollback) = std::fs::rename(&dest, target) {
+                return Err(format!(
+                    "{e}; failed to restore skill after recovery write error: {rollback}"
+                ));
+            }
+            return Err(e);
+        }
     }
     // Swept here rather than on a timer: this is the only thing that ever adds
     // to the directory, so it is the only place that can let it grow.
@@ -1602,18 +1652,27 @@ fn record_draft_recovery(dest: &std::path::Path, rec: &DraftRecoveryRecord) -> R
     std::fs::write(sidecar_dir.join("recovery.json"), &line)
         .map_err(|e| format!("Failed to write recovery metadata: {}", e))?;
 
-    let trash = trash_dir()?;
+    append_recovery_log(rec);
+    Ok(())
+}
+
+/// Best-effort index append; listing can rebuild from sidecars.
+fn append_recovery_log(rec: &DraftRecoveryRecord) {
+    let Ok(trash) = trash_dir() else {
+        return;
+    };
     let log = trash.join("recovery.jsonl");
-    std::fs::OpenOptions::new()
+    let Ok(line) = serde_json::to_string(rec) else {
+        return;
+    };
+    let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log)
         .and_then(|mut f| {
             use std::io::Write;
             writeln!(f, "{line}")
-        })
-        .map_err(|e| format!("Failed to append recovery log: {}", e))?;
-    Ok(())
+        });
 }
 
 fn draft_recovery_context(
@@ -2392,5 +2451,63 @@ mod tests {
             team_skill_restore_trashed(trashed, "other-skill".into(), Some("team-a".into()))
                 .expect_err("other slug");
         assert!(wrong_slug.contains("different skill"), "{wrong_slug}");
+    }
+
+    #[test]
+    fn discard_rolls_back_when_recovery_metadata_cannot_be_written() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_home::HomeGuard::set(home.path());
+        set_active_team("team-a");
+
+        let source = global_skills_dir().unwrap().join("blocked-recovery");
+        write_installed_skill(&source, "team-a", 1);
+        // A file at .clawhub blocks the recovery sidecar directory.
+        std::fs::write(source.join(".clawhub"), "blocker").unwrap();
+
+        let err = team_skill_discard_local("blocked-recovery".into(), Some("team-a".into()))
+            .expect_err("sidecar write should fail");
+        assert!(err.contains("recovery metadata"), "{err}");
+        assert!(source.is_dir(), "skill restored to original location");
+
+        let trash = trash_dir().unwrap();
+        let orphan = std::fs::read_dir(&trash)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("blocked-recovery-")
+            });
+        assert!(!orphan, "no orphan trash entry after rollback");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn discard_succeeds_when_recovery_log_append_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_home::HomeGuard::set(home.path());
+        set_active_team("team-a");
+
+        let trash = trash_dir().unwrap();
+        std::fs::create_dir_all(&trash).unwrap();
+        let log = trash.join("recovery.jsonl");
+        std::fs::write(&log, "existing\n").unwrap();
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let source = global_skills_dir().unwrap().join("say-hello");
+        write_installed_skill(&source, "team-a", 1);
+
+        let trashed = team_skill_discard_local("say-hello".into(), Some("team-a".into()))
+            .expect("sidecar success is enough");
+        assert!(std::path::Path::new(&trashed)
+            .join(".clawhub/recovery.json")
+            .is_file());
+
+        let listed =
+            team_skill_list_draft_recoveries(Some("say-hello".into()), Some("team-a".into()), None)
+                .expect("list scans sidecars");
+        assert!(listed.iter().any(|rec| rec.path == trashed));
     }
 }
