@@ -101,7 +101,7 @@
     "@tailwindcss/oxide-darwin-arm64": "^4.3.3",
     "@tailwindcss/oxide-darwin-x64": "^4.3.3",
     "@tailwindcss/oxide-linux-arm64-gnu": "^4.3.2",
-    "@tailwindcss/oxide-linux-x64-gnu": "^4.3.0",
+    "@tailwindcss/oxide-linux-x64-gnu": "^4.3.3",
     "@tailwindcss/oxide-win32-arm64-msvc": "^4.1.18",
     "@tailwindcss/oxide-win32-x64-msvc": "^4.3.3",
     "@tailwindcss/vite": "^4.3.3",
