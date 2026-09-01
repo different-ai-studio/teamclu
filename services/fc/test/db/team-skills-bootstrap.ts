@@ -47,6 +47,7 @@ create table if not exists team_skill_versions (
   size bigint not null default 0,
   changelog text not null,
   summary text not null,
+  category text,
   when_to_use text not null,
   when_not_to_use text not null,
   requires jsonb,

@@ -415,6 +415,7 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
         size: Number(body.size ?? 0),
         changelog,
         summary: fields.summary as string,
+        category: fields.category as string,
         whenToUse: fields.whenToUse as string,
         whenNotToUse: fields.whenNotToUse as string,
         requires: (fields.requires as any) ?? null,

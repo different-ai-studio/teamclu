@@ -1852,12 +1852,12 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       // the part only they can ask for.
       throw new SkillDiscardIncompleteError(trashedPath, e)
     } finally {
+      set((s) => ({ draftRecoveryRevision: s.draftRecoveryRevision + 1 }))
       await get().reconcileSkills().catch(() => {})
       await get()
         .loadSection('skills', { force: true })
         .catch(() => {})
     }
-    set((s) => ({ draftRecoveryRevision: s.draftRecoveryRevision + 1 }))
     return trashedPath
   },
 

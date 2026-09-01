@@ -4298,6 +4298,7 @@ export function createSupabaseBusinessRepository(options) {
         size: Number(body.size ?? 0),
         changelog,
         summary: fields.summary,
+        category: fields.category,
         when_to_use: fields.whenToUse,
         when_not_to_use: fields.whenNotToUse,
         requires: fields.requires ?? null,
