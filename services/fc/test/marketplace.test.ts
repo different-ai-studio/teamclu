@@ -4,7 +4,7 @@ import { handleBusinessApiRequest } from "../src/lib/business-api.js";
 import {
   isTeamScopedSkillObjectPath,
   marketplaceObjectPath,
-} from "../src/lib/pg-repo/marketplace.js";
+} from "../src/lib/validation/marketplace-paths.js";
 
 // Route-level coverage for the skills marketplace.
 // Design: docs/architecture/skills-marketplace.md

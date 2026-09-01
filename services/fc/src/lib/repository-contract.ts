@@ -1,12 +1,8 @@
 /**
- * Shared behavioral contract for BOTH repository backends.
+ * Behavioural contract the business repository must satisfy.
  *
- * Every method added here must be implemented in:
- *   - lib/supabase-repo.ts (Path A — production default)
- *   - lib/pg-repo/*       (Path B — BACKEND_KIND=postgres)
- *
- * Gates: test/repository-contract.test.ts (supabase stub),
- *        test/pg-repo-contract.test.ts (pglite).
+ * Implemented by lib/supabase-repo.ts; gated by
+ * test/repository-contract.test.ts against a stub client.
  */
 export function runBusinessRepositoryContract({ test, assert, createRepository }) {
   test("repository contract: sessions keep canonical fields and ordering", async () => {
@@ -959,52 +955,14 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     }
   });
 
-  test("repository contract: ensureMemberKey returns the caller's own key + gateway endpoint", async () => {
-    const repo = createRepository();
-    assert.equal(typeof repo.ensureMemberKey, "function", "repository must implement ensureMemberKey");
-    const out = await repo.ensureMemberKey("team-share-1");
-    assert.ok(out, "result must be returned");
-    assert.equal(typeof out.key, "string");
-    assert.ok(out.key.length > 0, "key must be non-empty");
-    assert.equal(typeof out.aiGatewayEndpoint, "string");
-    assert.ok(out.aiGatewayEndpoint.length > 0, "aiGatewayEndpoint must be non-empty");
-  });
-
-  test("repository contract: listLiteLlmKeys returns { teamId, keys }", async () => {
-    const repo = createRepository();
-    assert.equal(typeof repo.listLiteLlmKeys, "function", "repository must implement listLiteLlmKeys");
-    const out = await repo.listLiteLlmKeys("team-share-1");
-    assert.ok(out, "result must be returned");
-    assert.ok("teamId" in out, "result must have teamId");
-    assert.ok(Array.isArray(out.keys), "result must have keys array");
-  });
-
-  test("repository contract: setLiteLlmBudget returns { maxBudget }", async () => {
-    const repo = createRepository();
-    assert.equal(typeof repo.setLiteLlmBudget, "function", "repository must implement setLiteLlmBudget");
-    const out = await repo.setLiteLlmBudget("team-share-1", { maxBudget: 42 });
-    assert.ok(out, "result must be returned");
-    assert.equal(out.maxBudget, 42);
-  });
-
-  test("repository contract: setupLiteLlm returns gateway endpoint and key", async () => {
-    const repo = createRepository();
-    const out = await repo.setupLiteLlm("team-share-1");
-    assert.ok(out, "result must be returned");
-    assert.equal(typeof out.aiGatewayEndpoint, "string");
-    assert.ok(out.aiGatewayEndpoint.length > 0, "aiGatewayEndpoint must be non-empty");
-    assert.equal(typeof out.litellmKey, "string");
-    assert.ok(out.litellmKey.length > 0, "litellmKey must be non-empty");
-  });
-
   test("repository contract: getWorkspaceConfig returns an empty llm block for a fresh team", async () => {
     const repo = createRepository();
     const out = await repo.getWorkspaceConfig("team-share-fresh-2");
     assert.ok(out, "result must be returned");
     assert.ok(out.llm && typeof out.llm === "object", "llm block must be present");
-    assert.equal(out.llm.aiGatewayEndpoint, null);
+    assert.equal(out.llm.enabled, false);
+    assert.equal(out.llm.baseUrl, null);
     assert.deepEqual(out.llm.models, []);
-    assert.deepEqual(out.llm.availableModels, []);
   });
 
   test("repository contract: setLlmConfig persists and getWorkspaceConfig round-trips stored models", async () => {
@@ -1022,7 +980,6 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     assert.equal(out.llm.enabled, true);
     assert.equal(out.llm.baseUrl, "https://proxy.example.com/v1");
     assert.deepEqual(out.llm.models, [{ id: "gpt-4o", name: "GPT-4o" }, { id: "claude", name: "Claude" }]);
-    assert.ok(Array.isArray(out.llm.availableModels), "availableModels must be an array");
   });
 }
 

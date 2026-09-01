@@ -68,7 +68,7 @@ export function registerWorkspaces(router) {
   });
 
   // NOTE: GET /v1/teams/:teamId/workspace-config lives in routes/team-share.ts
-  // and returns the merged sync + litellm shape (syncMode, litellmTeamId).
+  // and returns the merged shape (syncMode, llm).
   // The legacy { defaultWorkspaceId, pinnedWorkspaceIds } shape is exposed via
   // GET /v1/teams/:teamId/workspace-defaults so that merged endpoint can own
   // the canonical path.

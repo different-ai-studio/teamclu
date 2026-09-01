@@ -5,8 +5,8 @@ The TeamClu Cloud API (Hono). It can run on Alibaba Function Compute via
 
 ## Run in Docker (self-host)
 
-The container serves the full `/v1` API plus `/healthz` and `/internal/cron`.
-All backing services (Postgres/Supabase, OSS, MQTT, LiteLLM) stay external and
+The container serves the full `/v1` API plus `/healthz`.
+All backing services (Supabase, OSS, MQTT, the AI gateway) stay external and
 are configured through environment variables — the same set listed in `s.yaml`.
 
 ```bash
@@ -21,64 +21,48 @@ curl http://127.0.0.1:9000/healthz   # {"ok":true}
 |-----|---------|---------|
 | `PORT` | `9000` | Listen port |
 | `HOST` | `0.0.0.0` | Bind address |
-| `CRON_TRIGGER_SECRET` | (unset) | Shared secret required by `/internal/cron` |
-| `BACKEND_KIND` | `supabase` | `supabase` or `postgres` (via `resolveBackendKind`) |
 
-All other vars (DB, Supabase, OSS, LiteLLM, APNs, MQTT, CodeUp) match `s.yaml`.
+All other vars (Supabase, OSS, APNs, MQTT, Apps/CodeUp) match `s.yaml`.
 
-## Dual backend paths (read before changing FC data access)
+## Data access (read before changing FC data access)
 
-Production self-host uses **`BACKEND_KIND=supabase`** (default). The codebase
-also carries a parallel **`postgres`** path (Drizzle + Better-Auth) for the same
-`/v1` repository contract. Treat them as **two implementations of one API**,
-not as “main vs dead code”, until the postgres path is removed.
+**Supabase is the only backend.** There is no switch, no second repository, and
+no ORM. Every `/v1` read and write goes through **`lib/supabase-repo.ts`** (plus
+`lib/supabase-repo/*`): PostgREST with the caller's bearer forwarded, so RLS and
+auth semantics are preserved. Login is GoTrue, via
+`createSupabaseAuthRepository`. Set-based work lives in Postgres functions
+called with `.rpc()`, not in application SQL.
 
-| Path | Switch | Business `/v1/*` | Auth |
-|------|--------|------------------|------|
-| **A — Supabase** | default / `supabase` | `lib/supabase-repo.ts` → PostgREST + RLS | GoTrue via `createSupabaseAuthRepository` |
-| **B — Postgres** | `BACKEND_KIND=postgres` | `lib/pg-repo/*` → Drizzle + `authz.ts` | Better-Auth via `createPgAuthRepository` |
+**FC opens no connection of its own to the control-plane database.** No
+`getDb()`, no Drizzle, no `DATABASE_URL`. The one place raw SQL survives is the
+Apps module, and it is not this database: `lib/provisioning/app-postgres.ts`
+provisions a schema + scoped login role per app (DDL PostgREST cannot express),
+and `lib/provisioning/app-data-db.ts` browses the user's own tables in the
+per-org database. Both connect over `APPS_DB_ADMIN_URL`.
 
-**Not Path B** (Drizzle exists on supabase deployments too): `lib/cron.ts`,
-`lib/litellm-usage.ts`, `lib/provisioning/app-postgres.ts` — tokenless or
-separate DB; always wired regardless of `BACKEND_KIND`.
+The schema lives in **`services/supabase/migrations/`** and nowhere else,
+applied by `deploy/self-host/init/apply-migrations.sh`, and is tested by the
+pgTAP suite in `services/supabase/tests/`. There used to be a second copy under
+`src/db/` for the ORM; it was deleted because it validated only itself — nothing
+applied it, and a drift from the real migrations still passed.
 
 ### Developer checklist (new Cloud API work)
 
 1. **Contract first** — `lib/repository-contract.ts`, then OpenAPI.
-2. **Implement both** — `supabase-repo.ts` (or `supabase-repo/*`) **and**
-   `pg-repo/<domain>.ts`, unless the feature is explicitly supabase-only.
-3. **Branching modules** — if you touch `sync-handlers.ts`, `sync-auth.ts`,
-   `push-deps.ts`, or `apps-vanity.ts`, update **both** the `postgres` and
-   `supabase` blocks (grep `resolveBackendKind()`).
-4. **Shared validation** — pure helpers imported from `pg-repo/` into
-   supabase-repo (e.g. `app-status`, `team-mcp`, `team-env-secrets`) must stay
-   backend-neutral; do not put PostgREST calls there.
-5. **Tests** — `test/repository-contract.test.ts` (supabase stub gate) and
-   `test/pg-repo-contract.test.ts` (pglite gate); domain tests often have
-   `pg-repo-*.test.ts` twins.
+2. **Implement** in `supabase-repo.ts` (or `supabase-repo/*`).
+3. **Shared validation** — request-shape and security rules that the route
+   layer and the repository both apply live in `lib/validation/`; keep them free
+   of PostgREST calls.
+4. **Tests** — `test/repository-contract.test.ts` is the contract gate; domain
+   tests sit alongside it.
 
 Entry wiring: `src/index.ts` (`makeBusinessRepoFactory` / `makeAuthRepoFactory`).
-Switch: `src/lib/backend-kind.ts`.
 
-### Cron (HTTP-triggered)
+### No scheduled work
 
-Alibaba FC drives cron via timer triggers. In Docker, an external scheduler
-POSTs to `/internal/cron` instead. Run each task on its own schedule:
-
-```bash
-curl -X POST http://127.0.0.1:9000/internal/cron \
-  -H "x-cron-secret: $CRON_TRIGGER_SECRET" \
-  -H "content-type: application/json" \
-  -d '{"task":"oss-abandon-sessions"}'
-
-curl -X POST http://127.0.0.1:9000/internal/cron \
-  -H "x-cron-secret: $CRON_TRIGGER_SECRET" \
-  -H "content-type: application/json" \
-  -d '{"task":"oss-gc-blobs"}'
-```
-
-Tasks: `oss-abandon-sessions`, `oss-gc-blobs`. A missing/wrong secret returns
-401; an unknown task returns 400. If the server was started without cron support it returns 503.
-
-The Alibaba FC entrypoint (`dist/index.handler`) and `s.yaml` are unchanged by
-the Docker support.
+FC runs nothing on a timer. The two OSS-sync cleanup tasks
+(`oss-abandon-sessions`, `oss-gc-blobs`) and their `/internal/cron` trigger were
+removed, along with the plpgsql functions they were ported from — neither copy
+had ever run on a deployment. `amuxc_upload_sessions` and `amuxc_blobs` now grow
+without bound; whatever collects them next needs the object store in scope, not
+just the registry.

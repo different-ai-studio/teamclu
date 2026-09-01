@@ -35,16 +35,20 @@
 // rather than recalling what was already synced.
 
 import { createServiceRoleClient } from './supabase.js';
-import { resolveBackendKind } from './backend-kind.js';
-import { getDb, type Db } from '../db/client.js';
-import { amuxcPathAcl, amuxcPathAclGrants, amuxcAccessLog } from '../db/schema/index.js';
-import { and, eq } from 'drizzle-orm';
 
 /** Audit actions, matching the CHECK constraint on `amuxc_access_log.action`. */
 export type AclAction = 'manifest' | 'download' | 'upload' | 'delete' | 'versions';
 
 export interface SyncAclDeps {
-  db?: Db;
+  /**
+   * Service-role client override. Production omits it and gets
+   * `createServiceRoleClient()`; tests pass a stub so the rules this module
+   * enforces can be exercised without a database. Injected rather than
+   * module-mocked because every other seam in this path (storage, repo, mqtt)
+   * already works this way.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase?: any;
   /**
    * Clock override for cache expiry (tests), in epoch milliseconds.
    *
@@ -197,28 +201,7 @@ async function loadView(
   actorId: string,
   deps: SyncAclDeps,
 ): Promise<AclView> {
-  if (resolveBackendKind() === 'postgres') {
-    const db = deps.db ?? getDb();
-    const rules = await db
-      .select({ id: amuxcPathAcl.id, prefix: amuxcPathAcl.pathPrefix })
-      .from(amuxcPathAcl)
-      .where(eq(amuxcPathAcl.teamId, teamId));
-    if (rules.length === 0) return EMPTY_VIEW;
-
-    const grants = await db
-      .select({ aclId: amuxcPathAclGrants.aclId })
-      .from(amuxcPathAclGrants)
-      .where(eq(amuxcPathAclGrants.actorId, actorId));
-    const granted = new Set(grants.map((g: { aclId: string }) => g.aclId));
-
-    return {
-      denied: rules.filter((r) => !granted.has(r.id)).map((r) => r.prefix),
-      allPrefixes: rules.map((r) => r.prefix),
-    };
-  }
-
-  // --- supabase path (production default) ---
-  const supabase = createServiceRoleClient();
+  const supabase = deps.supabase ?? createServiceRoleClient();
   const { data: rules, error: rulesErr } = await supabase
     .from('amuxc_path_acl')
     .select('id, path_prefix')
@@ -309,23 +292,7 @@ export async function recordAccess(
   deps: SyncAclDeps = {},
 ): Promise<void> {
   try {
-    if (resolveBackendKind() === 'postgres') {
-      const db = deps.db ?? getDb();
-      // `as any` matches every other insert in this codebase: drizzle 0.36.4's
-      // $inferInsert drops nullable/defaulted columns under TypeScript 5.9, so
-      // `path` and `at` are not in the inferred value type. See the identical
-      // cast in pg-repo/oss-sync.ts.
-      await (db.insert(amuxcAccessLog) as any).values({
-        teamId: entry.teamId,
-        actorId: entry.actorId,
-        pathPrefix: entry.pathPrefix,
-        path: entry.path ?? null,
-        action: entry.action,
-        allowed: entry.allowed,
-      });
-      return;
-    }
-    const supabase = createServiceRoleClient();
+    const supabase = deps.supabase ?? createServiceRoleClient();
     const { error } = await supabase.from('amuxc_access_log').insert({
       team_id: entry.teamId,
       actor_id: entry.actorId,

@@ -4,11 +4,8 @@
 // Each export is a standalone async function; the router in index.mjs
 // dispatches here after JWT/actor auth.
 //
-// DUAL PATH: each handler branches on resolveBackendKind() — keep postgres AND
-// supabase blocks in sync when changing OSS sync metadata (README § Dual backend).
-//   postgres → makeOssSyncRepo(getDb())
-//   supabase → createServiceRoleClient() + .from() / .rpc()  (production default)
-// Blob bytes live in Supabase Storage under both (see team-blob-storage.ts).
+// Sync metadata lives in Supabase (createServiceRoleClient + .from() / .rpc());
+// blob bytes live in Supabase Storage (see team-blob-storage.ts).
 
 import { createHash, randomUUID } from 'node:crypto';
 import { createServiceRoleClient } from './supabase.js';
@@ -24,16 +21,9 @@ import {
   recordAccess,
   type AclView,
 } from './sync-acl.js';
-import { resolveBackendKind } from './backend-kind.js';
 import { getTeamBlobStorage, type BlobStorage } from './team-blob-storage.js';
-import { makeOssSyncRepo, type OssSyncRepo } from './pg-repo/oss-sync.js';
-import { resolveActorForTeam } from './pg-repo/authz.js';
-import { getDb, type Db } from '../db/client.js';
-import { ApiError } from './http-utils.js';
-import { teamWorkspaceConfig, amuxcUploadSessions, amuxcFiles, amuxcFileVersions } from '../db/schema/index.js';
-import { and, eq } from 'drizzle-orm';
 import { syncTopic } from './mqtt-topics.js';
-import { pgPushDeps, pushDeps } from './push-deps.js';
+import { pushDeps } from './push-deps.js';
 
 const DOWNLOAD_TTL_SEC = 900;
 
@@ -54,8 +44,6 @@ export interface SyncMqttPublisher {
 }
 
 export interface SyncHandlerDeps {
-  db?: Db;
-  repo?: OssSyncRepo;
   storage?: BlobStorage;
   /** Override the live-file count. Tests only — production reads the table. */
   countLiveFiles?: (teamId: string) => Promise<number | null>;
@@ -68,6 +56,12 @@ export interface SyncHandlerDeps {
   mqtt?: SyncMqttPublisher | null;
   /** Clock override for hint `at` (tests). */
   now?: () => Date;
+  /**
+   * Clock override for the ACL cache (tests), in epoch milliseconds. This whole
+   * object is passed straight through to sync-acl.ts, which is why the two
+   * clocks have different names — see SyncAclDeps.
+   */
+  nowMs?: () => number;
   /**
    * When true, skip the per-call hint — batch wrappers publish once after
    * all items finish.
@@ -135,20 +129,13 @@ async function countLiveFiles(
 /**
  * Sum of live (non-deleted) file sizes for a team, or `null` when unknown.
  *
- * Postgres: drizzle `sum(size)`. Supabase: RPC `amux.amuxc_team_live_bytes`.
+ * Reads the `amux.amuxc_team_live_bytes` RPC.
  */
 async function sumLiveBytes(
   teamId: string,
   deps: SyncHandlerDeps = {},
 ): Promise<number | null> {
   if (deps.sumLiveBytes) return deps.sumLiveBytes(teamId);
-  if (resolveBackendKind() === 'postgres') {
-    try {
-      return await resolveRepo(deps).sumLiveBytes(teamId);
-    } catch {
-      return null;
-    }
-  }
   try {
     const supabase = createServiceRoleClient();
     const { data, error } = await supabase
@@ -178,12 +165,6 @@ async function blobRequiresUpload(
   }
 }
 
-function resolveRepo(deps: SyncHandlerDeps): OssSyncRepo {
-  if (deps.repo) return deps.repo;
-  const db = deps.db ?? getDb();
-  return makeOssSyncRepo(db);
-}
-
 /** Resolved once per process: `undefined` = not tried yet, `null` = unavailable. */
 let cachedSyncMqtt: SyncMqttPublisher | null | undefined;
 
@@ -191,7 +172,7 @@ function resolveMqtt(deps: SyncHandlerDeps): SyncMqttPublisher | null {
   if (deps.mqtt !== undefined) return deps.mqtt;
   if (cachedSyncMqtt !== undefined) return cachedSyncMqtt;
   try {
-    const bundle = resolveBackendKind() === 'postgres' ? pgPushDeps() : pushDeps();
+    const bundle = pushDeps();
     cachedSyncMqtt = bundle.mqtt ?? null;
   } catch (e: any) {
     // Memoize the failure too. The push bundle also builds a service-role
@@ -413,59 +394,6 @@ export async function handleSyncManifest(
   const denied = aclView.denied;
   await auditManifest(aclView, { teamId, actorId: caller.actorId }, deps);
 
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    const pageLimit = Math.min(Math.max(1, Number(limit) || 200), 1000);
-
-    // For postgres, the repo.manifest handles pagination via cursor.
-    // snapshotSeq: for first page, we read oss_change_seq from teamWorkspaceConfig;
-    // for subsequent pages, caller supplies snapshotSeq.
-    let snapshotSeq: number;
-    if (typeof clientSnapshotSeq === 'number') {
-      snapshotSeq = clientSnapshotSeq;
-    } else {
-      // Read snapshotSeq from DB
-      const db = deps.db ?? getDb();
-      const [twc] = await db
-        .select({ ossChangeSeq: teamWorkspaceConfig.ossChangeSeq })
-        .from(teamWorkspaceConfig)
-        .where(eq(teamWorkspaceConfig.teamId, teamId))
-        .limit(1);
-      if (!twc) {
-        return json(404, { error: 'team not found or not configured for OSS sync' });
-      }
-      snapshotSeq = twc.ossChangeSeq;
-    }
-
-    const result = await repo.manifest({
-      teamId,
-      afterSeq: Number(afterSeq) || 0,
-      snapshotSeq,
-      cursor: cursor as string | undefined,
-      limit: pageLimit,
-      deniedPrefixes: denied,
-    });
-
-    const items = result.files.map(r => ({
-      path:        r.path,
-      version:     r.currentVersion,
-      contentHash: r.contentHash,
-      size:        r.size,
-      deleted:     r.deleted,
-      changeSeq:   r.changeSeq,
-      updatedAt:   r.updatedAt,
-      updatedBy:   r.updatedBy,
-    }));
-
-    return json(200, {
-      snapshotSeq,
-      items,
-      nextCursor: result.nextCursor ?? null,
-    });
-  }
-
   // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();
 
@@ -640,41 +568,6 @@ export async function handleSyncUploadPrepare(
   const ossKey = ossKeyForHash(teamId, contentHash);
   const storage = resolveStorage(deps);
 
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    const known = await repo.download({ teamId, contentHash });
-
-    const expiresAt = new Date(Date.now() + 3600_000);
-    const sessionId = await repo.uploadPrepare({
-      teamId,
-      actorId,
-      nodeId: (nodeId as string | undefined) ?? null,
-      path: path as string,
-      parentVersion,
-      contentHash,
-      size,
-      ossKey,
-      expiresAt,
-    });
-
-    const requiresUpload = await blobRequiresUpload(
-      storage,
-      ossKey,
-      size,
-      Boolean(known?.verified),
-    );
-    const presignedPut = requiresUpload ? await storage.createUploadUrl(ossKey) : null;
-
-    return json(200, {
-      uploadSessionId: sessionId,
-      ossKey,
-      requiresUpload,
-      presignedPut,
-    });
-  }
-
   // --- supabase path ---
   const supabase = createServiceRoleClient();
 
@@ -752,60 +645,6 @@ export async function handleSyncUploadComplete(
 
   const { teamId, actorId } = caller;
   const storage = resolveStorage(deps);
-
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    // We need to fetch the session first to get oss_key + size for HEAD check.
-    // The repo.completeUpload will re-fetch + lock inside the transaction.
-    const db = deps.db ?? getDb();
-    const [session] = await db
-      .select()
-      .from(amuxcUploadSessions)
-      .where(eq(amuxcUploadSessions.id, uploadSessionId as string))
-      .limit(1);
-
-    if (!session) return json(404, { error: 'upload session not found' });
-    if (session.teamId !== teamId) return json(403, { error: 'session does not belong to this team' });
-
-    // Verify the bytes actually landed before marking the version live.
-    try {
-      const stat = await storage.stat(session.ossKey);
-      if (!stat || stat.size !== session.size) {
-        return json(422, {
-          error: 'BlobMissingOrSizeMismatch',
-          expected: session.size,
-          actual: stat?.size ?? null,
-        });
-      }
-    } catch (e: any) {
-      return json(422, { error: 'BlobMissingOrSizeMismatch', detail: e.message });
-    }
-
-    try {
-      const result = await repo.completeUpload(uploadSessionId as string, actorId);
-      return publishHintAfterSingle(
-        caller,
-        body,
-        json(200, {
-          version:     result.version,
-          contentHash: result.contentHash,
-          changeSeq:   result.changeSeq,
-        }),
-        deps,
-      );
-    } catch (e: any) {
-      if (e instanceof ApiError) {
-        if (e.statusCode === 409) return json(409, { reason: 'cas-mismatch', remoteVersion: undefined, remoteHash: undefined });
-        if (e.statusCode === 403) return json(403, { error: e.message });
-        if (e.statusCode === 410) return json(410, { error: e.message });
-        if (e.statusCode === 404) return json(404, { error: e.message });
-      }
-      console.error('[sync/complete] pg error:', e);
-      return json(500, { error: `complete failed: ${e.message}` });
-    }
-  }
 
   // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();
@@ -916,22 +755,6 @@ async function pathsForContentHash(
   contentHash: string,
   deps: SyncHandlerDeps,
 ): Promise<string[]> {
-  if (resolveBackendKind() === 'postgres') {
-    const db = deps.db ?? getDb();
-    const rows = await db
-      .select({ path: amuxcFiles.path })
-      .from(amuxcFiles)
-      .where(and(eq(amuxcFiles.teamId, teamId), eq(amuxcFiles.contentHash, contentHash)));
-    const versionRows = await db
-      .select({ path: amuxcFiles.path })
-      .from(amuxcFileVersions)
-      .innerJoin(amuxcFiles, eq(amuxcFileVersions.fileId, amuxcFiles.id))
-      .where(
-        and(eq(amuxcFiles.teamId, teamId), eq(amuxcFileVersions.contentHash, contentHash)),
-      );
-    return [...new Set([...rows, ...versionRows].map((r: { path: string }) => r.path))];
-  }
-
   // --- supabase path ---
   const supabase = createServiceRoleClient();
   const { data: current } = await supabase
@@ -1035,19 +858,6 @@ export async function handleSyncDownload(
     }
   }
 
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-    const blob = await repo.download({ teamId, contentHash });
-
-    if (!blob) return json(404, { error: 'blob not found' });
-    if (!blob.verified) return json(404, { error: 'blob not yet verified (upload not completed)' });
-
-    const downloadUrl = await storage.createDownloadUrl(blob.ossKey, DOWNLOAD_TTL_SEC);
-
-    return json(200, { downloadUrl, size: blob.size, ttlSec: DOWNLOAD_TTL_SEC });
-  }
-
   // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();
 
@@ -1105,34 +915,6 @@ export async function handleSyncDelete(
         deps,
       );
       return pathForbiddenResponse(path as string);
-    }
-  }
-
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    try {
-      const result = await repo.completeDelete({
-        teamId,
-        path: path as string,
-        parentVersion,
-        actorId,
-        nodeId: (nodeId as string | undefined) ?? null,
-      });
-      return publishHintAfterSingle(
-        caller,
-        body,
-        json(200, { version: result.version, changeSeq: result.changeSeq }),
-        deps,
-      );
-    } catch (e: any) {
-      if (e instanceof ApiError) {
-        if (e.statusCode === 409) return json(409, { reason: 'cas-mismatch', remoteVersion: undefined, remoteHash: undefined });
-        if (e.statusCode === 404) return json(404, { error: 'file not found' });
-      }
-      console.error('[sync/delete] pg error:', e);
-      return json(500, { error: `delete failed: ${e.message}` });
     }
   }
 
@@ -1216,38 +998,6 @@ export async function handleSyncVersions(
     if (denied) return pathForbiddenResponse(path);
   }
 
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    const pageLimit = Math.min(Math.max(1, Number(limit) || 50), 500);
-    const result = await repo.versions({
-      teamId,
-      path,
-      cursor: cursor as string | undefined,
-      limit: pageLimit,
-    });
-
-    if (result.versions.length === 0) {
-      // versions() returns [] if file not found — disambiguate with not found
-      return json(404, { error: 'file not found' });
-    }
-
-    const versions = result.versions.map(r => ({
-      version:          r.version,
-      parentVersion:    r.parentVersion,
-      contentHash:      r.contentHash,
-      size:             r.size,
-      deleted:          r.deleted,
-      createdAt:        r.createdAt,
-      createdBy:        r.createdBy,
-      createdByNodeId:  r.createdByNodeId,
-      message:          null, // pg schema doesn't store message field yet
-    }));
-
-    return json(200, { versions, nextCursor: result.nextCursor ?? null });
-  }
-
   // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();
 
@@ -1329,27 +1079,6 @@ export async function handleSyncSetMode(
   if (!mode) return json(400, { error: 'mode is required' });
   if (mode !== 'git' && mode !== 'oss') return json(400, { error: `invalid mode: ${mode}` });
 
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const db = deps.db ?? getDb();
-    const repo = resolveRepo(deps);
-
-    // Resolve userId → actorId (ownership checked inside repo)
-    const actorId = await resolveActorForTeam(db, userId, teamId as string);
-    if (!actorId) return json(403, { error: 'caller is not a member of this team' });
-
-    try {
-      await repo.setTeamSyncMode(teamId as string, mode as 'git' | 'oss', actorId);
-      return json(200, { mode });
-    } catch (e: any) {
-      if (e instanceof ApiError) {
-        if (e.statusCode === 400) return json(400, { error: e.message });
-        if (e.statusCode === 403) return json(403, { error: e.message });
-      }
-      return json(500, { error: e.message });
-    }
-  }
-
   // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();
 
@@ -1381,18 +1110,6 @@ export async function handleSyncTeamMode(
 ) {
   const { teamId } = body ?? {};
   if (!teamId) return json(400, { error: 'teamId is required' });
-
-  if (resolveBackendKind() === 'postgres') {
-    // --- postgres path ---
-    const repo = resolveRepo(deps);
-
-    try {
-      const mode = await repo.getTeamSyncMode(teamId as string);
-      return json(200, { mode });
-    } catch (e: any) {
-      return json(500, { error: e.message });
-    }
-  }
 
   // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();

@@ -22,7 +22,7 @@ KONG_IP=$(docker inspect supabase-kong \
 # `docker compose up -d` restarts supabase-rest, which then rebuilds its schema
 # cache from Postgres. Until that finishes every request through it answers 503
 # `PGRST002 Could not query the database for the schema cache`. The deploy
-# workflow waits for litellm, fc, and caddy — but nothing waits for this, so a
+# workflow waits for fc and caddy — but nothing waits for this, so a
 # fast runner fires the suite into a warming database and every DB-backed test
 # fails at `POST /v1/teams`, with the rest cascading off the team that was never
 # created. That is a deploy that reports failure while the deployment is fine.

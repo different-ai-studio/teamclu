@@ -16,7 +16,7 @@
 //! share one throttled cloud fetch, so reconciling on a provider read costs at
 //! most one request per team per [`MANAGED_LLM_TTL`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -55,7 +55,6 @@ pub struct ManagedLlmResolver {
     /// rather than at the cloud gateway — see `runtime_facing_base_url`.
     local_http_base: parking_lot::RwLock<Option<String>>,
     cache: AsyncMutex<HashMap<String, CachedManagedLlm>>,
-    member_key_kicked: AsyncMutex<HashSet<String>>,
 }
 
 impl ManagedLlmResolver {
@@ -65,7 +64,6 @@ impl ManagedLlmResolver {
             tokens: parking_lot::RwLock::new(None),
             local_http_base: parking_lot::RwLock::new(None),
             cache: AsyncMutex::new(HashMap::new()),
-            member_key_kicked: AsyncMutex::new(HashSet::new()),
         }
     }
 
@@ -117,17 +115,14 @@ impl ManagedLlmResolver {
     ///
     /// On a transient fetch failure, falls back to the last-known cached value
     /// (or `Unknown` if none) so a working `provider.team` is never wiped by a
-    /// blip. The first resolution per team also kicks a fire-and-forget
-    /// member-key provisioning POST so LiteLLM actually mints the locally-derived
-    /// `sk-tc-{actor}` key.
+    /// blip. The gateway key itself needs no provisioning call: it is derived
+    /// locally as `sk-tc-{actor_id[..40]}`.
     pub async fn resolve(&self, team_id: &str) -> ManagedLlmState {
         if let Some(cached) = self.cache.lock().await.get(team_id) {
             if cached.fetched_at.elapsed() < MANAGED_LLM_TTL {
                 return cached.state.clone();
             }
         }
-
-        self.maybe_kick_member_key(team_id).await;
 
         match self.backend.managed_llm_config(team_id).await {
             Ok(cfg) => {
@@ -203,25 +198,6 @@ impl ManagedLlmResolver {
                 "global team provider sync failed during managed LLM reconcile"
             );
         }
-    }
-
-    /// Kick a one-time, fire-and-forget LiteLLM member-key provisioning POST for
-    /// this team. Guarded so it runs at most once per team per process; failures
-    /// are logged and ignored (the key value is derived locally regardless).
-    async fn maybe_kick_member_key(&self, team_id: &str) {
-        {
-            let mut kicked = self.member_key_kicked.lock().await;
-            if !kicked.insert(team_id.to_string()) {
-                return;
-            }
-        }
-        let backend = self.backend.clone();
-        let tid = team_id.to_string();
-        tokio::spawn(async move {
-            if let Err(e) = backend.ensure_llm_member_key(&tid).await {
-                tracing::warn!(team_id = %tid, error = %e, "LiteLLM member-key self-heal failed");
-            }
-        });
     }
 }
 

@@ -16,10 +16,9 @@ import { json } from "./responses.js";
 // objects that live under `teams/<id>/_registry` and `teams/<id>/_meta` in the
 // OSS bucket.
 //
-// Still Alibaba OSS, and still live: /reset-secret and
-// /managed-git/setup-litellm both read and write `_registry/auth.json`, and the
-// latter still reads `_meta/team.json`. Team file sync no longer touches this
-// bucket at all (see team-blob-storage.ts) — this is the last thing left on it.
+// Still Alibaba OSS, and still live: /reset-secret reads and writes
+// `_registry/auth.json`. Team file sync no longer touches this bucket at all
+// (see team-blob-storage.ts) — this is the last thing left on it.
 //
 // `ossInfo()` and `verifyTeam()` went with /register, /token and /apply.
 // ---------------------------------------------------------------------------

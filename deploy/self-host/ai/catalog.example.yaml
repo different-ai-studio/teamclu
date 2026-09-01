@@ -39,7 +39,7 @@ providers:
   #   usage_mode: needs_stream_options
 
 # Body keys forwarded upstream. Everything else is dropped with a debug log.
-# Replaces LiteLLM's `litellm_settings.drop_params: true`.
+# The equivalent of the old gateway's `drop_params: true`.
 #
 # DeepSeek was measured to TOLERATE unknown params (a bogus key still returned
 # 200), so this is defensive rather than required — it earns its keep the day
@@ -139,7 +139,7 @@ public_models:
   # ── transition aliases — REMOVE IN PHASE 3 ───────────────────────────
   # Old clients still send these vendor ids, and they are still sitting in
   # team_workspace_config.llm_models. Keep them serving until those clients are
-  # gone (same gate as deleting LiteLLM), then drop both these entries and the
+  # gone, then drop both these entries and the
   # dead llm_models rows. See §4.3.2. Priced identically to the tier they
   # shadow, so the migration never changes anyone's bill.
   #
