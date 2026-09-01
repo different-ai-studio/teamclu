@@ -28,7 +28,7 @@ exception
 end;
 $$;
 
-select plan(65);
+select plan(66);
 
 select has_schema('amux', 'amux schema exists');
 
@@ -50,6 +50,15 @@ select col_type_is('amux', 'actors', 'last_active_at', 'timestamp with time zone
                    'actors.last_active_at is timestamptz');
 select col_type_is('amux', 'actors', 'avatar_url', 'text',
                    'actors.avatar_url is text');
+
+-- Uniqueness of (team_id, user_id) MUST stay partial. Agent actors carry no
+-- user_id, and a team holds many of them, so a plain unique index would cap
+-- every team at one agent. `indpred is not null` is what makes it partial.
+select ok(
+  (select indpred is not null from pg_index
+    where indexrelid = 'amux.actors_team_user_idx'::regclass),
+  'actors_team_user_idx is a PARTIAL unique index (many null-user actors per team)'
+);
 select col_type_is('amux', 'members', 'id', 'uuid',
                    'members.id is uuid');
 select col_type_is('amux', 'agents', 'id', 'uuid',

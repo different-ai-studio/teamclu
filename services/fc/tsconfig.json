@@ -15,9 +15,5 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"],
-  // src/db is the Drizzle schema + migrations, which only the pglite tests
-  // replay. Nothing under src/ imports it, and drizzle-orm is a devDependency,
-  // so emitting it would put modules in the image that throw on require.
-  "exclude": ["src/db/**"]
+  "include": ["src/**/*.ts"]
 }

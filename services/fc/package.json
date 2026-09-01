@@ -8,8 +8,7 @@
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "node --import tsx --test \"test/**/*.test.ts\"",
     "openapi:lint": "redocly lint ../../docs/openapi/teamclu-api.v1.yaml",
-    "openapi:types": "openapi-typescript ../../docs/openapi/teamclu-api.v1.yaml --output /tmp/teamclu-api.v1.d.ts",
-    "db:generate": "tsx node_modules/.bin/drizzle-kit generate"
+    "openapi:types": "openapi-typescript ../../docs/openapi/teamclu-api.v1.yaml --output /tmp/teamclu-api.v1.d.ts"
   },
   "dependencies": {
     "@alicloud/dysmsapi20170525": "^4.5.1",
@@ -32,8 +31,6 @@
     "@redocly/cli": "^1.34.15",
     "@types/node": "^20.16.0",
     "@types/nodemailer": "^6.4.0",
-    "drizzle-kit": "^0.28.1",
-    "drizzle-orm": "^0.36.4",
     "openapi-typescript": "^7.13.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"

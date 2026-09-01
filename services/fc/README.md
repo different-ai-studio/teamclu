@@ -26,23 +26,25 @@ All other vars (Supabase, OSS, APNs, MQTT, Apps/CodeUp) match `s.yaml`.
 
 ## Data access (read before changing FC data access)
 
-All `/v1` business data goes through **`lib/supabase-repo.ts`** (plus
-`lib/supabase-repo/*`): PostgREST with the caller's bearer forwarded, so RLS
-and auth semantics are preserved. Login is GoTrue, via
-`createSupabaseAuthRepository`.
+**Supabase is the only backend.** There is no switch, no second repository, and
+no ORM. Every `/v1` read and write goes through **`lib/supabase-repo.ts`** (plus
+`lib/supabase-repo/*`): PostgREST with the caller's bearer forwarded, so RLS and
+auth semantics are preserved. Login is GoTrue, via
+`createSupabaseAuthRepository`. Set-based work lives in Postgres functions
+called with `.rpc()`, not in application SQL.
 
-**FC opens no connection of its own to the control-plane database.** There is
-no `getDb()` and no `DATABASE_URL` any more: every `/v1` read and write goes
-through PostgREST. The one place raw SQL survives is the Apps module, which
-provisions and browses a *separate* database per org — `lib/provisioning/
-app-postgres.ts` and `app-data-db.ts`, on `APPS_DB_ADMIN_URL`.
+**FC opens no connection of its own to the control-plane database.** No
+`getDb()`, no Drizzle, no `DATABASE_URL`. The one place raw SQL survives is the
+Apps module, and it is not this database: `lib/provisioning/app-postgres.ts`
+provisions a schema + scoped login role per app (DDL PostgREST cannot express),
+and `lib/provisioning/app-data-db.ts` browses the user's own tables in the
+per-org database. Both connect over `APPS_DB_ADMIN_URL`.
 
-`src/db/` (the Drizzle schema + migrations) is now **test-only**, and nothing in
-`src/` imports it. It is what `test/db/pglite.ts` replays to build an in-memory
-database for `test/db/*.test.ts`. It is not applied to any deployment — the live
-schema is `services/supabase/migrations/`, applied by
-`deploy/self-host/init/apply-migrations.sh`. Treat a divergence between the two
-as a stale fixture, not a pending migration.
+The schema lives in **`services/supabase/migrations/`** and nowhere else,
+applied by `deploy/self-host/init/apply-migrations.sh`, and is tested by the
+pgTAP suite in `services/supabase/tests/`. There used to be a second copy under
+`src/db/` for the ORM; it was deleted because it validated only itself — nothing
+applied it, and a drift from the real migrations still passed.
 
 ### Developer checklist (new Cloud API work)
 
@@ -50,7 +52,7 @@ as a stale fixture, not a pending migration.
 2. **Implement** in `supabase-repo.ts` (or `supabase-repo/*`).
 3. **Shared validation** — request-shape and security rules that the route
    layer and the repository both apply live in `lib/validation/`; keep them free
-   of PostgREST/Drizzle calls.
+   of PostgREST calls.
 4. **Tests** — `test/repository-contract.test.ts` is the contract gate; domain
    tests sit alongside it.
 

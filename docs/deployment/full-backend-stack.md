@@ -58,7 +58,7 @@ TeamClu 的后端不是单一服务，而是一套协作组件。客户端（Des
 | **Cloud API** | `services/fc/` | 唯一客户端业务入口：`/v1/*` 团队/会话/消息/邀请/bootstrap | **必需** |
 | **Postgres + amux schema** | `services/supabase/migrations/` | 业务表、RLS、RPC | **必需** |
 | **Supabase Auth (GoTrue)** | self-host 栈 | 登录、JWT、refresh token | **必需** |
-| **PostgREST + Kong** | self-host 栈 | REST 层；Cloud API 内部 passthrough | **必需**（`BACKEND_KIND=supabase` 时） |
+| **PostgREST + Kong** | self-host 栈 | REST 层；Cloud API 的**唯一**数据通路 | **必需** |
 | **Realtime** | self-host 栈 | 部分补偿/订阅（主 live 走 MQTT） | 推荐 |
 | **Storage** | self-host 栈 | 附件 bucket | 推荐 |
 | **EMQX** | self-host 栈 | Session 内实时消息；对外 wss、对内 1883 | **必需** |
@@ -178,7 +178,6 @@ docker compose build fc && docker compose up -d fc
 
 | 变量 | 说明 |
 |------|------|
-| `BACKEND_KIND` | `supabase`（默认）或 `postgres` |
 | `SUPABASE_URL` | Cloud API → Kong 内部地址（`http://kong:8000`） |
 | `SUPABASE_PUBLIC_URL` | 返回给客户端的 Supabase 公网 URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | 服务端操作 |
