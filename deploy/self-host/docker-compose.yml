@@ -238,6 +238,15 @@ services:
       SUPABASE_URL: "${SUPABASE_URL:-http://kong:8000}"
       SUPABASE_ANON_KEY: "${ANON_KEY:-}"
       AUTH_BASE_URL: "${AUTH_BASE_URL:-}"
+      # Reserve before the upstream call and settle after it (design 4.6).
+      # OFF means metered-only: usage is still recorded, nothing is deducted,
+      # and an exhausted team is never stopped.
+      #
+      # ⚠️ Turning it on 402s every team WITHOUT a credit balance row at once
+      # (4.8.1), and a team created after the last backfill has none — the grant
+      # is only issued by POST /internal/credits/backfill, never automatically.
+      # Run that backfill first, every time.
+      CREDITS_ENFORCED: "${CREDITS_ENFORCED:-false}"
       # Upstream provider keys, same vars litellm already uses.
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"

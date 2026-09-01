@@ -155,7 +155,13 @@ test("a refund is accepted as a NEGATIVE amount and may drive the balance below 
   const svc = { Authorization: `Bearer ${SERVICE_TOKEN}`, "Content-Type": "application/json" };
   const key = `refund-test-${Date.now()}`;
   await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
-  await admin`update amux.team_credit_balance set balance_credits = 1000 where team_id = ${teamId}::uuid`;
+  // Upsert, not update: the row may not exist yet (a team is only credited on
+  // first contact), and an update that matches nothing leaves the starting
+  // balance at whatever the previous test left behind.
+  await admin`
+    insert into amux.team_credit_balance (team_id, balance_credits)
+    values (${teamId}::uuid, 1000)
+    on conflict (team_id) do update set balance_credits = 1000`;
 
   const r = await req(`/internal/teams/${teamId}/credits/top-up`, {
     method: "POST",
