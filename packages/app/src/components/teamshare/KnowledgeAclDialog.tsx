@@ -76,6 +76,26 @@ export function KnowledgeAclDialog({
   const [restricting, setRestricting] = React.useState(false)
   const [impact, setImpact] = React.useState<KnowledgeAclImpact | null>(null)
   const [pickerOpen, setPickerOpen] = React.useState(false)
+
+  /**
+   * Where the picker's popover renders.
+   *
+   * Radix's Dialog sets `pointer-events: none` on body and traps focus inside
+   * the dialog. A Popover portalled to body therefore lands outside that trap:
+   * the trigger looks fine and clicking it does nothing visible. Portalling into
+   * the dialog's own content element is how the rest of this app solves it
+   * (see settings/llm/AgentModelDefaults.tsx).
+   *
+   * `undefined` outside a dialog, which is Radix's normal default.
+   */
+  const [portalHost, setPortalHost] = React.useState<HTMLElement | undefined>(undefined)
+  // A callback ref rather than useRef + useEffect: it fires exactly when the
+  // node attaches, so there is no window in which the popover could render with
+  // no container and land on body anyway.
+  const anchorRef = React.useCallback((node: HTMLDivElement | null) => {
+    const host = node?.closest('[data-slot=dialog-content]')
+    setPortalHost(host instanceof HTMLElement ? host : undefined)
+  }, [])
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState(false)
 
@@ -218,6 +238,8 @@ export function KnowledgeAclDialog({
           <DialogDescription className="break-all font-mono text-xs">{dirName}</DialogDescription>
         </DialogHeader>
 
+        <div ref={anchorRef} />
+
         {rules === null ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -305,7 +327,7 @@ export function KnowledgeAclDialog({
                   <span className="ml-2 text-xs text-muted-foreground">{addable.length}</span>
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="w-72 p-0" align="start">
+              <PopoverContent container={portalHost} className="w-72 p-0" align="start">
                 <Command>
                   <CommandInput
                     placeholder={t('knowledgeAcl.searchPeople', 'Search people…')}

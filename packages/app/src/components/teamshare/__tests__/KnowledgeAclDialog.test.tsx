@@ -136,6 +136,26 @@ describe('KnowledgeAclDialog', () => {
     expect(addableCount()).toBe(2)
   })
 
+  it('the people picker opens inside the dialog, not portalled to body', async () => {
+    // Radix Dialog puts `pointer-events: none` on body and traps focus. A
+    // Popover portalled to body therefore lands outside the trap: the trigger
+    // looks fine and clicking it does nothing the user can reach. The fix is a
+    // portal container, and this is what asserts it stayed.
+    listKnowledgeAcl.mockResolvedValue([])
+    render(<KnowledgeAclDialog prefix="knowledge/hr/" open onOpenChange={() => {}} />)
+    await enterRestrictMode()
+
+    fireEvent.click(screen.getByRole('button', { name: /Add person/ }))
+
+    const input = await screen.findByPlaceholderText(/Search people/)
+    const dialog = document.querySelector('[data-slot=dialog-content]')
+    expect(dialog, 'dialog content should exist').toBeTruthy()
+    expect(
+      dialog?.contains(input),
+      'the picker must render inside the dialog, or it is unreachable',
+    ).toBe(true)
+  })
+
   it('a sibling folder is not treated as an ancestor', async () => {
     // knowledge/hr-public/ only looks like a prefix of knowledge/hr… if the
     // trailing slash is dropped. It must not constrain this folder.
