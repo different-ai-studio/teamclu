@@ -988,6 +988,7 @@
     "externalDropFailed": "复制文件失败",
     "addToAgent": "添加到 Agent",
     "managePermissions": "权限…",
+    "restrictedFolder": "仅限指定成员可见",
     "openWithDefault": "用默认应用打开",
     "duplicate": "创建副本",
     "openInTerminal": "在终端中打开",

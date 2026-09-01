@@ -988,6 +988,7 @@
     "externalDropFailed": "Failed to copy files",
     "addToAgent": "Add to Agent",
     "managePermissions": "Permissions\u2026",
+    "restrictedFolder": "Restricted to specific people",
     "openWithDefault": "Open with Default App",
     "duplicate": "Duplicate",
     "openInTerminal": "Open in Terminal",

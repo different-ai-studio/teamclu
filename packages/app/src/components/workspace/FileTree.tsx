@@ -13,6 +13,8 @@ import { withDefaultExtension } from "@/lib/knowledge-file-names";
 import { pruneKnowledgeNoise } from "@/lib/knowledge-tree-pruning";
 import { useTeamPermissions } from "@/lib/team-permissions";
 import { KnowledgeAclDialog } from "@/components/teamshare/KnowledgeAclDialog";
+import { getBackend } from "@/lib/backend";
+import { useCurrentTeamStore } from "@/stores/current-team";
 import { isIgnoredSyncKey } from "@/lib/knowledge-ignored";
 import { useTeamSyncStatusStore } from "@/stores/team-sync-status";
 import { buildBadgeMap, badgeForDirectory } from "@/lib/team-sync-badges";
@@ -219,6 +221,35 @@ export function FileTree({
   // decides whether the menu item is worth showing.
   const { canManageTeam } = useTeamPermissions();
   const [aclPrefix, setAclPrefix] = useState<string | null>(null);
+
+  /**
+   * Prefixes that carry a permission rule of their own, so the tree can mark
+   * them with a lock.
+   *
+   * Loaded only for owner/admin: the endpoint refuses everyone else, and that
+   * refusal is the point — a rule's prefix is a directory name, and telling
+   * someone which folders are restricted is the thing the design withholds.
+   * For everyone else this stays empty and no lock is ever drawn.
+   */
+  const aclTeamId = useCurrentTeamStore((s) => s.team?.id) ?? null;
+  const [restrictedPrefixes, setRestrictedPrefixes] = useState<Set<string>>(new Set());
+  const refreshRestricted = useCallback(async () => {
+    if (!canManageTeam || !aclTeamId || !knowledgeDir) {
+      setRestrictedPrefixes(new Set());
+      return;
+    }
+    try {
+      const rules = await getBackend().knowledgeAcl.listKnowledgeAcl(aclTeamId);
+      setRestrictedPrefixes(new Set(rules.map((r) => r.pathPrefix)));
+    } catch {
+      // A tree that cannot say which folders are restricted is still a usable
+      // tree; the dialog is where an error about permissions belongs.
+      setRestrictedPrefixes(new Set());
+    }
+  }, [canManageTeam, aclTeamId, knowledgeDir]);
+  useEffect(() => {
+    void refreshRestricted();
+  }, [refreshRestricted]);
   const handleManagePermissions = useCallback((path: string) => {
     const syncKey = teamSyncKeyForPath(path, { knowledgeDir, workspacePath });
     // A rule prefix must end in `/` — that trailing slash is what stops
@@ -1223,6 +1254,15 @@ export function FileTree({
       teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath }) !== null
         ? handleManagePermissions
         : undefined,
+    // Its OWN rule, not one inherited from an ancestor: descendants are drawn
+    // nested under the folder that is already marked.
+    isPermissionRestricted:
+      node.type === 'directory' &&
+      restrictedPrefixes.size > 0 &&
+      (() => {
+        const key = teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath });
+        return key !== null && restrictedPrefixes.has(`${key}/`);
+      })(),
     onDragStart: handleDragStart,
     onDragOver: handleDragOver,
     onDragLeave: handleDragLeave,
@@ -1349,7 +1389,12 @@ export function FileTree({
         <KnowledgeAclDialog
           prefix={aclPrefix}
           open={aclPrefix !== null}
-          onOpenChange={(open) => { if (!open) setAclPrefix(null); }}
+          onOpenChange={(open) => {
+            if (open) return;
+            setAclPrefix(null);
+            // The dialog may have added or dropped a rule.
+            void refreshRestricted();
+          }}
         />
       )}
 

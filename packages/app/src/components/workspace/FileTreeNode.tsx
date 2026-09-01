@@ -240,6 +240,18 @@ export interface FileTreeItemProps {
    * file browser passes nothing and the item does not render.
    */
   onManagePermissions?: (path: string) => void;
+  /**
+   * This folder carries a permission rule of its OWN.
+   *
+   * Not set for folders that merely sit under a restricted parent: they are
+   * drawn nested beneath the folder that is marked, so repeating the lock all
+   * the way down would be noise rather than information.
+   *
+   * Only ever true for someone who can manage the team — the rule list is
+   * owner/admin-only, so nobody else can be told which folders are restricted
+   * (the names are the sensitive part).
+   */
+  isPermissionRestricted?: boolean;
   onCopyPath: (path: string) => void;
   onCopyRelativePath: (path: string) => void;
   onReveal: (path: string) => void;
@@ -287,6 +299,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   onRenameCancel,
   onDelete,
   onManagePermissions,
+  isPermissionRestricted,
   onCopyPath,
   onCopyRelativePath,
   onReveal,
@@ -448,6 +461,13 @@ export const FileTreeItem = React.memo(function FileTreeItem({
 
       {isKnowledgeDir && !isTeamCluTeam && (
         <ObsidianIcon className="h-3.5 w-3.5 shrink-0" style={{ color: '#7C3AED' }} />
+      )}
+
+      {isPermissionRestricted && (
+        <Lock
+          className="h-3 w-3 shrink-0 text-muted-foreground"
+          aria-label={t("fileExplorer.restrictedFolder", "Restricted to specific people")}
+        />
       )}
 
       <span
