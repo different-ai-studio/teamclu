@@ -49,6 +49,7 @@ mod peers_workspaces;
 mod remote_tools;
 mod rpc;
 mod skills_manage;
+mod knowledge;
 mod runtime_lifecycle;
 use crate::history::EventHistory;
 #[cfg(test)]
@@ -328,6 +329,12 @@ pub(crate) enum SockCommand {
     },
     /// Agent-managed personal skill create/update/get from teamclu-introspect.
     SkillsManage {
+        payload: serde_json::Value,
+        reply_tx: oneshot::Sender<String>,
+    },
+    /// Knowledge-base MCP tools (scaffold / create / search) from the
+    /// agent-facing MCP bridge. Pure vault file ops on the active team.
+    Knowledge {
         payload: serde_json::Value,
         reply_tx: oneshot::Sender<String>,
     },
@@ -1980,6 +1987,9 @@ impl DaemonServer {
                             Some(SockCommand::SkillsManage { payload, reply_tx }) => {
                                 self.handle_skills_manage(payload, reply_tx).await;
                             }
+                            Some(SockCommand::Knowledge { payload, reply_tx }) => {
+                                self.handle_knowledge(payload, reply_tx).await;
+                            }
                             Some(SockCommand::CursorPermission { payload, reply_tx }) => {
                                 tokio::spawn(async move {
                                     let result =
@@ -2432,6 +2442,9 @@ impl DaemonServer {
                             }
                             Some(SockCommand::SkillsManage { payload, reply_tx }) => {
                                 self.handle_skills_manage(payload, reply_tx).await;
+                            }
+                            Some(SockCommand::Knowledge { payload, reply_tx }) => {
+                                self.handle_knowledge(payload, reply_tx).await;
                             }
                             Some(SockCommand::CursorPermission { payload, reply_tx }) => {
                                 tokio::spawn(async move {
@@ -2936,6 +2949,32 @@ where
                                 }
                                 Err(_) => {
                                     warn!("amuxd.sock: skills-manage reply dropped");
+                                }
+                            }
+                        } else if cmd == "knowledge" {
+                            let (reply_tx, reply_rx) = oneshot::channel();
+                            if tx
+                                .send(SockCommand::Knowledge {
+                                    payload: v,
+                                    reply_tx,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                            match reply_rx.await {
+                                Ok(body) => {
+                                    let mut stream = reader.into_inner();
+                                    if let Err(e) = stream.write_all(body.as_bytes()).await {
+                                        warn!("amuxd.sock: knowledge write failed: {e}");
+                                        return;
+                                    }
+                                    let _ = stream.write_all(b"\n").await;
+                                    let _ = stream.shutdown().await;
+                                }
+                                Err(_) => {
+                                    warn!("amuxd.sock: knowledge reply dropped");
                                 }
                             }
                         } else if cmd == "cursor-permission" {

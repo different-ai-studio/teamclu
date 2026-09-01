@@ -4313,6 +4313,18 @@ export function createSupabaseBusinessRepository(options) {
       const contentHash = String(body.contentHash ?? "").trim();
       if (!contentHash) throw new ApiError(400, "validation_failed", "contentHash is required");
 
+      if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
+        throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
+      }
+      const expectedLatestVersion = Number(body.expectedLatestVersion);
+      if (!Number.isInteger(expectedLatestVersion) || expectedLatestVersion < 0) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "expectedLatestVersion must be a non-negative integer",
+        );
+      }
+
       let { data: skill, error } = await supabase
         .from("team_skills")
         .select("*")
@@ -4324,6 +4336,14 @@ export function createSupabaseBusinessRepository(options) {
 
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id;
       if (!callerActorId) throw new ApiError(403, "forbidden", "not a member of this team");
+
+      if ((skill.latest_version ?? 0) !== expectedLatestVersion) {
+        throw new ApiError(
+          409,
+          "stale_team_skill_base",
+          `team skill base version mismatch: expected v${expectedLatestVersion}, registry is v${skill.latest_version ?? 0}`,
+        );
+      }
 
       if (skill.upstream_subscribed) {
         const { data: detached, error: dErr } = await supabase
@@ -4369,11 +4389,21 @@ export function createSupabaseBusinessRepository(options) {
         .single();
       if (vErr) throw vErr;
 
-      const { error: uErr } = await supabase
+      const { data: updated, error: uErr } = await supabase
         .from("team_skills")
         .update({ latest_version: nextVersion, ...merged })
-        .eq("id", skill.id);
+        .eq("id", skill.id)
+        .eq("latest_version", expectedLatestVersion)
+        .select("*")
+        .maybeSingle();
       if (uErr) throw uErr;
+      if (!updated) {
+        throw new ApiError(
+          409,
+          "stale_team_skill_base",
+          `team skill base version mismatch: expected v${expectedLatestVersion}, registry moved concurrently`,
+        );
+      }
       return mapTeamSkillVersionRow(version);
     },
 
