@@ -225,6 +225,32 @@ test("a plain member can revert to an earlier version", async () => {
   assert.equal(reverted.contentHash, "a".repeat(64));
 });
 
+test("revert to v1 restores the original category snapshot", async () => {
+  const { team, memberRepo } = await scenario();
+
+  const v1 = await memberRepo.getTeamSkill(team.id, "deploy-check");
+  assert.equal(v1.category, "devops");
+  const snap = v1.versions.find((v: { version: number }) => v.version === 1);
+  assert.equal(snap?.category, "devops");
+
+  await memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+    changelog: "retarget as coding",
+    contentHash: "b".repeat(64),
+    expectedLatestVersion: 1,
+    category: "coding",
+  });
+
+  const reverted = await memberRepo.revertTeamSkillVersion(team.id, "deploy-check", 1, {
+    expectedLatestVersion: 2,
+  });
+  assert.equal(reverted.version, 3);
+  assert.equal(reverted.category, "devops");
+
+  const after = await memberRepo.getTeamSkill(team.id, "deploy-check");
+  assert.equal(after.category, "devops");
+  assert.equal(after.latestVersion, 3);
+});
+
 test("a plain member can edit metadata and deprecate", async () => {
   const { team, memberRepo } = await scenario();
 

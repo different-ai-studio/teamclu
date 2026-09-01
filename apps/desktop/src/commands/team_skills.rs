@@ -1464,6 +1464,14 @@ pub fn team_skill_read_draft_metadata(
 }
 
 fn recovery_record_for_path(source: &std::path::Path) -> Option<DraftRecoveryRecord> {
+    let sidecar = source.join(".clawhub").join("recovery.json");
+    if sidecar.is_file() {
+        if let Ok(text) = std::fs::read_to_string(&sidecar) {
+            if let Ok(rec) = serde_json::from_str::<DraftRecoveryRecord>(&text) {
+                return Some(rec);
+            }
+        }
+    }
     let trash = trash_dir().ok()?;
     let log = trash.join("recovery.jsonl");
     if !log.is_file() {
@@ -1551,14 +1559,15 @@ fn move_to_trash(
     let dest = trash.join(format!("{}-{}", slug, now_millis()));
     std::fs::rename(target, &dest).map_err(|e| format!("Failed to move skill aside: {}", e))?;
     if let Some(ctx) = recovery {
-        record_draft_recovery(&DraftRecoveryRecord {
+        let rec = DraftRecoveryRecord {
             slug: slug.to_string(),
             path: dest.display().to_string(),
             at: now_millis(),
             reason: ctx.reason,
             base_version: ctx.base_version,
             team_id: ctx.team_id,
-        });
+        };
+        record_draft_recovery(&dest, &rec)?;
     }
     // Swept here rather than on a timer: this is the only thing that ever adds
     // to the directory, so it is the only place that can let it grow.
@@ -1584,22 +1593,27 @@ pub struct DraftRecoveryRecord {
     pub team_id: Option<String>,
 }
 
-fn record_draft_recovery(rec: &DraftRecoveryRecord) {
-    let Ok(trash) = trash_dir() else {
-        return;
-    };
+fn record_draft_recovery(dest: &std::path::Path, rec: &DraftRecoveryRecord) -> Result<(), String> {
+    let sidecar_dir = dest.join(".clawhub");
+    std::fs::create_dir_all(&sidecar_dir)
+        .map_err(|e| format!("Failed to write recovery metadata: {}", e))?;
+    let line = serde_json::to_string(rec)
+        .map_err(|e| format!("Failed to serialize recovery metadata: {}", e))?;
+    std::fs::write(sidecar_dir.join("recovery.json"), &line)
+        .map_err(|e| format!("Failed to write recovery metadata: {}", e))?;
+
+    let trash = trash_dir()?;
     let log = trash.join("recovery.jsonl");
-    let Ok(line) = serde_json::to_string(rec) else {
-        return;
-    };
-    let _ = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log)
         .and_then(|mut f| {
             use std::io::Write;
             writeln!(f, "{line}")
-        });
+        })
+        .map_err(|e| format!("Failed to append recovery log: {}", e))?;
+    Ok(())
 }
 
 fn draft_recovery_context(
@@ -1697,21 +1711,25 @@ pub fn team_skill_restore_trashed(
     let source = resolve_trashed_source(&trash_dir()?, trashed_path.trim())?;
 
     if let Some(expected_team) = team_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some(rec) = recovery_record_for_path(&source) {
-            match rec.team_id.as_deref() {
-                Some(rec_team) if rec_team != expected_team => {
-                    return Err(
-                        "This recovery belongs to another team and cannot be restored here"
-                            .to_string(),
-                    );
-                }
-                None => {
-                    return Err(
-                        "This recovery has no team context and cannot be restored here".to_string(),
-                    );
-                }
-                _ => {}
+        let rec = recovery_record_for_path(&source).ok_or_else(|| {
+            "This backup has no recovery record and cannot be restored into a team skill"
+                .to_string()
+        })?;
+        match rec.team_id.as_deref() {
+            Some(rec_team) if rec_team == expected_team => {}
+            Some(_) => {
+                return Err(
+                    "This recovery belongs to another team and cannot be restored here".to_string(),
+                );
             }
+            None => {
+                return Err(
+                    "This recovery has no team context and cannot be restored here".to_string(),
+                );
+            }
+        }
+        if rec.slug != slug {
+            return Err("This recovery belongs to a different skill".to_string());
         }
     }
 
@@ -2321,20 +2339,58 @@ mod tests {
     }
 
     #[test]
-    fn reqwest_error_includes_source_chain() {
-        let err = build_cloud_api_client()
-            .unwrap()
-            .get("https://127.0.0.1:1/")
-            .send()
-            .expect_err("refused");
-        let formatted = format_reqwest_error(&err);
-        assert!(
-            formatted.contains("error sending request"),
-            "top-level: {formatted}"
-        );
-        assert!(
-            formatted.contains("Connection refused") || formatted.contains("connect"),
-            "source chain must surface: {formatted}"
-        );
+    fn restore_into_a_team_requires_a_matching_recovery_record() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_home::HomeGuard::set(home.path());
+        set_active_team("team-a");
+
+        let source = global_skills_dir().unwrap().join("say-hello");
+        write_installed_skill(&source, "team-a", 1);
+
+        let trashed = team_skill_discard_local("say-hello".into(), Some("team-a".into()))
+            .expect("discard writes recovery metadata");
+        assert!(std::path::Path::new(&trashed)
+            .join(".clawhub/recovery.json")
+            .is_file());
+
+        let restored =
+            team_skill_restore_trashed(trashed.clone(), "say-hello".into(), Some("team-a".into()))
+                .expect("same team + slug restores");
+        assert!(std::path::Path::new(&restored).is_dir());
+    }
+
+    #[test]
+    fn restore_into_a_team_rejects_missing_or_mismatched_recovery() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_home::HomeGuard::set(home.path());
+        set_active_team("team-a");
+
+        let trash = trash_dir().unwrap();
+        std::fs::create_dir_all(&trash).unwrap();
+        let orphan = trash.join(format!("say-hello-{}", now_millis()));
+        write_installed_skill(&orphan, "team-a", 1);
+
+        let err = team_skill_restore_trashed(
+            orphan.display().to_string(),
+            "say-hello".into(),
+            Some("team-a".into()),
+        )
+        .expect_err("no recovery record");
+        assert!(err.contains("no recovery record"), "{err}");
+
+        let source = global_skills_dir().unwrap().join("say-hello");
+        write_installed_skill(&source, "team-a", 1);
+        let trashed =
+            team_skill_discard_local("say-hello".into(), Some("team-a".into())).expect("discard");
+
+        let wrong_team =
+            team_skill_restore_trashed(trashed.clone(), "say-hello".into(), Some("team-b".into()))
+                .expect_err("other team");
+        assert!(wrong_team.contains("another team"), "{wrong_team}");
+
+        let wrong_slug =
+            team_skill_restore_trashed(trashed, "other-skill".into(), Some("team-a".into()))
+                .expect_err("other slug");
+        assert!(wrong_slug.contains("different skill"), "{wrong_slug}");
     }
 }

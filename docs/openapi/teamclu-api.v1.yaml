@@ -2120,10 +2120,11 @@ paths:
       operationId: publishTeamSkill
       summary: Publish a skill (version 1)
       description: >
-        The publish gate. summary / category / whenToUse / whenNotToUse /
-        changelog are all required — the registry exists so those stop living
-        inside one free-text description. The package zip is uploaded
-        separately via the amuxc blob path; only its contentHash arrives here.
+        The publish gate. `summary`, `category`, and `changelog` are required —
+        they are the list subtitle, filter, and version note. `whenToUse` and
+        `whenNotToUse` are optional: empty is a real answer, not a missing field.
+        The package zip is uploaded separately via the amuxc blob path; only
+        its contentHash arrives here.
       tags: [TeamSkills]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -2440,12 +2441,10 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409":
-          description: Registry moved since the caller loaded it (`stale_team_skill_base`).
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-        "409":
-          description: That version is already the latest.
+          description: >
+            Conflict. Either the registry moved since the caller loaded it
+            (`stale_team_skill_base`), or the target version is already the
+            latest (`conflict`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -6478,7 +6477,7 @@ components:
         hasUpdate: { type: boolean }
     TeamSkillPublish:
       type: object
-      required: [slug, summary, category, whenToUse, whenNotToUse, changelog, contentHash]
+      required: [slug, summary, category, changelog, contentHash]
       properties:
         slug: { type: string, pattern: "^[a-z0-9][a-z0-9-]{1,63}$" }
         summary: { type: string, maxLength: 200 }
