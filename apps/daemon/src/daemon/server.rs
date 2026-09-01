@@ -4291,6 +4291,21 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn all_actual_entry_points_propagate_identical_workspace_env_and_revision() {
+        // Each entry point re-derives OPENCODE_CONFIG from the process-global
+        // amuxd home (`global_opencode_config_path` -> `amuxd_home_from_env`),
+        // once per spawn. This test spawns four times across many awaits, so a
+        // concurrent test moving `HOME` between two of them makes those two
+        // disagree on the path and the comparison fails -- the `daemon::server`
+        // race `test_brand_env` documents. Pin the home and take that lock.
+        let amuxd_home = TempDir::new().unwrap();
+        let _home_guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(amuxd_home.path());
+        // `env_assembly` only emits OPENCODE_CONFIG when the file is there, so
+        // without this the key is absent from all four captures and they agree
+        // for the wrong reason. Materialise it and the assertion covers it.
+        let global_config = teamclu_runtime_env::opencode_config::global_opencode_config_path();
+        std::fs::create_dir_all(global_config.parent().unwrap()).unwrap();
+        std::fs::write(&global_config, "{}").unwrap();
+
         let workspace = TempDir::new().unwrap();
         let backend = Arc::new(crate::backend::mock::MockBackend::with_identity(
             "team-test",
@@ -4401,6 +4416,13 @@ pub(crate) mod tests {
         let captures = captures.lock().unwrap().clone();
         assert_eq!(captures.len(), 4);
         let desktop = &captures[0];
+        // Guards the setup above: if the device config were missing, every
+        // capture would simply lack this key and the comparison would pass
+        // without ever covering it.
+        assert!(
+            desktop.extra_env.contains_key("OPENCODE_CONFIG"),
+            "OPENCODE_CONFIG absent, so the env comparison below covers nothing"
+        );
         for (entry_point, capture) in [
             ("cron", &captures[1]),
             ("resume", &captures[2]),
