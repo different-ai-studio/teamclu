@@ -987,6 +987,8 @@
     "pasteFailed": "Paste failed",
     "externalDropFailed": "Failed to copy files",
     "addToAgent": "Add to Agent",
+    "managePermissions": "Permissions\u2026",
+    "restrictedFolder": "Restricted to specific people",
     "openWithDefault": "Open with Default App",
     "duplicate": "Duplicate",
     "openInTerminal": "Open in Terminal",
@@ -1322,6 +1324,24 @@
         "admin": "admin"
       }
     }
+  },
+  "knowledgeAcl": {
+    "openInherited": "Everyone {{parent}} allows can see this folder. It has no restriction of its own.",
+    "openAll": "Everyone on the team can see this folder, including people who join later.",
+    "startRestricting": "Restrict to specific people",
+    "allowListNote": "Only the people listed here will receive this folder and everything under it. Anyone who joins the team later will not, until you add them.",
+    "limitedByParent": "You can only add people {{parent}} already allows.",
+    "noneSelected": "Nobody selected yet \\u2014 no one but team admins would see this folder.",
+    "removePerson": "Remove",
+    "addPerson": "Add person",
+    "searchPeople": "Search people\\u2026",
+    "noMatch": "No match.",
+    "dialogTitle": "Who can see this folder",
+    "impactBody": "{{members}} member(s) will lose access. {{files}} already-synced file(s) will be removed from their devices on the next sync.",
+    "impactCaveat": "Server content is not deleted, and copies already taken cannot be recalled.",
+    "scopeNoticeShort": "Removing access stops future syncing. It cannot take back copies already on someone\u2019s device.",
+    "clearRule": "Inherit from parent",
+    "check": "Check impact"
   },
   "settings": {
     "description": "Configure TeamClu settings.",
@@ -2855,12 +2875,7 @@
       "empty": "No restricted directories. Every member receives the whole knowledge vault.",
       "grantedCount": "{{count}} member(s) have access",
       "removeRule": "Remove restriction",
-      "addTitle": "Restrict a directory",
-      "impactTitle": "This will restrict {{prefix}}.",
-      "impactBody": "{{members}} member(s) will lose access. {{files}} already-synced file(s) will be removed from their devices on the next sync.",
-      "impactCaveat": "Server content is not deleted, and copies already taken cannot be recalled.",
-      "check": "Check impact",
-      "confirm": "Restrict directory"
+      "addHint": "To restrict a folder, right-click it in the knowledge tree and choose Permissions. Setting it there means the folder is already chosen, and the dialog can show what it inherits from its parent."
     }
   },
   "skillssh": {

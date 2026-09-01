@@ -987,6 +987,8 @@
     "pasteFailed": "粘贴失败",
     "externalDropFailed": "复制文件失败",
     "addToAgent": "添加到 Agent",
+    "managePermissions": "权限…",
+    "restrictedFolder": "仅限指定成员可见",
     "openWithDefault": "用默认应用打开",
     "duplicate": "创建副本",
     "openInTerminal": "在终端中打开",
@@ -1322,6 +1324,24 @@
         "admin": "admin"
       }
     }
+  },
+  "knowledgeAcl": {
+    "openInherited": "{{parent}} 允许的人都能看到这个目录。它自己没有单独的限制。",
+    "openAll": "全体成员都能看到这个目录，包括之后加入的人。",
+    "startRestricting": "限制为指定成员",
+    "allowListNote": "只有列在这里的人才会收到这个目录及其下的全部内容。之后加入团队的人不会自动获得，需要你手动添加。",
+    "limitedByParent": "只能添加 {{parent}} 已经允许的人。",
+    "noneSelected": "还没有选任何人 —— 除团队管理员外没人能看到这个目录。",
+    "removePerson": "移除",
+    "addPerson": "添加成员",
+    "searchPeople": "搜索成员…",
+    "noMatch": "没有匹配的人。",
+    "dialogTitle": "谁能看到这个目录",
+    "impactBody": "{{members}} 名成员将失去访问权，他们设备上已同步的 {{files}} 个文件将在下次同步时被删除。",
+    "impactCaveat": "服务端内容不会被删除，已被拷走的副本也无法收回。",
+    "scopeNoticeShort": "移除权限只会停止后续同步，无法收回对方设备上已有的副本。",
+    "clearRule": "继承上级",
+    "check": "查看影响范围"
   },
   "settings": {
     "description": "配置 TeamClu 设置。",
@@ -2855,12 +2875,7 @@
       "empty": "没有受限目录。每个成员都会收到完整的知识库。",
       "grantedCount": "{{count}} 人有权限",
       "removeRule": "移除限制",
-      "addTitle": "限制一个目录",
-      "impactTitle": "即将限制 {{prefix}}。",
-      "impactBody": "{{members}} 名成员将失去访问权，他们设备上已同步的 {{files}} 个文件将在下次同步时被删除。",
-      "impactCaveat": "服务端内容不会被删除，已被拷走的副本也无法收回。",
-      "check": "查看影响范围",
-      "confirm": "限制该目录"
+      "addHint": "要限制某个目录，在知识库树里右键它选「权限」。在那里设置意味着目录已经确定，而且弹窗能显示它从上级继承了什么。"
     }
   },
   "skillssh": {

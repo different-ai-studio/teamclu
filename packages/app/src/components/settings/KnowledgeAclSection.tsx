@@ -1,17 +1,13 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Lock, Plus, Trash2, AlertTriangle, Loader2 } from 'lucide-react'
+import { Lock, Trash2, AlertTriangle, Loader2 } from 'lucide-react'
 import { getBackend } from '@/lib/backend'
 import { useTeamPermissions } from '@/lib/team-permissions'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
 import { SettingCard, SectionHeader } from './shared'
-import type {
-  KnowledgeAclRule,
-  KnowledgeAclImpact,
-} from '@/lib/backend/cloud-api/knowledge-acl'
+import type { KnowledgeAclRule } from '@/lib/backend/cloud-api/knowledge-acl'
 
 /**
  * Knowledge access — per-directory permissions for the team vault.
@@ -44,11 +40,6 @@ export function KnowledgeAclSection() {
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState(false)
 
-  // Draft for a new rule.
-  const [draftPrefix, setDraftPrefix] = React.useState('')
-  const [draftActorIds, setDraftActorIds] = React.useState<string[]>([])
-  const [impact, setImpact] = React.useState<KnowledgeAclImpact | null>(null)
-
   const teamId = useCurrentTeamStore((s) => s.team?.id) ?? null
 
   const load = React.useCallback(async () => {
@@ -75,62 +66,6 @@ export function KnowledgeAclSection() {
   React.useEffect(() => {
     void load()
   }, [load])
-
-  const resetDraft = () => {
-    setDraftPrefix('')
-    setDraftActorIds([])
-    setImpact(null)
-  }
-
-  /** Normalise what the admin typed into the shape the API requires. */
-  const normalisedPrefix = React.useMemo(() => {
-    const raw = draftPrefix.trim().replace(/^\/+/, '')
-    if (!raw) return ''
-    const withScope = raw.startsWith('knowledge/') ? raw : `knowledge/${raw}`
-    return withScope.endsWith('/') ? withScope : `${withScope}/`
-  }, [draftPrefix])
-
-  /**
-   * Ask the server what this would cost before offering the button that does it.
-   * Never writes — `preview` exists precisely so the number can be shown first.
-   */
-  const checkImpact = async () => {
-    if (!teamId || !normalisedPrefix) return
-    setBusy(true)
-    setError(null)
-    try {
-      setImpact(
-        await getBackend().knowledgeAcl.previewKnowledgeAcl(teamId, {
-          pathPrefix: normalisedPrefix,
-          actorIds: draftActorIds,
-        }),
-      )
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const create = async () => {
-    if (!teamId || !normalisedPrefix) return
-    setBusy(true)
-    setError(null)
-    try {
-      await getBackend().knowledgeAcl.createKnowledgeAcl(teamId, {
-        pathPrefix: normalisedPrefix,
-        actorIds: draftActorIds,
-        // Only ever true once the admin has seen the numbers above.
-        confirmRevokeExisting: true,
-      })
-      resetDraft()
-      await load()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
 
   const toggleGrant = async (rule: KnowledgeAclRule, actorId: string) => {
     if (!teamId) return
@@ -268,93 +203,13 @@ export function KnowledgeAclSection() {
         ))
       )}
 
-      {/* ── New rule ───────────────────────────────────────────────────── */}
       <SettingCard>
-        <p className="mb-3 text-sm font-medium">
-          {t('settings.knowledgeAcl.addTitle', 'Restrict a directory')}
-        </p>
-        <Input
-          value={draftPrefix}
-          placeholder="knowledge/hr/"
-          disabled={busy}
-          onChange={(e) => {
-            setDraftPrefix(e.target.value)
-            // Any edit invalidates the numbers below — never let a confirm
-            // button carry an impact figure computed for a different directory.
-            setImpact(null)
-          }}
-        />
-        {normalisedPrefix && normalisedPrefix !== draftPrefix.trim() && (
-          <p className="mt-1 font-mono text-xs text-muted-foreground">{normalisedPrefix}</p>
-        )}
-
-        <div className="mt-3 flex flex-wrap gap-3">
-          {members.map((m) => (
-            <label key={m.id} className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={draftActorIds.includes(m.id)}
-                disabled={busy}
-                onCheckedChange={() => {
-                  setDraftActorIds((prev) =>
-                    prev.includes(m.id) ? prev.filter((x) => x !== m.id) : [...prev, m.id],
-                  )
-                  setImpact(null)
-                }}
-              />
-              <span className="truncate">{m.displayName}</span>
-            </label>
-          ))}
-        </div>
-
-        {/*
-          The confirmation screen. The admin sees what this costs before the
-          button that does it appears — which is the whole reason `preview` is a
-          separate endpoint.
-        */}
-        {impact && (
-          <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
-            <p className="font-medium">
-              {t('settings.knowledgeAcl.impactTitle', {
-                defaultValue: 'This will restrict {{prefix}}.',
-                prefix: impact.pathPrefix,
-              })}
-            </p>
-            <p className="mt-1 text-muted-foreground">
-              {t('settings.knowledgeAcl.impactBody', {
-                defaultValue:
-                  '{{members}} member(s) will lose access. {{files}} already-synced file(s) will be removed from their devices on the next sync.',
-                members: impact.affectedMembers,
-                files: impact.affectedFiles,
-              })}
-            </p>
-            <p className="mt-1 text-muted-foreground">
-              {t(
-                'settings.knowledgeAcl.impactCaveat',
-                'Server content is not deleted, and copies already taken cannot be recalled.',
-              )}
-            </p>
-          </div>
-        )}
-
-        <div className="mt-4 flex gap-2">
-          {!impact ? (
-            <Button disabled={busy || !normalisedPrefix} onClick={() => void checkImpact()}>
-              {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {t('settings.knowledgeAcl.check', 'Check impact')}
-            </Button>
-          ) : (
-            <>
-              <Button variant="destructive" disabled={busy} onClick={() => void create()}>
-                {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                <Plus className="mr-2 h-4 w-4" />
-                {t('settings.knowledgeAcl.confirm', 'Restrict directory')}
-              </Button>
-              <Button variant="ghost" disabled={busy} onClick={resetDraft}>
-                {t('common.cancel', 'Cancel')}
-              </Button>
-            </>
+        <p className="text-sm text-muted-foreground">
+          {t(
+            'settings.knowledgeAcl.addHint',
+            'To restrict a folder, right-click it in the knowledge tree and choose Permissions. Setting it there means the folder is already chosen, and the dialog can show what it inherits from its parent.',
           )}
-        </div>
+        </p>
       </SettingCard>
     </div>
   )
