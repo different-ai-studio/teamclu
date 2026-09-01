@@ -555,9 +555,10 @@ impl DaemonServer {
             })?;
 
         if let Some((parent_session_id, root_message_id)) = fork_from {
+            // After reset_backend_binding the store lookup is empty; still fork when
+            // fork_from is present so the thread re-branches from the parent anchor.
             let needs_fork = !session_id.is_empty()
                 && !ws_id.is_empty()
-                && !reset_backend_binding
                 && self
                     .sessions
                     .lookup(session_id, &ws_id, agent_type as i32)
