@@ -487,11 +487,32 @@ impl PiProcessPool {
                 dirs::home_dir().as_deref(),
             ),
         );
+        let mut applied_team_provider = false;
+        let mut skipped: Vec<&str> = Vec::new();
         for (k, v) in env.extra_env.iter() {
             if env.force_env_override || std::env::var_os(k).is_none() {
                 cmd.env(k, v);
+                if k == "TEAMCLU_TEAM_PROVIDER" {
+                    applied_team_provider = true;
+                }
+            } else {
+                // Silently dropped today: a key already present in the daemon's
+                // OWN environment wins over the assembled one unless the caller
+                // asked to override. Worth naming, because the symptom is a
+                // runtime that simply never sees a variable that was assembled
+                // for it.
+                skipped.push(k.as_str());
             }
         }
+        info!(
+            target: "amuxd::team_provider_probe",
+            extra_env_keys = env.extra_env.len(),
+            has_team_provider_in_extra_env = env.extra_env.contains_key("TEAMCLU_TEAM_PROVIDER"),
+            applied_team_provider,
+            force_env_override = env.force_env_override,
+            skipped = ?skipped,
+            "pi spawn env"
+        );
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
