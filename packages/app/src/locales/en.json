@@ -147,6 +147,8 @@
     "skillPublishStaleBody": "{{versions}} shipped after that. Publishing v{{next}} replaces them with your copy, so those changes will be gone.",
     "skillPublishSubmit": "Publish",
     "skillPublished": "Published",
+    "skillPublishedRefreshFailed": "Skill v{{v}} was published, but this machine failed to refresh. Retry the refresh — do not publish again.",
+    "skillSavedRefreshFailed": "Skill saved, but new sessions may still use a stale cache. {{msg}}",
     "skillPublishStaleBase": "Someone else published while you were editing. Your draft is kept — refresh and resolve the conflict.",
     "skillPublishFailed": "Publish failed: {{msg}}",
     "skillPublishStaleBase": "Someone else published while you were editing. Your draft is kept — refresh and resolve the conflict.",

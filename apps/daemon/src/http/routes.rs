@@ -223,6 +223,10 @@ pub fn build(state: HttpState) -> Router {
         )
         .route("/v1/workspaces/:id/skills", get(workspaces::get_skills))
         .route(
+            "/v1/workspaces/:id/skills/refresh",
+            post(workspaces::refresh_skills),
+        )
+        .route(
             "/v1/workspaces/:id/skills/:slug",
             put(workspaces::put_skill).delete(workspaces::delete_skill),
         )

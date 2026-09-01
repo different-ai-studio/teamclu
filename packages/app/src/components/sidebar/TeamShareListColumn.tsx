@@ -71,6 +71,7 @@ import { detailSelectionForSection } from '@/lib/tabs/teamshare-target'
 import type { ConnectedAgentRow } from '@/lib/backend/types'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
+import { encodeWorkspaceId, notifyDaemonSkillsChanged } from '@/lib/daemon-local-client'
 import { SkillScanPaths } from './SkillScanPaths'
 import { KnowledgeSyncFooter } from '@/components/teamshare/KnowledgeSyncFooter'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
@@ -1208,8 +1209,22 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                             onSelectFile={(rel) => selectSkillFile(row.id, rel)}
                             onFileRemoved={(rel) => closeSkillFiles(row.id, rel)}
                             onMutated={() => {
-                              void loadSection('skills', { force: true })
-                              void reconcileSkills().catch(() => {})
+                              void (async () => {
+                                if (workspacePath) {
+                                  try {
+                                    await notifyDaemonSkillsChanged(encodeWorkspaceId(workspacePath))
+                                  } catch {
+                                    toast.error(
+                                      t(
+                                        'teamShare.skillSavedRefreshFailed',
+                                        'Skill 已保存，但新会话可能暂时仍使用旧缓存。',
+                                      ),
+                                    )
+                                  }
+                                }
+                                void loadSection('skills', { force: true })
+                                void reconcileSkills().catch(() => {})
+                              })()
                             }}
                             refreshKey={treeRefreshKey}
                             rootCreate={rootCreate?.rowId === row.id ? rootCreate.kind : null}
