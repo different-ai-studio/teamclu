@@ -183,7 +183,11 @@ pub async fn tick_with_progress(
     // Costs nothing extra in applied work: the pull loop skips every item whose
     // version it already holds.
     let reconciling = now_secs().saturating_sub(state.last_reconcile_at) >= RECONCILE_INTERVAL_SECS;
-    let since_seq = if reconciling { 0 } else { state.last_server_seq };
+    let since_seq = if reconciling {
+        0
+    } else {
+        state.last_server_seq
+    };
     progress.report(SyncPhase::Checking, 0, 0);
     loop {
         // Retry transient failures (429 rate-limit / 503) in-call: a single
@@ -423,7 +427,11 @@ pub async fn tick_with_progress(
         all_dirty.retain(|p| !state.is_forbidden_now(p, now));
         let skipped = before - all_dirty.len();
         if skipped > 0 {
-            tracing::debug!(team_id, skipped, "push: skipping paths the server restricts");
+            tracing::debug!(
+                team_id,
+                skipped,
+                "push: skipping paths the server restricts"
+            );
         }
     }
     if let Some(count) = blocked_new_files {
@@ -1889,7 +1897,7 @@ mod tests {
         pairs.iter().copied().collect()
     }
 
-// ── revocation cleanup ────────────────────────────────────────────────
+    // ── revocation cleanup ────────────────────────────────────────────────
     //
     // The assertion that matters most in this file is
     // `apply_revocations_drops_the_state_entry_so_it_can_never_tombstone`.
@@ -1919,8 +1927,9 @@ mod tests {
         let root = dir.path().to_str().unwrap();
         let rules = IgnoreRules::load(dir.path());
 
-        let visible: std::collections::HashSet<String> =
-            ["knowledge/open/notes.md".to_string()].into_iter().collect();
+        let visible: std::collections::HashSet<String> = ["knowledge/open/notes.md".to_string()]
+            .into_iter()
+            .collect();
         let revoked = apply_revocations(root, &mut state, &visible, &rules);
 
         assert_eq!(revoked, vec!["knowledge/hr/salary.md".to_string()]);
@@ -1937,8 +1946,9 @@ mod tests {
         let root = dir.path().to_str().unwrap();
         let rules = IgnoreRules::load(dir.path());
 
-        let visible: std::collections::HashSet<String> =
-            ["knowledge/open/notes.md".to_string()].into_iter().collect();
+        let visible: std::collections::HashSet<String> = ["knowledge/open/notes.md".to_string()]
+            .into_iter()
+            .collect();
         apply_revocations(root, &mut state, &visible, &rules);
 
         assert!(
@@ -1963,8 +1973,9 @@ mod tests {
         let root = dir.path().to_str().unwrap();
         let rules = IgnoreRules::load(dir.path());
 
-        let visible: std::collections::HashSet<String> =
-            ["knowledge/open/notes.md".to_string()].into_iter().collect();
+        let visible: std::collections::HashSet<String> = ["knowledge/open/notes.md".to_string()]
+            .into_iter()
+            .collect();
         apply_revocations(root, &mut state, &visible, &rules);
 
         assert!(state.is_forbidden_now("knowledge/hr/salary.md", now_secs()));

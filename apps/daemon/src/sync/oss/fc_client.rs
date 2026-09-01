@@ -631,7 +631,10 @@ async fn map_fc_response<T: serde::de::DeserializeOwned>(
         // retry behaviour.
         if code == "PathForbidden" {
             return Err(SyncError::PathForbidden(
-                body["error"].as_str().unwrap_or("path forbidden").to_string(),
+                body["error"]
+                    .as_str()
+                    .unwrap_or("path forbidden")
+                    .to_string(),
             ));
         }
 
