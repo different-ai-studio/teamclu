@@ -237,13 +237,23 @@ test("the sweeper expires holds whose request never came back", { skip: !DB }, a
   assert.ok(after.ok);
 });
 
-test("a team with no balance row at all is refused, not defaulted to unlimited", { skip: !DB }, async () => {
-  // The fail-open this guards: a missing row reading as "no limit known" would
-  // give every un-provisioned team free AI.
+test("a team with no balance row gets the signup grant, and no more", { skip: !DB }, async () => {
+  // The fail-open this guards has not changed: a missing row must never read as
+  // "no limit known". What changed is the remedy — the team is now granted a
+  // FINITE amount on first contact rather than refused outright, so the test
+  // proves the ceiling instead of the refusal.
   await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
-  const r = await reserve(sql, { teamId, actorId: memberId, actorType: "member", holdCredits: 1 });
-  assert.equal(r.ok, false);
-  if (!r.ok) assert.equal(r.code, "insufficient_credits");
+
+  const tooBig = await reserve(sql, {
+    teamId, actorId: memberId, actorType: "member", holdCredits: SIGNUP_GRANT_CREDITS + 1,
+  });
+  assert.equal(tooBig.ok, false, "a hold larger than the grant must still be refused");
+  if (!tooBig.ok) assert.equal(tooBig.code, "insufficient_credits");
+
+  // ...and the grant it just received is exactly the signup amount, not unlimited.
+  const [{ balance_credits }] = await admin<{ balance_credits: string }[]>`
+    select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  assert.equal(Number(balance_credits), SIGNUP_GRANT_CREDITS);
 });
 
 // ── the signup grant on first contact ───────────────────────────────────────
