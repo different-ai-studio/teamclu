@@ -147,6 +147,8 @@
     "skillPublishStaleBody": "之后团队已经发过 {{versions}}。发布 v{{next}} 会用你这份覆盖掉它们，那些改动会丢失。",
     "skillPublishSubmit": "发布",
     "skillPublished": "已发布",
+    "skillPublishedRefreshFailed": "Skill v{{v}} 已发布，本机刷新失败。请重试刷新，不要再次发布。",
+    "skillSavedRefreshFailed": "Skill 已保存，但新会话可能暂时仍使用旧缓存。{{msg}}",
     "skillPublishStaleBase": "在你编辑期间有人发布了新版本。你的草稿已保留——刷新后处理冲突。",
     "skillPublishFailed": "发布失败：{{msg}}",
     "skillPublishStaleBase": "其他人已经发布新版本。你的草稿还在——请刷新并处理冲突。",

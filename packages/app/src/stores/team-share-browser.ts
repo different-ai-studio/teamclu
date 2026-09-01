@@ -18,6 +18,7 @@ import {
 } from '@/lib/skills/auto-follow'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { effectiveWorkspacePath } from '@/lib/effective-workspace'
+import { isTauri } from '@/lib/utils'
 import { useTabsStore } from '@/stores/tabs'
 import {
   decodeTeamShareTarget,
@@ -82,6 +83,7 @@ import {
   putDaemonMcp,
   installDaemonTeamMcp,
   reconcileDaemonTeamCloudConfig,
+  notifyDaemonSkillsChanged,
   type DaemonMcpServerConfig,
   type DaemonMcpServerProbeResult,
 } from '@/lib/daemon-local-client'
@@ -930,6 +932,33 @@ export class SkillDiscardIncompleteError extends Error {
   }
 }
 
+/** Disk is already right; OpenCode cache refresh did not register. */
+export class SkillRuntimeRefreshError extends Error {
+  constructor(message = 'skill_runtime_refresh_failed') {
+    super(message)
+    this.name = 'SkillRuntimeRefreshError'
+  }
+}
+
+/** Cloud publish succeeded; this machine's OpenCode cache did not refresh. */
+export class SkillPublishedRefreshError extends Error {
+  constructor(readonly version: number) {
+    super(`skill_published_refresh_failed:${version}`)
+    this.name = 'SkillPublishedRefreshError'
+  }
+}
+
+async function refreshLocalSkillsRuntime(): Promise<void> {
+  if (!isTauri()) return
+  const wsPath = await workspacePath()
+  if (!wsPath) throw new SkillRuntimeRefreshError('no workspace')
+  try {
+    await notifyDaemonSkillsChanged(encodeWorkspaceId(wsPath))
+  } catch (e) {
+    throw new SkillRuntimeRefreshError(e instanceof Error ? e.message : String(e))
+  }
+}
+
 /**
  * Download one version and lay it down.
  *
@@ -1207,6 +1236,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // (or only after restart).
     await get().reconcileSkills().catch(() => {})
     await get().loadSection('skills', { force: true })
+    await refreshLocalSkillsRuntime()
   },
 
   uninstallSkill: async (slug) => {
@@ -1226,6 +1256,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     })
     closeSkillTabs(slug)
     await get().loadSection('skills', { force: true })
+    await refreshLocalSkillsRuntime()
   },
 
   deletePersonalSkill: async (slug) => {
@@ -1251,6 +1282,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     closeSkillTabs(slug)
     await get().loadSection('skills', { force: true })
     window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
+    await refreshLocalSkillsRuntime()
   },
 
   deleteTeamSkill: async (slug) => {
@@ -1272,6 +1304,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     closeSkillTabs(slug)
     await get().loadSection('skills', { force: true })
     window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
+    await refreshLocalSkillsRuntime()
   },
 
   installMcp: async (name) => {
@@ -1610,8 +1643,19 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       await backend.marketplace.detachTeamSkill(teamId, slug).catch(() => {})
     }
 
+    // Rebaseline often leaves disk bytes unchanged, so reconcile will not
+    // record a Skills refresh. The OpenCode instance still has the old pack
+    // cached and must be told explicitly.
+    let refreshError: SkillPublishedRefreshError | null = null
+    try {
+      await refreshLocalSkillsRuntime()
+    } catch {
+      refreshError = new SkillPublishedRefreshError(version.version)
+    }
+
     await get().reconcileSkills()
     await get().loadSection('skills', { force: true })
+    if (refreshError) throw refreshError
   },
 
   keepArchivedCopy: async (slug, newSlug) => {
@@ -1624,6 +1668,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     await invoke('team_skill_restore_trashed', { trashedPath: path, slug: newSlug })
     get().dismissArchived(slug)
     await get().loadSection('skills', { force: true })
+    await refreshLocalSkillsRuntime()
   },
 
   dismissRetired: (slug) =>
@@ -1651,6 +1696,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       })
     await get().reconcileSkills()
     await get().loadSection('skills', { force: true })
+    await refreshLocalSkillsRuntime()
   },
 
   reconcileSkills: async () => {
@@ -1858,6 +1904,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         .loadSection('skills', { force: true })
         .catch(() => {})
     }
+    await refreshLocalSkillsRuntime()
     return trashedPath
   },
 
@@ -1870,6 +1917,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     set((s) => ({ draftRecoveryRevision: s.draftRecoveryRevision + 1 }))
     await get().reconcileSkills()
     await get().loadSection('skills', { force: true })
+    await refreshLocalSkillsRuntime()
   },
 
   forkSkill: async (slug, newSlug) => {

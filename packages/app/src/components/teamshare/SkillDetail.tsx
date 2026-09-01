@@ -37,6 +37,8 @@ import {
   isSkillDirtyConflict,
   SkillDiscardIncompleteError,
   SkillSlugTakenError,
+  SkillPublishedRefreshError,
+  SkillRuntimeRefreshError,
   StaleTeamSkillPublishError,
   StaleDirtySkillPublishError,
   type TeamSkillItem,
@@ -1348,6 +1350,17 @@ export function SkillDetail({ slug }: { slug: string }) {
         setPublishOpen(false)
         toast.success(t('teamShare.skillPublished', 'Published'))
       } catch (e) {
+        if (e instanceof SkillPublishedRefreshError) {
+          setPublishOpen(false)
+          toast.error(
+            t(
+              'teamShare.skillPublishedRefreshFailed',
+              'Skill v{{v}} 已发布，本机刷新失败。请重试刷新。',
+              { v: e.version },
+            ),
+          )
+          return
+        }
         if (e instanceof StaleDirtySkillPublishError) {
           toast.error(
             t(
@@ -1407,6 +1420,16 @@ export function SkillDetail({ slug }: { slug: string }) {
         action: undoAction(trashedPath, item.slug),
       })
     } catch (e) {
+      if (e instanceof SkillRuntimeRefreshError) {
+        toast.error(
+          t(
+            'teamShare.skillSavedRefreshFailed',
+            'Skill 已保存，但新会话可能暂时仍使用旧缓存。{{msg}}',
+            { msg: e.message },
+          ),
+        )
+        return
+      }
       // A discard that got as far as moving the edits aside still has to offer
       // the undo — that path is where the user most needs it, and it is exactly
       // where a plain error toast would leave their work stranded in a
@@ -1475,6 +1498,16 @@ export function SkillDetail({ slug }: { slug: string }) {
           toast.success(t('teamShare.skillReverted', 'Restored v{{v}} as the current version', { v: version })),
         )
         .catch((e) => {
+          if (e instanceof SkillRuntimeRefreshError) {
+            toast.error(
+              t(
+                'teamShare.skillSavedRefreshFailed',
+                'Skill 已保存，但新会话可能暂时仍使用旧缓存。{{msg}}',
+                { msg: e.message },
+              ),
+            )
+            return
+          }
           if (e instanceof StaleTeamSkillPublishError) {
             toast.error(
               t(
