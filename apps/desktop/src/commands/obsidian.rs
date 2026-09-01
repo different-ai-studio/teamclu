@@ -187,6 +187,7 @@ fn register_vault(vault_path: &str) -> Result<(), String> {
         json["vaults"] = serde_json::json!({});
     }
     let normalized = vault_path.trim_end_matches(['/', '\\']).to_string();
+    prune_stale_team_vaults(&mut json, &normalized);
     json["vaults"][vault_id(&normalized)] = serde_json::json!({
         "path": normalized,
         "ts": now_millis(),
@@ -204,6 +205,52 @@ fn register_vault(vault_path: &str) -> Result<(), String> {
     std::fs::rename(&tmp, &registry)
         .map_err(|e| format!("obsidian: replace {}: {e}", registry.display()))?;
     Ok(())
+}
+
+/// Drop entries this app wrote that no longer point at anything.
+///
+/// The team knowledge directory moved once already (`shared/knowledge` ->
+/// `shared/team-sync/knowledge`), and the entry left behind shows up in the
+/// user's Obsidian as a vault that opens onto nothing. Registering the new one
+/// does not remove the old.
+///
+/// # What it will not touch
+///
+/// Three conditions have to hold together, and each is there to make sure this
+/// only ever removes something we put there ourselves:
+///
+///   * the id is one we would have generated for that path — a vault the user
+///     added by hand has an id Obsidian chose, so it can never match;
+///   * the path is inside a `teams/<id>/shared` directory, which is ours;
+///   * the directory does not exist any more.
+///
+/// A vault the user keeps somewhere else, or one of ours that still resolves,
+/// is left exactly where it is. Losing somebody's real vault list would be a
+/// far worse outcome than leaving a dead entry behind, so the test is strict
+/// rather than clever.
+fn prune_stale_team_vaults(json: &mut serde_json::Value, keep: &str) {
+    let Some(vaults) = json.get_mut("vaults").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    vaults.retain(|id, entry| {
+        let Some(path) = entry.get("path").and_then(|p| p.as_str()) else {
+            return true;
+        };
+        if same_vault_path(path, keep) {
+            return true;
+        }
+        let ours = id == &vault_id(path.trim_end_matches(['/', '\\']))
+            && path.contains("/teams/")
+            && path.contains("/shared");
+        if !ours {
+            return true;
+        }
+        let gone = !std::path::Path::new(path).is_dir();
+        if gone {
+            tracing::info!(vault = %path, "removing a team vault entry that no longer resolves");
+        }
+        !gone
+    });
 }
 
 fn now_millis() -> u64 {
@@ -407,6 +454,61 @@ fn uri_handler_registered() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The prune must only ever remove entries this app wrote, for directories
+    /// that are gone. Everything else in a person's vault list is theirs.
+    #[test]
+    fn prune_keeps_everything_it_did_not_write() {
+        let user_vault = "/Users/x/Notes";
+        let ours_alive = "/Users/x/.amuxd/teams/t1/shared/team-sync/knowledge";
+        let ours_dead = "/Users/x/.amuxd/teams/t1/shared/knowledge";
+
+        let mut json = serde_json::json!({
+            "vaults": {
+                // A vault Obsidian registered itself: the id is not one we
+                // would generate, so it can never match however its path looks.
+                "0123456789abcdef": { "path": user_vault, "ts": 1, "open": false },
+                // Ours, and the directory really is gone.
+                vault_id(ours_dead): { "path": ours_dead, "ts": 2, "open": false },
+                // Ours, under a teams dir, but with an id we did not generate.
+                "ffffffffffffffff": { "path": ours_dead, "ts": 3, "open": false },
+            }
+        });
+
+        prune_stale_team_vaults(&mut json, ours_alive);
+
+        let vaults = json["vaults"].as_object().unwrap();
+        assert!(
+            vaults.contains_key("0123456789abcdef"),
+            "a vault the user added must survive"
+        );
+        assert!(
+            vaults.contains_key("ffffffffffffffff"),
+            "an id we would not have generated is not ours to remove"
+        );
+        assert!(
+            !vaults.contains_key(&vault_id(ours_dead)),
+            "our own entry for a directory that is gone should be dropped"
+        );
+    }
+
+    #[test]
+    fn prune_keeps_a_team_vault_that_still_resolves() {
+        // A real directory, so the "gone" test fails and the entry stays. Uses
+        // the crate's own path so the check is against something that exists.
+        let alive = std::env::temp_dir().join("teams/t1/shared/knowledge");
+        std::fs::create_dir_all(&alive).unwrap();
+        let alive = alive.to_string_lossy().to_string();
+
+        let mut json = serde_json::json!({
+            "vaults": { vault_id(&alive): { "path": alive, "ts": 1, "open": false } }
+        });
+        prune_stale_team_vaults(&mut json, "/somewhere/else");
+        assert!(
+            json["vaults"].as_object().unwrap().contains_key(&vault_id(&alive)),
+            "a team vault whose directory exists must be left alone"
+        );
+    }
 
     /// Team dirs sit under a home directory that often has a space in it, and
     /// folder names in this product are routinely CJK. Both have to survive

@@ -23,7 +23,7 @@ export function KnowledgeVersionHistory({ path }: { path: string }) {
   // The daemon addresses versions by sync key (`knowledge/<rel>`), never by an
   // absolute path — the tab carries the absolute one because that is what
   // identifies the document on this machine.
-  const [knowledgeDir, setKnowledgeDir] = React.useState<string | null>(null)
+  const [syncRoot, setKnowledgeDir] = React.useState<string | null>(null)
   React.useEffect(() => {
     let cancelled = false
     globalTeamKnowledgeShareDir()
@@ -32,8 +32,8 @@ export function KnowledgeVersionHistory({ path }: { path: string }) {
     return () => { cancelled = true }
   }, [])
   const syncKey = React.useMemo(
-    () => teamSyncKeyForPath(path, { knowledgeDir, workspacePath }),
-    [path, knowledgeDir, workspacePath],
+    () => teamSyncKeyForPath(path, { syncRoot, workspacePath }),
+    [path, syncRoot, workspacePath],
   )
 
   const fileVersions = useVersionHistoryStore((s) => s.fileVersions)

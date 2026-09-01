@@ -1,4 +1,8 @@
 {
+  "teamSync": {
+    "knowledgeRoot": "Knowledge",
+    "documentsRoot": "Documents"
+  },
   "teamShare": {
     "refreshAndSync": "Refresh and sync with cloud",
     "openInObsidian": "Open in Obsidian",
@@ -19,9 +23,6 @@
     "dirMissingStillMissing": "Rebuilt, but the team folder is still not here. The local daemon is probably out of date — restart or update it, then try again.",
     "dirMissingDaemonTooOld": "The local daemon is too old to create the team folder on its own. Restart or update it, then try again.",
     "envEmpty": "No environment variables yet.",
-    "knowledgeAdd": "New document or folder",
-    "knowledgeNewFile": "New document",
-    "knowledgeNewFolder": "New folder",
     "mcpAdd": "Add MCP server",
     "mcpAddSubmit": "Add to team",
     "mcpAddPersonalSubmit": "Add to this machine",
@@ -988,6 +989,9 @@
     "externalDropFailed": "Failed to copy files",
     "addToAgent": "Add to Agent",
     "managePermissions": "Permissions\u2026",
+    "importLocal": "Add files…",
+    "importFailed": "{{count}} item(s) could not be added",
+    "importFailedGeneric": "Could not add the selected files",
     "restrictedFolder": "Restricted to specific people",
     "openWithDefault": "Open with Default App",
     "duplicate": "Duplicate",

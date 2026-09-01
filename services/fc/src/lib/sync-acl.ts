@@ -84,6 +84,15 @@ const EMPTY_VIEW: AclView = Object.freeze({ denied: [], allPrefixes: [] });
  */
 export const MAX_ACL_RULES_PER_TEAM = 64;
 
+/**
+ * Roots a rule prefix may name — the two fixed directories of the synced tree.
+ *
+ * Kept in step with `ALLOWED_PREFIXES` in sync-path.ts and with the SQL CHECK
+ * on `amuxc_path_acl`. A prefix outside these names a path the sync engine will
+ * never carry, so a rule against it could never do anything.
+ */
+export const ALLOWED_ACL_ROOTS = ['documents/', 'knowledge/'] as const;
+
 // ---------------------------------------------------------------------------
 // Cache
 //
@@ -157,8 +166,14 @@ export function validateAclPrefix(prefix: unknown): { ok: boolean; message?: str
   if (typeof prefix !== 'string' || prefix.length === 0) {
     return { ok: false, message: 'pathPrefix is required' };
   }
-  if (!prefix.startsWith('knowledge/')) {
-    return { ok: false, message: 'pathPrefix must start with "knowledge/"' };
+  // Both synced roots are accepted. Only `documents/` gets a UI entry point,
+  // but that is editorial policy — see the migration widening the matching SQL
+  // constraint for why it is not enforced down here.
+  if (!ALLOWED_ACL_ROOTS.some((root) => prefix.startsWith(root))) {
+    return {
+      ok: false,
+      message: `pathPrefix must start with one of: ${ALLOWED_ACL_ROOTS.join(', ')}`,
+    };
   }
   if (!prefix.endsWith('/')) {
     return { ok: false, message: 'pathPrefix must end with "/" so it matches on a path boundary' };

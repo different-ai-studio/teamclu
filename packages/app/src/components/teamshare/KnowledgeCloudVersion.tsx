@@ -41,12 +41,12 @@ export function KnowledgeCloudVersion({ path }: { path: string }) {
   const { t } = useTranslation()
   const teamId = useCurrentTeamStore((s) => s.team?.id)
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
-  const knowledgeDir = useTeamConflictsStore((s) => s.knowledgeDir)
+  const syncRoot = useTeamConflictsStore((s) => s.syncRoot)
   const loadConflicts = useTeamConflictsStore((s) => s.load)
 
   const syncKey = React.useMemo(
-    () => teamSyncKeyForPath(path, { knowledgeDir, workspacePath }),
-    [path, knowledgeDir, workspacePath],
+    () => teamSyncKeyForPath(path, { syncRoot, workspacePath }),
+    [path, syncRoot, workspacePath],
   )
 
   const [content, setContent] = React.useState<string | null>(null)
@@ -59,8 +59,8 @@ export function KnowledgeCloudVersion({ path }: { path: string }) {
   // The knowledge dir is resolved by the conflicts store; without it a path
   // cannot be turned into the sync key every daemon call takes.
   React.useEffect(() => {
-    if (!knowledgeDir) void loadConflicts()
-  }, [knowledgeDir, loadConflicts])
+    if (!syncRoot) void loadConflicts()
+  }, [syncRoot, loadConflicts])
 
   // Deliberately component-local rather than the shared version-history store.
   // That store keeps ONE list for the whole app, so a second document's view

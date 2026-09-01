@@ -82,6 +82,24 @@ const MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
 /// `git clone` lands ten times that in one second.
 const MAX_NEW_FILES_PER_TICK: usize = 2000;
 
+/// Most tombstones one tick may broadcast before it stops and asks.
+///
+/// The add-side guard above protects the team's cloud from one person's
+/// mistake. This one protects **every member's disk** from it, which is the
+/// more expensive direction: a tombstone is applied by everyone, and the file
+/// is gone from all of their machines before anyone notices.
+///
+/// The engine infers "deleted locally" from `in state, absent from the scan`,
+/// so anything that makes the scan come back short reads as a mass delete —
+/// an external drive that did not mount, a directory moved out from under us,
+/// a sync plugin mid-write, a content-root change that ran in the wrong order.
+/// None of those are deletions, and all of them look exactly like one.
+///
+/// Deliberately far lower than the add-side limit. Deleting two hundred notes
+/// in one sitting is already unusual enough to be worth one confirmation;
+/// creating two thousand files is merely someone dropping a repo in.
+const MAX_DELETES_PER_TICK: usize = 200;
+
 /// Per-tick knobs a caller can set. A tick with `Default` values is the
 /// autonomous one the timer runs.
 #[derive(Debug, Clone, Copy, Default)]
@@ -92,6 +110,13 @@ pub struct TickOptions {
     /// the acknowledgement, so defaulting it to `true` anywhere would quietly
     /// remove the guard.
     pub allow_bulk_add: bool,
+    /// Broadcast a set of deletions an earlier tick refused to send.
+    ///
+    /// Same contract as [`TickOptions::allow_bulk_add`]: only ever set after a
+    /// person has been shown the count and agreed. Defaulting it to `true`
+    /// anywhere removes the guard, and this is the guard whose failure mode
+    /// reaches other people's machines.
+    pub allow_bulk_delete: bool,
 }
 
 /// Max concurrent direct-to-OSS blob transfers (PUT on push, GET on pull). OSS
@@ -125,6 +150,13 @@ pub struct TickResult {
     /// cloud is worse than none of it, and the user has to make one decision,
     /// not watch a partial upload.
     pub blocked_new_files: Option<u32>,
+    /// How many deletions this tick refused to broadcast, when
+    /// [`MAX_DELETES_PER_TICK`] was exceeded. `None` on a normal tick.
+    ///
+    /// Nothing was deleted in that case — not even the first
+    /// [`MAX_DELETES_PER_TICK`]. A partially applied mass deletion is the worst
+    /// of both: the files are gone for everyone AND the cause is harder to see.
+    pub blocked_deletes: Option<u32>,
 }
 
 /// Run a full sync tick: PULL then PUSH (spec §4.3), reporting how far it has
@@ -469,6 +501,26 @@ pub async fn tick_with_progress(
     // current scan was deleted locally → emit a server-side tombstone so other
     // nodes pull the deletion. Each tombstone is a parentVersion CAS.
     let dels = locally_deleted_paths(&state, &scan, &rules);
+
+    // A tombstone reaches every member's disk, so an unexpected pile of them is
+    // stopped and reported rather than sent. `locally_deleted_paths` cannot tell
+    // a real deletion from a scan that came back short — an unmounted drive, a
+    // moved directory, a content root that changed under us all read the same —
+    // and by the time the difference is visible the files are gone everywhere.
+    //
+    // All or nothing, matching the add-side guard: a half-applied mass deletion
+    // is the worst outcome, because the files are gone AND the cause is harder
+    // to see.
+    let (dels, blocked_deletes) = apply_delete_guard(dels, opts.allow_bulk_delete);
+    if let Some(count) = blocked_deletes {
+        tracing::warn!(
+            team_id,
+            deletions = count,
+            limit = MAX_DELETES_PER_TICK,
+            "push held back: refusing to broadcast this many deletions without confirmation"
+        );
+    }
+
     progress.report(SyncPhase::Deleting, 0, dels.len() as u32);
     let del_stats = delete_phase(content_root, team_id, fc, &mut state, dels).await;
 
@@ -507,6 +559,7 @@ pub async fn tick_with_progress(
         failed: state.quarantined.len() as u32,
         oversize,
         blocked_new_files,
+        blocked_deletes,
     };
     let _ = pull_failures;
 
@@ -1770,6 +1823,23 @@ fn plan_push(
 /// them off every teammate's disk — a client-side change silently destroying
 /// server-side data. Ignoring means "stop managing", never "delete": the state
 /// entries stay put, so relaxing the rule later lets the files resume syncing.
+/// Hold back a tombstone batch that is too large to send unasked.
+///
+/// All or nothing, matching the add-side guard and for a sharper reason: a
+/// tombstone is applied on every member's machine, so a partially sent mass
+/// deletion loses files for everyone AND makes the cause harder to find than if
+/// nothing had gone at all.
+fn apply_delete_guard(
+    dels: Vec<(String, i32)>,
+    allow_bulk_delete: bool,
+) -> (Vec<(String, i32)>, Option<u32>) {
+    if !allow_bulk_delete && dels.len() > MAX_DELETES_PER_TICK {
+        let count = dels.len() as u32;
+        return (Vec::new(), Some(count));
+    }
+    (dels, None)
+}
+
 fn locally_deleted_paths(
     state: &LocalSyncState,
     scan: &[ScannedFile],
@@ -2030,6 +2100,43 @@ mod tests {
             !state.files.get("knowledge/hr/a.md").unwrap().dirty,
             "a file we may never upload is not pending upload"
         );
+    }
+
+    // ── the delete-side guard ─────────────────────────────────────────────
+    //
+    // `locally_deleted_paths` cannot tell a deletion from a scan that came back
+    // short. These pin the arithmetic the guard applies to its result; the
+    // all-or-nothing decision itself lives in `tick` and is asserted through
+    // the counts below.
+
+    #[test]
+    fn delete_guard_threshold_is_all_or_nothing() {
+        // Under the limit: everything goes.
+        let under: Vec<(String, i32)> = (0..MAX_DELETES_PER_TICK)
+            .map(|i| (format!("knowledge/{i}.md"), 1))
+            .collect();
+        let (kept, blocked) = apply_delete_guard(under.clone(), false);
+        assert_eq!(kept.len(), MAX_DELETES_PER_TICK);
+        assert_eq!(blocked, None);
+
+        // One over: NOTHING goes. A half-applied mass deletion is the worst
+        // outcome — the files are gone for everyone and the cause is harder to
+        // see than if none had been.
+        let mut over = under.clone();
+        over.push(("knowledge/extra.md".into(), 1));
+        let (kept, blocked) = apply_delete_guard(over.clone(), false);
+        assert!(kept.is_empty(), "a partial mass delete is not an option");
+        assert_eq!(blocked, Some(over.len() as u32));
+    }
+
+    #[test]
+    fn delete_guard_yields_to_an_explicit_confirmation() {
+        let over: Vec<(String, i32)> = (0..MAX_DELETES_PER_TICK + 5)
+            .map(|i| (format!("knowledge/{i}.md"), 1))
+            .collect();
+        let (kept, blocked) = apply_delete_guard(over.clone(), true);
+        assert_eq!(kept.len(), over.len(), "a person said yes");
+        assert_eq!(blocked, None);
     }
 
     #[test]

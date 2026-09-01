@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { isTauri } from '@/lib/utils'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useOssSyncStore } from '@/stores/oss-sync'
-import { globalTeamKnowledgeShareDir } from '@/lib/team-skill-paths'
+import { globalTeamSyncShareRoot } from '@/lib/team-skill-paths'
 import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
 
 /**
@@ -14,6 +14,9 @@ import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
  * (already holding the REMOTE text), and `sidecar` is where their own text went
  * (e.g. `knowledge/.conflicts/a/foo.conflict.<ts>.<hash>.md`).
  */
+export /** The two fixed roots a sync key may name. */
+const SYNC_ROOTS = ['knowledge/', 'documents/'] as const
+
 export interface TeamConflict {
   /** Sync key of the document, e.g. `knowledge/onboarding.md`. */
   path: string
@@ -32,7 +35,7 @@ interface TeamConflictsState {
   /** Conflicts grouped by document sync key, newest first within a document. */
   bySyncKey: Record<string, TeamConflict[]>
   /** `~/.amuxd[-brand]/teams/<id>/shared/knowledge`, for path mapping. */
-  knowledgeDir: string | null
+  syncRoot: string | null
   loading: boolean
   error: string | null
 
@@ -48,7 +51,6 @@ interface TeamConflictsState {
   reset(): void
 }
 
-const KNOWLEDGE_PREFIX = 'knowledge/'
 
 function groupBySyncKey(entries: TeamConflict[]): Record<string, TeamConflict[]> {
   const out: Record<string, TeamConflict[]> = {}
@@ -61,7 +63,7 @@ function groupBySyncKey(entries: TeamConflict[]): Record<string, TeamConflict[]>
 export const useTeamConflictsStore = create<TeamConflictsState>((set, get) => ({
   entries: [],
   bySyncKey: {},
-  knowledgeDir: null,
+  syncRoot: null,
   loading: false,
   error: null,
 
@@ -75,18 +77,18 @@ export const useTeamConflictsStore = create<TeamConflictsState>((set, get) => ({
     set({ loading: true })
     try {
       const { invoke } = await import('@tauri-apps/api/core')
-      const [entries, knowledgeDir] = await Promise.all([
+      const [entries, syncRoot] = await Promise.all([
         invoke<TeamConflict[]>('team_conflicts', { teamId }),
         // Resolved alongside the list rather than once at startup: switching
         // teams repoints it, and a stale dir maps every conflict to a file that
         // is not there.
-        globalTeamKnowledgeShareDir().catch(() => null),
+        globalTeamSyncShareRoot().catch(() => null),
       ])
       const list = entries ?? []
       set({
         entries: list,
         bySyncKey: groupBySyncKey(list),
-        knowledgeDir,
+        syncRoot,
         loading: false,
         error: null,
       })
@@ -113,9 +115,17 @@ export const useTeamConflictsStore = create<TeamConflictsState>((set, get) => ({
   },
 
   absPathFor(syncKey) {
-    const dir = get().knowledgeDir
-    if (!dir || !syncKey.startsWith(KNOWLEDGE_PREFIX)) return null
-    return `${dir.replace(/[/\\]+$/, '')}/${syncKey.slice(KNOWLEDGE_PREFIX.length)}`
+    // A sync key already begins with its root name (`knowledge/…`,
+    // `documents/…`), and the sync root is their shared parent — so the key
+    // appends directly, with nothing to strip. Both roots resolve here; a
+    // conflict in either is a file the user has to be able to open.
+    //
+    // A key naming anything else is not ours to place. Retired prefixes still
+    // appear in old data (`skills/`, `.mcp/`), and turning one into a path
+    // would point the UI at a file that does not exist.
+    const dir = get().syncRoot
+    if (!dir || !SYNC_ROOTS.some((root) => syncKey.startsWith(root))) return null
+    return `${dir.replace(/[/\\]+$/, '')}/${syncKey}`
   },
 
   reset() {
