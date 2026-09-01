@@ -105,36 +105,21 @@ pub fn assemble_spawn_runtime_env_for_execution(
         }));
     let mut extra_env = bundle.extra_env;
     // Backend-neutral team-provider handoff. opencode consumes the team gateway
-    // via `provider.team` in the active team's opencode.json;
-    // other local runtimes (pi, …) that can't read opencode.json instead read
-    // this `TEAMCLU_TEAM_PROVIDER` env and register the provider themselves.
-    // The secret is NOT embedded — the payload references `${tc_api_key}`, the
-    // same env-interpolated key opencode uses, which is already in `extra_env`.
+    // via `provider.team` in the active team's opencode.json; other local
+    // runtimes (pi, …) cannot read that file and instead register the provider
+    // themselves from this payload.
+    //
+    // The secret is NOT embedded: the payload carries `apiKeyEnv`, naming the
+    // binding to read it from — `tc_gateway_token`, bound above. That binding
+    // has to exist, or the provider registers and every model on it silently
+    // becomes unavailable, which looks exactly like it never registered.
     if let ManagedLlmState::Enabled(provider) = &managed_llm {
         extra_env.insert(
             "TEAMCLU_TEAM_PROVIDER".to_string(),
             teamclu_runtime_env::team_provider_env_payload(provider, ai_proxy_base),
         );
-        tracing::info!(
-            target: "amuxd::team_provider_probe",
-            base_url = %provider.base_url,
-            models = provider.models.len(),
-            "injected TEAMCLU_TEAM_PROVIDER"
-        );
-    } else {
-        // The state AFTER stabilize_managed_llm_for_spawn, so this also says
-        // whether the on-disk provider.team fallback fired.
-        tracing::info!(
-            target: "amuxd::team_provider_probe",
-            state = match &managed_llm {
-                ManagedLlmState::Disabled => "Disabled",
-                ManagedLlmState::Unknown => "Unknown",
-                ManagedLlmState::Enabled(_) => unreachable!(),
-            },
-            disk_fallback_present = disk_team.is_some(),
-            "NOT injecting TEAMCLU_TEAM_PROVIDER"
-        );
     }
+
     // #742: point opencode at the daemon-owned device-level config, which is
     // where user-configured providers now live. `OPENCODE_CONFIG` loads it as an
     // *additional* global-scope config after the standard global chain, so these

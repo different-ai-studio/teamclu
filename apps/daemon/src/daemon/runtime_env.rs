@@ -562,26 +562,6 @@ impl ExecutionContextAssembler {
             Some(team_id) => self.managed_llm.resolve(team_id).await,
             None => ManagedLlmState::Unknown,
         };
-        // Diagnostic: the team gateway reaches opencode through the ACTIVE-TEAM
-        // global config, but reaches pi (and any other runtime) only through the
-        // env assembled here, off the WORKSPACE's team. When those two disagree
-        // the picker silently differs per runtime, and nothing on either side
-        // says so. Logged at INFO because the only way to see it otherwise is a
-        // process environment macOS will not show you.
-        tracing::info!(
-            target: "amuxd::team_provider_probe",
-            workspace_team = ?workspace.team_id,
-            configured_team = ?self.configured_team_id(),
-            effective_team = ?team_id,
-            managed_llm = match &managed_llm {
-                ManagedLlmState::Enabled(p) => format!("Enabled({}, {} models)", p.base_url, p.models.len()),
-                ManagedLlmState::Disabled => "Disabled".to_string(),
-                ManagedLlmState::Unknown => "Unknown".to_string(),
-            },
-            workspace_root = %workspace.workspace_root.display(),
-            working_directory = %working_directory.display(),
-            "resolving spawn env"
-        );
         let cloud_token_file = self
             .backend
             .cloud_auth_health()
