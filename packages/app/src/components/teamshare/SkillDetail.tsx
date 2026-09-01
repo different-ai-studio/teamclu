@@ -38,6 +38,7 @@ import {
   SkillDiscardIncompleteError,
   SkillSlugTakenError,
   StaleTeamSkillPublishError,
+  StaleDirtySkillPublishError,
   type TeamSkillItem,
   type TeamSkillFileDiff,
 } from '@/stores/team-share-browser'
@@ -552,7 +553,7 @@ function ConflictBar({
             {t('teamShare.skillConflictViewDiff', 'View changes')}
           </button>
           <span className="flex-1" />
-          {canPublish && (
+          {canPublish && !isStaleDirty && (
             <Button
               type="button"
               onClick={onPublish}
@@ -1255,6 +1256,15 @@ export function SkillDetail({ slug }: { slug: string }) {
         setPublishOpen(false)
         toast.success(t('teamShare.skillPublished', 'Published'))
       } catch (e) {
+        if (e instanceof StaleDirtySkillPublishError) {
+          toast.error(
+            t(
+              'teamShare.skillPublishStaleDirty',
+              'Your draft is behind the team. Apply the latest version, fork, or discard before publishing.',
+            ),
+          )
+          return
+        }
         if (e instanceof StaleTeamSkillPublishError) {
           toast.error(
             t(
@@ -1474,16 +1484,17 @@ export function SkillDetail({ slug }: { slug: string }) {
   const canEdit = Boolean(item.dirPath && item.filename && (item.kind === 'personal' || item.installed))
   const canShare = isPersonal && Boolean(item.dirPath && item.filename)
   const latestChangelog = [...versions].sort((a, b) => b.version - a.version)[0]?.changelog
-  // Any team member can publish and revert: the registry is team property, and
-  // the gate on a new version is the required fields, not an approver. `owner`
-  // stays on the row as the answer to "who is responsible for this" — it is
-  // displayed, not enforced (see the member-writes migration and the pg-repo
-  // header).
-  const canPublish = isRegistry
   const baseVersion = localState?.installedVersion
     ? Number(localState.installedVersion)
     : item.installedVersion
   const isStaleDirty = localState?.state === 'stale_dirty'
+  // Any team member can publish and revert: the registry is team property, and
+  // the gate on a new version is the required fields, not an approver. `owner`
+  // stays on the row as the answer to "who is responsible for this" — it is
+  // displayed, not enforced (see the member-writes migration and the pg-repo
+  // header). stale_dirty must rebase/fork/discard first — publishing would
+  // overwrite team versions the author never saw.
+  const canPublish = isRegistry && !isStaleDirty
   const showTeamDiffTab =
     isStaleDirty &&
     baseVersion != null &&

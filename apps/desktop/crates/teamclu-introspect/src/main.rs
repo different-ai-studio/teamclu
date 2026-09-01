@@ -372,7 +372,7 @@ fn tool_definitions() -> Value {
                             "properties": {
                                 "path": { "type": "string" },
                                 "content": { "type": "string" },
-                                "encoding": { "type": "string", "enum": ["utf8"] }
+                                "encoding": { "type": "string", "enum": ["utf8", "base64"] }
                             },
                             "required": ["path", "content"]
                         }
@@ -384,10 +384,16 @@ fn tool_definitions() -> Value {
                     },
                     "expectedDigest": {
                         "type": "string",
-                        "description": "Optimistic concurrency digest (sha256:...) from get_draft."
+                        "description": "Required. Optimistic concurrency digest (sha256:...) from get_draft."
                     }
                 },
-                "required": ["action"]
+                "required": ["action"],
+                "allOf": [
+                    {
+                        "if": { "properties": { "action": { "const": "update_draft" } } },
+                        "then": { "required": ["slug", "content", "expectedDigest"] }
+                    }
+                ]
             }
         },
         {
