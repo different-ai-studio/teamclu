@@ -606,6 +606,7 @@ impl ExecutionContextAssembler {
             &self.actor_name,
             cloud_token_file.as_deref(),
             &managed_llm,
+            self.managed_llm.gateway_token().as_deref(),
         )
         .map_err(|e| format!("assemble_runtime_env failed: {e}"))
     }
@@ -811,6 +812,7 @@ impl DaemonServer {
             &self.config.actor.name,
             cloud_token_file.as_deref(),
             &managed_llm,
+            self.managed_llm.gateway_token().as_deref(),
         )
         .map_err(|e| e.to_string())
     }

@@ -334,7 +334,11 @@ impl AmuxdAgentHandle {
             let map = self.logical_to_acp.lock().await;
             map.get(session).map(|s| s.binding.clone())
         }
-        .unwrap_or_default();
+        .unwrap_or_default(
+            // Channels spawn the same runtimes; the team provider needs its
+            // credential binding here too.
+            None,
+        );
         let (workspace_dir, _) = self.resolve_spawn_target(session, &binding).await?;
         let Some(dir) = workspace_dir else {
             // No resolvable workspace — a spawn would run in a throwaway

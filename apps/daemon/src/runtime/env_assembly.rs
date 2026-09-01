@@ -21,6 +21,7 @@ pub fn assemble_spawn_runtime_env(
     display_name: &str,
     cloud_token_file: Option<&str>,
     managed_llm: &ManagedLlmState,
+    gateway_token: Option<&str>,
 ) -> anyhow::Result<SpawnRuntimeEnv> {
     assemble_spawn_runtime_env_for_execution(
         workspace_root,
@@ -30,6 +31,7 @@ pub fn assemble_spawn_runtime_env(
         display_name,
         cloud_token_file,
         managed_llm,
+        gateway_token,
     )
 }
 
@@ -44,6 +46,7 @@ pub fn assemble_spawn_runtime_env_for_execution(
     display_name: &str,
     cloud_token_file: Option<&str>,
     managed_llm: &ManagedLlmState,
+    gateway_token: Option<&str>,
 ) -> anyhow::Result<SpawnRuntimeEnv> {
     // Cold ManagedLlm cache often yields Unknown and omits TEAMCLU_TEAM_PROVIDER;
     // reconstruct Enabled from on-disk provider.team so the spawn fingerprint
@@ -59,13 +62,20 @@ pub fn assemble_spawn_runtime_env_for_execution(
             actor_id: actor_id.to_string(),
             display_name: display_name.to_string(),
             cloud_token_file: cloud_token_file.map(str::to_string),
-            // Not supplied on the spawn path, and not needed there: since #941
-            // `provider.team` is written to the ACTIVE-TEAM GLOBAL config, and
-            // its apiKey is resolved by `sync_global_team_provider` during
-            // reconcile (which runs on every provider read). This context only
-            // feeds workspace-scoped `${...}` resolution, where nothing in the
-            // product references the gateway token.
-            gateway_token: None,
+            // Binds `tc_gateway_token`, which `TEAMCLU_TEAM_PROVIDER` names as
+            // its `apiKeyEnv`.
+            //
+            // This used to be None, on the reasoning that `provider.team` is
+            // written to the active-team global config and its apiKey resolved
+            // during reconcile — true, and true only for opencode, which reads
+            // that file. Every other runtime registers the provider itself from
+            // the env payload and looks the credential up by name. With the
+            // binding missing, pi registered the team provider and then showed
+            // none of its models: a provider with no resolvable credential is
+            // "loaded but unavailable" in pi, which is indistinguishable from
+            // never having been registered. Verified by A/B — same payload, the
+            // only difference being this variable.
+            gateway_token: gateway_token.map(str::to_string),
         },
         &managed_llm,
     )?;
@@ -228,6 +238,7 @@ mod tests {
             "Env Test Agent",
             None,
             &ManagedLlmState::Unknown,
+            None,
         )
         .unwrap();
 
@@ -311,6 +322,7 @@ mod tests {
             "Cron Agent",
             None,
             &managed,
+            None,
         )
         .unwrap();
 
@@ -391,6 +403,7 @@ mod tests {
             "FP Agent",
             None,
             &ManagedLlmState::Unknown,
+            None,
         )
         .unwrap();
         let from_enabled = assemble_spawn_runtime_env(
@@ -400,6 +413,7 @@ mod tests {
             "FP Agent",
             None,
             &enabled,
+            None,
         )
         .unwrap();
 

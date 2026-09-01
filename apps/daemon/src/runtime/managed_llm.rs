@@ -67,6 +67,19 @@ impl ManagedLlmResolver {
         self
     }
 
+    /// The `ai:invoke` token `provider.team`'s apiKey resolves to.
+    ///
+    /// Needed on the SPAWN path, not just during reconcile: opencode reads the
+    /// resolved key out of `provider.team` in the global config, but every other
+    /// runtime is handed `TEAMCLU_TEAM_PROVIDER`, whose `apiKeyEnv` names an env
+    /// binding it expects to find. Without the binding pi registers the provider
+    /// and then hides every model on it, because a provider with no resolvable
+    /// credential is "loaded but unavailable" — which looks exactly like the
+    /// provider never having been registered at all.
+    pub fn gateway_token(&self) -> Option<String> {
+        self.tokens.as_ref().map(|t| t.get_or_mint())
+    }
+
     /// Resolve the team's managed (shared) LLM directly from the cloud API, with
     /// a short-TTL in-memory cache. Replaces the old disk-mirrored
     /// `_meta/provider.json` read, which raced the first-install git clone and
