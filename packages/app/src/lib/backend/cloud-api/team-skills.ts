@@ -67,6 +67,7 @@ export interface TeamSkillVersion {
   size: number;
   changelog: string;
   summary: string;
+  category?: string | null;
   whenToUse: string;
   whenNotToUse: string;
   requires: string[] | null;
@@ -134,7 +135,7 @@ export interface TeamSkillsBackend {
     teamId: string,
     slug: string,
     version: number,
-    input?: { changelog?: string },
+    input: { changelog?: string; expectedLatestVersion: number },
   ): Promise<TeamSkillVersion>;
   updateTeamSkill(
     teamId: string,
@@ -213,7 +214,12 @@ export function createTeamSkillsModule(client: CloudApiClient): TeamSkillsBacken
       return client.post<TeamSkillVersion>(`${skillPath(teamId, slug)}/versions`, input);
     },
 
-    async revertTeamSkillVersion(teamId, slug, version, input = {}) {
+    async revertTeamSkillVersion(
+      teamId,
+      slug,
+      version,
+      input: { changelog?: string; expectedLatestVersion: number },
+    ) {
       return client.post<TeamSkillVersion>(
         `${skillPath(teamId, slug)}/versions/${version}/revert`,
         input,

@@ -153,6 +153,7 @@
     "skillPublishStaleDirty": "Your draft is behind the team. Apply the latest version, fork, or discard before publishing.",
     "skillPublishPreview": "Publishing {{count}} local file change(s) from disk.",
     "skillPublishLoadingDraft": "Reading draft metadata…",
+    "skillPublishDraftMetadataFailed": "Could not read draft metadata: {{msg}}",
     "skillPublishDraftDiff": "differs from registry",
     "skillDraftRecoveryTitle": "Recent draft recoveries",
     "skillDraftRecoveryBody": "Discarded drafts are kept for 7 days. Restore one to pick up where you left off.",

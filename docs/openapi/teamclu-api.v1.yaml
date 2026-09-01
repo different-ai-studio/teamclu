@@ -2287,7 +2287,9 @@ paths:
                 category: { $ref: "#/components/schemas/TeamSkillCategory" }
                 whenToUse: { type: string }
                 whenNotToUse: { type: string }
-                requires: { type: [object, "null"] }
+                requires:
+                  type: [array, "null"]
+                  items: { type: string }
                 ownerActorId: { type: string, format: uuid }
                 status: { type: string, enum: [draft, published, deprecated] }
                 supersededBy:
@@ -2350,7 +2352,9 @@ paths:
                 category: { $ref: "#/components/schemas/TeamSkillCategory" }
                 whenToUse: { type: string }
                 whenNotToUse: { type: string }
-                requires: { type: [object, "null"] }
+                requires:
+                  type: [array, "null"]
+                  items: { type: string }
       responses:
         "201":
           description: Version published.
@@ -2409,12 +2413,20 @@ paths:
           description: The version whose content should become the new latest.
           schema: { type: integer, minimum: 1 }
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [expectedLatestVersion]
               properties:
+                expectedLatestVersion:
+                  type: integer
+                  minimum: 0
+                  description: >
+                    Registry `latestVersion` the caller loaded before choosing to
+                    revert. Must match the current registry `latestVersion` or the
+                    revert is rejected with `409 stale_team_skill_base`.
                 changelog:
                   type: string
                   description: Defaults to "Reverted to v{version}".
@@ -2427,6 +2439,11 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Registry moved since the caller loaded it (`stale_team_skill_base`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: That version is already the latest.
           content:
@@ -6395,7 +6412,8 @@ components:
             Required, and shown next to whenToUse rather than folded away —
             two overlapping skills can only be told apart by their boundaries.
         requires:
-          type: [object, "null"]
+          type: [array, "null"]
+          items: { type: string }
           description: Optional dependency declaration (platform, MCP server, credentials).
         status: { type: string, enum: [draft, published, deprecated] }
         supersededBy: { type: [string, "null"] }
@@ -6423,9 +6441,12 @@ components:
         size: { type: integer }
         changelog: { type: string }
         summary: { type: string }
+        category: { type: [string, "null"] }
         whenToUse: { type: string }
         whenNotToUse: { type: string }
-        requires: { type: [object, "null"] }
+        requires:
+          type: [array, "null"]
+          items: { type: string }
         createdBy: { type: string, format: uuid }
         publishedFromVersion:
           type: [integer, "null"]
@@ -6464,7 +6485,9 @@ components:
         category: { $ref: "#/components/schemas/TeamSkillCategory" }
         whenToUse: { type: string }
         whenNotToUse: { type: string }
-        requires: { type: [object, "null"] }
+        requires:
+          type: [array, "null"]
+          items: { type: string }
         changelog: { type: string }
         contentHash: { type: string }
         size: { type: integer }

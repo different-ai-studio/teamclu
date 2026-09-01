@@ -648,6 +648,8 @@ function PublishVersionSheet({
   const [whenNotToUse, setWhenNotToUse] = React.useState(item.whenNotToUse ?? '')
   const [requiresText, setRequiresText] = React.useState((item.requires ?? []).join(', '))
   const [metadataLoading, setMetadataLoading] = React.useState(false)
+  const [metadataReady, setMetadataReady] = React.useState(false)
+  const [metadataError, setMetadataError] = React.useState<string | null>(null)
 
   React.useEffect(() => {
     if (!open) return
@@ -662,6 +664,8 @@ function PublishVersionSheet({
     setWhenNotToUse(item.whenNotToUse ?? '')
     setRequiresText((item.requires ?? []).join(', '))
     setMetadataLoading(true)
+    setMetadataReady(false)
+    setMetadataError(null)
     void onLoadDraftMetadata()
       .then((draft) => {
         if (typeof draft.summary === 'string') setSummary(draft.summary)
@@ -674,8 +678,11 @@ function PublishVersionSheet({
         if (typeof draft.whenToUse === 'string') setWhenToUse(draft.whenToUse)
         if (typeof draft.whenNotToUse === 'string') setWhenNotToUse(draft.whenNotToUse)
         if (draft.requires !== undefined) setRequiresText((draft.requires ?? []).join(', '))
+        setMetadataReady(true)
       })
-      .catch(() => {})
+      .catch((e) => {
+        setMetadataError(e instanceof Error ? e.message : String(e))
+      })
       .finally(() => setMetadataLoading(false))
   }, [open, item, onLoadDraftMetadata])
 
@@ -729,7 +736,14 @@ function PublishVersionSheet({
           </Button>
           <Button
             type="button"
-            disabled={!changelog.trim() || !summary.trim() || busy}
+            disabled={
+              !changelog.trim() ||
+              !summary.trim() ||
+              busy ||
+              metadataLoading ||
+              !metadataReady ||
+              !!metadataError
+            }
             onClick={() =>
               void onSubmit({
                 changelog: changelog.trim(),
@@ -778,6 +792,13 @@ function PublishVersionSheet({
         <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           {t('teamShare.skillPublishLoadingDraft', 'Reading draft metadata…')}
+        </div>
+      )}
+      {metadataError && (
+        <div className="rounded-[8px] border border-border border-l-2 border-l-destructive bg-paper px-3 py-2 text-[12px] text-muted-foreground">
+          {t('teamShare.skillPublishDraftMetadataFailed', 'Could not read draft metadata: {{msg}}', {
+            msg: metadataError,
+          })}
         </div>
       )}
       <label className="block space-y-1">
@@ -1053,6 +1074,7 @@ export function SkillDetail({ slug }: { slug: string }) {
   const loadSkillTeamUpdatesDiff = useTeamShareBrowserStore((s) => s.loadSkillTeamUpdatesDiff)
   const loadSkillDraftMetadata = useTeamShareBrowserStore((s) => s.loadSkillDraftMetadata)
   const listDraftRecoveries = useTeamShareBrowserStore((s) => s.listDraftRecoveries)
+  const draftRecoveryRevision = useTeamShareBrowserStore((s) => s.draftRecoveryRevision)
   const rebaseSkillOnLatest = useTeamShareBrowserStore((s) => s.rebaseSkillOnLatest)
   const localState = useTeamShareBrowserStore((s) => s.skillLocalState[slug])
   // Derived, not selected: a selector returning a fresh Set re-renders on every
@@ -1117,7 +1139,7 @@ export function SkillDetail({ slug }: { slug: string }) {
     return () => {
       cancelled = true
     }
-  }, [item?.slug, teamId, listDraftRecoveries])
+  }, [item?.slug, teamId, listDraftRecoveries, draftRecoveryRevision])
 
   React.useEffect(() => {
     if (!item || item.origin !== 'registry' || !teamId) {
@@ -1446,18 +1468,28 @@ export function SkillDetail({ slug }: { slug: string }) {
   const runRevert = React.useCallback(
     (version: number) => {
       if (!item || busy) return
+      const expectedLatest = item.latestVersion ?? 0
       setBusy(true)
-      void revertSkillVersion(item.slug, version)
+      void revertSkillVersion(item.slug, version, expectedLatest)
         .then(() =>
           toast.success(t('teamShare.skillReverted', 'Restored v{{v}} as the current version', { v: version })),
         )
-        .catch((e) =>
+        .catch((e) => {
+          if (e instanceof StaleTeamSkillPublishError) {
+            toast.error(
+              t(
+                'teamShare.skillPublishStaleBase',
+                'Someone else published while you were editing. Your draft is kept — refresh and resolve the conflict.',
+              ),
+            )
+            return
+          }
           toast.error(
             t('teamShare.skillRevertFailed', 'Restore failed: {{msg}}', {
               msg: e instanceof Error ? e.message : String(e),
             }),
-          ),
-        )
+          )
+        })
         .finally(() => setBusy(false))
     },
     [item, busy, revertSkillVersion, t],
