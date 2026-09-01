@@ -115,7 +115,12 @@ export interface TeamSkillsBackend {
   publishTeamSkillVersion(
     teamId: string,
     slug: string,
-    input: { contentHash: string; changelog: string; size?: number } & Partial<
+    input: {
+      contentHash: string;
+      changelog: string;
+      expectedLatestVersion: number;
+      size?: number;
+    } & Partial<
       Pick<TeamSkillPublishInput, "summary" | "category" | "whenToUse" | "whenNotToUse" | "requires">
     >,
   ): Promise<TeamSkillVersion>;

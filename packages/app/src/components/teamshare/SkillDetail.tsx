@@ -37,6 +37,7 @@ import {
   isSkillDirtyConflict,
   SkillDiscardIncompleteError,
   SkillSlugTakenError,
+  StaleTeamSkillPublishError,
   type TeamSkillItem,
   type TeamSkillFileDiff,
 } from '@/stores/team-share-browser'
@@ -1124,6 +1125,15 @@ export function SkillDetail({ slug }: { slug: string }) {
         setPublishOpen(false)
         toast.success(t('teamShare.skillPublished', 'Published'))
       } catch (e) {
+        if (e instanceof StaleTeamSkillPublishError) {
+          toast.error(
+            t(
+              'teamShare.skillPublishStaleBase',
+              'Someone else published while you were editing. Your draft is kept — refresh and resolve the conflict.',
+            ),
+          )
+          return
+        }
         toast.error(
           t('teamShare.skillPublishFailed', 'Publish failed: {{msg}}', {
             msg: e instanceof Error ? e.message : String(e),
@@ -1263,7 +1273,8 @@ export function SkillDetail({ slug }: { slug: string }) {
 
   if (!item) return null
 
-  const conflicted = localState?.state === 'dirty'
+  const conflicted =
+    localState?.state === 'dirty' || localState?.state === 'stale_dirty'
   const isRegistry = item.origin === 'registry'
   const isPersonal = item.kind === 'personal'
   const isBuiltin = isPersonal && item.personalSource === 'builtin'

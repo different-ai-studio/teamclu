@@ -27,7 +27,7 @@ export interface SkillLocalState {
    * — a skill the user wrote straight into the skills root, say. Installing is
    * what resolves it, and installing overwrites the files the package ships.
    */
-  state: 'missing' | 'clean' | 'dirty' | 'foreign'
+  state: 'missing' | 'clean' | 'dirty' | 'stale_dirty' | 'foreign'
   installedVersion: string | null
   modified: string[]
   deleted: string[]

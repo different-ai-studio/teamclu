@@ -2331,11 +2331,18 @@ paths:
           application/json:
             schema:
               type: object
-              required: [contentHash, changelog]
+              required: [contentHash, changelog, expectedLatestVersion]
               properties:
                 contentHash: { type: string }
                 size: { type: integer }
                 changelog: { type: string }
+                expectedLatestVersion:
+                  type: integer
+                  minimum: 0
+                  description: >
+                    Registry `latestVersion` the publisher believes is current.
+                    Mismatch returns 409 `stale_team_skill_base` so concurrent
+                    publishes cannot silently overwrite each other.
                 summary: { type: string, maxLength: 200 }
                 category: { $ref: "#/components/schemas/TeamSkillCategory" }
                 whenToUse: { type: string }
@@ -2349,6 +2356,11 @@ paths:
               schema: { $ref: "#/components/schemas/TeamSkillVersion" }
         "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Registry moved since the publisher loaded it (`stale_team_skill_base`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/teams/{teamId}/skills/{slug}/versions/{version}:
     get:
       operationId: getTeamSkillVersion

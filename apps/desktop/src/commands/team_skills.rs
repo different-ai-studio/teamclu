@@ -1052,7 +1052,7 @@ pub fn team_skill_installed_dir(slug: String, team_id: Option<String>) -> Result
 #[serde(rename_all = "camelCase")]
 pub struct TeamSkillInspectResult {
     pub slug: String,
-    /// `missing` | `clean` | `dirty` | `foreign`
+    /// `missing` | `clean` | `dirty` | `stale_dirty` | `foreign`
     pub state: String,
     pub installed_version: Option<String>,
     pub modified: Vec<String>,
@@ -1108,6 +1108,7 @@ pub fn team_skill_inspect(
     slug: String,
     expected_version: Option<i64>,
     team_id: Option<String>,
+    registry_latest_version: Option<i64>,
 ) -> Result<TeamSkillInspectResult, String> {
     let _ = expected_version;
     let slug = slug.trim().to_string();
@@ -1165,6 +1166,11 @@ pub fn team_skill_inspect(
     }
 
     let installed_version = origin.as_ref().map(|o| o.installed_version.clone());
+    let base_version = installed_version
+        .as_ref()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+    let registry_latest = registry_latest_version.unwrap_or(base_version);
 
     let baseline = origin.and_then(|o| o.files);
     match inspect(&target, baseline.as_ref()) {
@@ -1172,15 +1178,22 @@ pub fn team_skill_inspect(
             modified,
             deleted,
             added,
-        } => Ok(TeamSkillInspectResult {
-            slug,
-            state: "dirty".to_string(),
-            installed_version,
-            modified,
-            deleted,
-            added,
-            source: source.as_str().to_string(),
-        }),
+        } => {
+            let state = if registry_latest > base_version {
+                "stale_dirty".to_string()
+            } else {
+                "dirty".to_string()
+            };
+            Ok(TeamSkillInspectResult {
+                slug,
+                state,
+                installed_version,
+                modified,
+                deleted,
+                added,
+                source: source.as_str().to_string(),
+            })
+        }
         _ => Ok(TeamSkillInspectResult {
             slug,
             state: "clean".to_string(),
@@ -1578,7 +1591,7 @@ mod tests {
         )
         .unwrap();
 
-        let before = team_skill_inspect("say-hello".into(), Some(2), Some("team-a".into()))
+        let before = team_skill_inspect("say-hello".into(), Some(2), Some("team-a".into()), None)
             .expect("inspect hosted edit");
         assert_eq!(before.state, "dirty");
         assert_eq!(before.source, "hosted-agent");

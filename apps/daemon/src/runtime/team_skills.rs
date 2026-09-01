@@ -45,9 +45,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 
 use teamclu_skillpack::{
-    apply_zip_mode, build_manifest_for, list_managed_paths, read_origin, sanitize_zip_path,
-    swap_managed_files, write_origin, write_registry_frontmatter, RegistryFields, SkillOrigin,
-    ORIGIN_VERSION, SOURCE_TEAM,
+    apply_zip_mode, build_manifest_for, inspect, list_managed_paths, read_origin, sanitize_zip_path,
+    swap_managed_files, write_origin, write_registry_frontmatter, DirtyState, RegistryFields,
+    SkillOrigin, ORIGIN_VERSION, SOURCE_TEAM,
 };
 
 use crate::backend::{Backend, TeamSkillRow};
@@ -170,10 +170,20 @@ impl TeamSkillReconciler {
 
         for row in rows.iter().filter(|r| r.installed) {
             let want = desired_version(row);
+            let target = root.join(&row.slug);
             // A pack whose recorded version we cannot read is reinstalled
             // rather than trusted: one redundant download beats leaving content
             // of unknown provenance in front of an agent.
             if on_disk.get(&row.slug).copied() != Some(want) {
+                if is_dirty_pack(&target) {
+                    tracing::info!(
+                        team_id,
+                        slug = %row.slug,
+                        want,
+                        "team skill auto-follow held back by local draft"
+                    );
+                    continue;
+                }
                 match self.install(team_id, root, row, want).await {
                     Ok(()) => {
                         outcome.installed += 1;
@@ -216,6 +226,15 @@ impl TeamSkillReconciler {
                 continue;
             }
             let dir = root.join(slug);
+            if is_dirty_pack(&dir) {
+                match archive_removed_pack(team_id, &dir, slug) {
+                    Ok(()) => outcome.removed += 1,
+                    Err(e) => {
+                        tracing::warn!(team_id, slug = %slug, error = %e, "team skill archive failed");
+                    }
+                }
+                continue;
+            }
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => outcome.removed += 1,
                 Err(e) => {
@@ -462,6 +481,23 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn is_dirty_pack(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    let baseline = read_origin(path).and_then(|o| o.files);
+    inspect(path, baseline.as_ref()).is_dirty()
+}
+
+fn archive_removed_pack(team_id: &str, dir: &Path, slug: &str) -> Result<(), String> {
+    let archive_root = global_team_cloud_dir(team_id).join("archived-skills");
+    std::fs::create_dir_all(&archive_root)
+        .map_err(|e| format!("create archive dir: {e}"))?;
+    let dest = archive_root.join(format!("{slug}-{}", now_millis()));
+    std::fs::rename(dir, dest).map_err(|e| format!("archive skill {slug}: {e}"))?;
+    Ok(())
 }
 
 /// Unpack a skill archive.

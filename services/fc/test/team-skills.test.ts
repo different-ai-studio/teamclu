@@ -113,7 +113,11 @@ test("POST versions publishes a new version", async () => {
     {
       httpMethod: "POST",
       path: "/v1/teams/team-1/skills/deploy-check/versions",
-      body: JSON.stringify({ contentHash: "sha256:def", changelog: "fix typo" }),
+      body: JSON.stringify({
+        contentHash: "sha256:def",
+        changelog: "fix typo",
+        expectedLatestVersion: 1,
+      }),
     },
     repo,
   );
@@ -121,7 +125,7 @@ test("POST versions publishes a new version", async () => {
   assert.deepEqual(repo.calls[0].args, [
     "team-1",
     "deploy-check",
-    { contentHash: "sha256:def", changelog: "fix typo" },
+    { contentHash: "sha256:def", changelog: "fix typo", expectedLatestVersion: 1 },
   ]);
 });
 
