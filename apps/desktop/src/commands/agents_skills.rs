@@ -95,10 +95,10 @@ pub fn ensure_agents_skills_paths(workspace_path: Option<String>) -> Result<Stri
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let opencode = Path::new(ws).join("opencode.json");
-        if patch_config_file(&opencode, &agents_str)? {
-            touched.push(opencode.display().to_string());
-        }
+        // Workspace `opencode.json` used to get `~/.agents/skills` prepended here.
+        // That copy outranks the team's global hosted-first `skills.paths`, so
+        // an older member pack shadowed the hosted team skill. Claude still
+        // needs the member root; OpenCode reads it from the global config.
         let claude_ws = Path::new(ws).join(".claude").join("settings.json");
         if patch_config_file(&claude_ws, &agents_str)? {
             touched.push(claude_ws.display().to_string());
@@ -145,5 +145,29 @@ mod tests {
         let paths = v["skills"]["paths"].as_array().unwrap();
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0], "/tmp/.agents/skills");
+    }
+
+    #[test]
+    fn ensure_agents_skills_paths_does_not_write_workspace_opencode_json() {
+        let home = tempdir().unwrap();
+        let ws = tempdir().unwrap();
+        let opencode = ws.path().join("opencode.json");
+        std::fs::write(&opencode, "{}\n").unwrap();
+
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", home.path());
+        let result = ensure_agents_skills_paths(Some(ws.path().to_string_lossy().into_owned()));
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        result.unwrap();
+
+        let raw = std::fs::read_to_string(&opencode).unwrap();
+        let v: Value = serde_json::from_str(&raw).unwrap();
+        assert!(
+            v.get("skills").is_none(),
+            "workspace opencode.json must not gain a member skills.paths entry"
+        );
     }
 }

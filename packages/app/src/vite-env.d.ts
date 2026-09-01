@@ -3,7 +3,6 @@
 interface ImportMetaEnv {
   /** Build-time locale selection: 'en' | 'zh-CN' | 'all' | undefined */
   readonly VITE_LOCALE?: string;
-  readonly VITE_BACKEND_KIND?: string;
   readonly VITE_CLOUD_API_URL?: string;
   readonly VITE_MQTT_HOST?: string;
   readonly VITE_MQTT_PORT?: string;

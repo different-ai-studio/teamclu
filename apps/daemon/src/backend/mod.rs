@@ -148,7 +148,7 @@ pub struct TeamSkillDownload {
 pub struct ManagedLlmConfig {
     /// `false` when the team has no managed LLM enabled (or team-share is unset).
     pub enabled: bool,
-    /// Gateway base URL (`llm.baseUrl`, falling back to `llm.aiGatewayEndpoint`).
+    /// Gateway base URL (`llm.baseUrl`).
     pub base_url: Option<String>,
     /// Provider display name; `None` falls back to "Team".
     pub name: Option<String>,
@@ -326,15 +326,6 @@ pub trait Backend: Send + Sync {
     /// no-op that reports a successful uninstall while the server still says
     /// installed, so the next reconcile puts the pack straight back.
     async fn remove_team_skill_install(&self, team_id: &str, slug: &str) -> BackendResult<()>;
-
-    /// Idempotently ensure the caller's LiteLLM member key is provisioned via
-    /// `POST /v1/teams/:id/litellm/member-key`. The key value itself is
-    /// deterministic (`sk-tc-{actor_id[..40]}`) and derived locally; this call
-    /// only guarantees LiteLLM has actually minted it. Called fire-and-forget as
-    /// a self-heal, so failures are non-fatal. No-op default for mock backends.
-    async fn ensure_llm_member_key(&self, _team_id: &str) -> BackendResult<()> {
-        Ok(())
-    }
 
     /// Fetch the calling member's effective default agent for a team
     /// (member default, else team default, else None) via

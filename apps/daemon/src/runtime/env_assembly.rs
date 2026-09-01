@@ -21,6 +21,8 @@ pub fn assemble_spawn_runtime_env(
     display_name: &str,
     cloud_token_file: Option<&str>,
     managed_llm: &ManagedLlmState,
+    gateway_token: Option<&str>,
+    ai_proxy_base: Option<&str>,
 ) -> anyhow::Result<SpawnRuntimeEnv> {
     assemble_spawn_runtime_env_for_execution(
         workspace_root,
@@ -30,6 +32,8 @@ pub fn assemble_spawn_runtime_env(
         display_name,
         cloud_token_file,
         managed_llm,
+        gateway_token,
+        ai_proxy_base,
     )
 }
 
@@ -44,6 +48,8 @@ pub fn assemble_spawn_runtime_env_for_execution(
     display_name: &str,
     cloud_token_file: Option<&str>,
     managed_llm: &ManagedLlmState,
+    gateway_token: Option<&str>,
+    ai_proxy_base: Option<&str>,
 ) -> anyhow::Result<SpawnRuntimeEnv> {
     // Cold ManagedLlm cache often yields Unknown and omits TEAMCLU_TEAM_PROVIDER;
     // reconstruct Enabled from on-disk provider.team so the spawn fingerprint
@@ -59,13 +65,21 @@ pub fn assemble_spawn_runtime_env_for_execution(
             actor_id: actor_id.to_string(),
             display_name: display_name.to_string(),
             cloud_token_file: cloud_token_file.map(str::to_string),
-            // Not supplied on the spawn path, and not needed there: since #941
-            // `provider.team` is written to the ACTIVE-TEAM GLOBAL config, and
-            // its apiKey is resolved by `sync_global_team_provider` during
-            // reconcile (which runs on every provider read). This context only
-            // feeds workspace-scoped `${...}` resolution, where nothing in the
-            // product references the gateway token.
-            gateway_token: None,
+            // Binds `tc_gateway_token`, which `TEAMCLU_TEAM_PROVIDER` names as
+            // its `apiKeyEnv`.
+            //
+            // This used to be None, on the reasoning that `provider.team` is
+            // written to the active-team global config and its apiKey resolved
+            // during reconcile — true, and true only for opencode, which reads
+            // that file. Every other runtime registers the provider itself from
+            // the env payload and looks the credential up by name. With the
+            // binding missing, pi registered the team provider and then showed
+            // none of its models: a provider with no resolvable credential is
+            // "loaded but unavailable" in pi, which is indistinguishable from
+            // never having been registered. Verified by A/B — same payload, the
+            // only difference being this variable.
+            gateway_token: gateway_token.map(str::to_string),
+            ai_proxy_base: ai_proxy_base.map(str::to_string),
         },
         &managed_llm,
     )?;
@@ -91,17 +105,21 @@ pub fn assemble_spawn_runtime_env_for_execution(
         }));
     let mut extra_env = bundle.extra_env;
     // Backend-neutral team-provider handoff. opencode consumes the team gateway
-    // via `provider.team` in the active team's opencode.json;
-    // other local runtimes (pi, …) that can't read opencode.json instead read
-    // this `TEAMCLU_TEAM_PROVIDER` env and register the provider themselves.
-    // The secret is NOT embedded — the payload references `${tc_api_key}`, the
-    // same env-interpolated key opencode uses, which is already in `extra_env`.
+    // via `provider.team` in the active team's opencode.json; other local
+    // runtimes (pi, …) cannot read that file and instead register the provider
+    // themselves from this payload.
+    //
+    // The secret is NOT embedded: the payload carries `apiKeyEnv`, naming the
+    // binding to read it from — `tc_gateway_token`, bound above. That binding
+    // has to exist, or the provider registers and every model on it silently
+    // becomes unavailable, which looks exactly like it never registered.
     if let ManagedLlmState::Enabled(provider) = &managed_llm {
         extra_env.insert(
             "TEAMCLU_TEAM_PROVIDER".to_string(),
-            teamclu_runtime_env::team_provider_env_payload(provider),
+            teamclu_runtime_env::team_provider_env_payload(provider, ai_proxy_base),
         );
     }
+
     // #742: point opencode at the daemon-owned device-level config, which is
     // where user-configured providers now live. `OPENCODE_CONFIG` loads it as an
     // *additional* global-scope config after the standard global chain, so these
@@ -209,6 +227,7 @@ mod tests {
             "Env Test Agent",
             None,
             &ManagedLlmState::Unknown,
+            None,
         )
         .unwrap();
 
@@ -292,6 +311,7 @@ mod tests {
             "Cron Agent",
             None,
             &managed,
+            None,
         )
         .unwrap();
 
@@ -372,6 +392,7 @@ mod tests {
             "FP Agent",
             None,
             &ManagedLlmState::Unknown,
+            None,
         )
         .unwrap();
         let from_enabled = assemble_spawn_runtime_env(
@@ -381,6 +402,7 @@ mod tests {
             "FP Agent",
             None,
             &enabled,
+            None,
         )
         .unwrap();
 

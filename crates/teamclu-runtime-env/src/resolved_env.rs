@@ -387,6 +387,7 @@ mod tests {
             display_name: "Agent".to_string(),
             cloud_token_file: Some("/tmp/cloud-token".to_string()),
             gateway_token: None,
+            ai_proxy_base: None,
         }
     }
 

@@ -41,8 +41,8 @@ test("authBaseURL: env value is returned trimmed", () => {
 });
 
 test("authBaseURL: an explicit argument wins over the env var", () => {
-  // buildAuth({ baseURL }) and the pg-repo OAuth URL builder both pass an
-  // already-resolved value; it must take precedence over the ambient env.
+  // buildPlatformOAuthEnv passes an already-resolved value; it must take
+  // precedence over the ambient env.
   withEnv("https://from-env.example", () => {
     assert.equal(authBaseURL("https://explicit.example"), "https://explicit.example");
   });

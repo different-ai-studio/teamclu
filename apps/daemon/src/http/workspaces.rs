@@ -28,6 +28,7 @@ use crate::opencode_settings::LiveProviderCatalog;
 use crate::opencode_settings::OpenCodeSettingsError;
 use crate::proto::amux;
 use crate::runtime::refresh::{RefreshChangeKind, RefreshSource};
+use crate::runtime::supervisor::SkillsRefreshApplyStatus;
 use std::collections::HashMap;
 use std::path::Path as StdPath;
 
@@ -1113,6 +1114,71 @@ pub async fn delete_skill(
         .map_err(map_control_err)?;
     record_skills_refresh_change(&state, &workspace_id, &wpath).await;
     Ok(apply_ok(outcome))
+}
+
+#[derive(Debug, Serialize)]
+pub struct SkillsRefreshResponse {
+    pub ok: bool,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ApplyOutcome>,
+}
+
+/// `POST /v1/workspaces/:id/skills/refresh`
+///
+/// Does not rewrite files. Registers a Skills refresh and, when the workspace
+/// is idle, applies it before returning so the next session cannot reuse the
+/// cached OpenCode instance. An active turn is not interrupted.
+pub async fn refresh_skills(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Path(workspace_id): Path<String>,
+) -> Result<Json<SkillsRefreshResponse>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+    let wpath = workspace_path_or_404(&workspace_id).await?;
+    let Some(refresh) = state.runtime_refresh.as_ref() else {
+        return Err(HttpError::runtime_unavailable(
+            "runtime refresh coordinator unavailable",
+        ));
+    };
+    let runtime_workspace_id = resolve_runtime_workspace_id(&state, &workspace_id, &wpath).await;
+    refresh
+        .record_change(
+            &runtime_workspace_id,
+            &wpath,
+            RefreshChangeKind::Skills,
+            RefreshSource::UiMutation,
+        )
+        .await
+        .map_err(|e| HttpError::internal(e.to_string()))?;
+    let Some(supervisor) = state.runtime_supervisor.as_ref() else {
+        return Ok(Json(SkillsRefreshResponse {
+            ok: true,
+            status: "applied",
+            outcome: Some(ApplyOutcome::ReloadRequired),
+        }));
+    };
+    match supervisor
+        .apply_pending_skills_refresh(&runtime_workspace_id, &wpath)
+        .await
+    {
+        Ok(SkillsRefreshApplyStatus::Applied(outcome)) => Ok(Json(SkillsRefreshResponse {
+            ok: true,
+            status: "applied",
+            outcome: Some(outcome),
+        })),
+        Ok(SkillsRefreshApplyStatus::PendingActiveTurn) => Ok(Json(SkillsRefreshResponse {
+            ok: true,
+            status: "pending_active_turn",
+            outcome: None,
+        })),
+        Err(WorkspaceControlError::ActiveTurn(_)) => Ok(Json(SkillsRefreshResponse {
+            ok: true,
+            status: "pending_active_turn",
+            outcome: None,
+        })),
+        Err(e) => Err(map_control_err(e)),
+    }
 }
 
 /// `PUT /v1/workspaces/:id/roles/:slug`

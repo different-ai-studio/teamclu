@@ -115,6 +115,19 @@ pub struct SystemEnvContext {
     /// it is a daemon-lifetime credential — it dies with the process that
     /// minted it, so it cannot go stale while a runtime is alive.
     pub gateway_token: Option<String>,
+    /// The daemon's own loopback AI proxy for this team
+    /// (`http://127.0.0.1:<port>/v1/ai/teams/<id>`), written as the base URL
+    /// every runtime calls.
+    ///
+    /// It is NOT the cloud gateway. The credential above is a daemon token, and
+    /// the gateway verifies GoTrue tokens — a runtime pointed straight at the
+    /// gateway gets `invalid_token` on every call. The hop also buys the same
+    /// thing `cloud_token_file` buys: the daemon refreshes the cloud token per
+    /// request, so a multi-day agent never meets its expiry.
+    ///
+    /// `None` leaves the cloud URL in place, for callers with no listener to
+    /// offer.
+    pub ai_proxy_base: Option<String>,
 }
 
 pub fn assemble_runtime_env(
@@ -125,9 +138,10 @@ pub fn assemble_runtime_env(
 ) -> anyhow::Result<RuntimeEnvBundle> {
     opencode_db::maybe_migrate_legacy_opencode_db(workspace)?;
 
+    let ai_proxy_base = system.ai_proxy_base.clone();
     let personal = personal_secrets::load_personal_env()?;
     let resolved_env = resolved_env::resolve_runtime_env(personal, team_env, system);
-    sync_global_team_provider(managed_llm, &resolved_env.bindings)?;
+    sync_global_team_provider(managed_llm, &resolved_env.bindings, ai_proxy_base.as_deref())?;
     let sync = resolve_workspace_runtime_config(
         workspace,
         &resolved_env.bindings,
@@ -179,6 +193,7 @@ mod tests {
                 // credential this replaced (a LiteLLM `sk-tc-*` virtual key)
                 // was guessable precisely because it was derived.
                 gateway_token: Some("tok_spawn_actor".to_string()),
+                ai_proxy_base: None,
             },
             &managed,
         )

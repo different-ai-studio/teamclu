@@ -136,8 +136,6 @@ describe('loadTeamGitFileSyncStatus', () => {
         { id: 'default', name: 'Default' },
         { id: 'pro', name: 'Pro' },
       ],
-      availableModels: [],
-      aiGatewayEndpoint: null,
     })
 
     const { useTeamModeStore } = await import('@/stores/team-mode')
@@ -173,8 +171,6 @@ describe('loadTeamGitFileSyncStatus', () => {
       enabled: true,
       baseUrl: 'https://ai.ucar.cc',
       models,
-      availableModels: [],
-      aiGatewayEndpoint: null,
     })
 
     const { useTeamModeStore } = await import('@/stores/team-mode')
@@ -208,8 +204,6 @@ describe('loadTeamGitFileSyncStatus', () => {
       enabled: true,
       baseUrl: 'https://ai.ucar.cc',
       models: [{ id: 'default', name: 'Default' }],
-      availableModels: [],
-      aiGatewayEndpoint: null,
     }
 
     const { useTeamModeStore } = await import('@/stores/team-mode')

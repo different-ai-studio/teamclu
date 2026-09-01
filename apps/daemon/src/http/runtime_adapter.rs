@@ -27,13 +27,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use crate::config::workspace_control::WorkspaceControlError;
 use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
 use crate::runtime::adapter::{runtime_envelopes_from_acp_event, RuntimeEnvelope};
 use crate::runtime::supervisor::prepare_workspace;
 use crate::runtime::RuntimeManager;
 
-use super::errors::HttpError;
+use super::errors::{ErrorCode, HttpError};
 use super::events::SessionEvent;
 
 /// Parameters accepted by [`RuntimeAdapter::create_session`].
@@ -539,6 +540,18 @@ impl Clone for StubRuntimeAdapter {
     }
 }
 
+fn map_skills_attach_barrier_error(error: WorkspaceControlError) -> HttpError {
+    match error {
+        WorkspaceControlError::ActiveTurn(id) => HttpError::new(
+            ErrorCode::SessionBusy,
+            format!("workspace {id} has an active agent turn; retry after the turn ends"),
+        ),
+        other => HttpError::internal(format!(
+            "pending skills refresh before session attach failed: {other}"
+        )),
+    }
+}
+
 // ── RuntimeManager facade ───────────────────────────────────────────────────
 
 pub struct RuntimeManagerAdapter {
@@ -547,6 +560,7 @@ pub struct RuntimeManagerAdapter {
     backlog_cap: usize,
     refresh: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
     execution_context_assembler: Option<Arc<dyn RuntimeExecutionContextAssembler>>,
+    runtime_supervisor: std::sync::OnceLock<Arc<crate::runtime::RuntimeSupervisor>>,
 }
 
 struct ManagedSession {
@@ -582,9 +596,14 @@ impl RuntimeManagerAdapter {
             backlog_cap,
             refresh,
             execution_context_assembler,
+            runtime_supervisor: std::sync::OnceLock::new(),
         });
         Self::spawn_event_pump(&adapter);
         adapter
+    }
+
+    pub fn set_runtime_supervisor(&self, supervisor: Arc<crate::runtime::RuntimeSupervisor>) {
+        let _ = self.runtime_supervisor.set(supervisor);
     }
 
     fn spawn_event_pump(this: &Arc<Self>) {
@@ -802,6 +821,13 @@ impl RuntimeManagerAdapter {
         prepare_workspace(std::path::Path::new(&worktree)).map_err(|e| {
             HttpError::internal(format!("prepare workspace for runtime spawn: {e}"))
         })?;
+        if let Some(supervisor) = self.runtime_supervisor.get() {
+            let workspace_id = workspace_id.as_deref().unwrap_or("");
+            supervisor
+                .require_skills_refresh_for_attach(workspace_id, std::path::Path::new(&worktree))
+                .await
+                .map_err(map_skills_attach_barrier_error)?;
+        }
         let mut manager = self.manager.lock().await;
         manager
             .start_runtime_with_model(
@@ -1536,6 +1562,7 @@ mod tests {
             backlog_cap,
             refresh: None,
             execution_context_assembler: None,
+            runtime_supervisor: std::sync::OnceLock::new(),
         })
     }
 
@@ -1620,6 +1647,59 @@ mod tests {
             crate::runtime::execution_context::ProcessEnvRevision::from_bindings(
                 &captures[0].extra_env
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_runtime_refuses_when_skills_refresh_is_blocked_by_active_turn() {
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace_id =
+            crate::runtime::refresh::refresh_watch::workspace_runtime_id(workspace.path());
+        let mut manager = RuntimeManager::new(RuntimeManager::default_launch_configs(), None);
+        let attach_captures = crate::runtime::test_support::install_capturing_backend(&mut manager);
+        manager.add_test_workspace_runtime(
+            "rt-busy",
+            &workspace.path().to_string_lossy(),
+            &workspace_id,
+            amux::AgentStatus::Active,
+        );
+        let manager = Arc::new(tokio::sync::Mutex::new(manager));
+        let supervisor = crate::runtime::RuntimeSupervisor::new(manager.clone());
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                workspace.path(),
+                crate::runtime::refresh::RefreshChangeKind::Skills,
+                crate::runtime::refresh::RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+        let adapter = RuntimeManagerAdapter::new_with_execution_context_assembler(
+            manager,
+            16,
+            Some(supervisor.refresh_coordinator()),
+            Some(Arc::new(CapturingContextAssembler {
+                captured: Arc::new(std::sync::Mutex::new(Vec::new())),
+            })),
+        );
+        adapter.set_runtime_supervisor(supervisor);
+
+        let err = adapter
+            .spawn_runtime_in_worktree(
+                Uuid::new_v4(),
+                amux::AgentType::Opencode,
+                Some(workspace_id),
+                None,
+                None,
+                workspace.path().to_string_lossy().as_ref(),
+            )
+            .await
+            .expect_err("busy pending skills must refuse spawn");
+        assert_eq!(err.code, ErrorCode::SessionBusy);
+        assert!(
+            attach_captures.lock().unwrap().is_empty(),
+            "fail-closed attach must not start a runtime"
         );
     }
 

@@ -41,8 +41,9 @@ sync，每次 sync 内含 manifest/upload/download 多次调用）。
   部署限流非常激进，会把单场景拖到数分钟而超时——不是 daemon bug。默认后端换成
   self-host（`api.teamclu-dev.ucar.cc`，ECS 上的容器）后，**这个限流约束是否仍然
   存在尚未验证**，所以 skip 暂时保留，别把它当成 self-host 也限流的证据。
-- 要可靠跑重场景，仍可对**本地栈**：docker 起 `postgres + minio + FC(BACKEND_KIND=postgres)`，
-  把 `CLOUD_API_URL` 指向它。重场景代码本身是对的（与轻量场景同机制）。
+- 要可靠跑重场景，仍可对**本地栈**：`deploy/self-host/docker-compose.yml` 起一套
+  （Supabase 数据面 + minio + FC），把 `CLOUD_API_URL` 指向它。重场景代码本身是对的
+  （与轻量场景同机制）。
 
 ## 清理
 - 每个用例全新临时 team（`e2e-oss-<ts>`）+ 全新 throwaway owner 账号，跑完 `compose down -v` 销毁容器并 best-effort 移除成员。

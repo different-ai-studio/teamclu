@@ -63,6 +63,7 @@ import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
 import {
   useTeamShareBrowserStore,
+  SkillMutationRefreshError,
   type TeamMcpKind,
   type TeamShareSection,
   type TeamSkillKind,
@@ -71,6 +72,7 @@ import { detailSelectionForSection } from '@/lib/tabs/teamshare-target'
 import type { ConnectedAgentRow } from '@/lib/backend/types'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
+import { encodeWorkspaceId, notifyDaemonSkillsChanged } from '@/lib/daemon-local-client'
 import { SkillScanPaths } from './SkillScanPaths'
 import { KnowledgeSyncFooter } from '@/components/teamshare/KnowledgeSyncFooter'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
@@ -82,6 +84,7 @@ import {
   withDefaultExtension,
 } from '@/lib/knowledge-file-names'
 import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
+import { toastSkillMutationRefreshFailed } from '@/components/teamshare/skillMutationRefreshToast'
 
 const SECTION_META: Record<
   TeamShareSection,
@@ -347,6 +350,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
   const setCreating = useTeamShareBrowserStore((s) => s.setCreating)
   const deleteTeamSkill = useTeamShareBrowserStore((s) => s.deleteTeamSkill)
+  const retrySkillsRuntimeRefresh = useTeamShareBrowserStore((s) => s.retrySkillsRuntimeRefresh)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
 
@@ -362,6 +366,11 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       setDeleteTarget(null)
       toast.success(t('teamShare.skillDeleteTeamDone', '已从团队移除'))
     } catch (e) {
+      if (e instanceof SkillMutationRefreshError) {
+        setDeleteTarget(null)
+        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+        return
+      }
       toast.error(
         t('teamShare.skillDeleteTeamFailed', '移除失败：{{msg}}', {
           msg: e instanceof Error ? e.message : String(e),
@@ -370,7 +379,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     } finally {
       setDeleting(false)
     }
-  }, [deleteTarget, deleting, deleteTeamSkill, t])
+  }, [deleteTarget, deleting, deleteTeamSkill, retrySkillsRuntimeRefresh, t])
 
   // Which skill packages are showing their files, and which one is being added
   // to. View state, not persisted: it says nothing about the skill itself.
@@ -1208,8 +1217,22 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                             onSelectFile={(rel) => selectSkillFile(row.id, rel)}
                             onFileRemoved={(rel) => closeSkillFiles(row.id, rel)}
                             onMutated={() => {
-                              void loadSection('skills', { force: true })
-                              void reconcileSkills().catch(() => {})
+                              void (async () => {
+                                if (workspacePath) {
+                                  try {
+                                    await notifyDaemonSkillsChanged(encodeWorkspaceId(workspacePath))
+                                  } catch {
+                                    toast.error(
+                                      t(
+                                        'teamShare.skillSavedRefreshFailed',
+                                        'Skill 已保存，但新会话可能暂时仍使用旧缓存。',
+                                      ),
+                                    )
+                                  }
+                                }
+                                void loadSection('skills', { force: true })
+                                void reconcileSkills().catch(() => {})
+                              })()
                             }}
                             refreshKey={treeRefreshKey}
                             rootCreate={rootCreate?.rowId === row.id ? rootCreate.kind : null}

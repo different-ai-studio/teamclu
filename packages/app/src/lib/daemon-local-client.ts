@@ -1051,6 +1051,14 @@ export async function putDaemonSkill(
   return result.ok ? result.data : null
 }
 
+/** Register a Skills refresh without rewriting files. Next idle apply disposes the OpenCode instance. */
+export async function notifyDaemonSkillsChanged(workspaceId: string): Promise<void> {
+  await daemonFetchData<{ ok: boolean }>(
+    `/v1/workspaces/${workspaceId}/skills/refresh`,
+    { method: 'POST' },
+  )
+}
+
 export async function deleteDaemonSkill(
   workspaceId: string,
   slug: string,

@@ -190,7 +190,7 @@ services:
       # through it returns tinyproxy's "Filtered" page, which surfaces as a bare
       # 500 unexpected_failure on the id_token grant. Routing Apple direct also
       # keeps Sign in with Apple working if that proxy box ever goes away.
-      NO_PROXY: localhost,127.0.0.1,::1,db,kong,rest,realtime,storage,imgproxy,meta,analytics,functions,supavisor,fc,litellm,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,appleid.apple.com
+      NO_PROXY: localhost,127.0.0.1,::1,db,kong,rest,realtime,storage,imgproxy,meta,analytics,functions,supavisor,fc,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,appleid.apple.com
 
       GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
       GOTRUE_SMTP_HOST: ${SMTP_HOST}

@@ -4,7 +4,7 @@
 //! here before agent spawn, and `/v1/workspaces/:id/runtime/*` handlers
 //! delegate reload/status to the shared `RuntimeManager`.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,7 +34,8 @@ const INSTRUCTION_PLUGIN_TEMPLATE: &str = include_str!(
 const SESSION_CONTEXT_PLUGIN_TEMPLATE: &str = include_str!(
     "../../../../packages/app/src/lib/opencode/templates/teamclu-session-context-plugin.mjs.txt"
 );
-const SESSION_CONTEXT_CLIENT_TEMPLATE: &str = include_str!("../../shared/session-context-client.mjs");
+const SESSION_CONTEXT_CLIENT_TEMPLATE: &str =
+    include_str!("../../shared/session-context-client.mjs");
 
 use crate::config::workspace_control::{
     ApplyOutcome, EnvActivationBlocker, EnvActivationDiagnostics, RuntimeStatus,
@@ -593,16 +594,92 @@ fn ensure_extended_inherent_config(
 
 /// Skill paths that moved to the global config — the ones older builds seeded
 /// into every workspace. Both the `~`-prefixed and the expanded form of the
-/// agents dir count: older builds wrote either.
+/// agents dir count: older builds wrote either. Hosted team cloud roots also
+/// belong in the global file; a workspace copy of one would outrank it.
 fn is_migrated_skill_path(path: Option<&str>) -> bool {
     let Some(path) = path else { return false };
     if path == TEAM_SKILLS_PATH || path == "~/.agents/skills" {
+        return true;
+    }
+    if is_hosted_team_skills_path(path, &crate::config::layout::teams_dir()) {
         return true;
     }
     dirs::home_dir()
         .map(|home| home.join(".agents").join("skills"))
         .map(|agents| path == agents.to_string_lossy())
         .unwrap_or(false)
+}
+
+/// Daemon-managed hosted install root: `<teams_root>/<teamId>/state/cloud/skills`.
+///
+/// Shape-alike paths outside `teams_root` are user config and must not be
+/// rewritten or dropped.
+pub(crate) fn is_hosted_team_skills_path(path: &str, teams_root: &Path) -> bool {
+    let path = PathBuf::from(path.replace('\\', "/").trim_end_matches('/'));
+    let root = PathBuf::from(
+        teams_root
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/'),
+    );
+    let Ok(rel) = path.strip_prefix(&root) else {
+        return false;
+    };
+    let mut comps = rel.components();
+    match (
+        comps.next(),
+        comps.next(),
+        comps.next(),
+        comps.next(),
+        comps.next(),
+    ) {
+        (
+            Some(Component::Normal(team)),
+            Some(Component::Normal(state)),
+            Some(Component::Normal(cloud)),
+            Some(Component::Normal(skills)),
+            None,
+        ) => !team.is_empty() && state == "state" && cloud == "cloud" && skills == "skills",
+        _ => false,
+    }
+}
+
+/// Put the two system-managed skill roots first, in the order OpenCode must
+/// search them, then keep any user-defined extras.
+///
+/// Hosted (current team) before `~/.agents/skills`. Every hosted root for a
+/// *different* team is dropped so a team switch cannot leave the previous
+/// team's packs in the search path.
+pub fn normalize_managed_skill_paths(
+    existing: &[String],
+    hosted: Option<&str>,
+    member: Option<&str>,
+    teams_root: &Path,
+) -> Vec<String> {
+    let path_eq = |a: &str, b: &str| a.replace('\\', "/") == b.replace('\\', "/");
+    let is_member =
+        |path: &str| path_eq(path, "~/.agents/skills") || member.is_some_and(|m| path_eq(path, m));
+    let is_managed = |path: &str| is_hosted_team_skills_path(path, teams_root) || is_member(path);
+
+    let mut out = Vec::new();
+    if let Some(hosted) = hosted.filter(|p| !p.is_empty()) {
+        out.push(hosted.to_string());
+    }
+    if let Some(member) = member.filter(|p| !p.is_empty()) {
+        if !out.iter().any(|p| path_eq(p, member)) {
+            out.push(member.to_string());
+        }
+    }
+    for path in existing {
+        if path.trim().is_empty() || is_managed(path) {
+            continue;
+        }
+        if out.iter().any(|p| path_eq(p, path)) {
+            continue;
+        }
+        out.push(path.clone());
+    }
+    out
 }
 
 /// Seed the real skill roots into the active team's global config, absolutely —
@@ -624,23 +701,18 @@ fn is_migrated_skill_path(path: Option<&str>) -> bool {
 pub fn ensure_global_skill_paths() -> Result<bool, WorkspaceControlError> {
     use teamclu_runtime_env::opencode_config::{OpencodeConfigError, OpencodeConfigStore};
 
-    let mut wanted: Vec<String> = Vec::new();
-    if let Some(team_id) = crate::config::team_mcp::onboarded_team_id() {
-        wanted.push(
-            crate::runtime::team_skills::team_cloud_skills_dir(&team_id)
-                .to_string_lossy()
-                .into_owned(),
-        );
-    }
-    if let Some(home) = dirs::home_dir() {
-        wanted.push(
-            home.join(".agents")
-                .join("skills")
-                .to_string_lossy()
-                .into_owned(),
-        );
-    }
-    if wanted.is_empty() {
+    let hosted = crate::config::team_mcp::onboarded_team_id().map(|team_id| {
+        crate::runtime::team_skills::team_cloud_skills_dir(&team_id)
+            .to_string_lossy()
+            .into_owned()
+    });
+    let member = dirs::home_dir().map(|home| {
+        home.join(".agents")
+            .join("skills")
+            .to_string_lossy()
+            .into_owned()
+    });
+    if hosted.is_none() && member.is_none() {
         return Ok(false);
     }
 
@@ -666,14 +738,25 @@ pub fn ensure_global_skill_paths() -> Result<bool, WorkspaceControlError> {
                 "global opencode.json skills.paths is not an array".to_string(),
             )
         })?;
-        let mut changed = false;
-        for path in wanted {
-            if !paths.iter().any(|v| v.as_str() == Some(path.as_str())) {
-                paths.push(serde_json::json!(path));
-                changed = true;
-            }
+        let existing: Vec<String> = paths
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        let teams_root = crate::config::layout::teams_dir();
+        let normalized = normalize_managed_skill_paths(
+            &existing,
+            hosted.as_deref(),
+            member.as_deref(),
+            &teams_root,
+        );
+        if existing == normalized {
+            return Ok(false);
         }
-        Ok(changed)
+        *paths = normalized
+            .into_iter()
+            .map(serde_json::Value::String)
+            .collect();
+        Ok(true)
     })
     .map_err(map_store_err)
 }
@@ -764,7 +847,9 @@ fn install_instruction_plugin_file(workspace_path: &Path) -> Result<(), Workspac
 }
 
 fn install_session_context_plugin_file(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
-    use crate::runtime::workspace_runtime::{SESSION_CONTEXT_CLIENT_REL, SESSION_CONTEXT_PLUGIN_REL};
+    use crate::runtime::workspace_runtime::{
+        SESSION_CONTEXT_CLIENT_REL, SESSION_CONTEXT_PLUGIN_REL,
+    };
 
     let plugin_path = workspace_path.join(SESSION_CONTEXT_PLUGIN_REL);
     let client_path = workspace_path.join(SESSION_CONTEXT_CLIENT_REL);
@@ -772,17 +857,16 @@ fn install_session_context_plugin_file(workspace_path: &Path) -> Result<(), Work
         std::fs::create_dir_all(parent).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
     }
 
-    let write_if_changed =
-        |path: &Path, template: &str| -> Result<(), WorkspaceControlError> {
-            let should_write = match std::fs::read_to_string(path) {
-                Ok(existing) => existing != template,
-                Err(_) => true,
-            };
-            if should_write {
-                std::fs::write(path, template).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-            }
-            Ok(())
+    let write_if_changed = |path: &Path, template: &str| -> Result<(), WorkspaceControlError> {
+        let should_write = match std::fs::read_to_string(path) {
+            Ok(existing) => existing != template,
+            Err(_) => true,
         };
+        if should_write {
+            std::fs::write(path, template).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
+        }
+        Ok(())
+    };
 
     write_if_changed(&client_path, SESSION_CONTEXT_CLIENT_TEMPLATE)?;
     write_if_changed(&plugin_path, SESSION_CONTEXT_PLUGIN_TEMPLATE)?;
@@ -1076,6 +1160,10 @@ impl RuntimeSupervisor {
         Arc::clone(&self.refresh)
     }
 
+    pub fn agent_manager(&self) -> &Arc<AsyncMutex<RuntimeManager>> {
+        &self.agents
+    }
+
     pub fn start_refresh_auto_applier(self: Arc<Self>) -> JoinHandle<()> {
         self.start_refresh_auto_applier_with_interval(Duration::from_secs(1))
     }
@@ -1293,12 +1381,16 @@ impl RuntimeSupervisor {
                     .unwrap_or_default(),
                 cloud_token_file: snapshot.bindings.get("TC_ACCESS_TOKEN_FILE").cloned(),
                 gateway_token: None,
+                // Not a spawn path with a listener behind it.
+                ai_proxy_base: None,
             })
             .unwrap_or(teamclu_runtime_env::SystemEnvContext {
                 actor_id: String::new(),
                 display_name: String::new(),
                 cloud_token_file: None,
                 gateway_token: None,
+                // Not a spawn path with a listener behind it.
+                ai_proxy_base: None,
             });
         let resolved = teamclu_runtime_env::resolve_runtime_env(
             personal_env.clone(),
@@ -1722,6 +1814,8 @@ impl RuntimeSupervisor {
                     .unwrap_or_default(),
                 cloud_token_file: previous.bindings.get("TC_ACCESS_TOKEN_FILE").cloned(),
                 gateway_token: None,
+                // Not a spawn path with a listener behind it.
+                ai_proxy_base: None,
             },
         );
         current.fingerprint == previous.fingerprint
@@ -1812,6 +1906,95 @@ impl RuntimeSupervisor {
             }
         }
     }
+
+    /// Register-then-apply for UI skill mutations.
+    ///
+    /// Idle workspaces dispose the cached OpenCode directory instance before
+    /// this returns. An active turn is left running; the pending Skills
+    /// refresh is applied by the auto-applier (or the next attach) once idle.
+    ///
+    /// Mixed pending (Skills plus MCP/env/…) still invalidates the Skills
+    /// cache and clears only the Skills kind. Other kinds stay pending.
+    pub async fn apply_pending_skills_refresh(
+        &self,
+        workspace_id: &str,
+        workspace_path: &Path,
+    ) -> Result<SkillsRefreshApplyStatus, WorkspaceControlError> {
+        let workspace_path_str = workspace_path.to_string_lossy();
+        let pending = self.refresh.pending_workspace_states().await;
+        let Some(state) = pending.into_iter().find(|state| {
+            state.workspace_id == workspace_id
+                || state.workspace_path == workspace_path_str.as_ref()
+        }) else {
+            return Ok(SkillsRefreshApplyStatus::Applied(ApplyOutcome::AppliedLive));
+        };
+        if !state
+            .change_kinds
+            .iter()
+            .any(|kind| matches!(kind, RefreshChangeKind::Skills))
+        {
+            return Ok(SkillsRefreshApplyStatus::Applied(ApplyOutcome::AppliedLive));
+        }
+        let busy = {
+            let manager = self.agents.lock().await;
+            manager.workspace_has_active_turn(&workspace_path_str, workspace_id)
+        };
+        if busy {
+            self.refresh
+                .set_auto_apply_blocked_by_active_runtime(workspace_id, true)
+                .await;
+            return Ok(SkillsRefreshApplyStatus::PendingActiveTurn);
+        }
+        self.refresh
+            .set_auto_apply_blocked_by_active_runtime(workspace_id, false)
+            .await;
+        // Do not call `apply_refresh`: that clears every pending kind.
+        match self
+            .reload_workspace(workspace_id, workspace_path, false)
+            .await
+        {
+            Ok(outcome) => {
+                self.refresh
+                    .clear_change_kind(workspace_id, RefreshChangeKind::Skills)
+                    .await;
+                Ok(SkillsRefreshApplyStatus::Applied(outcome))
+            }
+            Err(WorkspaceControlError::ActiveTurn(_)) => {
+                self.refresh
+                    .set_auto_apply_blocked_by_active_runtime(workspace_id, true)
+                    .await;
+                Ok(SkillsRefreshApplyStatus::PendingActiveTurn)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Session attach barrier: only an applied Skills refresh may proceed.
+    ///
+    /// `PendingActiveTurn` and dispose/apply errors both refuse the spawn so
+    /// a new session cannot attach to a stale OpenCode instance.
+    pub async fn require_skills_refresh_for_attach(
+        &self,
+        workspace_id: &str,
+        workspace_path: &Path,
+    ) -> Result<ApplyOutcome, WorkspaceControlError> {
+        match self
+            .apply_pending_skills_refresh(workspace_id, workspace_path)
+            .await?
+        {
+            SkillsRefreshApplyStatus::Applied(outcome) => Ok(outcome),
+            SkillsRefreshApplyStatus::PendingActiveTurn => {
+                Err(WorkspaceControlError::ActiveTurn(workspace_id.to_owned()))
+            }
+        }
+    }
+}
+
+/// Result of a Skills-only refresh apply attempt.
+#[derive(Debug, Clone)]
+pub enum SkillsRefreshApplyStatus {
+    Applied(ApplyOutcome),
+    PendingActiveTurn,
 }
 
 fn auto_applicable_refresh(state: &WorkspaceRefreshState) -> bool {
@@ -2333,6 +2516,8 @@ mod tests {
                 display_name: "Agent Test".to_string(),
                 cloud_token_file: None,
                 gateway_token: None,
+                // Not a spawn path with a listener behind it.
+                ai_proxy_base: None,
             },
         );
         {
@@ -2545,6 +2730,418 @@ mod tests {
         assert_eq!(dto.status, "clean");
         // The mock's `expect(1)` verifies on server drop that the dispose
         // request actually reached the serve process.
+    }
+
+    #[tokio::test]
+    async fn apply_pending_skills_refresh_disposes_when_idle() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let directory = dir.path().to_string_lossy().into_owned();
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param("directory", directory))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+
+        let status = supervisor
+            .apply_pending_skills_refresh(&workspace_id, dir.path())
+            .await
+            .expect("apply");
+        assert!(matches!(
+            status,
+            SkillsRefreshApplyStatus::Applied(ApplyOutcome::ReloadRequired)
+        ));
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "clean");
+        assert!(!dto.auto_apply_blocked_by_active_runtime);
+    }
+
+    #[tokio::test]
+    async fn apply_pending_skills_refresh_stays_pending_when_busy() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.add_test_workspace_runtime(
+                "rt-busy",
+                &dir.path().to_string_lossy(),
+                &workspace_id,
+                amux::AgentStatus::Active,
+            );
+        }
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+
+        let status = supervisor
+            .apply_pending_skills_refresh(&workspace_id, dir.path())
+            .await
+            .expect("pending");
+        assert!(matches!(
+            status,
+            SkillsRefreshApplyStatus::PendingActiveTurn
+        ));
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "pending");
+        assert!(dto.auto_apply_blocked_by_active_runtime);
+        assert!(dto.change_kinds.iter().any(|k| k == "skills"));
+    }
+
+    #[tokio::test]
+    async fn apply_pending_skills_refresh_clears_only_skills_when_mixed() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let directory = dir.path().to_string_lossy().into_owned();
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param("directory", directory))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+
+        for kind in [
+            refresh::RefreshChangeKind::Skills,
+            refresh::RefreshChangeKind::Mcp,
+            refresh::RefreshChangeKind::EnvVars,
+        ] {
+            supervisor
+                .refresh_coordinator()
+                .record_change(
+                    &workspace_id,
+                    dir.path(),
+                    kind,
+                    refresh::RefreshSource::UiMutation,
+                )
+                .await
+                .unwrap();
+        }
+
+        let status = supervisor
+            .apply_pending_skills_refresh(&workspace_id, dir.path())
+            .await
+            .expect("apply skills from mixed pending");
+        assert!(matches!(
+            status,
+            SkillsRefreshApplyStatus::Applied(ApplyOutcome::ReloadRequired)
+        ));
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "pending");
+        assert!(!dto.change_kinds.iter().any(|k| k == "skills"));
+        assert!(dto.change_kinds.contains(&"mcp".to_string()));
+        assert!(dto.change_kinds.contains(&"env_vars".to_string()));
+    }
+
+    #[tokio::test]
+    async fn require_skills_refresh_for_attach_fails_closed_when_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let supervisor = RuntimeSupervisor::new(Arc::new(AsyncMutex::new(RuntimeManager::new(
+            RuntimeManager::default_launch_configs(),
+            None,
+        ))));
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.add_test_workspace_runtime(
+                "rt-busy",
+                &dir.path().to_string_lossy(),
+                &workspace_id,
+                amux::AgentStatus::Active,
+            );
+        }
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+
+        let err = supervisor
+            .require_skills_refresh_for_attach(&workspace_id, dir.path())
+            .await
+            .expect_err("busy workspace must refuse attach");
+        assert!(matches!(
+            err,
+            WorkspaceControlError::ActiveTurn(ref id) if id == &workspace_id
+        ));
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "pending");
+        assert!(dto.change_kinds.iter().any(|k| k == "skills"));
+    }
+
+    #[tokio::test]
+    async fn require_skills_refresh_for_attach_fails_when_dispose_errors() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+
+        let err = supervisor
+            .require_skills_refresh_for_attach(&workspace_id, dir.path())
+            .await
+            .expect_err("dispose failure must refuse attach");
+        assert!(matches!(err, WorkspaceControlError::Io(_)));
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "pending");
+        assert!(dto.change_kinds.iter().any(|k| k == "skills"));
+    }
+
+    #[tokio::test]
+    async fn apply_pending_skills_refresh_applies_after_turn_ends() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let directory = dir.path().to_string_lossy().into_owned();
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param("directory", directory))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.add_test_workspace_runtime(
+                "rt-busy",
+                &dir.path().to_string_lossy(),
+                &workspace_id,
+                amux::AgentStatus::Active,
+            );
+        }
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+        let busy = supervisor
+            .apply_pending_skills_refresh(&workspace_id, dir.path())
+            .await
+            .expect("busy");
+        assert!(matches!(busy, SkillsRefreshApplyStatus::PendingActiveTurn));
+
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.set_test_runtime_status("rt-busy", amux::AgentStatus::Idle);
+        }
+
+        // New session attach (or the auto-applier) must consume the pending
+        // Skills refresh before reusing the cached instance.
+        let idle = supervisor
+            .apply_pending_skills_refresh(&workspace_id, dir.path())
+            .await
+            .expect("idle apply");
+        assert!(matches!(
+            idle,
+            SkillsRefreshApplyStatus::Applied(ApplyOutcome::ReloadRequired)
+        ));
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "clean");
+    }
+
+    #[tokio::test]
+    async fn auto_applier_disposes_after_active_turn_ends() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let directory = dir.path().to_string_lossy().into_owned();
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param("directory", directory))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.add_test_workspace_runtime(
+                "rt-busy",
+                &dir.path().to_string_lossy(),
+                &workspace_id,
+                amux::AgentStatus::Active,
+            );
+        }
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 0);
+
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.set_test_runtime_status("rt-busy", amux::AgentStatus::Idle);
+        }
+        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "clean");
     }
 
     #[tokio::test]
@@ -2887,6 +3484,227 @@ mod tests {
         assert!(
             cfg["mcp"].get("user-server").is_some(),
             "a user's own server must survive the migration"
+        );
+    }
+
+    #[test]
+    fn prepare_workspace_strips_managed_skill_paths_from_workspace_config() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let agents = home.path().join(".agents/skills");
+        let hosted = home.path().join(".amuxd/teams/team-a/state/cloud/skills");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("opencode.json"),
+            serde_json::json!({
+                "skills": {
+                    "paths": [
+                        agents.to_string_lossy(),
+                        hosted.to_string_lossy(),
+                        "/opt/custom/skills"
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        prepare_workspace(dir.path()).unwrap();
+
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
+        )
+        .unwrap();
+        let paths = cfg["skills"]["paths"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            paths
+                .iter()
+                .all(|p| p.as_str() != Some(agents.to_string_lossy().as_ref())),
+            "member path must not stay in workspace opencode.json"
+        );
+        assert!(
+            paths
+                .iter()
+                .all(|p| p.as_str() != Some(hosted.to_string_lossy().as_ref())),
+            "hosted path must not stay in workspace opencode.json"
+        );
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.as_str() == Some("/opt/custom/skills")),
+            "user custom paths survive"
+        );
+    }
+}
+
+#[cfg(test)]
+mod skill_path_normalize_tests {
+    use super::*;
+
+    const TEAMS_ROOT: &str = "/Users/me/.amuxd/teams";
+    const HOSTED_A: &str = "/Users/me/.amuxd/teams/team-a/state/cloud/skills";
+    const HOSTED_B: &str = "/Users/me/.amuxd/teams/team-b/state/cloud/skills";
+    const MEMBER: &str = "/Users/me/.agents/skills";
+    const CUSTOM: &str = "/opt/company/skills";
+    const LOOKALIKE: &str = "/opt/company/teams/team-a/state/cloud/skills";
+
+    fn normalize(existing: &[String], hosted: Option<&str>, member: Option<&str>) -> Vec<String> {
+        normalize_managed_skill_paths(existing, hosted, member, Path::new(TEAMS_ROOT))
+    }
+
+    #[test]
+    fn empty_config_emits_hosted_then_member() {
+        assert_eq!(
+            normalize(&[], Some(HOSTED_A), Some(MEMBER)),
+            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+        );
+    }
+
+    #[test]
+    fn member_only_existing_puts_hosted_first() {
+        assert_eq!(
+            normalize(&[MEMBER.to_string()], Some(HOSTED_A), Some(MEMBER)),
+            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+        );
+    }
+
+    #[test]
+    fn reverses_member_before_hosted() {
+        assert_eq!(
+            normalize(
+                &[MEMBER.to_string(), HOSTED_A.to_string()],
+                Some(HOSTED_A),
+                Some(MEMBER)
+            ),
+            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+        );
+    }
+
+    #[test]
+    fn dedupes_repeated_managed_paths() {
+        assert_eq!(
+            normalize(
+                &[
+                    HOSTED_A.to_string(),
+                    MEMBER.to_string(),
+                    HOSTED_A.to_string(),
+                    MEMBER.to_string()
+                ],
+                Some(HOSTED_A),
+                Some(MEMBER)
+            ),
+            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+        );
+    }
+
+    #[test]
+    fn preserves_custom_paths_and_their_order() {
+        let extra = "/home/me/extra-skills";
+        assert_eq!(
+            normalize(
+                &[CUSTOM.to_string(), MEMBER.to_string(), extra.to_string()],
+                Some(HOSTED_A),
+                Some(MEMBER)
+            ),
+            vec![
+                HOSTED_A.to_string(),
+                MEMBER.to_string(),
+                CUSTOM.to_string(),
+                extra.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn switching_teams_drops_previous_hosted_root() {
+        assert_eq!(
+            normalize(
+                &[HOSTED_A.to_string(), MEMBER.to_string()],
+                Some(HOSTED_B),
+                Some(MEMBER)
+            ),
+            vec![HOSTED_B.to_string(), MEMBER.to_string()]
+        );
+    }
+
+    #[test]
+    fn no_active_team_drops_hosted_roots() {
+        assert_eq!(
+            normalize(
+                &[HOSTED_A.to_string(), MEMBER.to_string(), CUSTOM.to_string()],
+                None,
+                Some(MEMBER)
+            ),
+            vec![MEMBER.to_string(), CUSTOM.to_string()]
+        );
+    }
+
+    #[test]
+    fn tilde_member_alias_is_treated_as_managed() {
+        assert_eq!(
+            normalize(
+                &["~/.agents/skills".into(), CUSTOM.to_string()],
+                Some(HOSTED_A),
+                Some(MEMBER)
+            ),
+            vec![HOSTED_A.to_string(), MEMBER.to_string(), CUSTOM.to_string()]
+        );
+    }
+
+    #[test]
+    fn normalize_is_idempotent() {
+        let first = normalize(
+            &[MEMBER.to_string(), HOSTED_A.to_string(), CUSTOM.to_string()],
+            Some(HOSTED_A),
+            Some(MEMBER),
+        );
+        let second = normalize(&first, Some(HOSTED_A), Some(MEMBER));
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn hosted_path_matcher_requires_managed_teams_root() {
+        let root = Path::new(TEAMS_ROOT);
+        assert!(is_hosted_team_skills_path(HOSTED_A, root));
+        assert!(is_hosted_team_skills_path(
+            "/Users/me/.amuxd/teams/team-b/state/cloud/skills/",
+            root
+        ));
+        assert!(is_hosted_team_skills_path(
+            r"C:\Users\me\.amuxd\teams\team-a\state\cloud\skills",
+            Path::new(r"C:\Users\me\.amuxd\teams")
+        ));
+        assert!(!is_hosted_team_skills_path(LOOKALIKE, root));
+        assert!(!is_hosted_team_skills_path(
+            "/Users/me/.amuxd/teams/team-a/shared/skills",
+            root
+        ));
+        assert!(!is_hosted_team_skills_path(
+            "/Users/me/.amuxd/teams/team-a/state/cloud/skills/extra",
+            root
+        ));
+        assert!(!is_hosted_team_skills_path(
+            "/Users/me/.amuxd/teams/team-a/state/cloud",
+            root
+        ));
+    }
+
+    #[test]
+    fn lookalike_company_hosted_path_is_kept_as_custom() {
+        assert_eq!(
+            normalize(
+                &[LOOKALIKE.to_string(), MEMBER.to_string()],
+                Some(HOSTED_A),
+                Some(MEMBER)
+            ),
+            vec![
+                HOSTED_A.to_string(),
+                MEMBER.to_string(),
+                LOOKALIKE.to_string()
+            ]
         );
     }
 }

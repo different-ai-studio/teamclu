@@ -50,8 +50,7 @@ TeamClu 的后端不是单一服务，而是一套协作组件。客户端（Des
 
 可选：
   • 阿里云 OSS — 团队工作区文件同步（外部服务，非本机）
-  • LiteLLM — AI Gateway / 团队 LLM Key 与用量（栈内 compose 服务）
-  • 定时任务 — OSS 清理、abandon session 等（`--profile cron`）
+  • AI Gateway — 团队共享模型（团队自己填 baseUrl；栈内也仍跑着待退役的 LiteLLM 容器）
 ```
 
 | 组件 | 代码路径 | 职责 | 是否必需 |
@@ -59,15 +58,14 @@ TeamClu 的后端不是单一服务，而是一套协作组件。客户端（Des
 | **Cloud API** | `services/fc/` | 唯一客户端业务入口：`/v1/*` 团队/会话/消息/邀请/bootstrap | **必需** |
 | **Postgres + amux schema** | `services/supabase/migrations/` | 业务表、RLS、RPC | **必需** |
 | **Supabase Auth (GoTrue)** | self-host 栈 | 登录、JWT、refresh token | **必需** |
-| **PostgREST + Kong** | self-host 栈 | REST 层；Cloud API 内部 passthrough | **必需**（`BACKEND_KIND=supabase` 时） |
+| **PostgREST + Kong** | self-host 栈 | REST 层；Cloud API 的**唯一**数据通路 | **必需** |
 | **Realtime** | self-host 栈 | 部分补偿/订阅（主 live 走 MQTT） | 推荐 |
 | **Storage** | self-host 栈 | 附件 bucket | 推荐 |
 | **EMQX** | self-host 栈 | Session 内实时消息；对外 wss、对内 1883 | **必需** |
 | **Caddy / 反向代理** | self-host 栈 | TLS、域名路由 | 对外必需 |
 | **阿里云 OSS** | Cloud API 环境变量 | 团队 share / 工作区同步（外部对象存储） | 可选（无则 sync 不可用） |
-| **LiteLLM** | self-host 栈（compose 服务） | `POST /v1/teams/:id/litellm/setup`、用量统计 | 可选 |
+| **LiteLLM** | self-host 栈（compose 服务） | 遗留 AI 网关，Cloud API 已不再调用它；等待退役 | 可选 |
 | **amuxd** | `apps/daemon/` | Agent 运行时；通常跑在用户设备而非中心机房 | 按场景 |
-| **Cron** | compose `--profile cron` | OSS GC、abandon sessions | 推荐 |
 
 ---
 
@@ -105,7 +103,7 @@ push 到 `main` 且改动 `deploy/self-host/**`、`services/fc/**` 或
 - [ ] **域名与 DNS**：5 个子域（Cloud API / Supabase / MQTT / Studio / EMQX Dashboard）指向同一台机器；本地验收可用 `CADDY_TLS_MODE=internal`
 - [ ] **TLS**：Let's Encrypt（`acme`）或内网 CA（`internal`）；本地 Podman/macOS 可 `off`
 - [ ] **Postgres 15+**：由栈内 Supabase fork 镜像提供（`db` 服务）
-- [ ] **出站网络**：Cloud API 需能访问阿里云 OSS 与模型供应商；Supabase / MQTT / LiteLLM 均在同一 compose 网络内
+- [ ] **出站网络**：Cloud API 需能访问阿里云 OSS 与模型供应商；Supabase / MQTT / AI 网关均在同一 compose 网络内
 - [ ] **端口**：仅 Caddy 暴露 80/443
 
 ### 3.2 密钥与账号
@@ -120,9 +118,7 @@ push 到 `main` 且改动 `deploy/self-host/**`、`services/fc/**` 或
 | `MQTT_SERVICE_TOKEN` | Cloud API 连 EMQX 的服务 JWT |
 | `PUSH_WEBHOOK_SECRET` | 推送 webhook 校验 |
 | `APNS_*` | iOS 推送（生产必需则填真实值） |
-| `CRON_TRIGGER_SECRET` | cron profile 调用 `/internal/cron` |
-| `LITELLM_MASTER_KEY` | 团队 LiteLLM 开通 |
-| `AUTH_SECRET` | Better Auth（phone/OAuth 等） |
+| `LITELLM_MASTER_KEY` | LiteLLM 容器自身的 admin key（Cloud API 已不用） |
 
 完整变量清单以 [`deploy/self-host/.env.example`](../../deploy/self-host/.env.example)
 与 [`deploy/self-host/docker-compose.yml`](../../deploy/self-host/docker-compose.yml) 为准。
@@ -182,18 +178,18 @@ docker compose build fc && docker compose up -d fc
 
 | 变量 | 说明 |
 |------|------|
-| `BACKEND_KIND` | `supabase`（默认）或 `postgres` |
 | `SUPABASE_URL` | Cloud API → Kong 内部地址（`http://kong:8000`） |
 | `SUPABASE_PUBLIC_URL` | 返回给客户端的 Supabase 公网 URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | 服务端操作 |
 | `SUPABASE_ANON_KEY` | Auth proxy |
 | `MQTT_BROKER_URL` | 发布 MQTT ping |
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | 服务账号 |
-| `DATABASE_URL` | `BACKEND_KIND=postgres` 时用 |
-| `AUTH_BASE_URL` | OAuth / Better Auth 对外 base；**应显式设为 `https://api.teamclu-dev.ucar.cc`** |
+| `DATABASE_URL` | FC 直连 Postgres 的旁路：cron 任务、Apps 每应用库。`/v1` 业务 API 不用它 |
+| `AUTH_BASE_URL` | Apps 平台登录所签 JWT 的 issuer/audience；**应显式设为 `https://api.teamclu-dev.ucar.cc`** |
 
-> ⚠️ `AUTH_BASE_URL` 在 `services/fc/src/auth/` 里的代码内置默认值仍是**已下线**的
-> `https://cloud.ucar.cc`。留空会落到这个死地址，务必显式配置。
+> ⚠️ `services/fc/src/auth/base-url.ts` 对 `AUTH_BASE_URL` 是 fail-closed 的：留空
+> 会直接抛错而不是回落到默认值。但 `services/fc/s.yaml` 那一层仍带着**已下线**的
+> `https://cloud.ucar.cc` 默认值，所以走阿里云 FC 部署时必须显式配置。
 
 **运行时功能开关（feature flags）：** `/v1/config/public` 与 `/v1/config/bootstrap`
 会把一部分开关下发给客户端，客户端拿它覆盖自己 `build.config*.json` 里烘死的默认值
@@ -274,26 +270,16 @@ ENDPOINT=https://oss-cn-shenzhen.aliyuncs.com
 
 未配置时 FC 正常启动，**团队工作区 OSS 同步不可用**。
 
-### 4.5 LiteLLM（可选 AI Gateway）
+### 4.5 团队 AI 网关
 
-LiteLLM 是**栈内 compose 服务**（`ghcr.io/berriai/litellm-database`），其自身的库
-（`_litellm`）由 `litellm-init` 建在同一个 Postgres 上。
+**Cloud API 自己不再开通任何网关。** 团队的共享模型是一份配置，通过
+`PUT /v1/teams/:id/llm-config` 写入 `{ enabled, baseUrl, models }`，daemon 从
+`GET /v1/teams/:id/workspace-config` 的 `llm` 块读走，密钥则由 daemon 本地按
+`sk-tc-{actor_id[..40]}` 推导，不经过任何开通接口。
 
-- Cloud API 通过 `LITELLM_URL` + `LITELLM_MASTER_KEY` 调 LiteLLM Admin API
-- 团队开通：`POST /v1/teams/:id/litellm/setup`
-- Token 用量：Cloud API 直连 LiteLLM 的库（库名可用 `LITELLM_DB_NAME` 覆盖）
-
-`.env` 里 `LITELLM_URL` **留空即可** —— compose 用
-`${LITELLM_URL:-http://litellm:4000}` 兜底指向栈内网关：
-
-```dotenv
-LITELLM_URL=          # 留空 → http://litellm:4000
-LITELLM_MASTER_KEY=sk-...
-```
-
-> 只有改用**外部**网关时才显式填 `LITELLM_URL`。若绕过 compose 把空值直接传给
-> Cloud API，`services/fc/src/lib/litellm.ts` 会**抛错**（拒绝猜测网关地址）——
-> 早期"静默回落到托管网关"的行为已移除。
+LiteLLM 容器（`ghcr.io/berriai/litellm-database`，库 `_litellm` 由 `litellm-init`
+建在同一个 Postgres 上）**仍留在 compose 里**，Caddy 也仍把 `/llm/*` 反代到它 ——
+既有团队的 `baseUrl` 还指着那条路径。Cloud API 与它已完全解耦，退役是单独一步。
 
 ### 4.6 amuxd（Agent 宿主）
 

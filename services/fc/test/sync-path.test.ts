@@ -177,9 +177,11 @@ test('rejects bare filename with no prefix', () => {
 // ---------------------------------------------------------------------------
 // ALLOWED_PREFIXES export
 // ---------------------------------------------------------------------------
-test('ALLOWED_PREFIXES is knowledge/ and nothing else', () => {
+test('ALLOWED_PREFIXES is the two fixed roots and nothing else', () => {
   // An exact match on purpose: this list is mirrored in three Rust constants
   // (daemon + desktop path_validator, global_team_store), and a prefix quietly
   // added back on one side is the failure mode this pins down.
-  assert.deepEqual([...ALLOWED_PREFIXES], ['knowledge/']);
+  // `documents/` joined in "feat(sync): two fixed roots" (f59bcd8d); this
+  // assertion had been left on the old single-root value.
+  assert.deepEqual([...ALLOWED_PREFIXES], ['documents/', 'knowledge/']);
 });

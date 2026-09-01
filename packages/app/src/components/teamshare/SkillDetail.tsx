@@ -37,6 +37,9 @@ import {
   isSkillDirtyConflict,
   SkillDiscardIncompleteError,
   SkillSlugTakenError,
+  SkillPublishedRefreshError,
+  SkillMutationRefreshError,
+  SkillRuntimeRefreshError,
   StaleTeamSkillPublishError,
   StaleDirtySkillPublishError,
   type TeamSkillItem,
@@ -55,6 +58,7 @@ import { useIsDark } from './use-is-dark'
 import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
+import { toastSkillMutationRefreshFailed } from './skillMutationRefreshToast'
 
 type SkillConfirmAction = 'delete' | 'uninstall'
 
@@ -1064,6 +1068,7 @@ export function SkillDetail({ slug }: { slug: string }) {
   const installSkill = useTeamShareBrowserStore((s) => s.installSkill)
   const uninstallSkill = useTeamShareBrowserStore((s) => s.uninstallSkill)
   const deletePersonalSkill = useTeamShareBrowserStore((s) => s.deletePersonalSkill)
+  const retrySkillsRuntimeRefresh = useTeamShareBrowserStore((s) => s.retrySkillsRuntimeRefresh)
   const publishSkillVersion = useTeamShareBrowserStore((s) => s.publishSkillVersion)
   const discardLocalSkill = useTeamShareBrowserStore((s) => s.discardLocalSkill)
   const restoreDiscardedSkill = useTeamShareBrowserStore((s) => s.restoreDiscardedSkill)
@@ -1214,6 +1219,10 @@ export function SkillDetail({ slug }: { slug: string }) {
       await installSkill(item.slug)
       toast.success(t('teamShare.skillInstalled', 'Installed'))
     } catch (e) {
+      if (e instanceof SkillMutationRefreshError) {
+        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+        return
+      }
       // The installer refuses to overwrite a pack with local edits. That is a
       // state to explain, not a failure to report — the conflict bar renders as
       // soon as the reconcile records it.
@@ -1227,7 +1236,7 @@ export function SkillDetail({ slug }: { slug: string }) {
     } finally {
       setBusy(false)
     }
-  }, [item, busy, installSkill, t])
+  }, [item, busy, installSkill, retrySkillsRuntimeRefresh, t])
 
   const runUninstall = React.useCallback(async () => {
     if (!item || busy) return
@@ -1237,6 +1246,10 @@ export function SkillDetail({ slug }: { slug: string }) {
       await uninstallSkill(item.slug)
       toast.success(t('teamShare.skillUninstalled', 'Uninstalled'))
     } catch (e) {
+      if (e instanceof SkillMutationRefreshError) {
+        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+        return
+      }
       toast.error(
         t('teamShare.skillUninstallFailed', 'Uninstall failed: {{msg}}', {
           msg: e instanceof Error ? e.message : String(e),
@@ -1245,7 +1258,7 @@ export function SkillDetail({ slug }: { slug: string }) {
     } finally {
       setBusy(false)
     }
-  }, [item, busy, uninstallSkill, t])
+  }, [item, busy, uninstallSkill, retrySkillsRuntimeRefresh, t])
 
   const runDelete = React.useCallback(async () => {
     if (!item || busy) return
@@ -1255,6 +1268,10 @@ export function SkillDetail({ slug }: { slug: string }) {
       await deletePersonalSkill(item.slug)
       toast.success(t('teamShare.skillDeleted', 'Deleted'))
     } catch (e) {
+      if (e instanceof SkillMutationRefreshError) {
+        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+        return
+      }
       toast.error(
         t('teamShare.skillDeleteFailed', 'Delete failed: {{msg}}', {
           msg: e instanceof Error ? e.message : String(e),
@@ -1263,7 +1280,7 @@ export function SkillDetail({ slug }: { slug: string }) {
     } finally {
       setBusy(false)
     }
-  }, [item, busy, deletePersonalSkill, t])
+  }, [item, busy, deletePersonalSkill, retrySkillsRuntimeRefresh, t])
 
   const runShare = React.useCallback(
     async (input: {
@@ -1292,13 +1309,17 @@ export function SkillDetail({ slug }: { slug: string }) {
                 action: {
                   label: t('teamShare.skillKeepMine', 'Keep mine'),
                   onClick: () => {
-                    void restoreDiscardedSkill(retiredPath, `${input.slug}-mine`).catch((e) =>
+                    void restoreDiscardedSkill(retiredPath, `${input.slug}-mine`).catch((e) => {
+                      if (e instanceof SkillMutationRefreshError) {
+                        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+                        return
+                      }
                       toast.error(
                         t('teamShare.skillRestoreFailed', 'Restore failed: {{msg}}', {
                           msg: e instanceof Error ? e.message : String(e),
                         }),
-                      ),
-                    )
+                      )
+                    })
                   },
                 },
               }
@@ -1320,7 +1341,7 @@ export function SkillDetail({ slug }: { slug: string }) {
         setBusy(false)
       }
     },
-    [item, busy, sharePersonalSkill, t],
+    [item, busy, sharePersonalSkill, restoreDiscardedSkill, retrySkillsRuntimeRefresh, t],
   )
 
   const runPublishVersion = React.useCallback(
@@ -1348,6 +1369,35 @@ export function SkillDetail({ slug }: { slug: string }) {
         setPublishOpen(false)
         toast.success(t('teamShare.skillPublished', 'Published'))
       } catch (e) {
+        if (e instanceof SkillPublishedRefreshError) {
+          setPublishOpen(false)
+          toast.error(
+            t(
+              'teamShare.skillPublishedRefreshFailed',
+              'Skill v{{v}} 已发布，本机刷新失败。请重试刷新。',
+              { v: e.version },
+            ),
+            {
+              action: {
+                label: t('teamShare.skillRetryRefresh', 'Retry refresh'),
+                onClick: () => {
+                  void retrySkillsRuntimeRefresh()
+                    .then(() =>
+                      toast.success(t('teamShare.skillRefreshRetried', 'Runtime refreshed')),
+                    )
+                    .catch((retryError) =>
+                      toast.error(
+                        t('teamShare.skillRetryRefreshFailed', 'Runtime refresh failed: {{msg}}', {
+                          msg: retryError instanceof Error ? retryError.message : String(retryError),
+                        }),
+                      ),
+                    )
+                },
+              },
+            },
+          )
+          return
+        }
         if (e instanceof StaleDirtySkillPublishError) {
           toast.error(
             t(
@@ -1375,23 +1425,27 @@ export function SkillDetail({ slug }: { slug: string }) {
         setBusy(false)
       }
     },
-    [item, busy, publishSkillVersion, t],
+    [item, busy, publishSkillVersion, retrySkillsRuntimeRefresh, t],
   )
 
   const undoAction = React.useCallback(
     (trashedPath: string, slug: string) => ({
       label: t('common.undo', 'Undo'),
       onClick: () => {
-        void restoreDiscardedSkill(trashedPath, slug).catch((e) =>
+        void restoreDiscardedSkill(trashedPath, slug).catch((e) => {
+          if (e instanceof SkillMutationRefreshError) {
+            toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+            return
+          }
           toast.error(
             t('teamShare.skillRestoreFailed', 'Restore failed: {{msg}}', {
               msg: e instanceof Error ? e.message : String(e),
             }),
-          ),
-        )
+          )
+        })
       },
     }),
-    [restoreDiscardedSkill, t],
+    [restoreDiscardedSkill, retrySkillsRuntimeRefresh, t],
   )
 
   const runDiscard = React.useCallback(async () => {
@@ -1407,6 +1461,20 @@ export function SkillDetail({ slug }: { slug: string }) {
         action: undoAction(trashedPath, item.slug),
       })
     } catch (e) {
+      if (e instanceof SkillMutationRefreshError) {
+        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+        return
+      }
+      if (e instanceof SkillRuntimeRefreshError) {
+        toast.error(
+          t(
+            'teamShare.skillSavedRefreshFailed',
+            'Skill 已保存，但新会话可能暂时仍使用旧缓存。{{msg}}',
+            { msg: e.message },
+          ),
+        )
+        return
+      }
       // A discard that got as far as moving the edits aside still has to offer
       // the undo — that path is where the user most needs it, and it is exactly
       // where a plain error toast would leave their work stranded in a
@@ -1425,7 +1493,7 @@ export function SkillDetail({ slug }: { slug: string }) {
     } finally {
       setBusy(false)
     }
-  }, [item, busy, discardLocalSkill, undoAction, t])
+  }, [item, busy, discardLocalSkill, undoAction, retrySkillsRuntimeRefresh, t])
 
   const runFork = React.useCallback(
     async (newSlug: string) => {
@@ -1436,6 +1504,10 @@ export function SkillDetail({ slug }: { slug: string }) {
         setForkOpen(false)
         toast.success(t('teamShare.skillForked', 'Saved as {{slug}}', { slug: newSlug }))
       } catch (e) {
+        if (e instanceof SkillMutationRefreshError) {
+          toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+          return
+        }
         toast.error(
           t('teamShare.skillForkFailed', 'Save failed: {{msg}}', {
             msg: e instanceof Error ? e.message : String(e),
@@ -1445,7 +1517,7 @@ export function SkillDetail({ slug }: { slug: string }) {
         setBusy(false)
       }
     },
-    [item, busy, forkSkill, t],
+    [item, busy, forkSkill, retrySkillsRuntimeRefresh, t],
   )
 
   const runKeepArchived = React.useCallback(async () => {
@@ -1455,6 +1527,10 @@ export function SkillDetail({ slug }: { slug: string }) {
       await keepArchivedCopy(item.slug, `${item.slug}-mine`)
       toast.success(t('teamShare.skillForked', 'Saved as {{slug}}', { slug: `${item.slug}-mine` }))
     } catch (e) {
+      if (e instanceof SkillMutationRefreshError) {
+        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+        return
+      }
       toast.error(
         t('teamShare.skillRestoreFailed', 'Restore failed: {{msg}}', {
           msg: e instanceof Error ? e.message : String(e),
@@ -1463,7 +1539,7 @@ export function SkillDetail({ slug }: { slug: string }) {
     } finally {
       setBusy(false)
     }
-  }, [item, busy, keepArchivedCopy, t])
+  }, [item, busy, keepArchivedCopy, retrySkillsRuntimeRefresh, t])
 
   const runRevert = React.useCallback(
     (version: number) => {
@@ -1475,6 +1551,20 @@ export function SkillDetail({ slug }: { slug: string }) {
           toast.success(t('teamShare.skillReverted', 'Restored v{{v}} as the current version', { v: version })),
         )
         .catch((e) => {
+          if (e instanceof SkillMutationRefreshError) {
+            toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+            return
+          }
+          if (e instanceof SkillRuntimeRefreshError) {
+            toast.error(
+              t(
+                'teamShare.skillSavedRefreshFailed',
+                'Skill 已保存，但新会话可能暂时仍使用旧缓存。{{msg}}',
+                { msg: e.message },
+              ),
+            )
+            return
+          }
           if (e instanceof StaleTeamSkillPublishError) {
             toast.error(
               t(
@@ -1492,7 +1582,7 @@ export function SkillDetail({ slug }: { slug: string }) {
         })
         .finally(() => setBusy(false))
     },
-    [item, busy, revertSkillVersion, t],
+    [item, busy, revertSkillVersion, retrySkillsRuntimeRefresh, t],
   )
 
   const openDiff = React.useCallback(() => {

@@ -7,7 +7,7 @@
  */
 
 import { ApiError } from "../http-utils.js";
-import { marketplaceObjectPath } from "../pg-repo/marketplace.js";
+import { marketplaceObjectPath } from "../validation/marketplace-paths.js";
 import { statSkillObject } from "../skills-storage.js";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
@@ -61,7 +61,7 @@ function mapCatalogVersion(r: any) {
   };
 }
 
-/** Mirrors MARKET_STATUSES in pg-repo/marketplace.ts and the DB CHECK. */
+/** Mirrors the market_status DB CHECK. */
 const MARKET_STATUSES: readonly string[] = ["draft", "published", "delisted"];
 
 function requireFields(body: any) {

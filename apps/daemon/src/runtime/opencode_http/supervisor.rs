@@ -150,7 +150,7 @@ impl ServeSupervisor {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_with_base_url(
+    pub fn test_with_base_url(
         generation_id: String,
         revision: ProcessEnvRevision,
         base_url: String,
