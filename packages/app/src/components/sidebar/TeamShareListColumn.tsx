@@ -14,8 +14,6 @@ import {
   ArrowUpCircle,
   Plus,
   AlertTriangle,
-  FilePlus,
-  FolderPlus,
   RefreshCw,
   ChevronRight,
   Store,
@@ -980,31 +978,13 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
               />
             </Button>
           )}
-          {section === 'knowledge' && syncRoot && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                  title={t('teamShare.knowledgeAdd', 'New document or folder')}
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-44">
-                <DropdownMenuItem onSelect={() => setRootCreating('file')}>
-                  <FilePlus className="mr-2 h-3.5 w-3.5" />
-                  {t('teamShare.knowledgeNewFile', 'New document')}
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setRootCreating('folder')}>
-                  <FolderPlus className="mr-2 h-3.5 w-3.5" />
-                  {t('teamShare.knowledgeNewFolder', 'New folder')}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          {/*
+            No "new document / new folder" here any more. This header acts on
+            the tree root, and the root now holds exactly two fixed directories
+            — a third would never sync, since the scanner only descends into
+            the fixed prefixes. Creating happens inside 资料库 or 知识库, from
+            the folder's own context menu.
+          */}
           {(section === 'mcp' || section === 'env') && (
             <Button
               type="button"

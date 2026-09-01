@@ -250,6 +250,44 @@ export function FileTree({
   useEffect(() => {
     void refreshRestricted();
   }, [refreshRestricted]);
+  /**
+   * Display name for a node that is one of the two fixed roots.
+   *
+   * On disk they are `documents` and `knowledge` — ASCII, stable, safe on every
+   * filesystem — and 资料库 / 知识库 to read. Only the top level is translated:
+   * a `knowledge` directory three levels down is an ordinary folder.
+   *
+   * The compacted case is why this takes `compactName` rather than reading the
+   * node alone. When a root has a single expanded child the tree collapses the
+   * chain into one row, and `node` is then the END of that chain — so asking
+   * what the node is never identifies the root. The name being drawn is the
+   * joined path, and it is that name's first segment that has to be swapped.
+   */
+  const localizedRootName = useCallback(
+    (node: FileNode, compactName?: string): string | undefined => {
+      if (node.type !== 'directory' || !syncRoot) return undefined;
+      const rootLabel = (name: string): string | undefined => {
+        if (name === 'knowledge') return t('teamSync.knowledgeRoot', 'Knowledge');
+        if (name === 'documents') return t('teamSync.documentsRoot', 'Documents');
+        return undefined;
+      };
+      if (compactName) {
+        const [head, ...rest] = compactName.split('/');
+        // Only when the chain actually starts at a root — a compacted chain
+        // deeper in the tree keeps every segment as it is on disk.
+        const key = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
+        if (key === compactName) {
+          const label = rootLabel(head);
+          if (label) return [label, ...rest].join('/');
+        }
+        return undefined;
+      }
+      const key = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
+      return key ? rootLabel(key) : undefined;
+    },
+    [syncRoot, workspacePath, t],
+  );
+
   const handleManagePermissions = useCallback((path: string) => {
     const syncKey = teamSyncKeyForPath(path, { syncRoot, workspacePath });
     // A rule prefix must end in `/` — that trailing slash is what stops
@@ -1260,12 +1298,7 @@ export function FileTree({
       node.type === 'directory' &&
       syncRoot != null &&
       node.path.replace(/[/\\]+$/, '') === syncRoot.replace(/[/\\]+$/, ''),
-    localizedName: (() => {
-      const key = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
-      if (key === 'knowledge') return t('teamSync.knowledgeRoot', 'Knowledge');
-      if (key === 'documents') return t('teamSync.documentsRoot', 'Documents');
-      return undefined;
-    })(),
+    localizedName: localizedRootName(node, compactName),
     // Documents only. Knowledge is shared consensus — everyone on the team sees
     // the same thing — so it is never offered a restriction. That split is
     // editorial rather than technical, which is why it lives here and not in a
