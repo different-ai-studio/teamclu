@@ -1483,7 +1483,7 @@ pub fn team_skill_list_draft_recoveries(
         .filter(|rec| slug_filter.is_none_or(|s| rec.slug == s))
         .filter(|rec| std::path::Path::new(&rec.path).is_dir())
         .collect();
-    out.sort_by(|a, b| b.at.cmp(&a.at));
+    out.sort_by_key(|a| std::cmp::Reverse(a.at));
     out.truncate(cap);
     Ok(out)
 }
