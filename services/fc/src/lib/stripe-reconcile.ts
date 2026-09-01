@@ -14,7 +14,7 @@
 // `applied` flag coming back is the answer to "was this one missing".
 // ---------------------------------------------------------------------------
 import type Stripe from "stripe";
-import { creditCheckoutSession } from "./routes/stripe.js";
+import { creditCheckoutSession, refundCharge } from "./routes/stripe.js";
 import { stripeClient, stripeConfigured } from "./stripe.js";
 
 export interface ReconcileResult extends Record<string, number> {
@@ -82,4 +82,102 @@ export async function stripeReconcileCheckouts(
     }
   }
   return result;
+}
+
+
+// ---------------------------------------------------------------------------
+// Refunds
+// ---------------------------------------------------------------------------
+// The purchase side had two layers of insurance (Stripe's own retries, plus the
+// sweep above) and the refund side had one. That asymmetry is the wrong way
+// round: an unrepaired top-up means a paying customer is missing credits and
+// will say so within minutes. An unrepaired REFUND is silent — the customer has
+// their money back and nobody is watching the balance they kept.
+//
+// Same shape as the checkout pass, and deliberately the same code path:
+// `refundCharge` is what the webhook runs, so this cannot drift from it.
+
+export interface RefundReconcileResult extends Record<string, number> {
+  scanned: number;
+  succeededRefunds: number;
+  /** Charges whose refunds were genuinely missing locally and are now debited. */
+  repaired: number;
+  alreadyRecorded: number;
+  /** Refunds on charges that carry no team id — not ours, and not a problem. */
+  notOurs: number;
+  failed: number;
+}
+
+export async function stripeReconcileRefunds(
+  opts: { lookbackDays?: number; stripe?: Stripe } = {},
+): Promise<RefundReconcileResult> {
+  const result: RefundReconcileResult = {
+    scanned: 0,
+    succeededRefunds: 0,
+    repaired: 0,
+    alreadyRecorded: 0,
+    notOurs: 0,
+    failed: 0,
+  };
+  if (!opts.stripe && !stripeConfigured()) return result;
+
+  const stripe = opts.stripe ?? stripeClient();
+  const days = opts.lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
+  const since = Math.floor(Date.now() / 1000) - days * 86_400;
+
+  // Grouped by charge, because `refundCharge` works per charge and applies
+  // every refund on it. A charge refunded in three parts is one unit of work,
+  // and each part still lands under its own idempotency key.
+  const charges = new Set<string>();
+  for await (const refund of stripe.refunds.list({ created: { gte: since }, limit: 100 })) {
+    result.scanned += 1;
+    if (refund.status !== "succeeded") continue;
+    result.succeededRefunds += 1;
+    const chargeId = typeof refund.charge === "string" ? refund.charge : refund.charge?.id;
+    if (chargeId) charges.add(chargeId);
+  }
+
+  for (const chargeId of charges) {
+    try {
+      const charge = await stripe.charges.retrieve(chargeId);
+      // Unlike the webhook — which receives an event for a charge that SHOULD be
+      // ours and so shouts about a missing team id — this pass walks every
+      // refund on the account. A charge with no team id is simply someone
+      // else's, and treating that as a failure would bury the real ones.
+      if (!(charge.metadata?.team_id ?? "").trim()) {
+        result.notOurs += 1;
+        continue;
+      }
+      const r = await refundCharge(stripe, charge);
+      if (r.applied) {
+        result.repaired += 1;
+        console.warn(
+          `[stripe/reconcile] debited refunds on charge ${chargeId} that the webhook never delivered`,
+        );
+      } else {
+        result.alreadyRecorded += 1;
+      }
+    } catch (err) {
+      // One bad charge must not stop the rest — this IS the recovery path.
+      result.failed += 1;
+      console.error(`[stripe/reconcile] charge ${chargeId} failed:`, err);
+    }
+  }
+  return result;
+}
+
+/** Both passes. What the cron task runs. */
+export async function stripeReconcile(
+  opts: { lookbackDays?: number; stripe?: Stripe } = {},
+): Promise<Record<string, number>> {
+  const checkouts = await stripeReconcileCheckouts(opts);
+  const refunds = await stripeReconcileRefunds(opts);
+  return {
+    ...checkouts,
+    refundsScanned: refunds.scanned,
+    refundsRepaired: refunds.repaired,
+    refundsAlreadyRecorded: refunds.alreadyRecorded,
+    refundsNotOurs: refunds.notOurs,
+    refundsFailed: refunds.failed,
+  };
 }
