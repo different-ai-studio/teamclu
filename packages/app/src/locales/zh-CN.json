@@ -1,4 +1,8 @@
 {
+  "teamSync": {
+    "knowledgeRoot": "知识库",
+    "documentsRoot": "资料库"
+  },
   "teamShare": {
     "refreshAndSync": "刷新并同步云端",
     "openInObsidian": "在 Obsidian 中打开",

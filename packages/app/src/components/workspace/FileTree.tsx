@@ -206,7 +206,7 @@ export function FileTree({
   // Team-knowledge conflicts. `bySyncKey` is empty in the overwhelmingly common
   // case, which is what keeps the per-row lookup below free.
   const conflictsBySyncKey = useTeamConflictsStore(s => s.bySyncKey);
-  const knowledgeDir = useTeamConflictsStore(s => s.knowledgeDir);
+  const syncRoot = useTeamConflictsStore(s => s.syncRoot);
 
   const ignoredRoots = useTeamSyncStatusStore(s => s.ignoredRoots);
   const localBySyncKey = useTeamSyncStatusStore(s => s.localBySyncKey);
@@ -234,7 +234,7 @@ export function FileTree({
   const aclTeamId = useCurrentTeamStore((s) => s.team?.id) ?? null;
   const [restrictedPrefixes, setRestrictedPrefixes] = useState<Set<string>>(new Set());
   const refreshRestricted = useCallback(async () => {
-    if (!canManageTeam || !aclTeamId || !knowledgeDir) {
+    if (!canManageTeam || !aclTeamId || !syncRoot) {
       setRestrictedPrefixes(new Set());
       return;
     }
@@ -246,17 +246,17 @@ export function FileTree({
       // tree; the dialog is where an error about permissions belongs.
       setRestrictedPrefixes(new Set());
     }
-  }, [canManageTeam, aclTeamId, knowledgeDir]);
+  }, [canManageTeam, aclTeamId, syncRoot]);
   useEffect(() => {
     void refreshRestricted();
   }, [refreshRestricted]);
   const handleManagePermissions = useCallback((path: string) => {
-    const syncKey = teamSyncKeyForPath(path, { knowledgeDir, workspacePath });
+    const syncKey = teamSyncKeyForPath(path, { syncRoot, workspacePath });
     // A rule prefix must end in `/` — that trailing slash is what stops
     // `knowledge/hr/` from also covering `knowledge/hr-public/`, on the server
     // and in the client matcher alike.
     if (syncKey) setAclPrefix(`${syncKey}/`);
-  }, [knowledgeDir, workspacePath]);
+  }, [syncRoot, workspacePath]);
   const focusedPath = useWorkspaceStore(s => s.focusedPath);
   const selectFile = useWorkspaceStore(s => s.selectFile);
   const selectFileRange = useWorkspaceStore(s => s.selectFileRange);
@@ -265,8 +265,8 @@ export function FileTree({
   const collapseDirectory = useWorkspaceStore(s => s.collapseDirectory);
   const setFocusedPath = useWorkspaceStore(s => s.setFocusedPath);
   const fileTree = useMemo(
-    () => pruneKnowledgeNoise(rawFileTree, { knowledgeDir, workspacePath }),
-    [rawFileTree, knowledgeDir, workspacePath],
+    () => pruneKnowledgeNoise(rawFileTree, { syncRoot, workspacePath }),
+    [rawFileTree, syncRoot, workspacePath],
   );
   // One badge per document, folded from the three things that can be true of
   // it: a conflict sidecar on disk, a local change not yet pushed, a cloud
@@ -1208,7 +1208,7 @@ export function FileTree({
     // spellings of the same file, and `teamSyncKeyForPath` maps both.
     syncStatus: (() => {
       if (!anyBadges) return null;
-      const syncKey = teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath });
+      const syncKey = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
       if (!syncKey) return null;
       return node.type === 'directory'
         ? badgeForDirectory(syncKey, badges)
@@ -1219,14 +1219,14 @@ export function FileTree({
     // alongside the five that make up the sync-status scale.
     syncIgnored: (() => {
       if (ignoredRoots.size === 0) return false;
-      const syncKey = teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath });
+      const syncKey = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
       return syncKey !== null && isIgnoredSyncKey(syncKey, ignoredRoots);
     })(),
     // Whether the row has a cloud counterpart at all — which is what decides
     // if "show the cloud version" is a meaningful thing to offer on it.
     isTeamKnowledge:
       node.type !== 'directory' &&
-      teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath }) !== null,
+      teamSyncKeyForPath(node.path, { syncRoot, workspacePath }) !== null,
     onSelectFile: selectFile,
     onSelectFileRange: selectFileRange,
     onToggleFileSelection: toggleFileSelection,
@@ -1248,10 +1248,33 @@ export function FileTree({
     // knowledge tree, and only to someone who can manage the team. Undefined
     // everywhere else, which is what keeps the item out of the ordinary
     // workspace file browser.
+    // Only the two fixed roots, and only at the top level: a `knowledge`
+    // directory nested three deep is an ordinary folder and keeps its name.
+    // The on-disk names stay ASCII everywhere else — manifest keys, ACL
+    // prefixes and logs are all addressed by them.
+    // The sync root holds exactly two directories and no third one would ever
+    // sync, so it offers no create action. `teamSyncKeyForPath` returns null
+    // for the root itself while returning a key for everything inside it,
+    // which is precisely the distinction needed.
+    disallowCreate:
+      node.type === 'directory' &&
+      syncRoot != null &&
+      node.path.replace(/[/\\]+$/, '') === syncRoot.replace(/[/\\]+$/, ''),
+    localizedName: (() => {
+      const key = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
+      if (key === 'knowledge') return t('teamSync.knowledgeRoot', 'Knowledge');
+      if (key === 'documents') return t('teamSync.documentsRoot', 'Documents');
+      return undefined;
+    })(),
+    // Documents only. Knowledge is shared consensus — everyone on the team sees
+    // the same thing — so it is never offered a restriction. That split is
+    // editorial rather than technical, which is why it lives here and not in a
+    // database constraint.
     onManagePermissions:
       canManageTeam &&
       node.type === 'directory' &&
-      teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath }) !== null
+      (teamSyncKeyForPath(node.path, { syncRoot, workspacePath })?.startsWith('documents/') ??
+        false)
         ? handleManagePermissions
         : undefined,
     // Its OWN rule, not one inherited from an ancestor: descendants are drawn
@@ -1260,7 +1283,7 @@ export function FileTree({
       node.type === 'directory' &&
       restrictedPrefixes.size > 0 &&
       (() => {
-        const key = teamSyncKeyForPath(node.path, { knowledgeDir, workspacePath });
+        const key = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
         return key !== null && restrictedPrefixes.has(`${key}/`);
       })(),
     onDragStart: handleDragStart,

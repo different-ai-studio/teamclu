@@ -27,10 +27,10 @@ vi.mock('@/stores/workspace', () => ({
 }))
 
 const loadSection = vi.fn()
-const browserState = vi.hoisted(() => ({ knowledgeRoot: null as string | null }))
+const browserState = vi.hoisted(() => ({ syncRoot: null as string | null }))
 vi.mock('@/stores/team-share-browser', () => {
   const store = (sel: (s: { loadSection: typeof loadSection }) => unknown) => sel({ loadSection })
-  store.getState = () => ({ loadSection, knowledgeRoot: browserState.knowledgeRoot })
+  store.getState = () => ({ loadSection, syncRoot: browserState.syncRoot })
   return { useTeamShareBrowserStore: store }
 })
 
@@ -43,7 +43,7 @@ describe('TeamDirInitPanel', () => {
     workspaceState.workspacePath = '/workspace'
     linkDaemonTeamWorkspace.mockResolvedValue({ ok: true })
     // The repair worked unless a test says otherwise.
-    browserState.knowledgeRoot = '/home/u/.amuxd/teams/t/shared/knowledge'
+    browserState.syncRoot = '/home/u/.amuxd/teams/t/shared/team-sync'
     loadSection.mockResolvedValue(undefined)
   })
 
@@ -103,7 +103,7 @@ describe('TeamDirInitPanel', () => {
    * 200s, no feedback — which is what a dead button looks like.
    */
   it('reports a repair that succeeded without producing a team folder', async () => {
-    browserState.knowledgeRoot = null
+    browserState.syncRoot = null
     render(<TeamDirInitPanel />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Rebuild team folder' }))

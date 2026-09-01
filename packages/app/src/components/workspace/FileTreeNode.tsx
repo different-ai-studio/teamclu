@@ -241,6 +241,24 @@ export interface FileTreeItemProps {
    */
   onManagePermissions?: (path: string) => void;
   /**
+   * Name to draw instead of the on-disk one.
+   *
+   * Used for the two fixed sync roots, which are `documents` and `knowledge` on
+   * disk — ASCII, stable, safe on every filesystem — and «资料库» / «知识库» to
+   * read. Only the caller knows a node is one of those roots; a directory named
+   * `knowledge` three levels down is an ordinary folder and keeps its name.
+   */
+  localizedName?: string;
+  /**
+   * Refuse "new file" / "new folder" on this node.
+   *
+   * Set for the sync root itself: the tree has exactly two roots and a third
+   * one would never sync — the scanner only descends into the fixed prefixes,
+   * so anything else is invisible to it. Better to not offer the action than to
+   * let someone create a folder that quietly goes nowhere.
+   */
+  disallowCreate?: boolean;
+  /**
    * This folder carries a permission rule of its OWN.
    *
    * Not set for folders that merely sit under a restricted parent: they are
@@ -299,6 +317,8 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   onRenameCancel,
   onDelete,
   onManagePermissions,
+  localizedName,
+  disallowCreate,
   isPermissionRestricted,
   onCopyPath,
   onCopyRelativePath,
@@ -327,7 +347,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   // Every role gets the full context menu, team files included — file ops are
   // not role-gated in the tree.
   const isCutTarget = clipboardPaths?.includes(node.path) && isClipboardCut;
-  const displayName = compactName || node.name;
+  const displayName = localizedName || compactName || node.name;
   const contextMenuOpenedAtRef = useRef(0);
 
   const handleClick = (e: React.MouseEvent) => {
@@ -527,7 +547,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
     <ContextMenu>
       <ContextMenuTrigger asChild>{rowContent}</ContextMenuTrigger>
       <ContextMenuContent className="w-56">
-        {isDirectory && (
+        {isDirectory && !disallowCreate && (
           <>
             <ContextMenuItem onSelect={guardedMenuAction(() => onNewFile(node.path))}>
               <FilePlus className="h-4 w-4" />

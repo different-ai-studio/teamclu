@@ -1,4 +1,8 @@
 {
+  "teamSync": {
+    "knowledgeRoot": "Knowledge",
+    "documentsRoot": "Documents"
+  },
   "teamShare": {
     "refreshAndSync": "Refresh and sync with cloud",
     "openInObsidian": "Open in Obsidian",
