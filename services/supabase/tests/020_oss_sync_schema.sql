@@ -605,6 +605,14 @@ select is(
 -- Tests 43-50: set_team_sync_mode + get_team_sync_mode (migration 20260527000004)
 -- ---------------------------------------------------------------------------
 
+-- §9 above left the session as service_role (set_config('role','service_role')),
+-- and `ctx` is a temp table only the owning superuser session may read — so the
+-- very next statement, which reads `ctx` to find alice, fails with "permission
+-- denied for table ctx" and aborts the transaction. The cleanup-function tests
+-- that used to sit here reset the role as a side effect of their own setup;
+-- this does it deliberately now that they are gone.
+set local role postgres;
+
 -- Test 43: set_team_sync_mode rejects bad mode (22023)
 select pg_temp.as_user((select alice from ctx));
 select throws_ok(

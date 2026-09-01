@@ -41,6 +41,15 @@ export type AclAction = 'manifest' | 'download' | 'upload' | 'delete' | 'version
 
 export interface SyncAclDeps {
   /**
+   * Service-role client override. Production omits it and gets
+   * `createServiceRoleClient()`; tests pass a stub so the rules this module
+   * enforces can be exercised without a database. Injected rather than
+   * module-mocked because every other seam in this path (storage, repo, mqtt)
+   * already works this way.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase?: any;
+  /**
    * Clock override for cache expiry (tests), in epoch milliseconds.
    *
    * Named `nowMs` rather than `now` on purpose: `SyncHandlerDeps` already has a
@@ -192,7 +201,7 @@ async function loadView(
   actorId: string,
   deps: SyncAclDeps,
 ): Promise<AclView> {
-  const supabase = createServiceRoleClient();
+  const supabase = deps.supabase ?? createServiceRoleClient();
   const { data: rules, error: rulesErr } = await supabase
     .from('amuxc_path_acl')
     .select('id, path_prefix')
@@ -283,7 +292,7 @@ export async function recordAccess(
   deps: SyncAclDeps = {},
 ): Promise<void> {
   try {
-    const supabase = createServiceRoleClient();
+    const supabase = deps.supabase ?? createServiceRoleClient();
     const { error } = await supabase.from('amuxc_access_log').insert({
       team_id: entry.teamId,
       actor_id: entry.actorId,
