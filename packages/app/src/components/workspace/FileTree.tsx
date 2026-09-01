@@ -631,6 +631,54 @@ export function FileTree({
     void writeSystemClipboardFiles(paths);
   }, [setClipboard]);
 
+  /**
+   * Copy local files or folders into a documents directory.
+   *
+   * A copy, never a move: the source is somewhere the user chose and probably
+   * still wants — a Downloads folder, a shared drive — and taking it away would
+   * be a surprise no dialog warned about.
+   *
+   * `copyItem` already handles recursion and name collisions (it appends
+   * " copy"), so nothing here needs to know about either.
+   */
+  const handleImportLocal = useCallback(async (targetDir: string) => {
+    if (!isTauri()) return;
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const picked = await open({ multiple: true, directory: false });
+      const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+      if (paths.length === 0) return;
+
+      const { copyItem } = await import('@/components/workspace/file-tree-operations');
+      let failed = 0;
+      for (const source of paths) {
+        // Copying a directory into itself or its own subtree would recurse
+        // until the disk fills. The same guard the paste path applies.
+        if (targetDir === source || targetDir.startsWith(`${source}/`)) {
+          failed++;
+          continue;
+        }
+        if (!(await copyItem(source, targetDir))) failed++;
+      }
+
+      await expandDirectory(targetDir);
+      await refreshFileTree();
+      if (failed > 0) {
+        toast.error(
+          t('fileExplorer.importFailed', {
+            defaultValue: '{{count}} item(s) could not be added',
+            count: failed,
+          }),
+        );
+      }
+    } catch (e) {
+      toast.error(
+        t('fileExplorer.importFailedGeneric', 'Could not add the selected files'),
+      );
+      console.error('[FileTree] import failed', e);
+    }
+  }, [expandDirectory, refreshFileTree, t]);
+
   const handlePaste = useCallback(async (targetDir: string) => {
     const success = await pasteFiles(targetDir);
     if (success) {
@@ -1303,6 +1351,13 @@ export function FileTree({
     // the same thing — so it is never offered a restriction. That split is
     // editorial rather than technical, which is why it lives here and not in a
     // database constraint.
+    // 资料库 only — see the prop's own note for why 知识库 does not get this.
+    onImportLocal:
+      node.type === 'directory' &&
+      (teamSyncKeyForPath(node.path, { syncRoot, workspacePath })?.startsWith('documents/') ??
+        false)
+        ? handleImportLocal
+        : undefined,
     onManagePermissions:
       canManageTeam &&
       node.type === 'directory' &&

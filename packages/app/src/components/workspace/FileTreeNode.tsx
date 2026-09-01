@@ -16,6 +16,7 @@ import {
   ExternalLink,
   MessageSquarePlus,
   Lock,
+  FolderInput,
   AppWindow,
   History,
   AlertTriangle,
@@ -270,6 +271,14 @@ export interface FileTreeItemProps {
    * (the names are the sensitive part).
    */
   isPermissionRestricted?: boolean;
+  /**
+   * Import local files or folders into this directory, by copy.
+   *
+   * Supplied only for directories inside 资料库 — that root is for files that
+   * come from somewhere else and have an owner. 知识库 is written in the app or
+   * in Obsidian, so pulling arbitrary files into it is not an action it wants.
+   */
+  onImportLocal?: (path: string) => void;
   onCopyPath: (path: string) => void;
   onCopyRelativePath: (path: string) => void;
   onReveal: (path: string) => void;
@@ -320,6 +329,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   localizedName,
   disallowCreate,
   isPermissionRestricted,
+  onImportLocal,
   onCopyPath,
   onCopyRelativePath,
   onReveal,
@@ -571,6 +581,12 @@ export const FileTreeItem = React.memo(function FileTreeItem({
           the handler at all. The folder is the one that was right-clicked, so
           there is nothing to choose and no path to mistype.
         */}
+        {isDirectory && onImportLocal && (
+          <ContextMenuItem onSelect={guardedMenuAction(() => onImportLocal(node.path))}>
+            <FolderInput className="h-4 w-4" />
+            {t("fileExplorer.importLocal", "Add files…")}
+          </ContextMenuItem>
+        )}
         {isDirectory && onManagePermissions && (
           <ContextMenuItem onSelect={guardedMenuAction(() => onManagePermissions(node.path))}>
             <Lock className="h-4 w-4" />

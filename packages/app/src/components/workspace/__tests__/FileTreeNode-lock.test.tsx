@@ -13,7 +13,7 @@
  * caller relies on: the flag, and only the flag, produces the marker.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { FileTreeItem, type FileTreeItemProps } from '../FileTreeNode'
 
 vi.mock('react-i18next', () => ({
@@ -63,6 +63,27 @@ function props(overrides: Partial<FileTreeItemProps> = {}): FileTreeItemProps {
     ...overrides,
   } as unknown as FileTreeItemProps
 }
+
+describe('FileTreeItem documents actions', () => {
+  /** Radix renders menu content only once the menu is opened. */
+  function openMenu() {
+    fireEvent.contextMenu(screen.getByText('hr'))
+  }
+
+  it('offers "add files" when the caller supplies the handler', async () => {
+    render(<FileTreeItem {...props({ onImportLocal: vi.fn() })} />)
+    openMenu()
+    expect(await screen.findByText('Add files…')).toBeTruthy()
+  })
+
+  it('does not offer it otherwise — 知识库 is written in the app, not imported into', async () => {
+    render(<FileTreeItem {...props()} />)
+    openMenu()
+    // The menu is open (another item proves it), and this action is absent.
+    expect(await screen.findByText('Add to Agent')).toBeTruthy()
+    expect(screen.queryByText('Add files…')).toBeNull()
+  })
+})
 
 describe('FileTreeItem restriction marker', () => {
   it('marks a folder that has its own rule', () => {
