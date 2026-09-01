@@ -8,7 +8,8 @@ import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { connect, type Sql } from "../src/db.js";
 import {
-  backfillSignupGrants, pruneUsage, reconcile, release, reserve, settle, sweepExpired, topUp,
+  backfillSignupGrants, pruneUsage, reconcile, release, reserve, settle,
+  SIGNUP_GRANT_CREDITS, sweepExpired, topUp,
 } from "../src/credits.js";
 
 const DB = process.env.DATABASE_URL;
@@ -243,6 +244,83 @@ test("a team with no balance row at all is refused, not defaulted to unlimited",
   const r = await reserve(sql, { teamId, actorId: memberId, actorType: "member", holdCredits: 1 });
   assert.equal(r.ok, false);
   if (!r.ok) assert.equal(r.code, "insufficient_credits");
+});
+
+// ── the signup grant on first contact ───────────────────────────────────────
+
+/** A team with no balance row at all — what a brand-new signup looks like. */
+async function makeUngrantedTeam(): Promise<{ id: string; actorId: string }> {
+  const [{ id }] = await admin<{ id: string }[]>`
+    insert into amux.teams (slug, name)
+    values (${`fresh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}, 'fresh team')
+    returning id`;
+  const [{ id: actorId }] = await admin<{ id: string }[]>`
+    insert into amux.actors (team_id, actor_type, display_name, user_id)
+    values (${id}::uuid, 'member', 'Member', ${USER_A}) returning id`;
+  return { id, actorId };
+}
+
+test("a brand-new team is granted on its first request, not hard-stopped", { skip: !DB }, async () => {
+  // Before this, the grant was only ever issued by the manual backfill, so any
+  // team created after the last run had no balance row — and reserve() reads a
+  // missing row as a zero balance. Enforcement plus a new signup meant the user
+  // could not send a single message.
+  const team = await makeUngrantedTeam();
+  try {
+    const before = await admin<{ n: string }[]>`
+      select count(*)::text as n from amux.team_credit_balance where team_id = ${team.id}::uuid`;
+    assert.equal(before[0].n, "0", "fixture must start with no balance row");
+
+    const r = await reserve(sql, {
+      teamId: team.id, actorId: team.actorId, actorType: "member", holdCredits: 1000,
+    });
+    assert.equal(r.ok, true);
+
+    const [{ balance_credits }] = await admin<{ balance_credits: string }[]>`
+      select balance_credits from amux.team_credit_balance where team_id = ${team.id}::uuid`;
+    assert.equal(Number(balance_credits), SIGNUP_GRANT_CREDITS);
+
+    const [{ idempotency_key }] = await admin<{ idempotency_key: string }[]>`
+      select idempotency_key from amux.credit_ledger where team_id = ${team.id}::uuid`;
+    assert.equal(idempotency_key, `signup_grant:${team.id}`, "same key the backfill uses — they cannot double-grant");
+  } finally {
+    await admin`delete from amux.teams where id = ${team.id}::uuid`;
+  }
+});
+
+test("a team that SPENT down to zero is not re-granted", { skip: !DB }, async () => {
+  // The dangerous version of this feature: "balance is zero, give them credits"
+  // would refill anyone who ran out, forever. The signal is the absence of a
+  // ROW — a team that spent its way to zero still has one.
+  await setBalance(0);
+  const r = await reserve(sql, {
+    teamId: member.teamId(), actorId: member.actorId(), actorType: "member", holdCredits: 1,
+  });
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.equal(r.code, "insufficient_credits");
+  const [{ balance_credits }] = await admin<{ balance_credits: string }[]>`
+    select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+  assert.equal(Number(balance_credits), 0, "still zero — no refill");
+});
+
+test("two concurrent first requests grant exactly once", { skip: !DB }, async () => {
+  const team = await makeUngrantedTeam();
+  try {
+    const both = await Promise.all([
+      reserve(sql, { teamId: team.id, actorId: team.actorId, actorType: "member", holdCredits: 1000 }),
+      reserve(sql, { teamId: team.id, actorId: team.actorId, actorType: "member", holdCredits: 1000 }),
+    ]);
+    assert.deepEqual(both.map((r) => r.ok), [true, true]);
+    const [{ n }] = await admin<{ n: string }[]>`
+      select count(*)::text as n from amux.credit_ledger
+       where team_id = ${team.id}::uuid and kind = 'grant'`;
+    assert.equal(n, "1", "the unique index, not a read-then-write, is what makes this safe");
+    const [{ balance_credits }] = await admin<{ balance_credits: string }[]>`
+      select balance_credits from amux.team_credit_balance where team_id = ${team.id}::uuid`;
+    assert.equal(Number(balance_credits), SIGNUP_GRANT_CREDITS, "granted once, not twice");
+  } finally {
+    await admin`delete from amux.teams where id = ${team.id}::uuid`;
+  }
 });
 
 // ── operator surface ────────────────────────────────────────────────────────
