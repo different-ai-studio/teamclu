@@ -366,6 +366,7 @@ interface TeamShareBrowserState {
   loadSkillTeamUpdatesDiff: (slug: string, fromVersion: number, toVersion: number) => Promise<TeamSkillFileDiff[]>
   /** Metadata from the working copy's SKILL.md frontmatter. */
   loadSkillDraftMetadata: (slug: string) => Promise<TeamSkillDraftMetadata>
+  listDraftRecoveries: (slug: string) => Promise<DraftRecoveryRecord[]>
   /** Discard local edits and install the team's latest version (rebase). */
   rebaseSkillOnLatest: (slug: string) => Promise<string>
   loadSection: (section: TeamShareSection, opts?: { force?: boolean; withTools?: boolean }) => Promise<void>
@@ -391,8 +392,19 @@ export interface TeamSkillFileDiff {
 
 export interface TeamSkillDraftMetadata {
   summary?: string | null
+  category?: string | null
   whenToUse?: string | null
   whenNotToUse?: string | null
+  requires?: string[] | null
+}
+
+export interface DraftRecoveryRecord {
+  slug: string
+  path: string
+  at: number
+  reason: string
+  baseVersion?: number | null
+  teamId?: string | null
 }
 
 /**
@@ -1546,7 +1558,6 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       // team moved on while this machine stayed dirty, latestVersion is ahead
       // of the draft base — passing it would let an old draft overwrite vN.
       expectedLatestVersion: draftBaseVersion,
-      publishedFromVersion: draftBaseVersion,
       ...(input.summary !== undefined ? { summary: input.summary } : {}),
       ...(input.category !== undefined ? { category: input.category } : {}),
       ...(input.whenToUse !== undefined ? { whenToUse: input.whenToUse } : {}),
@@ -1572,7 +1583,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         summary: version.summary,
         whenToUse: version.whenToUse,
         whenNotToUse: version.whenNotToUse,
-        requires: version.requires ?? skill.requires,
+        requires: version.requires,
       },
     })
     // Same reason as Share: the pack landed on this Agent's disk, so this Agent
@@ -1924,11 +1935,12 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       accessToken: null,
       version,
       owner: detail.ownerActorId,
-      category: detail.category,
+      // Omit category so the zip's own frontmatter wins in stage_installed_pack.
       summary: snap?.summary ?? detail.summary,
       whenToUse: snap?.whenToUse ?? detail.whenToUse,
       whenNotToUse: snap?.whenNotToUse ?? detail.whenNotToUse,
-      requires: snap?.requires ?? detail.requires,
+      // `null` on a snapshot is "this version had no requires", not "look at latest".
+      requires: snap ? snap.requires : detail.requires,
       isGlobal: true,
     })
     return invoke<TeamSkillFileDiff[]>('team_skill_diff_versions', {
@@ -1943,6 +1955,13 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     return invoke<TeamSkillDraftMetadata>('team_skill_read_draft_metadata', { slug, teamId })
+  },
+
+  listDraftRecoveries: async (slug) => {
+    return invoke<DraftRecoveryRecord[]>('team_skill_list_draft_recoveries', {
+      slug,
+      limit: 10,
+    }).catch(() => [])
   },
 
   loadSection: async (section, opts) => {

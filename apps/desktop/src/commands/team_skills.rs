@@ -525,7 +525,11 @@ fn team_skill_install_blocking(
         Some(move_to_trash(
             &target,
             &slug,
-            Some(draft_recovery_context(&target, "replace", req.team_id.as_deref())),
+            Some(draft_recovery_context(
+                &target,
+                "replace",
+                req.team_id.as_deref(),
+            )),
         )?)
     } else {
         None
@@ -1336,26 +1340,41 @@ fn read_text_side(path: &std::path::Path) -> (Option<String>, bool) {
 
 fn stage_installed_pack(req: &TeamSkillInstallRequest) -> Result<tempfile::TempDir, String> {
     let client = build_cloud_api_client()?;
-    let resp = download_request(
-        &client,
-        &req.download_url,
-        req.access_token.as_deref(),
-    )
-    .send()
-    .map_err(|e| format!("Download failed: {}", format_reqwest_error(&e)))?;
+    let resp = download_request(&client, &req.download_url, req.access_token.as_deref())
+        .send()
+        .map_err(|e| format!("Download failed: {}", format_reqwest_error(&e)))?;
     if !resp.status().is_success() {
         return Err(format!("Download failed with status {}", resp.status()));
     }
     let zip_bytes = resp
         .bytes()
         .map_err(|e| format!("Failed to read download body: {}", e))?;
-    let staging = tempfile::tempdir().map_err(|e| format!("Failed to create staging dir: {}", e))?;
+    let staging =
+        tempfile::tempdir().map_err(|e| format!("Failed to create staging dir: {}", e))?;
     extract_zip_to_dir(&zip_bytes, staging.path())?;
-    write_install_frontmatter(staging.path(), req)?;
+    // Category is not snapshotted on version rows. Stamping the *current*
+    // registry category onto both sides of a version-range diff hides the
+    // pack's own frontmatter. Prefer the zip; fall back to the caller's value.
+    let mut stamped = req.clone();
+    if let Ok(current) = std::fs::read_to_string(staging.path().join("SKILL.md")) {
+        let parsed = parse_frontmatter(&current);
+        if let Some(category) = parsed.string("category") {
+            stamped.category = Some(category.to_string());
+        }
+        if stamped.requires.is_none() {
+            if let Some(requires) = parsed.present_list("requires") {
+                stamped.requires = Some(requires);
+            }
+        }
+    }
+    write_install_frontmatter(staging.path(), &stamped)?;
     Ok(staging)
 }
 
-fn diff_staged_trees(from: &std::path::Path, to: &std::path::Path) -> Result<Vec<TeamSkillFileDiff>, String> {
+fn diff_staged_trees(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> Result<Vec<TeamSkillFileDiff>, String> {
     let mut paths = BTreeSet::new();
     for rel in list_managed_paths(from).map_err(|e| format!("Failed to list files: {}", e))? {
         paths.insert(rel);
@@ -1398,9 +1417,17 @@ pub async fn team_skill_diff_versions(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamSkillDraftMetadata {
+    /// `None` = key absent in the draft (keep registry). `Some("")` = cleared.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub when_to_use: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub when_not_to_use: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires: Option<Vec<String>>,
 }
 
 /// Read structured metadata from the working copy's SKILL.md frontmatter.
@@ -1416,8 +1443,10 @@ pub fn team_skill_read_draft_metadata(
     if !skill_md.is_file() {
         return Ok(TeamSkillDraftMetadata {
             summary: None,
+            category: None,
             when_to_use: None,
             when_not_to_use: None,
+            requires: None,
         });
     }
     let content = std::fs::read_to_string(&skill_md)
@@ -1425,11 +1454,12 @@ pub fn team_skill_read_draft_metadata(
     let parsed = parse_frontmatter(&content);
     Ok(TeamSkillDraftMetadata {
         summary: parsed
-            .string("description")
-            .or_else(|| parsed.string("summary"))
-            .map(str::to_string),
-        when_to_use: parsed.string("when_to_use").map(str::to_string),
-        when_not_to_use: parsed.string("when_not_to_use").map(str::to_string),
+            .present_string("description")
+            .or_else(|| parsed.present_string("summary")),
+        category: parsed.present_string("category"),
+        when_to_use: parsed.present_string("when_to_use"),
+        when_not_to_use: parsed.present_string("when_not_to_use"),
+        requires: parsed.present_list("requires"),
     })
 }
 
@@ -1477,7 +1507,11 @@ pub fn team_skill_discard_local(slug: String, team_id: Option<String>) -> Result
     move_to_trash(
         &target,
         &slug,
-        Some(draft_recovery_context(&target, "discard", team_id.as_deref())),
+        Some(draft_recovery_context(
+            &target,
+            "discard",
+            team_id.as_deref(),
+        )),
     )
 }
 
@@ -1547,7 +1581,11 @@ fn record_draft_recovery(rec: &DraftRecoveryRecord) {
         });
 }
 
-fn draft_recovery_context(target: &std::path::Path, reason: &str, team_id: Option<&str>) -> DraftRecoveryContext {
+fn draft_recovery_context(
+    target: &std::path::Path,
+    reason: &str,
+    team_id: Option<&str>,
+) -> DraftRecoveryContext {
     let base_version = read_origin(target).and_then(|o| o.installed_version.parse::<i64>().ok());
     DraftRecoveryContext {
         reason: reason.to_string(),
