@@ -63,6 +63,7 @@ import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
 import {
   useTeamShareBrowserStore,
+  SkillMutationRefreshError,
   type TeamMcpKind,
   type TeamShareSection,
   type TeamSkillKind,
@@ -83,6 +84,7 @@ import {
   withDefaultExtension,
 } from '@/lib/knowledge-file-names'
 import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
+import { toastSkillMutationRefreshFailed } from '@/components/teamshare/skillMutationRefreshToast'
 
 const SECTION_META: Record<
   TeamShareSection,
@@ -348,6 +350,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
   const setCreating = useTeamShareBrowserStore((s) => s.setCreating)
   const deleteTeamSkill = useTeamShareBrowserStore((s) => s.deleteTeamSkill)
+  const retrySkillsRuntimeRefresh = useTeamShareBrowserStore((s) => s.retrySkillsRuntimeRefresh)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
 
@@ -363,6 +366,11 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       setDeleteTarget(null)
       toast.success(t('teamShare.skillDeleteTeamDone', '已从团队移除'))
     } catch (e) {
+      if (e instanceof SkillMutationRefreshError) {
+        setDeleteTarget(null)
+        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+        return
+      }
       toast.error(
         t('teamShare.skillDeleteTeamFailed', '移除失败：{{msg}}', {
           msg: e instanceof Error ? e.message : String(e),
@@ -371,7 +379,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     } finally {
       setDeleting(false)
     }
-  }, [deleteTarget, deleting, deleteTeamSkill, t])
+  }, [deleteTarget, deleting, deleteTeamSkill, retrySkillsRuntimeRefresh, t])
 
   // Which skill packages are showing their files, and which one is being added
   // to. View state, not persisted: it says nothing about the skill itself.

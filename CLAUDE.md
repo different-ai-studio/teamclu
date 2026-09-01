@@ -265,8 +265,8 @@ Cloud API endpoints: see `docs/openapi/teamclu-api.v1.yaml` (the contract) —
 
 Team share onboarding endpoints (see `docs/openapi/teamclu-api.v1.yaml`):
 
-- `GET  /v1/teams/:id/workspace-config` — merged shape `{ syncMode, litellmTeamId, llm }`. The legacy `{ defaultWorkspaceId, pinnedWorkspaceIds }` shape now lives at `GET /v1/teams/:id/workspace-defaults` (PUT path is unchanged).
-- `POST /v1/teams/:id/litellm/setup` — provisions LiteLLM and returns `{ aiGatewayEndpoint, litellmKey }`; 503 `litellm_unavailable` if FC is not configured.
+- `GET  /v1/teams/:id/workspace-config` — merged shape `{ syncMode, llm }`. The legacy `{ defaultWorkspaceId, pinnedWorkspaceIds }` shape now lives at `GET /v1/teams/:id/workspace-defaults` (PUT path is unchanged).
+- `PUT  /v1/teams/:id/llm-config` — sets the team's AI gateway (`{ enabled, baseUrl, models }`). FC no longer provisions LiteLLM; the gateway is configured, not minted.
 
 <!-- seahelm:suggest:start -->
 ## Quick options for the user (seahelm)

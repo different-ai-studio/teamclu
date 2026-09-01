@@ -697,8 +697,6 @@ impl Backend for CloudApiBackend {
             #[serde(default)]
             base_url: Option<String>,
             #[serde(default)]
-            ai_gateway_endpoint: Option<String>,
-            #[serde(default)]
             models: Vec<ModelEntry>,
         }
         #[derive(serde::Deserialize)]
@@ -715,10 +713,7 @@ impl Backend for CloudApiBackend {
         let Some(llm) = resp.llm else {
             return Ok(ManagedLlmConfig::default());
         };
-        let base_url = llm
-            .base_url
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| llm.ai_gateway_endpoint.filter(|s| !s.trim().is_empty()));
+        let base_url = llm.base_url.filter(|s| !s.trim().is_empty());
         let models = llm
             .models
             .into_iter()
@@ -822,19 +817,6 @@ impl Backend for CloudApiBackend {
     async fn remove_team_skill_install(&self, team_id: &str, slug: &str) -> BackendResult<()> {
         self.delete_no_content(&format!("/v1/teams/{team_id}/skills/{slug}/install"))
             .await
-    }
-
-    async fn ensure_llm_member_key(&self, team_id: &str) -> BackendResult<()> {
-        #[derive(serde::Serialize)]
-        struct Empty {}
-        #[derive(serde::Deserialize)]
-        struct Resp {
-            #[allow(dead_code)]
-            key: Option<String>,
-        }
-        let path = format!("/v1/teams/{team_id}/litellm/member-key");
-        let _: Resp = self.post(&path, &Empty {}, None).await?;
-        Ok(())
     }
 
     async fn get_effective_default_agent(&self, team_id: &str) -> BackendResult<Option<String>> {
@@ -2917,9 +2899,7 @@ mod tests {
                 "llm": {
                     "enabled": true,
                     "baseUrl": "https://ai.ucar.cc",
-                    "models": [{ "id": "default", "name": "Default" }, { "id": "pro", "name": "Pro" }],
-                    "availableModels": [],
-                    "aiGatewayEndpoint": "https://ai.ucar.cc/v1"
+                    "models": [{ "id": "default", "name": "Default" }, { "id": "pro", "name": "Pro" }]
                 }
             })))
             .mount(&server)
@@ -2933,25 +2913,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_llm_config_falls_back_to_gateway_endpoint_when_base_url_null() {
+    async fn managed_llm_config_without_base_url_is_not_enabled() {
+        // `enabled` alone is not enough: with no baseUrl there is nowhere to
+        // send traffic, so the resolver must not advertise a provider.
         let server = MockServer::start().await;
         mount_refresh(&server).await;
         Mock::given(method("GET"))
             .and(path("/v1/teams/team-1/workspace-config"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "llm": {
-                    "enabled": true,
-                    "baseUrl": null,
-                    "models": [],
-                    "aiGatewayEndpoint": "https://gw.example/v1"
-                }
+                "llm": { "enabled": true, "baseUrl": null, "models": [] }
             })))
             .mount(&server)
             .await;
         let backend = CloudApiBackend::new(config(&server));
         let cfg = backend.managed_llm_config("team-1").await.unwrap();
         assert!(cfg.enabled);
-        assert_eq!(cfg.base_url.as_deref(), Some("https://gw.example/v1"));
+        assert_eq!(cfg.base_url, None);
     }
 
     #[tokio::test]

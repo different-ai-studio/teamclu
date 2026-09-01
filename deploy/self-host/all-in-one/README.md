@@ -1,11 +1,11 @@
-# TeamClu Self-host All-in-one (Supabase mode)
+# TeamClu Self-host All-in-one
 
-A single Docker image that folds the full TeamClu self-host **Supabase-mode**
-backend into one auto-starting container, behind Caddy on one port (`8080`).
+A single Docker image that folds the full TeamClu self-host backend into one
+auto-starting container, behind Caddy on one port (`8080`).
 
-`BACKEND_KIND=supabase`: the container runs a real Supabase data plane
-(Postgres + GoTrue + PostgREST + storage-api) plus NanoMQ, the TeamClu Cloud API
-(FC), and Caddy — all under `supervisord`.
+It runs a real Supabase data plane (Postgres + GoTrue + PostgREST +
+storage-api) plus NanoMQ, the TeamClu Cloud API (FC), and Caddy — all under
+`supervisord`.
 
 ## What runs inside
 

@@ -175,6 +175,7 @@ pub struct DaemonServer {
     refresh_watch_registry:
         Option<std::sync::Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
     refresh_coordinator: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
+    runtime_supervisor: Option<Arc<crate::runtime::RuntimeSupervisor>>,
     /// Applies skills-only refreshes once the workspace becomes idle.
     refresh_auto_apply_task: Option<tokio::task::JoinHandle<()>>,
     /// Shared flag written by the MQTT event loop and read by `/v1/info`.
@@ -820,8 +821,12 @@ impl DaemonServer {
             cron_sessions: cron::CronSessionCache::new(),
             refresh_watch_registry: None,
             refresh_coordinator: None,
+            runtime_supervisor: None,
             refresh_auto_apply_task: None,
             mqtt_connected_flag: None,
+            // Built without a token source: the HTTP layer owns the TokenStore
+            // and has not started yet. It is injected below, once that store
+            // exists — see the `set_tokens` call after the http spawn.
             managed_llm: Arc::new(crate::runtime::managed_llm::ManagedLlmResolver::new(
                 backend,
             )),
@@ -1136,19 +1141,21 @@ impl DaemonServer {
             // auto-reload running workspaces on pending coordinator state.
             let refresh_coordinator = runtime_supervisor.refresh_coordinator();
             self.refresh_coordinator = Some(refresh_coordinator.clone());
+            self.runtime_supervisor = Some(runtime_supervisor.clone());
             {
                 let mut manager = self.agents.lock().await;
                 manager.attach_refresh_coordinator(refresh_coordinator.clone());
             }
             self.refresh_auto_apply_task =
                 Some(runtime_supervisor.clone().start_refresh_auto_applier());
-            let runtime: Arc<dyn crate::http::runtime_adapter::RuntimeAdapter> =
-                crate::http::runtime_adapter::RuntimeManagerAdapter::new_with_execution_context_assembler(
+            let adapter = crate::http::runtime_adapter::RuntimeManagerAdapter::new_with_execution_context_assembler(
                     self.agents.clone(),
                     http_cfg.max_event_backlog,
                     Some(refresh_coordinator),
                     Some(execution_context_assembler.clone()),
                 );
+            adapter.set_runtime_supervisor(runtime_supervisor.clone());
+            let runtime: Arc<dyn crate::http::runtime_adapter::RuntimeAdapter> = adapter;
             // Start the refresh watchers with an empty workspace set so the
             // (cloud-dependent) `cloud_workspace_list()` fetch does not delay the
             // HTTP listener bind. The set is populated on a background task after
@@ -1206,6 +1213,26 @@ impl DaemonServer {
             {
                 Ok(h) => {
                     info!(addr = %h.local_addr, "http listener bound");
+                    // Hand the spawn-path resolver the SAME TokenStore the HTTP
+                    // layer authenticates against. Loading a second store from
+                    // the same file is not equivalent: the file holds only the
+                    // root token, while minted session tokens live in the
+                    // instance that minted them — so a token from any other
+                    // store is rejected as "invalid or expired".
+                    //
+                    // Without this the runtimes that read their credential from
+                    // `TEAMCLU_TEAM_PROVIDER` (pi, and anything after it) get a
+                    // token nothing accepts, and every team-model call 401s.
+                    self.managed_llm.set_tokens(
+                        crate::runtime::gateway_token::GatewayTokenSource::new(h.tokens.clone()),
+                    );
+                    // ...and where to reach that proxy. Runtimes are pointed
+                    // here, not at the cloud gateway: the token above is only
+                    // valid locally, and this hop is what refreshes the cloud
+                    // credential per request so a multi-day agent never meets
+                    // its expiry.
+                    self.managed_llm
+                        .set_local_http_base(format!("http://{}", h.local_addr));
                     if let Err(err) = self
                         .runtime_context
                         .validate_managed_setup(&self.config.agents.local_agent)
@@ -3884,6 +3911,7 @@ pub(crate) mod tests {
                 cron_sessions: cron::CronSessionCache::new(),
                 refresh_watch_registry: None,
                 refresh_coordinator: None,
+                runtime_supervisor: None,
                 refresh_auto_apply_task: None,
                 mqtt_connected_flag: None,
                 mqtt_recovery_rx: None,

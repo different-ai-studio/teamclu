@@ -6,7 +6,7 @@ import {
   assertTransportShape,
   readServerFields,
   NAME_RE,
-} from "../src/lib/pg-repo/team-mcp.js";
+} from "../src/lib/validation/team-mcp.js";
 
 // Route-level coverage for the team MCP catalog, plus direct repo coverage for
 // the secret-literal gate (which is the security-relevant part and does not

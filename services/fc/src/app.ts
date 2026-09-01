@@ -1,12 +1,9 @@
-import { sharedSecretMatches } from "./lib/shared-secret.js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { getAuth } from "./auth/better-auth.js";
 import { registerAllRoutes } from "./lib/routes/index.js";
 import { createHonoRouterAdapter } from "./lib/hono-adapter.js";
 import { isRateLimited, resolveClientIp } from "./lib/rate-limit.js";
 import { handleSyncRequest } from "./lib/legacy-sync.js";
-import { resolveBackendKind } from "./lib/backend-kind.js";
 import * as admin from "./lib/admin-handlers.js";
 import { isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
 import { parseAppPublicHost } from "./lib/apps-public-host.js";
@@ -15,7 +12,6 @@ export type AppDeps = {
   createRepository: (args: { accessToken: string }) => unknown;
   createAuthRepository: () => unknown;
   createSystemRepository?: () => unknown | Promise<unknown>;
-  runCron?: (task: string) => Promise<unknown>;
   /** Resolves a vanity app host to its row; injected so tests need no database. */
   lookupVanityApp?: LookupVanityApp;
 };
@@ -103,39 +99,6 @@ export function createApp(deps: AppDeps): Hono {
   // Container liveness/readiness probe — no DB access.
   app.get("/healthz", (c) => c.json({ ok: true }));
 
-  // Better-Auth HTTP surface (JWKS, OAuth callbacks, session API). Required for
-  // BACKEND_KIND=postgres: verifyAccessToken reads JWKS in-process, but OAuth
-  // and external callers still need these routes on /api/auth/*.
-  if (resolveBackendKind() === "postgres") {
-    app.on(["POST", "GET"], "/api/auth/*", (c) => getAuth().handler(c.req.raw));
-  }
-
-  // HTTP-triggered cron (replaces FC timer for the Docker/self-host path).
-  // Guarded by a shared secret; an external scheduler POSTs { task }.
-  app.post("/internal/cron", async (c) => {
-    if (!sharedSecretMatches(c.req.header("x-cron-secret"), process.env.CRON_TRIGGER_SECRET)) {
-      return c.json({ error: "unauthorized" }, 401);
-    }
-    if (!deps.runCron) {
-      return c.json({ error: "cron_unavailable" }, 503);
-    }
-    const t = await c.req.text();
-    let body: any = {};
-    if (t) { try { body = JSON.parse(t); } catch { return c.json({ error: "Invalid JSON body" }, 400); } }
-    if (!body.task || typeof body.task !== "string") {
-      return c.json({ error: "missing_task" }, 400);
-    }
-    try {
-      const result = await deps.runCron(body.task);
-      return c.json(result as any);
-    } catch (err: any) {
-      if (String(err?.message).startsWith("Unknown cron task")) {
-        return c.json({ error: "unknown_task" }, 400);
-      }
-      throw err;
-    }
-  });
-
   // /v1 business routes — registered through the adapter so routes/*.ts are unchanged.
   const v1Router = createHonoRouterAdapter(app, deps);
   registerAllRoutes(v1Router as any);
@@ -199,7 +162,6 @@ export function createApp(deps: AppDeps): Hono {
   // Admin/provisioning endpoints (all POST). Each parses JSON body then calls the handler.
   const adminRoutes: Array<[string, (body: any) => Promise<any>]> = [
     ["/reset-secret", (b) => admin.handleResetSecret(b)],
-    ["/managed-git/setup-litellm", (b) => admin.handleManagedGitSetupLitellm(b)],
   ];
   for (const [path, fn] of adminRoutes) {
     app.post(path, async (c) => {

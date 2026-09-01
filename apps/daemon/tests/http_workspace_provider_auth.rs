@@ -2,13 +2,18 @@
 
 include!("support/crate_modules.rs");
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::http::runtime_adapter::RuntimeManagerAdapter;
+use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use config::{HttpConfig, OpenCodeCompatStore};
 use reqwest::Client;
+use runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
+use runtime::opencode_http::host_pool::{GenerationFactory, HostGeneration, OpenCodeHostPool};
+use runtime::opencode_http::supervisor::{ServeSupervisor, ShutdownOutcome};
 use serde_json::Value;
 use tokio::sync::Mutex;
 use wiremock::matchers::{method, path, query_param};
@@ -343,11 +348,76 @@ async fn post_materialize_team_mcp_clears_copies_an_older_build_left_behind() {
     );
 }
 
+struct DisposeMockFactory {
+    base_url: String,
+}
+
+#[async_trait]
+impl GenerationFactory for DisposeMockFactory {
+    async fn start(
+        &self,
+        generation_id: String,
+        _domain: IsolationDomainKey,
+        revision: ProcessEnvRevision,
+        _env: HashMap<String, String>,
+    ) -> Result<Arc<ServeSupervisor>, String> {
+        Ok(Arc::new(ServeSupervisor::test_with_base_url(
+            generation_id,
+            revision,
+            self.base_url.clone(),
+        )))
+    }
+
+    fn stop(&self, _generation: &HostGeneration) -> ShutdownOutcome {
+        ShutdownOutcome::Stopped
+    }
+}
+
 async fn test_app_with_refresh() -> (
     TestApp,
     tempfile::TempDir,
     std::sync::Arc<runtime::RuntimeSupervisor>,
 ) {
+    spawn_refresh_app(runtime::RuntimeSupervisor::new(Arc::new(Mutex::new(
+        runtime::RuntimeManager::new(std::collections::HashMap::new(), None),
+    ))))
+    .await
+}
+
+async fn test_app_with_refresh_pool(
+    base_url: String,
+) -> (
+    TestApp,
+    tempfile::TempDir,
+    std::sync::Arc<runtime::RuntimeSupervisor>,
+    Arc<OpenCodeHostPool>,
+) {
+    let pool = OpenCodeHostPool::new(Arc::new(DisposeMockFactory { base_url }));
+    let manager = Arc::new(Mutex::new(runtime::RuntimeManager::new(
+        std::collections::HashMap::new(),
+        None,
+    )));
+    let supervisor = runtime::RuntimeSupervisor::new_with_host_pool(manager.clone(), pool.clone());
+    let (app, dir) = spawn_refresh_app_inner(manager, supervisor.clone()).await;
+    (app, dir, supervisor, pool)
+}
+
+async fn spawn_refresh_app(
+    supervisor: std::sync::Arc<runtime::RuntimeSupervisor>,
+) -> (
+    TestApp,
+    tempfile::TempDir,
+    std::sync::Arc<runtime::RuntimeSupervisor>,
+) {
+    let manager = supervisor.agent_manager().clone();
+    let (app, dir) = spawn_refresh_app_inner(manager, supervisor.clone()).await;
+    (app, dir, supervisor)
+}
+
+async fn spawn_refresh_app_inner(
+    manager: Arc<Mutex<runtime::RuntimeManager>>,
+    supervisor: std::sync::Arc<runtime::RuntimeSupervisor>,
+) -> (TestApp, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let token_path = dir.path().join("token");
     let cfg = HttpConfig {
@@ -357,12 +427,8 @@ async fn test_app_with_refresh() -> (
         heartbeat_interval: Duration::from_secs(5),
         ..HttpConfig::default()
     };
-    let manager = Arc::new(Mutex::new(runtime::RuntimeManager::new(
-        std::collections::HashMap::new(),
-        None,
-    )));
-    let supervisor = runtime::RuntimeSupervisor::new(manager.clone());
     let runtime = RuntimeManagerAdapter::new(manager, 256, None);
+    runtime.set_runtime_supervisor(supervisor.clone());
     let workspace_control: Arc<dyn config::WorkspaceControlStore> =
         Arc::new(OpenCodeCompatStore::new());
     let handle = crate::http::spawn(
@@ -370,7 +436,7 @@ async fn test_app_with_refresh() -> (
         crate::http::server::metadata("actor".into(), "test"),
         runtime,
         Some(workspace_control),
-        Some(supervisor.clone()),
+        Some(supervisor),
         None,
         test_sync_dispatcher(),
         None,
@@ -423,15 +489,41 @@ async fn test_app_with_refresh() -> (
             session_token,
         },
         dir,
-        supervisor,
     )
 }
 
+async fn seed_workspace_host(
+    pool: &Arc<OpenCodeHostPool>,
+    workspace_id: &str,
+) -> runtime::opencode_http::host_pool::HostLease {
+    let env = HashMap::from([("SENTINEL".to_string(), "v1".to_string())]);
+    let revision = ProcessEnvRevision::from_bindings(&env);
+    pool.acquire(
+        IsolationDomainKey::Workspace(workspace_id.to_string()),
+        revision,
+        env,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .await
+    .expect("seed host")
+}
+
 #[tokio::test]
-async fn skills_refresh_records_skills_change() {
-    let (app, _dir, supervisor) = test_app_with_refresh().await;
+async fn skills_refresh_applies_and_clears_when_workspace_is_idle() {
+    let server = MockServer::start().await;
     let ws = tempfile::tempdir().expect("workspace");
+    let directory = ws.path().to_string_lossy().into_owned();
+    Mock::given(method("POST"))
+        .and(path("/instance/dispose"))
+        .and(query_param("directory", directory.clone()))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (app, _dir, supervisor, pool) = test_app_with_refresh_pool(server.uri()).await;
     let wid = ws_id(ws.path());
+    let _lease = seed_workspace_host(&pool, &wid).await;
     let body: Value = app
         .client
         .post(format!("{}/v1/workspaces/{wid}/skills/refresh", app.base))
@@ -445,14 +537,69 @@ async fn skills_refresh_records_skills_change() {
         .await
         .expect("json");
     assert_eq!(body["ok"], true);
+    assert_eq!(body["status"], "applied");
+    assert_eq!(body["outcome"], "reload_required");
 
     let dto = supervisor
         .refresh_coordinator()
         .runtime_refresh_dto(&wid)
         .await;
+    assert_eq!(dto.status, "clean");
+    assert!(
+        dto.change_kinds.is_empty(),
+        "applied refresh must clear pending skills, got {:?}",
+        dto.change_kinds
+    );
+}
+
+#[tokio::test]
+async fn skills_refresh_pending_when_workspace_has_active_turn() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/instance/dispose"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let (app, _dir, supervisor, pool) = test_app_with_refresh_pool(server.uri()).await;
+    let ws = tempfile::tempdir().expect("workspace");
+    let wid = ws_id(ws.path());
+    let _lease = seed_workspace_host(&pool, &wid).await;
+    {
+        let mut manager = supervisor.agent_manager().lock().await;
+        manager.add_test_workspace_runtime(
+            "rt-busy",
+            &ws.path().to_string_lossy(),
+            &wid,
+            proto::amux::AgentStatus::Active,
+        );
+    }
+    let body: Value = app
+        .client
+        .post(format!("{}/v1/workspaces/{wid}/skills/refresh", app.base))
+        .bearer_auth(&app.session_token)
+        .send()
+        .await
+        .expect("response")
+        .error_for_status()
+        .expect("status")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["status"], "pending_active_turn");
+    assert!(body.get("outcome").is_none() || body["outcome"].is_null());
+
+    let dto = supervisor
+        .refresh_coordinator()
+        .runtime_refresh_dto(&wid)
+        .await;
+    assert_eq!(dto.status, "pending");
+    assert!(dto.auto_apply_blocked_by_active_runtime);
     assert!(
         dto.change_kinds.iter().any(|k| k == "skills"),
-        "expected Skills refresh, got {:?}",
+        "expected Skills still pending, got {:?}",
         dto.change_kinds
     );
 }

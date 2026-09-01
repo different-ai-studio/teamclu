@@ -40,7 +40,7 @@ test("parseSyamlEnvVars keeps digits in names (APNS_PRIVATE_KEY_P8)", () => {
 test("parseComposeFcEnvVars reads the fc service, not another service's environment", () => {
   const text = [
     "services:",
-    "  litellm:",
+    "  ai-gateway:",
     "    environment:",
     "      NOT_FC: 1",
     "  fc:",
@@ -61,11 +61,6 @@ test("parseComposeFcEnvVars reads the fc service, not another service's environm
  * is a decision, not an oversight — the reason is the point of the list.
  */
 const INTENTIONAL_FC_ONLY = {
-  // Better-Auth path (BACKEND_KIND=postgres) only. Self-host defaults to
-  // BACKEND_KIND=supabase, where GoTrue owns login and sends OTP mail from its
-  // own GOTRUE_SMTP_* config; app.ts mounts the Better-Auth surface only under
-  // postgres, so FC never reads these there.
-
   // Must NOT be set on self-host — passing these through would cause the bug.
   CORS_HANDLED_BY_PROXY: "MUST stay unset: Caddy adds no CORS headers, Hono must own CORS",
 
@@ -82,11 +77,7 @@ const INTENTIONAL_FC_ONLY = {
  * than blessing them as intentional. Fix by adding to the compose fc
  * environment map and deleting the entry here.
  */
-const KNOWN_GAPS = {
-  // Default is 1, a serverless tuning. Inert while self-host runs
-  // BACKEND_KIND=supabase (getDb() is postgres-only), but serializes every DB
-  // request through one connection the moment that flips.
-};
+const KNOWN_GAPS = {};
 
 /** In the compose fc allowlist and deliberately not in s.yaml. */
 const INTENTIONAL_COMPOSE_ONLY = {
@@ -102,7 +93,7 @@ function readVars() {
   // Guard against a parser regression quietly emptying either side.
   assert.ok(syaml.length > 20, `parsed only ${syaml.length} vars from s.yaml — parser likely broken`);
   assert.ok(compose.length > 20, `parsed only ${compose.length} vars from compose — parser likely broken`);
-  for (const shared of ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "LITELLM_URL"]) {
+  for (const shared of ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "MQTT_BROKER_URL"]) {
     assert.ok(syaml.includes(shared), `expected ${shared} in s.yaml — parser likely broken`);
     assert.ok(compose.includes(shared), `expected ${shared} in compose — parser likely broken`);
   }

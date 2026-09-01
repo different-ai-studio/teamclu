@@ -159,7 +159,7 @@ The key setting is `cloudApiUrl`, which points the app at a TeamClu Cloud API de
 
 `build.config.local.json` is git-ignored. For local development you can also override the endpoint with `VITE_CLOUD_API_URL` in `packages/app/.env.local`. Rebuild for changes to take effect.
 
-The Cloud API implementation lives in `services/fc/` (Node.js 20), backed by Supabase and, optionally, a LiteLLM proxy for shared AI budget management.
+The Cloud API implementation lives in `services/fc/` (Node.js 20), backed by Supabase, with the team AI gateway in `services/ai-gateway/` handling shared AI budgets.
 
 ## Documentation
 

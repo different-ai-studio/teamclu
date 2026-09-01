@@ -28,6 +28,7 @@ use crate::opencode_settings::LiveProviderCatalog;
 use crate::opencode_settings::OpenCodeSettingsError;
 use crate::proto::amux;
 use crate::runtime::refresh::{RefreshChangeKind, RefreshSource};
+use crate::runtime::supervisor::SkillsRefreshApplyStatus;
 use std::collections::HashMap;
 use std::path::Path as StdPath;
 
@@ -1118,12 +1119,16 @@ pub async fn delete_skill(
 #[derive(Debug, Serialize)]
 pub struct SkillsRefreshResponse {
     pub ok: bool,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ApplyOutcome>,
 }
 
 /// `POST /v1/workspaces/:id/skills/refresh`
 ///
-/// Does not rewrite files. Registers a Skills refresh so idle auto-apply
-/// disposes the OpenCode workspace instance and the next session re-reads disk.
+/// Does not rewrite files. Registers a Skills refresh and, when the workspace
+/// is idle, applies it before returning so the next session cannot reuse the
+/// cached OpenCode instance. An active turn is not interrupted.
 pub async fn refresh_skills(
     principal: Principal,
     State(state): State<HttpState>,
@@ -1146,7 +1151,34 @@ pub async fn refresh_skills(
         )
         .await
         .map_err(|e| HttpError::internal(e.to_string()))?;
-    Ok(Json(SkillsRefreshResponse { ok: true }))
+    let Some(supervisor) = state.runtime_supervisor.as_ref() else {
+        return Ok(Json(SkillsRefreshResponse {
+            ok: true,
+            status: "applied",
+            outcome: Some(ApplyOutcome::ReloadRequired),
+        }));
+    };
+    match supervisor
+        .apply_pending_skills_refresh(&runtime_workspace_id, &wpath)
+        .await
+    {
+        Ok(SkillsRefreshApplyStatus::Applied(outcome)) => Ok(Json(SkillsRefreshResponse {
+            ok: true,
+            status: "applied",
+            outcome: Some(outcome),
+        })),
+        Ok(SkillsRefreshApplyStatus::PendingActiveTurn) => Ok(Json(SkillsRefreshResponse {
+            ok: true,
+            status: "pending_active_turn",
+            outcome: None,
+        })),
+        Err(WorkspaceControlError::ActiveTurn(_)) => Ok(Json(SkillsRefreshResponse {
+            ok: true,
+            status: "pending_active_turn",
+            outcome: None,
+        })),
+        Err(e) => Err(map_control_err(e)),
+    }
 }
 
 /// `PUT /v1/workspaces/:id/roles/:slug`

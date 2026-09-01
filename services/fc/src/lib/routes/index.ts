@@ -19,7 +19,6 @@ import { registerSync } from "./sync.js";
 import { registerTeamShare } from "./team-share.js";
 import { registerTeamCredits } from "./team-credits.js";
 import { registerStripe } from "./stripe.js";
-import { registerTeamLiteLlm } from "./team-litellm.js";
 import { registerAccount } from "./account.js";
 import { registerTeamSkills } from "./team-skills.js";
 import { registerMarketplace } from "./marketplace.js";
@@ -36,7 +35,7 @@ export function registerAllRoutes(router) {
   registerMessages(router);
   registerInvites(router);
   // team-share routes must be registered BEFORE workspaces so the new merged
-  // GET /v1/teams/:teamId/workspace-config (share+litellm shape) wins over
+  // GET /v1/teams/:teamId/workspace-config wins over
   // the legacy default/pinned-workspace GET in workspaces.mjs. The legacy
   // PUT remains reachable since it's a distinct verb.
   registerTeamShare(router);
@@ -47,7 +46,6 @@ export function registerAllRoutes(router) {
   // Not under /v1/teams/:teamId, so registration order is irrelevant here —
   // unlike the team-scoped routes above, which must precede workspaces.
   registerStripe(router);
-  registerTeamLiteLlm(router);
   // Before workspaces for the same reason team-share is: these own
   // /v1/teams/:teamId/skills* and must not be shadowed by a broader match.
   registerTeamSkills(router);

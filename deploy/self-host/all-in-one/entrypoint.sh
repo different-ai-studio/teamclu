@@ -49,7 +49,6 @@ make_jwt_secret() { rand_base64_url 48; }
 POSTGRES_PASSWORD="$(ensure_env_value "$SECRETS_FILE" POSTGRES_PASSWORD make_b64_32)"
 JWT_SECRET="$(ensure_env_value "$SECRETS_FILE" JWT_SECRET make_jwt_secret)"
 if ! grep -q '^JWT_EXP=' "$SECRETS_FILE"; then write_env_value "$SECRETS_FILE" JWT_EXP 3600; fi
-ensure_env_value "$SECRETS_FILE" CRON_TRIGGER_SECRET make_b64_32 >/dev/null
 
 JWT_EXP="$(read_env_value "$SECRETS_FILE" JWT_EXP)"
 

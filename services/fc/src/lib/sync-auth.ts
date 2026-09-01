@@ -3,32 +3,10 @@
 // JWT verification + actor resolution for /sync/* endpoints.
 // Spec §3 auth middleware.
 //
-// DUAL PATH: JWT + actor resolution for /sync/* — postgres uses verifyAccessToken
-// + pg-repo/authz; supabase uses auth.getUser + actor_id_for_user_in_team RPC.
-// Update BOTH branches when changing sync auth (README § Dual backend paths).
-//
-// Under BACKEND_KIND=postgres the token is verified locally (verifyAccessToken)
-// and actor membership is resolved via pg-repo/authz — no Supabase calls.
-// Under the default "supabase" backend the original supabase.auth.getUser +
-// actor_id_for_user_in_team RPC path is preserved unchanged.
+// The caller's GoTrue JWT is verified with supabase.auth.getUser, and their
+// actor for the team comes from the amux.actor_id_for_user_in_team RPC.
 
 import { createServiceRoleClient } from './supabase.js';
-import { resolveBackendKind } from './backend-kind.js';
-import { verifyAccessToken, type VerifiedClaims } from '../auth/verify.js';
-import { resolveActorForTeam } from './pg-repo/authz.js';
-import { getDb, type Db } from '../db/client.js';
-import type { JWTVerifyGetKey } from 'jose';
-
-// ---------------------------------------------------------------------------
-// Injectable deps — production callers omit these; tests inject stubs.
-// ---------------------------------------------------------------------------
-
-type VerifyFn = (token: string, opts?: { keyset?: JWTVerifyGetKey; baseURL?: string }) => Promise<VerifiedClaims>;
-
-interface SyncAuthDeps {
-  verifyToken?: VerifyFn;
-  db?: Db;
-}
 
 // ---------------------------------------------------------------------------
 // extractBearer — shared helper
@@ -60,24 +38,11 @@ function extractBearer(
  */
 export async function authenticateJwtOnly(
   { headers }: { headers: Record<string, string> | undefined },
-  deps: SyncAuthDeps = {},
 ): Promise<{ ok: true; userId: string } | { ok: false; status: number; error: string }> {
   const { token, err: bearerErr } = extractBearer(headers);
   if (bearerErr) return { ok: false, ...bearerErr };
   if (!token) return { ok: false, status: 401, error: 'missing bearer token' };
 
-  if (resolveBackendKind() === 'postgres') {
-    const verify = deps.verifyToken ?? verifyAccessToken;
-    try {
-      const claims = await verify(token);
-      return { ok: true, userId: claims.sub };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { ok: false, status: 401, error: `jwt invalid: ${msg}` };
-    }
-  }
-
-  // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();
   const { data: userData, error: userErr } = await supabase.auth.getUser(token);
   if (userErr || !userData?.user?.id) {
@@ -100,7 +65,6 @@ export async function authenticateJwtOnly(
  */
 export async function authenticateSyncCall(
   { headers, teamId }: { headers: Record<string, string> | undefined; teamId: string },
-  deps: SyncAuthDeps = {},
 ): Promise<
   | { ok: true; userId: string; teamId: string; actorId: string }
   | { ok: false; status: number; error: string }
@@ -109,26 +73,6 @@ export async function authenticateSyncCall(
   if (bearerErr) return { ok: false, ...bearerErr };
   if (!token) return { ok: false, status: 401, error: 'missing bearer token' };
 
-  if (resolveBackendKind() === 'postgres') {
-    const verify = deps.verifyToken ?? verifyAccessToken;
-    let userId: string;
-    try {
-      const claims = await verify(token);
-      userId = claims.sub;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { ok: false, status: 401, error: `jwt invalid: ${msg}` };
-    }
-
-    const db = deps.db ?? getDb();
-    const actorId = await resolveActorForTeam(db, userId, teamId);
-    if (!actorId) {
-      return { ok: false, status: 403, error: 'not a team member' };
-    }
-    return { ok: true, userId, teamId, actorId };
-  }
-
-  // --- supabase path (unchanged) ---
   const supabase = createServiceRoleClient();
   const { data: userData, error: userErr } = await supabase.auth.getUser(token);
   if (userErr || !userData?.user?.id) {
