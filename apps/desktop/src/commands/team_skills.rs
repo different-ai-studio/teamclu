@@ -2461,8 +2461,11 @@ mod tests {
 
         let source = global_skills_dir().unwrap().join("blocked-recovery");
         write_installed_skill(&source, "team-a", 1);
-        // A file at .clawhub blocks the recovery sidecar directory.
-        std::fs::write(source.join(".clawhub"), "blocker").unwrap();
+        // `write_installed_skill` already created `.clawhub/` to hold origin.json,
+        // so the blocker has to sit on the sidecar file itself: a directory where
+        // `record_draft_recovery` must write `recovery.json` fails that write on
+        // every platform, without the chmod dance the sibling test needs.
+        std::fs::create_dir_all(source.join(".clawhub").join("recovery.json")).unwrap();
 
         let err = team_skill_discard_local("blocked-recovery".into(), Some("team-a".into()))
             .expect_err("sidecar write should fail");
