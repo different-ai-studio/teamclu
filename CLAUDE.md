@@ -84,7 +84,7 @@ pnpm ios:test               # iOS UI tests
 
 **Monorepo layout:**
 - `packages/app/` — React 19 frontend (TypeScript, Tailwind 4, Zustand, Vite)
-- `apps/desktop/` — Rust/Tauri backend (commands, RAG via Tantivy)
+- `apps/desktop/` — Rust/Tauri backend (Tauri IPC commands, amuxd supervisor)
 - `apps/daemon/` — amuxd daemon (opencode HTTP runtime, MQTT/Supabase bridge)
 - `apps/ios/` — iOS app, Xcode project, and Swift packages
 - `services/supabase/` — Supabase migrations, seed, and database tests
@@ -96,12 +96,11 @@ pnpm ios:test               # iOS UI tests
 **Frontend key paths:**
 - `packages/app/src/stores/` — Zustand stores (50+ files, global state)
 - `packages/app/src/components/` — React components (editors, chat, diff)
-- `packages/app/src/lib/` — Utilities (RAG, git, skills)
+- `packages/app/src/lib/` — Utilities (backend client, skills, sync, MQTT)
 - `packages/app/src/hooks/` — React hooks
 
 **Rust backend key paths:**
 - `apps/desktop/src/commands/` — Tauri IPC commands (oss_sync/, team_share/, team_git.rs, gateway/, cron/, etc.)
-- `apps/desktop/crates/teamclu-rag/` — Full-text search (Tantivy) + embeddings
 - `apps/desktop/binaries/` — sidecar binaries (teamclu-introspect, etc.)
 
 **Editor system:** Markdown (Tiptap) / HTML (Tiptap + sandbox preview) / Code (CodeMirror 6 + Shiki)
@@ -149,8 +148,9 @@ Single source of truth principle — **never mix content sources**:
 ## Team Collaboration
 
 Team sync is owned by the amuxd daemon (OSS engine). The legacy iroh-based P2P
-mode has been removed, and so has git share — `git` is not invoked anywhere in
-the product.
+mode has been removed, and so has git share — team sync never invokes `git`.
+(The only `git` left in the product is the per-app Gitea checkout in
+`apps/daemon/src/sync/app_git.rs`, which has nothing to do with team share.)
 
 **There is no share-mode switch any more.** It was a one-shot cloud flag with no
 producer left in the product — nothing shipped a call that set it — so every team
@@ -168,7 +168,12 @@ values cannot be dropped, and dropping the column is a one-way door on
 production data), but no code reads or writes them. Do not reintroduce a branch
 on them.
 
-Shared: `skills/`, `.mcp/`, `knowledge/`
+Shared: the sync content root is `~/.amuxd/teams/<id>/shared/team-sync/`, and
+`global_team_store::SHARED_PREFIXES` is the whole of it — `knowledge/` and
+`documents/`, surfaced in a workspace as the `team-knowledge` and
+`team-documents` symlinks. `skills` moved to the skills registry; `.mcp` and
+`_secrets` moved to the Cloud API. The `teamclu-team` workspace link still
+exists but is daemon-owned and sits *outside* the synced tree.
 
 ## Versioning & Release
 

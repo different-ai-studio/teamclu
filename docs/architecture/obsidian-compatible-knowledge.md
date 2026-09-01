@@ -36,8 +36,8 @@
 
 | 事实 | 位置 |
 |---|---|
-| 同步前缀只剩 `knowledge/` | `apps/daemon/src/sync/oss/path_validator.rs:8`、`services/fc/src/lib/sync-path.ts:11` |
-| 内容根是 `~/.amuxd[-<brand>]/teams/<id>/shared/`，vault 候选是其下的 `knowledge/` | `apps/daemon/src/config/global_team_store.rs` |
+| 同步前缀是 `documents/` 和 `knowledge/` 两个 | `apps/daemon/src/sync/oss/path_validator.rs:20`、`services/fc/src/lib/sync-path.ts:19` |
+| 内容根是 `~/.amuxd[-<brand>]/teams/<id>/shared/team-sync/`，vault 候选是其下的 `knowledge/` | `apps/daemon/src/config/global_team_store.rs` |
 | 也可从 `<workspace>/team-knowledge` 软链进入 | `apps/daemon/src/config/workspace_link.rs:200` |
 | **磁盘上是明文，上传也是明文**（`cipher_hash == plain_hash`）；`crypto.rs` 只剩读切换前的旧 blob 与本地 `secrets.enc` 两个用途；团队 secret 不再是同步前置条件 | `apps/daemon/src/sync/oss/engine.rs` `prepare_upload`、`dispatch.rs` `run_once`，见 ADR-0008 |
 | 扫描器全量 walk，**只跳过 `*.conflict.*`**，点开头的目录照收 | `apps/daemon/src/sync/oss/scanner.rs:33` |
@@ -88,7 +88,7 @@
 ### 3.1 vault 根
 
 ```
-~/.amuxd[-<brand>]/teams/<team-id>/shared/knowledge
+~/.amuxd[-<brand>]/teams/<team-id>/shared/team-sync/knowledge
 ```
 
 用户执行一次「Open folder as vault」。**不做镜像、不做二次副本** —— 多一份副本

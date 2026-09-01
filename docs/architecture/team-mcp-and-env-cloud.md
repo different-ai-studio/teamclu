@@ -1,6 +1,8 @@
 # 团队 MCP 与团队 env 走 Cloud API
 
-状态：PR1（服务端）已落地，客户端分阶段接入中。
+状态：已落地。`.mcp/` 与 `_secrets/` 都已退出同步前缀——三处镜像常量
+（daemon / desktop 的 `ALLOWED_PREFIXES`、FC 的 `sync-path.ts`）现在都只有
+`documents/` 和 `knowledge/`，客户端读的是 Cloud API。
 相关：`docs/architecture/team-skills-registry.md`、`docs/architecture/personal-env-and-runtime-env.md`
 
 ## 1. 背景
@@ -12,8 +14,10 @@ skills/  knowledge/  .mcp/  _meta/  _secrets/  _feedback/
 ```
 
 `skills/` 已经改成服务端注册表。本次把 `.mcp/`（团队 MCP 配置）和
-`_secrets/`（团队 env，客户端加密）也搬到 Cloud API，**git/OSS 同步退化成只管
-文档（`knowledge/`）**。`_meta/` 与 `_feedback/` 暂不动。
+`_secrets/`（团队 env，客户端加密）也搬到 Cloud API，**同步引擎退化成只管内容**。
+`_meta/` 与 `_feedback/` 从此没有写入方。git 模式后来整个删掉了，只剩 OSS；内容
+根之后又从一个 `knowledge/` 扩成 `documents/` + `knowledge/` 两个
+（见 `docs/specs/2026-09-01-team-sync-two-roots-design.md`）。
 
 搬迁同时修掉两个现状问题：
 
@@ -183,9 +187,9 @@ URL 格式非法时返回 `None` 而不是回退到 build config——回退会�
 进去**。且 agent 必须能离线跑。
 
 解法是 **daemon 自有的落盘缓存 + 异步 reconciler**：缓存放
-`~/.amuxd/teams/<team_id>/cloud/`（`teamclu-team/` 的**兄弟目录，不在里面**，
-否则 git 模式下会造成 commit 抖动、并被同步引擎当成本地文件产生 tombstone）。
-同步读取端只需在候选目录列表里加一项。
+`~/.amuxd/teams/<team_id>/state/cloud/`（`layout::team_state_dir` 下，**在同步树
+`shared/team-sync/` 外面**，否则会被同步引擎当成本地文件、给每个队友产生
+tombstone）。同步读取端只需在候选目录列表里加一项。
 
 三个必须处理的陷阱：
 

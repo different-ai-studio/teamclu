@@ -80,7 +80,9 @@ daemon 停着的时候整个目录都可以安全删除，下次启动会重建�
 
 ```text
 teams/<team_id>/
-├── shared/teamclu-team/   # 唯一会被同步引擎扫描并推上云的目录
+├── shared/team-sync/      # 唯一会被同步引擎扫描并推上云的目录
+│                          # 两个固定根：documents/ 和 knowledge/
+├── shared/teamclu-team/   # workspace 软链的落点；daemon 自己用，在同步树外
 ├── workspace/             # 没指定项目路径时，小助手默认干活的地方
 └── state/                 # daemon 私有，永不同步
 ```
@@ -91,8 +93,10 @@ channels / team_share / local_agent，**凭证字段不落这里**，bot token �
 成员缓存、runtime 索引（`runtimes.toml`）、会话（`sessions/`）、事件历史、
 MCP 配置、附件、app 检出。
 
-**只有 `shared/` 会被同步。** 往团队目录里加文件会不会被推上云？只要不在
-`shared/` 下面，答案恒为不会。
+**只有 `shared/team-sync/` 会被同步。** 往团队目录里加文件会不会被推上云？
+只要不在 `shared/team-sync/` 下面，答案恒为不会——包括紧挨着它的
+`shared/teamclu-team/`：那是 daemon 自己的目录，被刻意放在同步树**外面**
+（`global_team_store::SYNC_ROOT_DIR`）。
 
 `teams/_unclaimed/` 是还没 onboard 时的落脚点，onboard 成功时整个目录会被
 重命名成真正的 team id，之前攒下的会话不会丢。
