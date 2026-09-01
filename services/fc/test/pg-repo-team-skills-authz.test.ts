@@ -137,6 +137,40 @@ test("a plain member can publish a new version of somebody else's skill", async 
   assert.equal(after.ownerActorId, ownerActor!.id);
 });
 
+test("publish stores publishedFromVersion for audit", async () => {
+  const { team, memberRepo } = await scenario();
+
+  const version = await memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+    changelog: "from local draft",
+    contentHash: "b".repeat(64),
+    expectedLatestVersion: 1,
+    publishedFromVersion: 1,
+  });
+
+  assert.equal(version.publishedFromVersion, 1);
+});
+
+test("publish rejects when draft baseline lags registry (stale dirty)", async () => {
+  const { team, memberRepo } = await scenario();
+
+  await memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+    changelog: "v2",
+    contentHash: "b".repeat(64),
+    expectedLatestVersion: 1,
+  });
+
+  await assert.rejects(
+    () =>
+      memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+        changelog: "stale draft attempt",
+        contentHash: "d".repeat(64),
+        expectedLatestVersion: 1,
+        publishedFromVersion: 1,
+      }),
+    (e: any) => e.statusCode === 409 && e.code === "stale_team_skill_base",
+  );
+});
+
 test("publish rejects stale expectedLatestVersion", async () => {
   const { team, memberRepo } = await scenario();
 

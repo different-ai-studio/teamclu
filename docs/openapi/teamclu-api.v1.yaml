@@ -2340,14 +2340,23 @@ paths:
                   type: integer
                   minimum: 0
                   description: >
-                    Registry `latestVersion` the publisher believes is current.
-                    Mismatch returns 409 `stale_team_skill_base` so concurrent
-                    publishes cannot silently overwrite each other.
+                    Registry `latestVersion` the publisher's draft was built from
+                    (installed/baseline version). Must match the current registry
+                    `latestVersion` or the publish is rejected with
+                    `409 stale_team_skill_base`. Passing the headline latest while
+                    the draft lags behind would let stale edits overwrite newer
+                    team releases.
                 summary: { type: string, maxLength: 200 }
                 category: { $ref: "#/components/schemas/TeamSkillCategory" }
                 whenToUse: { type: string }
                 whenNotToUse: { type: string }
                 requires: { type: [object, "null"] }
+                publishedFromVersion:
+                  type: integer
+                  minimum: 1
+                  description: >
+                    Installed/baseline version the publisher's working copy was
+                    built from. Stored for audit; does not affect CAS.
       responses:
         "201":
           description: Version published.
@@ -6424,6 +6433,7 @@ components:
         whenNotToUse: { type: string }
         requires: { type: [object, "null"] }
         createdBy: { type: string, format: uuid }
+        publishedFromVersion: { type: [integer, "null"], minimum: 1 }
         createdAt: { type: [string, "null"], format: date-time }
     TeamSkillInstall:
       type: object

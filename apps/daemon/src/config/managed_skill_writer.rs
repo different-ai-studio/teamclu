@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use base64::Engine as _;
 use teamclu_skillpack::manifest::build_manifest;
 use teamclu_types::skill_frontmatter::parse_frontmatter;
 use uuid::Uuid;
@@ -279,13 +280,21 @@ pub(crate) fn normalize_pack_rel_path(raw: &str) -> Result<PathBuf, ManagedSkill
 
 pub(crate) fn decode_pack_file(input: &PackFileInput) -> Result<Vec<u8>, ManagedSkillError> {
     let encoding = input.encoding.as_deref().unwrap_or("utf8");
-    if encoding != "utf8" {
-        return Err(ManagedSkillError::new(
+    match encoding {
+        "utf8" => Ok(input.content.as_bytes().to_vec()),
+        "base64" => base64::engine::general_purpose::STANDARD
+            .decode(input.content.trim())
+            .map_err(|e| {
+                ManagedSkillError::new(
+                    ManagedSkillErrorCode::InvalidSkillFilePath,
+                    format!("invalid base64 file content: {e}"),
+                )
+            }),
+        other => Err(ManagedSkillError::new(
             ManagedSkillErrorCode::InvalidSkillFilePath,
-            format!("unsupported file encoding {encoding:?}; only utf8 is supported"),
-        ));
+            format!("unsupported file encoding {other:?}; use utf8 or base64"),
+        )),
     }
-    Ok(input.content.as_bytes().to_vec())
 }
 
 pub(crate) fn reject_symlink(path: &Path) -> Result<(), ManagedSkillError> {
