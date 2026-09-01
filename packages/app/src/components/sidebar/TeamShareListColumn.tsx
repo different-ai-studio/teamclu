@@ -669,13 +669,15 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       })
   }, [section, q, skills.items, localState, t])
 
+  /** Team and personal are different trust boundaries, so they get their own groups. */
   const skillGroups = React.useMemo(() => {
+    const team = skillRows.filter(
+      (r) => r.kind === 'team-installed' || r.kind === 'team-available',
+    )
+    const personal = skillRows.filter((r) => r.kind === 'personal')
     return [
-      {
-        key: 'installed' as const,
-        label: t('teamShare.skillGroupAgentInstalled', 'Agent 已安装'),
-        rows: skillRows,
-      },
+      { key: 'team' as const, label: t('teamShare.scope.team', '团队'), rows: team },
+      { key: 'personal' as const, label: t('teamShare.scope.personal', '个人'), rows: personal },
     ].filter((g) => g.rows.length > 0 || !q)
   }, [skillRows, t, q])
 
