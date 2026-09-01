@@ -7,7 +7,7 @@ function bearerHeaders() {
   return { Authorization: "Bearer test-token", "X-Request-Id": "req_litellm_test" };
 }
 
-function makeRepo({ result, error, usage, usageError, memberKeyResult, memberKeyError, keysResult, keysError, budgetResult, budgetError }: any = {}) {
+function makeRepo({ result, error, memberKeyResult, memberKeyError, keysResult, keysError, budgetResult, budgetError }: any = {}) {
   const calls = [];
   return {
     calls,
@@ -32,20 +32,6 @@ function makeRepo({ result, error, usage, usageError, memberKeyResult, memberKey
       return keysResult ?? {
         teamId: "litellm-generated-abc",
         keys: [{ key: "sk-abcdefghij...", alias: "member-1", spend: 1.5, created_at: "2026-06-01T00:00:00Z" }],
-      };
-    },
-    async getLiteLlmUsage(teamId, opts) {
-      calls.push({ method: "getLiteLlmUsage", teamId, opts });
-      if (usageError) throw usageError;
-      return usage ?? {
-        litellmTeamId: `tc-${teamId}`,
-        range: opts?.range ?? "month",
-        startDate: "2026-06-01",
-        endDate: "2026-06-30",
-        summary: { totalTokens: 100, promptTokens: 60, completionTokens: 40, totalSpend: 1.5, requestCount: 3 },
-        maxBudget: 10,
-        members: [{ actorId: "11111111-1111-4111-8111-111111111111", displayName: "周金亮", tokens: 100, spend: 1.5, requests: 3 }],
-        byModel: [{ model: "kimi-k2.6", tokens: 100, spend: 1.5, requests: 3 }],
       };
     },
   };
@@ -115,52 +101,6 @@ test("POST /v1/teams/:id/litellm/member-key repo throws ApiError 503 → 503 sur
   assert.equal(res.statusCode, 503);
   const body = JSON.parse(res.body);
   assert.equal(body.error.code, "litellm_unavailable");
-});
-
-test("GET /v1/teams/:id/litellm/usage → 200 returns team usage + passes range/date", async () => {
-  const repo = makeRepo();
-  const res = await handleBusinessApiRequest({
-    httpMethod: "GET",
-    path: "/v1/teams/team-1/litellm/usage",
-    queryStringParameters: { range: "week", date: "2026-06-10" },
-    headers: bearerHeaders(),
-  }, { createRepository: () => repo });
-
-  assert.equal(res.statusCode, 200);
-  const body = JSON.parse(res.body);
-  assert.equal(body.summary.totalTokens, 100);
-  assert.equal(body.members[0].displayName, "周金亮");
-  assert.equal(body.byModel[0].model, "kimi-k2.6");
-  assert.deepEqual(repo.calls[0], {
-    method: "getLiteLlmUsage",
-    teamId: "team-1",
-    opts: { range: "week", date: "2026-06-10" },
-  });
-});
-
-test("GET /v1/teams/:id/litellm/usage defaults range to month when omitted", async () => {
-  const repo = makeRepo();
-  const res = await handleBusinessApiRequest({
-    httpMethod: "GET",
-    path: "/v1/teams/team-1/litellm/usage",
-    headers: bearerHeaders(),
-  }, { createRepository: () => repo });
-
-  assert.equal(res.statusCode, 200);
-  assert.equal(repo.calls[0].opts.range, "month");
-  assert.equal(repo.calls[0].opts.date, undefined);
-});
-
-test("GET /v1/teams/:id/litellm/usage repo throws 503 → surfaced", async () => {
-  const repo = makeRepo({ usageError: new ApiError(503, "litellm_usage_unavailable", "not configured") });
-  const res = await handleBusinessApiRequest({
-    httpMethod: "GET",
-    path: "/v1/teams/team-1/litellm/usage",
-    headers: bearerHeaders(),
-  }, { createRepository: () => repo });
-
-  assert.equal(res.statusCode, 503);
-  assert.equal(JSON.parse(res.body).error.code, "litellm_usage_unavailable");
 });
 
 test("GET /v1/teams/:id/litellm/keys → 200 returns mapped keys from persisted litellm team id", async () => {

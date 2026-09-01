@@ -62,8 +62,6 @@ import {
 } from "./provisioning/app-secrets.js";
 import { normalizeAgentTypes } from "./agent-types.js";
 import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-status.js";
-import { computeRange, getLiteLlmSql, queryTeamUsage } from "./litellm-usage.js";
-import { rollUpUsageByOwner, type UsageOwner } from "./usage-attribution.js";
 import { litellmFetch as sharedLitellmFetch } from "./litellm.js";
 import {
   REALTIME_TRANSPORT_OPTS, requiredRow, requiredString, requiredInteger,
@@ -77,83 +75,6 @@ import {
 export { publishableKeyFromEnv } from "./supabase-repo/shared.js";
 export { createSupabaseAuthRepository } from "./supabase-repo/auth.js";
 import { normalizePhone } from "./supabase-repo/phone-auth.js";
-
-/**
- * `actors.id` is a uuid column: a non-uuid in the `.in()` list makes PostgREST
- * reject the whole request (22P02), which would take the usage screen down over
- * one malformed LiteLLM user_id. Unmatched ids just report as "unattributed".
- */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Map spending actor ids → the accountable human.
- *
- * Three flat queries rather than one embedded select: PostgREST resource
- * embedding would need the actors→agents FK relationship spelled by name, and
- * a rename there fails at runtime, not build time.
- *
- * Team-scoped on purpose — ids come from LiteLLM, so an unscoped lookup would
- * let any key surface an unrelated team's member name.
- */
-async function resolveOwnersForTeam(supabase, teamId, actorIds): Promise<Map<string, UsageOwner>> {
-  const ids = actorIds.filter((id) => UUID_RE.test(id));
-  const out = new Map<string, UsageOwner>();
-  if (!ids.length) return out;
-
-  const actorRows = await chunkedIn(ids, async (chunk) => {
-    const { data, error } = await supabase
-      .from("actors")
-      .select("id, actor_type, display_name")
-      .eq("team_id", teamId)
-      .in("id", chunk);
-    if (error) throw error;
-    return data ?? [];
-  });
-  if (!actorRows.length) return out;
-
-  const agentIds = actorRows.filter((a) => a.actor_type === "agent").map((a) => a.id);
-  const ownerOf = new Map<string, string>();
-  if (agentIds.length) {
-    const agentRows = await chunkedIn(agentIds, async (chunk) => {
-      const { data, error } = await supabase
-        .from("agents")
-        .select("id, owner_member_id")
-        .in("id", chunk);
-      if (error) throw error;
-      return data ?? [];
-    });
-    for (const r of agentRows) if (r.owner_member_id) ownerOf.set(r.id, r.owner_member_id);
-  }
-
-  // Owner display names: an agent's owner need not be among the spending actors
-  // (a human can own a daemon and never spend under their own key), so their
-  // actor row may not be in actorRows and has to be fetched separately.
-  const nameOf = new Map<string, string>(actorRows.map((a) => [a.id, a.display_name]));
-  const missing = [...new Set([...ownerOf.values()])].filter((id) => !nameOf.has(id));
-  if (missing.length) {
-    const ownerRows = await chunkedIn(missing, async (chunk) => {
-      const { data, error } = await supabase
-        .from("actors")
-        .select("id, display_name")
-        .eq("team_id", teamId)
-        .in("id", chunk);
-      if (error) throw error;
-      return data ?? [];
-    });
-    for (const r of ownerRows) nameOf.set(r.id, r.display_name);
-  }
-
-  for (const a of actorRows) {
-    if (a.actor_type === "agent") {
-      const ownerId = ownerOf.get(a.id);
-      const ownerName = ownerId ? nameOf.get(ownerId) : undefined;
-      if (ownerId && ownerName) out.set(a.id, { actorId: ownerId, displayName: ownerName });
-      continue;
-    }
-    out.set(a.id, { actorId: a.id, displayName: a.display_name });
-  }
-  return out;
-}
 
 /**
  * Longest PostgREST URL we let out of this process.
@@ -371,8 +292,6 @@ export function createSupabaseBusinessRepository(options) {
     // reason names the variable so the 503 is actionable.
     appData,
     appDataUnavailableReason,
-    // Injectable for tests; defaults to querying the LiteLLM RDS directly.
-    queryLiteLlmUsage = (litellmTeamId, range) => queryTeamUsage(getLiteLlmSql(), litellmTeamId, range),
     // Injectable for tests; defaults to the shared LiteLLM HTTP client.
     litellmFetch: litellmFetchOpt,
     trustedExternalJwtSecret = process.env.TRUSTED_EXTERNAL_JWT_SECRET,
@@ -1033,52 +952,12 @@ export function createSupabaseBusinessRepository(options) {
     // (see the read pattern mirrored from ensureMemberKey above). If the team
     // has never provisioned LiteLLM, return an empty usage shape without
     // querying LiteLLM.
-    async getLiteLlmUsage(teamId, opts: { range?: string; date?: string } = {}) {
-      await requireCallerTeamMember(teamId);
-      const range = computeRange((opts.range ?? "month") as any, opts.date);
-
-      const { data: cfg, error: cfgErr } = await supabase
-        .from("team_workspace_config")
-        .select("litellm_team_id")
-        .eq("team_id", teamId)
-        .maybeSingle();
-      if (cfgErr) throw cfgErr;
-
-      const litellmTeamId = cfg?.litellm_team_id ?? null;
-      if (!litellmTeamId) {
-        return {
-          litellmTeamId: null,
-          range: range.range,
-          startDate: range.startDate,
-          endDate: range.endDate,
-          startUtc: range.startUtc,
-          endUtc: range.endUtc,
-          summary: {
-            totalTokens: 0,
-            promptTokens: 0,
-            completionTokens: 0,
-            totalSpend: 0,
-            requestCount: 0,
-          },
-          maxBudget: null,
-          members: [],
-          byModel: [],
-        };
-      }
-
-      const usage = await queryLiteLlmUsage(litellmTeamId, range);
-      return {
-        ...usage,
-        members: await rollUpUsageByOwner(usage.members ?? [], (ids) => resolveOwnersForTeam(supabase, teamId, ids)),
-      };
-    },
-
     // Lists the team's LiteLLM virtual keys (masked). Any team member may
     // read — resolved via requireCallerTeamMemberActor (401/403). The
     // LiteLLM team id is NOT a deterministic `tc-${teamId}` value; it's
     // provisioner-generated and persisted into
-    // team_workspace_config.litellm_team_id (see ensureMemberKey/getLiteLlmUsage
-    // above). If the team has never provisioned LiteLLM, return an empty
+    // team_workspace_config.litellm_team_id (see ensureMemberKey above).
+    // If the team has never provisioned LiteLLM, return an empty
     // keys list without calling LiteLLM.
     async listLiteLlmKeys(teamId) {
       await requireCallerTeamMemberActor(teamId);

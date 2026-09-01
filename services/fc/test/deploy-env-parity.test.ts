@@ -131,9 +131,9 @@ test("the exception lists stay honest", () => {
  * Every environment variable the service reads.
  *
  * Three access shapes are in use: `process.env.FOO` directly, `env.FOO` on an
- * injected `env` object (resolveBackendKind, publishableKeyFromEnv,
- * litellm-usage), and `envValue("FOO")` — the blank-is-absent reader in
- * routes/config.ts. Matching only some would report live variables as dead.
+ * injected `env` object (publishableKeyFromEnv), and `envValue("FOO")` — the
+ * blank-is-absent reader in routes/config.ts. Matching only some would report
+ * live variables as dead.
  */
 function envVarsReadBySource(): Set<string> {
   const found = new Set<string>();

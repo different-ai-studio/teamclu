@@ -1398,7 +1398,6 @@
       "leaderboard": "排行榜",
       "shortcuts": "快捷方式",
       "channels": "通道",
-      "tokenUsage": "Token 用量",
       "privacy": "隐私与遥测",
       "cache": "本地缓存",
       "diagnostics": "诊断与支持",
@@ -2424,32 +2423,6 @@
       "operationFailed": "快捷方式操作失败",
       "rpcMissing": "快捷方式数据库函数缺失。请应用最新的 Supabase migration，然后刷新应用。",
       "empty": "暂无快捷方式"
-    },
-    "tokenUsage": {
-      "title": "Token 用量",
-      "teamDescription": "查看整个团队真实的 AI Token 消耗与费用。",
-      "loading": "加载统计中...",
-      "range": {
-        "day": "当日",
-        "week": "当周",
-        "month": "当月",
-        "year": "当年"
-      },
-      "prevPeriod": "上一周期",
-      "nextPeriod": "下一周期",
-      "unavailable": "团队 AI 用量尚不可用，请先开通团队 AI 网关（LiteLLM）。",
-      "totalCost": "总费用",
-      "totalTokens": "总 Token 数",
-      "requests": "请求数",
-      "budget": "预算",
-      "leaderboard": "成员排行榜",
-      "noUsage": "本周期暂无用量。",
-      "unattributed": "未归属",
-      "byModel": "按模型",
-      "colName": "名称",
-      "colTokens": "Token",
-      "colRequests": "请求",
-      "colCost": "费用"
     },
     "privacy": {
       "title": "隐私与遥测",

@@ -11,15 +11,6 @@ export function registerTeamLiteLlm(router) {
     return { body: result };
   });
 
-  // Team-wide token + spend usage from LiteLLM. range = day|week|month|year
-  // (default month); optional `date` (yyyy-mm-dd) selects the period to view.
-  router.get("/v1/teams/:teamId/litellm/usage", async (ctx) => {
-    const range = ctx.query.get("range") ?? "month";
-    const date = ctx.query.get("date") ?? undefined;
-    const result = await ctx.repository.getLiteLlmUsage(ctx.params.teamId, { range, date });
-    return { body: result };
-  });
-
   // Lists the team's LiteLLM virtual keys (masked). Any team member may read.
   router.get("/v1/teams/:teamId/litellm/keys", async (ctx) => {
     const result = await ctx.repository.listLiteLlmKeys(ctx.params.teamId);

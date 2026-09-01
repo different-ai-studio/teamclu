@@ -1398,7 +1398,6 @@
       "leaderboard": "Leaderboard",
       "shortcuts": "Shortcuts",
       "channels": "Channels",
-      "tokenUsage": "Token Usage",
       "privacy": "Privacy & Telemetry",
       "cache": "Local Cache",
       "diagnostics": "Diagnostics & Support",
@@ -2424,32 +2423,6 @@
       "operationFailed": "Shortcut operation failed",
       "rpcMissing": "Shortcut database functions are missing. Apply the latest Supabase migrations, then refresh the app.",
       "empty": "No shortcuts yet"
-    },
-    "tokenUsage": {
-      "title": "Token Usage",
-      "teamDescription": "View the whole team's real AI token consumption and cost.",
-      "loading": "Loading stats...",
-      "range": {
-        "day": "Day",
-        "week": "Week",
-        "month": "Month",
-        "year": "Year"
-      },
-      "prevPeriod": "Previous period",
-      "nextPeriod": "Next period",
-      "unavailable": "Team AI usage is not available yet. Enable the team AI gateway (LiteLLM) first.",
-      "totalCost": "Total Cost",
-      "totalTokens": "Total Tokens",
-      "requests": "Requests",
-      "budget": "Budget",
-      "leaderboard": "Member Leaderboard",
-      "noUsage": "No usage in this period.",
-      "unattributed": "Unattributed",
-      "byModel": "By Model",
-      "colName": "Name",
-      "colTokens": "Tokens",
-      "colRequests": "Reqs",
-      "colCost": "Cost"
     },
     "privacy": {
       "title": "Privacy & Telemetry",

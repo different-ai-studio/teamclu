@@ -61,7 +61,6 @@ resources:
         # LiteLLM usage reads the `litellm` database on the SAME Postgres instance
         # as the primary FC connection (DATABASE_URL/POSTGRES_*); only the db name
         # differs. Override the db name here if it is not `litellm`.
-        LITELLM_DB_NAME: ${env('LITELLM_DB_NAME', 'litellm')}
         CODEUP_ORG_ID: ${env('CODEUP_ORG_ID', '')}
         CODEUP_PAT: ${env('CODEUP_PAT', '')}
         CODEUP_BOT_USERNAME: ${env('CODEUP_BOT_USERNAME', 'teamclu')}
@@ -174,15 +173,6 @@ resources:
         # Hono's own CORS middleware is skipped — prevents duplicate headers.
         CORS_HANDLED_BY_PROXY: ${env('CORS_HANDLED_BY_PROXY', '')}
         DATABASE_URL: ${env('DATABASE_URL', '')}
-        # Parts-based fallback for the same primary Postgres connection.
-        # `resolveLiteLlmConnString` (lib/litellm-usage.ts) prefers DATABASE_URL
-        # and falls back to these. Without them declared here that fallback was
-        # unreachable in production: LiteLLM usage 503s the moment DATABASE_URL
-        # is blank instead of degrading to the parts it already knows how to use.
-        POSTGRES_HOST: ${env('POSTGRES_HOST', '')}
-        POSTGRES_PORT: ${env('POSTGRES_PORT', '')}
-        POSTGRES_USERNAME: ${env('POSTGRES_USERNAME', '')}
-        POSTGRES_PASSWORD: ${env('POSTGRES_PASSWORD', '')}
         # Phone login (partner-aligned). DEFAULT_ORG_ID = the default tenant new
         # users join; PHONE_EMAIL_DOMAIN = domain of the synthetic auth email
         # (`<phone>@<domain>`) and therefore half the account identity — it must

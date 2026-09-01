@@ -463,51 +463,6 @@ export type TeamInviteInput =
       teamRole?: null;
     });
 
-export type LiteLlmUsageRange = "day" | "week" | "month" | "year";
-
-export interface LiteLlmUsageSummary {
-  totalTokens: number;
-  promptTokens: number;
-  completionTokens: number;
-  totalSpend: number;
-  requestCount: number;
-}
-
-/**
- * Usage rolled up to the human accountable for it, not to the key that spent it.
- * Tokens are burned by daemons; the server resolves each agent actor through its
- * owner, so one row can merge a person's own key with every daemon they own.
- */
-export interface LiteLlmMemberUsage {
-  /** Owning human actor id; null = the unattributed bucket. */
-  actorId: string | null;
-  /** null when unattributed — render a localized label, never a raw id. */
-  displayName: string | null;
-  tokens: number;
-  spend: number;
-  requests: number;
-}
-
-export interface LiteLlmModelUsage {
-  model: string;
-  tokens: number;
-  spend: number;
-  requests: number;
-}
-
-export interface LiteLlmUsage {
-  litellmTeamId: string;
-  range: LiteLlmUsageRange;
-  startDate: string;
-  endDate: string;
-  startUtc?: string;
-  endUtc?: string;
-  maxBudget: number | null;
-  summary: LiteLlmUsageSummary;
-  members: LiteLlmMemberUsage[];
-  byModel: LiteLlmModelUsage[];
-}
-
 export interface TeamsBackend {
   listCurrentUserTeams(args?: { limit?: number }): Promise<TeamSummary[]>;
   getTeam(teamId: string): Promise<TeamSummary | null>;
@@ -540,7 +495,6 @@ export interface TeamsBackend {
   /** Toggle a team's visibility (public | private) via PATCH /v1/teams/:id. */
   setTeamVisibility(teamId: string, visibility: "public" | "private"): Promise<TeamSummary>;
   activateTeam(teamId: string): Promise<{ actorId: string | null; teamId: string; refreshToken: string }>;
-  getLiteLlmUsage(teamId: string, opts?: { range?: LiteLlmUsageRange; date?: string }): Promise<LiteLlmUsage>;
 }
 
 export interface IdeaRow {

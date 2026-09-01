@@ -316,14 +316,6 @@ services:
       MQTT_USE_TLS: "false"
       CRON_TRIGGER_SECRET: "${CRON_TRIGGER_SECRET}"
       DATABASE_URL: "${DATABASE_URL:-}"
-      # Parts-based fallback for the same Postgres, mirroring s.yaml.
-      # resolveLiteLlmConnString prefers DATABASE_URL and falls back to these;
-      # declared on both targets so LiteLLM usage degrades instead of 503-ing
-      # when DATABASE_URL is blank. Defaults match the compose Postgres service.
-      POSTGRES_HOST: "${POSTGRES_HOST:-db}"
-      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
-      POSTGRES_USERNAME: "${POSTGRES_USERNAME:-postgres}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
       ACCESS_KEY_ID: "${ACCESS_KEY_ID:-}"
       ACCESS_KEY_SECRET: "${ACCESS_KEY_SECRET:-}"
       ROLE_ARN: "${ROLE_ARN:-}"
@@ -443,11 +435,6 @@ services:
       # Note it applies at provisioning time only: changing it never moves a team
       # that already exists.
       LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD: "${LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD:-}"
-      # Must be set: litellm-init creates the database as `_litellm`, but
-      # resolveLiteLlmConnString() defaults to `litellm` (no underscore), so
-      # without this the usage queries connect to a database that never exists.
-      LITELLM_DB_NAME: "${LITELLM_DB_NAME:-_litellm}"
-
       # ── Declared in services/fc/s.yaml but historically absent here, so the
       # container never received them and the features were silently off on the
       # box. This map is an allowlist; the two deploy targets must stay in step

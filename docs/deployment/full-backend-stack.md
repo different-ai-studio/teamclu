@@ -281,7 +281,6 @@ LiteLLM 是**栈内 compose 服务**（`ghcr.io/berriai/litellm-database`），�
 
 - Cloud API 通过 `LITELLM_URL` + `LITELLM_MASTER_KEY` 调 LiteLLM Admin API
 - 团队开通：`POST /v1/teams/:id/litellm/setup`
-- Token 用量：Cloud API 直连 LiteLLM 的库（库名可用 `LITELLM_DB_NAME` 覆盖）
 
 `.env` 里 `LITELLM_URL` **留空即可** —— compose 用
 `${LITELLM_URL:-http://litellm:4000}` 兜底指向栈内网关：
