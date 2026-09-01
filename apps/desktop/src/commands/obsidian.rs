@@ -505,7 +505,10 @@ mod tests {
         });
         prune_stale_team_vaults(&mut json, "/somewhere/else");
         assert!(
-            json["vaults"].as_object().unwrap().contains_key(&vault_id(&alive)),
+            json["vaults"]
+                .as_object()
+                .unwrap()
+                .contains_key(&vault_id(&alive)),
             "a team vault whose directory exists must be left alone"
         );
     }
