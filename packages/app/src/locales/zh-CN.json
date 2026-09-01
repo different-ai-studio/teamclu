@@ -1421,7 +1421,8 @@
       "roles": "角色",
       "rolesSkills": "角色与技能",
       "deps": "依赖",
-      "billing": "账单"
+      "billing": "账单",
+      "knowledgeAcl": "知识库权限"
     },
     "general": {
       "title": "通用",
@@ -2845,6 +2846,21 @@
         "adjustment": "调整",
         "refund": "退款"
       }
+    },
+    "knowledgeAcl": {
+      "title": "知识库权限",
+      "description": "将某个知识库目录限定给指定成员。未列出的人将不再收到它。",
+      "ownerOnly": "只有团队所有者或管理员能管理知识库目录权限。",
+      "scopeNotice": "这里控制的是团队内部谁能收到这个目录。知识库内容在服务端以明文存储，因此对运维方并不保密。移除权限只会停止后续同步，无法收回对方设备上已有的副本。",
+      "empty": "没有受限目录。每个成员都会收到完整的知识库。",
+      "grantedCount": "{{count}} 人有权限",
+      "removeRule": "移除限制",
+      "addTitle": "限制一个目录",
+      "impactTitle": "即将限制 {{prefix}}。",
+      "impactBody": "{{members}} 名成员将失去访问权，他们设备上已同步的 {{files}} 个文件将在下次同步时被删除。",
+      "impactCaveat": "服务端内容不会被删除，已被拷走的副本也无法收回。",
+      "check": "查看影响范围",
+      "confirm": "限制该目录"
     }
   },
   "skillssh": {

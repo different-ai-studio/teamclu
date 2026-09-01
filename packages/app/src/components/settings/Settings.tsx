@@ -7,6 +7,7 @@ import {
   MessageSquare,
   Sparkles,
   UserRound,
+  Lock,
   Package,
   Clock,
   Coins,
@@ -65,6 +66,7 @@ const daemonSections: Section[] = [
 // Local Agent (opencode) config sections.
 const localAgentSections: Section[] = [
   { id: 'llm', label: 'LLM Model', labelKey: 'settings.nav.llm', icon: Brain },
+  { id: 'knowledgeAcl', label: 'Knowledge Access', labelKey: 'settings.nav.knowledgeAcl', icon: Lock },
   { id: 'prompt', label: 'Prompt', labelKey: 'settings.nav.prompt', icon: MessageSquareText },
   { id: 'roles', label: 'Roles', labelKey: 'settings.nav.roles', icon: UserRound },
   { id: 'rolesSkills', label: 'Role Skills', labelKey: 'settings.nav.rolesSkills', icon: Sparkles },

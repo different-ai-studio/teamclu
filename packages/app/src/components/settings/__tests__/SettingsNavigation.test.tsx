@@ -106,6 +106,7 @@ describe('Settings navigation', () => {
       'LLM Model',
       // 'Team LLM' is gone: the team gateway is now a pinned card inside the
       // LLM Model pane, not a section of its own.
+      'Knowledge Access',
       'Prompt',
       // 'Roles' and 'Role Skills' are temporarily hidden — see
       // HIDDEN_LOCAL_AGENT_SECTIONS in Settings.tsx. 'Knowledge Base' is gone

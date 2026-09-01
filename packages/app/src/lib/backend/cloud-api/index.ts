@@ -22,6 +22,7 @@ import { createSystemModule } from "./system";
 import { createTeamSkillsModule } from "./team-skills";
 import { createMarketplaceModule } from "./marketplace";
 import { createTeamMcpModule } from "./team-mcp";
+import { createKnowledgeAclModule } from "./knowledge-acl";
 import { createTeamEnvSecretsModule } from "./team-env-secrets";
 
 export function hasCloudApiBackendConfig(config: ServerConfig): boolean {
@@ -63,6 +64,7 @@ export function createCloudApiBackend(
     teamSkills: createTeamSkillsModule(client),
     marketplace: createMarketplaceModule(client),
     teamMcp: createTeamMcpModule(client),
+    knowledgeAcl: createKnowledgeAclModule(client),
     teamEnvSecrets: createTeamEnvSecretsModule(client),
   };
 }

@@ -35,6 +35,7 @@ function assertNewOrgAllowed(): void {
 }
 
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
+import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
 import { isLegalStatusTransition } from "./pg-repo/app-status.js";
 // Shared with the pg-repo twin on purpose — validation only; keep free of
 // PostgREST/Drizzle calls so both backends can import these helpers.
@@ -4836,6 +4837,34 @@ export function createSupabaseBusinessRepository(options) {
       supabase,
       serviceRoleClient,
       mapTeamSkillRow,
+      resolveCallerActorForTeam: async (teamId: string) => {
+        const { data: userData, error: userErr } = await supabase.auth.getUser();
+        if (userErr) throw userErr;
+        const userId = userData?.user?.id;
+        if (!userId) return null;
+        const { data, error } = await supabase
+          .from("actors")
+          .select("id")
+          .eq("team_id", teamId)
+          .eq("user_id", userId)
+          .limit(1)
+          .maybeSingle();
+        if (error) throw error;
+        return data ? { id: data.id } : null;
+      },
+    }),
+
+    // ─── Knowledge path ACL ──────────────────────────────────────────────────
+    // docs/specs/2026-08-31-knowledge-path-acl-design.md
+    //
+    // Unlike team MCP above, authz here CANNOT live in RLS: the ACL tables carry
+    // RLS with no policy, because `path_prefix` is a directory name and any
+    // "members may read the rules" policy would hand out exactly the list the
+    // feature exists to withhold. The module checks owner/admin itself and then
+    // uses the service role, the same shape /sync/* already has.
+    ...makeKnowledgeAclRepo({
+      supabase,
+      serviceRoleClient,
       resolveCallerActorForTeam: async (teamId: string) => {
         const { data: userData, error: userErr } = await supabase.auth.getUser();
         if (userErr) throw userErr;

@@ -17,6 +17,7 @@ const lazySection = (load: () => Promise<Record<string, unknown>>, name: string)
 
 export const SETTINGS_SECTION_COMPONENTS: Record<SettingsSection, React.ComponentType> = {
   llm: lazySection(() => import('./LLMSectionRouter'), 'LLMSection'),
+  knowledgeAcl: lazySection(() => import('./KnowledgeAclSection'), 'KnowledgeAclSection'),
   general: lazySection(() => import('./GeneralSection'), 'GeneralSection'),
   prompt: lazySection(() => import('./PromptSection'), 'PromptSection'),
   channels: lazySection(() => import('./ChannelsSection'), 'ChannelsSection'),

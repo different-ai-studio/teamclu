@@ -11,7 +11,7 @@
  *   see all amuxc_files rows with change_seq ≤ N (same atomic tx).
  */
 
-import { and, desc, eq, gt, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, lt, notLike, or, sql } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import {
   amuxcBlobs,
@@ -65,6 +65,13 @@ export interface ManifestInput {
   snapshotSeq?: number;
   cursor?: string;
   limit?: number;
+  /**
+   * Knowledge prefixes the caller may not see (see lib/sync-acl.ts).
+   *
+   * Empty or omitted — the case for every team without ACL rules — leaves the
+   * query byte-identical to what it was before per-directory ACL existed.
+   */
+  deniedPrefixes?: string[];
 }
 
 export interface ManifestFile {
@@ -322,7 +329,7 @@ export function makeOssSyncRepo(db: DbLike) {
      * pagination even when multiple files share the same change_seq.
      */
     async manifest(input: ManifestInput): Promise<ManifestResult> {
-      const { teamId, afterSeq, cursor, limit = 200 } = input;
+      const { teamId, afterSeq, cursor, limit = 200, deniedPrefixes = [] } = input;
 
       // Parse cursor: "changeSeq:id"
       let cursorSeq: number | null = null;
@@ -337,9 +344,18 @@ export function makeOssSyncRepo(db: DbLike) {
 
       // Build WHERE: (change_seq > afterSeq) AND keyset (change_seq, id) > (cursorSeq, cursorId)
       // Keyset: change_seq > cursorSeq OR (change_seq = cursorSeq AND id > cursorId)
+      // One NOT LIKE per restricted prefix. Prefixes always carry a trailing
+      // slash, so `knowledge/hr/%` cannot match `knowledge/hr-public/…` — the
+      // same property `matchPrefix` in sync-acl.ts relies on. Both matchers have
+      // to agree about what a prefix covers, and that slash is why they do.
+      const aclFilters = deniedPrefixes.map((prefix) =>
+        notLike(amuxcFiles.path, `${prefix}%`),
+      );
+
       const baseFilter = and(
         eq(amuxcFiles.teamId, teamId),
         gt(amuxcFiles.changeSeq, afterSeq),
+        ...aclFilters,
       );
 
       const whereClause =

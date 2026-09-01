@@ -25,6 +25,7 @@ import { registerTeamSkills } from "./team-skills.js";
 import { registerMarketplace } from "./marketplace.js";
 import { registerTeamMcp } from "./team-mcp.js";
 import { registerTeamEnvSecrets } from "./team-env-secrets.js";
+import { registerKnowledgeAcl } from "./knowledge-acl.js";
 
 export function registerAllRoutes(router) {
   registerAuth(router);
@@ -56,6 +57,9 @@ export function registerAllRoutes(router) {
   // broader team match.
   registerTeamMcp(router);
   registerTeamEnvSecrets(router);
+  // Same ordering reason as every other team-scoped module here: this owns
+  // /v1/teams/:teamId/knowledge-acl* and must precede workspaces' broader match.
+  registerKnowledgeAcl(router);
   registerWorkspaces(router);
   registerSystem(router);
   registerActors(router);
