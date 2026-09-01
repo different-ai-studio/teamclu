@@ -8,6 +8,7 @@ import type {
   SessionSyncRow,
   SessionsBackend,
 } from "../types";
+import { rememberThreadForkFromSessionDetail } from "@/lib/thread-fork-metadata";
 import { CloudApiError, type CloudApiClient } from "./http";
 import { fetchAllSyncPages } from "./sync-paging";
 
@@ -32,10 +33,12 @@ type CloudSessionDetail = CloudSession & {
   summary?: string | null;
   acpSessionId?: string | null;
   binding?: string | null;
+  parentSessionId?: string | null;
+  threadRootMessageId?: string | null;
 };
 
 function mapSessionDetail(row: CloudSessionDetail): SessionDetailRow {
-  return {
+  const mapped: SessionDetailRow = {
     id: row.id,
     team_id: row.teamId,
     title: row.title,
@@ -50,9 +53,13 @@ function mapSessionDetail(row: CloudSessionDetail): SessionDetailRow {
     binding: row.binding ?? null,
     source: row.source ?? null,
     cron_job_id: row.cronJobId ?? null,
+    parent_session_id: row.parentSessionId ?? null,
+    thread_root_message_id: row.threadRootMessageId ?? null,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
   };
+  rememberThreadForkFromSessionDetail(mapped);
+  return mapped;
 }
 
 type Page<T> = { items: T[]; nextCursor: string | null };
@@ -200,6 +207,25 @@ export function createSessionsModule(client: CloudApiClient): SessionsBackend {
         teamId,
         sessionIds,
       });
+      return out.items ?? [];
+    },
+    async createThread(parentSessionId, rootMessageId) {
+      const out = await client.post<CloudSessionDetail>(
+        `/v1/sessions/${encodeURIComponent(parentSessionId)}/threads`,
+        { rootMessageId },
+      );
+      return mapSessionDetail(out);
+    },
+    async listThreadSummaries(parentSessionId) {
+      const out = await client.get<{
+        items: Array<{
+          threadSessionId: string;
+          rootMessageId: string;
+          messageCount: number;
+          lastMessageAt: string | null;
+          participantCount: number;
+        }>;
+      }>(`/v1/sessions/${encodeURIComponent(parentSessionId)}/thread-summaries`);
       return out.items ?? [];
     },
   };

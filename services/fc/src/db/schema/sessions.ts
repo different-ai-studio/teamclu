@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, unique, foreignKey } from "drizzle-orm/pg-core";
 import { teams } from "./teams.js";
 import { actors } from "./teams.js";
 
@@ -23,8 +23,12 @@ export const sessions = pgTable("sessions", {
    *  Written at create time from the binding and never cleared, so a chat can
    *  still enumerate the sessions it detached from (`/sessions` → `/sessions n`). */
   gatewayKey: text("gateway_key"),
-  /** How the session was created: 'user' (default) | 'cron' | 'gateway'. */
+  /** How the session was created: 'user' (default) | 'cron' | 'gateway' | 'thread'. */
   source: text("source").notNull().default("user"),
+  /** Parent session when source='thread' (forked agent-reply thread). */
+  parentSessionId: uuid("parent_session_id"),
+  /** Anchor agent_reply message when source='thread'. */
+  threadRootMessageId: uuid("thread_root_message_id"),
   /** For source='cron': the desktop-local cron job id that created it
    *  (a daemon-local string id, not a cloud FK). */
   cronJobId: text("cron_job_id"),
@@ -32,6 +36,10 @@ export const sessions = pgTable("sessions", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   teamBindingUniq: unique("sessions_team_binding_uniq").on(t.teamId, t.binding),
+  parentSessionFk: foreignKey({
+    columns: [t.parentSessionId],
+    foreignColumns: [t.id],
+  }).onDelete("cascade"),
 }));
 
 export const sessionParticipants = pgTable("session_participants", {

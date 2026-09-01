@@ -60,6 +60,10 @@ import { useSessionPermissionMode } from "@/lib/session-permission-mode";
 import { interruptAgentActor } from "@/lib/teamclu/interrupt-agent";
 import { toast } from "sonner";
 import { AcpStreamDebugPanel } from "./AcpStreamDebugPanel";
+import { ThreadPanel } from "./ThreadPanel";
+import { ThreadListPanel } from "./ThreadListPanel";
+import { useThreadPanelStore } from "@/stores/thread-panel-store";
+import { useThreadListPanelStore } from "@/stores/thread-list-panel-store";
 import type { Todo } from "@/stores/session-types";
 import { QuestionInputDock } from "./QuestionInputDock";
 import {
@@ -1231,11 +1235,31 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
 
   // ── Render ────────────────────────────────────────────────────────────
 
+  const threadParentSessionId = useThreadPanelStore((s) => s.parentSessionId);
+  const threadListParentSessionId = useThreadListPanelStore((s) => s.parentSessionId);
+
+  React.useEffect(() => {
+    if (!displaySessionId) return;
+    const listState = useThreadListPanelStore.getState();
+    if (listState.isOpen && listState.parentSessionId !== displaySessionId) {
+      listState.close();
+    }
+    const threadState = useThreadPanelStore.getState();
+    if (threadState.isOpen && threadState.parentSessionId !== displaySessionId) {
+      threadState.close();
+    }
+  }, [displaySessionId]);
+
   return (
     <div
       className={cn(
-      "flex flex-col",
+        "flex min-h-0 flex-1 flex-row overflow-hidden",
         compact ? "h-full w-full relative" : "absolute inset-0",
+      )}
+    >
+    <div
+      className={cn(
+      "relative flex min-h-0 min-w-0 flex-1 flex-col",
       )}
     >
       {/* Actors panel mounts in RightPanel for the 'actors' tab; trigger
@@ -1418,6 +1442,13 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
           />
         </React.Suspense>
       )}
+    </div>
+    {displaySessionId && threadListParentSessionId === displaySessionId ? (
+      <ThreadListPanel parentSessionId={displaySessionId} />
+    ) : null}
+    {displaySessionId && threadParentSessionId === displaySessionId ? (
+      <ThreadPanel parentSessionId={displaySessionId} />
+    ) : null}
     </div>
   );
 }

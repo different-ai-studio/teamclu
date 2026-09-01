@@ -462,9 +462,35 @@ impl DaemonServer {
                         crate::runtime::turn_aggregator::TurnAggregator::cloud_persistent(&msg);
                     let kind = msg.kind;
                     let content = msg.content;
-                    let metadata_json = msg.metadata_json;
+                    let mut metadata_json = msg.metadata_json;
                     let turn_id = msg.turn_id;
                     let interrupted = metadata_json.contains("\"turn_status\":\"interrupted\"");
+                    if persist {
+                        let agents = self.agents.lock().await;
+                        if let Some(handle) = agents.get_handle(agent_id) {
+                            let backend_handle = agents.agent_backend_handle();
+                            let mut backend = backend_handle.lock().await;
+                            if handle.acp_session_id.starts_with("pi:") {
+                                let leaf = backend
+                                    .completed_turn_leaf_id(&handle.acp_session_id);
+                                metadata_json =
+                                    crate::runtime::backend_session_metadata::stamp_pi_backend_session_metadata(
+                                        &metadata_json,
+                                        &handle.acp_session_id,
+                                        leaf.as_deref(),
+                                    );
+                            } else if handle.agent_type == amux::AgentType::Opencode {
+                                let message_id = backend
+                                    .completed_turn_opencode_message_id(&handle.acp_session_id);
+                                metadata_json =
+                                    crate::runtime::backend_session_metadata::stamp_opencode_backend_session_metadata(
+                                        &metadata_json,
+                                        &handle.acp_session_id,
+                                        message_id.as_deref(),
+                                    );
+                            }
+                        }
+                    }
                     let mut cloud_ok = true;
                     for sid in &collab_sessions {
                         let ok = tc

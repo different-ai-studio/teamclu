@@ -521,6 +521,8 @@ export interface RuntimeStartArgs {
   modelId?: string
   /** Discard stored backend binding and spawn a fresh backend session. */
   resetBackendBinding?: boolean
+  /** Lazy thread fork from parent session at anchor agent_reply. */
+  forkFrom?: { parentSessionId: string; rootMessageId: string }
   timeoutMs?: number
 }
 
@@ -535,6 +537,12 @@ export async function runtimeStart(args: RuntimeStartArgs): Promise<RuntimeStart
       initialPrompt: args.initialPrompt ?? '',
       modelId: args.modelId ?? '',
       resetBackendBinding: args.resetBackendBinding ?? false,
+      forkFrom: args.forkFrom
+        ? {
+            parentSessionId: args.forkFrom.parentSessionId,
+            rootMessageId: args.forkFrom.rootMessageId,
+          }
+        : undefined,
     })
     req.method = { case: 'runtimeStart', value: start }
   }, args.targetActorId, args.timeoutMs)

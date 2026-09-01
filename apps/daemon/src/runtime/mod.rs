@@ -1,5 +1,6 @@
 pub mod acp_event_frame;
 pub mod backend;
+pub mod backend_session_metadata;
 pub mod claude_agent;
 pub(crate) mod claude_skills;
 pub mod cursor_sdk;

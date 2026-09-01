@@ -510,6 +510,27 @@ async function handleCommand(command) {
       });
     }
 
+    case "fork_session": {
+      if (!command.parentSessionPath) {
+        return fail(id, "fork_session", "parentSessionPath is required");
+      }
+      if (!command.forkLeafId) {
+        return fail(id, "fork_session", "forkLeafId is required");
+      }
+      const parentManager = pi.SessionManager.open(command.parentSessionPath, sessionDir);
+      const branchedManager = parentManager.createBranchedSession(command.forkLeafId);
+      const newPath = branchedManager.getSessionFile();
+      if (!newPath) {
+        return fail(id, "fork_session", "createBranchedSession returned no session file");
+      }
+      const sessionId = `pi:${newPath}`;
+      return ok(id, "fork_session", {
+        sessionId,
+        sessionFile: newPath,
+        leafId: branchedManager.getLeafId() ?? undefined,
+      });
+    }
+
     case "close_session":
       return ok(id, "close_session", { closed: await closeSession(command.sessionId) });
 

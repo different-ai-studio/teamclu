@@ -4,6 +4,7 @@ import { getBackend } from '@/lib/backend'
 import { runtimeStart, setModel } from '@/lib/teamclu-rpc'
 import { resolveAmuxAgentType } from '@/lib/amux-agent-type'
 import { seedRuntimeStateAfterStart } from '@/lib/seed-runtime-state'
+import { runtimeForkFromForSession } from '@/lib/thread-fork'
 import { seedLocalDaemonModelsInBackground } from '@/lib/local-daemon-model-catalog'
 import {
   normalizeAgentModelId,
@@ -626,6 +627,7 @@ export async function startAgentRuntimesAsync(
       })
       // RPC topic is amux/{team}/{agentActorId}/rpc/req — the routing segment
       // is the agent's actor_id.
+      const forkFrom = runtimeForkFromForSession(args.sessionId);
       const runtimeStartArgs = {
         targetActorId: agentActorId,
         ...runtimeStartWorkspaceArgs(runtimeWorkspaceId, isLocalDaemonAgent ? localWorktree : ''),
@@ -633,6 +635,7 @@ export async function startAgentRuntimesAsync(
         agentType,
         initialPrompt: '',
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
+        ...(forkFrom ? { forkFrom } : {}),
         timeoutMs: rpcTimeoutMs,
       } as const
 

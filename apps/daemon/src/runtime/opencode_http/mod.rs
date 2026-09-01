@@ -90,6 +90,8 @@ pub(crate) struct Route {
     /// for this session (gateway `send` tool / remote tools). Pruned back out
     /// on detach / re-attach so stale entries don't accumulate.
     pub(crate) injected_mcp: Vec<String>,
+    /// Latest assistant message id seen during the current or last turn (`^msg…`).
+    pub(crate) last_assistant_message_id: Option<String>,
     /// Set when this route is a lightweight alias for an opencode `task`
     /// subagent session (`Session.parentID`). Frames still carry the child
     /// `acp_session_id`; only the delivery channel / directory / permission
@@ -289,6 +291,7 @@ impl HostGeneration {
             tools_in_flight: HashSet::new(),
             translate: TranslateState::default(),
             injected_mcp: Vec::new(),
+            last_assistant_message_id: None,
             parent_session_id: Some(parent_id.to_string()),
             retry_streak: None,
         };
@@ -577,6 +580,75 @@ impl OpencodeHost {
         .with_route_lease(route_lease);
         Ok((cmd_tx, startup))
     }
+
+    /// Fork parent opencode session at anchor message (`POST /session/{id}/fork`).
+    pub async fn fork_session_at(
+        &mut self,
+        spec: crate::runtime::backend::ForkSpec,
+    ) -> crate::error::Result<String> {
+        let anchor_message_id = spec
+            .fork_opencode_message_id
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                crate::error::AmuxError::Agent(
+                    "opencode thread fork requires fork_opencode_message_id (anchor messageID)"
+                        .into(),
+                )
+            })?;
+        let lease = self
+            .pool
+            .acquire(
+                spec.isolation_domain,
+                spec.process_env_revision,
+                spec.extra_env,
+                Instant::now() + Duration::from_secs(30),
+            )
+            .await
+            .map_err(|error| match error {
+                HostPoolError::CapacityTimeout {
+                    active,
+                    draining,
+                    queued,
+                } => crate::error::AmuxError::Agent(format!(
+                    "host_capacity_timeout: {active} active, {draining} draining, {queued} queued"
+                )),
+                HostPoolError::Spawn(message) => crate::error::AmuxError::Agent(message),
+            })?;
+        let directory = canonical_dir(&spec.worktree);
+        let client = lease
+            .generation
+            .serve
+            .ensure()
+            .await
+            .map_err(|e| crate::error::AmuxError::Agent(e.to_string()))?;
+        events::ensure_sse_task(&lease.generation, &directory);
+        let messages = client
+            .session_messages(&directory, &spec.parent_acp_session_id)
+            .await?;
+        let exclusive_cutoff = client::resolve_exclusive_fork_cutoff(&messages, &anchor_message_id)
+            .map_err(crate::error::AmuxError::Agent)?;
+        client
+            .fork_session(
+                &directory,
+                &spec.parent_acp_session_id,
+                exclusive_cutoff.as_deref(),
+            )
+            .await
+    }
+
+    pub fn completed_turn_opencode_message_id(&self, acp_session_id: &str) -> Option<String> {
+        let gens = self.generations.lock();
+        for weak in gens.values() {
+            let Some(gen) = weak.upgrade() else {
+                continue;
+            };
+            let routes = gen.routes.lock();
+            if let Some(route) = routes.get(acp_session_id) {
+                return route.last_assistant_message_id.clone();
+            }
+        }
+        None
+    }
 }
 
 impl Default for OpencodeHost {
@@ -856,6 +928,7 @@ async fn attach(
                 tools_in_flight: HashSet::new(),
                 translate: TranslateState::default(),
                 injected_mcp,
+                last_assistant_message_id: None,
                 parent_session_id: None,
                 retry_streak: None,
             },
@@ -1036,6 +1109,7 @@ async fn do_prompt(
         route.turn_last_event_at = std::time::Instant::now();
         route.retry_streak = None;
         route.tools_in_flight.clear();
+        route.last_assistant_message_id = None;
         (
             route.event_tx.clone(),
             route.directory.clone(),
@@ -2004,6 +2078,7 @@ mod pool_tests {
             tools_in_flight: HashSet::new(),
             translate: TranslateState::default(),
             injected_mcp: Vec::new(),
+            last_assistant_message_id: None,
             parent_session_id: None,
         }
     }
@@ -2348,6 +2423,7 @@ mod pool_tests {
                 tools_in_flight: HashSet::new(),
                 translate: TranslateState::default(),
                 injected_mcp: vec!["amuxd-send".to_string()],
+                last_assistant_message_id: None,
                 parent_session_id: None,
                 retry_streak: None,
             },
@@ -2381,6 +2457,7 @@ mod turn_activity_tests {
             tools_in_flight: HashSet::new(),
             translate: TranslateState::default(),
             injected_mcp: Vec::new(),
+            last_assistant_message_id: None,
             parent_session_id: None,
             retry_streak: None,
         }
@@ -2575,6 +2652,7 @@ mod turn_activity_tests {
                     tools_in_flight: HashSet::new(),
                     translate: TranslateState::default(),
                     injected_mcp: Vec::new(),
+                    last_assistant_message_id: None,
                     parent_session_id: Some("ses_parent".to_string()),
                     retry_streak: None,
                 },

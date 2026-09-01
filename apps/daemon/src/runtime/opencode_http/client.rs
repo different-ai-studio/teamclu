@@ -311,6 +311,45 @@ impl ServeClient {
         Self::check(resp, "question reject").await.map(|_| ())
     }
 
+    /// POST /session/{parentID}/fork → new branched session id.
+    ///
+    /// `exclusive_cutoff_message_id`: opencode treats `messageID` as an **exclusive**
+    /// upper bound (`id >= messageID` stops copying). Pass the anchor assistant's
+    /// **next** message id to include the anchor; `None` omits `messageID` and
+    /// copies the full parent history (anchor is the last message).
+    pub async fn fork_session(
+        &self,
+        directory: &str,
+        parent_session_id: &str,
+        exclusive_cutoff_message_id: Option<&str>,
+    ) -> crate::error::Result<String> {
+        let body = match exclusive_cutoff_message_id.filter(|s| !s.is_empty()) {
+            Some(message_id) => serde_json::json!({ "messageID": message_id }),
+            None => serde_json::json!({}),
+        };
+        let resp = self
+            .req(
+                reqwest::Method::POST,
+                &format!("/session/{parent_session_id}/fork"),
+                directory,
+            )
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| crate::error::AmuxError::Agent(format!("fork session: {e}")))?;
+        let resp = Self::check(resp, "fork session").await?;
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| crate::error::AmuxError::Agent(format!("fork session body: {e}")))?;
+        body.get("id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                crate::error::AmuxError::Agent("fork session: no id in response".into())
+            })
+    }
+
     /// POST /session/{id}/abort.
     pub async fn abort(&self, directory: &str, session_id: &str) -> crate::error::Result<()> {
         let resp = self
@@ -441,6 +480,33 @@ pub fn split_model_id(model_id: &str) -> Option<PromptModel> {
     })
 }
 
+/// Resolve the exclusive `messageID` to pass to `POST /session/{id}/fork` so the
+/// branched session includes `anchor_opencode_message_id` (assistant reply).
+///
+/// Opencode copies messages while `id < messageID`; omit `messageID` to copy all.
+pub fn resolve_exclusive_fork_cutoff(
+    messages: &[serde_json::Value],
+    anchor_opencode_message_id: &str,
+) -> Result<Option<String>, String> {
+    let ids: Vec<&str> = messages
+        .iter()
+        .filter_map(|m| {
+            m.pointer("/info/id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+        })
+        .collect();
+    let idx = ids
+        .iter()
+        .position(|&id| id == anchor_opencode_message_id)
+        .ok_or_else(|| {
+            format!(
+                "anchor opencode message {anchor_opencode_message_id} not found in parent session"
+            )
+        })?;
+    Ok(ids.get(idx + 1).map(|&id| id.to_string()))
+}
+
 /// Pull the `provider/model` id out of a `GET /session/{id}` body.
 ///
 /// opencode stores the session's last-used model as
@@ -563,5 +629,33 @@ mod tests {
         assert_eq!(models[0].provider_name, "Team");
         assert_eq!(models[1].id, "team/kimi-k2");
         assert_eq!(models[1].display_name, "kimi-k2");
+    }
+
+    fn msg(id: &str) -> serde_json::Value {
+        serde_json::json!({ "info": { "id": id, "role": "assistant" } })
+    }
+
+    #[test]
+    fn exclusive_fork_cutoff_uses_next_message_when_anchor_not_last() {
+        let messages = vec![msg("msg_u1"), msg("msg_a1"), msg("msg_u2")];
+        assert_eq!(
+            resolve_exclusive_fork_cutoff(&messages, "msg_a1").unwrap().as_deref(),
+            Some("msg_u2")
+        );
+    }
+
+    #[test]
+    fn exclusive_fork_cutoff_none_when_anchor_is_last() {
+        let messages = vec![msg("msg_u1"), msg("msg_a1")];
+        assert_eq!(
+            resolve_exclusive_fork_cutoff(&messages, "msg_a1").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn exclusive_fork_cutoff_errors_when_anchor_missing() {
+        let messages = vec![msg("msg_u1"), msg("msg_a1")];
+        assert!(resolve_exclusive_fork_cutoff(&messages, "msg_missing").is_err());
     }
 }

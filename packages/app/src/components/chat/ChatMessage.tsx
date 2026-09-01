@@ -34,6 +34,8 @@ import {
   AgentReplyQuote,
   jumpToMessageById,
 } from "./AgentReplyQuote";
+import { ThreadBadge } from "./ThreadBadge";
+import { MessageActionIconButton } from "./MessageActionIconButton";
 import { useActorDisplayName } from "@/hooks/useActorDisplayName";
 import { useCurrentTeamStore } from "@/stores/current-team";
 
@@ -83,6 +85,7 @@ export const ChatMessage = React.memo(function ChatMessage({
   basePath,
   shouldShowThinking = true,
   showStarRating = false,
+  suppressThreadBadge = false,
   tokenGroupInfo,
   replyToMessage,
 }: {
@@ -91,6 +94,8 @@ export const ChatMessage = React.memo(function ChatMessage({
   basePath?: string;
   shouldShowThinking?: boolean;
   showStarRating?: boolean;
+  /** Hide "+ 开话题" when rendering a thread anchor (avoids nested panel loops). */
+  suppressThreadBadge?: boolean;
   tokenGroupInfo?: {
     hideTokenUsage: boolean;
     groupSummary?: { steps: number; totalInput: number; totalOutput: number; totalCost: number };
@@ -704,20 +709,30 @@ export const ChatMessage = React.memo(function ChatMessage({
         </div>
       ) : null}
 
-      {/* Copy action for assistant text responses */}
-      {shouldShowAssistantCopyAction && (
-        <div className={cn("pl-1 mt-1 transition-opacity", copied ? "opacity-100" : "opacity-0 group-hover/msg:opacity-100")}>
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground/70 hover:text-foreground hover:bg-muted/40 transition-colors"
-            title={copied ? t("common.copied", "Copied!") : t("common.copy", "Copy")}
-          >
-            {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
-            <span>{copied ? t("common.copied", "Copied!") : t("common.copy", "Copy")}</span>
-          </button>
-        </div>
-      )}
+      {!isUser && activeSessionId && !latestMessage.isStreaming ? (
+        <ThreadBadge
+          parentSessionId={activeSessionId}
+          messageId={message.id}
+          message={latestMessage}
+          hideThread={suppressThreadBadge}
+          actionsRevealed={copied}
+          copySlot={
+            shouldShowAssistantCopyAction ? (
+              <MessageActionIconButton
+                label={copied ? t("common.copied", "Copied!") : t("common.copy", "Copy")}
+                onClick={handleCopy}
+                testId="message-copy-action"
+              >
+                {copied ? (
+                  <Check className="h-3.5 w-3.5 text-green-500" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" />
+                )}
+              </MessageActionIconButton>
+            ) : null
+          }
+        />
+      ) : null}
 
       {/* Tool calls — only while streaming on fallback path; completed uses process shell above */}
       {!isUser &&

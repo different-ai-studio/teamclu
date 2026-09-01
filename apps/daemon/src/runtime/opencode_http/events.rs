@@ -290,6 +290,16 @@ async fn handle_event(shared: &Arc<HostGeneration>, event: &serde_json::Value) {
                 if route.turn_active && super::is_turn_progress_event(event_type) {
                     route.turn_last_event_at = std::time::Instant::now();
                 }
+                if event_type == "message.updated" {
+                    if let (Some(id), Some(role)) = (
+                        props.pointer("/info/id").and_then(|v| v.as_str()),
+                        props.pointer("/info/role").and_then(|v| v.as_str()),
+                    ) {
+                        if role == "assistant" {
+                            route.last_assistant_message_id = Some(id.to_string());
+                        }
+                    }
+                }
                 let parent_id = route.parent_session_id.clone();
                 let events = translate::translate_event(&mut route.translate, event_type, &props);
                 if !events.is_empty() {

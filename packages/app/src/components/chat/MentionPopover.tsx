@@ -27,6 +27,8 @@ interface MentionPopoverProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   searchQuery: string
+  /** Composer session for @-mention roster (defaults to active session selection). */
+  sessionId?: string | null
   /** Engaged agent pill in the composer footer — triggers E2 confirm when @-mentioning a human. */
   engagedAgent?: AttachedAgent | null
   onSelectMember: (person: MentionedPerson, options?: MemberMentionSelectOptions) => void
@@ -113,12 +115,14 @@ export function MentionPopover({
   open,
   onOpenChange,
   searchQuery,
+  sessionId: sessionIdProp,
   engagedAgent = null,
   onSelectMember,
   onSelectAgent,
 }: MentionPopoverProps) {
   const { t } = useTranslation()
-  const sessionId = useSessionSelectionStore(s => s.currentSessionId)
+  const selectedSessionId = useSessionSelectionStore(s => s.currentSessionId)
+  const sessionId = sessionIdProp ?? selectedSessionId
   const currentMemberActorId = useCurrentTeamStore(s => s.currentMember?.id ?? null)
   const ensureParticipants = useSessionParticipantStore(s => s.ensureParticipants)
   const sessionParticipants = useSessionParticipantStore(s =>

@@ -85,6 +85,22 @@ export class SessionManager {
   getEntries() {
     return this.entries;
   }
+
+  createBranchedSession(leafId) {
+    const idx = this.entries.findIndex((e) => e.id === leafId);
+    const subset = idx >= 0 ? this.entries.slice(0, idx + 1) : [...this.entries];
+    const newFile = path.join(
+      path.dirname(this.file),
+      `branch-${crypto.randomUUID()}.jsonl`,
+    );
+    fs.mkdirSync(path.dirname(newFile), { recursive: true });
+    const header = { type: "header", id: path.basename(newFile, ".jsonl") };
+    fs.writeFileSync(
+      newFile,
+      [JSON.stringify(header), ...subset.map((e) => JSON.stringify(e))].join("\n") + "\n",
+    );
+    return new SessionManager(this.cwd, newFile, subset);
+  }
 }
 
 export async function createAgentSessionServices(options) {

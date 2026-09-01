@@ -98,6 +98,8 @@ export interface ChatSendDeps {
   welcomeQuickChatAgent: ReturnType<typeof quickChatWelcomeAgent>["agent"];
   setWelcomeSessionStarting: React.Dispatch<React.SetStateAction<boolean>>;
   messageListRef: React.RefObject<MessageListHandle | null>;
+  /** When false, sendIntoSession does not touch the global session-store draft. */
+  clearGlobalDraft?: boolean;
 }
 
 export function useChatSend({
@@ -116,6 +118,7 @@ export function useChatSend({
   welcomeQuickChatAgent,
   setWelcomeSessionStarting,
   messageListRef,
+  clearGlobalDraft = true,
 }: ChatSendDeps) {
 
   /**
@@ -172,13 +175,19 @@ export function useChatSend({
     // async work. This prevents stale images from leaking into later sends
     // if the user types and submits again while the upload is in flight.
     const currentPendingFiles = pendingFiles;
-    const draftSnapshot = useSessionStore.getState().draftInput;
+    const draftSnapshot = clearGlobalDraft
+      ? useSessionStore.getState().draftInput
+      : "";
     setPendingFiles([]);
-    useSessionStore.getState().setDraftInput("");
+    if (clearGlobalDraft) {
+      useSessionStore.getState().setDraftInput("");
+    }
 
     const restoreComposer = () => {
       setPendingFiles(currentPendingFiles);
-      useSessionStore.getState().setDraftInput(draftSnapshot);
+      if (clearGlobalDraft) {
+        useSessionStore.getState().setDraftInput(draftSnapshot);
+      }
     };
 
     // WYSIWYG: pill in footer, typed @, or explicit extra on first send.
@@ -210,7 +219,9 @@ export function useChatSend({
     // listParticipants when the composer pill already names the agent.
     const authSession = useAuthStore.getState().session;
     const teamIdFromSessionList =
-      useSessionListStore.getState().rows.find(r => r.id === sid)?.team_id ?? null;
+      useSessionListStore.getState().rows.find((r) => r.id === sid)?.team_id ??
+      sheetTeamId ??
+      null;
     let teamIdForSend: string | null = teamIdFromSessionList;
 
     const teamIdPromise = Promise.resolve(
@@ -827,5 +838,5 @@ export function useChatSend({
       return false;
     }
   };
-  return { handleSubmit, createSessionAndSendFirst };
+  return { handleSubmit, createSessionAndSendFirst, sendIntoSession };
 }

@@ -155,6 +155,7 @@ impl DaemonServer {
         initial_model_override: Option<String>,
         requester_actor_id: &str,
         reset_backend_binding: bool,
+        fork_from: Option<(String, String)>,
     ) -> Result<StartRuntimeOutcome, StartRuntimeError> {
         info!(workspace_id, worktree, session_id, "apply_start_runtime");
 
@@ -534,7 +535,7 @@ impl DaemonServer {
             }
         }
 
-        let forbid_new_session_fallback = false;
+        let mut resume_acp_session_id: Option<String> = None;
 
         let workspace_team_id = self.resolve_workspace_team_id(&ws_id).await;
 
@@ -552,6 +553,47 @@ impl DaemonServer {
                 error_message: format!("assemble_runtime_env failed: {e}"),
                 failed_stage: "env_setup".to_string(),
             })?;
+
+        if let Some((parent_session_id, root_message_id)) = fork_from {
+            let needs_fork = !session_id.is_empty()
+                && !ws_id.is_empty()
+                && !reset_backend_binding
+                && self
+                    .sessions
+                    .lookup(session_id, &ws_id, agent_type as i32)
+                    .is_none();
+            if needs_fork
+                && matches!(
+                    agent_type,
+                    amux::AgentType::Pi | amux::AgentType::Opencode
+                )
+            {
+                let forked = {
+                    let agents = self.agents.lock().await;
+                    let backend_handle = agents.agent_backend_handle();
+                    let mut agent_backend = backend_handle.lock().await;
+                    crate::daemon::thread_runtime::fork_thread_binding(
+                        &self.sessions,
+                        &self.backend,
+                        agent_backend.as_mut(),
+                        &context,
+                        &crate::daemon::thread_runtime::ThreadForkParams {
+                            thread_session_id: session_id.to_string(),
+                            parent_session_id,
+                            root_message_id,
+                            workspace_id: ws_id.clone(),
+                            worktree: resolved_worktree.clone(),
+                            agent_type,
+                        },
+                    )
+                    .await?
+                };
+                resume_acp_session_id = Some(forked.clone());
+                self.upsert_session_binding(session_id, &ws_id, agent_type, &forked);
+            }
+        }
+
+        let forbid_new_session_fallback = resume_acp_session_id.is_some();
 
         // Do not write / pass `remote-tools-host.json` — auto-inject of
         // `amuxd-remote-tools` is paused. Re-enable via write_remote_tools_mcp_config.
@@ -571,7 +613,7 @@ impl DaemonServer {
                 session_id,
                 initial_model_override,
                 mcp_config_path,
-                None,
+                resume_acp_session_id,
                 forbid_new_session_fallback,
                 context,
             )
@@ -799,6 +841,16 @@ impl DaemonServer {
 
         let initial_model_override = runtime_start_initial_model_override(start);
 
+        let fork_from = start.fork_from.as_ref().and_then(|f| {
+            let parent = f.parent_session_id.trim();
+            let root = f.root_message_id.trim();
+            if parent.is_empty() || root.is_empty() {
+                None
+            } else {
+                Some((parent.to_string(), root.to_string()))
+            }
+        });
+
         let outcome = self
             .apply_start_runtime(
                 at,
@@ -809,6 +861,7 @@ impl DaemonServer {
                 initial_model_override,
                 &request.requester_actor_id,
                 start.reset_backend_binding,
+                fork_from,
             )
             .await;
 

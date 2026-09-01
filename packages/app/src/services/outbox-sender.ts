@@ -38,6 +38,7 @@ import {
 import { bumpSessionListLastMessage } from "@/lib/session-list-preview";
 import { maybeAutoTitleSessionFromFirstMessage } from "@/lib/session-auto-title";
 import { useSessionListStore } from "@/stores/session-list-store";
+import { runtimeForkFromForSession } from "@/lib/thread-fork";
 
 const TICK_MS = 1000;
 const DELIVERED_GC_MS = 5000;
@@ -162,6 +163,7 @@ async function ensureLocalRuntimeForFastPath(
   const worktree =
     bound?.workspacePath || (useWorkspaceStore.getState().workspacePath?.trim() ?? "");
 
+  const forkFrom = runtimeForkFromForSession(entry.sessionId);
   sessionFlowLog("outbox_sender.local_runtime_start.begin", {
     messageId: entry.messageId,
     sessionId: entry.sessionId,
@@ -169,6 +171,7 @@ async function ensureLocalRuntimeForFastPath(
     localDaemonActorId,
     worktree: worktree || null,
     workspaceId: workspaceId || null,
+    forkFrom: forkFrom ?? null,
   });
   await runtimeStart({
     targetActorId: localDaemonActorId,
@@ -177,6 +180,7 @@ async function ensureLocalRuntimeForFastPath(
     sessionId: entry.sessionId,
     agentType,
     modelId: entry.model ?? "",
+    ...(forkFrom ? { forkFrom } : {}),
   });
   sessionFlowLog("outbox_sender.local_runtime_start.ok", {
     messageId: entry.messageId,

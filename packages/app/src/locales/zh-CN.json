@@ -3299,5 +3299,29 @@
   "tabBar": {
     "closeAria": "关闭标签页",
     "findClose": "关闭（Esc）"
+  },
+  "thread": {
+    "agentFallback": "Agent",
+    "anchorLabel": "话题起点 · 只读",
+    "createFailed": "创建话题失败，请稍后重试",
+    "daysAgo": "{{n}} 天前",
+    "defaultTitle": "话题",
+    "headerSubtitle": "fork 自 agent 回复",
+    "headerTitle": "话题 · {{title}}",
+    "hoursAgo": "{{n}} 小时前",
+    "inputPlaceholder": "在话题里继续…",
+    "justNow": "刚刚",
+    "lastReply": "最后回复 {{time}}",
+    "minutesAgo": "{{n}} 分钟前",
+    "replies": "{{count}} 条回复",
+    "continue": "查看话题",
+    "tooltipStart": "开话题",
+    "start": "+ 开话题",
+    "listTitle": "话题",
+    "listSubtitle": "本对话 {{count}} 个话题",
+    "listOpen": "查看话题列表",
+    "listClose": "关闭话题列表",
+    "listLoading": "加载话题…",
+    "listEmpty": "暂无话题"
   }
 }

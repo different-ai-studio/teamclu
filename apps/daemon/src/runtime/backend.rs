@@ -109,6 +109,22 @@ impl AcpStartupMetadata {
     }
 }
 
+/// Inputs for lazy thread fork at first runtimeStart on a thread session.
+#[derive(Debug, Clone)]
+pub struct ForkSpec {
+    pub parent_acp_session_id: String,
+    pub parent_teamclu_session_id: String,
+    pub root_message_id: String,
+    pub worktree: String,
+    pub fork_leaf_id: Option<String>,
+    /// opencode `messageID` (`^msg…`) for `POST /session/{id}/fork`.
+    pub fork_opencode_message_id: Option<String>,
+    pub isolation_domain: IsolationDomainKey,
+    pub process_env_revision: ProcessEnvRevision,
+    pub extra_env: HashMap<String, String>,
+    pub force_env_override: bool,
+}
+
 // ---------------------------------------------------------------------------
 // AgentBackend trait
 // ---------------------------------------------------------------------------
@@ -226,6 +242,26 @@ pub trait AgentBackend: Send {
         &mut self,
         _service: std::sync::Arc<super::context_service::RuntimeContextService>,
     ) {
+    }
+
+    /// Fork a backend session at an anchor message (thread lazy attach).
+    /// Pi implements via `createBranchedSession`; other backends may override
+    /// or return an error until implemented.
+    async fn fork_session_at(&mut self, spec: ForkSpec) -> crate::error::Result<String> {
+        let _ = spec;
+        Err(crate::error::AmuxError::Agent(
+            "fork_session_at not supported for this backend".into(),
+        ))
+    }
+
+    /// Latest pi leaf entry id after a completed turn (for thread fork metadata).
+    fn completed_turn_leaf_id(&self, _acp_session_id: &str) -> Option<String> {
+        None
+    }
+
+    /// Latest opencode assistant `messageID` after a completed turn (thread fork anchor).
+    fn completed_turn_opencode_message_id(&self, _acp_session_id: &str) -> Option<String> {
+        None
     }
 }
 
@@ -400,6 +436,14 @@ impl AgentBackend for OpencodeHttpBackend {
         &self,
     ) -> Option<std::sync::Arc<super::opencode_http::host_pool::OpenCodeHostPool>> {
         Some(self.host.pool())
+    }
+
+    async fn fork_session_at(&mut self, spec: ForkSpec) -> crate::error::Result<String> {
+        self.host.fork_session_at(spec).await
+    }
+
+    fn completed_turn_opencode_message_id(&self, acp_session_id: &str) -> Option<String> {
+        self.host.completed_turn_opencode_message_id(acp_session_id)
     }
 }
 

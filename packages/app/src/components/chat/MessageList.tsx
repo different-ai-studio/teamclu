@@ -41,8 +41,12 @@ export interface MessageListProps {
   sessionDirectory?: string;
   /** Optional empty-state content rendered when there are no messages (not loading) */
   emptyState?: React.ReactNode;
+  /** Composer lives outside MessageList (e.g. thread panel) — skip main-chat bottom inset. */
+  externalComposer?: boolean;
   /** Optional content rendered at the bottom of the scrollable message area. */
   bottomContent?: React.ReactNode;
+  /** Hide "+ Open thread" on agent replies (e.g. inside ThreadPanel). */
+  suppressThreadBadge?: boolean;
 }
 
 export interface MessageListHandle {
@@ -66,7 +70,9 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       compact = false,
       sessionDirectory,
       emptyState,
+      externalComposer = false,
       bottomContent,
+      suppressThreadBadge = false,
     },
     ref,
   ) {
@@ -527,7 +533,11 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
               showCenteredEmpty &&
                 "flex flex-1 flex-col justify-center",
             )}
-            style={{ paddingBottom: `${inputAreaHeight + SAFE_BOTTOM_SPACING}px` }}
+            style={{
+              paddingBottom: externalComposer
+                ? "12px"
+                : `${inputAreaHeight + SAFE_BOTTOM_SPACING}px`,
+            }}
           >
             {showSessionLoadingSpinner ? (
               <div
@@ -657,6 +667,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
                                       ? messagesById.get(message.replyToMessageId) ?? null
                                       : null
                                   }
+                                  suppressThreadBadge={suppressThreadBadge}
                                 />
                               </ErrorBoundary>
                             </div>
@@ -689,6 +700,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
                                   ? messagesById.get(message.replyToMessageId) ?? null
                                   : null
                               }
+                              suppressThreadBadge={suppressThreadBadge}
                             />
                           </ErrorBoundary>
                         </div>

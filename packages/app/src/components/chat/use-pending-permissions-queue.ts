@@ -8,35 +8,35 @@ import { useSessionStore } from "@/stores/session";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { collectVisiblePermissions } from "./permission-queue";
 
-export function usePendingPermissionsQueue() {
-  const activeSessionId = useSessionStore((s) => s.activeSessionId);
-  const sessionPermissionMode = useSessionPermissionMode(activeSessionId);
+/** Permission / approval queue for a composer surface (main session or thread). */
+export function usePendingPermissionsQueue(permissionSessionId: string | null) {
+  const sessionPermissionMode = useSessionPermissionMode(permissionSessionId);
   const sessions = useSessionStore((s) => s.sessions);
   const pendingPermissions = useSessionStore((s) => s.pendingPermissions);
   const streamRevision = useV2StreamingStore((s) =>
-    activeSessionId ? (s.revisionBySession[activeSessionId] ?? 0) : 0,
+    permissionSessionId ? (s.revisionBySession[permissionSessionId] ?? 0) : 0,
   );
   const [dismissedIds, setDismissedIds] = React.useState<string[]>([]);
 
   const acpStreamingPermissions = React.useMemo(() => {
     const streamByKey = useV2StreamingStore.getState().byKey;
-    return collectAcpStreamingPermissions(activeSessionId, streamByKey);
-  }, [activeSessionId, streamRevision]);
+    return collectAcpStreamingPermissions(permissionSessionId, streamByKey);
+  }, [permissionSessionId, streamRevision]);
 
   const waitingPermissions = React.useMemo(() => {
     const streamByKey = useV2StreamingStore.getState().byKey;
-    return collectAcpBystanderWaitingPermissions(activeSessionId, streamByKey);
-  }, [activeSessionId, streamRevision]);
+    return collectAcpBystanderWaitingPermissions(permissionSessionId, streamByKey);
+  }, [permissionSessionId, streamRevision]);
 
   const baseVisiblePermissions = React.useMemo(
     () =>
       collectVisiblePermissions(
-        activeSessionId,
+        permissionSessionId,
         sessions,
         pendingPermissions,
         acpStreamingPermissions,
       ),
-    [activeSessionId, acpStreamingPermissions, pendingPermissions, sessions],
+    [permissionSessionId, acpStreamingPermissions, pendingPermissions, sessions],
   );
 
   React.useEffect(() => {
@@ -73,7 +73,7 @@ export function usePendingPermissionsQueue() {
   }, []);
 
   return {
-    activeSessionId,
+    permissionSessionId,
     sessionPermissionMode,
     visiblePermissions,
     currentEntry,

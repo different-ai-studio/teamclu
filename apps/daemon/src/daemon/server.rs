@@ -79,6 +79,20 @@ pub(crate) struct StartRuntimeError {
     failed_stage: String,
 }
 
+impl StartRuntimeError {
+    pub(crate) fn new(
+        error_code: impl Into<String>,
+        error_message: impl Into<String>,
+        failed_stage: impl Into<String>,
+    ) -> Self {
+        Self {
+            error_code: error_code.into(),
+            error_message: error_message.into(),
+            failed_stage: failed_stage.into(),
+        }
+    }
+}
+
 fn mark_mqtt_connected(flag: &Option<Arc<std::sync::atomic::AtomicBool>>, connected: bool) {
     if let Some(flag) = flag {
         flag.store(connected, std::sync::atomic::Ordering::Relaxed);
@@ -2594,6 +2608,7 @@ impl DaemonServer {
                     None,
                     "",
                     false,
+                    None,
                 )
                 .await
             {
@@ -3986,6 +4001,7 @@ pub(crate) mod tests {
                 None,
                 "",
                 false,
+                None,
             )
             .await;
         let err = match result {
@@ -4030,6 +4046,7 @@ pub(crate) mod tests {
                 None,
                 "",
                 false,
+                None,
             )
             .await;
 
@@ -4070,6 +4087,7 @@ pub(crate) mod tests {
                 None,
                 "",
                 false,
+                None,
             )
             .await;
 
@@ -4134,6 +4152,7 @@ pub(crate) mod tests {
                 None,
                 "",
                 false,
+                None,
             )
             .await;
 
@@ -4211,6 +4230,7 @@ pub(crate) mod tests {
                 None,
                 "",
                 false,
+                None,
             )
             .await
             .unwrap_or_else(|error| panic!("desktop spawn failed: {}", error.error_message));
@@ -4282,6 +4302,7 @@ pub(crate) mod tests {
                 None,
                 "",
                 false,
+                None,
             )
             .await
             .unwrap_or_else(|error| panic!("desktop spawn failed: {}", error.error_message));
