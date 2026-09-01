@@ -193,6 +193,7 @@ mod tests {
                 // credential this replaced (a LiteLLM `sk-tc-*` virtual key)
                 // was guessable precisely because it was derived.
                 gateway_token: Some("tok_spawn_actor".to_string()),
+                ai_proxy_base: None,
             },
             &managed,
         )

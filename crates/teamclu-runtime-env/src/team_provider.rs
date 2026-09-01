@@ -419,7 +419,7 @@ mod tests {
             }],
         });
         let mut config = serde_json::json!({});
-        assert!(mutate_team_provider(&mut config, &state).unwrap());
+        assert!(mutate_team_provider(&mut config, &state, None).unwrap());
 
         let models = config["provider"]["team"]["models"].as_object().unwrap();
         assert_eq!(models.len(), 3);
@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn ensure_global_team_provider_adds_team_when_enabled() {
         let (_lock, dir, _home) = global_config_dir();
-        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), None).unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(global_config_path(&dir)).unwrap()).unwrap();
         assert!(parsed["provider"]["team"].is_object());
@@ -455,7 +455,7 @@ mod tests {
         let (_lock, dir, _home) = global_config_dir();
         let resolved = "tok_live_session";
         write_team_provider_with_key(&dir, resolved);
-        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), None).unwrap();
         assert_eq!(
             read_team_api_key(&dir).as_deref(),
             Some(resolved),
@@ -473,7 +473,7 @@ mod tests {
         // no amount of reconciling clears.
         let (_lock, dir, _home) = global_config_dir();
         write_team_provider_with_key(&dir, "sk-tc-actor-123");
-        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), None).unwrap();
         assert_eq!(
             read_team_api_key(&dir).as_deref(),
             Some(crate::merge::GATEWAY_TOKEN_PLACEHOLDER),
@@ -521,7 +521,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider())).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), None).unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(global_config_path(&dir)).unwrap()).unwrap();
         assert_eq!(
@@ -538,7 +538,7 @@ mod tests {
             serde_json::json!({ "provider": { "team": {} } }).to_string(),
         )
         .unwrap();
-        ensure_global_team_provider(&ManagedLlmState::Disabled).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Disabled, None).unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(global_config_path(&dir)).unwrap()).unwrap();
         assert!(parsed.get("provider").is_none());
@@ -552,7 +552,7 @@ mod tests {
             serde_json::json!({ "provider": { "team": { "keep": true } } }).to_string(),
         )
         .unwrap();
-        ensure_global_team_provider(&ManagedLlmState::Unknown).unwrap();
+        ensure_global_team_provider(&ManagedLlmState::Unknown, None).unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(global_config_path(&dir)).unwrap()).unwrap();
         assert_eq!(parsed["provider"]["team"]["keep"], true);
@@ -620,8 +620,8 @@ mod tests {
             panic!("expected Enabled");
         };
         assert_eq!(
-            team_provider_env_payload(&from_disk),
-            team_provider_env_payload(&provider)
+            team_provider_env_payload(&from_disk, None),
+            team_provider_env_payload(&provider, None)
         );
     }
 }

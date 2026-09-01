@@ -161,7 +161,7 @@ mod tests {
         .unwrap();
 
         let secrets = secrets_for_team_provider("tok_actor_123");
-        sync_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), &secrets).unwrap();
+        sync_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), &secrets, None).unwrap();
         resolve_workspace_runtime_config(
             dir.path(),
             &secrets,
@@ -207,6 +207,7 @@ mod tests {
         sync_global_team_provider(
             &ManagedLlmState::Enabled(sample_provider()),
             &secrets_for_team_provider("tok_actor_xyz"),
+            None,
         )
         .unwrap();
 
@@ -225,11 +226,11 @@ mod tests {
         let secrets = secrets_for_team_provider("shared-actor");
         let managed = ManagedLlmState::Enabled(sample_provider());
 
-        sync_global_team_provider(&managed, &secrets).unwrap();
+        sync_global_team_provider(&managed, &secrets, None).unwrap();
         let reconcile_disk = fs::read_to_string(global_config_path(&dir)).unwrap();
 
         fs::write(global_config_path(&dir), r#"{}"#).unwrap();
-        sync_global_team_provider(&managed, &secrets).unwrap();
+        sync_global_team_provider(&managed, &secrets, None).unwrap();
         let spawn_disk = fs::read_to_string(global_config_path(&dir)).unwrap();
 
         let reconcile_json: serde_json::Value = serde_json::from_str(&reconcile_disk).unwrap();
@@ -268,7 +269,7 @@ mod tests {
         );
         secrets.insert("API_TOKEN".to_string(), "ghp_spawn".to_string());
 
-        sync_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), &secrets).unwrap();
+        sync_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), &secrets, None).unwrap();
         resolve_workspace_runtime_config(dir.path(), &secrets, SecretResolveScope::FullConfig)
             .unwrap();
 
