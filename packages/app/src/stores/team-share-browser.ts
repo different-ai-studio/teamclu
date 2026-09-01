@@ -296,6 +296,8 @@ interface TeamShareBrowserState {
    * is held back as `blocked` there, as with any other removal.
    */
   deleteTeamSkill: (slug: string) => Promise<void>
+  /** Re-notify the daemon after a successful mutation whose refresh failed. */
+  retrySkillsRuntimeRefresh: () => Promise<void>
   /** Install a team MCP server for yourself — there is no install-for-others. */
   installMcp: (name: string) => Promise<void>
   uninstallMcp: (name: string) => Promise<void>
@@ -940,6 +942,28 @@ export class SkillRuntimeRefreshError extends Error {
   }
 }
 
+export type SkillMutationAction =
+  | 'install'
+  | 'uninstall'
+  | 'delete-personal'
+  | 'delete-team'
+  | 'restore'
+  | 'revert'
+  | 'discard'
+  | 'keep-archived'
+
+/** Business mutation succeeded; this machine's OpenCode cache did not refresh. */
+export class SkillMutationRefreshError extends Error {
+  constructor(
+    readonly action: SkillMutationAction,
+    readonly slug: string,
+    cause?: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause ?? 'skill_runtime_refresh_failed'))
+    this.name = 'SkillMutationRefreshError'
+  }
+}
+
 /** Cloud publish succeeded; this machine's OpenCode cache did not refresh. */
 export class SkillPublishedRefreshError extends Error {
   constructor(readonly version: number) {
@@ -956,6 +980,14 @@ async function refreshLocalSkillsRuntime(): Promise<void> {
     await notifyDaemonSkillsChanged(encodeWorkspaceId(wsPath))
   } catch (e) {
     throw new SkillRuntimeRefreshError(e instanceof Error ? e.message : String(e))
+  }
+}
+
+async function refreshAfterMutation(action: SkillMutationAction, slug: string): Promise<void> {
+  try {
+    await refreshLocalSkillsRuntime()
+  } catch (cause) {
+    throw new SkillMutationRefreshError(action, slug, cause)
   }
 }
 
@@ -1236,7 +1268,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // (or only after restart).
     await get().reconcileSkills().catch(() => {})
     await get().loadSection('skills', { force: true })
-    await refreshLocalSkillsRuntime()
+    await refreshAfterMutation('install', slug)
   },
 
   uninstallSkill: async (slug) => {
@@ -1256,7 +1288,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     })
     closeSkillTabs(slug)
     await get().loadSection('skills', { force: true })
-    await refreshLocalSkillsRuntime()
+    await refreshAfterMutation('uninstall', slug)
   },
 
   deletePersonalSkill: async (slug) => {
@@ -1282,7 +1314,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     closeSkillTabs(slug)
     await get().loadSection('skills', { force: true })
     window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
-    await refreshLocalSkillsRuntime()
+    await refreshAfterMutation('delete-personal', slug)
   },
 
   deleteTeamSkill: async (slug) => {
@@ -1304,6 +1336,10 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     closeSkillTabs(slug)
     await get().loadSection('skills', { force: true })
     window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
+    await refreshAfterMutation('delete-team', slug)
+  },
+
+  retrySkillsRuntimeRefresh: async () => {
     await refreshLocalSkillsRuntime()
   },
 
@@ -1668,7 +1704,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     await invoke('team_skill_restore_trashed', { trashedPath: path, slug: newSlug })
     get().dismissArchived(slug)
     await get().loadSection('skills', { force: true })
-    await refreshLocalSkillsRuntime()
+    await refreshAfterMutation('keep-archived', slug)
   },
 
   dismissRetired: (slug) =>
@@ -1696,7 +1732,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       })
     await get().reconcileSkills()
     await get().loadSection('skills', { force: true })
-    await refreshLocalSkillsRuntime()
+    await refreshAfterMutation('revert', slug)
   },
 
   reconcileSkills: async () => {
@@ -1904,7 +1940,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         .loadSection('skills', { force: true })
         .catch(() => {})
     }
-    await refreshLocalSkillsRuntime()
+    await refreshAfterMutation('discard', slug)
     return trashedPath
   },
 
@@ -1917,7 +1953,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     set((s) => ({ draftRecoveryRevision: s.draftRecoveryRevision + 1 }))
     await get().reconcileSkills()
     await get().loadSection('skills', { force: true })
-    await refreshLocalSkillsRuntime()
+    await refreshAfterMutation('restore', slug)
   },
 
   forkSkill: async (slug, newSlug) => {
