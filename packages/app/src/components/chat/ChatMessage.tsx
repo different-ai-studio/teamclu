@@ -86,6 +86,7 @@ export const ChatMessage = React.memo(function ChatMessage({
   shouldShowThinking = true,
   showStarRating = false,
   suppressThreadBadge = false,
+  allowStartThread = true,
   tokenGroupInfo,
   replyToMessage,
 }: {
@@ -96,6 +97,8 @@ export const ChatMessage = React.memo(function ChatMessage({
   showStarRating?: boolean;
   /** Hide "+ 开话题" when rendering a thread anchor (avoids nested panel loops). */
   suppressThreadBadge?: boolean;
+  /** Hide fork affordance when anchor is outside the newest message window. */
+  allowStartThread?: boolean;
   tokenGroupInfo?: {
     hideTokenUsage: boolean;
     groupSummary?: { steps: number; totalInput: number; totalOutput: number; totalCost: number };
@@ -715,6 +718,7 @@ export const ChatMessage = React.memo(function ChatMessage({
           messageId={message.id}
           message={latestMessage}
           hideThread={suppressThreadBadge}
+          allowStartThread={allowStartThread}
           actionsRevealed={copied}
           copySlot={
             shouldShowAssistantCopyAction ? (

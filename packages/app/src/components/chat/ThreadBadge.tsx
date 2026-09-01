@@ -17,6 +17,7 @@ export function ThreadBadge({
   messageId,
   message,
   hideThread = false,
+  allowStartThread = true,
   copySlot = null,
   actionsRevealed = false,
 }: {
@@ -24,6 +25,8 @@ export function ThreadBadge({
   messageId: string;
   message: StoreMessage;
   hideThread?: boolean;
+  /** UI-only: hide "start thread" when anchor is outside the newest message window. */
+  allowStartThread?: boolean;
   copySlot?: React.ReactNode;
   actionsRevealed?: boolean;
 }) {
@@ -106,7 +109,7 @@ export function ThreadBadge({
     ) : null;
 
   const startThreadButton =
-    showThread && !hasThreadUi ? (
+    showThread && !hasThreadUi && allowStartThread ? (
       <MessageActionIconButton
         label={t("thread.tooltipStart")}
         onClick={onOpen}

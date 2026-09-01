@@ -25,3 +25,14 @@ describe("thread-fork-metadata", () => {
     expect(runtimeForkFromForSession("missing")).toBeUndefined();
   });
 });
+
+describe("thread-fork window", () => {
+  it("allows start thread only within the newest message window", async () => {
+    const { canStartThreadFromNewestIndex, THREAD_FORK_MESSAGE_WINDOW } =
+      await import("@/lib/thread-fork");
+    expect(THREAD_FORK_MESSAGE_WINDOW).toBe(100);
+    expect(canStartThreadFromNewestIndex(0)).toBe(true);
+    expect(canStartThreadFromNewestIndex(99)).toBe(true);
+    expect(canStartThreadFromNewestIndex(100)).toBe(false);
+  });
+});

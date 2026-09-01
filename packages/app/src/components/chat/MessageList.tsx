@@ -19,6 +19,7 @@ import {
   type ChatScrollToMessageDetail,
 } from "@/lib/chat-scroll-to-message";
 import { DEFAULT_INPUT_AREA_HEIGHT, SAFE_BOTTOM_SPACING } from "./layout-constants";
+import { canStartThreadFromNewestIndex } from "@/lib/thread-fork";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -633,6 +634,9 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
                             virtualItem.index === renderedMessages.length - 1;
                           const shouldShowThinking =
                             isLastMessage && message.isStreaming;
+                          const allowStartThread = canStartThreadFromNewestIndex(
+                            renderedMessages.length - 1 - virtualItem.index,
+                          );
 
                           return (
                             <div
@@ -668,6 +672,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
                                       : null
                                   }
                                   suppressThreadBadge={suppressThreadBadge}
+                                  allowStartThread={allowStartThread}
                                 />
                               </ErrorBoundary>
                             </div>
@@ -679,6 +684,9 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
                       const isLastMessage = index === renderedMessages.length - 1;
                       const shouldShowThinking =
                         isLastMessage && message.isStreaming;
+                      const allowStartThread = canStartThreadFromNewestIndex(
+                        renderedMessages.length - 1 - index,
+                      );
 
                       return (
                         <div
@@ -701,6 +709,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
                                   : null
                               }
                               suppressThreadBadge={suppressThreadBadge}
+                              allowStartThread={allowStartThread}
                             />
                           </ErrorBoundary>
                         </div>
