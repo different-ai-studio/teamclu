@@ -2303,7 +2303,8 @@ export function createSupabaseBusinessRepository(options) {
       let q = supabase
         .from("sessions")
         .select(SESSION_SYNC_COLUMNS)
-        .eq("team_id", teamId);
+        .eq("team_id", teamId)
+        .is("parent_session_id", null);
       if (updatedAfter) q = q.gt("updated_at", updatedAfter);
       const { data, error } = await applySyncKeyset(q, cursor, limit);
       if (error) throw error;
