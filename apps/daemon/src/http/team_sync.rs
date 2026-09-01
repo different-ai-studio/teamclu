@@ -34,6 +34,13 @@ pub struct SyncRequest {
     /// never by a retry, or the guard becomes a one-tick delay.
     #[serde(default)]
     pub allow_bulk_add: bool,
+    /// When `true`, broadcast a set of deletions an earlier tick held back.
+    ///
+    /// Same rule as `allow_bulk_add`, and stricter in consequence: a tombstone
+    /// is applied on every member's machine, so a retry setting this on the
+    /// user's behalf would remove a guard that protects other people's files.
+    #[serde(default)]
+    pub allow_bulk_delete: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,6 +73,7 @@ pub async fn sync_now(
             crate::sync::dispatch::SyncOptions {
                 force: body.force_sync,
                 allow_bulk_add: body.allow_bulk_add,
+                allow_bulk_delete: body.allow_bulk_delete,
             },
         )
         .await;
@@ -404,6 +412,91 @@ async fn reconcile_team_skills_for_state(
     Ok(Json(TeamSkillReconcileResponse { team_id, outcome }))
 }
 
+async fn lookup_team_skill_row(
+    backend: &std::sync::Arc<dyn crate::backend::Backend>,
+    team_id: &str,
+    slug: &str,
+) -> Result<crate::backend::TeamSkillRow, HttpError> {
+    let slug = slug.trim();
+    if slug.is_empty() {
+        return Err(HttpError::validation("skill slug must not be empty"));
+    }
+    backend
+        .team_skills(team_id)
+        .await
+        .map_err(|e| HttpError::internal(e.to_string()))?
+        .into_iter()
+        .find(|row| row.slug == slug)
+        .ok_or_else(|| HttpError::not_found(format!("team skill {slug} not found in registry")))
+}
+
+fn managed_skill_error(err: crate::config::ManagedSkillError) -> HttpError {
+    use crate::config::ManagedSkillErrorCode;
+    use crate::http::errors::ErrorCode;
+    match err.code {
+        ManagedSkillErrorCode::SkillChanged => {
+            HttpError::new(ErrorCode::Conflict, err.message)
+        }
+        ManagedSkillErrorCode::SkillNotFound => HttpError::not_found(err.message),
+        ManagedSkillErrorCode::InvalidSkillSlug
+        | ManagedSkillErrorCode::InvalidSkillFrontmatter
+        | ManagedSkillErrorCode::InvalidSkillFilePath
+        | ManagedSkillErrorCode::SkillPackTooLarge => HttpError::validation(err.message),
+        ManagedSkillErrorCode::SkillWriteFailed
+        | ManagedSkillErrorCode::SkillOwnershipUnavailable
+        | ManagedSkillErrorCode::SkillRefreshFailed => HttpError::internal(err.message),
+        ManagedSkillErrorCode::TeamSkillReadOnly
+        | ManagedSkillErrorCode::BuiltinSkillReadOnly
+        | ManagedSkillErrorCode::SkillAlreadyExists => HttpError::forbidden(err.message),
+    }
+}
+
+/// `GET /v1/team/skills/:slug/draft` — read the local working copy of an
+/// installed team Skill for this daemon actor.
+pub async fn get_team_skill_draft_handler(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Path(slug): Path<String>,
+) -> Result<Json<crate::config::TeamSkillDraftView>, HttpError> {
+    require_scope(&principal, "workspace:read")?;
+    let (backend, team_id) = daemon_backend_and_team(&state)?;
+    let row = lookup_team_skill_row(backend, &team_id, &slug).await?;
+    let home = dirs::home_dir().ok_or_else(|| HttpError::internal("home directory not found"))?;
+    let view = crate::config::get_team_skill_draft(&home, &team_id, &row)
+        .map_err(managed_skill_error)?;
+    Ok(Json(view))
+}
+
+/// `PUT /v1/team/skills/:slug/draft` — edit the local working copy without
+/// publishing. Baseline in `origin.json` is preserved so dirty detection works.
+pub async fn update_team_skill_draft_handler(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Path(slug): Path<String>,
+    Json(body): Json<crate::config::UpdatePackRequest>,
+) -> Result<Json<crate::config::TeamSkillDraftUpdateResult>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+    if body.slug.trim().is_empty() {
+        return Err(HttpError::validation("slug is required"));
+    }
+    if slug.trim() != body.slug.trim() {
+        return Err(HttpError::validation("URL slug must match body slug"));
+    }
+    let (backend, team_id) = daemon_backend_and_team(&state)?;
+    let row = lookup_team_skill_row(backend, &team_id, &slug).await?;
+    let home = dirs::home_dir().ok_or_else(|| HttpError::internal("home directory not found"))?;
+    let result = crate::config::update_team_skill_draft(&home, &team_id, &row, &body)
+        .map_err(managed_skill_error)?;
+    crate::runtime::team_skills::notify_team_skill_draft_changed(
+        &team_id,
+        state.backend.as_ref(),
+        state.runtime_refresh.as_ref(),
+        state.refresh_watch_registry.as_ref(),
+    )
+    .await;
+    Ok(Json(result))
+}
+
 fn daemon_backend_and_team(
     state: &HttpState,
 ) -> Result<(&std::sync::Arc<dyn crate::backend::Backend>, String), HttpError> {
@@ -536,6 +629,89 @@ pub struct ConflictEntry {
 /// `conflicts` counter in `/v1/team/sync/status` is per-tick and resets on the
 /// next one, so "how many conflicts are waiting for me" can only be read from
 /// this scan.
+/// One manifest entry this device knows about but has not fetched.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownEntry {
+    pub path: String,
+    pub version: i32,
+    /// Server-side size, so the UI can say what a fetch would cost.
+    pub size: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathsRequest {
+    pub team_id: String,
+    pub paths: Vec<String>,
+}
+
+/// Documents this device is aware of but has not downloaded.
+///
+/// The tree is drawn from this UNION the disk scan, which is the whole of what
+/// makes an unfetched file visible: nothing is written to disk for one, so the
+/// scan alone can never show it.
+pub async fn list_known(
+    principal: Principal,
+    State(_state): State<HttpState>,
+    Query(q): Query<StatusQuery>,
+) -> Result<Json<Vec<KnownEntry>>, HttpError> {
+    require_scope(&principal, "workspace:read")?;
+    let state = crate::sync::oss::state::LocalSyncState::load_at(&q.team_id)
+        .map_err(|e| HttpError::internal(&e))?;
+    let mut out: Vec<KnownEntry> = state
+        .known
+        .iter()
+        .map(|(path, k)| KnownEntry {
+            path: path.clone(),
+            version: k.version,
+            size: k.size,
+        })
+        .collect();
+    // Stable order: a poll every few seconds must not reshuffle the tree.
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(Json(out))
+}
+
+/// Fetch listed-but-unfetched paths, because a person asked for them.
+///
+/// Fails rather than queueing when the network is not there. A queue would let
+/// a click do nothing visible and then produce the file twenty minutes later,
+/// when it is no longer wanted — and the point of fetching on demand is that
+/// the thing is there when you ask.
+pub async fn fetch_known(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Json(body): Json<PathsRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+    let fetched = state
+        .sync_dispatcher
+        .fetch_documents(&body.team_id, &body.paths)
+        .await
+        .map_err(|e| HttpError::internal(&e))?;
+    Ok(Json(serde_json::json!({ "fetched": fetched })))
+}
+
+/// Give back the disk some documents occupy, keeping them listed.
+///
+/// Returns the paths actually released. A file with unpushed edits is refused
+/// and simply absent from the response — the caller reports what it asked for
+/// against what came back, rather than being told everything succeeded.
+pub async fn release_local(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Json(body): Json<PathsRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+    let released = state
+        .sync_dispatcher
+        .release_documents(&body.team_id, &body.paths)
+        .await
+        .map_err(|e| HttpError::internal(&e))?;
+    Ok(Json(serde_json::json!({ "released": released })))
+}
+
 pub async fn list_conflicts(
     principal: Principal,
     State(_state): State<HttpState>,

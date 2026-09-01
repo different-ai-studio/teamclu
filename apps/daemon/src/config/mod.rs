@@ -12,6 +12,7 @@ mod managed_skill_writer;
 mod roles_skills;
 mod skill_creation_policy;
 mod session_store;
+mod team_skill_draft;
 pub mod team_config;
 pub mod team_mcp;
 pub mod workspace_control;
@@ -42,6 +43,10 @@ pub use managed_skill_writer::{
 pub use skill_creation_policy::{
     append_policy_to_prompt, materialize_policy_file, SKILL_CREATION_POLICY,
     SKILL_CREATION_POLICY_VERSION,
+};
+pub use team_skill_draft::{
+    effective_team_skill_dir, get_team_skill_draft, update_team_skill_draft,
+    EffectiveSkillSource, TeamSkillDraftUpdateResult, TeamSkillDraftView,
 };
 pub use roles_skills::{
     find_managed_skill_in_session_inventory, is_inherent_skill, scan_roles_skills_state,

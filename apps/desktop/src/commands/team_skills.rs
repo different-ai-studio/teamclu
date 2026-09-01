@@ -16,12 +16,13 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use teamclu_skillpack::{
     build_manifest, build_manifest_for, inspect, list_managed_paths, read_origin,
     remove_managed_files, swap_managed_files, write_origin, write_registry_frontmatter, DirtyState,
     RegistryFields, SkillOrigin, ORIGIN_VERSION,
 };
-use teamclu_types::skill_frontmatter::{write_frontmatter, FrontmatterValue};
+use teamclu_types::skill_frontmatter::{parse_frontmatter, write_frontmatter, FrontmatterValue};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
@@ -521,7 +522,15 @@ fn team_skill_install_blocking(
             .map(|mut d| d.next().is_some())
             .unwrap_or(false)
     {
-        Some(move_to_trash(&target, &slug)?)
+        Some(move_to_trash(
+            &target,
+            &slug,
+            Some(draft_recovery_context(
+                &target,
+                "replace",
+                req.team_id.as_deref(),
+            )),
+        )?)
     } else {
         None
     };
@@ -1052,7 +1061,7 @@ pub fn team_skill_installed_dir(slug: String, team_id: Option<String>) -> Result
 #[serde(rename_all = "camelCase")]
 pub struct TeamSkillInspectResult {
     pub slug: String,
-    /// `missing` | `clean` | `dirty` | `foreign`
+    /// `missing` | `clean` | `dirty` | `stale_dirty` | `foreign`
     pub state: String,
     pub installed_version: Option<String>,
     pub modified: Vec<String>,
@@ -1108,6 +1117,7 @@ pub fn team_skill_inspect(
     slug: String,
     expected_version: Option<i64>,
     team_id: Option<String>,
+    registry_latest_version: Option<i64>,
 ) -> Result<TeamSkillInspectResult, String> {
     let _ = expected_version;
     let slug = slug.trim().to_string();
@@ -1165,6 +1175,11 @@ pub fn team_skill_inspect(
     }
 
     let installed_version = origin.as_ref().map(|o| o.installed_version.clone());
+    let base_version = installed_version
+        .as_ref()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+    let registry_latest = registry_latest_version.unwrap_or(base_version);
 
     let baseline = origin.and_then(|o| o.files);
     match inspect(&target, baseline.as_ref()) {
@@ -1172,15 +1187,22 @@ pub fn team_skill_inspect(
             modified,
             deleted,
             added,
-        } => Ok(TeamSkillInspectResult {
-            slug,
-            state: "dirty".to_string(),
-            installed_version,
-            modified,
-            deleted,
-            added,
-            source: source.as_str().to_string(),
-        }),
+        } => {
+            let state = if registry_latest > base_version {
+                "stale_dirty".to_string()
+            } else {
+                "dirty".to_string()
+            };
+            Ok(TeamSkillInspectResult {
+                slug,
+                state,
+                installed_version,
+                modified,
+                deleted,
+                added,
+                source: source.as_str().to_string(),
+            })
+        }
         _ => Ok(TeamSkillInspectResult {
             slug,
             state: "clean".to_string(),
@@ -1299,6 +1321,194 @@ pub async fn team_skill_diff(
     .map_err(|e| format!("team skill diff task failed: {}", e))?
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamSkillVersionRangeDiffRequest {
+    pub from: TeamSkillInstallRequest,
+    pub to: TeamSkillInstallRequest,
+}
+
+fn read_text_side(path: &std::path::Path) -> (Option<String>, bool) {
+    match std::fs::read(path) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => (Some(text), false),
+            Err(_) => (None, true),
+        },
+        Err(_) => (None, false),
+    }
+}
+
+fn stage_installed_pack(req: &TeamSkillInstallRequest) -> Result<tempfile::TempDir, String> {
+    let client = build_cloud_api_client()?;
+    let resp = download_request(&client, &req.download_url, req.access_token.as_deref())
+        .send()
+        .map_err(|e| format!("Download failed: {}", format_reqwest_error(&e)))?;
+    if !resp.status().is_success() {
+        return Err(format!("Download failed with status {}", resp.status()));
+    }
+    let zip_bytes = resp
+        .bytes()
+        .map_err(|e| format!("Failed to read download body: {}", e))?;
+    let staging =
+        tempfile::tempdir().map_err(|e| format!("Failed to create staging dir: {}", e))?;
+    extract_zip_to_dir(&zip_bytes, staging.path())?;
+    // Category is not snapshotted on version rows. Stamping the *current*
+    // registry category onto both sides of a version-range diff hides the
+    // pack's own frontmatter. Prefer the zip; fall back to the caller's value.
+    let mut stamped = req.clone();
+    if let Ok(current) = std::fs::read_to_string(staging.path().join("SKILL.md")) {
+        let parsed = parse_frontmatter(&current);
+        if let Some(category) = parsed.string("category") {
+            stamped.category = Some(category.to_string());
+        }
+        if stamped.requires.is_none() {
+            if let Some(requires) = parsed.present_list("requires") {
+                stamped.requires = Some(requires);
+            }
+        }
+    }
+    write_install_frontmatter(staging.path(), &stamped)?;
+    Ok(staging)
+}
+
+fn diff_staged_trees(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> Result<Vec<TeamSkillFileDiff>, String> {
+    let mut paths = BTreeSet::new();
+    for rel in list_managed_paths(from).map_err(|e| format!("Failed to list files: {}", e))? {
+        paths.insert(rel);
+    }
+    for rel in list_managed_paths(to).map_err(|e| format!("Failed to list files: {}", e))? {
+        paths.insert(rel);
+    }
+    let mut out = Vec::new();
+    for rel in paths {
+        let (baseline, baseline_binary) = read_text_side(&from.join(&rel));
+        let (current, current_binary) = read_text_side(&to.join(&rel));
+        if baseline == current && !baseline_binary && !current_binary {
+            continue;
+        }
+        out.push(TeamSkillFileDiff {
+            path: rel,
+            baseline,
+            current,
+            binary: baseline_binary || current_binary,
+        });
+    }
+    Ok(out)
+}
+
+/// Diff two published versions — e.g. what the team shipped between your
+/// baseline and their latest while you were editing locally.
+#[tauri::command]
+pub async fn team_skill_diff_versions(
+    request: TeamSkillVersionRangeDiffRequest,
+) -> Result<Vec<TeamSkillFileDiff>, String> {
+    tokio::task::spawn_blocking(move || {
+        let from = stage_installed_pack(&request.from)?;
+        let to = stage_installed_pack(&request.to)?;
+        diff_staged_trees(from.path(), to.path())
+    })
+    .await
+    .map_err(|e| format!("team skill version diff task failed: {}", e))?
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamSkillDraftMetadata {
+    /// `None` = key absent in the draft (keep registry). `Some("")` = cleared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub when_to_use: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub when_not_to_use: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires: Option<Vec<String>>,
+}
+
+/// Read structured metadata from the working copy's SKILL.md frontmatter.
+#[tauri::command]
+pub fn team_skill_read_draft_metadata(
+    slug: String,
+    team_id: Option<String>,
+) -> Result<TeamSkillDraftMetadata, String> {
+    let slug = slug.trim().to_string();
+    validate_slug(&slug)?;
+    let (target, _) = effective_team_skill_dir(&slug, team_id.as_deref())?;
+    let skill_md = target.join("SKILL.md");
+    if !skill_md.is_file() {
+        return Ok(TeamSkillDraftMetadata {
+            summary: None,
+            category: None,
+            when_to_use: None,
+            when_not_to_use: None,
+            requires: None,
+        });
+    }
+    let content = std::fs::read_to_string(&skill_md)
+        .map_err(|e| format!("Failed to read SKILL.md: {}", e))?;
+    let parsed = parse_frontmatter(&content);
+    Ok(TeamSkillDraftMetadata {
+        summary: parsed
+            .present_string("description")
+            .or_else(|| parsed.present_string("summary")),
+        category: parsed.present_string("category"),
+        when_to_use: parsed.present_string("when_to_use"),
+        when_not_to_use: parsed.present_string("when_not_to_use"),
+        requires: parsed.present_list("requires"),
+    })
+}
+
+fn recovery_record_for_path(source: &std::path::Path) -> Option<DraftRecoveryRecord> {
+    let trash = trash_dir().ok()?;
+    let log = trash.join("recovery.jsonl");
+    if !log.is_file() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(source).ok()?;
+    let content = std::fs::read_to_string(&log).ok()?;
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<DraftRecoveryRecord>(line).ok())
+        .find(|rec| {
+            std::fs::canonicalize(&rec.path)
+                .ok()
+                .is_some_and(|p| p == canonical)
+        })
+}
+
+/// Recent draft recovery records (discarded packs moved to trash).
+#[tauri::command]
+pub fn team_skill_list_draft_recoveries(
+    slug: Option<String>,
+    team_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<DraftRecoveryRecord>, String> {
+    let trash = trash_dir()?;
+    let log = trash.join("recovery.jsonl");
+    if !log.is_file() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(&log).unwrap_or_default();
+    let cap = limit.unwrap_or(20).min(50);
+    let slug_filter = slug.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let team_filter = team_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let mut out: Vec<DraftRecoveryRecord> = content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<DraftRecoveryRecord>(line).ok())
+        .filter(|rec| slug_filter.is_none_or(|s| rec.slug == s))
+        .filter(|rec| team_filter.is_none_or(|t| rec.team_id.as_deref() == Some(t)))
+        .filter(|rec| std::path::Path::new(&rec.path).is_dir())
+        .collect();
+    out.sort_by_key(|a| std::cmp::Reverse(a.at));
+    out.truncate(cap);
+    Ok(out)
+}
+
 /// Move the installed pack aside so a clean copy can be laid down.
 ///
 /// Returns the path it was moved to. Nothing is deleted: "discard my changes"
@@ -1315,7 +1525,15 @@ pub fn team_skill_discard_local(slug: String, team_id: Option<String>) -> Result
         return Err(format!("{} is not installed", slug));
     }
 
-    move_to_trash(&target, &slug)
+    move_to_trash(
+        &target,
+        &slug,
+        Some(draft_recovery_context(
+            &target,
+            "discard",
+            team_id.as_deref(),
+        )),
+    )
 }
 
 /// Move a skill directory into the trash and return where it went.
@@ -1323,15 +1541,78 @@ pub fn team_skill_discard_local(slug: String, team_id: Option<String>) -> Result
 /// Every path that takes something away from the user goes through here rather
 /// than `remove_dir_all`, so "undo" is always a rename back rather than a
 /// restore from nothing.
-fn move_to_trash(target: &std::path::Path, slug: &str) -> Result<String, String> {
+fn move_to_trash(
+    target: &std::path::Path,
+    slug: &str,
+    recovery: Option<DraftRecoveryContext>,
+) -> Result<String, String> {
     let trash = trash_dir()?;
     std::fs::create_dir_all(&trash).map_err(|e| format!("Failed to create trash dir: {}", e))?;
     let dest = trash.join(format!("{}-{}", slug, now_millis()));
     std::fs::rename(target, &dest).map_err(|e| format!("Failed to move skill aside: {}", e))?;
+    if let Some(ctx) = recovery {
+        record_draft_recovery(&DraftRecoveryRecord {
+            slug: slug.to_string(),
+            path: dest.display().to_string(),
+            at: now_millis(),
+            reason: ctx.reason,
+            base_version: ctx.base_version,
+            team_id: ctx.team_id,
+        });
+    }
     // Swept here rather than on a timer: this is the only thing that ever adds
     // to the directory, so it is the only place that can let it grow.
     prune_trash(&trash);
     Ok(dest.display().to_string())
+}
+
+#[derive(Debug, Clone)]
+struct DraftRecoveryContext {
+    reason: String,
+    base_version: Option<i64>,
+    team_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftRecoveryRecord {
+    pub slug: String,
+    pub path: String,
+    pub at: u64,
+    pub reason: String,
+    pub base_version: Option<i64>,
+    pub team_id: Option<String>,
+}
+
+fn record_draft_recovery(rec: &DraftRecoveryRecord) {
+    let Ok(trash) = trash_dir() else {
+        return;
+    };
+    let log = trash.join("recovery.jsonl");
+    let Ok(line) = serde_json::to_string(rec) else {
+        return;
+    };
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "{line}")
+        });
+}
+
+fn draft_recovery_context(
+    target: &std::path::Path,
+    reason: &str,
+    team_id: Option<&str>,
+) -> DraftRecoveryContext {
+    let base_version = read_origin(target).and_then(|o| o.installed_version.parse::<i64>().ok());
+    DraftRecoveryContext {
+        reason: reason.to_string(),
+        base_version,
+        team_id: team_id.map(str::to_string),
+    }
 }
 
 /// Retire the personal original a skill was shared from.
@@ -1377,7 +1658,7 @@ pub fn team_skill_retire_personal(dir_path: String, slug: String) -> Result<Stri
         return Err("Refusing to move a directory outside the home directory".to_string());
     }
 
-    move_to_trash(&source, &slug)
+    move_to_trash(&source, &slug, None)
 }
 
 /// Resolve a caller-supplied backup path, refusing anything that is not really
@@ -1414,6 +1695,25 @@ pub fn team_skill_restore_trashed(
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
     let source = resolve_trashed_source(&trash_dir()?, trashed_path.trim())?;
+
+    if let Some(expected_team) = team_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(rec) = recovery_record_for_path(&source) {
+            match rec.team_id.as_deref() {
+                Some(rec_team) if rec_team != expected_team => {
+                    return Err(
+                        "This recovery belongs to another team and cannot be restored here"
+                            .to_string(),
+                    );
+                }
+                None => {
+                    return Err(
+                        "This recovery has no team context and cannot be restored here".to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
 
     let target = preferred_team_skill_dir(&slug, team_id.as_deref())?;
     if let Some(parent) = target.parent() {
@@ -1578,7 +1878,7 @@ mod tests {
         )
         .unwrap();
 
-        let before = team_skill_inspect("say-hello".into(), Some(2), Some("team-a".into()))
+        let before = team_skill_inspect("say-hello".into(), Some(2), Some("team-a".into()), None)
             .expect("inspect hosted edit");
         assert_eq!(before.state, "dirty");
         assert_eq!(before.source, "hosted-agent");

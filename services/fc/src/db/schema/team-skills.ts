@@ -67,10 +67,13 @@ export const teamSkillVersions = pgTable(
     size: bigint("size", { mode: "number" }).notNull().default(0),
     changelog: text("changelog").notNull(),
     summary: text("summary").notNull(),
+    category: text("category"),
     whenToUse: text("when_to_use").notNull(),
     whenNotToUse: text("when_not_to_use").notNull(),
     requires: jsonb("requires"),
     createdBy: uuid("created_by").references(() => actors.id, { onDelete: "set null" }),
+    /** Baseline version the publisher's working copy was built from (audit). */
+    publishedFromVersion: integer("published_from_version"),
     upstreamVersion: integer("upstream_version"),
     blobScope: text("blob_scope").notNull().default("team"),
     objectPath: text("object_path"),

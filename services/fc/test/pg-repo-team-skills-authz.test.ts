@@ -126,6 +126,7 @@ test("a plain member can publish a new version of somebody else's skill", async 
     changelog: "fixed the rollback step",
     contentHash: "b".repeat(64),
     size: 20,
+    expectedLatestVersion: 1,
   });
 
   assert.equal(version.version, 2);
@@ -136,14 +137,88 @@ test("a plain member can publish a new version of somebody else's skill", async 
   assert.equal(after.ownerActorId, ownerActor!.id);
 });
 
+test("publish stores publishedFromVersion from CAS baseline, not client", async () => {
+  const { team, memberRepo } = await scenario();
+
+  const version = await memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+    changelog: "from local draft",
+    contentHash: "b".repeat(64),
+    expectedLatestVersion: 1,
+    publishedFromVersion: 99,
+  });
+
+  assert.equal(version.publishedFromVersion, 1);
+});
+
+test("publish rejects when draft baseline lags registry (stale dirty)", async () => {
+  const { team, memberRepo } = await scenario();
+
+  await memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+    changelog: "v2",
+    contentHash: "b".repeat(64),
+    expectedLatestVersion: 1,
+  });
+
+  await assert.rejects(
+    () =>
+      memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+        changelog: "stale draft attempt",
+        contentHash: "d".repeat(64),
+        expectedLatestVersion: 1,
+        publishedFromVersion: 1,
+      }),
+    (e: any) => e.statusCode === 409 && e.code === "stale_team_skill_base",
+  );
+});
+
+test("publish rejects stale expectedLatestVersion", async () => {
+  const { team, memberRepo } = await scenario();
+
+  await memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+    changelog: "v2",
+    contentHash: "b".repeat(64),
+    expectedLatestVersion: 1,
+  });
+
+  await assert.rejects(
+    () =>
+      memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+        changelog: "stale attempt",
+        contentHash: "c".repeat(64),
+        expectedLatestVersion: 1,
+      }),
+    (e: any) => e.statusCode === 409 && e.code === "stale_team_skill_base",
+  );
+});
+
+test("revert rejects stale expectedLatestVersion", async () => {
+  const { team, memberRepo } = await scenario();
+  await memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+    changelog: "v2",
+    contentHash: "b".repeat(64),
+    expectedLatestVersion: 1,
+  });
+
+  await assert.rejects(
+    () =>
+      memberRepo.revertTeamSkillVersion(team.id, "deploy-check", 1, {
+        expectedLatestVersion: 1,
+      }),
+    (e: any) => e.statusCode === 409 && e.code === "stale_team_skill_base",
+  );
+});
+
 test("a plain member can revert to an earlier version", async () => {
   const { team, memberRepo } = await scenario();
   await memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
     changelog: "bad publish",
     contentHash: "c".repeat(64),
+    expectedLatestVersion: 1,
   });
 
-  const reverted = await memberRepo.revertTeamSkillVersion(team.id, "deploy-check", 1);
+  const reverted = await memberRepo.revertTeamSkillVersion(team.id, "deploy-check", 1, {
+    expectedLatestVersion: 2,
+  });
 
   // Reverting rolls forward with old content — versions only ever go up.
   assert.equal(reverted.version, 3);
@@ -235,7 +310,9 @@ test("revert on a subscribed marketplace skill keeps the blob and detaches", asy
              'marketplace', 'marketplace/blobs/sha256/bb/bb/${"b".repeat(64)}', 2)`,
   );
 
-  const reverted = await memberRepo.revertTeamSkillVersion(team.id, "deploy-check", 1);
+  const reverted = await memberRepo.revertTeamSkillVersion(team.id, "deploy-check", 1, {
+    expectedLatestVersion: 2,
+  });
 
   assert.equal(reverted.version, 3);
   // The package has to remain resolvable, which means the blob's home travels

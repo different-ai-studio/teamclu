@@ -13,7 +13,7 @@
 - **🔋 开箱即用** — 内置 RAG 知识库、Auto UI 视觉识别、语音转文字，以及六大渠道网关（企业微信、飞书、Discord、Kook、微信、邮件），无需胶水代码
 - **🧑‍💻 从个人开发者到中小企业** — 本地优先、默认私有；可从单人使用扩展到小型公司
 
-[English](README.md) | 简体中文 | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
+[English](README.md) | 简体中文 | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Bahasa Indonesia](README.id.md)
 
 ## 界面截图
 

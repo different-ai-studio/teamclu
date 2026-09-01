@@ -350,20 +350,55 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_team_skills",
-            "description": "List the team's Skills catalog, or install/uninstall a team Skill for this Agent only. Cannot target another Actor and cannot manage MCP servers.",
+            "description": "List the team's Skills catalog, install/uninstall a team Skill for this Agent, or edit the local working copy draft of an installed team Skill. Draft edits affect only this machine until published from the team Skills page; new sessions pick up draft changes, the current session keeps its prior content. Use get_draft before update_draft and pass expectedDigest for optimistic concurrency. Cannot target another Actor and cannot manage MCP servers.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["list", "install", "uninstall"] },
-                    "slug": { "type": "string", "description": "Required for install/uninstall." },
-                    "version": { "type": "integer", "minimum": 1, "description": "Required for install." }
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "install", "uninstall", "get_draft", "update_draft"]
+                    },
+                    "slug": { "type": "string", "description": "Required except for list." },
+                    "version": { "type": "integer", "minimum": 1, "description": "Required for install." },
+                    "content": {
+                        "type": "string",
+                        "description": "Full SKILL.md content with YAML frontmatter. Required for update_draft."
+                    },
+                    "files": {
+                        "type": "array",
+                        "description": "Optional files to add or replace under the skill root on update_draft.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": { "type": "string" },
+                                "content": { "type": "string" },
+                                "encoding": { "type": "string", "enum": ["utf8", "base64"] }
+                            },
+                            "required": ["path", "content"]
+                        }
+                    },
+                    "deleteFiles": {
+                        "type": "array",
+                        "description": "Relative paths to remove explicitly on update_draft.",
+                        "items": { "type": "string" }
+                    },
+                    "expectedDigest": {
+                        "type": "string",
+                        "description": "Required. Optimistic concurrency digest (sha256:...) from get_draft."
+                    }
                 },
-                "required": ["action"]
+                "required": ["action"],
+                "allOf": [
+                    {
+                        "if": { "properties": { "action": { "const": "update_draft" } } },
+                        "then": { "required": ["slug", "content", "expectedDigest"] }
+                    }
+                ]
             }
         },
         {
             "name": "manage_skills",
-            "description": "Create, update, or read a personal reusable skill stored under ~/.agents/skills/<slug>/. Use this for normal skills shared across OpenCode, Pi, and Claude Code. Do not write skills directly to .opencode/skills, .pi/skills, or .claude/skills.",
+            "description": "Create, update, or read a personal reusable skill stored under ~/.agents/skills/<slug>/. Use this for normal skills shared across OpenCode, Pi, and Claude Code. For installed team Skills use manage_team_skills get_draft/update_draft instead. Do not write skills directly to .opencode/skills, .pi/skills, or .claude/skills.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

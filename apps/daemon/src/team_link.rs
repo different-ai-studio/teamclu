@@ -8,7 +8,9 @@ use std::path::Path;
 use tracing::{debug, info, warn};
 
 use crate::config::global_team_store::{self, TEAM_LINK_NAME};
-use crate::config::workspace_link::{self, LinkStatus, TEAM_KNOWLEDGE_LINK_NAME};
+use crate::config::workspace_link::{
+    self, LinkStatus, TEAM_DOCUMENTS_LINK_NAME, TEAM_KNOWLEDGE_LINK_NAME,
+};
 
 /// Whether a workspace path is an app checkout
 /// (`<amuxd home>/teams/<teamId>/apps/<appId>`).
@@ -70,6 +72,7 @@ fn remove_link_entry(link: &Path, ws_path: &str) {
 /// and must survive teardown.
 fn remove_workspace_knowledge_symlink(ws_root: &Path, ws_path: &str) {
     remove_link_entry(&ws_root.join(TEAM_KNOWLEDGE_LINK_NAME), ws_path);
+    remove_link_entry(&ws_root.join(TEAM_DOCUMENTS_LINK_NAME), ws_path);
 }
 
 /// Remove `<workspace>/teamclu-team` and `<workspace>/team-knowledge` only when

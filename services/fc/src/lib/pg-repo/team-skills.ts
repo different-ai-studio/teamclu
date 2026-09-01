@@ -146,10 +146,12 @@ function mapVersion(row: any) {
     size: row.size ?? 0,
     changelog: row.changelog,
     summary: row.summary,
+    category: row.category ?? null,
     whenToUse: row.whenToUse,
     whenNotToUse: row.whenNotToUse,
     requires: row.requires ?? null,
     createdBy: row.createdBy,
+    publishedFromVersion: row.publishedFromVersion ?? null,
     createdAt: iso(row.createdAt),
   };
 }
@@ -426,66 +428,97 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
     async createTeamSkillVersion(teamId: string, slug: string, body: any = {}) {
       const userId = requireUser();
       const callerActorId = await requireActorForTeam(db, userId, teamId);
-      let skill = await loadSkill(teamId, slug);
-
-      // Publishing a team version on a subscribed marketplace skill detaches
-      // first — otherwise the next align tick would overwrite the team's work.
-      if (skill.upstreamSubscribed) {
-        await (db.update(teamSkills) as any)
-          .set({
-            upstreamSubscribed: false,
-            upstreamDetachedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(teamSkills.id, skill.id));
-        skill = await loadSkill(teamId, slug);
-      }
 
       const changelog = String(body.changelog ?? "").trim();
       if (!changelog) throw new ApiError(400, "validation_failed", "changelog is required");
       const contentHash = String(body.contentHash ?? "").trim();
       if (!contentHash) throw new ApiError(400, "validation_failed", "contentHash is required");
 
-      // Metadata is optional on a version bump; unspecified fields inherit the
-      // skill's current values so a pure content change stays a one-liner.
+      if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
+        throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
+      }
+      const expectedLatestVersion = Number(body.expectedLatestVersion);
+      if (!Number.isInteger(expectedLatestVersion) || expectedLatestVersion < 0) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "expectedLatestVersion must be a non-negative integer",
+        );
+      }
+
       const patch = requirePublishFields(body, { partial: true });
-      const merged = {
-        summary: (patch.summary as string) ?? skill.summary,
-        whenToUse: (patch.whenToUse as string) ?? skill.whenToUse,
-        whenNotToUse: (patch.whenNotToUse as string) ?? skill.whenNotToUse,
-        requires: patch.requires !== undefined ? patch.requires : skill.requires,
-        category: (patch.category as string) ?? skill.category,
-      };
 
-      const nextVersion = (skill.latestVersion ?? 0) + 1;
-      const [version] = await (db.insert(teamSkillVersions) as any)
-        .values({
-          skillId: skill.id,
-          version: nextVersion,
-          contentHash,
-          size: Number(body.size ?? 0),
-          changelog,
-          summary: merged.summary,
-          whenToUse: merged.whenToUse,
-          whenNotToUse: merged.whenNotToUse,
-          requires: (merged.requires as any) ?? null,
-          createdBy: callerActorId,
-          blobScope: "team",
-        })
-        .returning();
+      return db.transaction(async (tx: any) => {
+        const [skill] = await tx
+          .select()
+          .from(teamSkills)
+          .where(and(eq(teamSkills.teamId, teamId), eq(teamSkills.slug, slug)))
+          .for("update")
+          .limit(1);
+        if (!skill) throw new ApiError(404, "not_found", `skill not found: ${slug}`);
 
-      await (db.update(teamSkills) as any)
-        .set({
-          latestVersion: nextVersion,
-          summary: merged.summary,
-          whenToUse: merged.whenToUse,
-          whenNotToUse: merged.whenNotToUse,
-          requires: (merged.requires as any) ?? null,
-          category: merged.category,
-        })
-        .where(eq(teamSkills.id, skill.id));
+        let current = skill;
+        if (skill.upstreamSubscribed) {
+          const [detached] = await (tx.update(teamSkills) as any)
+            .set({
+              upstreamSubscribed: false,
+              upstreamDetachedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(teamSkills.id, skill.id))
+            .returning();
+          current = detached;
+        }
 
-      return mapVersion(version);
+        const latest = current.latestVersion ?? 0;
+        if (latest !== expectedLatestVersion) {
+          throw new ApiError(
+            409,
+            "stale_team_skill_base",
+            `team skill base version mismatch: expected v${expectedLatestVersion}, registry is v${latest}`,
+          );
+        }
+
+        const merged = {
+          summary: (patch.summary as string) ?? current.summary,
+          whenToUse: (patch.whenToUse as string) ?? current.whenToUse,
+          whenNotToUse: (patch.whenNotToUse as string) ?? current.whenNotToUse,
+          requires: patch.requires !== undefined ? patch.requires : current.requires,
+          category: (patch.category as string) ?? current.category,
+        };
+
+        const nextVersion = latest + 1;
+        const [version] = await (tx.insert(teamSkillVersions) as any)
+          .values({
+            skillId: current.id,
+            version: nextVersion,
+            contentHash,
+            size: Number(body.size ?? 0),
+            changelog,
+            summary: merged.summary,
+            category: merged.category,
+            whenToUse: merged.whenToUse,
+            whenNotToUse: merged.whenNotToUse,
+            requires: (merged.requires as any) ?? null,
+            createdBy: callerActorId,
+            publishedFromVersion: expectedLatestVersion > 0 ? expectedLatestVersion : null,
+            blobScope: "team",
+          })
+          .returning();
+
+        await (tx.update(teamSkills) as any)
+          .set({
+            latestVersion: nextVersion,
+            summary: merged.summary,
+            whenToUse: merged.whenToUse,
+            whenNotToUse: merged.whenNotToUse,
+            requires: (merged.requires as any) ?? null,
+            category: merged.category,
+          })
+          .where(eq(teamSkills.id, current.id));
+
+        return mapVersion(version);
+      });
     },
 
     /**
@@ -506,83 +539,112 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
     async revertTeamSkillVersion(teamId: string, slug: string, targetVersion: number, body: any = {}) {
       const userId = requireUser();
       const callerActorId = await requireActorForTeam(db, userId, teamId);
-      let skill = await loadSkill(teamId, slug);
 
-      // A revert is a team-authored version like any other, so it detaches a
-      // subscribed skill exactly as `createTeamSkillVersion` does. Without this
-      // the new version carries no `upstream_version`, the next align reads
-      // that as "upstream 0" and immediately re-projects marketplace latest —
-      // the revert is undone on the very next list request, silently.
-      if (skill.upstreamSubscribed) {
-        await (db.update(teamSkills) as any)
-          .set({
-            upstreamSubscribed: false,
-            upstreamDetachedAt: new Date(),
-            updatedAt: new Date(),
+      if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
+        throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
+      }
+      const expectedLatestVersion = Number(body.expectedLatestVersion);
+      if (!Number.isInteger(expectedLatestVersion) || expectedLatestVersion < 0) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "expectedLatestVersion must be a non-negative integer",
+        );
+      }
+
+      return db.transaction(async (tx: any) => {
+        const [skill] = await tx
+          .select()
+          .from(teamSkills)
+          .where(and(eq(teamSkills.teamId, teamId), eq(teamSkills.slug, slug)))
+          .for("update")
+          .limit(1);
+        if (!skill) throw new ApiError(404, "not_found", `skill not found: ${slug}`);
+
+        let current = skill;
+        if (skill.upstreamSubscribed) {
+          const [detached] = await (tx.update(teamSkills) as any)
+            .set({
+              upstreamSubscribed: false,
+              upstreamDetachedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(teamSkills.id, skill.id))
+            .returning();
+          current = detached;
+        }
+
+        const latest = current.latestVersion ?? 0;
+        if (latest !== expectedLatestVersion) {
+          throw new ApiError(
+            409,
+            "stale_team_skill_base",
+            `team skill base version mismatch: expected v${expectedLatestVersion}, registry is v${latest}`,
+          );
+        }
+
+        const [source] = await tx
+          .select()
+          .from(teamSkillVersions)
+          .where(
+            and(
+              eq(teamSkillVersions.skillId, current.id),
+              eq(teamSkillVersions.version, targetVersion),
+            ),
+          )
+          .limit(1);
+        if (!source) throw new ApiError(404, "not_found", `version ${targetVersion} not found`);
+        if (targetVersion === current.latestVersion) {
+          throw new ApiError(409, "conflict", `v${targetVersion} is already the latest version`);
+        }
+
+        const changelog =
+          String(body.changelog ?? "").trim() || `Reverted to v${targetVersion}`;
+        const nextVersion = latest + 1;
+        const publishedFromVersion = latest > 0 ? latest : null;
+        const category = source.category ?? current.category;
+
+        const [version] = await (tx.insert(teamSkillVersions) as any)
+          .values({
+            skillId: current.id,
+            version: nextVersion,
+            contentHash: source.contentHash,
+            size: source.size ?? 0,
+            changelog,
+            summary: source.summary,
+            category,
+            whenToUse: source.whenToUse,
+            whenNotToUse: source.whenNotToUse,
+            requires: (source.requires as any) ?? null,
+            createdBy: callerActorId,
+            publishedFromVersion,
+            blobScope: source.blobScope ?? "team",
+            objectPath: source.objectPath ?? null,
+            upstreamVersion: source.upstreamVersion ?? null,
           })
-          .where(eq(teamSkills.id, skill.id));
-        skill = await loadSkill(teamId, slug);
-      }
+          .returning();
 
-      const [source] = await db
-        .select()
-        .from(teamSkillVersions)
-        .where(
-          and(
-            eq(teamSkillVersions.skillId, skill.id),
-            eq(teamSkillVersions.version, targetVersion),
-          ),
-        )
-        .limit(1);
-      if (!source) throw new ApiError(404, "not_found", `version ${targetVersion} not found`);
-      if (targetVersion === skill.latestVersion) {
-        throw new ApiError(409, "conflict", `v${targetVersion} is already the latest version`);
-      }
+        const [updated] = await (tx.update(teamSkills) as any)
+          .set({
+            latestVersion: nextVersion,
+            summary: source.summary,
+            category,
+            whenToUse: source.whenToUse,
+            whenNotToUse: source.whenNotToUse,
+            requires: (source.requires as any) ?? null,
+          })
+          .where(and(eq(teamSkills.id, current.id), eq(teamSkills.latestVersion, expectedLatestVersion)))
+          .returning();
+        if (!updated) {
+          throw new ApiError(
+            409,
+            "stale_team_skill_base",
+            "team skill base version mismatch: registry moved concurrently",
+          );
+        }
 
-      const changelog =
-        String(body.changelog ?? "").trim() || `Reverted to v${targetVersion}`;
-      const nextVersion = (skill.latestVersion ?? 0) + 1;
-
-      // The metadata snapshot travels with the content. "Revert to v3" that
-      // restored v3's files under v7's description would produce a package
-      // whose SKILL.md frontmatter contradicts itself on every install.
-      const [version] = await (db.insert(teamSkillVersions) as any)
-        .values({
-          skillId: skill.id,
-          version: nextVersion,
-          contentHash: source.contentHash,
-          size: source.size ?? 0,
-          changelog,
-          summary: source.summary,
-          whenToUse: source.whenToUse,
-          whenNotToUse: source.whenNotToUse,
-          requires: (source.requires as any) ?? null,
-          createdBy: callerActorId,
-          // Blob ownership travels with the content. A marketplace-sourced
-          // version lives at `object_path` and is deliberately absent from
-          // `amuxc_blobs` (design §4.1), so a revert that dropped these two
-          // columns produced a row whose download fell into the team-blob
-          // branch, found nothing, and 409'd forever.
-          blobScope: source.blobScope ?? "team",
-          objectPath: source.objectPath ?? null,
-          // Provenance only — the skill is detached above, so nothing aligns
-          // against it. Keeping it means a later re-adopt can still tell which
-          // upstream version these bytes came from.
-          upstreamVersion: source.upstreamVersion ?? null,
-        })
-        .returning();
-
-      await (db.update(teamSkills) as any)
-        .set({
-          latestVersion: nextVersion,
-          summary: source.summary,
-          whenToUse: source.whenToUse,
-          whenNotToUse: source.whenNotToUse,
-          requires: (source.requires as any) ?? null,
-        })
-        .where(eq(teamSkills.id, skill.id));
-
-      return mapVersion(version);
+        return mapVersion(version);
+      });
     },
 
     /** Metadata edit, owner transfer, deprecation. */

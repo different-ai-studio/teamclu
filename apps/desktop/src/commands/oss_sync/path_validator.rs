@@ -4,7 +4,11 @@
 use std::path::Path;
 
 /// Prefixes this client still syncs. Mirrors the daemon's list.
-pub const ALLOWED_PREFIXES: &[&str] = &["knowledge/"];
+/// The two fixed roots of the synced tree. Must stay identical to the daemon's
+/// list in `apps/daemon/src/sync/oss/path_validator.rs` and FC's in
+/// `services/fc/src/lib/sync-path.ts` — three copies, and each one going stale
+/// fails differently.
+pub const ALLOWED_PREFIXES: &[&str] = &["documents/", "knowledge/"];
 
 /// Moved to the Cloud API — see `apps/daemon/src/sync/oss/path_validator.rs`
 /// for why these stay acceptable on the wire instead of being rejected.

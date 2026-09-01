@@ -4313,151 +4313,96 @@ export function createSupabaseBusinessRepository(options) {
       const contentHash = String(body.contentHash ?? "").trim();
       if (!contentHash) throw new ApiError(400, "validation_failed", "contentHash is required");
 
-      let { data: skill, error } = await supabase
-        .from("team_skills")
-        .select("*")
-        .eq("team_id", teamId)
-        .eq("slug", slug)
-        .maybeSingle();
-      if (error) throw error;
-      if (!skill) throw new ApiError(404, "not_found", `skill not found: ${slug}`);
+      if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
+        throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
+      }
+      const expectedLatestVersion = Number(body.expectedLatestVersion);
+      if (!Number.isInteger(expectedLatestVersion) || expectedLatestVersion < 0) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "expectedLatestVersion must be a non-negative integer",
+        );
+      }
 
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id;
       if (!callerActorId) throw new ApiError(403, "forbidden", "not a member of this team");
 
-      if (skill.upstream_subscribed) {
-        const { data: detached, error: dErr } = await supabase
-          .from("team_skills")
-          .update({
-            upstream_subscribed: false,
-            upstream_detached_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", skill.id)
-          .select("*")
-          .single();
-        if (dErr) throw dErr;
-        skill = detached;
+      const patch = requireTeamSkillFields(body, { partial: true });
+
+      const { data, error } = await supabase.rpc("publish_team_skill_version", {
+        p_team_id: teamId,
+        p_slug: slug,
+        p_expected_latest_version: expectedLatestVersion,
+        p_content_hash: contentHash,
+        p_size: Number(body.size ?? 0),
+        p_changelog: changelog,
+        p_summary: patch.summary ?? null,
+        p_category: patch.category ?? null,
+        p_when_to_use: patch.whenToUse !== undefined ? patch.whenToUse : null,
+        p_when_not_to_use: patch.whenNotToUse !== undefined ? patch.whenNotToUse : null,
+        p_requires: patch.requires !== undefined ? patch.requires : null,
+      });
+
+      if (error) {
+        const msg = error.message ?? "publish failed";
+        if (/stale_team_skill_base/i.test(msg)) {
+          throw new ApiError(409, "stale_team_skill_base", msg);
+        }
+        if (error.code === "P0002" || /skill not found/i.test(msg)) {
+          throw new ApiError(404, "not_found", msg);
+        }
+        if (error.code === "42501") {
+          throw new ApiError(403, "forbidden", msg);
+        }
+        throw error;
       }
 
-      const patch = requireTeamSkillFields(body, { partial: true });
-      const merged = {
-        summary: patch.summary ?? skill.summary,
-        when_to_use: patch.whenToUse ?? skill.when_to_use,
-        when_not_to_use: patch.whenNotToUse ?? skill.when_not_to_use,
-        requires: patch.requires !== undefined ? patch.requires : skill.requires,
-        category: patch.category ?? skill.category,
-      };
-      const nextVersion = (skill.latest_version ?? 0) + 1;
-
-      const { data: version, error: vErr } = await supabase
-        .from("team_skill_versions")
-        .insert({
-          skill_id: skill.id,
-          version: nextVersion,
-          content_hash: contentHash,
-          size: Number(body.size ?? 0),
-          changelog,
-          summary: merged.summary,
-          when_to_use: merged.when_to_use,
-          when_not_to_use: merged.when_not_to_use,
-          requires: merged.requires ?? null,
-          created_by: callerActorId,
-          blob_scope: "team",
-        })
-        .select("*")
-        .single();
-      if (vErr) throw vErr;
-
-      const { error: uErr } = await supabase
-        .from("team_skills")
-        .update({ latest_version: nextVersion, ...merged })
-        .eq("id", skill.id);
-      if (uErr) throw uErr;
-      return mapTeamSkillVersionRow(version);
+      return mapTeamSkillVersionRow(data);
     },
 
     /** See the pg-repo twin for why a revert publishes forward instead of
      * moving latest_version back. */
     async revertTeamSkillVersion(teamId, slug, targetVersion: number, body: any = {}) {
-      const { data: skill, error } = await supabase
-        .from("team_skills")
-        .select("*")
-        .eq("team_id", teamId)
-        .eq("slug", slug)
-        .maybeSingle();
-      if (error) throw error;
-      if (!skill) throw new ApiError(404, "not_found", `skill not found: ${slug}`);
-
       const callerActorId = (await this.resolveCallerActorForTeam(teamId))?.id;
       if (!callerActorId) throw new ApiError(403, "forbidden", "not a member of this team");
 
-      const { data: source, error: sErr } = await supabase
-        .from("team_skill_versions")
-        .select("*")
-        .eq("skill_id", skill.id)
-        .eq("version", targetVersion)
-        .maybeSingle();
-      if (sErr) throw sErr;
-      if (!source) throw new ApiError(404, "not_found", `version ${targetVersion} not found`);
-      if (targetVersion === skill.latest_version) {
-        throw new ApiError(409, "conflict", `v${targetVersion} is already the latest version`);
+      const changelog = String(body.changelog ?? "").trim() || null;
+      if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
+        throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
+      }
+      const expectedLatestVersion = Number(body.expectedLatestVersion);
+      if (!Number.isInteger(expectedLatestVersion) || expectedLatestVersion < 0) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "expectedLatestVersion must be a non-negative integer",
+        );
       }
 
-      // A revert is a team-authored version, so it detaches a subscribed skill
-      // exactly as publishing one does. Without this the new row carries no
-      // upstream_version, the next align reads that as "upstream 0" and
-      // re-projects marketplace latest — undoing the revert on the next list
-      // request, silently. Mirrors createTeamSkillVersion on this backend.
-      if (skill.upstream_subscribed) {
-        const { error: dErr } = await supabase
-          .from("team_skills")
-          .update({
-            upstream_subscribed: false,
-            upstream_detached_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", skill.id);
-        if (dErr) throw dErr;
+      const { data, error } = await supabase.rpc("revert_team_skill_version", {
+        p_team_id: teamId,
+        p_slug: slug,
+        p_target_version: targetVersion,
+        p_expected_latest_version: expectedLatestVersion,
+        p_changelog: changelog,
+      });
+
+      if (error) {
+        const msg = error.message ?? "revert failed";
+        if (/already the latest/i.test(msg) || /stale_team_skill_base/i.test(msg)) {
+          throw new ApiError(409, /stale_team_skill_base/i.test(msg) ? "stale_team_skill_base" : "conflict", msg);
+        }
+        if (error.code === "P0002" || /not found/i.test(msg)) {
+          throw new ApiError(404, "not_found", msg);
+        }
+        if (error.code === "42501") {
+          throw new ApiError(403, "forbidden", msg);
+        }
+        throw error;
       }
 
-      const changelog = String(body.changelog ?? "").trim() || `Reverted to v${targetVersion}`;
-      const nextVersion = (skill.latest_version ?? 0) + 1;
-      const snapshot = {
-        summary: source.summary,
-        when_to_use: source.when_to_use,
-        when_not_to_use: source.when_not_to_use,
-        requires: source.requires ?? null,
-      };
-
-      const { data: version, error: vErr } = await supabase
-        .from("team_skill_versions")
-        .insert({
-          skill_id: skill.id,
-          version: nextVersion,
-          content_hash: source.content_hash,
-          size: source.size ?? 0,
-          changelog,
-          created_by: callerActorId,
-          // Blob ownership travels with the content: a marketplace-sourced
-          // version lives at object_path and is deliberately absent from
-          // amuxc_blobs, so dropping these produced a row whose download fell
-          // into the team-blob branch and 409'd forever.
-          blob_scope: source.blob_scope ?? "team",
-          object_path: source.object_path ?? null,
-          upstream_version: source.upstream_version ?? null,
-          ...snapshot,
-        })
-        .select("*")
-        .single();
-      if (vErr) throw vErr;
-
-      const { error: uErr } = await supabase
-        .from("team_skills")
-        .update({ latest_version: nextVersion, ...snapshot })
-        .eq("id", skill.id);
-      if (uErr) throw uErr;
-      return mapTeamSkillVersionRow(version);
+      return mapTeamSkillVersionRow(data);
     },
 
     async updateTeamSkill(teamId, slug, patch: any = {}) {
@@ -5325,10 +5270,12 @@ function mapTeamSkillVersionRow(r: any) {
     size: r.size ?? 0,
     changelog: r.changelog,
     summary: r.summary,
+    category: r.category ?? null,
     whenToUse: r.when_to_use,
     whenNotToUse: r.when_not_to_use,
     requires: r.requires ?? null,
     createdBy: r.created_by,
+    publishedFromVersion: r.published_from_version ?? null,
     createdAt: appIso(r.created_at),
   };
 }

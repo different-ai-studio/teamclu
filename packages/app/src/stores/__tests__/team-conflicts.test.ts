@@ -7,7 +7,7 @@ vi.mock('@/stores/current-team', () => ({
   useCurrentTeamStore: { getState: () => ({ team: { id: 'team-1' } }) },
 }))
 vi.mock('@/lib/team-skill-paths', () => ({
-  globalTeamKnowledgeShareDir: () => Promise.resolve('/home/u/.amuxd/teams/team-1/shared/knowledge'),
+  globalTeamSyncShareRoot: () => Promise.resolve('/home/u/.amuxd/teams/team-1/shared/team-sync'),
 }))
 
 const syncNow = vi.fn(() => Promise.resolve())
@@ -27,7 +27,7 @@ function entry(sidecar: string, conflictedAt: number) {
 beforeEach(() => {
   invoke.mockReset()
   syncNow.mockClear()
-  useTeamConflictsStore.setState({ entries: [], bySyncKey: {}, knowledgeDir: null, error: null })
+  useTeamConflictsStore.setState({ entries: [], bySyncKey: {}, syncRoot: null, error: null })
 })
 
 describe('team-conflicts store', () => {
@@ -49,7 +49,7 @@ describe('team-conflicts store', () => {
     await useTeamConflictsStore.getState().load()
 
     expect(useTeamConflictsStore.getState().absPathFor(SIDECAR)).toBe(
-      '/home/u/.amuxd/teams/team-1/shared/knowledge/.conflicts/note.conflict.1000.aabbccdd.md',
+      '/home/u/.amuxd/teams/team-1/shared/team-sync/knowledge/.conflicts/note.conflict.1000.aabbccdd.md',
     )
     // Anything outside the knowledge prefix is not ours to place.
     expect(useTeamConflictsStore.getState().absPathFor('skills/x.md')).toBeNull()

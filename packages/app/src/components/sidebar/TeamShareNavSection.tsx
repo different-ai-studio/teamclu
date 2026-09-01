@@ -119,7 +119,7 @@ export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: Te
   const skillLocalState = useTeamShareBrowserStore((s) => s.skillLocalState)
 
   const skillConflicts = React.useMemo(
-    () => Object.values(skillLocalState).filter((s) => s.state === 'dirty').length,
+    () => Object.values(skillLocalState).filter((s) => s.state === 'dirty' || s.state === 'stale_dirty').length,
     [skillLocalState],
   )
 

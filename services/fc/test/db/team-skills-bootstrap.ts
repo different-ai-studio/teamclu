@@ -51,6 +51,7 @@ create table if not exists team_skill_versions (
   when_not_to_use text not null,
   requires jsonb,
   created_by uuid references actors(id) on delete set null,
+  published_from_version integer,
   created_at timestamptz not null default now(),
   -- Where this version's package lives. Rows scoped to the marketplace resolve
   -- through object_path and are deliberately absent from amuxc_blobs (4.1).

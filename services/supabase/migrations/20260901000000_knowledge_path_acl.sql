@@ -147,3 +147,24 @@ ALTER TABLE ONLY amux.amuxc_access_log FORCE ROW LEVEL SECURITY;
 
 COMMENT ON TABLE amux.amuxc_access_log IS
   'Access audit for restricted knowledge prefixes only; unrestricted traffic writes nothing. Denials are recorded as well. Retention 180 days, pruned manually until the FC cron profile is enabled on self-host.';
+
+-- ---------------------------------------------------------------------------
+-- Grants
+-- ---------------------------------------------------------------------------
+--
+-- `amux` has no ALTER DEFAULT PRIVILEGES backstop, so a new table reachable
+-- from FC needs its privileges written out here. BYPASSRLS on `service_role`
+-- only exempts it from RLS; Postgres still refuses the table without a GRANT.
+--
+-- Not granted to `authenticated` on purpose: a rule's path_prefix is a
+-- directory name, and members are not meant to see the list at all. That is the
+-- same reason these tables carry RLS with no policy — withholding the grant too
+-- means a policy added by mistake later still cannot leak them.
+--
+-- (Also shipped as 20260901010000 for deployments that already applied this
+-- file before the grants were added.)
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON amux.amuxc_path_acl TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON amux.amuxc_path_acl_grants TO service_role;
+GRANT SELECT, INSERT, DELETE ON amux.amuxc_access_log TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE amux.amuxc_access_log_id_seq TO service_role;

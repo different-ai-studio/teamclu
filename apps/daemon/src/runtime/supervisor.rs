@@ -2696,7 +2696,7 @@ mod tests {
         let amuxd = home.path().join(".amuxd");
         std::fs::create_dir_all(&amuxd).unwrap();
         std::fs::write(amuxd.join("daemon.toml"), "active_team = \"team-abc\"\n").unwrap();
-        let knowledge = amuxd.join("teams/team-abc/shared/knowledge");
+        let knowledge = amuxd.join("teams/team-abc/shared/team-sync/knowledge");
         std::fs::create_dir_all(&knowledge).unwrap();
 
         let ws = tempfile::tempdir().unwrap();

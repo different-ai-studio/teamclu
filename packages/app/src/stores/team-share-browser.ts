@@ -4,7 +4,7 @@ import { useEnvVarsStore, type TeamEnvListing } from '@/stores/env-vars'
 import type { SkillSource } from '@/lib/skills/types'
 import { getSourceLabel } from '@/lib/skills/loader'
 import { frontmatterString } from '@/lib/skills/frontmatter'
-import { resolveTeamKnowledgeDir } from '@/lib/team-skill-paths'
+import { resolveTeamSyncRoot } from '@/lib/team-skill-paths'
 import { invoke } from '@tauri-apps/api/core'
 import { getBackend } from '@/lib/backend/provider'
 import { getFreshAccessToken } from '@/lib/auth/session-store'
@@ -258,7 +258,7 @@ interface TeamShareBrowserState {
   knowledge: SectionState<TeamKnowledgeItem>
   envCount: number
   /** Absolute path of the team shared root, for the knowledge file tree. */
-  knowledgeRoot: string | null
+  syncRoot: string | null
   subjectActorId: string | null
   /** Single detail shown beside the list. Team-share items never create tabs. */
   detailTarget: TeamShareTarget | null
@@ -345,6 +345,8 @@ interface TeamShareBrowserState {
    * still shows: the detail pane.
    */
   skillRetired: Record<string, SkillRetirement>
+  /** Bumped when draft recoveries change (discard/restore). */
+  draftRecoveryRevision: number
   dismissRetired: (slug: string) => void
   /** Restore an archived directory under `newSlug`, keeping the team pack. */
   keepArchivedCopy: (slug: string, newSlug: string) => Promise<void>
@@ -355,13 +357,20 @@ interface TeamShareBrowserState {
    */
   reconcileSkills: () => Promise<void>
   /** Publish an older version's content as the new latest (undo a bad publish). */
-  revertSkillVersion: (slug: string, version: number) => Promise<void>
+  revertSkillVersion: (slug: string, version: number, expectedLatestVersion: number) => Promise<void>
   /** Move the edited pack aside and re-install clean. Returns the undo handle. */
   discardLocalSkill: (slug: string) => Promise<string>
   restoreDiscardedSkill: (trashedPath: string, slug: string) => Promise<void>
   /** Copy the edits out under a new slug so the team version can keep following. */
   forkSkill: (slug: string, newSlug: string) => Promise<string>
   loadSkillDiff: (slug: string) => Promise<TeamSkillFileDiff[]>
+  /** Diff between two published versions (team updates while you were editing). */
+  loadSkillTeamUpdatesDiff: (slug: string, fromVersion: number, toVersion: number) => Promise<TeamSkillFileDiff[]>
+  /** Metadata from the working copy's SKILL.md frontmatter. */
+  loadSkillDraftMetadata: (slug: string) => Promise<TeamSkillDraftMetadata>
+  listDraftRecoveries: (slug: string) => Promise<DraftRecoveryRecord[]>
+  /** Discard local edits and install the team's latest version (rebase). */
+  rebaseSkillOnLatest: (slug: string) => Promise<string>
   loadSection: (section: TeamShareSection, opts?: { force?: boolean; withTools?: boolean }) => Promise<void>
   loadMcpTools: (opts?: { refresh?: boolean }) => Promise<void>
   loadCounts: () => Promise<void>
@@ -381,6 +390,23 @@ export interface TeamSkillFileDiff {
   baseline: string | null
   current: string | null
   binary: boolean
+}
+
+export interface TeamSkillDraftMetadata {
+  summary?: string | null
+  category?: string | null
+  whenToUse?: string | null
+  whenNotToUse?: string | null
+  requires?: string[] | null
+}
+
+export interface DraftRecoveryRecord {
+  slug: string
+  path: string
+  at: number
+  reason: string
+  baseVersion?: number | null
+  teamId?: string | null
 }
 
 /**
@@ -853,6 +879,30 @@ export function isSkillDirtyConflict(e: unknown): boolean {
 
 const isDirtyConflict = isSkillDirtyConflict
 
+/** Cloud API 409 when another member published while this draft was open. */
+export class StaleTeamSkillPublishError extends Error {
+  constructor(readonly slug: string) {
+    super('stale_team_skill_base')
+    this.name = 'StaleTeamSkillPublishError'
+  }
+}
+
+/** Draft is behind the team registry — must rebase, fork, or discard before publishing. */
+export class StaleDirtySkillPublishError extends Error {
+  constructor(readonly slug: string) {
+    super('stale_dirty_draft')
+    this.name = 'StaleDirtySkillPublishError'
+  }
+}
+
+export function isStaleTeamSkillPublish(e: unknown): boolean {
+  if (e instanceof StaleTeamSkillPublishError) return true
+  if (e && typeof e === 'object' && 'code' in e) {
+    return (e as { code?: string }).code === 'stale_team_skill_base'
+  }
+  return String(e instanceof Error ? e.message : e).includes('stale_team_skill_base')
+}
+
 /** The team registry already has this name. Raised before any upload happens. */
 export class SkillSlugTakenError extends Error {
   constructor(readonly slug: string) {
@@ -927,8 +977,14 @@ async function inspectSkill(
   slug: string,
   expectedVersion: number | null,
   teamId: string,
+  registryLatestVersion?: number | null,
 ): Promise<SkillLocalState> {
-  return invoke<SkillLocalState>('team_skill_inspect', { slug, expectedVersion, teamId })
+  return invoke<SkillLocalState>('team_skill_inspect', {
+    slug,
+    expectedVersion,
+    teamId,
+    registryLatestVersion: registryLatestVersion ?? null,
+  })
 }
 
 async function listInstalledPacks(): Promise<OnDiskSkill[]> {
@@ -1020,13 +1076,14 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   mcp: emptySection<TeamMcpItem>(),
   knowledge: emptySection<TeamKnowledgeItem>(),
   envCount: 0,
-  knowledgeRoot: null,
+  syncRoot: null,
   subjectActorId: null,
   detailTarget: null,
   skillLocalState: {},
   skillSyncErrors: {},
   skillArchived: {},
   skillRetired: {},
+  draftRecoveryRevision: 0,
 
   counts: () => {
     const s = get()
@@ -1468,6 +1525,16 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const skill = get().skills.items.find((s) => s.slug === slug)
     if (!skill) throw new Error(`${slug} is not in the registry`)
 
+    const local = get().skillLocalState[slug]
+    if (local?.state === 'stale_dirty') {
+      throw new StaleDirtySkillPublishError(slug)
+    }
+
+    const draftBaseVersion = Number(local?.installedVersion ?? skill.installedVersion ?? 0)
+    if (!draftBaseVersion) {
+      throw new Error(`${slug} has no installed baseline version to publish from`)
+    }
+
     const { getEffectiveServerConfig } = await import('@/lib/server-config')
     const { cloudApiUrl } = await getEffectiveServerConfig()
     if (!cloudApiUrl) throw new Error('Cloud API URL is not configured')
@@ -1490,16 +1557,24 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       contentHash: packed.contentHash,
       size: packed.size,
       changelog: input.changelog,
+      // CAS against the draft baseline, not the registry headline. When the
+      // team moved on while this machine stayed dirty, latestVersion is ahead
+      // of the draft base — passing it would let an old draft overwrite vN.
+      expectedLatestVersion: draftBaseVersion,
       ...(input.summary !== undefined ? { summary: input.summary } : {}),
       ...(input.category !== undefined ? { category: input.category } : {}),
       ...(input.whenToUse !== undefined ? { whenToUse: input.whenToUse } : {}),
       ...(input.whenNotToUse !== undefined ? { whenNotToUse: input.whenNotToUse } : {}),
       ...(input.requires !== undefined ? { requires: input.requires } : {}),
+    }).catch((e) => {
+      if (isStaleTeamSkillPublish(e)) throw new StaleTeamSkillPublishError(slug)
+      throw e
     })
 
     // Re-baseline against the version just published. Skipping this leaves the
     // author permanently in conflict with their own release, since the disk
     // still differs from the baseline taken at the previous version.
+    // Use the server-returned metadata — it is the canonical snapshot for vN.
     await invoke('team_skill_rebaseline', {
       request: {
         workspacePath: wsPath,
@@ -1508,10 +1583,10 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         version: version.version,
         owner: skill.ownerActorId,
         category: input.category ?? skill.category,
-        summary: input.summary ?? skill.summary,
-        whenToUse: input.whenToUse ?? skill.whenToUse,
-        whenNotToUse: input.whenNotToUse ?? skill.whenNotToUse,
-        requires: input.requires ?? skill.requires,
+        summary: version.summary,
+        whenToUse: version.whenToUse,
+        whenNotToUse: version.whenNotToUse,
+        requires: version.requires,
       },
     })
     // Same reason as Share: the pack landed on this Agent's disk, so this Agent
@@ -1565,15 +1640,15 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       return { skillArchived: next }
     }),
 
-  revertSkillVersion: async (slug, version) => {
+  revertSkillVersion: async (slug, version, expectedLatestVersion) => {
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
-    // Rolls forward with the old content rather than moving `latestVersion`
-    // back, so auto-follow carries it to everyone the same way the bad version
-    // arrived. Without a caller this endpoint was decoration: under auto-follow
-    // a broken publish reaches the whole team within one tick, and the author's
-    // only other remedy is rebuilding the old bytes by hand.
-    await getBackend().teamSkills.revertTeamSkillVersion(teamId, slug, version)
+    await getBackend()
+      .teamSkills.revertTeamSkillVersion(teamId, slug, version, { expectedLatestVersion })
+      .catch((e) => {
+        if (isStaleTeamSkillPublish(e)) throw new StaleTeamSkillPublishError(slug)
+        throw e
+      })
     await get().reconcileSkills()
     await get().loadSection('skills', { force: true })
   },
@@ -1627,12 +1702,19 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     ])
     for (const slug of known) {
       const row = desired.find((s) => s.slug === slug)
-      const state = await inspectSkill(slug, row?.installedVersion ?? null, teamId).catch(() => null)
+      const state = await inspectSkill(
+        slug,
+        row?.installedVersion ?? null,
+        teamId,
+        row?.latestVersion ?? null,
+      ).catch(() => null)
       if (!state) continue
       states[slug] = state
       // A local edit needs a decision; another registry's pack is not ours to
       // touch at all. Both mean "auto-follow stops here".
-      if (state.state === 'dirty' || state.state === 'foreign') blocked.add(slug)
+      if (state.state === 'dirty' || state.state === 'stale_dirty' || state.state === 'foreign') {
+        blocked.add(slug)
+      }
     }
 
     // Re-read the disk after inspection rather than reusing the listing above.
@@ -1647,19 +1729,20 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     let diskChanged = false
 
     for (const { slug, version } of plan.install) {
+      const row = desired.find((s) => s.slug === slug)
       try {
         const { archivedPath } = await materializeSkill(teamId, slug, version, {
           archiveUnmanaged: true,
         })
         if (archivedPath) archived[slug] = archivedPath
-        states[slug] = await inspectSkill(slug, version, teamId)
+        states[slug] = await inspectSkill(slug, version, teamId, row?.latestVersion ?? null)
         delete errors[slug]
         diskChanged = true
       } catch (e) {
         // A pack that turned dirty between the inspect and the install; the
         // backstop in the installer caught it.
         if (isDirtyConflict(e)) {
-          const state = await inspectSkill(slug, version, teamId).catch(() => null)
+          const state = await inspectSkill(slug, version, teamId, row?.latestVersion ?? null).catch(() => null)
           if (state) states[slug] = state
           continue
         }
@@ -1702,6 +1785,18 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       // that one is about *their* edited copy surviving, which the delete
       // confirmation does not cover.
       const bySelf = selfDeleted.delete(slug)
+      if (blocked.has(slug) && !archived[slug]) {
+        try {
+          const trashedPath = await invoke<string>('team_skill_discard_local', { slug, teamId })
+          archived[slug] = trashedPath
+          delete states[slug]
+          diskChanged = true
+          retired[slug] = 'kept'
+        } catch {
+          retired[slug] = 'kept'
+        }
+        continue
+      }
       if (uninstalled.has(slug)) {
         if (!bySelf) retired[slug] = 'removed'
       } else if (blocked.has(slug)) {
@@ -1742,9 +1837,13 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     const skill = get().skills.items.find((s) => s.slug === slug)
+    const local = get().skillLocalState[slug]
+    const latest = skill?.latestVersion ?? 1
+    const reinstallVersion =
+      local?.state === 'stale_dirty' ? latest : Number(local?.installedVersion ?? latest)
     const trashedPath = await invoke<string>('team_skill_discard_local', { slug, teamId })
     try {
-      await materializeSkill(teamId, slug, skill?.latestVersion ?? 1)
+      await materializeSkill(teamId, slug, reinstallVersion)
     } catch (e) {
       // Everything up to here already happened: the edits are in the trash and
       // the pack is off the disk. Reporting this as a plain failure would strand
@@ -1758,13 +1857,17 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         .loadSection('skills', { force: true })
         .catch(() => {})
     }
+    set((s) => ({ draftRecoveryRevision: s.draftRecoveryRevision + 1 }))
     return trashedPath
   },
+
+  rebaseSkillOnLatest: async (slug) => get().discardLocalSkill(slug),
 
   restoreDiscardedSkill: async (trashedPath, slug) => {
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     await invoke('team_skill_restore_trashed', { trashedPath, slug, teamId })
+    set((s) => ({ draftRecoveryRevision: s.draftRecoveryRevision + 1 }))
     await get().reconcileSkills()
     await get().loadSection('skills', { force: true })
   },
@@ -1820,6 +1923,55 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     })
   },
 
+  loadSkillTeamUpdatesDiff: async (slug, fromVersion, toVersion) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    const detail = await getBackend().teamSkills.getTeamSkill(teamId, slug)
+    const fromSnapshot = detail.versions.find((v) => v.version === fromVersion)
+    const toSnapshot = detail.versions.find((v) => v.version === toVersion)
+    const [{ url: fromUrl }, { url: toUrl }] = await Promise.all([
+      getBackend().teamSkills.resolveDownload(teamId, slug, fromVersion),
+      getBackend().teamSkills.resolveDownload(teamId, slug, toVersion),
+    ])
+    const base = (snap: typeof fromSnapshot, version: number, url: string) => ({
+      slug,
+      teamId,
+      downloadUrl: url,
+      accessToken: null,
+      version,
+      owner: detail.ownerActorId,
+      // Omit category so the zip's own frontmatter wins in stage_installed_pack.
+      summary: snap?.summary ?? detail.summary,
+      whenToUse: snap?.whenToUse ?? detail.whenToUse,
+      whenNotToUse: snap?.whenNotToUse ?? detail.whenNotToUse,
+      // `null` on a snapshot is "this version had no requires", not "look at latest".
+      requires: snap ? snap.requires : detail.requires,
+      isGlobal: true,
+    })
+    return invoke<TeamSkillFileDiff[]>('team_skill_diff_versions', {
+      request: {
+        from: base(fromSnapshot, fromVersion, fromUrl),
+        to: base(toSnapshot, toVersion, toUrl),
+      },
+    })
+  },
+
+  loadSkillDraftMetadata: async (slug) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    return invoke<TeamSkillDraftMetadata>('team_skill_read_draft_metadata', { slug, teamId })
+  },
+
+  listDraftRecoveries: async (slug) => {
+    const teamId = currentTeamId()
+    if (!teamId) return []
+    return invoke<DraftRecoveryRecord[]>('team_skill_list_draft_recoveries', {
+      slug,
+      teamId,
+      limit: 10,
+    }).catch(() => [])
+  },
+
   loadSection: async (section, opts) => {
     const wsPath = await workspacePath()
 
@@ -1871,8 +2023,8 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         // team dir is missing on this machine", not "this workspace lacks a
         // link into it". Note there is no workspace gate left: knowledge is
         // per-team, not per-workspace.
-        const root = await resolveTeamKnowledgeDir()
-        const previous = get().knowledgeRoot
+        const root = await resolveTeamSyncRoot()
+        const previous = get().syncRoot
         if (previous && previous !== root) {
           // Switching teams repoints knowledge at a different directory. The old
           // one has to stop being rendered and, more importantly, stop being
@@ -1881,7 +2033,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
           await useWorkspaceStore.getState().closeExternalRoot(previous)
         }
         const items = root ? await listTeamKnowledge(root) : []
-        set({ knowledgeRoot: root, knowledge: { items, loading: false, loaded: true, error: null } })
+        set({ syncRoot: root, knowledge: { items, loading: false, loaded: true, error: null } })
       } else if (section === 'mcp') {
         // Not gated on `wsPath`: with an Agent selected this goes over RPC to
         // that Agent and never touches the local workspace. Requiring one made

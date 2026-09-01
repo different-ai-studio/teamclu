@@ -2287,7 +2287,9 @@ paths:
                 category: { $ref: "#/components/schemas/TeamSkillCategory" }
                 whenToUse: { type: string }
                 whenNotToUse: { type: string }
-                requires: { type: [object, "null"] }
+                requires:
+                  type: [array, "null"]
+                  items: { type: string }
                 ownerActorId: { type: string, format: uuid }
                 status: { type: string, enum: [draft, published, deprecated] }
                 supersededBy:
@@ -2331,16 +2333,28 @@ paths:
           application/json:
             schema:
               type: object
-              required: [contentHash, changelog]
+              required: [contentHash, changelog, expectedLatestVersion]
               properties:
                 contentHash: { type: string }
                 size: { type: integer }
                 changelog: { type: string }
+                expectedLatestVersion:
+                  type: integer
+                  minimum: 0
+                  description: >
+                    Registry `latestVersion` the publisher's draft was built from
+                    (installed/baseline version). Must match the current registry
+                    `latestVersion` or the publish is rejected with
+                    `409 stale_team_skill_base`. Passing the headline latest while
+                    the draft lags behind would let stale edits overwrite newer
+                    team releases.
                 summary: { type: string, maxLength: 200 }
                 category: { $ref: "#/components/schemas/TeamSkillCategory" }
                 whenToUse: { type: string }
                 whenNotToUse: { type: string }
-                requires: { type: [object, "null"] }
+                requires:
+                  type: [array, "null"]
+                  items: { type: string }
       responses:
         "201":
           description: Version published.
@@ -2349,6 +2363,11 @@ paths:
               schema: { $ref: "#/components/schemas/TeamSkillVersion" }
         "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Registry moved since the publisher loaded it (`stale_team_skill_base`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/teams/{teamId}/skills/{slug}/versions/{version}:
     get:
       operationId: getTeamSkillVersion
@@ -2394,12 +2413,20 @@ paths:
           description: The version whose content should become the new latest.
           schema: { type: integer, minimum: 1 }
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [expectedLatestVersion]
               properties:
+                expectedLatestVersion:
+                  type: integer
+                  minimum: 0
+                  description: >
+                    Registry `latestVersion` the caller loaded before choosing to
+                    revert. Must match the current registry `latestVersion` or the
+                    revert is rejected with `409 stale_team_skill_base`.
                 changelog:
                   type: string
                   description: Defaults to "Reverted to v{version}".
@@ -2412,6 +2439,11 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Registry moved since the caller loaded it (`stale_team_skill_base`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: That version is already the latest.
           content:
@@ -6380,7 +6412,8 @@ components:
             Required, and shown next to whenToUse rather than folded away —
             two overlapping skills can only be told apart by their boundaries.
         requires:
-          type: [object, "null"]
+          type: [array, "null"]
+          items: { type: string }
           description: Optional dependency declaration (platform, MCP server, credentials).
         status: { type: string, enum: [draft, published, deprecated] }
         supersededBy: { type: [string, "null"] }
@@ -6408,10 +6441,21 @@ components:
         size: { type: integer }
         changelog: { type: string }
         summary: { type: string }
+        category: { type: [string, "null"] }
         whenToUse: { type: string }
         whenNotToUse: { type: string }
-        requires: { type: [object, "null"] }
+        requires:
+          type: [array, "null"]
+          items: { type: string }
         createdBy: { type: string, format: uuid }
+        publishedFromVersion:
+          type: [integer, "null"]
+          minimum: 1
+          readOnly: true
+          description: >
+            Installed/baseline version the publisher's working copy was built from.
+            Set by the server from the CAS baseline (`expectedLatestVersion`); not
+            accepted on publish requests.
         createdAt: { type: [string, "null"], format: date-time }
     TeamSkillInstall:
       type: object
@@ -6441,7 +6485,9 @@ components:
         category: { $ref: "#/components/schemas/TeamSkillCategory" }
         whenToUse: { type: string }
         whenNotToUse: { type: string }
-        requires: { type: [object, "null"] }
+        requires:
+          type: [array, "null"]
+          items: { type: string }
         changelog: { type: string }
         contentHash: { type: string }
         size: { type: integer }

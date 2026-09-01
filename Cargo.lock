@@ -302,6 +302,7 @@ dependencies = [
  "image",
  "include_dir",
  "libc",
+ "libsql-rusqlite",
  "mime",
  "notify",
  "openssl",

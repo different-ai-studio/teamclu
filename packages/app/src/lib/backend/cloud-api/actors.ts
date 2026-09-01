@@ -188,7 +188,10 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
       return out.items.map(mapAgentAccess);
     },
     async listTeamMembersForAccess(teamId) {
-      const page = await client.get<Page<CloudActor>>(`/v1/teams/${encodeURIComponent(teamId)}/actors?kind=user&limit=500`);
+      // `kind` is matched against actor_type verbatim by both backends, and the
+      // only values that exist are member / agent / external. This asked for
+      // `user`, which matches nothing — so every caller got an empty list.
+      const page = await client.get<Page<CloudActor>>(`/v1/teams/${encodeURIComponent(teamId)}/actors?kind=member&limit=500`);
       return page.items.map((row): TeamMemberOptionBackendRow => ({
         id: row.id,
         displayName: row.displayName || row.id,
