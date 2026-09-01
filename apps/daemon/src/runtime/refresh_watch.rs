@@ -188,8 +188,6 @@ pub fn classify_change_path(
         {
             Some(RefreshChangeKind::EnvVars)
         } else if path.starts_with(workspace.workspace_path.join(".claude/skills"))
-            || path.starts_with(workspace.workspace_path.join(".opencode/skills"))
-            || path.starts_with(workspace.workspace_path.join(".pi/skills"))
             || path.starts_with(workspace.workspace_path.join(".agents/skills"))
             || is_team_skills_path(path, &workspace.workspace_path)
             || is_global_skill_path
@@ -240,16 +238,13 @@ fn watch_roots(workspaces: &[WatchedWorkspace], home: Option<&Path>) -> Vec<Watc
                 recursive: false,
             });
         }
+        // `.opencode/skills` and `.pi/skills` are deliberately absent, here and
+        // in `classify_change_path`. `native_skill_fallback_guard` does watch
+        // those directories, but it reads them itself at turn open and turn
+        // close (`scan_native_skills`) and never consults this watcher, so
+        // subscribing here buys it nothing and breaks the mirror above.
         roots.push(WatchRoot {
             path: workspace.workspace_path.join(".claude/skills"),
-            recursive: true,
-        });
-        roots.push(WatchRoot {
-            path: workspace.workspace_path.join(".opencode/skills"),
-            recursive: true,
-        });
-        roots.push(WatchRoot {
-            path: workspace.workspace_path.join(".pi/skills"),
             recursive: true,
         });
         roots.push(WatchRoot {
@@ -570,6 +565,7 @@ mod tests {
         for retired in [
             Path::new("/tmp/ws-1/.teamclu/skills/demo-skill/SKILL.md"),
             Path::new("/tmp/ws-1/.opencode/skills/demo-skill/SKILL.md"),
+            Path::new("/tmp/ws-1/.pi/skills/demo-skill/SKILL.md"),
             Path::new("/Users/tester/.config/teamclu/skills/global-skill/SKILL.md"),
             Path::new("/Users/tester/.config/opencode/skills/global-skill/SKILL.md"),
         ] {
