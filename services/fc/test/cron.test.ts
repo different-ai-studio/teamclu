@@ -489,7 +489,7 @@ test("ossSyncGcOrphanBlobs: a run is capped, and the backlog survives it", async
 
 test("runCronTask: dispatches oss-abandon-sessions", async () => {
   const { db } = await makeTestDb();
-  const result = await runCronTask(db, "oss-abandon-sessions");
+  const result = await runCronTask(() => db, "oss-abandon-sessions");
   assert.equal(result.task, "oss-abandon-sessions");
   assert.ok("abandoned" in result.result);
   assert.ok("deleted" in result.result);
@@ -497,15 +497,31 @@ test("runCronTask: dispatches oss-abandon-sessions", async () => {
 
 test("runCronTask: dispatches oss-gc-blobs", async () => {
   const { db } = await makeTestDb();
-  const result = await runCronTask(db, "oss-gc-blobs");
+  const result = await runCronTask(() => db, "oss-gc-blobs");
   assert.equal(result.task, "oss-gc-blobs");
   assert.ok("deleted" in result.result);
+});
+
+test("a task that needs no database never asks for one", async () => {
+  // `runCronTask(getDb(), task)` resolved the connection BEFORE dispatch, so
+  // every task needed a database whether or not it touched one. getDb() throws
+  // when DATABASE_URL is unset — and it is unset on the supabase backend path —
+  // so /internal/cron answered 500 for EVERY task on the only deployment that
+  // runs. Unnoticed because the cron compose profile was never enabled there.
+  let asked = false;
+  const boom = () => {
+    asked = true;
+    throw new Error("DATABASE_URL is not set");
+  };
+  const result = await runCronTask(boom, "stripe-reconcile");
+  assert.equal(result.task, "stripe-reconcile");
+  assert.equal(asked, false, "stripe-reconcile talks to Stripe and the gateway, never to a table here");
 });
 
 test("runCronTask: throws on unknown task", async () => {
   const { db } = await makeTestDb();
   await assert.rejects(
-    () => runCronTask(db, "unknown-task"),
+    () => runCronTask(() => db, "unknown-task"),
     /Unknown cron task/
   );
 });
