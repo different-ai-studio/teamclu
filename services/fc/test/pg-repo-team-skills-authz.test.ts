@@ -137,6 +137,19 @@ test("a plain member can publish a new version of somebody else's skill", async 
   assert.equal(after.ownerActorId, ownerActor!.id);
 });
 
+test("publish stores publishedFromVersion for audit", async () => {
+  const { team, memberRepo } = await scenario();
+
+  const version = await memberRepo.createTeamSkillVersion(team.id, "deploy-check", {
+    changelog: "from local draft",
+    contentHash: "b".repeat(64),
+    expectedLatestVersion: 1,
+    publishedFromVersion: 1,
+  });
+
+  assert.equal(version.publishedFromVersion, 1);
+});
+
 test("publish rejects stale expectedLatestVersion", async () => {
   const { team, memberRepo } = await scenario();
 

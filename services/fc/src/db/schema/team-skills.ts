@@ -71,6 +71,8 @@ export const teamSkillVersions = pgTable(
     whenNotToUse: text("when_not_to_use").notNull(),
     requires: jsonb("requires"),
     createdBy: uuid("created_by").references(() => actors.id, { onDelete: "set null" }),
+    /** Baseline version the publisher's working copy was built from (audit). */
+    publishedFromVersion: integer("published_from_version"),
     upstreamVersion: integer("upstream_version"),
     blobScope: text("blob_scope").notNull().default("team"),
     objectPath: text("object_path"),

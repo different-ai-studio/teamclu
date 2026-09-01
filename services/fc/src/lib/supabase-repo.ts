@@ -4369,6 +4369,18 @@ export function createSupabaseBusinessRepository(options) {
         category: patch.category ?? skill.category,
       };
       const nextVersion = (skill.latest_version ?? 0) + 1;
+      let publishedFromVersion: number | null = null;
+      if (body.publishedFromVersion !== undefined && body.publishedFromVersion !== null) {
+        const from = Number(body.publishedFromVersion);
+        if (!Number.isInteger(from) || from < 1) {
+          throw new ApiError(
+            400,
+            "validation_failed",
+            "publishedFromVersion must be a positive integer",
+          );
+        }
+        publishedFromVersion = from;
+      }
 
       const { data: version, error: vErr } = await supabase
         .from("team_skill_versions")
@@ -4383,6 +4395,7 @@ export function createSupabaseBusinessRepository(options) {
           when_not_to_use: merged.when_not_to_use,
           requires: merged.requires ?? null,
           created_by: callerActorId,
+          published_from_version: publishedFromVersion,
           blob_scope: "team",
         })
         .select("*")
@@ -5359,6 +5372,7 @@ function mapTeamSkillVersionRow(r: any) {
     whenNotToUse: r.when_not_to_use,
     requires: r.requires ?? null,
     createdBy: r.created_by,
+    publishedFromVersion: r.published_from_version ?? null,
     createdAt: appIso(r.created_at),
   };
 }

@@ -362,6 +362,12 @@ interface TeamShareBrowserState {
   /** Copy the edits out under a new slug so the team version can keep following. */
   forkSkill: (slug: string, newSlug: string) => Promise<string>
   loadSkillDiff: (slug: string) => Promise<TeamSkillFileDiff[]>
+  /** Diff between two published versions (team updates while you were editing). */
+  loadSkillTeamUpdatesDiff: (slug: string, fromVersion: number, toVersion: number) => Promise<TeamSkillFileDiff[]>
+  /** Metadata from the working copy's SKILL.md frontmatter. */
+  loadSkillDraftMetadata: (slug: string) => Promise<TeamSkillDraftMetadata>
+  /** Discard local edits and install the team's latest version (rebase). */
+  rebaseSkillOnLatest: (slug: string) => Promise<string>
   loadSection: (section: TeamShareSection, opts?: { force?: boolean; withTools?: boolean }) => Promise<void>
   loadMcpTools: (opts?: { refresh?: boolean }) => Promise<void>
   loadCounts: () => Promise<void>
@@ -381,6 +387,12 @@ export interface TeamSkillFileDiff {
   baseline: string | null
   current: string | null
   binary: boolean
+}
+
+export interface TeamSkillDraftMetadata {
+  summary?: string | null
+  whenToUse?: string | null
+  whenNotToUse?: string | null
 }
 
 /**
@@ -1507,12 +1519,16 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       accessToken,
     })
 
+    const local = get().skillLocalState[slug]
+    const draftBaseVersion = Number(local?.installedVersion ?? skill.installedVersion ?? 0) || undefined
+
     const backend = getBackend()
     const version = await backend.teamSkills.publishTeamSkillVersion(teamId, slug, {
       contentHash: packed.contentHash,
       size: packed.size,
       changelog: input.changelog,
       expectedLatestVersion: skill.latestVersion ?? 0,
+      ...(draftBaseVersion ? { publishedFromVersion: draftBaseVersion } : {}),
       ...(input.summary !== undefined ? { summary: input.summary } : {}),
       ...(input.category !== undefined ? { category: input.category } : {}),
       ...(input.whenToUse !== undefined ? { whenToUse: input.whenToUse } : {}),
@@ -1526,6 +1542,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // Re-baseline against the version just published. Skipping this leaves the
     // author permanently in conflict with their own release, since the disk
     // still differs from the baseline taken at the previous version.
+    // Use the server-returned metadata — it is the canonical snapshot for vN.
     await invoke('team_skill_rebaseline', {
       request: {
         workspacePath: wsPath,
@@ -1534,10 +1551,10 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         version: version.version,
         owner: skill.ownerActorId,
         category: input.category ?? skill.category,
-        summary: input.summary ?? skill.summary,
-        whenToUse: input.whenToUse ?? skill.whenToUse,
-        whenNotToUse: input.whenNotToUse ?? skill.whenNotToUse,
-        requires: input.requires ?? skill.requires,
+        summary: version.summary,
+        whenToUse: version.whenToUse,
+        whenNotToUse: version.whenNotToUse,
+        requires: version.requires ?? skill.requires,
       },
     })
     // Same reason as Share: the pack landed on this Agent's disk, so this Agent
@@ -1788,9 +1805,13 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     const skill = get().skills.items.find((s) => s.slug === slug)
+    const local = get().skillLocalState[slug]
+    const latest = skill?.latestVersion ?? 1
+    const reinstallVersion =
+      local?.state === 'stale_dirty' ? latest : Number(local?.installedVersion ?? latest)
     const trashedPath = await invoke<string>('team_skill_discard_local', { slug, teamId })
     try {
-      await materializeSkill(teamId, slug, skill?.latestVersion ?? 1)
+      await materializeSkill(teamId, slug, reinstallVersion)
     } catch (e) {
       // Everything up to here already happened: the edits are in the trash and
       // the pack is off the disk. Reporting this as a plain failure would strand
@@ -1806,6 +1827,8 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     }
     return trashedPath
   },
+
+  rebaseSkillOnLatest: async (slug) => get().discardLocalSkill(slug),
 
   restoreDiscardedSkill: async (trashedPath, slug) => {
     const teamId = currentTeamId()
@@ -1864,6 +1887,44 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         isGlobal: true,
       },
     })
+  },
+
+  loadSkillTeamUpdatesDiff: async (slug, fromVersion, toVersion) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    const detail = await getBackend().teamSkills.getTeamSkill(teamId, slug)
+    const fromSnapshot = detail.versions.find((v) => v.version === fromVersion)
+    const toSnapshot = detail.versions.find((v) => v.version === toVersion)
+    const [{ url: fromUrl }, { url: toUrl }] = await Promise.all([
+      getBackend().teamSkills.resolveDownload(teamId, slug, fromVersion),
+      getBackend().teamSkills.resolveDownload(teamId, slug, toVersion),
+    ])
+    const base = (snap: typeof fromSnapshot, version: number, url: string) => ({
+      slug,
+      teamId,
+      downloadUrl: url,
+      accessToken: null,
+      version,
+      owner: detail.ownerActorId,
+      category: detail.category,
+      summary: snap?.summary ?? detail.summary,
+      whenToUse: snap?.whenToUse ?? detail.whenToUse,
+      whenNotToUse: snap?.whenNotToUse ?? detail.whenNotToUse,
+      requires: snap?.requires ?? detail.requires,
+      isGlobal: true,
+    })
+    return invoke<TeamSkillFileDiff[]>('team_skill_diff_versions', {
+      request: {
+        from: base(fromSnapshot, fromVersion, fromUrl),
+        to: base(toSnapshot, toVersion, toUrl),
+      },
+    })
+  },
+
+  loadSkillDraftMetadata: async (slug) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    return invoke<TeamSkillDraftMetadata>('team_skill_read_draft_metadata', { slug, teamId })
   },
 
   loadSection: async (section, opts) => {
