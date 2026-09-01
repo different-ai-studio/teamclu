@@ -104,7 +104,8 @@ describe('Settings navigation', () => {
       within(screen.getByTestId('local-agent-subnav')).getAllByRole('button').map((button) => button.textContent),
     ).toEqual([
       'LLM Model',
-      'Team LLM',
+      // 'Team LLM' is gone: the team gateway is now a pinned card inside the
+      // LLM Model pane, not a section of its own.
       'Prompt',
       // 'Roles' and 'Role Skills' are temporarily hidden — see
       // HIDDEN_LOCAL_AGENT_SECTIONS in Settings.tsx. 'Knowledge Base' is gone

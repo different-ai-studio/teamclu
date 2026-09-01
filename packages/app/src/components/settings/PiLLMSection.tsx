@@ -6,6 +6,7 @@ import { useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
 import { groupAgentModelOptions } from '@/lib/agent-available-models'
 import { SectionHeader, SettingCard } from './shared'
+import { TeamProviderCard } from './llm/TeamProviderCard'
 
 /**
  * pi LLM settings — deliberately NOT the OpenCode provider UI.
@@ -51,6 +52,9 @@ export function PiLLMSection() {
           'pi 运行时自带的模型与 provider，由主机上的 pi 凭证管理。',
         )}
       />
+
+      {/* Pinned above pi's own catalog: the team gateway needs no `pi /login`. */}
+      <TeamProviderCard className="mb-4" />
 
       <SettingCard className="mb-4">
         <div className="flex items-start gap-3 p-4">
