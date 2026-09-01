@@ -306,6 +306,29 @@ impl TeamSkillReconciler {
     }
 }
 
+/// Same refresh fan-out as [`apply_team_skill_outcome`], but for a local draft
+/// edit that did not change the reconciler's install set.
+pub async fn notify_team_skill_draft_changed(
+    team_id: &str,
+    backend: Option<&Arc<dyn Backend>>,
+    refresh: Option<&Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
+    refresh_watch_registry: Option<
+        &Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>,
+    >,
+) {
+    apply_team_skill_outcome(
+        team_id,
+        TeamSkillReconcileOutcome {
+            installed: 1,
+            removed: 0,
+        },
+        backend,
+        refresh,
+        refresh_watch_registry,
+    )
+    .await;
+}
+
 /// Tell every local workspace of this team that its skill set moved.
 ///
 /// The install root is outside every `refresh_watch` root — deliberately, since
