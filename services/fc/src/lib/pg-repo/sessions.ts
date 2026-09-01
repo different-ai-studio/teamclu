@@ -819,7 +819,7 @@ export function makeSessionsRepo(db: DbLike, ctx: SessionsCtx = {}, deps: Sessio
       updatedAfter: string | null,
       { limit = DEFAULT_LIST_LIMIT, cursor = null }: { limit?: number; cursor?: { updatedAt?: string | null; id?: string } | null } = {},
     ) {
-      const conditions = [eq(sessions.teamId, teamId)];
+      const conditions = [eq(sessions.teamId, teamId), isNull(sessions.parentSessionId)];
       if (updatedAfter) conditions.push(gt(sessions.updatedAt, new Date(updatedAfter)));
       if (cursor?.updatedAt) {
         // Keyset: strictly after (updatedAt, id).
