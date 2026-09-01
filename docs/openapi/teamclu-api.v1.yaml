@@ -2351,12 +2351,6 @@ paths:
                 whenToUse: { type: string }
                 whenNotToUse: { type: string }
                 requires: { type: [object, "null"] }
-                publishedFromVersion:
-                  type: integer
-                  minimum: 1
-                  description: >
-                    Installed/baseline version the publisher's working copy was
-                    built from. Stored for audit; does not affect CAS.
       responses:
         "201":
           description: Version published.
@@ -6433,7 +6427,14 @@ components:
         whenNotToUse: { type: string }
         requires: { type: [object, "null"] }
         createdBy: { type: string, format: uuid }
-        publishedFromVersion: { type: [integer, "null"], minimum: 1 }
+        publishedFromVersion:
+          type: [integer, "null"]
+          minimum: 1
+          readOnly: true
+          description: >
+            Installed/baseline version the publisher's working copy was built from.
+            Set by the server from the CAS baseline (`expectedLatestVersion`); not
+            accepted on publish requests.
         createdAt: { type: [string, "null"], format: date-time }
     TeamSkillInstall:
       type: object

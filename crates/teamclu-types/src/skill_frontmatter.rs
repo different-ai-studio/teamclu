@@ -59,6 +59,35 @@ impl ParsedFrontmatter {
             .map(str::trim)
             .filter(|s| !s.is_empty())
     }
+
+    /// `Some` when the key is present, including an empty scalar or a list.
+    /// Distinguishes "agent cleared this field" from "the draft never had it".
+    pub fn present_string(&self, key: &str) -> Option<String> {
+        self.data.get(key).map(|v| match v {
+            FrontmatterValue::Scalar(s) => s.trim().to_string(),
+            FrontmatterValue::List(items) => items.join(", "),
+        })
+    }
+
+    /// `Some` when the key is present. Empty scalar → empty vec; scalar with
+    /// commas is split so a one-line `requires: a, b` still round-trips.
+    pub fn present_list(&self, key: &str) -> Option<Vec<String>> {
+        self.data.get(key).map(|v| match v {
+            FrontmatterValue::List(items) => items.clone(),
+            FrontmatterValue::Scalar(s) => {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    trimmed
+                        .split(',')
+                        .map(|part| part.trim().to_string())
+                        .filter(|part| !part.is_empty())
+                        .collect()
+                }
+            }
+        })
+    }
 }
 
 fn is_fence(line: &str) -> bool {

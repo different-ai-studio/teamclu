@@ -41,6 +41,8 @@ import {
   StaleDirtySkillPublishError,
   type TeamSkillItem,
   type TeamSkillFileDiff,
+  type TeamSkillDraftMetadata,
+  type DraftRecoveryRecord,
 } from '@/stores/team-share-browser'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend/provider'
@@ -144,7 +146,7 @@ function MetaRow({ item, ownerLabel }: { item: TeamSkillItem; ownerLabel: string
     primary.push(t('teamShare.skillInstalledVersion', 'installed v{{v}}', { v: item.installedVersion }))
   }
   if (item.requires?.length) {
-    primary.push(t('teamShare.skillRequires', 'requires {{list}}', { list: item.requires.join(', ') }))
+    primary.push(t('teamShare.skillRequiresList', 'requires {{list}}', { list: item.requires.join(', ') }))
   }
 
   const secondary: string[] = []
@@ -623,34 +625,55 @@ function PublishVersionSheet({
   open: boolean
   busy: boolean
   changePreview?: { modified: string[]; deleted: string[]; added: string[] }
-  onLoadDraftMetadata: () => Promise<{ summary?: string | null; whenToUse?: string | null; whenNotToUse?: string | null }>
+  onLoadDraftMetadata: () => Promise<TeamSkillDraftMetadata>
   onClose: () => void
   onSubmit: (input: {
     changelog: string
-    summary?: string
-    whenToUse?: string
-    whenNotToUse?: string
+    summary: string
+    category: TeamSkillCategory
+    whenToUse: string
+    whenNotToUse: string
+    requires: string[]
   }) => Promise<void>
 }) {
   const { t } = useTranslation()
   const [changelog, setChangelog] = React.useState('')
   const [summary, setSummary] = React.useState(item.summary ?? '')
+  const [category, setCategory] = React.useState<TeamSkillCategory>(
+    (TEAM_SKILL_CATEGORIES.includes(item.category as TeamSkillCategory)
+      ? item.category
+      : 'general') as TeamSkillCategory,
+  )
   const [whenToUse, setWhenToUse] = React.useState(item.whenToUse ?? '')
   const [whenNotToUse, setWhenNotToUse] = React.useState(item.whenNotToUse ?? '')
+  const [requiresText, setRequiresText] = React.useState((item.requires ?? []).join(', '))
   const [metadataLoading, setMetadataLoading] = React.useState(false)
 
   React.useEffect(() => {
     if (!open) return
     setChangelog('')
     setSummary(item.summary ?? '')
+    setCategory(
+      (TEAM_SKILL_CATEGORIES.includes(item.category as TeamSkillCategory)
+        ? item.category
+        : 'general') as TeamSkillCategory,
+    )
     setWhenToUse(item.whenToUse ?? '')
     setWhenNotToUse(item.whenNotToUse ?? '')
+    setRequiresText((item.requires ?? []).join(', '))
     setMetadataLoading(true)
     void onLoadDraftMetadata()
       .then((draft) => {
-        if (draft.summary) setSummary(draft.summary)
-        if (draft.whenToUse) setWhenToUse(draft.whenToUse)
-        if (draft.whenNotToUse) setWhenNotToUse(draft.whenNotToUse)
+        if (typeof draft.summary === 'string') setSummary(draft.summary)
+        if (
+          typeof draft.category === 'string' &&
+          TEAM_SKILL_CATEGORIES.includes(draft.category as TeamSkillCategory)
+        ) {
+          setCategory(draft.category as TeamSkillCategory)
+        }
+        if (typeof draft.whenToUse === 'string') setWhenToUse(draft.whenToUse)
+        if (typeof draft.whenNotToUse === 'string') setWhenNotToUse(draft.whenNotToUse)
+        if (draft.requires !== undefined) setRequiresText((draft.requires ?? []).join(', '))
       })
       .catch(() => {})
       .finally(() => setMetadataLoading(false))
@@ -661,7 +684,7 @@ function PublishVersionSheet({
   const field = 'w-full rounded-[8px] border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-coral/60'
   const label = 'text-[11px] font-semibold uppercase tracking-wide text-faint'
   const metaHint = (draftValue: string, registryValue: string | null | undefined) =>
-    draftValue.trim() && draftValue.trim() !== (registryValue ?? '').trim() ? (
+    draftValue.trim() !== (registryValue ?? '').trim() ? (
       <span className="ml-2 font-normal normal-case text-faint">
         {t('teamShare.skillPublishDraftDiff', 'differs from registry')}
       </span>
@@ -706,19 +729,18 @@ function PublishVersionSheet({
           </Button>
           <Button
             type="button"
-            disabled={!changelog.trim() || busy}
+            disabled={!changelog.trim() || !summary.trim() || busy}
             onClick={() =>
-              // Empty fields are omitted, not sent as "". The server rejects a
-              // present-but-empty value, and it does so *after* the package has
-              // already been uploaded — so a blank "when not to use" used to
-              // cost an orphaned blob, no version, and an error naming a field
-              // the dialog never marked as required. Omitted means "keep what
-              // the registry already has", which is what a blank box reads as.
               void onSubmit({
                 changelog: changelog.trim(),
-                summary: summary.trim() || undefined,
-                whenToUse: whenToUse.trim() || undefined,
-                whenNotToUse: whenNotToUse.trim() || undefined,
+                summary: summary.trim(),
+                category,
+                whenToUse: whenToUse.trim(),
+                whenNotToUse: whenNotToUse.trim(),
+                requires: requiresText
+                  .split(',')
+                  .map((part) => part.trim())
+                  .filter(Boolean),
               })
             }
             className="h-8 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90 disabled:opacity-40"
@@ -778,6 +800,24 @@ function PublishVersionSheet({
       </label>
       <label className="block space-y-1">
         <span className={label}>
+          {t('teamShare.skillShareCategory', 'Category')}
+          {metaHint(category, item.category)}
+        </span>
+        <Select value={category} onValueChange={(v) => setCategory(v as TeamSkillCategory)}>
+          <SelectTrigger className="h-auto w-full rounded-[8px] border-border bg-background px-3 py-2 text-[13px] shadow-none">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {TEAM_SKILL_CATEGORIES.map((c) => (
+              <SelectItem key={c} value={c} className="text-[13px]">
+                {c}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+      <label className="block space-y-1">
+        <span className={label}>
           {t('teamShare.skillWhenToUse', 'When to use')}
           {metaHint(whenToUse, item.whenToUse)}
         </span>
@@ -792,6 +832,18 @@ function PublishVersionSheet({
           value={whenNotToUse}
           onChange={(e) => setWhenNotToUse(e.target.value)}
           rows={3}
+          className={field}
+        />
+      </label>
+      <label className="block space-y-1">
+        <span className={label}>
+          {t('teamShare.skillRequires', 'Requires')}
+          {metaHint(requiresText, (item.requires ?? []).join(', '))}
+        </span>
+        <input
+          value={requiresText}
+          onChange={(e) => setRequiresText(e.target.value)}
+          placeholder={t('teamShare.skillRequiresHint', 'comma-separated, e.g. git, jq')}
           className={field}
         />
       </label>
@@ -1000,6 +1052,7 @@ export function SkillDetail({ slug }: { slug: string }) {
   const loadSkillDiff = useTeamShareBrowserStore((s) => s.loadSkillDiff)
   const loadSkillTeamUpdatesDiff = useTeamShareBrowserStore((s) => s.loadSkillTeamUpdatesDiff)
   const loadSkillDraftMetadata = useTeamShareBrowserStore((s) => s.loadSkillDraftMetadata)
+  const listDraftRecoveries = useTeamShareBrowserStore((s) => s.listDraftRecoveries)
   const rebaseSkillOnLatest = useTeamShareBrowserStore((s) => s.rebaseSkillOnLatest)
   const localState = useTeamShareBrowserStore((s) => s.skillLocalState[slug])
   // Derived, not selected: a selector returning a fresh Set re-renders on every
@@ -1044,12 +1097,27 @@ export function SkillDetail({ slug }: { slug: string }) {
   const [confirmAction, setConfirmAction] = React.useState<SkillConfirmAction | null>(null)
   const [versions, setVersions] = React.useState<TeamSkillVersion[]>([])
   const [versionsLoading, setVersionsLoading] = React.useState(false)
+  const [recoveries, setRecoveries] = React.useState<DraftRecoveryRecord[]>([])
   const [ownerLabel, setOwnerLabel] = React.useState<string | null>(null)
   const baseline = item?.content ?? ''
 
   React.useEffect(() => {
     setContent(item?.content ?? '')
   }, [slug, item?.content])
+
+  React.useEffect(() => {
+    if (!item || !teamId) {
+      setRecoveries([])
+      return
+    }
+    let cancelled = false
+    void listDraftRecoveries(item.slug).then((rows) => {
+      if (!cancelled) setRecoveries(rows)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [item?.slug, teamId, listDraftRecoveries])
 
   React.useEffect(() => {
     if (!item || item.origin !== 'registry' || !teamId) {
@@ -1236,9 +1304,11 @@ export function SkillDetail({ slug }: { slug: string }) {
   const runPublishVersion = React.useCallback(
     async (input: {
       changelog: string
-      summary?: string
-      whenToUse?: string
-      whenNotToUse?: string
+      summary: string
+      category: TeamSkillCategory
+      whenToUse: string
+      whenNotToUse: string
+      requires: string[]
     }) => {
       if (!item || busy) return
       if (item.upstreamSubscribed) {
@@ -1739,6 +1809,55 @@ export function SkillDetail({ slug }: { slug: string }) {
         own, possibly seconds after they signed in on a new machine, so the file
         was set aside instead and they get to decide.
       */}
+      {recoveries.length > 0 && (
+        <div className="border-b border-border px-5 py-3">
+          <div className="rounded-[8px] border border-border border-l-2 border-l-foreground bg-paper px-4 py-3">
+            <span className="text-[13px] font-semibold text-foreground">
+              {t('teamShare.skillDraftRecoveryTitle', 'Recent draft recoveries')}
+            </span>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+              {t(
+                'teamShare.skillDraftRecoveryBody',
+                'Discarded drafts are kept for 7 days. Restore one to pick up where you left off.',
+              )}
+            </p>
+            <ul className="mt-2 space-y-2">
+              {recoveries.map((rec) => (
+                <li
+                  key={rec.path}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-border-soft bg-background px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-[12.5px] font-medium text-foreground">{rec.slug}</p>
+                    <p className="font-mono text-[11px] text-faint">
+                      {new Date(rec.at).toLocaleString()}
+                      {rec.baseVersion != null ? ` · v${rec.baseVersion}` : ''}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() =>
+                      void restoreDiscardedSkill(rec.path, rec.slug).catch((e) =>
+                        toast.error(
+                          t('teamShare.skillRestoreFailed', 'Restore failed: {{msg}}', {
+                            msg: e instanceof Error ? e.message : String(e),
+                          }),
+                        ),
+                      )
+                    }
+                    className="h-8 shrink-0 text-[13px] text-muted-foreground hover:text-foreground"
+                  >
+                    {t('teamShare.skillDraftRecoveryRestore', 'Restore draft')}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {archivedPath && (
         <div className="border-b border-border px-5 py-3">
           <div className="rounded-[8px] border border-border border-l-2 border-l-foreground bg-paper px-4 py-3">
