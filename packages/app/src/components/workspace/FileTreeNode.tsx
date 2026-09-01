@@ -16,6 +16,10 @@ import {
   ExternalLink,
   MessageSquarePlus,
   Lock,
+  FolderInput,
+  CloudDownload,
+  CloudOff,
+  CloudAlert,
   AppWindow,
   History,
   AlertTriangle,
@@ -241,6 +245,24 @@ export interface FileTreeItemProps {
    */
   onManagePermissions?: (path: string) => void;
   /**
+   * Name to draw instead of the on-disk one.
+   *
+   * Used for the two fixed sync roots, which are `documents` and `knowledge` on
+   * disk — ASCII, stable, safe on every filesystem — and «资料库» / «知识库» to
+   * read. Only the caller knows a node is one of those roots; a directory named
+   * `knowledge` three levels down is an ordinary folder and keeps its name.
+   */
+  localizedName?: string;
+  /**
+   * Refuse "new file" / "new folder" on this node.
+   *
+   * Set for the sync root itself: the tree has exactly two roots and a third
+   * one would never sync — the scanner only descends into the fixed prefixes,
+   * so anything else is invisible to it. Better to not offer the action than to
+   * let someone create a folder that quietly goes nowhere.
+   */
+  disallowCreate?: boolean;
+  /**
    * This folder carries a permission rule of its OWN.
    *
    * Not set for folders that merely sit under a restricted parent: they are
@@ -252,6 +274,29 @@ export interface FileTreeItemProps {
    * (the names are the sensitive part).
    */
   isPermissionRestricted?: boolean;
+  /**
+   * Import local files or folders into this directory, by copy.
+   *
+   * Supplied only for directories inside 资料库 — that root is for files that
+   * come from somewhere else and have an owner. 知识库 is written in the app or
+   * in Obsidian, so pulling arbitrary files into it is not an action it wants.
+   */
+  onImportLocal?: (path: string) => void;
+  /**
+   * This documents file is listed but not on this device.
+   *
+   * Nothing is written to disk for one, so its row comes from the manifest
+   * rather than the scan. Distinct from a path the caller has no permission to
+   * see: that one never reaches the manifest at all, so it is absent rather
+   * than marked — "not downloaded" and "not allowed" must not look alike.
+   */
+  isNotDownloaded?: boolean;
+  /** A fetch was attempted and failed. Separate from the above on purpose. */
+  downloadFailed?: boolean;
+  /** Fetch this path (a file, or everything under a directory). */
+  onDownload?: (path: string) => void;
+  /** Give back the local copy, keeping the file listed. Never a delete. */
+  onReleaseLocal?: (path: string) => void;
   onCopyPath: (path: string) => void;
   onCopyRelativePath: (path: string) => void;
   onReveal: (path: string) => void;
@@ -299,7 +344,14 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   onRenameCancel,
   onDelete,
   onManagePermissions,
+  localizedName,
+  disallowCreate,
   isPermissionRestricted,
+  onImportLocal,
+  isNotDownloaded,
+  downloadFailed,
+  onDownload,
+  onReleaseLocal,
   onCopyPath,
   onCopyRelativePath,
   onReveal,
@@ -327,7 +379,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   // Every role gets the full context menu, team files included — file ops are
   // not role-gated in the tree.
   const isCutTarget = clipboardPaths?.includes(node.path) && isClipboardCut;
-  const displayName = compactName || node.name;
+  const displayName = localizedName || compactName || node.name;
   const contextMenuOpenedAtRef = useRef(0);
 
   const handleClick = (e: React.MouseEvent) => {
@@ -463,6 +515,18 @@ export const FileTreeItem = React.memo(function FileTreeItem({
         <ObsidianIcon className="h-3.5 w-3.5 shrink-0" style={{ color: '#7C3AED' }} />
       )}
 
+      {downloadFailed ? (
+        <CloudAlert
+          className="h-3 w-3 shrink-0 text-destructive"
+          aria-label={t("fileExplorer.downloadFailed", "Download failed")}
+        />
+      ) : isNotDownloaded ? (
+        <CloudDownload
+          className="h-3 w-3 shrink-0 text-muted-foreground"
+          aria-label={t("fileExplorer.notDownloaded", "Not downloaded")}
+        />
+      ) : null}
+
       {isPermissionRestricted && (
         <Lock
           className="h-3 w-3 shrink-0 text-muted-foreground"
@@ -527,7 +591,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
     <ContextMenu>
       <ContextMenuTrigger asChild>{rowContent}</ContextMenuTrigger>
       <ContextMenuContent className="w-56">
-        {isDirectory && (
+        {isDirectory && !disallowCreate && (
           <>
             <ContextMenuItem onSelect={guardedMenuAction(() => onNewFile(node.path))}>
               <FilePlus className="h-4 w-4" />
@@ -551,6 +615,26 @@ export const FileTreeItem = React.memo(function FileTreeItem({
           the handler at all. The folder is the one that was right-clicked, so
           there is nothing to choose and no path to mistype.
         */}
+        {onDownload && (
+          <ContextMenuItem onSelect={guardedMenuAction(() => onDownload(node.path))}>
+            <CloudDownload className="h-4 w-4" />
+            {isDirectory
+              ? t("fileExplorer.downloadFolder", "Download this folder")
+              : t("fileExplorer.download", "Download")}
+          </ContextMenuItem>
+        )}
+        {onReleaseLocal && (
+          <ContextMenuItem onSelect={guardedMenuAction(() => onReleaseLocal(node.path))}>
+            <CloudOff className="h-4 w-4" />
+            {t("fileExplorer.releaseLocal", "Remove local copy")}
+          </ContextMenuItem>
+        )}
+        {isDirectory && onImportLocal && (
+          <ContextMenuItem onSelect={guardedMenuAction(() => onImportLocal(node.path))}>
+            <FolderInput className="h-4 w-4" />
+            {t("fileExplorer.importLocal", "Add files…")}
+          </ContextMenuItem>
+        )}
         {isDirectory && onManagePermissions && (
           <ContextMenuItem onSelect={guardedMenuAction(() => onManagePermissions(node.path))}>
             <Lock className="h-4 w-4" />

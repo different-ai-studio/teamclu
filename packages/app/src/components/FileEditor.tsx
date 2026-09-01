@@ -410,7 +410,7 @@ export function FileEditor({
   // The team's real knowledge dir (`~/.amuxd[-<brand>]/teams/<id>/shared/
   // knowledge`) — the directory the OSS sync engine owns, resolved by absolute
   // path rather than through any workspace link.
-  const [knowledgeDir, setKnowledgeDir] = useState<string | null>(null)
+  const [syncRoot, setKnowledgeDir] = useState<string | null>(null)
   useEffect(() => {
     let cancelled = false
     globalTeamKnowledgeShareDir()
@@ -425,8 +425,8 @@ export function FileEditor({
   // `team-knowledge` symlink. Both map to the same key, so the same document has
   // the same history whichever surface opened it.
   const teamSyncKey = useMemo(
-    () => (filePath ? teamSyncKeyForPath(filePath, { knowledgeDir, workspacePath }) : null),
-    [filePath, knowledgeDir, workspacePath],
+    () => (filePath ? teamSyncKeyForPath(filePath, { syncRoot, workspacePath }) : null),
+    [filePath, syncRoot, workspacePath],
   )
   // Team content is exactly what sync carries. This used to be "anywhere under
   // `teamclu-team/`", which is a tree sync retired: it offered history on files

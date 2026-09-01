@@ -56,7 +56,7 @@ export function TeamDirInitPanel() {
       // is what a user actually hit: four clicks, four 200s, no feedback.
       //
       // So check the outcome, not the call.
-      if (!useTeamShareBrowserStore.getState().knowledgeRoot) {
+      if (!useTeamShareBrowserStore.getState().syncRoot) {
         setError(
           t(
             'teamShare.dirMissingStillMissing',

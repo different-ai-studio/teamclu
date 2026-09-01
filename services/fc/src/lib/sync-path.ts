@@ -8,7 +8,15 @@
 // moved to a purpose-built API: skills to the skills registry, `.mcp/` and
 // `_secrets/` to the team MCP / env endpoints, and the team LLM config that
 // `_meta/` was meant to hold to /v1/teams/:id/workspace-config.
-export const ALLOWED_PREFIXES = ['knowledge/'];
+// The two fixed roots of the synced tree. Must stay identical to the Rust
+// copies in apps/daemon/src/sync/oss/path_validator.rs and
+// apps/desktop/src/commands/oss_sync/path_validator.rs.
+//
+// This one is the server's, so it is also the one that decides whether a new
+// prefix can be uploaded at all. Widening it first is the safe order: the
+// server accepting a prefix no client uses yet is harmless, while a client
+// pushing a prefix the server rejects is a 422 the user cannot act on.
+export const ALLOWED_PREFIXES = ['documents/', 'knowledge/'];
 
 /**
  * Validate a sync path coming from the wire.

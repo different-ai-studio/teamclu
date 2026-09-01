@@ -20,7 +20,7 @@ pub const TEAM_LINK_NAME: &str = "teamclu-team";
 /// `<team>/cloud/` — a sibling of this directory, so the sync engine never sees
 /// them. `skills` moved to the skills registry. `_meta` and `_feedback` never
 /// had a writer here.
-pub const SHARED_PREFIXES: &[&str] = &["knowledge"];
+pub const SHARED_PREFIXES: &[&str] = &["documents", "knowledge"];
 
 /// Reject a shared-dir name that could escape the workspace or hide itself.
 pub fn validate_shared_dir_name(name: &str) -> anyhow::Result<()> {
@@ -74,8 +74,19 @@ pub fn global_team_dir(team_id: &str) -> PathBuf {
 /// content-addressed, so a machine that upgrades simply pulls the team's
 /// knowledge down into the new root on its next tick.
 pub fn sync_content_root(team_id: &str) -> PathBuf {
-    super::layout::team_shared_dir(team_id)
+    super::layout::team_shared_dir(team_id).join(SYNC_ROOT_DIR)
 }
+
+/// The directory under `shared/` that holds the synced tree.
+///
+/// Everything the daemon owns for itself — `teamclu-team/`, the
+/// `team-knowledge` workspace symlink, `state/` — is a sibling of this rather
+/// than a child, so it is outside the synced tree **by construction**. That
+/// used to be held in place by comments ("must stay outside `shared/`") and by
+/// a guard in `workspace_link.rs` whose own comment calls a symlink landing
+/// inside the content root "the exact class of thing this guard exists to keep
+/// out". None of those depend on anyone remembering, now.
+pub const SYNC_ROOT_DIR: &str = "team-sync";
 
 /// `~/.amuxd/teams/<team_id>/state/cloud` — daemon-owned mirror of the team
 /// config that now comes from the Cloud API rather than the sync engine (team
@@ -151,6 +162,89 @@ pub fn resolve_team_dir(workspace_root: &Path, team_id: &str) -> PathBuf {
 
 /// Create the team dir and the fixed shared-prefix subdirectories if missing.
 /// Returns the team dir path.
+/// Move a pre-`team-sync` layout into place, before anything scans.
+///
+/// # Why this cannot be skipped
+///
+/// `state.json` lives in `{meta}/sync/`, **outside** the content root, so it
+/// does not move when the root does. Leave the files where they were and the
+/// first scan of the new root comes back empty while state still lists every
+/// path with `synced_version > 0` — which `locally_deleted_paths` reads as "the
+/// user deleted all of these" and the push phase broadcasts as tombstones. The
+/// team's knowledge would be deleted off every member's disk.
+///
+/// Renaming instead keeps the manifest keys (`knowledge/…`, root-relative)
+/// unchanged, so this costs no re-download and loses no unpushed edit.
+///
+/// # Ordering
+///
+/// Must complete before the first tick. `ensure_initialized` is the only thing
+/// that runs before sync for a team, which is why it lives here rather than in
+/// the sync module.
+///
+/// Idempotent: a missing old directory or an existing new one is a no-op, so a
+/// crash mid-migration resumes correctly on the next start.
+fn migrate_pre_team_sync_layout(team_id: &str) -> std::io::Result<()> {
+    let shared = super::layout::team_shared_dir(team_id);
+    let sync_root = shared.join(SYNC_ROOT_DIR);
+
+    for prefix in SHARED_PREFIXES {
+        let legacy = shared.join(prefix);
+        let target = sync_root.join(prefix);
+        // Only when the old location has content and the new one is absent.
+        // Both present means a half-finished move or a hand-made directory;
+        // renaming over it could lose data, so leave it and say so.
+        if !legacy.is_dir() {
+            continue;
+        }
+        if target.exists() {
+            tracing::warn!(
+                team_id,
+                prefix,
+                "both the legacy and the team-sync copy of this directory exist; \
+                 leaving them alone — the legacy one is no longer synced"
+            );
+            continue;
+        }
+        std::fs::create_dir_all(&sync_root)?;
+        std::fs::rename(&legacy, &target)?;
+        tracing::info!(
+            team_id,
+            prefix,
+            "moved into the team-sync content root; manifest paths are unchanged"
+        );
+    }
+    Ok(())
+}
+
+/// Log anything at the content root that is not one of the fixed prefixes.
+///
+/// One `read_dir`, not a walk. The scanner only ever descends into the prefixes
+/// (`scanner.rs`, `for prefix in ALLOWED_PREFIXES`), so a stray root entry is
+/// otherwise invisible: it never syncs and nothing says why. After the roots
+/// were fixed there is no ordinary way to create one — Obsidian opens
+/// `knowledge/`, agents reach the tree through per-prefix symlinks, the UI
+/// offers no create action at the root — so this exists to explain the case
+/// that should not happen, not to police one that does.
+fn warn_on_unexpected_root_entries(team_id: &str, sync_root: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(sync_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if SHARED_PREFIXES.contains(&name.as_ref()) {
+            continue;
+        }
+        tracing::warn!(
+            team_id,
+            entry = %name,
+            "unexpected entry at the sync root; it is not one of the fixed \
+             prefixes and will never be synced"
+        );
+    }
+}
+
 pub fn ensure_initialized(team_id: &str) -> std::io::Result<PathBuf> {
     let dir = global_team_dir(team_id);
     std::fs::create_dir_all(&dir)?;
@@ -158,9 +252,14 @@ pub fn ensure_initialized(team_id: &str) -> std::io::Result<PathBuf> {
     // under `shared/teamclu-team/knowledge` — see `sync_content_root`.
     let shared = super::layout::team_shared_dir(team_id);
     std::fs::create_dir_all(&shared)?;
+    // Before anything creates the new tree, so the rename has a clear target.
+    migrate_pre_team_sync_layout(team_id)?;
+    let sync_root = sync_content_root(team_id);
+    std::fs::create_dir_all(&sync_root)?;
     for prefix in SHARED_PREFIXES {
-        std::fs::create_dir_all(shared.join(prefix))?;
+        std::fs::create_dir_all(sync_root.join(prefix))?;
     }
+    warn_on_unexpected_root_entries(team_id, &sync_root);
     Ok(dir)
 }
 
@@ -212,6 +311,110 @@ mod tests {
         assert_eq!(path, PathBuf::from("/tmp/workspace/teamclu"));
     }
 
+    // ── the team-sync migration ───────────────────────────────────────────
+    //
+    // The assertion that matters is `migration_leaves_no_tombstone_candidates`.
+    // If it regresses, upgrading deletes the team's knowledge off every
+    // member's machine — the files stop being where the scan looks while
+    // state.json still lists them, and the push phase reads that as intent.
+
+    #[test]
+    fn migration_moves_a_legacy_prefix_into_the_sync_root() {
+        let _guard = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let shared = super::super::layout::team_shared_dir("team-mig");
+        std::fs::create_dir_all(shared.join("knowledge")).unwrap();
+        std::fs::write(shared.join("knowledge/a.md"), b"hello").unwrap();
+
+        ensure_initialized("team-mig").unwrap();
+
+        let root = sync_content_root("team-mig");
+        assert_eq!(
+            std::fs::read(root.join("knowledge/a.md")).unwrap(),
+            b"hello",
+            "content must arrive at the new root"
+        );
+        assert!(
+            !shared.join("knowledge").exists(),
+            "the legacy directory must be gone, not copied"
+        );
+        assert!(root.join("documents").is_dir(), "both roots are created");
+    }
+
+    #[test]
+    fn migration_leaves_no_tombstone_candidates() {
+        let _guard = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let shared = super::super::layout::team_shared_dir("team-tomb");
+        std::fs::create_dir_all(shared.join("knowledge/sub")).unwrap();
+        for path in ["knowledge/a.md", "knowledge/sub/b.md"] {
+            std::fs::write(shared.join(path), b"x").unwrap();
+        }
+
+        ensure_initialized("team-tomb").unwrap();
+
+        // The engine decides a file was deleted from "in state, absent from the
+        // scan". state.json keys by the root-relative path and lives outside the
+        // content root, so every one of these paths must still resolve under the
+        // NEW root — otherwise the next push tombstones them for the whole team.
+        let root = sync_content_root("team-tomb");
+        for path in ["knowledge/a.md", "knowledge/sub/b.md"] {
+            assert!(
+                root.join(path).is_file(),
+                "{path} must still be found where the scan now looks; \
+                 if it is not, the next push deletes it for every member"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_is_idempotent_and_never_overwrites() {
+        let _guard = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let shared = super::super::layout::team_shared_dir("team-idem");
+        std::fs::create_dir_all(shared.join("knowledge")).unwrap();
+        std::fs::write(shared.join("knowledge/a.md"), b"legacy").unwrap();
+
+        ensure_initialized("team-idem").unwrap();
+        // A second run is a no-op — a crash mid-migration resumes correctly.
+        ensure_initialized("team-idem").unwrap();
+        let root = sync_content_root("team-idem");
+        assert_eq!(
+            std::fs::read(root.join("knowledge/a.md")).unwrap(),
+            b"legacy"
+        );
+
+        // Both present: refuse rather than rename over content that is already
+        // in the new location.
+        std::fs::create_dir_all(shared.join("knowledge")).unwrap();
+        std::fs::write(shared.join("knowledge/other.md"), b"reappeared").unwrap();
+        ensure_initialized("team-idem").unwrap();
+        assert_eq!(
+            std::fs::read(root.join("knowledge/a.md")).unwrap(),
+            b"legacy",
+            "the migrated copy must not be clobbered"
+        );
+    }
+
+    #[test]
+    fn daemon_owned_dirs_are_siblings_of_the_sync_root_not_children() {
+        let _guard = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        // This used to be held in place by comments saying "must stay outside
+        // shared/". Moving the content root down makes it structural.
+        let root = sync_content_root("team-sib");
+        assert!(!global_team_dir("team-sib").starts_with(&root));
+        assert!(!global_sync_state_path("team-sib").starts_with(&root));
+    }
+
     #[test]
     fn global_dir_is_keyed_by_team_id() {
         let _guard = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -251,9 +454,19 @@ mod tests {
                 synced.display()
             );
         }
-        // Guard the premise: the team repo dir really is inside the synced tree
-        // now, so this test would be vacuous if it kept measuring against it.
-        assert!(global_team_dir("team-a").starts_with(&synced));
+        // The team repo dir used to be INSIDE the synced tree, which is why the
+        // list above had to be measured against `sync_content_root` rather than
+        // against `shared/`. Moving the content root down to `team-sync/` put it
+        // outside too, so it now belongs in the same list rather than as a
+        // counter-example.
+        assert!(
+            !global_team_dir("team-a").starts_with(&synced),
+            "the team repo dir is a sibling of the synced tree now, not a child"
+        );
+        // Guard the premise a different way: `synced` must be a real
+        // subdirectory, or every assertion above passes vacuously.
+        assert!(synced.starts_with(super::super::layout::team_shared_dir("team-a")));
+        assert!(synced.ends_with(SYNC_ROOT_DIR));
     }
 
     #[test]
@@ -298,10 +511,14 @@ mod tests {
         std::env::set_var("HOME", tmp.path());
         let dir = ensure_initialized("team-x").unwrap();
         assert!(dir.is_dir()); // shared/teamclu-team (team repo)
-        // knowledge syncs under shared/knowledge (sync content root), not the repo dir
+        // The prefixes live under the sync content root — `shared/team-sync/` —
+        // not under the repo dir and not directly under `shared/`.
         let shared = sync_content_root("team-x");
         for prefix in SHARED_PREFIXES {
-            assert!(shared.join(prefix).is_dir(), "{prefix} should exist under shared/");
+            assert!(
+                shared.join(prefix).is_dir(),
+                "{prefix} should exist under the sync root"
+            );
         }
     }
 }

@@ -45,7 +45,7 @@ import { parseWikiLinkText } from '@/lib/wiki-link-utils';
 import { resolveWikiLinkPath, createNoteFromLink } from '@/lib/wiki-link-resolver';
 import {
   globalTeamKnowledgeShareDir,
-  teamKnowledgeRootForPath,
+  teamContentRootForPath,
 } from '@/lib/team-skill-paths';
 import { useWorkspaceStore } from '@/stores/workspace';
 
@@ -165,7 +165,7 @@ function handleWikiLinkClick(event: MouseEvent, filePath?: string): boolean {
       // team's notes, and does so by the real directory.
       const root =
         (filePath
-          ? teamKnowledgeRootForPath(filePath, { workspacePath: workspace.workspacePath })
+          ? teamContentRootForPath(filePath, { workspacePath: workspace.workspacePath })
           : null) ?? (await globalTeamKnowledgeShareDir());
       if (!root) return;
 
