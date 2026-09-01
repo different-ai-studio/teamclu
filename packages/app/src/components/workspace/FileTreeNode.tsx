@@ -17,6 +17,9 @@ import {
   MessageSquarePlus,
   Lock,
   FolderInput,
+  CloudDownload,
+  CloudOff,
+  CloudAlert,
   AppWindow,
   History,
   AlertTriangle,
@@ -279,6 +282,21 @@ export interface FileTreeItemProps {
    * in Obsidian, so pulling arbitrary files into it is not an action it wants.
    */
   onImportLocal?: (path: string) => void;
+  /**
+   * This documents file is listed but not on this device.
+   *
+   * Nothing is written to disk for one, so its row comes from the manifest
+   * rather than the scan. Distinct from a path the caller has no permission to
+   * see: that one never reaches the manifest at all, so it is absent rather
+   * than marked — "not downloaded" and "not allowed" must not look alike.
+   */
+  isNotDownloaded?: boolean;
+  /** A fetch was attempted and failed. Separate from the above on purpose. */
+  downloadFailed?: boolean;
+  /** Fetch this path (a file, or everything under a directory). */
+  onDownload?: (path: string) => void;
+  /** Give back the local copy, keeping the file listed. Never a delete. */
+  onReleaseLocal?: (path: string) => void;
   onCopyPath: (path: string) => void;
   onCopyRelativePath: (path: string) => void;
   onReveal: (path: string) => void;
@@ -330,6 +348,10 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   disallowCreate,
   isPermissionRestricted,
   onImportLocal,
+  isNotDownloaded,
+  downloadFailed,
+  onDownload,
+  onReleaseLocal,
   onCopyPath,
   onCopyRelativePath,
   onReveal,
@@ -493,6 +515,18 @@ export const FileTreeItem = React.memo(function FileTreeItem({
         <ObsidianIcon className="h-3.5 w-3.5 shrink-0" style={{ color: '#7C3AED' }} />
       )}
 
+      {downloadFailed ? (
+        <CloudAlert
+          className="h-3 w-3 shrink-0 text-destructive"
+          aria-label={t("fileExplorer.downloadFailed", "Download failed")}
+        />
+      ) : isNotDownloaded ? (
+        <CloudDownload
+          className="h-3 w-3 shrink-0 text-muted-foreground"
+          aria-label={t("fileExplorer.notDownloaded", "Not downloaded")}
+        />
+      ) : null}
+
       {isPermissionRestricted && (
         <Lock
           className="h-3 w-3 shrink-0 text-muted-foreground"
@@ -581,6 +615,20 @@ export const FileTreeItem = React.memo(function FileTreeItem({
           the handler at all. The folder is the one that was right-clicked, so
           there is nothing to choose and no path to mistype.
         */}
+        {onDownload && (
+          <ContextMenuItem onSelect={guardedMenuAction(() => onDownload(node.path))}>
+            <CloudDownload className="h-4 w-4" />
+            {isDirectory
+              ? t("fileExplorer.downloadFolder", "Download this folder")
+              : t("fileExplorer.download", "Download")}
+          </ContextMenuItem>
+        )}
+        {onReleaseLocal && (
+          <ContextMenuItem onSelect={guardedMenuAction(() => onReleaseLocal(node.path))}>
+            <CloudOff className="h-4 w-4" />
+            {t("fileExplorer.releaseLocal", "Remove local copy")}
+          </ContextMenuItem>
+        )}
         {isDirectory && onImportLocal && (
           <ContextMenuItem onSelect={guardedMenuAction(() => onImportLocal(node.path))}>
             <FolderInput className="h-4 w-4" />

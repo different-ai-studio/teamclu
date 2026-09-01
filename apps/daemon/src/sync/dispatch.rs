@@ -337,6 +337,50 @@ impl SyncDispatcher {
 
     /// FC base URL for OSS sync: the cloud URL from the authenticated backend.
     /// Returns an error if no backend is configured or it exposes no URL.
+    /// Fetch documents this device has listed but not downloaded.
+    ///
+    /// Lives here rather than in the HTTP layer because it needs the same
+    /// assembly `sync_team` does — the team secret and an authenticated FC
+    /// client — and duplicating that in a handler is how the two drift.
+    pub async fn fetch_documents(
+        &self,
+        team_id: &str,
+        paths: &[String],
+    ) -> Result<u32, String> {
+        use crate::sync::oss;
+        let secret = self.secrets.resolve_team_secret(team_id, None).ok();
+        let jwt = self.oss_jwt().await?;
+        let fc = oss::fc_client::FcClient::new(self.fc_endpoint()?, jwt);
+        let root = crate::config::global_team_store::sync_content_root(team_id);
+        oss::engine::fetch_known(
+            &root.to_string_lossy(),
+            team_id,
+            secret.as_deref(),
+            &fc,
+            paths,
+            &oss::ProgressSink::new(|_| {}),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Give back the disk some documents occupy, keeping them listed.
+    ///
+    /// No network and no FC client: this only rewrites local state and removes
+    /// local bytes. It must never reach the server, because releasing local
+    /// disk is not a deletion for anybody else.
+    pub async fn release_documents(
+        &self,
+        team_id: &str,
+        paths: &[String],
+    ) -> Result<Vec<String>, String> {
+        use crate::sync::oss;
+        let root = crate::config::global_team_store::sync_content_root(team_id);
+        oss::engine::release_local(&root.to_string_lossy(), team_id, paths)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     pub fn fc_endpoint(&self) -> Result<String, String> {
         self.backend
             .as_ref()

@@ -632,6 +632,93 @@ export function FileTree({
   }, [setClipboard]);
 
   /**
+   * Documents listed by the manifest but not on this device.
+   *
+   * Keyed by sync key (`documents/…`). Nothing is written to disk for these, so
+   * the scan cannot reveal them — this is the only thing that makes them
+   * visible at all.
+   */
+  const [knownDocs, setKnownDocs] = useState<Map<string, number>>(new Map());
+  const [failedDownloads, setFailedDownloads] = useState<Set<string>>(new Set());
+
+  const refreshKnown = useCallback(async () => {
+    if (!isTauri() || !aclTeamId || !syncRoot) {
+      setKnownDocs(new Map());
+      return;
+    }
+    try {
+      const { listKnownDocuments } = await import('@/lib/daemon-local-client');
+      const items = await listKnownDocuments(aclTeamId);
+      setKnownDocs(new Map(items.map((i) => [i.path, i.size])));
+    } catch {
+      // A tree that cannot list unfetched documents is still a usable tree; it
+      // simply shows what is on disk, which is the pre-lazy behaviour.
+      setKnownDocs(new Map());
+    }
+  }, [aclTeamId, syncRoot]);
+
+  useEffect(() => {
+    void refreshKnown();
+  }, [refreshKnown]);
+
+  /**
+   * Fetch a path, or everything listed under it when it is a directory.
+   *
+   * Reports failure rather than queueing: offline means "not now", and a hidden
+   * queue would deliver the file long after the person stopped wanting it.
+   */
+  const handleDownload = useCallback(async (path: string) => {
+    if (!aclTeamId) return;
+    const key = teamSyncKeyForPath(path, { syncRoot, workspacePath });
+    if (!key) return;
+    // A directory has no entry of its own; everything listed beneath it does.
+    const targets = knownDocs.has(key)
+      ? [key]
+      : [...knownDocs.keys()].filter((k) => k.startsWith(`${key}/`));
+    if (targets.length === 0) return;
+
+    try {
+      const { fetchDocuments } = await import('@/lib/daemon-local-client');
+      await fetchDocuments(aclTeamId, targets);
+      setFailedDownloads((prev) => {
+        const next = new Set(prev);
+        for (const t of targets) next.delete(t);
+        return next;
+      });
+    } catch {
+      setFailedDownloads((prev) => new Set([...prev, ...targets]));
+      toast.error(t('fileExplorer.downloadFailedToast', 'Download failed — check your connection'));
+    }
+    await refreshKnown();
+    await refreshFileTree();
+  }, [aclTeamId, syncRoot, workspacePath, knownDocs, refreshKnown, refreshFileTree, t]);
+
+  /**
+   * Give back the local copy. The server keeps it and nobody else is affected;
+   * the wording has to carry that, because "remove" and "delete" are one word
+   * apart in a user's head and only one of them is team-wide.
+   */
+  const handleReleaseLocal = useCallback(async (path: string) => {
+    if (!aclTeamId) return;
+    const key = teamSyncKeyForPath(path, { syncRoot, workspacePath });
+    if (!key) return;
+    try {
+      const { releaseDocuments } = await import('@/lib/daemon-local-client');
+      const released = await releaseDocuments(aclTeamId, [key]);
+      if (released.length === 0) {
+        // Refused — almost always because the file holds unpushed edits.
+        toast.error(
+          t('fileExplorer.releaseRefused', 'Not removed — this file has unsaved changes to sync'),
+        );
+      }
+    } catch {
+      toast.error(t('fileExplorer.releaseFailed', 'Could not remove the local copy'));
+    }
+    await refreshKnown();
+    await refreshFileTree();
+  }, [aclTeamId, syncRoot, workspacePath, refreshKnown, refreshFileTree, t]);
+
+  /**
    * Copy local files or folders into a documents directory.
    *
    * A copy, never a move: the source is somewhere the user chose and probably
@@ -1351,6 +1438,24 @@ export function FileTree({
     // the same thing — so it is never offered a restriction. That split is
     // editorial rather than technical, which is why it lives here and not in a
     // database constraint.
+    ...(() => {
+      const key = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
+      if (!key || !key.startsWith('documents/')) return {};
+      const listedOnly = knownDocs.has(key);
+      // A directory is offered a download when anything beneath it is listed.
+      const hasListedBelow =
+        node.type === 'directory' && [...knownDocs.keys()].some((k) => k.startsWith(`${key}/`));
+      return {
+        isNotDownloaded: listedOnly,
+        downloadFailed: failedDownloads.has(key),
+        onDownload: listedOnly || hasListedBelow ? handleDownload : undefined,
+        // Only what is actually held locally can be given back. A directory is
+        // not offered it: releasing a whole subtree in one click is too easy to
+        // do by accident for something that looks like deleting.
+        onReleaseLocal:
+          node.type !== 'directory' && !listedOnly ? handleReleaseLocal : undefined,
+      };
+    })(),
     // 资料库 only — see the prop's own note for why 知识库 does not get this.
     onImportLocal:
       node.type === 'directory' &&
