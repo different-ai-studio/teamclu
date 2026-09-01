@@ -1912,6 +1912,9 @@ impl RuntimeSupervisor {
     /// Idle workspaces dispose the cached OpenCode directory instance before
     /// this returns. An active turn is left running; the pending Skills
     /// refresh is applied by the auto-applier (or the next attach) once idle.
+    ///
+    /// Mixed pending (Skills plus MCP/env/…) still invalidates the Skills
+    /// cache and clears only the Skills kind. Other kinds stay pending.
     pub async fn apply_pending_skills_refresh(
         &self,
         workspace_id: &str,
@@ -1925,7 +1928,11 @@ impl RuntimeSupervisor {
         }) else {
             return Ok(SkillsRefreshApplyStatus::Applied(ApplyOutcome::AppliedLive));
         };
-        if !auto_applicable_refresh(&state) {
+        if !state
+            .change_kinds
+            .iter()
+            .any(|kind| matches!(kind, RefreshChangeKind::Skills))
+        {
             return Ok(SkillsRefreshApplyStatus::Applied(ApplyOutcome::AppliedLive));
         }
         let busy = {
@@ -1941,11 +1948,17 @@ impl RuntimeSupervisor {
         self.refresh
             .set_auto_apply_blocked_by_active_runtime(workspace_id, false)
             .await;
+        // Do not call `apply_refresh`: that clears every pending kind.
         match self
-            .apply_refresh(workspace_id, workspace_path, false)
+            .reload_workspace(workspace_id, workspace_path, false)
             .await
         {
-            Ok(outcome) => Ok(SkillsRefreshApplyStatus::Applied(outcome)),
+            Ok(outcome) => {
+                self.refresh
+                    .clear_change_kind(workspace_id, RefreshChangeKind::Skills)
+                    .await;
+                Ok(SkillsRefreshApplyStatus::Applied(outcome))
+            }
             Err(WorkspaceControlError::ActiveTurn(_)) => {
                 self.refresh
                     .set_auto_apply_blocked_by_active_runtime(workspace_id, true)
@@ -1953,6 +1966,26 @@ impl RuntimeSupervisor {
                 Ok(SkillsRefreshApplyStatus::PendingActiveTurn)
             }
             Err(err) => Err(err),
+        }
+    }
+
+    /// Session attach barrier: only an applied Skills refresh may proceed.
+    ///
+    /// `PendingActiveTurn` and dispose/apply errors both refuse the spawn so
+    /// a new session cannot attach to a stale OpenCode instance.
+    pub async fn require_skills_refresh_for_attach(
+        &self,
+        workspace_id: &str,
+        workspace_path: &Path,
+    ) -> Result<ApplyOutcome, WorkspaceControlError> {
+        match self
+            .apply_pending_skills_refresh(workspace_id, workspace_path)
+            .await?
+        {
+            SkillsRefreshApplyStatus::Applied(outcome) => Ok(outcome),
+            SkillsRefreshApplyStatus::PendingActiveTurn => {
+                Err(WorkspaceControlError::ActiveTurn(workspace_id.to_owned()))
+            }
         }
     }
 }
@@ -2814,6 +2847,164 @@ mod tests {
             .await;
         assert_eq!(dto.status, "pending");
         assert!(dto.auto_apply_blocked_by_active_runtime);
+        assert!(dto.change_kinds.iter().any(|k| k == "skills"));
+    }
+
+    #[tokio::test]
+    async fn apply_pending_skills_refresh_clears_only_skills_when_mixed() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let directory = dir.path().to_string_lossy().into_owned();
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param("directory", directory))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+
+        for kind in [
+            refresh::RefreshChangeKind::Skills,
+            refresh::RefreshChangeKind::Mcp,
+            refresh::RefreshChangeKind::EnvVars,
+        ] {
+            supervisor
+                .refresh_coordinator()
+                .record_change(
+                    &workspace_id,
+                    dir.path(),
+                    kind,
+                    refresh::RefreshSource::UiMutation,
+                )
+                .await
+                .unwrap();
+        }
+
+        let status = supervisor
+            .apply_pending_skills_refresh(&workspace_id, dir.path())
+            .await
+            .expect("apply skills from mixed pending");
+        assert!(matches!(
+            status,
+            SkillsRefreshApplyStatus::Applied(ApplyOutcome::ReloadRequired)
+        ));
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "pending");
+        assert!(!dto.change_kinds.iter().any(|k| k == "skills"));
+        assert!(dto.change_kinds.contains(&"mcp".to_string()));
+        assert!(dto.change_kinds.contains(&"env_vars".to_string()));
+    }
+
+    #[tokio::test]
+    async fn require_skills_refresh_for_attach_fails_closed_when_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let supervisor = RuntimeSupervisor::new(Arc::new(AsyncMutex::new(RuntimeManager::new(
+            RuntimeManager::default_launch_configs(),
+            None,
+        ))));
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.add_test_workspace_runtime(
+                "rt-busy",
+                &dir.path().to_string_lossy(),
+                &workspace_id,
+                amux::AgentStatus::Active,
+            );
+        }
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+
+        let err = supervisor
+            .require_skills_refresh_for_attach(&workspace_id, dir.path())
+            .await
+            .expect_err("busy workspace must refuse attach");
+        assert!(matches!(
+            err,
+            WorkspaceControlError::ActiveTurn(ref id) if id == &workspace_id
+        ));
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "pending");
+        assert!(dto.change_kinds.iter().any(|k| k == "skills"));
+    }
+
+    #[tokio::test]
+    async fn require_skills_refresh_for_attach_fails_when_dispose_errors() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+
+        let err = supervisor
+            .require_skills_refresh_for_attach(&workspace_id, dir.path())
+            .await
+            .expect_err("dispose failure must refuse attach");
+        assert!(matches!(err, WorkspaceControlError::Io(_)));
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "pending");
         assert!(dto.change_kinds.iter().any(|k| k == "skills"));
     }
 

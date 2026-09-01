@@ -576,17 +576,19 @@ impl DaemonServer {
         let should_bind_remote_target = !session_id.is_empty() && !requester_actor_id.is_empty();
 
         if let Some(supervisor) = self.runtime_supervisor.as_ref() {
-            if let Err(error) = supervisor
-                .apply_pending_skills_refresh(&ws_id, std::path::Path::new(&resolved_worktree))
+            supervisor
+                .require_skills_refresh_for_attach(&ws_id, std::path::Path::new(&resolved_worktree))
                 .await
-            {
-                tracing::warn!(
-                    workspace_id = %ws_id,
-                    worktree = %resolved_worktree,
-                    error = %error,
-                    "pending skills refresh before session attach failed"
-                );
-            }
+                .map_err(|error| StartRuntimeError {
+                    error_code: match &error {
+                        crate::config::workspace_control::WorkspaceControlError::ActiveTurn(_) => {
+                            "WORKSPACE_BUSY".to_string()
+                        }
+                        _ => "SKILLS_REFRESH_FAILED".to_string(),
+                    },
+                    error_message: error.to_string(),
+                    failed_stage: "skills_refresh".to_string(),
+                })?;
         }
 
         // Spawn.
