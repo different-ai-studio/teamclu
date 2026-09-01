@@ -15,6 +15,7 @@ import {
   ClipboardPaste,
   ExternalLink,
   MessageSquarePlus,
+  Lock,
   AppWindow,
   History,
   AlertTriangle,
@@ -233,6 +234,12 @@ export interface FileTreeItemProps {
   onRenameConfirm: (oldPath: string, newName: string) => void;
   onRenameCancel: () => void;
   onDelete: (path: string, isDirectory: boolean) => void;
+  /**
+   * Open the "who can see this folder" dialog. Directories only, and only
+   * supplied for directories inside the team knowledge tree — the workspace
+   * file browser passes nothing and the item does not render.
+   */
+  onManagePermissions?: (path: string) => void;
   onCopyPath: (path: string) => void;
   onCopyRelativePath: (path: string) => void;
   onReveal: (path: string) => void;
@@ -279,6 +286,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   onRenameConfirm,
   onRenameCancel,
   onDelete,
+  onManagePermissions,
   onCopyPath,
   onCopyRelativePath,
   onReveal,
@@ -517,6 +525,18 @@ export const FileTreeItem = React.memo(function FileTreeItem({
           <MessageSquarePlus className="h-4 w-4" />
           {t("fileExplorer.addToAgent", "Add to Agent")}
         </ContextMenuItem>
+        {/*
+          Only for directories inside the team knowledge tree, and only for
+          someone who can manage the team: the caller decides both by passing
+          the handler at all. The folder is the one that was right-clicked, so
+          there is nothing to choose and no path to mistype.
+        */}
+        {isDirectory && onManagePermissions && (
+          <ContextMenuItem onSelect={guardedMenuAction(() => onManagePermissions(node.path))}>
+            <Lock className="h-4 w-4" />
+            {t("fileExplorer.managePermissions", "Permissions…")}
+          </ContextMenuItem>
+        )}
         {!isDirectory && (
           <ContextMenuItem onSelect={guardedMenuAction(() => onOpenDefault(node.path))}>
             <AppWindow className="h-4 w-4" />
