@@ -995,6 +995,8 @@
     "downloadFolder": "Download this folder",
     "releaseLocal": "Remove local copy",
     "downloadFailedToast": "Download failed — check your connection",
+    "downloadProgress": "Downloading {{done}} of {{total}}…",
+    "downloadCancelled": "Stopped. {{done}} file(s) were downloaded and kept.",
     "releaseRefused": "Not removed — this file has unsaved changes to sync",
     "releaseFailed": "Could not remove the local copy",
     "importLocal": "Add files…",

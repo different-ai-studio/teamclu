@@ -662,7 +662,25 @@ export function FileTree({
   }, [refreshKnown]);
 
   /**
+   * Cancel flag for an in-flight folder download.
+   *
+   * A ref rather than state: the loop below reads it between chunks, and a
+   * state update would not be visible to a closure already running.
+   */
+  const downloadCancelRef = useRef(false);
+
+  /**
    * Fetch a path, or everything listed under it when it is a directory.
+   *
+   * Sent in chunks so a folder of several hundred files reports progress and
+   * can be stopped. Stopping leaves what already arrived: each file is either
+   * complete on disk or still merely listed, and the rest stay listed — so a
+   * partial download is a smaller download, not a broken state.
+   *
+   * That asymmetry is worth naming, because the delete path deliberately does
+   * the opposite. A partially applied mass DELETE loses files for everyone and
+   * hides the cause, so that one is all-or-nothing; a partial fetch costs
+   * nothing but the bytes not yet fetched.
    *
    * Reports failure rather than queueing: offline means "not now", and a hidden
    * queue would deliver the file long after the person stopped wanting it.
@@ -677,18 +695,83 @@ export function FileTree({
       : [...knownDocs.keys()].filter((k) => k.startsWith(`${key}/`));
     if (targets.length === 0) return;
 
-    try {
-      const { fetchDocuments } = await import('@/lib/daemon-local-client');
-      await fetchDocuments(aclTeamId, targets);
-      setFailedDownloads((prev) => {
-        const next = new Set(prev);
-        for (const t of targets) next.delete(t);
-        return next;
-      });
-    } catch {
-      setFailedDownloads((prev) => new Set([...prev, ...targets]));
+    const { fetchDocuments } = await import('@/lib/daemon-local-client');
+
+    // One file needs no progress reporting; the row's own state is enough.
+    if (targets.length === 1) {
+      try {
+        await fetchDocuments(aclTeamId, targets);
+        setFailedDownloads((prev) => {
+          const next = new Set(prev);
+          next.delete(targets[0]);
+          return next;
+        });
+      } catch {
+        setFailedDownloads((prev) => new Set([...prev, targets[0]]));
+        toast.error(t('fileExplorer.downloadFailedToast', 'Download failed — check your connection'));
+      }
+      await refreshKnown();
+      await refreshFileTree();
+      return;
+    }
+
+    const toastId = `download-${key}`;
+    downloadCancelRef.current = false;
+    // Small enough that cancelling feels immediate, large enough that a few
+    // hundred files do not become a few hundred round trips.
+    const CHUNK = 20;
+    let done = 0;
+    let failed = 0;
+
+    const report = () =>
+      toast.loading(
+        t('fileExplorer.downloadProgress', {
+          defaultValue: 'Downloading {{done}} of {{total}}…',
+          done,
+          total: targets.length,
+        }),
+        {
+          id: toastId,
+          action: {
+            label: t('common.cancel', 'Cancel'),
+            onClick: () => { downloadCancelRef.current = true; },
+          },
+        },
+      );
+    report();
+
+    for (let i = 0; i < targets.length; i += CHUNK) {
+      if (downloadCancelRef.current) break;
+      const chunk = targets.slice(i, i + CHUNK);
+      try {
+        await fetchDocuments(aclTeamId, chunk);
+        setFailedDownloads((prev) => {
+          const next = new Set(prev);
+          for (const c of chunk) next.delete(c);
+          return next;
+        });
+      } catch {
+        failed += chunk.length;
+        setFailedDownloads((prev) => new Set([...prev, ...chunk]));
+      }
+      done += chunk.length;
+      report();
+    }
+
+    toast.dismiss(toastId);
+    if (downloadCancelRef.current) {
+      // Says what was kept, not just that it stopped: the files already
+      // fetched are real and staying.
+      toast.info(
+        t('fileExplorer.downloadCancelled', {
+          defaultValue: 'Stopped. {{done}} file(s) were downloaded and kept.',
+          done: done - failed,
+        }),
+      );
+    } else if (failed > 0) {
       toast.error(t('fileExplorer.downloadFailedToast', 'Download failed — check your connection'));
     }
+
     await refreshKnown();
     await refreshFileTree();
   }, [aclTeamId, syncRoot, workspacePath, knownDocs, refreshKnown, refreshFileTree, t]);

@@ -995,6 +995,8 @@
     "downloadFolder": "下载整个目录",
     "releaseLocal": "移除本地副本",
     "downloadFailedToast": "下载失败，请检查网络",
+    "downloadProgress": "正在下载 {{done}} / {{total}}…",
+    "downloadCancelled": "已停止。{{done}} 个文件已下载并保留。",
     "releaseRefused": "未移除——这个文件还有未同步的改动",
     "releaseFailed": "无法移除本地副本",
     "importLocal": "添加文件…",
