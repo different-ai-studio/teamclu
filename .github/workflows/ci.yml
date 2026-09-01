@@ -217,7 +217,7 @@ jobs:
             -c "alter role ai_gateway login password 'ci';"
           echo "PGHOST_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' pgtap)" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
 
