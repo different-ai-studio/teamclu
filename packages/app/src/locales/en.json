@@ -3368,5 +3368,29 @@
   "tabBar": {
     "closeAria": "Close tab",
     "findClose": "Close (Escape)"
+  },
+  "thread": {
+    "agentFallback": "Agent",
+    "anchorLabel": "Thread anchor · read-only",
+    "createFailed": "Could not create thread. Try again.",
+    "daysAgo": "{{n}}d ago",
+    "defaultTitle": "Thread",
+    "headerSubtitle": "Forked from agent reply",
+    "headerTitle": "Thread · {{title}}",
+    "hoursAgo": "{{n}}h ago",
+    "inputPlaceholder": "Continue in thread…",
+    "justNow": "Just now",
+    "lastReply": "Last reply {{time}}",
+    "minutesAgo": "{{n}}m ago",
+    "replies": "{{count}} replies",
+    "continue": "View thread",
+    "tooltipStart": "Open thread",
+    "start": "+ Open thread",
+    "listTitle": "Threads",
+    "listSubtitle": "{{count}} threads in this session",
+    "listOpen": "View threads",
+    "listClose": "Close thread list",
+    "listLoading": "Loading threads…",
+    "listEmpty": "No threads yet"
   }
 }

@@ -1190,6 +1190,10 @@ impl Backend for CloudApiBackend {
             mode: String,
             #[serde(rename = "ideaId", default)]
             idea_id: Option<String>,
+            #[serde(rename = "parentSessionId", default)]
+            parent_session_id: Option<String>,
+            #[serde(rename = "threadRootMessageId", default)]
+            thread_root_message_id: Option<String>,
             #[serde(rename = "createdAt")]
             created_at: Option<DateTime<Utc>>,
         }
@@ -1228,6 +1232,8 @@ impl Backend for CloudApiBackend {
             title: s.title,
             summary: String::new(),
             idea_id: s.idea_id,
+            parent_session_id: s.parent_session_id,
+            thread_root_message_id: s.thread_root_message_id,
             created_at: s.created_at.unwrap_or_else(Utc::now),
         };
         let participants = roster

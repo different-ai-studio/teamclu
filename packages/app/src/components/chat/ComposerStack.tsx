@@ -23,6 +23,7 @@ import {
   composerStackRowDividerClass,
   composerStackShellClass,
 } from "./composer-glass";
+import { useSessionSelectionStore } from "@/stores/session-selection-store";
 import { usePendingPermissionsQueue } from "./use-pending-permissions-queue";
 
 export type ActiveStreamingAgent = {
@@ -436,6 +437,7 @@ export function ComposerStack({
   queue = [],
   onRemoveFromQueue,
   planSlotHidden = false,
+  permissionSessionId = null,
   children,
 }: {
   agents: ReadonlyArray<ActiveStreamingAgent>;
@@ -445,8 +447,12 @@ export function ComposerStack({
   onRemoveFromQueue?: (id: string) => void;
   /** Hide plan slot visually but keep state (e.g. while approval card is showing). */
   planSlotHidden?: boolean;
+  /** Session whose pending ACP permissions render in this stack (defaults to main active). */
+  permissionSessionId?: string | null;
   children?: React.ReactNode;
 }) {
+  const activeSessionId = useSessionSelectionStore((s) => s.activeSessionId);
+  const resolvedPermissionSessionId = permissionSessionId ?? activeSessionId;
   const {
     sessionPermissionMode,
     currentEntry,
@@ -454,7 +460,7 @@ export function ComposerStack({
     waitingRequesterActorId,
     onReplyStart,
     onReplyRollback,
-  } = usePendingPermissionsQueue();
+  } = usePendingPermissionsQueue(resolvedPermissionSessionId);
 
   const streamingActorIds = React.useMemo(
     () => agents.map((agent) => agent.actorId),

@@ -415,6 +415,13 @@ message UpdateIdeaRequest {
 // Request the daemon spawn a new Claude Code subprocess.
 // Accepted-only reply — actual lifecycle flows on {team}/{actor}/runtime/{rid}/state.
 // See spec "Runtime lifecycle" section for the state machine.
+// Lazy thread fork: first @agent in a thread session resumes parent backend
+// history at the anchor agent_reply (see docs/architecture/session-threads.md).
+message RuntimeForkFrom {
+  string parent_session_id = 1;
+  string root_message_id = 2;
+}
+
 message RuntimeStartRequest {
   amux.AgentType agent_type = 1;        // required
   string initial_prompt = 2;            // optional — first user message at spawn
@@ -429,6 +436,7 @@ message RuntimeStartRequest {
   // When true, discard any stored backend binding for (session_id, workspace_id)
   // and create a fresh backend session on this cloud session.
   bool reset_backend_binding = 8;
+  RuntimeForkFrom fork_from = 9;
 }
 
 // Accepted-only reply to RuntimeStartRequest.

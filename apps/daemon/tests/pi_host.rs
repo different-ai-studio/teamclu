@@ -393,3 +393,44 @@ async fn open_state_commands_close_round_trip() {
     let ping = host.send(serde_json::json!({"type": "ping"})).await;
     host.response(&ping).await;
 }
+
+#[tokio::test]
+async fn fork_session_branches_jsonl() {
+    if !node_available() {
+        eprintln!("skip pi_host fork_session: node not on PATH");
+        return;
+    }
+    let mut host = Host::spawn().await;
+    let new_id = host
+        .send(serde_json::json!({"type": "new_session"}))
+        .await;
+    let (new_resp, _) = host.response(&new_id).await;
+    let parent_path = new_resp["data"]["sessionFile"].as_str().unwrap();
+    let prompt_id = host
+        .send(serde_json::json!({
+            "type": "prompt",
+            "sessionId": new_resp["data"]["sessionId"],
+            "message": "hello"
+        }))
+        .await;
+    let _ = host.response(&prompt_id).await;
+    let (agent_end, _) = host
+        .wait_for(|l| l["type"] == "agent_end")
+        .await;
+    let leaf_id = agent_end["leafId"].as_str().unwrap().to_string();
+    let fork_cmd = host
+        .send(serde_json::json!({
+            "type": "fork_session",
+            "parentSessionPath": parent_path,
+            "forkLeafId": leaf_id,
+        }))
+        .await;
+    let (fork_resp, _) = host.response(&fork_cmd).await;
+    assert_eq!(fork_resp["success"], true);
+    let fork_path = fork_resp["data"]["sessionFile"].as_str().unwrap();
+    assert_ne!(fork_path, parent_path);
+    assert!(fork_resp["data"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .starts_with("pi:"));
+}

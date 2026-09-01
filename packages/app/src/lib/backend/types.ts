@@ -180,6 +180,8 @@ export interface SessionDetailRow {
   binding: string | null;
   source?: string | null;
   cron_job_id?: string | null;
+  parent_session_id?: string | null;
+  thread_root_message_id?: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -216,6 +218,19 @@ export interface SessionsBackend {
   joinSession(sessionId: string): Promise<SessionDetailRow>;
   listSessionsForTeamSince(teamId: string, updatedAfter: string): Promise<SessionSyncRow[]>;
   listSessionDisplayRows(teamId: string, sessionIds: string[]): Promise<SessionDisplayRow[]>;
+  createThread(
+    parentSessionId: string,
+    rootMessageId: string,
+  ): Promise<SessionDetailRow>;
+  listThreadSummaries(parentSessionId: string): Promise<
+    Array<{
+      threadSessionId: string;
+      rootMessageId: string;
+      messageCount: number;
+      lastMessageAt: string | null;
+      participantCount: number;
+    }>
+  >;
 }
 
 export interface OutgoingMessageInput {

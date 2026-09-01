@@ -19,6 +19,7 @@ import {
   type ChatScrollToMessageDetail,
 } from "@/lib/chat-scroll-to-message";
 import { DEFAULT_INPUT_AREA_HEIGHT, SAFE_BOTTOM_SPACING } from "./layout-constants";
+import { canStartThreadFromNewestIndex } from "@/lib/thread-fork";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -41,8 +42,12 @@ export interface MessageListProps {
   sessionDirectory?: string;
   /** Optional empty-state content rendered when there are no messages (not loading) */
   emptyState?: React.ReactNode;
+  /** Composer lives outside MessageList (e.g. thread panel) — skip main-chat bottom inset. */
+  externalComposer?: boolean;
   /** Optional content rendered at the bottom of the scrollable message area. */
   bottomContent?: React.ReactNode;
+  /** Hide "+ Open thread" on agent replies (e.g. inside ThreadPanel). */
+  suppressThreadBadge?: boolean;
 }
 
 export interface MessageListHandle {
@@ -66,7 +71,9 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       compact = false,
       sessionDirectory,
       emptyState,
+      externalComposer = false,
       bottomContent,
+      suppressThreadBadge = false,
     },
     ref,
   ) {
@@ -527,7 +534,11 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
               showCenteredEmpty &&
                 "flex flex-1 flex-col justify-center",
             )}
-            style={{ paddingBottom: `${inputAreaHeight + SAFE_BOTTOM_SPACING}px` }}
+            style={{
+              paddingBottom: externalComposer
+                ? "12px"
+                : `${inputAreaHeight + SAFE_BOTTOM_SPACING}px`,
+            }}
           >
             {showSessionLoadingSpinner ? (
               <div
@@ -623,6 +634,9 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
                             virtualItem.index === renderedMessages.length - 1;
                           const shouldShowThinking =
                             isLastMessage && message.isStreaming;
+                          const allowStartThread = canStartThreadFromNewestIndex(
+                            renderedMessages.length - 1 - virtualItem.index,
+                          );
 
                           return (
                             <div
@@ -657,6 +671,8 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
                                       ? messagesById.get(message.replyToMessageId) ?? null
                                       : null
                                   }
+                                  suppressThreadBadge={suppressThreadBadge}
+                                  allowStartThread={allowStartThread}
                                 />
                               </ErrorBoundary>
                             </div>
@@ -668,6 +684,9 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
                       const isLastMessage = index === renderedMessages.length - 1;
                       const shouldShowThinking =
                         isLastMessage && message.isStreaming;
+                      const allowStartThread = canStartThreadFromNewestIndex(
+                        renderedMessages.length - 1 - index,
+                      );
 
                       return (
                         <div
@@ -689,6 +708,8 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
                                   ? messagesById.get(message.replyToMessageId) ?? null
                                   : null
                               }
+                              suppressThreadBadge={suppressThreadBadge}
+                              allowStartThread={allowStartThread}
                             />
                           </ErrorBoundary>
                         </div>

@@ -90,6 +90,7 @@ function MentionPopoverWrapper({
   open,
   onOpenChange,
   searchQuery,
+  mentionSessionId,
   engagedAgents,
   onEngageAgent,
   onRemoveAgent,
@@ -97,6 +98,7 @@ function MentionPopoverWrapper({
   open: boolean;
   onOpenChange: (next: boolean) => void;
   searchQuery: string;
+  mentionSessionId: string | null;
   engagedAgents: AttachedAgent[];
   onEngageAgent: (agent: AttachedAgent) => void;
   onRemoveAgent: (agentId: string) => void;
@@ -113,6 +115,7 @@ function MentionPopoverWrapper({
       open={open}
       onOpenChange={onOpenChange}
       searchQuery={searchQuery}
+      sessionId={mentionSessionId}
       engagedAgent={engagedAgent}
       onSelectMember={(person, options) => {
         if (options?.clearEngagedAgent && engagedAgent) {
@@ -164,6 +167,10 @@ const REDESIGN_ON = import.meta.env.VITE_MENTION_REDESIGN !== 'false';
 
 interface ChatInputAreaProps {
   activeSessionId: string | null;
+  /** Session for permission cards / approval mode (defaults to activeSessionId). */
+  permissionSessionId?: string | null;
+  /** Session for @-mention participant roster (defaults to activeSessionId). */
+  mentionSessionId?: string | null;
   compact: boolean;
   /** Draft text is owned by the session store so typing does not re-render ChatPanel. */
   pendingFiles: File[];
@@ -197,6 +204,13 @@ interface ChatInputAreaProps {
   sessionModelId?: string;
   activeStreamingAgents?: ReadonlyArray<ActiveStreamingAgent>;
   onInterruptAgent?: (agentId: string) => void;
+  /** When set, do not share the global session-store draft (dual composer). */
+  draftOverride?: {
+    value: string;
+    onChange: (value: string) => void;
+  };
+  /** overlay = float over MessageList (main chat); inline = flex footer (thread panel). */
+  inputLayout?: "overlay" | "inline";
 }
 
 function ComposerSubmitButton({
@@ -239,6 +253,8 @@ function PageLinkInsertBridge() {
 
 export function ChatInputArea({
   activeSessionId,
+  permissionSessionId: permissionSessionIdProp,
+  mentionSessionId: mentionSessionIdProp,
   compact,
   pendingFiles,
   onAppendPendingFiles,
@@ -266,25 +282,35 @@ export function ChatInputArea({
   sessionModelId,
   activeStreamingAgents = [],
   onInterruptAgent,
+  draftOverride,
+  inputLayout = "overlay",
 }: ChatInputAreaProps) {
   const { t } = useTranslation();
+  const mentionSessionId = mentionSessionIdProp ?? activeSessionId;
+  const permissionSessionId = permissionSessionIdProp ?? activeSessionId;
 
   // Subscribe here — not in ChatPanel — so keystrokes do not re-render MessageList.
-  const inputValue = useSessionStore((s) => s.draftInput);
+  const storeDraft = useSessionStore((s) => s.draftInput);
   const setDraftInput = useSessionStore.getState().setDraftInput;
+  const inputValue = draftOverride?.value ?? storeDraft;
   const draftPreselectedActor = useUIStore((s) => s.draftPreselectedActor);
 
   const handleInputChange = React.useCallback(
     (nextValue: string) => {
+      if (draftOverride) {
+        draftOverride.onChange(nextValue);
+        return;
+      }
       setDraftInput(nextValue);
     },
-    [setDraftInput],
+    [draftOverride, setDraftInput],
   );
 
   // Per-actor draft persistence (Actors tab → navigate away → restore).
-  const draftStorageKey = draftPreselectedActor
-    ? `teamclu-actor-draft:${draftPreselectedActor.id}`
-    : null;
+  const draftStorageKey =
+    draftOverride || !draftPreselectedActor
+      ? null
+      : `teamclu-actor-draft:${draftPreselectedActor.id}`;
   const justRestoredDraftRef = React.useRef(false);
 
   React.useEffect(() => {
@@ -324,6 +350,7 @@ export function ChatInputArea({
 
   // Voice input / "Add to Agent": append transcript or file mention to input
   React.useEffect(() => {
+    if (draftOverride) return;
     const unregister = useComposerInsertStore.getState().registerInsertToChatHandler(
       (transcript) => {
         const prev = useSessionStore.getState().draftInput;
@@ -333,7 +360,7 @@ export function ChatInputArea({
       },
     );
     return unregister;
-  }, [setDraftInput]);
+  }, [draftOverride, setDraftInput]);
 
   // # file reference states
   const [filePopoverOpen, setFilePopoverOpen] = React.useState(false);
@@ -480,16 +507,18 @@ export function ChatInputArea({
     return () => ro.disconnect();
   }, [onHeightChange]);
 
-  return (
+  const inputShell = (
     <div
       ref={rootRef}
       data-testid="chat-input-area"
-      style={bottomOffsetPx ? { bottom: bottomOffsetPx } : undefined}
+      style={inputLayout === "overlay" && bottomOffsetPx ? { bottom: bottomOffsetPx } : undefined}
       className={cn(
         "z-20",
-        compact
-          ? "absolute bottom-0 left-0 right-0 px-2 pb-2 pt-2 bg-background"
-          : "absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background from-[42%] via-background/92 to-transparent px-4 pb-6 pt-8",
+        inputLayout === "inline"
+          ? "relative shrink-0 px-0 py-0"
+          : compact
+            ? "absolute bottom-0 left-0 right-0 px-2 pb-2 pt-2 bg-background"
+            : "absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background from-[42%] via-background/92 to-transparent px-4 pb-6 pt-8",
       )}
     >
       <div className={cn("relative z-10 w-full", compact ? "" : "mx-auto max-w-3xl")}>
@@ -506,6 +535,7 @@ export function ChatInputArea({
           queue={stackQueue}
           onRemoveFromQueue={_onRemoveFromQueue}
           planSlotHidden={planSlotHidden}
+          permissionSessionId={permissionSessionId}
         >
           <PromptInput
             value={inputValue}
@@ -612,7 +642,9 @@ export function ChatInputArea({
                   ? t('chat.inputPlaceholderContinue', 'Continue typing...')
                   : pendingFiles.length > 0
                     ? t('chat.inputPlaceholderDescription', 'Add a description...')
-                    : t('chat.inputPlaceholderMention', 'Mention with @, reference files with #...')
+                    : inputLayout === "inline"
+                      ? t('thread.inputPlaceholder', 'Continue in thread…')
+                      : t('chat.inputPlaceholderMention', 'Mention with @, reference files with #...')
               }
             />
           </PromptInputBody>
@@ -631,6 +663,7 @@ export function ChatInputArea({
               open={mentionPopoverOpen}
               onOpenChange={setMentionPopoverOpen}
               searchQuery={mentionSearchQuery}
+              mentionSessionId={mentionSessionId}
               engagedAgents={engagedAgents}
               onEngageAgent={onEngageAgent}
               onRemoveAgent={onRemoveAgent}
@@ -646,7 +679,10 @@ export function ChatInputArea({
           <PromptInputFooter>
             <PromptInputTools>
               <FileInputButton onFilesSelected={handleIncomingFiles} />
-              <PermissionApprovalModeSelect sessionId={activeSessionId} />
+              <PermissionApprovalModeSelect
+                sessionId={permissionSessionId}
+                iconOnly={inputLayout === "inline"}
+              />
 
               {/* Engaged agent pills — model is chosen per agent on each pill. */}
               <AgentSelectorDock
@@ -687,4 +723,17 @@ export function ChatInputArea({
       </div>
     </div>
   );
+
+  if (inputLayout === "inline") {
+    return (
+      <div
+        data-testid="thread-composer-shell"
+        className="relative z-40 shrink-0 bg-background px-2 pb-2 pt-2"
+      >
+        {inputShell}
+      </div>
+    );
+  }
+
+  return inputShell;
 }

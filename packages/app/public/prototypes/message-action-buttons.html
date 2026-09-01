@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>消息操作按钮 — 开话题 × 复制 UI 方案</title>
+  <style>
+    :root {
+      --background: #fbfaf7;
+      --paper: #ffffff;
+      --panel: #efece4;
+      --selected: #e7e2d6;
+      --foreground: #1a1a14;
+      --ink-2: #3d3c34;
+      --muted-foreground: #75736a;
+      --faint: #a8a6a0;
+      --border: rgba(26, 26, 20, 0.08);
+      --border-soft: rgba(26, 26, 20, 0.05);
+      --coral: #e85a4a;
+      --coral-soft: #f5d6cf;
+      --font-sans: "PingFang SC", "Noto Sans SC", "Source Han Sans SC", -apple-system, BlinkMacSystemFont, "Microsoft YaHei", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: var(--font-sans); background: #e8e5de; color: var(--foreground); min-height: 100vh; }
+
+    .spec { background: var(--paper); border-bottom: 1px solid var(--border); padding: 22px 28px 20px; }
+    .spec h1 { font-size: 15px; font-weight: 700; }
+    .spec .lead { margin-top: 8px; font-size: 13px; color: var(--muted-foreground); line-height: 1.65; max-width: 56rem; }
+    .spec-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 14px; }
+    .spec-card { border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; background: var(--background); }
+    .spec-card h3 { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
+    .spec-card p { font-size: 12.5px; color: var(--ink-2); line-height: 1.55; }
+
+    .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; align-items: center; }
+    .controls label { font-size: 11px; font-weight: 600; color: var(--faint); letter-spacing: 0.04em; text-transform: uppercase; margin-right: 4px; }
+    .controls button { font-family: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--ink-2); cursor: pointer; }
+    .controls button:hover { background: var(--selected); }
+    .controls button.is-active { background: var(--foreground); color: #fefdfa; border-color: var(--foreground); }
+    .rec { font-size: 9px; font-weight: 700; color: var(--coral); background: var(--coral-soft); padding: 1px 5px; border-radius: 4px; margin-left: 4px; vertical-align: middle; }
+
+    .stage { padding: 24px 28px 40px; display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; align-items: start; }
+    .panel { background: var(--paper); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 12px 40px -20px rgba(20,20,15,0.18); }
+    .panel-head { padding: 12px 16px; border-bottom: 1px solid var(--border-soft); background: var(--background); }
+    .panel-head h2 { font-size: 13px; font-weight: 700; }
+    .panel-head p { font-size: 12px; color: var(--muted-foreground); margin-top: 3px; line-height: 1.5; }
+
+    .chat { background: var(--background); padding: 20px 22px 16px; min-height: 220px; }
+    .msg { padding-left: 33px; position: relative; }
+    .msg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; margin-left: -33px; }
+    .avatar { width: 24px; height: 24px; border-radius: 5px; background: rgba(232,90,74,0.12); color: var(--coral); font-size: 11px; font-weight: 700; display: grid; place-items: center; box-shadow: 0 0 0 1.5px var(--coral); }
+    .name { font-size: 13px; font-weight: 600; }
+    .ai { font-family: var(--font-mono); font-size: 9.5px; font-weight: 600; padding: 1px 5px; border-radius: 3px; border: 1px solid var(--coral); color: var(--coral); }
+    .time { font-family: var(--font-mono); font-size: 11px; color: var(--faint); margin-left: auto; }
+    .body { font-size: 13.5px; line-height: 1.7; color: var(--ink-2); }
+    .hint { margin-top: 10px; font-size: 11px; color: var(--faint); font-style: italic; }
+
+    /* ── shared icon ── */
+    .ico { width: 14px; height: 14px; flex-shrink: 0; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+    /* ═══ Variant A — Ghost 统一（推荐）═══ */
+    .actions-a { display: flex; align-items: center; gap: 2px; margin-top: 8px; padding-left: 1px; }
+    .actions-a button {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 8px; border-radius: 6px; border: none; background: transparent;
+      font-family: inherit; font-size: 12px; color: var(--muted-foreground);
+      cursor: pointer; transition: color 0.12s, background 0.12s;
+    }
+    .actions-a button:hover { color: var(--ink-2); background: rgba(26,26,20,0.05); }
+    .actions-a .sep { width: 1px; height: 12px; background: var(--border); margin: 0 2px; }
+
+    /* ═══ Variant B — Paper 工具条 ═══ */
+    .actions-b {
+      display: inline-flex; align-items: stretch; margin-top: 8px;
+      background: var(--paper); border: 1px solid var(--border); border-radius: 8px;
+      box-shadow: 0 1px 2px rgba(20,20,15,0.04); overflow: hidden;
+    }
+    .actions-b button {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 5px 10px; border: none; background: transparent;
+      font-family: inherit; font-size: 12px; color: var(--muted-foreground);
+      cursor: pointer; transition: background 0.12s, color 0.12s;
+    }
+    .actions-b button + button { border-left: 1px solid var(--border-soft); }
+    .actions-b button:hover { background: var(--selected); color: var(--ink-2); }
+
+    /* ═══ Variant C — Outlined 成对 ═══ */
+    .actions-c { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+    .actions-c button {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 9px; border-radius: 7px;
+      border: 1px solid var(--border); background: var(--paper);
+      font-family: inherit; font-size: 12px; color: var(--muted-foreground);
+      cursor: pointer; transition: border-color 0.12s, color 0.12s, background 0.12s;
+    }
+    .actions-c button:hover { color: var(--ink-2); border-color: rgba(26,26,20,0.14); background: var(--paper); }
+
+    /* ═══ Variant D — Icon-first 紧凑 ═══ */
+    .actions-d { display: flex; align-items: center; gap: 4px; margin-top: 8px; }
+    .actions-d button {
+      display: inline-flex; align-items: center; justify-content: center; gap: 0;
+      width: 28px; height: 28px; padding: 0; border-radius: 7px;
+      border: 1px solid transparent; background: transparent;
+      color: var(--muted-foreground); cursor: pointer;
+      transition: width 0.18s ease, padding 0.18s ease, gap 0.18s ease, background 0.12s, border-color 0.12s, color 0.12s;
+      overflow: hidden; white-space: nowrap; font-family: inherit; font-size: 12px;
+    }
+    .actions-d button .lbl { max-width: 0; opacity: 0; transition: max-width 0.18s ease, opacity 0.12s ease, margin 0.18s ease; margin-left: 0; }
+    .actions-d button:hover {
+      width: auto; padding: 0 10px; gap: 5px;
+      background: var(--paper); border-color: var(--border);
+      color: var(--ink-2); box-shadow: 0 1px 3px rgba(20,20,15,0.06);
+    }
+    .actions-d button:hover .lbl { max-width: 6rem; opacity: 1; margin-left: 2px; }
+
+    /* ═══ Variant E — 文字链 + 点分隔 ═══ */
+    .actions-e { display: flex; align-items: center; gap: 0; margin-top: 8px; font-size: 12px; }
+    .actions-e button {
+      border: none; background: none; padding: 2px 0; font-family: inherit;
+      font-size: 12px; color: var(--faint); cursor: pointer;
+      transition: color 0.12s; text-decoration: underline; text-decoration-color: transparent;
+      text-underline-offset: 3px;
+    }
+    .actions-e button:hover { color: var(--ink-2); text-decoration-color: rgba(26,26,20,0.25); }
+    .actions-e .dot { color: var(--faint); padding: 0 8px; user-select: none; font-size: 10px; }
+
+    /* ═══ Variant F — Segmented 胶囊（Slack 风）═══ */
+    .actions-f {
+      display: inline-flex; margin-top: 8px; padding: 2px;
+      background: var(--panel); border-radius: 999px; border: 1px solid var(--border-soft);
+    }
+    .actions-f button {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 10px; border: none; border-radius: 999px;
+      background: transparent; font-family: inherit; font-size: 11.5px;
+      color: var(--muted-foreground); cursor: pointer; transition: background 0.12s, color 0.12s, box-shadow 0.12s;
+    }
+    .actions-f button:hover { color: var(--ink-2); background: rgba(255,255,255,0.55); }
+    .actions-f button.is-thread { background: var(--paper); color: var(--ink-2); box-shadow: 0 1px 2px rgba(20,20,15,0.06); }
+
+    .compare-all { padding: 0 28px 48px; }
+    .compare-all h2 { font-size: 14px; font-weight: 700; margin-bottom: 14px; }
+    .matrix { display: grid; grid-template-columns: 140px repeat(2, 1fr); gap: 12px 16px; align-items: center; max-width: 900px; }
+    .matrix-label { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.05em; }
+    .matrix-cell { background: var(--background); border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px 14px; min-height: 52px; display: flex; align-items: center; }
+    .matrix-head { font-size: 12px; font-weight: 600; color: var(--muted-foreground); }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header class="spec">
+    <h1>消息操作按钮 — 开话题 × 复制</h1>
+    <p class="lead">
+      当前问题：<strong>「+ 开话题」</strong>是虚线边框 pill，<strong>「复制」</strong>是无边框 ghost，视觉层级不统一。
+      以下 6 套方案均遵循 Editorial Calm：纸感中性色、coral 不用于次要操作、悬停才出现（已有话题的 badge 可常驻）。
+    </p>
+    <div class="spec-grid">
+      <div class="spec-card"><h3>A Ghost 统一</h3><p>与复制同族：无边框、icon+12px 文案、hover 浅底。中间 1px 分隔。<span class="rec">推荐</span></p></div>
+      <div class="spec-card"><h3>B Paper 工具条</h3><p>单张 paper 卡片内两个 action，内部分隔线。信息密度高、边界清晰。</p></div>
+      <div class="spec-card"><h3>C Outlined 成对</h3><p>两个相同实线边框 pill，去掉虚线。对称但略重。</p></div>
+      <div class="spec-card"><h3>D Icon 紧凑</h3><p>默认仅图标，hover 展开文案。适合窄列 / thread 侧栏。</p></div>
+      <div class="spec-card"><h3>E 文字链</h3><p>最轻量：faint 下划线链接 + 点分隔。几乎不占空间。</p></div>
+      <div class="spec-card"><h3>F Segmented 胶囊</h3><p>panel 底上的分段控件，Slack/Discord 风。话题 badge 可高亮一段。</p></div>
+    </div>
+    <div class="controls">
+      <label>预览状态</label>
+      <button type="button" class="state-btn is-active" data-state="new">未开话题</button>
+      <button type="button" class="state-btn" data-state="existing">已有话题 · 3 条回复</button>
+    </div>
+  </header>
+
+  <main class="stage" id="stage"></main>
+
+  <section class="compare-all">
+    <h2>并排速览（悬停按钮看 hover 态）</h2>
+    <div class="matrix">
+      <div></div>
+      <div class="matrix-head">未开话题</div>
+      <div class="matrix-head">已有话题</div>
+
+      <div class="matrix-label">A Ghost</div>
+      <div class="matrix-cell" id="m-a-new"></div>
+      <div class="matrix-cell" id="m-a-ex"></div>
+
+      <div class="matrix-label">B Paper</div>
+      <div class="matrix-cell" id="m-b-new"></div>
+      <div class="matrix-cell" id="m-b-ex"></div>
+
+      <div class="matrix-label">C Outlined</div>
+      <div class="matrix-cell" id="m-c-new"></div>
+      <div class="matrix-cell" id="m-c-ex"></div>
+
+      <div class="matrix-label">D Icon</div>
+      <div class="matrix-cell" id="m-d-new"></div>
+      <div class="matrix-cell" id="m-d-ex"></div>
+
+      <div class="matrix-label">E Link</div>
+      <div class="matrix-cell" id="m-e-new"></div>
+      <div class="matrix-cell" id="m-e-ex"></div>
+
+      <div class="matrix-label">F Segmented</div>
+      <div class="matrix-cell" id="m-f-new"></div>
+      <div class="matrix-cell" id="m-f-ex"></div>
+    </div>
+  </section>
+
+  <script>
+    const ICONS = {
+      thread: '<svg class="ico" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+      plus: '<svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+      copy: '<svg class="ico" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    };
+
+    const VARIANTS = [
+      { id: 'a', title: 'A · Ghost 统一', rec: true, desc: '复制与开话题同族 ghost；已有话题时 thread 文案可略深。' },
+      { id: 'b', title: 'B · Paper 工具条', desc: '一张小 paper 卡片包住两个 action，像 composer 内的次级工具。' },
+      { id: 'c', title: 'C · Outlined 成对', desc: '对称实线边框；去掉虚线，两个按钮完全同规格。' },
+      { id: 'd', title: 'D · Icon 紧凑', desc: '默认 28×28 图标按钮；hover 向右展开文案。thread 侧栏也适用。' },
+      { id: 'e', title: 'E · 文字链', desc: '最轻：faint 链接态，中间 · 分隔。几乎不抢 agent 正文注意力。' },
+      { id: 'f', title: 'F · Segmented 胶囊', desc: 'panel 底分段控件；已有话题时段落高亮为 paper。' },
+    ];
+
+    function copyBtn() {
+      return `<button type="button">${ICONS.copy}<span>复制</span></button>`;
+    }
+
+    function threadBtnNew(variant) {
+      if (variant === 'a') return `<button type="button">${ICONS.plus}<span>开话题</span></button>`;
+      if (variant === 'b') return `<button type="button">${ICONS.plus}<span>开话题</span></button>`;
+      if (variant === 'c') return `<button type="button">${ICONS.plus}<span>开话题</span></button>`;
+      if (variant === 'd') return `<button type="button">${ICONS.plus}<span class="lbl">开话题</span></button>`;
+      if (variant === 'e') return `<button type="button">开话题</button>`;
+      if (variant === 'f') return `<button type="button">${ICONS.plus}<span>开话题</span></button>`;
+    }
+
+    function threadBtnExisting(variant) {
+      const label = '3 条回复';
+      if (variant === 'a') return `<button type="button" style="color:var(--ink-2)">${ICONS.thread}<span>${label}</span></button>`;
+      if (variant === 'b') return `<button type="button" style="color:var(--ink-2)">${ICONS.thread}<span>${label}</span></button>`;
+      if (variant === 'c') return `<button type="button" style="color:var(--ink-2)">${ICONS.thread}<span>${label}</span></button>`;
+      if (variant === 'd') return `<button type="button">${ICONS.thread}<span class="lbl">${label}</span></button>`;
+      if (variant === 'e') return `<button type="button">${label}</button>`;
+      if (variant === 'f') return `<button type="button" class="is-thread">${ICONS.thread}<span>${label}</span></button>`;
+    }
+
+    function actionsHtml(variant, state) {
+      const thread = state === 'existing' ? threadBtnExisting(variant) : threadBtnNew(variant);
+      const copy = variant === 'd'
+        ? `<button type="button">${ICONS.copy}<span class="lbl">复制</span></button>`
+        : copyBtn();
+
+      switch (variant) {
+        case 'a': return `<div class="actions-a">${thread}<span class="sep"></span>${copy}</div>`;
+        case 'b': return `<div class="actions-b">${thread}${copy}</div>`;
+        case 'c': return `<div class="actions-c">${thread}${copy}</div>`;
+        case 'd': return `<div class="actions-d">${thread}${copy}</div>`;
+        case 'e': {
+          const threadE = state === 'existing'
+            ? '<button type="button">3 条回复</button>'
+            : '<button type="button">开话题</button>';
+          return `<div class="actions-e">${threadE}<span class="dot">·</span><button type="button">复制</button></div>`;
+        }
+        case 'f': return `<div class="actions-f">${thread}${copy}</div>`;
+        default: return '';
+      }
+    }
+
+    function messageBlock(actions, hint) {
+      return `
+        <div class="chat">
+          <div class="msg">
+            <div class="msg-head">
+              <div class="avatar">M</div>
+              <span class="name">MDC</span>
+              <span class="ai">AI</span>
+              <span class="time">14:32</span>
+            </div>
+            <div class="body">你上一条消息发的是：「错了，其实我叫椰子」—— 把名字从椰皇更正为椰子 🥥</div>
+            ${actions}
+            ${hint ? `<p class="hint">${hint}</p>` : ''}
+          </div>
+        </div>`;
+    }
+
+    function renderStage(state) {
+      const stage = document.getElementById('stage');
+      stage.innerHTML = VARIANTS.map(v => `
+        <article class="panel">
+          <div class="panel-head">
+            <h2>${v.title}${v.rec ? ' <span class="rec">推荐</span>' : ''}</h2>
+            <p>${v.desc}</p>
+          </div>
+          ${messageBlock(actionsHtml(v.id, state), state === 'new' ? '↑ 悬停消息时出现（示意：此处常显以便对比）' : '↑ 已有话题：thread badge 常驻，复制仍随 hover')}
+        </article>
+      `).join('');
+
+      VARIANTS.forEach(v => {
+        document.getElementById(`m-${v.id}-new`).innerHTML = actionsHtml(v.id, 'new');
+        document.getElementById(`m-${v.id}-ex`).innerHTML = actionsHtml(v.id, 'existing');
+      });
+    }
+
+    let currentState = 'new';
+    document.querySelectorAll('.state-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.state-btn').forEach(b => b.classList.remove('is-active'));
+        btn.classList.add('is-active');
+        currentState = btn.dataset.state;
+        renderStage(currentState);
+      });
+    });
+
+    renderStage('new');
+  </script>
+</body>
+</html>

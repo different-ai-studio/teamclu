@@ -729,6 +729,8 @@ impl SessionManager {
             title: String::new(),
             summary: String::new(),
             idea_id: None,
+            parent_session_id: None,
+            thread_root_message_id: None,
             created_at: chrono::Utc::now(),
         };
         let now = chrono::Utc::now();

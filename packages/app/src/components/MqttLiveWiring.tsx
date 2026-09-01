@@ -71,6 +71,7 @@ import { syncActorsForTeam } from "@/lib/sync/actor-sync";
 import { syncIdeasForTeam } from "@/lib/sync/idea-sync";
 import { syncSessionsForTeam } from "@/lib/sync/session-sync";
 import { useCurrentTeamStore } from "@/stores/current-team";
+import { useSessionLiveInterestStore } from "@/stores/session-live-interest-store";
 import { resolveCurrentMemberActorId } from "@/lib/current-actor";
 import { isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
 import {
@@ -1632,6 +1633,7 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
       ? s.rows.find((r) => r.id === activeSessionIdForSubscribe)?.team_id ?? null
       : null,
   );
+  const openedSessionInterestRevision = useSessionLiveInterestStore((s) => s.revision);
   useEffect(() => {
     if (!userId || !mqttTeamId) {
       resetInboxIdleInterestState();
@@ -1666,6 +1668,7 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
     activeSessionTeamId,
     liveInterestExtrasKey,
     inboxIdleRevision,
+    openedSessionInterestRevision,
     mqttTeamId,
     mqttReconnectNonce,
     userId,

@@ -554,6 +554,47 @@ describe('outbox sender', () => {
     expect(ensureAgentRuntimesForSession).not.toHaveBeenCalled()
   })
 
+  it('local fast path passes thread forkFrom to runtimeStart', async () => {
+    mocks.isTauri.mockReturnValue(true)
+    mocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
+    mocks.runtimeStart.mockResolvedValue({})
+
+    const { rememberThreadForkMetadata, clearThreadForkMetadataForTests } =
+      await import('@/lib/thread-fork-metadata')
+    clearThreadForkMetadataForTests()
+    rememberThreadForkMetadata('thread-session-1', 'parent-session-1', 'anchor-msg-1')
+
+    const { useOutboxStore } = await import('@/stores/outbox-store')
+    const { startOutboxSender } = await import('../outbox-sender')
+
+    await useOutboxStore.getState().enqueue({
+      messageId: 'msg-thread-fork',
+      teamId: 'team-1',
+      sessionId: 'thread-session-1',
+      senderActorId: 'member-1',
+      content: '@Local follow-up',
+      model: 'opencode/qwen',
+      mentionActorIds: ['agent-local'],
+      attachmentUrls: [],
+    })
+    startOutboxSender()
+
+    await vi.waitFor(() => {
+      expect(mocks.runtimeStart).toHaveBeenCalled()
+    })
+    expect(mocks.runtimeStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'thread-session-1',
+        forkFrom: {
+          parentSessionId: 'parent-session-1',
+          rootMessageId: 'anchor-msg-1',
+        },
+      }),
+    )
+
+    clearThreadForkMetadataForTests()
+  })
+
   it('local-only mentions still deliver when the broker is down', async () => {
     // The whole point of the local fast path: the agent this message is
     // addressed to already has it (loopback ingest), so a dead broker must not

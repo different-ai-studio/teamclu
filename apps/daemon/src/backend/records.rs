@@ -89,7 +89,23 @@ pub struct BackendSessionRow {
     pub summary: String,
     #[serde(default)]
     pub idea_id: Option<String>,
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
+    #[serde(default)]
+    pub thread_root_message_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl BackendSessionRow {
+    /// Lazy thread fork anchor when both parent and root message ids are set.
+    pub fn thread_fork_from(&self) -> Option<(String, String)> {
+        let parent = self.parent_session_id.as_deref().filter(|s| !s.is_empty())?;
+        let root = self
+            .thread_root_message_id
+            .as_deref()
+            .filter(|s| !s.is_empty())?;
+        Some((parent.to_string(), root.to_string()))
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -175,6 +191,44 @@ mod tests {
         assert_eq!(row.title, "");
         assert_eq!(row.summary, "");
         assert!(row.idea_id.is_none());
+        assert!(row.parent_session_id.is_none());
+        assert!(row.thread_root_message_id.is_none());
+    }
+
+    #[test]
+    fn backend_session_row_thread_fork_from() {
+        let row = BackendSessionRow {
+            id: "thread-1".into(),
+            team_id: "team-1".into(),
+            created_by_actor_id: None,
+            primary_agent_id: None,
+            mode: String::new(),
+            title: String::new(),
+            summary: String::new(),
+            idea_id: None,
+            parent_session_id: Some("parent-1".into()),
+            thread_root_message_id: Some("msg-anchor".into()),
+            created_at: chrono::Utc::now(),
+        };
+        assert_eq!(
+            row.thread_fork_from(),
+            Some(("parent-1".into(), "msg-anchor".into()))
+        );
+        assert!(BackendSessionRow {
+            id: "t".into(),
+            team_id: "team-1".into(),
+            created_by_actor_id: None,
+            primary_agent_id: None,
+            mode: String::new(),
+            title: String::new(),
+            summary: String::new(),
+            idea_id: None,
+            parent_session_id: Some("parent-1".into()),
+            thread_root_message_id: None,
+            created_at: chrono::Utc::now(),
+        }
+        .thread_fork_from()
+        .is_none());
     }
 
     #[test]

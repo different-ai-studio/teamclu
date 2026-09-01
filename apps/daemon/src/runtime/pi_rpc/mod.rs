@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 
 use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
-use crate::runtime::backend::{AcpCommand, AcpStartupMetadata, AgentBackend};
+use crate::runtime::backend::{AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec};
 use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 use crate::runtime::manager::AgentLaunchConfig;
 use crate::runtime::opencode_http::translate::status_change;
@@ -693,6 +693,54 @@ async fn host_establish_session(
         session_path,
         leaf_id,
     })
+}
+
+/// Branch a pi session file at `fork_leaf_id` without adopting it in the host.
+/// Returns the new `pi:/path` acp session id for resume attach.
+pub(crate) async fn fork_branched_session(
+    shared: &Arc<Shared>,
+    worktree: &str,
+    isolation_domain: IsolationDomainKey,
+    process_env_revision: ProcessEnvRevision,
+    extra_env: HashMap<String, String>,
+    force_env_override: bool,
+    parent_session_path: &str,
+    fork_leaf_id: &str,
+) -> Result<String, String> {
+    let worktree = canonical_dir(worktree);
+    let key = PoolKey {
+        domain: isolation_domain,
+        env_revision: process_env_revision,
+        worktree: worktree.clone(),
+    };
+    let env = SpawnEnv {
+        extra_env,
+        force_env_override,
+        remote_tools_cmd: None,
+        mcp_servers: mcp_servers_from_opencode_json(&worktree),
+    };
+    let proc = shared
+        .pool
+        .ensure_with_env(shared, &key, env)
+        .map_err(|e| e.to_string())?;
+    if proc.mode != PiSessionMode::Host {
+        return Err("pi thread fork requires host mode".into());
+    }
+    let response = proc
+        .client
+        .request(serde_json::json!({
+            "type": "fork_session",
+            "parentSessionPath": parent_session_path,
+            "forkLeafId": fork_leaf_id,
+        }))
+        .await
+        .map_err(|e| with_stderr_tail(&proc, e.to_string()))?;
+    response
+        .pointer("/data/sessionId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "pi fork_session returned no sessionId".to_string())
 }
 
 /// Keep the host's open-session count under the soft cap: `close_session` the
@@ -1594,6 +1642,44 @@ impl AgentBackend for PiRpcBackend {
             .request(serde_json::json!({"type": "get_available_models"}))
             .await?;
         Ok(models_from_response(&resp))
+    }
+
+    async fn fork_session_at(&mut self, spec: ForkSpec) -> crate::error::Result<String> {
+        let parent_path = spec
+            .parent_acp_session_id
+            .strip_prefix(SESSION_ID_PREFIX)
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| {
+                crate::error::AmuxError::Agent(format!(
+                    "invalid pi parent acp session id: {}",
+                    spec.parent_acp_session_id
+                ))
+            })?;
+        let fork_leaf = spec.fork_leaf_id.filter(|s| !s.is_empty()).ok_or_else(|| {
+            crate::error::AmuxError::Agent(
+                "pi thread fork requires fork_leaf_id (anchor agent_end.leafId)".into(),
+            )
+        })?;
+        fork_branched_session(
+            &self.shared,
+            &spec.worktree,
+            spec.isolation_domain,
+            spec.process_env_revision,
+            spec.extra_env,
+            spec.force_env_override,
+            parent_path,
+            &fork_leaf,
+        )
+        .await
+        .map_err(crate::error::AmuxError::Agent)
+    }
+
+    fn completed_turn_leaf_id(&self, acp_session_id: &str) -> Option<String> {
+        self.shared
+            .routes
+            .lock()
+            .get(acp_session_id)
+            .and_then(|r| r.last_entry_id.clone())
     }
 }
 

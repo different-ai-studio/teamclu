@@ -57,11 +57,13 @@ import { SIDEBAR_INTERACTIVE_CURSOR } from "@/components/sidebar/sidebar-interac
 import { NarrowChatHeader } from "@/components/responsive/NarrowChatHeader";
 import { useLayoutBreakpoint } from "@/hooks/use-layout-breakpoint";
 import { ChatPanel } from "@/components/chat/ChatPanel";
+import { SessionThreadsHeaderButton } from "@/components/chat/SessionThreadsHeaderButton";
 import { NewSessionDialog } from "@/components/chat/NewSessionDialog";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { MqttLiveWiring } from "@/components/MqttLiveWiring";
 import { TeamSkillAutoFollow } from "@/components/TeamSkillAutoFollow";
 import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
+import { ThreadHistoryLoader } from "@/components/ThreadHistoryLoader";
 import { UpdateDialogContainer } from "@/components/updater/UpdateDialog";
 import { RightPanel } from "@/components/panel";
 import { AppControlPanel } from "@/components/apps/AppControlPanel";
@@ -1000,6 +1002,7 @@ function AppContent() {
       <MqttLiveWiring userId={userId} teamId={currentTeamId} onMyActorId={setMyActorId} />
       <TeamSkillAutoFollow teamId={currentTeamId} />
       <SessionHistoryLoader />
+      <ThreadHistoryLoader />
     </>
   );
 
@@ -1163,6 +1166,9 @@ function AppContent() {
               )}
               {capabilities.workspace && workspacePath && showTerminalToggle && (
                 <TerminalToggleButton workspacePath={workspacePath} />
+              )}
+              {activeSession && hasCurrentSession && (
+                <SessionThreadsHeaderButton sessionId={activeSession.id} />
               )}
               {hasCurrentSession && !isSoloBuild() && (
                 <HeaderPanelTab
