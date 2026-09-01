@@ -1463,10 +1463,29 @@ pub fn team_skill_read_draft_metadata(
     })
 }
 
+fn recovery_record_for_path(source: &std::path::Path) -> Option<DraftRecoveryRecord> {
+    let trash = trash_dir().ok()?;
+    let log = trash.join("recovery.jsonl");
+    if !log.is_file() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(source).ok()?;
+    let content = std::fs::read_to_string(&log).ok()?;
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<DraftRecoveryRecord>(line).ok())
+        .find(|rec| {
+            std::fs::canonicalize(&rec.path)
+                .ok()
+                .is_some_and(|p| p == canonical)
+        })
+}
+
 /// Recent draft recovery records (discarded packs moved to trash).
 #[tauri::command]
 pub fn team_skill_list_draft_recoveries(
     slug: Option<String>,
+    team_id: Option<String>,
     limit: Option<usize>,
 ) -> Result<Vec<DraftRecoveryRecord>, String> {
     let trash = trash_dir()?;
@@ -1477,13 +1496,15 @@ pub fn team_skill_list_draft_recoveries(
     let content = std::fs::read_to_string(&log).unwrap_or_default();
     let cap = limit.unwrap_or(20).min(50);
     let slug_filter = slug.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let team_filter = team_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let mut out: Vec<DraftRecoveryRecord> = content
         .lines()
         .filter_map(|line| serde_json::from_str::<DraftRecoveryRecord>(line).ok())
         .filter(|rec| slug_filter.is_none_or(|s| rec.slug == s))
+        .filter(|rec| team_filter.is_none_or(|t| rec.team_id.as_deref() == Some(t)))
         .filter(|rec| std::path::Path::new(&rec.path).is_dir())
         .collect();
-    out.sort_by(|a, b| b.at.cmp(&a.at));
+    out.sort_by_key(|rec| std::cmp::Reverse(rec.at));
     out.truncate(cap);
     Ok(out)
 }
@@ -1674,6 +1695,25 @@ pub fn team_skill_restore_trashed(
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
     let source = resolve_trashed_source(&trash_dir()?, trashed_path.trim())?;
+
+    if let Some(expected_team) = team_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(rec) = recovery_record_for_path(&source) {
+            match rec.team_id.as_deref() {
+                Some(rec_team) if rec_team != expected_team => {
+                    return Err(
+                        "This recovery belongs to another team and cannot be restored here"
+                            .to_string(),
+                    );
+                }
+                None => {
+                    return Err(
+                        "This recovery has no team context and cannot be restored here".to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
 
     let target = preferred_team_skill_dir(&slug, team_id.as_deref())?;
     if let Some(parent) = target.parent() {

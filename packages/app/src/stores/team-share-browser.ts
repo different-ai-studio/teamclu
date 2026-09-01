@@ -345,6 +345,8 @@ interface TeamShareBrowserState {
    * still shows: the detail pane.
    */
   skillRetired: Record<string, SkillRetirement>
+  /** Bumped when draft recoveries change (discard/restore). */
+  draftRecoveryRevision: number
   dismissRetired: (slug: string) => void
   /** Restore an archived directory under `newSlug`, keeping the team pack. */
   keepArchivedCopy: (slug: string, newSlug: string) => Promise<void>
@@ -355,7 +357,7 @@ interface TeamShareBrowserState {
    */
   reconcileSkills: () => Promise<void>
   /** Publish an older version's content as the new latest (undo a bad publish). */
-  revertSkillVersion: (slug: string, version: number) => Promise<void>
+  revertSkillVersion: (slug: string, version: number, expectedLatestVersion: number) => Promise<void>
   /** Move the edited pack aside and re-install clean. Returns the undo handle. */
   discardLocalSkill: (slug: string) => Promise<string>
   restoreDiscardedSkill: (trashedPath: string, slug: string) => Promise<void>
@@ -1081,6 +1083,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   skillSyncErrors: {},
   skillArchived: {},
   skillRetired: {},
+  draftRecoveryRevision: 0,
 
   counts: () => {
     const s = get()
@@ -1637,15 +1640,15 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       return { skillArchived: next }
     }),
 
-  revertSkillVersion: async (slug, version) => {
+  revertSkillVersion: async (slug, version, expectedLatestVersion) => {
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
-    // Rolls forward with the old content rather than moving `latestVersion`
-    // back, so auto-follow carries it to everyone the same way the bad version
-    // arrived. Without a caller this endpoint was decoration: under auto-follow
-    // a broken publish reaches the whole team within one tick, and the author's
-    // only other remedy is rebuilding the old bytes by hand.
-    await getBackend().teamSkills.revertTeamSkillVersion(teamId, slug, version)
+    await getBackend()
+      .teamSkills.revertTeamSkillVersion(teamId, slug, version, { expectedLatestVersion })
+      .catch((e) => {
+        if (isStaleTeamSkillPublish(e)) throw new StaleTeamSkillPublishError(slug)
+        throw e
+      })
     await get().reconcileSkills()
     await get().loadSection('skills', { force: true })
   },
@@ -1854,6 +1857,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         .loadSection('skills', { force: true })
         .catch(() => {})
     }
+    set((s) => ({ draftRecoveryRevision: s.draftRecoveryRevision + 1 }))
     return trashedPath
   },
 
@@ -1863,6 +1867,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     await invoke('team_skill_restore_trashed', { trashedPath, slug, teamId })
+    set((s) => ({ draftRecoveryRevision: s.draftRecoveryRevision + 1 }))
     await get().reconcileSkills()
     await get().loadSection('skills', { force: true })
   },
@@ -1958,8 +1963,11 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   },
 
   listDraftRecoveries: async (slug) => {
+    const teamId = currentTeamId()
+    if (!teamId) return []
     return invoke<DraftRecoveryRecord[]>('team_skill_list_draft_recoveries', {
       slug,
+      teamId,
       limit: 10,
     }).catch(() => [])
   },

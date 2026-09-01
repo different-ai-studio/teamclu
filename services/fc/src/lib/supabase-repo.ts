@@ -4368,10 +4368,23 @@ export function createSupabaseBusinessRepository(options) {
       if (!callerActorId) throw new ApiError(403, "forbidden", "not a member of this team");
 
       const changelog = String(body.changelog ?? "").trim() || null;
+      if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
+        throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
+      }
+      const expectedLatestVersion = Number(body.expectedLatestVersion);
+      if (!Number.isInteger(expectedLatestVersion) || expectedLatestVersion < 0) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "expectedLatestVersion must be a non-negative integer",
+        );
+      }
+
       const { data, error } = await supabase.rpc("revert_team_skill_version", {
         p_team_id: teamId,
         p_slug: slug,
         p_target_version: targetVersion,
+        p_expected_latest_version: expectedLatestVersion,
         p_changelog: changelog,
       });
 
@@ -5257,6 +5270,7 @@ function mapTeamSkillVersionRow(r: any) {
     size: r.size ?? 0,
     changelog: r.changelog,
     summary: r.summary,
+    category: r.category ?? null,
     whenToUse: r.when_to_use,
     whenNotToUse: r.when_not_to_use,
     requires: r.requires ?? null,

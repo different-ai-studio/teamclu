@@ -67,6 +67,7 @@ export const teamSkillVersions = pgTable(
     size: bigint("size", { mode: "number" }).notNull().default(0),
     changelog: text("changelog").notNull(),
     summary: text("summary").notNull(),
+    category: text("category"),
     whenToUse: text("when_to_use").notNull(),
     whenNotToUse: text("when_not_to_use").notNull(),
     requires: jsonb("requires"),

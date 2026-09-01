@@ -151,6 +151,7 @@
     "skillPublishStaleDirty": "你的草稿落后于团队版本。请先应用最新版、另存为个人 skill，或丢弃草稿后再发布。",
     "skillPublishPreview": "将发布磁盘上 {{count}} 处本地文件改动。",
     "skillPublishLoadingDraft": "正在读取草稿元数据…",
+    "skillPublishDraftMetadataFailed": "无法读取草稿元数据：{{msg}}",
     "skillPublishDraftDiff": "与 registry 不同",
     "skillDraftRecoveryTitle": "近期草稿恢复",
     "skillDraftRecoveryBody": "丢弃的草稿会保留 7 天。可恢复后继续编辑。",

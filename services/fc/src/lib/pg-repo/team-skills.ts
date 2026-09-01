@@ -146,6 +146,7 @@ function mapVersion(row: any) {
     size: row.size ?? 0,
     changelog: row.changelog,
     summary: row.summary,
+    category: row.category ?? null,
     whenToUse: row.whenToUse,
     whenNotToUse: row.whenNotToUse,
     requires: row.requires ?? null,
@@ -495,6 +496,7 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
             size: Number(body.size ?? 0),
             changelog,
             summary: merged.summary,
+            category: merged.category,
             whenToUse: merged.whenToUse,
             whenNotToUse: merged.whenNotToUse,
             requires: (merged.requires as any) ?? null,
@@ -538,6 +540,18 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
       const userId = requireUser();
       const callerActorId = await requireActorForTeam(db, userId, teamId);
 
+      if (body.expectedLatestVersion === undefined || body.expectedLatestVersion === null) {
+        throw new ApiError(400, "validation_failed", "expectedLatestVersion is required");
+      }
+      const expectedLatestVersion = Number(body.expectedLatestVersion);
+      if (!Number.isInteger(expectedLatestVersion) || expectedLatestVersion < 0) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "expectedLatestVersion must be a non-negative integer",
+        );
+      }
+
       return db.transaction(async (tx: any) => {
         const [skill] = await tx
           .select()
@@ -560,6 +574,15 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
           current = detached;
         }
 
+        const latest = current.latestVersion ?? 0;
+        if (latest !== expectedLatestVersion) {
+          throw new ApiError(
+            409,
+            "stale_team_skill_base",
+            `team skill base version mismatch: expected v${expectedLatestVersion}, registry is v${latest}`,
+          );
+        }
+
         const [source] = await tx
           .select()
           .from(teamSkillVersions)
@@ -577,8 +600,9 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
 
         const changelog =
           String(body.changelog ?? "").trim() || `Reverted to v${targetVersion}`;
-        const nextVersion = (current.latestVersion ?? 0) + 1;
-        const publishedFromVersion = current.latestVersion > 0 ? current.latestVersion : null;
+        const nextVersion = latest + 1;
+        const publishedFromVersion = latest > 0 ? latest : null;
+        const category = source.category ?? current.category;
 
         const [version] = await (tx.insert(teamSkillVersions) as any)
           .values({
@@ -588,6 +612,7 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
             size: source.size ?? 0,
             changelog,
             summary: source.summary,
+            category,
             whenToUse: source.whenToUse,
             whenNotToUse: source.whenNotToUse,
             requires: (source.requires as any) ?? null,
@@ -599,15 +624,24 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
           })
           .returning();
 
-        await (tx.update(teamSkills) as any)
+        const [updated] = await (tx.update(teamSkills) as any)
           .set({
             latestVersion: nextVersion,
             summary: source.summary,
+            category,
             whenToUse: source.whenToUse,
             whenNotToUse: source.whenNotToUse,
             requires: (source.requires as any) ?? null,
           })
-          .where(eq(teamSkills.id, current.id));
+          .where(and(eq(teamSkills.id, current.id), eq(teamSkills.latestVersion, expectedLatestVersion)))
+          .returning();
+        if (!updated) {
+          throw new ApiError(
+            409,
+            "stale_team_skill_base",
+            "team skill base version mismatch: registry moved concurrently",
+          );
+        }
 
         return mapVersion(version);
       });
