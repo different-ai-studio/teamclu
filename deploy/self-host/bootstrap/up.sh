@@ -146,10 +146,8 @@ if use_podman_compose; then
   podman pod rm -f pod_teamclaw-self-host 2>/dev/null || true
   podman rm -f $(podman ps -aq --filter label=com.docker.compose.project=teamclaw-self-host) 2>/dev/null || true
 
-  echo "==> compose up (base stack, excluding fc/caddy/litellm — may take several minutes on first boot)"
-  # litellm is held back until litellm-init has created the _litellm database;
-  # podman-compose ignores the service_completed_successfully gate.
-  BASE_SERVICES="$(compose_services_except '^(fc|caddy|litellm)$' | tr '\n' ' ')"
+  echo "==> compose up (base stack, excluding fc/caddy — may take several minutes on first boot)"
+  BASE_SERVICES="$(compose_services_except '^(fc|caddy)$' | tr '\n' ' ')"
   BASE_SERVICES="${BASE_SERVICES%% }"
   if [ -z "$BASE_SERVICES" ]; then
     echo "error: no compose services found" >&2
@@ -177,15 +175,6 @@ if use_podman_compose; then
     || true
 fi
 wait_exit_ok "$MIGRATE" 300
-
-if use_podman_compose; then
-  echo "==> create _litellm database"
-  "$RUNTIME" start teamclaw-self-host_litellm-init_1 2>/dev/null \
-    || "${RUN[@]}" up -d --no-deps litellm-init 2>/dev/null \
-    || true
-  wait_exit_ok teamclaw-self-host_litellm-init_1 120
-  recreate_no_deps litellm
-fi
 
 if use_podman_compose; then
   recreate_no_deps fc

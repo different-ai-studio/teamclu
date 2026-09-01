@@ -99,44 +99,11 @@ services:
     # script is mounted read-only, so invoke via `sh` rather than chmod +x (chmod fails on a ro mount)
     entrypoint: ["/bin/sh", "-c", "sh /apply-migrations.sh"]
 
-  # Creates the _litellm database inside the Supabase postgres (`db`) container.
-  # LiteLLM's prisma schema owns ~20 tables and would collide with the app schema
-  # in `postgres`, so it gets its own database on the same server — same pattern
-  # as Supabase's own _supabase/_analytics database.
-  #
-  # This runs as a one-shot service rather than a volumes/db/*.sql init script
-  # because docker-entrypoint-initdb.d only executes on FIRST cluster init: an
-  # already-deployed stack would never get the database. CREATE DATABASE cannot
-  # run inside a transaction or take IF NOT EXISTS, hence the SELECT-then-create.
-  litellm-init:
-    image: postgres:15-alpine
-    restart: "no"
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      PGHOST: "${POSTGRES_HOST}"
-      PGPORT: "${POSTGRES_PORT}"
-      PGUSER: postgres
-      PGPASSWORD: "${POSTGRES_PASSWORD}"
-      PGDATABASE: "${POSTGRES_DB}"
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -e
-        if [ "$$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='_litellm'")" = "1" ]; then
-          echo "litellm-init: _litellm already exists"
-        else
-          psql -c 'CREATE DATABASE "_litellm"'
-          echo "litellm-init: created _litellm"
-        fi
-
   # Ensures the legacy `teamclaw_apps` database exists (pre per-org DBs). New
   # data_app deploys create `tc_org_<orgId>` on demand via APPS_DB_ADMIN_URL
   # (superuser connection to the compose `db` service) and do not need it.
   #
-  # Same one-shot pattern as litellm-init: CREATE DATABASE has no IF NOT EXISTS
+  # One-shot rather than a db init script: CREATE DATABASE has no IF NOT EXISTS
   # and cannot run inside a transaction; docker-entrypoint-initdb.d never re-runs
   # on an already-initialized volume.
   apps-db-init:
@@ -166,38 +133,6 @@ services:
           echo "apps-db-init: created teamclaw_apps (legacy; new deploys use tc_org_*)"
         fi
 
-  # AI gateway. FC provisions per-team budgets and virtual keys against the admin
-  # API (/team/new, /key/generate) using LITELLM_MASTER_KEY.
-  #
-  # The -database image variant runs `prisma migrate deploy` against DATABASE_URL
-  # on boot; the plain litellm image does not and would fail on a fresh database.
-  litellm:
-    image: ghcr.io/berriai/litellm-database:v1.83.3-stable
-    restart: unless-stopped
-    depends_on:
-      litellm-init:
-        condition: service_completed_successfully
-    # Not fronted by Caddy — the gateway is reachable in-network at
-    # http://litellm:4000 (FC) and on the host loopback for admin work
-    # (curl/UI via an SSH tunnel). Publish to 0.0.0.0 only behind a firewall:
-    # the master key is a full admin credential.
-    ports:
-      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
-    environment:
-      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY}"
-      # Postgres password is interpolated raw — if POSTGRES_PASSWORD contains
-      # @ : / or #, percent-encode it here or prisma will misparse the URL.
-      DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/_litellm"
-      STORE_MODEL_IN_DB: "True"
-      UI_USERNAME: "${LITELLM_UI_USERNAME:-admin}"
-      UI_PASSWORD: "${LITELLM_UI_PASSWORD:-}"
-      # Provider keys referenced by litellm/config.yaml via os.environ/.
-      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-    volumes:
-      - ./litellm/config.yaml:/app/config.yaml:ro
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
     healthcheck:
       # Image has no curl; python3 is the interpreter the proxy itself runs on.
       test:
@@ -210,11 +145,11 @@ services:
       retries: 12
       start_period: 60s
 
-  # Team AI gateway. Replaces LiteLLM's role for clients, but ships ALONGSIDE it:
-  # every installed desktop still points at the old gateway until Phase 1 flips
-  # team_workspace_config.llm_base_url, so removing litellm here would break
-  # them all instantly. Deletion is Phase 3, behind the gate in
-  # docs/specs/2026-08-28-team-ai-gateway-design.md §11.5.
+  # Team AI gateway — the only one. It replaced LiteLLM, which is gone.
+  #
+  # A team reaches it through its own team_workspace_config.llm_base_url; any
+  # team still holding the old /llm URL has nothing serving it, so check that
+  # column before deploying this (design §11.5).
   #
   # Reached publicly through Caddy at /ai/* ; FC calls it in-network on :4001.
   ai-gateway:
@@ -247,7 +182,7 @@ services:
       # is only issued by POST /internal/credits/backfill, never automatically.
       # Run that backfill first, every time.
       CREDITS_ENFORCED: "${CREDITS_ENFORCED:-false}"
-      # Upstream provider keys, same vars litellm already uses.
+      # Upstream provider keys.
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"

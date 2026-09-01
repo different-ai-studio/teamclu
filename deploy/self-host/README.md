@@ -444,8 +444,6 @@ docker volume rm teamclaw-self-host_caddy_config   # 保留 caddy_data 可留证
 | `vector` | `timberio/vector` | Log collector; reads from Docker socket |
 | `emqx` | `emqx/emqx:5.10.3` | MQTT broker with JWT authenticator |
 | `migrate` | `postgres:15-alpine` | One-shot migration runner; exits 0 when done |
-| `litellm-init` | `postgres:15-alpine` | One-shot; creates the `_litellm` database inside `db`; exits 0 when done |
-| `litellm` | `ghcr.io/berriai/litellm-database` | AI 网关；FC 在此开团队预算与虚拟 key |
 | `fc` | built from `services/fc` | TeamClu Cloud API (Node.js); the only app-level backend |
 | `caddy` | `caddy:2` | Reverse proxy + automatic TLS; **only service with host ports** |
 | `gitea` | `gitea/gitea:1.22` | Per-app private git repos (Apps module); HTTP via Caddy, SSH on host `GITEA_SSH_PORT` |
@@ -745,50 +743,10 @@ docker compose exec -T emqx /opt/emqx/bin/emqx ctl status
 docker compose exec -T fc node -e \
   "fetch('http://kong:8000/health').then(r=>r.text()).then(console.log)"
 
-# LiteLLM 网关（宿主机 loopback）
-curl -s http://127.0.0.1:4000/health/liveliness
+# 团队 AI 网关（容器内）
+docker compose exec -T fc node -e \
+  "fetch('http://ai-gateway:4001/healthz').then(r=>r.text()).then(console.log)"
 ```
-
-## LiteLLM AI 网关
-
-随 `docker compose up` 默认启动。FC 通过 `LITELLM_MASTER_KEY` 调用其管理 API
-（`/team/new`、`/key/generate`、`/key/info`）为每个团队开预算和虚拟 key,支撑
-`POST /v1/teams/:id/litellm/setup`。
-
-**数据库**：不单独起 postgres。`litellm-init` 在 Supabase 的 `db` 容器里建一个
-独立的 `_litellm` 数据库（LiteLLM 的 prisma schema 有约 20 张表,放进 `postgres`
-会和应用表冲突）——与 Supabase 自己的 `_supabase`/`_analytics` 是同一套做法。
-建库用一次性 service 而不是 `volumes/db/*.sql`,因为 init 脚本只在**集群首次
-初始化**时执行,已经部署过的栈永远不会跑到。
-
-**网络**：不经 Caddy,没有公网域名。FC 走 `http://litellm:4000`;管理操作走宿主机
-`127.0.0.1:4000`（要用 UI 就本地 SSH 隧道）。master key 是完整管理凭证,除非有
-防火墙,否则不要把它发布到 `0.0.0.0`。
-
-**配置模型**：开箱没有任何模型。`store_model_in_db: true` 已打开,可在管理 UI 里
-加模型并持久化到 `_litellm`;也可以改用 `litellm/config.yaml` 里注释掉的静态
-`model_list`,并把对应 key 写进 `.env`。
-
-```bash
-# 加一个模型（示例）
-curl -s http://127.0.0.1:4000/model/new \
-  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"model_name":"gpt-4o","litellm_params":{"model":"openai/gpt-4o","api_key":"sk-..."}}'
-```
-
-> **`.env` 里的 `LITELLM_URL` 留空是正常的 —— compose 会替换成内置网关。**
-> `docker-compose.yml` 用 `${LITELLM_URL:-http://litellm:4000}` 兜底,所以留空即指向
-> 栈内 LiteLLM。只有改用**外部**网关时才需要显式填。
->
-> 若绕过 compose 直接把空的 `LITELLM_URL` 传给 FC,`services/fc/src/lib/litellm.ts`
-> 现在会**直接抛错**(拒绝猜测 AI 网关地址),而不是静默回落到某个第三方托管网关 ——
-> 早期版本的这个回落行为已移除。该检查只在 `LITELLM_MASTER_KEY` 已配置时才会触达,
-> 因此完全不跑 LiteLLM 的部署不受影响。
->
-> **Rust 版（`litellm-rust`）暂不可用**：仍是 early beta,只有 amd64、无 arm64,且
-> `v1.89.3` 实测所有路由（含 `/team/new`、`/v1/chat/completions`）均返回 404。等它补齐
-> 管理 API 后,换掉 image 一行即可,`config.yaml` 官方承诺不变。
 
 ### Storage smoke (image upload)
 
@@ -879,12 +837,7 @@ All variables live in `.env` (copied from `.env.example`).
 | `APPS_DB_APP_URL` | for data_app on FC | Postgres URL whose **host** is injected into each deployed app's `DATABASE_URL`. Required when `APPS_DB_ADMIN_URL` uses compose-internal `db` — deployed functions run on external Alibaba FC and cannot resolve that hostname. Use a VPC-reachable private IP, RDS URL, etc. |
 | `APPS_FC_VPC_ID` / `APPS_FC_VSWITCH_ID` / `APPS_FC_SECURITY_GROUP_ID` | for data_app on FC | VPC attachment for deployed app functions. Required when `APPS_DB_APP_URL` is set — without it the function cannot reach an internal RDS host. Use a dedicated security group (not the RDS-managed one) |
 | `APPS_FC_ENDPOINT` / `ALIYUN_ACCOUNT_ID` | for apps | Account-scoped FC 3.0 data-plane host (`<accountId>.<region>.fc.aliyuncs.com`). Not the OSS `ENDPOINT`; set one of the two |
-| `LITELLM_URL` | no | 留空即用内置网关（compose 默认 `http://litellm:4000`）。仅在改用**外部**网关时才设置 |
-| `LITELLM_MASTER_KEY` | auto | `gen-secrets.sh` 生成（`sk-` 前缀）；LiteLLM 管理凭证,同时交给 FC |
-| `LITELLM_UI_USERNAME` | no | 管理 UI 用户名（默认 `admin`） |
-| `LITELLM_UI_PASSWORD` | auto | `gen-secrets.sh` 生成 |
-| `LITELLM_PORT` | no | 网关在宿主机 loopback 的端口（默认 `4000`） |
-| `OPENAI_API_KEY` | no | 上游 provider key；供 `litellm/config.yaml` 里的 `os.environ/` 引用 |
+| `OPENAI_API_KEY` | no | 上游 provider key；供 `ai/catalog.yaml` 引用 |
 | `ANTHROPIC_API_KEY` | no | 同上 |
 
 ## Single-image platform mode

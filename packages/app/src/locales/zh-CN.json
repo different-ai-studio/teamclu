@@ -2487,7 +2487,7 @@
       },
       "prevPeriod": "上一周期",
       "nextPeriod": "下一周期",
-      "unavailable": "团队 AI 用量尚不可用，请先开通团队 AI 网关（LiteLLM）。",
+      "unavailable": "团队 AI 用量尚不可用，请先开通团队 AI 网关。",
       "requests": "请求数",
       "leaderboard": "成员排行榜",
       "noUsage": "本周期暂无用量。",

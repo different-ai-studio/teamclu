@@ -6,7 +6,7 @@ The TeamClu Cloud API (Hono). It can run on Alibaba Function Compute via
 ## Run in Docker (self-host)
 
 The container serves the full `/v1` API plus `/healthz`.
-All backing services (Postgres/Supabase, OSS, MQTT, LiteLLM) stay external and
+All backing services (Supabase, OSS, MQTT, the AI gateway) stay external and
 are configured through environment variables — the same set listed in `s.yaml`.
 
 ```bash

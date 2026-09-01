@@ -40,7 +40,7 @@ test("parseSyamlEnvVars keeps digits in names (APNS_PRIVATE_KEY_P8)", () => {
 test("parseComposeFcEnvVars reads the fc service, not another service's environment", () => {
   const text = [
     "services:",
-    "  litellm:",
+    "  ai-gateway:",
     "    environment:",
     "      NOT_FC: 1",
     "  fc:",

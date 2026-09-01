@@ -2487,7 +2487,7 @@
       },
       "prevPeriod": "Previous period",
       "nextPeriod": "Next period",
-      "unavailable": "Team AI usage is not available yet. Enable the team AI gateway (LiteLLM) first.",
+      "unavailable": "Team AI usage is not available yet. Enable the team AI gateway first.",
       "requests": "Requests",
       "leaderboard": "Member Leaderboard",
       "noUsage": "No usage in this period.",

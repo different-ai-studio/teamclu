@@ -82,15 +82,6 @@ services:
       - auth
       - storage
 
-  litellm-init:
-    depends_on:
-      - db
-
-  litellm:
-    # podman-compose goes stale on the completed litellm-init container; up.sh
-    # ordering is enough (litellm retries its DB connection on boot anyway).
-    depends_on: []
-
   fc:
     # No depends_on — podman-compose stores container dependency IDs that go stale
     # after migrate exits; up.sh starts fc explicitly after migrate completes.
@@ -101,10 +92,6 @@ services:
 
   caddy:
     depends_on: []
-
-  cron:
-    depends_on:
-      - fc
 
   emqx:
     # Podman machine default is 2GiB; Supabase alone can use ~1.5GiB. Belt-and-
