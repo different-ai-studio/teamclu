@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
 use serde::Serialize;
 use teamclu_skillpack::{
     inspect, read_origin, DirtyState, ORIGIN_DIR, SOURCE_TEAM, SkillOrigin,
@@ -64,6 +65,9 @@ pub fn effective_team_skill_dir(
 pub struct DraftPackFile {
     pub path: String,
     pub content: String,
+    /// `utf8` (default) or `base64` for non-text assets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -177,10 +181,18 @@ fn list_pack_files(target: &Path) -> Result<Vec<DraftPackFile>, ManagedSkillErro
         if rel_str.starts_with(&format!("{ORIGIN_DIR}/")) {
             continue;
         }
-        let content = fs::read_to_string(entry.path()).map_err(io_err)?;
+        let bytes = fs::read(entry.path()).map_err(io_err)?;
+        let (content, encoding) = match String::from_utf8(bytes.clone()) {
+            Ok(text) => (text, None),
+            Err(_) => (
+                base64::engine::general_purpose::STANDARD.encode(bytes),
+                Some("base64".to_string()),
+            ),
+        };
         out.push(DraftPackFile {
             path: rel_str,
             content,
+            encoding,
         });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -332,14 +344,22 @@ pub fn update_team_skill_draft(
     let (origin, _dirty) = ensure_writable_team_pack(&target, &req.slug, team_id, row)?;
     let base_version = parse_base_version(&origin)?;
 
-    if let Some(expected) = req.expected_digest.as_deref().filter(|v| !v.is_empty()) {
-        let current = pack_digest(&target)?;
-        if current != expected {
-            return Err(ManagedSkillError::new(
+    let expected = req
+        .expected_digest
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            ManagedSkillError::new(
                 ManagedSkillErrorCode::SkillChanged,
-                "skill digest does not match expectedDigest",
-            ));
-        }
+                "expectedDigest is required — call get_draft first",
+            )
+        })?;
+    let current = pack_digest(&target)?;
+    if current != expected {
+        return Err(ManagedSkillError::new(
+            ManagedSkillErrorCode::SkillChanged,
+            "skill digest does not match expectedDigest",
+        ));
     }
 
     let parent = target
@@ -400,6 +420,7 @@ pub fn update_team_skill_draft(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::managed_skill_writer::{ManagedSkillErrorCode, UpdatePackRequest};
     use teamclu_skillpack::{write_origin, ORIGIN_VERSION};
 
     fn write_skill(dir: &Path, body: &str) {
@@ -489,5 +510,57 @@ mod tests {
         assert!(current.contains("# Changed"));
         let dirty = inspect(&skill, Some(&baseline));
         assert!(dirty.is_dirty());
+    }
+
+    #[test]
+    fn get_draft_returns_binary_files_as_base64() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let team = "team-bin";
+        let slug = "with-asset";
+        let skill = home.join(".agents/skills").join(slug);
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: with-asset\ndescription: Demo\n---\n\n# Demo\n",
+        )
+        .unwrap();
+        fs::write(skill.join("logo.png"), [0x89, 0x50, 0x4e, 0x47]).unwrap();
+        stamp_team_origin(&skill, slug, team, 1, true);
+
+        let view = get_team_skill_draft(home, team, &row(slug, 1, true)).unwrap();
+        let asset = view
+            .files
+            .iter()
+            .find(|f| f.path == "logo.png")
+            .expect("binary asset listed");
+        assert_eq!(asset.encoding.as_deref(), Some("base64"));
+        assert!(!asset.content.is_empty());
+    }
+
+    #[test]
+    fn update_draft_requires_expected_digest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let team = "team-digest";
+        let slug = "needs-digest";
+        let skill = home.join(".agents/skills").join(slug);
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: needs-digest\ndescription: One\n---\n\n# One\n",
+        )
+        .unwrap();
+        stamp_team_origin(&skill, slug, team, 1, true);
+
+        let req = UpdatePackRequest {
+            slug: slug.into(),
+            content: "---\nname: needs-digest\ndescription: Two\n---\n\n# Two\n".into(),
+            files: vec![],
+            expected_digest: None,
+            delete_files: vec![],
+        };
+        let err = update_team_skill_draft(home, team, &row(slug, 1, true), &req).unwrap_err();
+        assert_eq!(err.code, ManagedSkillErrorCode::SkillChanged);
     }
 }

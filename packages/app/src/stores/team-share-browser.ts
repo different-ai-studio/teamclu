@@ -873,6 +873,14 @@ export class StaleTeamSkillPublishError extends Error {
   }
 }
 
+/** Draft is behind the team registry — must rebase, fork, or discard before publishing. */
+export class StaleDirtySkillPublishError extends Error {
+  constructor(readonly slug: string) {
+    super('stale_dirty_draft')
+    this.name = 'StaleDirtySkillPublishError'
+  }
+}
+
 export function isStaleTeamSkillPublish(e: unknown): boolean {
   if (e instanceof StaleTeamSkillPublishError) return true
   if (e && typeof e === 'object' && 'code' in e) {
@@ -1502,6 +1510,16 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const skill = get().skills.items.find((s) => s.slug === slug)
     if (!skill) throw new Error(`${slug} is not in the registry`)
 
+    const local = get().skillLocalState[slug]
+    if (local?.state === 'stale_dirty') {
+      throw new StaleDirtySkillPublishError(slug)
+    }
+
+    const draftBaseVersion = Number(local?.installedVersion ?? skill.installedVersion ?? 0)
+    if (!draftBaseVersion) {
+      throw new Error(`${slug} has no installed baseline version to publish from`)
+    }
+
     const { getEffectiveServerConfig } = await import('@/lib/server-config')
     const { cloudApiUrl } = await getEffectiveServerConfig()
     if (!cloudApiUrl) throw new Error('Cloud API URL is not configured')
@@ -1519,16 +1537,16 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       accessToken,
     })
 
-    const local = get().skillLocalState[slug]
-    const draftBaseVersion = Number(local?.installedVersion ?? skill.installedVersion ?? 0) || undefined
-
     const backend = getBackend()
     const version = await backend.teamSkills.publishTeamSkillVersion(teamId, slug, {
       contentHash: packed.contentHash,
       size: packed.size,
       changelog: input.changelog,
-      expectedLatestVersion: skill.latestVersion ?? 0,
-      ...(draftBaseVersion ? { publishedFromVersion: draftBaseVersion } : {}),
+      // CAS against the draft baseline, not the registry headline. When the
+      // team moved on while this machine stayed dirty, latestVersion is ahead
+      // of the draft base — passing it would let an old draft overwrite vN.
+      expectedLatestVersion: draftBaseVersion,
+      publishedFromVersion: draftBaseVersion,
       ...(input.summary !== undefined ? { summary: input.summary } : {}),
       ...(input.category !== undefined ? { category: input.category } : {}),
       ...(input.whenToUse !== undefined ? { whenToUse: input.whenToUse } : {}),
