@@ -145,6 +145,7 @@
     "skillPublishStaleBody": "{{versions}} shipped after that. Publishing v{{next}} replaces them with your copy, so those changes will be gone.",
     "skillPublishSubmit": "Publish",
     "skillPublished": "Published",
+    "skillPublishStaleBase": "Someone else published while you were editing. Your draft is kept — refresh and resolve the conflict.",
     "skillPublishFailed": "Publish failed: {{msg}}",
     "skillForkTitle": "Save as personal skill",
     "skillForkHint": "Keeps your edits under a new name. The team version goes back to updating automatically.",

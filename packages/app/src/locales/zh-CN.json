@@ -145,6 +145,7 @@
     "skillPublishStaleBody": "之后团队已经发过 {{versions}}。发布 v{{next}} 会用你这份覆盖掉它们，那些改动会丢失。",
     "skillPublishSubmit": "发布",
     "skillPublished": "已发布",
+    "skillPublishStaleBase": "在你编辑期间有人发布了新版本。你的草稿已保留——刷新后处理冲突。",
     "skillPublishFailed": "发布失败：{{msg}}",
     "skillForkTitle": "另存为个人 skill",
     "skillForkHint": "用新名字保留你的改动，团队版本恢复自动更新。",
