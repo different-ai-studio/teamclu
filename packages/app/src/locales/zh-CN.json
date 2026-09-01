@@ -46,7 +46,6 @@
     "mcpShareNameTaken": "团队里已经有一个叫 {{name}} 的 MCP 服务器。",
     "skills": "技能",
     "agentSkillsEmpty": "当前 Agent 没有已安装的 Skills。",
-    "skillGroupAgentInstalled": "Agent 已安装",
     "selectAgent": "选择 Agent",
     "noManageableAgents": "没有可管理的 Agent",
     "marketTeam": "团队",

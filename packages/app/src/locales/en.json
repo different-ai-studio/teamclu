@@ -46,7 +46,6 @@
     "mcpShareNameTaken": "The team already has an MCP server called {{name}}.",
     "skills": "Skills",
     "agentSkillsEmpty": "This Agent has no installed Skills.",
-    "skillGroupAgentInstalled": "Installed on Agent",
     "selectAgent": "Select Agent",
     "noManageableAgents": "No manageable Agents",
     "marketTeam": "Team",
