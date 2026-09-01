@@ -22,6 +22,7 @@ pub fn assemble_spawn_runtime_env(
     cloud_token_file: Option<&str>,
     managed_llm: &ManagedLlmState,
     gateway_token: Option<&str>,
+    ai_proxy_base: Option<&str>,
 ) -> anyhow::Result<SpawnRuntimeEnv> {
     assemble_spawn_runtime_env_for_execution(
         workspace_root,
@@ -32,6 +33,7 @@ pub fn assemble_spawn_runtime_env(
         cloud_token_file,
         managed_llm,
         gateway_token,
+        ai_proxy_base,
     )
 }
 
@@ -47,6 +49,7 @@ pub fn assemble_spawn_runtime_env_for_execution(
     cloud_token_file: Option<&str>,
     managed_llm: &ManagedLlmState,
     gateway_token: Option<&str>,
+    ai_proxy_base: Option<&str>,
 ) -> anyhow::Result<SpawnRuntimeEnv> {
     // Cold ManagedLlm cache often yields Unknown and omits TEAMCLU_TEAM_PROVIDER;
     // reconstruct Enabled from on-disk provider.team so the spawn fingerprint
@@ -76,6 +79,7 @@ pub fn assemble_spawn_runtime_env_for_execution(
             // never having been registered. Verified by A/B — same payload, the
             // only difference being this variable.
             gateway_token: gateway_token.map(str::to_string),
+            ai_proxy_base: ai_proxy_base.map(str::to_string),
         },
         &managed_llm,
     )?;
@@ -109,7 +113,7 @@ pub fn assemble_spawn_runtime_env_for_execution(
     if let ManagedLlmState::Enabled(provider) = &managed_llm {
         extra_env.insert(
             "TEAMCLU_TEAM_PROVIDER".to_string(),
-            teamclu_runtime_env::team_provider_env_payload(provider),
+            teamclu_runtime_env::team_provider_env_payload(provider, ai_proxy_base),
         );
         tracing::info!(
             target: "amuxd::team_provider_probe",

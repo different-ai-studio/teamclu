@@ -307,6 +307,7 @@ impl AmuxdAgentHandle {
             // path has a token source of its own — the gateway runtime does not
             // hold one, and a wrong token is worse than an absent provider.
             None,
+            None,
         )
         .map(|env| SpawnRuntimeEnv {
             is_gateway: true,

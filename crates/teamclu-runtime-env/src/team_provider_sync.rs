@@ -35,8 +35,11 @@ pub struct TeamProviderSyncResult {
 pub fn sync_global_team_provider(
     managed_llm: &ManagedLlmState,
     secrets: &HashMap<String, String>,
+    // The daemon's own loopback AI proxy for this team, which is what a runtime
+    // must call — see `runtime_facing_base_url`. None leaves the cloud URL.
+    proxy_base: Option<&str>,
 ) -> anyhow::Result<bool> {
-    let changed = team_provider::ensure_global_team_provider(managed_llm)?;
+    let changed = team_provider::ensure_global_team_provider(managed_llm, proxy_base)?;
     let Some(gateway_token) = secrets.get("tc_gateway_token") else {
         return Ok(changed);
     };

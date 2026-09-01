@@ -50,6 +50,10 @@ pub struct ManagedLlmResolver {
     /// tokens live only in the instance that minted them, so a token from a
     /// second store authenticates against nothing.
     tokens: parking_lot::RwLock<Option<super::gateway_token::GatewayTokenSource>>,
+    /// `http://127.0.0.1:<port>` for this daemon's own listener, set once the
+    /// HTTP layer is up. Runtimes are pointed at `<base>/v1/ai/teams/<id>`
+    /// rather than at the cloud gateway — see `runtime_facing_base_url`.
+    local_http_base: parking_lot::RwLock<Option<String>>,
     cache: AsyncMutex<HashMap<String, CachedManagedLlm>>,
     member_key_kicked: AsyncMutex<HashSet<String>>,
 }
@@ -59,6 +63,7 @@ impl ManagedLlmResolver {
         Self {
             backend,
             tokens: parking_lot::RwLock::new(None),
+            local_http_base: parking_lot::RwLock::new(None),
             cache: AsyncMutex::new(HashMap::new()),
             member_key_kicked: AsyncMutex::new(HashSet::new()),
         }
@@ -76,6 +81,20 @@ impl ManagedLlmResolver {
     /// builds before its HTTP layer exists.
     pub fn set_tokens(&self, tokens: super::gateway_token::GatewayTokenSource) {
         *self.tokens.write() = Some(tokens);
+    }
+
+    /// Record this daemon's own HTTP origin, once its listener has an address.
+    pub fn set_local_http_base(&self, base: String) {
+        *self.local_http_base.write() = Some(base);
+    }
+
+    /// The AI proxy URL a runtime should call for `team_id`, or None when this
+    /// daemon has no listener to offer (tests, headless paths).
+    pub fn ai_proxy_base(&self, team_id: &str) -> Option<String> {
+        self.local_http_base
+            .read()
+            .as_ref()
+            .map(|base| format!("{}/v1/ai/teams/{}", base.trim_end_matches('/'), team_id))
     }
 
     /// The `ai:invoke` token `provider.team`'s apiKey resolves to.
@@ -174,7 +193,10 @@ impl ManagedLlmResolver {
             .map(|t| t.get_or_mint())
             .unwrap_or_default();
         let secrets = teamclu_runtime_env::secrets_for_team_provider(&token);
-        if let Err(e) = teamclu_runtime_env::sync_global_team_provider(&state, &secrets) {
+        let proxy_base = self.ai_proxy_base(team_id);
+        if let Err(e) =
+            teamclu_runtime_env::sync_global_team_provider(&state, &secrets, proxy_base.as_deref())
+        {
             tracing::warn!(
                 team_id,
                 error = %e,

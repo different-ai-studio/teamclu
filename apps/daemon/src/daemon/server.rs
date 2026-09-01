@@ -1222,6 +1222,13 @@ impl DaemonServer {
                     self.managed_llm.set_tokens(
                         crate::runtime::gateway_token::GatewayTokenSource::new(h.tokens.clone()),
                     );
+                    // ...and where to reach that proxy. Runtimes are pointed
+                    // here, not at the cloud gateway: the token above is only
+                    // valid locally, and this hop is what refreshes the cloud
+                    // credential per request so a multi-day agent never meets
+                    // its expiry.
+                    self.managed_llm
+                        .set_local_http_base(format!("http://{}", h.local_addr));
                     if let Err(err) = self
                         .runtime_context
                         .validate_managed_setup(&self.config.agents.local_agent)
