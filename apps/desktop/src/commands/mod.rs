@@ -72,6 +72,9 @@ pub const APP_DISPLAY_NAME: &str = env!("APP_DISPLAY_NAME");
 /// Independent of `APP_SHORT_NAME` — betly is short name `teamclaw` on scheme
 /// `teamclu`, copilot361 is `copilot361` on both.
 pub const APP_SCHEME: &str = env!("APP_SCHEME");
+/// Read by the teamclu-introspect sidecar (`export_session_link`), which amuxd
+/// registers as an MCP server and therefore inherits this from.
+pub const APP_SCHEME_ENV: &str = "TEAMCLU_APP_SCHEME";
 /// Workspace metadata directory (`.teamclu` for official builds).
 pub const TEAMCLU_DIR: &str = env!("TEAMCLU_DIR");
 /// Subfolder inside workspace where the team repo is cloned / symlinked.
@@ -148,18 +151,46 @@ pub fn brand_home_dir() -> std::path::PathBuf {
     teamclu_runtime_env::brand_home_dir(APP_SHORT_NAME)
 }
 
+/// Brand + `AMUXD_HOME` + app-scheme env every bundled amuxd subcommand must
+/// inherit so `stop` / `start` / `status` / `init` / `clear` / `uninstall-service`
+/// all hit the same branded home (`~/.amuxd-<brand>`), not the default `~/.amuxd`.
+pub fn branded_amuxd_env_for(
+    short_name: &str,
+    display_name: &str,
+    scheme: &str,
+) -> Vec<(&'static str, String)> {
+    vec![
+        (
+            teamclu_runtime_env::BRAND_SHORT_NAME_ENV,
+            short_name.to_string(),
+        ),
+        (
+            teamclu_runtime_env::APP_DISPLAY_NAME_ENV,
+            display_name.to_string(),
+        ),
+        (
+            teamclu_runtime_env::AMUXD_HOME_ENV,
+            teamclu_runtime_env::amuxd_home_for_brand(short_name)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (APP_SCHEME_ENV, scheme.to_string()),
+    ]
+}
+
+/// Brand env for this desktop build (`APP_SHORT_NAME` / display / scheme).
+pub fn branded_amuxd_env() -> Vec<(&'static str, String)> {
+    branded_amuxd_env_for(APP_SHORT_NAME, APP_DISPLAY_NAME, APP_SCHEME)
+}
+
 /// Stamp brand + `AMUXD_HOME` onto a shell sidecar so CLI (`init` / `clear` /
 /// `doctor`) reads the same state dir as the desktop-managed daemon.
 pub fn with_amuxd_brand_env(
     command: tauri_plugin_shell::process::Command,
 ) -> tauri_plugin_shell::process::Command {
-    command
-        .env(teamclu_runtime_env::BRAND_SHORT_NAME_ENV, APP_SHORT_NAME)
-        .env(teamclu_runtime_env::APP_DISPLAY_NAME_ENV, APP_DISPLAY_NAME)
-        .env(
-            teamclu_runtime_env::AMUXD_HOME_ENV,
-            amuxd_home_dir().to_string_lossy().as_ref(),
-        )
+    branded_amuxd_env()
+        .into_iter()
+        .fold(command, |cmd, (key, value)| cmd.env(key, value))
 }
 
 /// Best-effort OS account name used to seed a new member's default display

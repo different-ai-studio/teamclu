@@ -31,12 +31,6 @@ const EXIT_CHILD_GRACE: Duration = Duration::from_millis(500);
 const INTROSPECT_ENV: &str = "TEAMCLU_INTROSPECT_BIN";
 const CURSOR_BRIDGE_MAIN_ENV: &str = "TEAMCLU_CURSOR_BRIDGE_MAIN";
 const CLAUDE_BRIDGE_MAIN_ENV: &str = "TEAMCLU_CLAUDE_BRIDGE_MAIN";
-const BRAND_SHORT_NAME_ENV: &str = teamclu_runtime_env::BRAND_SHORT_NAME_ENV;
-const AMUXD_HOME_ENV: &str = teamclu_runtime_env::AMUXD_HOME_ENV;
-/// Read by the teamclu-introspect sidecar (`export_session_link`), which amuxd
-/// registers as an MCP server and therefore inherits this from.
-const APP_SCHEME_ENV: &str = "TEAMCLU_APP_SCHEME";
-const APP_DISPLAY_NAME_ENV: &str = teamclu_runtime_env::APP_DISPLAY_NAME_ENV;
 const LAUNCHD_LABEL: &str = "cc.ucar.amuxd";
 
 struct SupervisorInner {
@@ -167,19 +161,147 @@ fn locate_bundled_bridge_main(bridge_name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-fn amuxd_dir() -> PathBuf {
-    super::amuxd_home_dir()
+/// Inject the same brand env onto std and tokio commands (start/stop/status/…).
+trait AmuxdBrandEnv {
+    fn set_brand_env(&mut self, key: &str, value: &str);
+}
+
+impl AmuxdBrandEnv for std::process::Command {
+    fn set_brand_env(&mut self, key: &str, value: &str) {
+        self.env(key, value);
+    }
+}
+
+impl AmuxdBrandEnv for tokio::process::Command {
+    fn set_brand_env(&mut self, key: &str, value: &str) {
+        self.env(key, value);
+    }
+}
+
+fn apply_amuxd_brand_env_pairs<C: AmuxdBrandEnv>(cmd: &mut C, pairs: &[(&'static str, String)]) {
+    for (key, value) in pairs {
+        cmd.set_brand_env(key, value);
+    }
+}
+
+fn apply_amuxd_brand_env<C: AmuxdBrandEnv>(cmd: &mut C) {
+    apply_amuxd_brand_env_pairs(cmd, &super::branded_amuxd_env());
+}
+
+fn amuxd_pidfile_path() -> PathBuf {
+    crate::commands::amuxd_run_dir().join("amuxd.pid")
+}
+
+fn amuxd_lock_path() -> PathBuf {
+    crate::commands::amuxd_run_dir().join("amuxd.lock")
+}
+
+fn amuxd_pidfile_pid() -> Option<i32> {
+    let body = std::fs::read_to_string(amuxd_pidfile_path()).ok()?;
+    body.trim().parse::<i32>().ok().filter(|&pid| pid > 0)
 }
 
 fn amuxd_pid_is_running() -> bool {
-    let pid_path = crate::commands::amuxd_run_dir().join("amuxd.pid");
-    let Ok(body) = std::fs::read_to_string(&pid_path) else {
+    amuxd_pidfile_pid().is_some_and(pid_alive)
+}
+
+fn pidfile_matches_child(child: &Option<tokio::process::Child>) -> bool {
+    let Some(c) = child.as_ref() else {
         return false;
     };
-    let Ok(pid) = body.trim().parse::<i32>() else {
+    let Some(id) = c.id() else {
         return false;
     };
-    pid_alive(pid)
+    amuxd_pidfile_pid() == Some(id as i32)
+}
+
+fn managed_log_hint() -> String {
+    let path = crate::commands::amuxd_logs_dir().join("amuxd.managed.log");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return String::new();
+    };
+    let start = bytes.len().saturating_sub(4096);
+    let tail = String::from_utf8_lossy(&bytes[start..]);
+    let tail = tail.trim();
+    if tail.is_empty() {
+        String::new()
+    } else {
+        format!("\n--- amuxd.managed.log ---\n{tail}")
+    }
+}
+
+fn child_exited_before_ready_error() -> String {
+    format!(
+        "managed amuxd exited before becoming ready; another daemon still holds {}{}",
+        amuxd_lock_path().display(),
+        managed_log_hint()
+    )
+}
+
+fn still_running_after_stop_error() -> String {
+    let pid = amuxd_pidfile_pid()
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    format!(
+        "amuxd still running after stop timeout (pid {pid} at {}); refuse to spawn",
+        amuxd_pidfile_path().display()
+    )
+}
+
+/// Snapshot: would this state count as a successful restart?
+///
+/// pidfile must belong to the spawned child. `/healthz` 200 from an old
+/// daemon (different pidfile PID) is never success.
+fn restart_takeover_ok(
+    child_pid: u32,
+    child_exited: bool,
+    pidfile_pid: Option<i32>,
+    healthz_ok: bool,
+) -> Result<(), String> {
+    if child_exited {
+        return Err(child_exited_before_ready_error());
+    }
+    match pidfile_pid {
+        Some(pid) if pid == child_pid as i32 => {}
+        Some(other) => {
+            return Err(format!(
+                "managed amuxd pidfile PID {other} does not match spawned child {child_pid}"
+            ));
+        }
+        None => return Err("managed amuxd pidfile missing after spawn".into()),
+    }
+    if !healthz_ok {
+        return Err("amuxd health check timed out (/v1/healthz)".into());
+    }
+    Ok(())
+}
+
+struct SpawnProbe {
+    child_pid: Option<u32>,
+    child_exited: bool,
+}
+
+fn probe_spawned_child(child: &mut Option<tokio::process::Child>) -> SpawnProbe {
+    let Some(c) = child.as_mut() else {
+        return SpawnProbe {
+            child_pid: None,
+            child_exited: true,
+        };
+    };
+    let pid = c.id();
+    match c.try_wait() {
+        Ok(None) => SpawnProbe {
+            child_pid: pid,
+            child_exited: false,
+        },
+        Ok(Some(_)) | Err(_) => {
+            *child = None;
+            SpawnProbe {
+                child_pid: pid,
+                child_exited: true,
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -237,15 +359,15 @@ fn pid_alive(_pid: i32) -> bool {
     false
 }
 
-async fn wait_for_amuxd_stopped(timeout: Duration) {
+async fn wait_for_amuxd_stopped(timeout: Duration) -> Result<(), String> {
     let start = std::time::Instant::now();
     while amuxd_pid_is_running() {
         if start.elapsed() >= timeout {
-            eprintln!("[amuxd-supervisor] warning: amuxd still running after stop timeout");
-            return;
+            return Err(still_running_after_stop_error());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    Ok(())
 }
 
 /// True when GET `/v1/healthz` succeeds (same contract as the frontend probe).
@@ -271,17 +393,32 @@ async fn daemon_healthz_ok() -> bool {
     }
 }
 
-async fn wait_until_healthy(timeout: Duration, app_exiting: &AtomicBool) -> Result<(), String> {
+async fn wait_until_healthy(
+    timeout: Duration,
+    app_exiting: &AtomicBool,
+    inner: &tokio::sync::Mutex<SupervisorInner>,
+) -> Result<(), String> {
     let start = std::time::Instant::now();
     loop {
         if app_exiting.load(Ordering::SeqCst) {
             return Err("amuxd supervisor is shutting down".into());
         }
-        if daemon_healthz_ok().await {
+        let probe = {
+            let mut guard = inner.lock().await;
+            probe_spawned_child(&mut guard.child)
+        };
+        if probe.child_exited {
+            return Err(child_exited_before_ready_error());
+        }
+        let Some(child_pid) = probe.child_pid else {
+            return Err(child_exited_before_ready_error());
+        };
+        let healthz_ok = daemon_healthz_ok().await;
+        if restart_takeover_ok(child_pid, false, amuxd_pidfile_pid(), healthz_ok).is_ok() {
             return Ok(());
         }
         if start.elapsed() > timeout {
-            return Err("amuxd health check timed out (/v1/healthz)".into());
+            return restart_takeover_ok(child_pid, false, amuxd_pidfile_pid(), healthz_ok);
         }
         tokio::time::sleep(HEALTH_TICK).await;
     }
@@ -290,9 +427,10 @@ async fn wait_until_healthy(timeout: Duration, app_exiting: &AtomicBool) -> Resu
 /// Blocking variant — only for the sync exit path (`shutdown_blocking`).
 fn run_bundled_once(args: &[&str]) -> Result<(), String> {
     let bin = bundled_amuxd()?;
-    let out = std::process::Command::new(&bin)
-        .no_window()
-        .args(args)
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.no_window().args(args);
+    apply_amuxd_brand_env(&mut cmd);
+    let out = cmd
         .output()
         .map_err(|e| format!("spawn amuxd {}: {e}", args.join(" ")))?;
     if !out.status.success() {
@@ -309,9 +447,10 @@ fn run_bundled_once(args: &[&str]) -> Result<(), String> {
 /// Async variant for tokio contexts — does not block a runtime worker.
 async fn run_bundled_once_async(args: &[&str]) -> Result<(), String> {
     let bin = bundled_amuxd()?;
-    let out = tokio::process::Command::new(&bin)
-        .no_window()
-        .args(args)
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.no_window().args(args);
+    apply_amuxd_brand_env(&mut cmd);
+    let out = cmd
         .output()
         .await
         .map_err(|e| format!("spawn amuxd {}: {e}", args.join(" ")))?;
@@ -411,7 +550,7 @@ async fn migrate_legacy_service_if_needed(supervisor: &AmuxdSupervisor) -> Resul
     if amuxd_pid_is_running() {
         eprintln!("[amuxd-supervisor] stopping leftover amuxd before managed start");
         let _ = run_bundled_once_async(&["stop"]).await;
-        wait_for_amuxd_stopped(STOP_TIMEOUT).await;
+        wait_for_amuxd_stopped(STOP_TIMEOUT).await?;
     }
 
     supervisor.migrated_legacy.store(true, Ordering::SeqCst);
@@ -587,12 +726,18 @@ impl AmuxdSupervisor {
 
         migrate_legacy_service_if_needed(state).await?;
 
-        if child_is_alive(&mut inner.child) && daemon_healthz_ok().await {
+        if child_is_alive(&mut inner.child)
+            && pidfile_matches_child(&inner.child)
+            && daemon_healthz_ok().await
+        {
             return Ok(());
         }
 
-        // Heal: stop any live/stale instance before (re)spawn.
+        // Heal: stop any live/stale instance before (re)spawn. Must actually
+        // kill the *branded* daemon — `amuxd stop` without AMUXD_HOME hits
+        // ~/.amuxd and leaves ~/.amuxd-<brand> running.
         stop_with_child_fallback_async(&mut inner, STOP_TIMEOUT).await;
+        wait_for_amuxd_stopped(STOP_TIMEOUT).await?;
 
         if state.app_exiting.load(Ordering::SeqCst) {
             return Err("amuxd supervisor is shutting down".into());
@@ -646,12 +791,9 @@ impl AmuxdSupervisor {
             cmd.process_group(0);
         }
         // White-label: personal secrets under ~/.{brand}/secrets and amuxd
-        // state under ~/.amuxd-<brand> (official keeps ~/.amuxd).
-        let amuxd_home = amuxd_dir();
-        cmd.env(BRAND_SHORT_NAME_ENV, super::APP_SHORT_NAME);
-        cmd.env(APP_DISPLAY_NAME_ENV, super::APP_DISPLAY_NAME);
-        cmd.env(AMUXD_HOME_ENV, &amuxd_home);
-        cmd.env(APP_SCHEME_ENV, super::APP_SCHEME);
+        // state under ~/.amuxd-<brand> (official keeps ~/.amuxd). Same helper
+        // as stop/status/init so we never hand-write a different env set.
+        apply_amuxd_brand_env(&mut cmd);
         if let Some(introspect) = bundled_introspect_path() {
             cmd.env(INTROSPECT_ENV, introspect);
         }
@@ -673,7 +815,7 @@ impl AmuxdSupervisor {
         // behind HEALTH_TIMEOUT. app_exiting aborts the wait.
         drop(inner);
 
-        if let Err(e) = wait_until_healthy(HEALTH_TIMEOUT, &state.app_exiting).await {
+        if let Err(e) = wait_until_healthy(HEALTH_TIMEOUT, &state.app_exiting, &state.inner).await {
             let mut inner = state.inner.lock().await;
             stop_with_child_fallback_async(&mut inner, EXIT_CHILD_GRACE).await;
             return Err(e);
@@ -837,6 +979,15 @@ pub async fn daemon_supervisor_status<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::{branded_amuxd_env_for, APP_SCHEME_ENV};
+    use crate::test_home::HomeGuard;
+
+    fn env_lookup<'a>(pairs: &'a [(&'static str, String)], key: &str) -> Option<&'a str> {
+        pairs
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.as_str())
+    }
 
     #[test]
     fn bridge_candidates_include_tauri_resources_binaries_layout() {
@@ -850,5 +1001,148 @@ mod tests {
             }),
             "candidates={cands:?}"
         );
+    }
+
+    #[test]
+    fn stop_brand_env_uses_branded_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = HomeGuard::set(tmp.path());
+        let pairs = branded_amuxd_env_for("teamclaw", "TeamClaw", "teamclu");
+        let home = env_lookup(&pairs, teamclu_runtime_env::AMUXD_HOME_ENV).unwrap();
+        assert!(
+            home.ends_with(".amuxd-teamclaw"),
+            "AMUXD_HOME should be branded, got {home}"
+        );
+        assert_eq!(
+            env_lookup(&pairs, teamclu_runtime_env::BRAND_SHORT_NAME_ENV),
+            Some("teamclaw")
+        );
+        assert_eq!(env_lookup(&pairs, APP_SCHEME_ENV), Some("teamclu"));
+        assert!(pairs
+            .iter()
+            .any(|(k, _)| *k == teamclu_runtime_env::APP_DISPLAY_NAME_ENV));
+    }
+
+    #[cfg(unix)]
+    fn capture_brand_env(cmd_kind: &str, pairs: &[(&'static str, String)]) -> String {
+        let script = "printf '%s' \"$AMUXD_HOME|$TEAMCLU_BRAND_SHORT_NAME|$TEAMCLU_APP_SCHEME\"";
+        match cmd_kind {
+            "sync" => {
+                let mut cmd = std::process::Command::new("sh");
+                cmd.args(["-c", script]);
+                apply_amuxd_brand_env_pairs(&mut cmd, pairs);
+                let out = cmd.output().expect("sync sh");
+                assert!(
+                    out.status.success(),
+                    "stderr={}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                String::from_utf8_lossy(&out.stdout).into_owned()
+            }
+            "async" => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let mut cmd = tokio::process::Command::new("sh");
+                    cmd.args(["-c", script]);
+                    apply_amuxd_brand_env_pairs(&mut cmd, pairs);
+                    let out = cmd.output().await.expect("async sh");
+                    assert!(
+                        out.status.success(),
+                        "stderr={}",
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    String::from_utf8_lossy(&out.stdout).into_owned()
+                })
+            }
+            other => panic!("unknown cmd_kind {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_uses_branded_home_on_sync_and_async_commands() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = HomeGuard::set(tmp.path());
+        let pairs = branded_amuxd_env_for("teamclaw", "TeamClaw", "teamclu");
+        let sync_out = capture_brand_env("sync", &pairs);
+        let async_out = capture_brand_env("async", &pairs);
+        for out in [&sync_out, &async_out] {
+            let parts: Vec<&str> = out.split('|').collect();
+            assert_eq!(parts.len(), 3, "{out}");
+            assert!(
+                parts[0].ends_with(".amuxd-teamclaw"),
+                "AMUXD_HOME={}",
+                parts[0]
+            );
+            assert_eq!(parts[1], "teamclaw");
+            assert_eq!(parts[2], "teamclu");
+        }
+        assert_eq!(sync_out, async_out);
+    }
+
+    #[test]
+    fn different_brands_do_not_share_amuxd_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = HomeGuard::set(tmp.path());
+        let teamclaw = branded_amuxd_env_for("teamclaw", "TeamClaw", "teamclu");
+        let other = branded_amuxd_env_for("copilot361", "Copilot361", "copilot361");
+        let home_a = env_lookup(&teamclaw, teamclu_runtime_env::AMUXD_HOME_ENV).unwrap();
+        let home_b = env_lookup(&other, teamclu_runtime_env::AMUXD_HOME_ENV).unwrap();
+        assert_ne!(home_a, home_b);
+        assert!(home_a.ends_with(".amuxd-teamclaw"), "{home_a}");
+        assert!(home_b.ends_with(".amuxd-copilot361"), "{home_b}");
+        // A stop targeted at brand A cannot address brand B's lock/pidfile.
+        assert!(!home_a.starts_with(home_b) && !home_b.starts_with(home_a));
+    }
+
+    #[test]
+    fn lock_conflict_child_exit_is_restart_err_not_healthz_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = HomeGuard::set(tmp.path());
+        let err = restart_takeover_ok(200, true, Some(100), true).expect_err("must not Ok");
+        assert!(err.contains("exited before becoming ready"), "{err}");
+        assert!(err.contains("amuxd.lock"), "{err}");
+        assert!(
+            err.contains("amuxd-") || err.contains("/amuxd/") || err.contains(".amuxd"),
+            "lock path should be under branded/official amuxd home: {err}"
+        );
+    }
+
+    #[test]
+    fn pidfile_mismatch_with_healthz_is_not_success() {
+        let err = restart_takeover_ok(200, false, Some(100), true)
+            .expect_err("old pidfile + healthz 200 must not succeed");
+        assert!(err.contains("does not match spawned child 200"), "{err}");
+        assert!(err.contains("100"), "{err}");
+    }
+
+    #[test]
+    fn happy_path_branded_restart_takeover() {
+        restart_takeover_ok(200, false, Some(200), true)
+            .expect("matching pidfile + live child + healthz must succeed");
+    }
+
+    #[tokio::test]
+    async fn old_daemon_still_alive_after_stop_is_err_and_does_not_spawn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = HomeGuard::set(tmp.path());
+        let run_dir = crate::commands::amuxd_run_dir();
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(run_dir.join("amuxd.pid"), std::process::id().to_string()).unwrap();
+
+        let err = wait_for_amuxd_stopped(Duration::from_millis(250))
+            .await
+            .expect_err("live branded pidfile must fail stop wait");
+        assert!(err.contains("still running"), "{err}");
+        assert!(err.contains("refuse to spawn"), "{err}");
+        // Gate used by ensure_started_locked: `wait_for_amuxd_stopped(...).await?`
+        // happens before spawn. An Err here is the "do not spawn" proof.
+        assert!(matches!(
+            wait_for_amuxd_stopped(Duration::from_millis(0)).await,
+            Err(_)
+        ));
     }
 }
