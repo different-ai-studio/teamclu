@@ -822,29 +822,12 @@ impl DaemonServer {
             refresh_coordinator: None,
             refresh_auto_apply_task: None,
             mqtt_connected_flag: None,
-            // With a token source, not bare.
-            //
-            // There are two resolvers: this one, on the SPAWN path, and the
-            // HTTP layer's, which reconciles `provider.team` and resolves its
-            // apiKey into the file opencode reads. Only the second had a token
-            // source, which was sufficient for exactly as long as opencode was
-            // the only consumer. Every other runtime is handed
-            // `TEAMCLU_TEAM_PROVIDER` and looks its credential up from the env
-            // by the name in `apiKeyEnv` — so this resolver has to be able to
-            // mint one too, or `tc_gateway_token` is never bound and pi hides
-            // every team model behind an unresolvable credential.
-            //
-            // The store is file-backed and shared, so a token minted here is
-            // the same secret the HTTP layer validates against.
-            managed_llm: Arc::new(
-                crate::runtime::managed_llm::ManagedLlmResolver::new(backend).with_tokens(
-                    crate::http::tokens::TokenStore::load_or_init(
-                        &crate::config::DaemonConfig::http_token_path(),
-                    )
-                    .ok()
-                    .map(crate::runtime::gateway_token::GatewayTokenSource::new),
-                ),
-            ),
+            // Built without a token source: the HTTP layer owns the TokenStore
+            // and has not started yet. It is injected below, once that store
+            // exists — see the `set_tokens` call after the http spawn.
+            managed_llm: Arc::new(crate::runtime::managed_llm::ManagedLlmResolver::new(
+                backend,
+            )),
             live_tee,
             session_remote_targets: Arc::new(AsyncMutex::new(
                 crate::remote_tools::SessionRemoteTargetStore::default(),
@@ -1226,6 +1209,19 @@ impl DaemonServer {
             {
                 Ok(h) => {
                     info!(addr = %h.local_addr, "http listener bound");
+                    // Hand the spawn-path resolver the SAME TokenStore the HTTP
+                    // layer authenticates against. Loading a second store from
+                    // the same file is not equivalent: the file holds only the
+                    // root token, while minted session tokens live in the
+                    // instance that minted them — so a token from any other
+                    // store is rejected as "invalid or expired".
+                    //
+                    // Without this the runtimes that read their credential from
+                    // `TEAMCLU_TEAM_PROVIDER` (pi, and anything after it) get a
+                    // token nothing accepts, and every team-model call 401s.
+                    self.managed_llm.set_tokens(
+                        crate::runtime::gateway_token::GatewayTokenSource::new(h.tokens.clone()),
+                    );
                     if let Err(err) = self
                         .runtime_context
                         .validate_managed_setup(&self.config.agents.local_agent)

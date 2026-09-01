@@ -44,7 +44,12 @@ pub struct ManagedLlmResolver {
     /// resolves to. `None` in focused tests and wherever no HTTP layer exists —
     /// the provider is then written with the placeholder left in place, which
     /// is correct: there is no local proxy to authenticate against either.
-    tokens: Option<super::gateway_token::GatewayTokenSource>,
+    /// Interior-mutable because the HTTP layer owns the TokenStore and starts
+    /// AFTER this resolver is built. Two stores loaded from the same file are
+    /// NOT interchangeable — the root token is on disk, but minted session
+    /// tokens live only in the instance that minted them, so a token from a
+    /// second store authenticates against nothing.
+    tokens: parking_lot::RwLock<Option<super::gateway_token::GatewayTokenSource>>,
     cache: AsyncMutex<HashMap<String, CachedManagedLlm>>,
     member_key_kicked: AsyncMutex<HashSet<String>>,
 }
@@ -53,7 +58,7 @@ impl ManagedLlmResolver {
     pub fn new(backend: Arc<dyn Backend>) -> Self {
         Self {
             backend,
-            tokens: None,
+            tokens: parking_lot::RwLock::new(None),
             cache: AsyncMutex::new(HashMap::new()),
             member_key_kicked: AsyncMutex::new(HashSet::new()),
         }
@@ -62,9 +67,15 @@ impl ManagedLlmResolver {
     /// Attach the token source so reconciles can resolve
     /// `provider.team.options.apiKey`. Chained after `new()` because most call
     /// sites (tests, the channel manager) have no HTTP layer to mint from.
-    pub fn with_tokens(mut self, tokens: Option<super::gateway_token::GatewayTokenSource>) -> Self {
-        self.tokens = tokens;
+    pub fn with_tokens(self, tokens: Option<super::gateway_token::GatewayTokenSource>) -> Self {
+        *self.tokens.write() = tokens;
         self
+    }
+
+    /// Attach the token source after construction, for the resolver the daemon
+    /// builds before its HTTP layer exists.
+    pub fn set_tokens(&self, tokens: super::gateway_token::GatewayTokenSource) {
+        *self.tokens.write() = Some(tokens);
     }
 
     /// The `ai:invoke` token `provider.team`'s apiKey resolves to.
@@ -77,7 +88,7 @@ impl ManagedLlmResolver {
     /// credential is "loaded but unavailable" — which looks exactly like the
     /// provider never having been registered at all.
     pub fn gateway_token(&self) -> Option<String> {
-        self.tokens.as_ref().map(|t| t.get_or_mint())
+        self.tokens.read().as_ref().map(|t| t.get_or_mint())
     }
 
     /// Resolve the team's managed (shared) LLM directly from the cloud API, with
@@ -158,6 +169,7 @@ impl ManagedLlmResolver {
         // (and leak a token into the store) on every provider read.
         let token = self
             .tokens
+            .read()
             .as_ref()
             .map(|t| t.get_or_mint())
             .unwrap_or_default();
