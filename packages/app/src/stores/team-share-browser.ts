@@ -4,7 +4,7 @@ import { useEnvVarsStore, type TeamEnvListing } from '@/stores/env-vars'
 import type { SkillSource } from '@/lib/skills/types'
 import { getSourceLabel } from '@/lib/skills/loader'
 import { frontmatterString } from '@/lib/skills/frontmatter'
-import { resolveTeamKnowledgeDir } from '@/lib/team-skill-paths'
+import { resolveTeamSyncRoot } from '@/lib/team-skill-paths'
 import { invoke } from '@tauri-apps/api/core'
 import { getBackend } from '@/lib/backend/provider'
 import { getFreshAccessToken } from '@/lib/auth/session-store'
@@ -258,7 +258,7 @@ interface TeamShareBrowserState {
   knowledge: SectionState<TeamKnowledgeItem>
   envCount: number
   /** Absolute path of the team shared root, for the knowledge file tree. */
-  knowledgeRoot: string | null
+  syncRoot: string | null
   subjectActorId: string | null
   /** Single detail shown beside the list. Team-share items never create tabs. */
   detailTarget: TeamShareTarget | null
@@ -1074,7 +1074,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   mcp: emptySection<TeamMcpItem>(),
   knowledge: emptySection<TeamKnowledgeItem>(),
   envCount: 0,
-  knowledgeRoot: null,
+  syncRoot: null,
   subjectActorId: null,
   detailTarget: null,
   skillLocalState: {},
@@ -2015,8 +2015,8 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         // team dir is missing on this machine", not "this workspace lacks a
         // link into it". Note there is no workspace gate left: knowledge is
         // per-team, not per-workspace.
-        const root = await resolveTeamKnowledgeDir()
-        const previous = get().knowledgeRoot
+        const root = await resolveTeamSyncRoot()
+        const previous = get().syncRoot
         if (previous && previous !== root) {
           // Switching teams repoints knowledge at a different directory. The old
           // one has to stop being rendered and, more importantly, stop being
@@ -2025,7 +2025,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
           await useWorkspaceStore.getState().closeExternalRoot(previous)
         }
         const items = root ? await listTeamKnowledge(root) : []
-        set({ knowledgeRoot: root, knowledge: { items, loading: false, loaded: true, error: null } })
+        set({ syncRoot: root, knowledge: { items, loading: false, loaded: true, error: null } })
       } else if (section === 'mcp') {
         // Not gated on `wsPath`: with an Agent selected this goes over RPC to
         // that Agent and never touches the local workspace. Requiring one made

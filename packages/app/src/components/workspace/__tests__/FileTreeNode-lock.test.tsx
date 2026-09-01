@@ -13,7 +13,7 @@
  * caller relies on: the flag, and only the flag, produces the marker.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { FileTreeItem, type FileTreeItemProps } from '../FileTreeNode'
 
 vi.mock('react-i18next', () => ({
@@ -63,6 +63,58 @@ function props(overrides: Partial<FileTreeItemProps> = {}): FileTreeItemProps {
     ...overrides,
   } as unknown as FileTreeItemProps
 }
+
+describe('FileTreeItem download state', () => {
+  it('marks a listed-but-unfetched file', () => {
+    render(<FileTreeItem {...props({ isNotDownloaded: true })} />)
+    expect(screen.getByLabelText('Not downloaded')).toBeTruthy()
+  })
+
+  it('a failed download is marked differently from an unfetched one', () => {
+    // The next action differs: one is "click and it appears", the other is
+    // "clicking again will not help until the connection does".
+    render(<FileTreeItem {...props({ isNotDownloaded: true, downloadFailed: true })} />)
+    expect(screen.getByLabelText('Download failed')).toBeTruthy()
+    expect(screen.queryByLabelText('Not downloaded')).toBeNull()
+  })
+
+  it('a downloaded file carries no marker — it is the normal case', () => {
+    render(<FileTreeItem {...props()} />)
+    expect(screen.queryByLabelText('Not downloaded')).toBeNull()
+    expect(screen.queryByLabelText('Download failed')).toBeNull()
+  })
+
+  it('a file the caller may not see is absent, not marked', () => {
+    // The distinction this pins: an unpermitted path never reaches the
+    // manifest, so the tree has no row for it at all. Only a path we know
+    // about but have not fetched gets a marker — the two must never look
+    // alike, because one is "click to get it" and the other is "it is not
+    // yours".
+    render(<FileTreeItem {...props({ isNotDownloaded: false })} />)
+    expect(screen.queryByLabelText('Not downloaded')).toBeNull()
+  })
+})
+
+describe('FileTreeItem documents actions', () => {
+  /** Radix renders menu content only once the menu is opened. */
+  function openMenu() {
+    fireEvent.contextMenu(screen.getByText('hr'))
+  }
+
+  it('offers "add files" when the caller supplies the handler', async () => {
+    render(<FileTreeItem {...props({ onImportLocal: vi.fn() })} />)
+    openMenu()
+    expect(await screen.findByText('Add files…')).toBeTruthy()
+  })
+
+  it('does not offer it otherwise — 知识库 is written in the app, not imported into', async () => {
+    render(<FileTreeItem {...props()} />)
+    openMenu()
+    // The menu is open (another item proves it), and this action is absent.
+    expect(await screen.findByText('Add to Agent')).toBeTruthy()
+    expect(screen.queryByText('Add files…')).toBeNull()
+  })
+})
 
 describe('FileTreeItem restriction marker', () => {
   it('marks a folder that has its own rule', () => {

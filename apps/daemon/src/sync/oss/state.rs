@@ -84,6 +84,31 @@ pub struct ForbiddenPath {
 /// file per interval, buying nothing.
 pub const FORBIDDEN_RETRY_SECS: u64 = 24 * 60 * 60;
 
+/// A file the manifest lists that this device has NOT fetched.
+///
+/// # Why this is not a flag on `FileState`
+///
+/// The engine decides a file was deleted locally from `in state.files, absent
+/// from the scan` (`engine::locally_deleted_paths`) — and "known but not
+/// downloaded" is exactly that shape. A `materialized: bool` on `FileState`
+/// would work only as long as every one of the dozen call sites that read that
+/// map remembers to check it, and the cost of one forgetting is a tombstone
+/// broadcast to the whole team.
+///
+/// Keeping these in their own map makes it a property of the type instead: a
+/// path that is not in `files` can never become a tombstone candidate, and that
+/// holds without anyone remembering anything.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownFile {
+    /// Server version this entry describes.
+    pub version: i32,
+    /// Blob hash — what the download endpoint takes.
+    pub cipher_hash: String,
+    /// Size on the server, for showing a cost before fetching.
+    pub size: u64,
+}
+
 /// Full local sync state file (schema v1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +140,16 @@ pub struct LocalSyncState {
     /// whole manifest is what makes revocation observable at all.
     #[serde(default)]
     pub last_reconcile_at: u64,
+    /// Manifest entries this device knows about but has not fetched.
+    ///
+    /// Only ever `documents/` paths: `knowledge/` is fetched eagerly because
+    /// every member is meant to hold the same copy of it.
+    ///
+    /// `serde(default)` so an older state file still loads, and an older daemon
+    /// still reads a newer one — same treatment `quarantined` and `forbidden`
+    /// got, and for the same reason.
+    #[serde(default)]
+    pub known: HashMap<String, KnownFile>,
 }
 
 impl LocalSyncState {
@@ -164,6 +199,7 @@ impl LocalSyncState {
             quarantined: HashMap::new(),
             forbidden: HashMap::new(),
             last_reconcile_at: 0,
+            known: HashMap::new(),
         };
         let body = match std::fs::read_to_string(&path) {
             Ok(body) => body,
@@ -220,6 +256,7 @@ impl LocalSyncState {
             quarantined: HashMap::new(),
             forbidden: HashMap::new(),
             last_reconcile_at: 0,
+            known: HashMap::new(),
         }
     }
 
@@ -267,6 +304,67 @@ impl LocalSyncState {
                 deleted_local: false,
             },
         );
+    }
+
+    /// Record a manifest entry without fetching it.
+    ///
+    /// Refuses to touch a path that is already materialized: overwriting a real
+    /// `files` entry with a `known` one would tell the engine the file is not on
+    /// disk while it still is, and the very next scan would treat the local copy
+    /// as an untracked addition.
+    pub fn note_known(&mut self, path: &str, version: i32, cipher_hash: &str, size: u64) {
+        if self.files.contains_key(path) {
+            return;
+        }
+        self.known.insert(
+            path.to_string(),
+            KnownFile {
+                version,
+                cipher_hash: cipher_hash.to_string(),
+                size,
+            },
+        );
+    }
+
+    /// Whether this path is listed but not present on disk.
+    pub fn is_known_only(&self, path: &str) -> bool {
+        !self.files.contains_key(path) && self.known.contains_key(path)
+    }
+
+    /// Forget a `known` entry — the file has just landed, or the server dropped it.
+    ///
+    /// The caller writes to `files` separately (via `upsert`); this only clears
+    /// the other side. Keeping the two halves separate means neither map can be
+    /// updated "half way" by a single helper that someone later changes.
+    pub fn clear_known(&mut self, path: &str) {
+        self.known.remove(path);
+    }
+
+    /// Give up the local copy of a file, keeping the knowledge that it exists.
+    ///
+    /// The inverse of a download, and the ONLY way a path leaves `files` without
+    /// being deleted. Deliberately not routed through the tombstone path: this
+    /// must never produce a `delete_batch` entry, or releasing local disk would
+    /// delete the file for every member.
+    ///
+    /// Returns `false` — refusing — when the file has unpushed local edits.
+    /// Releasing those throws away something the user wrote, which no amount of
+    /// disk pressure justifies. The caller is expected to surface the refusal.
+    pub fn release_local(&mut self, path: &str) -> bool {
+        let Some(entry) = self.files.get(path) else {
+            return false;
+        };
+        if entry.dirty || entry.deleted_local {
+            return false;
+        }
+        let known = KnownFile {
+            version: entry.synced_version,
+            cipher_hash: entry.synced_cipher_hash.clone(),
+            size: entry.size,
+        };
+        self.files.remove(path);
+        self.known.insert(path.to_string(), known);
+        true
     }
 
     /// Remember that the server refuses this path, so the push side stops

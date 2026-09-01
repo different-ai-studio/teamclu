@@ -24,7 +24,7 @@ vi.mock('@/lib/build-config', async (importOriginal) => {
 
 import {
   amuxdHomePath,
-  globalTeamKnowledgeShareDir,
+  globalTeamSyncShareRoot,
   resolveTeamDir,
   teamSyncKeyForPath,
   TEAM_SHARE_LINK_DIR,
@@ -88,10 +88,10 @@ describe('team-skill-paths (white-label amuxd home)', () => {
  * The key the OSS sync engine addresses a file by — its path relative to the
  * team's sync content root. Everything version-related (history, baseline diff,
  * restore) is keyed by this, and it is derived from the absolute
- * `~/.amuxd[-<brand>]/teams/<id>/shared/knowledge` path, never from a workspace.
+ * `~/.amuxd[-<brand>]/teams/<id>/shared/team-sync` path, never from a workspace.
  */
 describe('teamSyncKeyForPath', () => {
-  const KNOWLEDGE = '/home/user/.amuxd-copilot361/teams/team-abc/shared/knowledge'
+  const SYNC_ROOT = '/home/user/.amuxd-copilot361/teams/team-abc/shared/team-sync'
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -101,7 +101,7 @@ describe('teamSyncKeyForPath', () => {
   })
 
   it('maps a file under the real knowledge dir to its sync key', () => {
-    expect(teamSyncKeyForPath(`${KNOWLEDGE}/guides/setup.md`, { knowledgeDir: KNOWLEDGE })).toBe(
+    expect(teamSyncKeyForPath(`${SYNC_ROOT}/knowledge/guides/setup.md`, { syncRoot: SYNC_ROOT })).toBe(
       'knowledge/guides/setup.md',
     )
   })
@@ -114,7 +114,7 @@ describe('teamSyncKeyForPath', () => {
   it('maps the workspace team-knowledge symlink to the same key', () => {
     expect(
       teamSyncKeyForPath('/ws/team-knowledge/guides/setup.md', {
-        knowledgeDir: KNOWLEDGE,
+        syncRoot: SYNC_ROOT,
         workspacePath: '/ws',
       }),
     ).toBe('knowledge/guides/setup.md')
@@ -122,10 +122,10 @@ describe('teamSyncKeyForPath', () => {
 
   it('returns null for a file outside any knowledge tree', () => {
     expect(
-      teamSyncKeyForPath('/ws/src/main.ts', { knowledgeDir: KNOWLEDGE, workspacePath: '/ws' }),
+      teamSyncKeyForPath('/ws/src/main.ts', { syncRoot: SYNC_ROOT, workspacePath: '/ws' }),
     ).toBeNull()
     // The root itself is a directory, not a synced file.
-    expect(teamSyncKeyForPath(KNOWLEDGE, { knowledgeDir: KNOWLEDGE })).toBeNull()
+    expect(teamSyncKeyForPath(SYNC_ROOT, { syncRoot: SYNC_ROOT })).toBeNull()
   })
 
   it('falls back to the last resolved knowledge dir when none is passed', async () => {
@@ -134,7 +134,7 @@ describe('teamSyncKeyForPath', () => {
     )
     mockReadTextFile.mockResolvedValue('active_team = "team-abc"\n')
 
-    await expect(globalTeamKnowledgeShareDir()).resolves.toBe(KNOWLEDGE)
-    expect(teamSyncKeyForPath(`${KNOWLEDGE}/top.md`)).toBe('knowledge/top.md')
+    await expect(globalTeamSyncShareRoot()).resolves.toBe(SYNC_ROOT)
+    expect(teamSyncKeyForPath(`${SYNC_ROOT}/knowledge/top.md`)).toBe('knowledge/top.md')
   })
 })

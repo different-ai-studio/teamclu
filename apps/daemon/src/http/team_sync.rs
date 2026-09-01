@@ -34,6 +34,13 @@ pub struct SyncRequest {
     /// never by a retry, or the guard becomes a one-tick delay.
     #[serde(default)]
     pub allow_bulk_add: bool,
+    /// When `true`, broadcast a set of deletions an earlier tick held back.
+    ///
+    /// Same rule as `allow_bulk_add`, and stricter in consequence: a tombstone
+    /// is applied on every member's machine, so a retry setting this on the
+    /// user's behalf would remove a guard that protects other people's files.
+    #[serde(default)]
+    pub allow_bulk_delete: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,6 +73,7 @@ pub async fn sync_now(
             crate::sync::dispatch::SyncOptions {
                 force: body.force_sync,
                 allow_bulk_add: body.allow_bulk_add,
+                allow_bulk_delete: body.allow_bulk_delete,
             },
         )
         .await;
@@ -621,6 +629,89 @@ pub struct ConflictEntry {
 /// `conflicts` counter in `/v1/team/sync/status` is per-tick and resets on the
 /// next one, so "how many conflicts are waiting for me" can only be read from
 /// this scan.
+/// One manifest entry this device knows about but has not fetched.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownEntry {
+    pub path: String,
+    pub version: i32,
+    /// Server-side size, so the UI can say what a fetch would cost.
+    pub size: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathsRequest {
+    pub team_id: String,
+    pub paths: Vec<String>,
+}
+
+/// Documents this device is aware of but has not downloaded.
+///
+/// The tree is drawn from this UNION the disk scan, which is the whole of what
+/// makes an unfetched file visible: nothing is written to disk for one, so the
+/// scan alone can never show it.
+pub async fn list_known(
+    principal: Principal,
+    State(_state): State<HttpState>,
+    Query(q): Query<StatusQuery>,
+) -> Result<Json<Vec<KnownEntry>>, HttpError> {
+    require_scope(&principal, "workspace:read")?;
+    let state = crate::sync::oss::state::LocalSyncState::load_at(&q.team_id)
+        .map_err(|e| HttpError::internal(&e))?;
+    let mut out: Vec<KnownEntry> = state
+        .known
+        .iter()
+        .map(|(path, k)| KnownEntry {
+            path: path.clone(),
+            version: k.version,
+            size: k.size,
+        })
+        .collect();
+    // Stable order: a poll every few seconds must not reshuffle the tree.
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(Json(out))
+}
+
+/// Fetch listed-but-unfetched paths, because a person asked for them.
+///
+/// Fails rather than queueing when the network is not there. A queue would let
+/// a click do nothing visible and then produce the file twenty minutes later,
+/// when it is no longer wanted — and the point of fetching on demand is that
+/// the thing is there when you ask.
+pub async fn fetch_known(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Json(body): Json<PathsRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+    let fetched = state
+        .sync_dispatcher
+        .fetch_documents(&body.team_id, &body.paths)
+        .await
+        .map_err(|e| HttpError::internal(&e))?;
+    Ok(Json(serde_json::json!({ "fetched": fetched })))
+}
+
+/// Give back the disk some documents occupy, keeping them listed.
+///
+/// Returns the paths actually released. A file with unpushed edits is refused
+/// and simply absent from the response — the caller reports what it asked for
+/// against what came back, rather than being told everything succeeded.
+pub async fn release_local(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Json(body): Json<PathsRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+    let released = state
+        .sync_dispatcher
+        .release_documents(&body.team_id, &body.paths)
+        .await
+        .map_err(|e| HttpError::internal(&e))?;
+    Ok(Json(serde_json::json!({ "released": released })))
+}
+
 pub async fn list_conflicts(
     principal: Principal,
     State(_state): State<HttpState>,
