@@ -71,6 +71,7 @@ export interface TeamSkillVersion {
   whenNotToUse: string;
   requires: string[] | null;
   createdBy: string;
+  publishedFromVersion: number | null;
   createdAt: string | null;
 }
 
@@ -119,6 +120,7 @@ export interface TeamSkillsBackend {
       contentHash: string;
       changelog: string;
       expectedLatestVersion: number;
+      publishedFromVersion?: number;
       size?: number;
     } & Partial<
       Pick<TeamSkillPublishInput, "summary" | "category" | "whenToUse" | "whenNotToUse" | "requires">

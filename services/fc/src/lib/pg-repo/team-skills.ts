@@ -150,6 +150,7 @@ function mapVersion(row: any) {
     whenNotToUse: row.whenNotToUse,
     requires: row.requires ?? null,
     createdBy: row.createdBy,
+    publishedFromVersion: row.publishedFromVersion ?? null,
     createdAt: iso(row.createdAt),
   };
 }
@@ -486,6 +487,18 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
         };
 
         const nextVersion = latest + 1;
+        let publishedFromVersion: number | null = null;
+        if (body.publishedFromVersion !== undefined && body.publishedFromVersion !== null) {
+          const from = Number(body.publishedFromVersion);
+          if (!Number.isInteger(from) || from < 1) {
+            throw new ApiError(
+              400,
+              "validation_failed",
+              "publishedFromVersion must be a positive integer",
+            );
+          }
+          publishedFromVersion = from;
+        }
         const [version] = await (tx.insert(teamSkillVersions) as any)
           .values({
             skillId: current.id,
@@ -498,6 +511,7 @@ export function makeTeamSkillsRepo(db: DbLike, ctx: TeamSkillsCtx) {
             whenNotToUse: merged.whenNotToUse,
             requires: (merged.requires as any) ?? null,
             createdBy: callerActorId,
+            publishedFromVersion,
             blobScope: "team",
           })
           .returning();
