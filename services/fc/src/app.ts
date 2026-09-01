@@ -1,4 +1,3 @@
-import { sharedSecretMatches } from "./lib/shared-secret.js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { registerAllRoutes } from "./lib/routes/index.js";
@@ -13,7 +12,6 @@ export type AppDeps = {
   createRepository: (args: { accessToken: string }) => unknown;
   createAuthRepository: () => unknown;
   createSystemRepository?: () => unknown | Promise<unknown>;
-  runCron?: (task: string) => Promise<unknown>;
   /** Resolves a vanity app host to its row; injected so tests need no database. */
   lookupVanityApp?: LookupVanityApp;
 };
@@ -100,32 +98,6 @@ export function createApp(deps: AppDeps): Hono {
 
   // Container liveness/readiness probe — no DB access.
   app.get("/healthz", (c) => c.json({ ok: true }));
-
-  // HTTP-triggered cron (replaces FC timer for the Docker/self-host path).
-  // Guarded by a shared secret; an external scheduler POSTs { task }.
-  app.post("/internal/cron", async (c) => {
-    if (!sharedSecretMatches(c.req.header("x-cron-secret"), process.env.CRON_TRIGGER_SECRET)) {
-      return c.json({ error: "unauthorized" }, 401);
-    }
-    if (!deps.runCron) {
-      return c.json({ error: "cron_unavailable" }, 503);
-    }
-    const t = await c.req.text();
-    let body: any = {};
-    if (t) { try { body = JSON.parse(t); } catch { return c.json({ error: "Invalid JSON body" }, 400); } }
-    if (!body.task || typeof body.task !== "string") {
-      return c.json({ error: "missing_task" }, 400);
-    }
-    try {
-      const result = await deps.runCron(body.task);
-      return c.json(result as any);
-    } catch (err: any) {
-      if (String(err?.message).startsWith("Unknown cron task")) {
-        return c.json({ error: "unknown_task" }, 400);
-      }
-      throw err;
-    }
-  });
 
   // /v1 business routes — registered through the adapter so routes/*.ts are unchanged.
   const v1Router = createHonoRouterAdapter(app, deps);

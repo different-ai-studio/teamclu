@@ -51,7 +51,6 @@ TeamClu 的后端不是单一服务，而是一套协作组件。客户端（Des
 可选：
   • 阿里云 OSS — 团队工作区文件同步（外部服务，非本机）
   • AI Gateway — 团队共享模型（团队自己填 baseUrl；栈内也仍跑着待退役的 LiteLLM 容器）
-  • 定时任务 — OSS 清理、abandon session 等（`--profile cron`）
 ```
 
 | 组件 | 代码路径 | 职责 | 是否必需 |
@@ -67,7 +66,6 @@ TeamClu 的后端不是单一服务，而是一套协作组件。客户端（Des
 | **阿里云 OSS** | Cloud API 环境变量 | 团队 share / 工作区同步（外部对象存储） | 可选（无则 sync 不可用） |
 | **LiteLLM** | self-host 栈（compose 服务） | 遗留 AI 网关，Cloud API 已不再调用它；等待退役 | 可选 |
 | **amuxd** | `apps/daemon/` | Agent 运行时；通常跑在用户设备而非中心机房 | 按场景 |
-| **Cron** | compose `--profile cron` | OSS GC、abandon sessions | 推荐 |
 
 ---
 
@@ -120,7 +118,6 @@ push 到 `main` 且改动 `deploy/self-host/**`、`services/fc/**` 或
 | `MQTT_SERVICE_TOKEN` | Cloud API 连 EMQX 的服务 JWT |
 | `PUSH_WEBHOOK_SECRET` | 推送 webhook 校验 |
 | `APNS_*` | iOS 推送（生产必需则填真实值） |
-| `CRON_TRIGGER_SECRET` | cron profile 调用 `/internal/cron` |
 | `LITELLM_MASTER_KEY` | LiteLLM 容器自身的 admin key（Cloud API 已不用） |
 
 完整变量清单以 [`deploy/self-host/.env.example`](../../deploy/self-host/.env.example)

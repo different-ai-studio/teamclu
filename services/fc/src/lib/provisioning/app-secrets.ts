@@ -1,6 +1,4 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { appSecrets } from "../../db/schema/apps.js";
 import { ApiError } from "../http-utils.js";
 
 type Env = NodeJS.ProcessEnv;
@@ -68,43 +66,6 @@ export function open(kind: string, ciphertext: string, env: Env = process.env): 
   decipher.setAAD(Buffer.from(kind, "utf8"));
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type DbLike = any;
-
-/** Upsert one encrypted app secret row (Drizzle). */
-export async function putAppSecret(
-  db: DbLike,
-  appId: string,
-  kind: string,
-  plaintext: string,
-): Promise<void> {
-  const ciphertext = seal(kind, plaintext);
-  await db
-    .insert(appSecrets)
-    .values({ appId, kind, ciphertext })
-    .onConflictDoUpdate({
-      target: [appSecrets.appId, appSecrets.kind],
-      set: { ciphertext, updatedAt: new Date() },
-    });
-}
-
-/** Read and decrypt one app secret, or null when absent. */
-export async function getAppSecret(db: DbLike, appId: string, kind: string): Promise<string | null> {
-  const [row] = await db
-    .select({ ciphertext: appSecrets.ciphertext })
-    .from(appSecrets)
-    .where(and(eq(appSecrets.appId, appId), eq(appSecrets.kind, kind)))
-    .limit(1);
-  if (!row) return null;
-  return open(kind, row.ciphertext);
-}
-
-export async function deleteAppSecret(db: DbLike, appId: string, kind: string): Promise<void> {
-  await db
-    .delete(appSecrets)
-    .where(and(eq(appSecrets.appId, appId), eq(appSecrets.kind, kind)));
 }
 
 /** Upsert via Supabase service role (amux.app_secrets). */

@@ -448,7 +448,6 @@ docker volume rm teamclaw-self-host_caddy_config   # 保留 caddy_data 可留证
 | `litellm` | `ghcr.io/berriai/litellm-database` | AI 网关；FC 在此开团队预算与虚拟 key |
 | `fc` | built from `services/fc` | TeamClu Cloud API (Node.js); the only app-level backend |
 | `caddy` | `caddy:2` | Reverse proxy + automatic TLS; **only service with host ports** |
-| `cron` _(opt-in)_ | `curlimages/curl` | Polls FC cron endpoints every 15 min |
 | `gitea` | `gitea/gitea:1.22` | Per-app private git repos (Apps module); HTTP via Caddy, SSH on host `GITEA_SSH_PORT` |
 
 **Host ports（因运行时而异）：**
@@ -632,17 +631,6 @@ is unaffected.
 ---
 
 ## Opt-in profiles
-
-### Cron (scheduled background jobs)
-
-```bash
-docker compose --profile cron up -d
-```
-
-Adds the `cron` service, which POSTs to FC's `/internal/cron` endpoint every
-15 minutes for OSS-related maintenance tasks. Requires `CRON_TRIGGER_SECRET`
-to be set in `.env` (gen-secrets does **not** generate this; pick any random
-string).
 
 ### Running the daemon (opt-in)
 
@@ -880,8 +868,6 @@ All variables live in `.env` (copied from `.env.example`).
 | `CADDY_HTTPS_PORT` | no | Host HTTPS port (default `443`; Podman `8443` via `up.sh`) |
 | `ACME_EMAIL` | for acme | Let's Encrypt contact |
 | `DOCKER_SOCKET_LOCATION` | no | Docker socket path (default: `/var/run/docker.sock`); used by the `vector` log collector |
-| `CRON_TRIGGER_SECRET` | for cron | Shared secret for `/internal/cron` |
-| `DATABASE_URL` | for cron / LiteLLM usage / Apps | Postgres connection string for the bundled `db` |
 | `ACCESS_KEY_ID` | no | Alibaba OSS key ID |
 | `ACCESS_KEY_SECRET` | no | Alibaba OSS key secret |
 | `ROLE_ARN` | no | Alibaba RAM role ARN for OSS |

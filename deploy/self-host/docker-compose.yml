@@ -314,8 +314,6 @@ services:
       MQTT_USERNAME: "fc-service"
       MQTT_PASSWORD: "${MQTT_SERVICE_TOKEN}"
       MQTT_USE_TLS: "false"
-      CRON_TRIGGER_SECRET: "${CRON_TRIGGER_SECRET}"
-      DATABASE_URL: "${DATABASE_URL:-}"
       ACCESS_KEY_ID: "${ACCESS_KEY_ID:-}"
       ACCESS_KEY_SECRET: "${ACCESS_KEY_SECRET:-}"
       ROLE_ARN: "${ROLE_ARN:-}"
@@ -556,31 +554,6 @@ services:
       - kong
       - emqx
       - gitea
-
-  # ── opt-in: scheduled cron (docker compose --profile cron up) ──
-  cron:
-    image: curlimages/curl:8.10.1
-    restart: unless-stopped
-    profiles: ["cron"]
-    depends_on:
-      fc:
-        condition: service_started
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        while true; do
-          curl -fsS -X POST http://fc:9000/internal/cron \
-            -H "x-cron-secret: ${CRON_TRIGGER_SECRET}" \
-            -H "content-type: application/json" \
-            -d '{"task":"oss-abandon-sessions"}' || true
-          # gc-blobs hourly check (script runs every 15m; gate daily inside FC if needed)
-          curl -fsS -X POST http://fc:9000/internal/cron \
-            -H "x-cron-secret: ${CRON_TRIGGER_SECRET}" \
-            -H "content-type: application/json" \
-            -d '{"task":"oss-gc-blobs"}' || true
-          sleep 900
-        done
 
   # ── opt-in: TeamClu daemon (docker compose --profile daemon up) ──
   # Auto-joins a team on first start via AMUXD_JOIN_TOKEN (mint one with

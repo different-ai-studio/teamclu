@@ -112,8 +112,7 @@ async function countLiveFiles(
 
 /**
  * Sum of live (non-deleted) file sizes for a team, or `null` when unknown.
- *
- * Postgres: drizzle `sum(size)`. Supabase: RPC `amux.amuxc_team_live_bytes`.
+ * Reads the `amux.amuxc_team_live_bytes` RPC.
  */
 async function sumLiveBytes(
   teamId: string,

@@ -5,7 +5,7 @@ The TeamClu Cloud API (Hono). It can run on Alibaba Function Compute via
 
 ## Run in Docker (self-host)
 
-The container serves the full `/v1` API plus `/healthz` and `/internal/cron`.
+The container serves the full `/v1` API plus `/healthz`.
 All backing services (Postgres/Supabase, OSS, MQTT, LiteLLM) stay external and
 are configured through environment variables — the same set listed in `s.yaml`.
 
@@ -21,9 +21,8 @@ curl http://127.0.0.1:9000/healthz   # {"ok":true}
 |-----|---------|---------|
 | `PORT` | `9000` | Listen port |
 | `HOST` | `0.0.0.0` | Bind address |
-| `CRON_TRIGGER_SECRET` | (unset) | Shared secret required by `/internal/cron` |
 
-All other vars (DB, Supabase, OSS, LiteLLM, APNs, MQTT, CodeUp) match `s.yaml`.
+All other vars (Supabase, OSS, APNs, MQTT, Apps/CodeUp) match `s.yaml`.
 
 ## Data access (read before changing FC data access)
 
@@ -32,17 +31,18 @@ All `/v1` business data goes through **`lib/supabase-repo.ts`** (plus
 and auth semantics are preserved. Login is GoTrue, via
 `createSupabaseAuthRepository`.
 
-Drizzle is also present, but it is **not** a second business backend — it is
-how the tokenless side paths reach Postgres directly: `lib/cron.ts`,
-`lib/litellm-usage.ts`, `lib/apps-vanity.ts`, `lib/provisioning/app-secrets.ts`
-and `lib/provisioning/app-postgres.ts`. Those need `DATABASE_URL`; the business
-API does not.
+**FC opens no connection of its own to the control-plane database.** There is
+no `getDb()` and no `DATABASE_URL` any more: every `/v1` read and write goes
+through PostgREST. The one place raw SQL survives is the Apps module, which
+provisions and browses a *separate* database per org — `lib/provisioning/
+app-postgres.ts` and `app-data-db.ts`, on `APPS_DB_ADMIN_URL`.
 
-`src/db/migrations/` is **not applied to any deployment**. The live schema is
-`services/supabase/migrations/`, applied by `deploy/self-host/init/apply-migrations.sh`.
-The Drizzle set exists so `test/db/pglite.ts` can build an in-memory database
-for the tests that need real SQL (cron, oss-sync schema, app data browser) —
-keep it in step with the real migrations for that reason, not for deployment.
+`src/db/` (the Drizzle schema + migrations) is now **test-only**, and nothing in
+`src/` imports it. It is what `test/db/pglite.ts` replays to build an in-memory
+database for `test/db/*.test.ts`. It is not applied to any deployment — the live
+schema is `services/supabase/migrations/`, applied by
+`deploy/self-host/init/apply-migrations.sh`. Treat a divergence between the two
+as a stale fixture, not a pending migration.
 
 ### Developer checklist (new Cloud API work)
 
@@ -56,25 +56,11 @@ keep it in step with the real migrations for that reason, not for deployment.
 
 Entry wiring: `src/index.ts` (`makeBusinessRepoFactory` / `makeAuthRepoFactory`).
 
-### Cron (HTTP-triggered)
+### No scheduled work
 
-Alibaba FC drives cron via timer triggers. In Docker, an external scheduler
-POSTs to `/internal/cron` instead. Run each task on its own schedule:
-
-```bash
-curl -X POST http://127.0.0.1:9000/internal/cron \
-  -H "x-cron-secret: $CRON_TRIGGER_SECRET" \
-  -H "content-type: application/json" \
-  -d '{"task":"oss-abandon-sessions"}'
-
-curl -X POST http://127.0.0.1:9000/internal/cron \
-  -H "x-cron-secret: $CRON_TRIGGER_SECRET" \
-  -H "content-type: application/json" \
-  -d '{"task":"oss-gc-blobs"}'
-```
-
-Tasks: `oss-abandon-sessions`, `oss-gc-blobs`. A missing/wrong secret returns
-401; an unknown task returns 400. If the server was started without cron support it returns 503.
-
-The Alibaba FC entrypoint (`dist/index.handler`) and `s.yaml` are unchanged by
-the Docker support.
+FC runs nothing on a timer. The two OSS-sync cleanup tasks
+(`oss-abandon-sessions`, `oss-gc-blobs`) and their `/internal/cron` trigger were
+removed, along with the plpgsql functions they were ported from — neither copy
+had ever run on a deployment. `amuxc_upload_sessions` and `amuxc_blobs` now grow
+without bound; whatever collects them next needs the object store in scope, not
+just the registry.

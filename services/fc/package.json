@@ -19,7 +19,6 @@
     "@aws-sdk/s3-request-presigner": "^3.600.0",
     "@hono/node-server": "^1.19.14",
     "@supabase/supabase-js": "^2.45.0",
-    "drizzle-orm": "^0.36.4",
     "hono": "^4.12.23",
     "jose": "^5.9.0",
     "mqtt": "^5.10.0",
@@ -34,6 +33,7 @@
     "@types/node": "^20.16.0",
     "@types/nodemailer": "^6.4.0",
     "drizzle-kit": "^0.28.1",
+    "drizzle-orm": "^0.36.4",
     "openapi-typescript": "^7.13.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"

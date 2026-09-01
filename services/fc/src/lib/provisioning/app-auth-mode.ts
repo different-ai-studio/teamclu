@@ -1,7 +1,7 @@
 import { authBaseURL } from "../../auth/base-url.js";
 import { appPublicUrl } from "../apps-public-host.js";
 import { ApiError } from "../http-utils.js";
-import { getAppSecret, OAUTH_CLIENT_SECRET_KIND } from "./app-secrets.js";
+import { OAUTH_CLIENT_SECRET_KIND } from "./app-secrets.js";
 import { oauthUnavailable, type GotrueOAuthClient } from "./gotrue-oauth.js";
 
 export const AUTH_MODES = ["none", "platform", "third"] as const;
@@ -151,24 +151,4 @@ export async function buildPlatformOAuthEnv(
     APP_PUBLIC_URL: publicUrl,
     API_BASE: authBaseURL().replace(/\/+$/, ""),
   };
-}
-
-/** Reads app_secrets via Drizzle. */
-export async function buildPlatformOAuthEnvPg(
-  deps: {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    db: any;
-    gotrue?: GotrueOAuthClient;
-    gotrueUnavailableReason?: string;
-    env?: NodeJS.ProcessEnv;
-  },
-  input: { appId: string; slug: string; oauthClientId: string | null },
-): Promise<Record<string, string>> {
-  return buildPlatformOAuthEnv(
-    {
-      ...deps,
-      getSecret: (kind) => getAppSecret(deps.db, input.appId, kind),
-    },
-    input,
-  );
 }

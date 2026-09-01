@@ -1,12 +1,10 @@
 import { handle } from "hono/aws-lambda";
 import { createApp } from "./app.js";
-import { runCronTask } from "./lib/cron.js";
 import {
   createSupabaseAuthRepository,
   createSupabaseBusinessRepository,
   publishableKeyFromEnv,
 } from "./lib/supabase-repo.js";
-import { getDb } from "./db/client.js";
 import { queryParams } from "./lib/routing-utils.js";
 import { dispatchPush } from "./lib/push-dispatch.js";
 import { pushDeps } from "./lib/admin-handlers.js";
@@ -259,7 +257,6 @@ const app = createApp({
   createRepository: makeBusinessRepoFactory(),
   createAuthRepository: makeAuthRepoFactory(),
   createSystemRepository: makeSystemRepoFactory(),
-  runCron: (task: string) => runCronTask(getDb(), task),
   lookupVanityApp: vanityLookup(),
 });
 
@@ -280,40 +277,12 @@ export function normalizeFcEvent(event: any): any {
 }
 
 // ---------------------------------------------------------------------------
-// Timer-event detection
-//
-// Aliyun FC timer events carry triggerName / triggerTime and a custom payload
-// string, but do NOT have rawPath / requestContext (those are HTTP-only).
-// We use the absence of rawPath + requestContext as the definitive signal.
-// ---------------------------------------------------------------------------
-function isTimerEvent(event: any): boolean {
-  if (event == null || typeof event !== "object") return false;
-  // HTTP events always have rawPath (FC 3.0) or requestContext (FC 2.0/3.0).
-  if (event.rawPath != null || event.requestContext != null) return false;
-  // Timer events have either triggerName or triggerTime, plus a payload field.
-  return (event.triggerName != null || event.triggerTime != null) && event.payload != null;
-}
-
 export async function handler(event: any, context: any) {
   // FC 3.0 HTTP trigger passes a Buffer; FC 2.0 may pass a JSON string.
   if (Buffer.isBuffer(event)) {
     event = JSON.parse(event.toString());
   } else if (typeof event === "string") {
     event = JSON.parse(event);
-  }
-
-  // Route timer events to cron handlers before the Hono app sees them.
-  if (isTimerEvent(event)) {
-    let payload: { task?: string };
-    try {
-      payload = typeof event.payload === "string" ? JSON.parse(event.payload) : event.payload;
-    } catch {
-      return { error: "invalid_payload", message: "Timer payload is not valid JSON" };
-    }
-    if (!payload.task) {
-      return { error: "missing_task", message: "Timer payload must include a task field" };
-    }
-    return runCronTask(getDb(), payload.task);
   }
 
   normalizeFcEvent(event);
