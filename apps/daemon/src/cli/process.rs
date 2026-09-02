@@ -662,6 +662,17 @@ mod tests {
             .spawn()
             .unwrap();
         let pgid = child.id();
+        // Do not hand back a fake the reaper cannot recognise yet: between
+        // `fork` and `execve` the child's `/proc/<pid>/cmdline` is empty, and a
+        // reap in that window reports `StaleOrReused` instead of `Reaped`. The
+        // deadline is a stuck-process guard, not a latency estimate — this
+        // normally settles in well under a millisecond.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline
+            && !crate::runtime::opencode_http::process_registry::test_group_is_verifiable(pgid)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         (child, pgid)
     }
 
