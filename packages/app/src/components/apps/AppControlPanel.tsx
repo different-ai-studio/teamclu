@@ -53,7 +53,14 @@ function StatusDot({ tone }: { tone: 'live' | 'ready' | 'failed' | 'idle' }) {
   return <span className={cn('inline-block h-2 w-2 shrink-0 rounded-full', color)} />
 }
 
-function SectionCard({
+/**
+ * A flat group of related settings.
+ *
+ * No border and no background on purpose: the panel is a narrow column, and
+ * boxing every group turned it into a stack of chrome with the actual controls
+ * squeezed inside. The heading and the spacing carry the grouping instead.
+ */
+function Group({
   title,
   children,
 }: {
@@ -61,12 +68,34 @@ function SectionCard({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-[14px] border border-border bg-paper px-3.5 py-3">
-      <h3 className="mb-2.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-faint">
+    <section className="[&+&]:mt-6">
+      <h3 className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-2">
         {title}
       </h3>
       {children}
     </section>
+  )
+}
+
+/**
+ * One labelled group inside a card.
+ *
+ * The panel used to be seven separate cards, which made a scroll of mostly
+ * borders. Grouping them puts the two questions a user actually has — "what is
+ * this app" and "what is live" — one per card.
+ */
+function Field({
+  label,
+  children,
+}: {
+  label: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="border-t border-border-soft/60 pt-3 first:border-t-0 first:pt-0 [&+&]:mt-3">
+      <h4 className="mb-1.5 text-[11px] font-medium text-faint">{label}</h4>
+      {children}
+    </div>
   )
 }
 
@@ -358,330 +387,359 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
         </p>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
-        <SectionCard title={t('apps.rename', 'Rename')}>
-          <div className="flex gap-1.5">
-            <Input
-              value={nameDraft}
-              onChange={(e) => setNameDraft(e.target.value)}
-              className="h-8 flex-1 rounded-[7px] text-[13px]"
-              disabled={renaming}
-            />
-            <Button
-              type="button"
-              size="sm"
-              className="h-8 shrink-0 gap-1 rounded-[7px] px-2.5"
-              disabled={renaming || !nameDraft.trim() || nameDraft.trim() === app.name}
-              onClick={() => void handleRename()}
-            >
-              {renaming ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Save className="h-3.5 w-3.5" />
-              )}
-            </Button>
-          </div>
-        </SectionCard>
-
-        {showReseed && (
-          <SectionCard title={t('apps.reseed', 'Reseed')}>
-            <p className="mb-2 text-[12px] text-muted-foreground">
-              {t(
-                'apps.controlPanel.reseedHint',
-                '重新写入模板或克隆仓库。仅在初始化失败或目录为空时使用。',
-              )}
-            </p>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1.5 rounded-[7px] text-[12px]"
-              disabled={reseeding}
-              onClick={() => void handleReseed()}
-            >
-              {reseeding ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="h-3.5 w-3.5" />
-              )}
-              {t('apps.reseed', 'Reseed')}
-            </Button>
-          </SectionCard>
-        )}
-
-        <SectionCard title={t('apps.controlPanel.localPath', '本机路径')}>
-          {localPathLoading ? (
-            <div className="flex items-center gap-2 py-1 text-[12.5px] text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              {t('common.loading', 'Loading…')}
-            </div>
-          ) : !isTauri() ? (
-            <p className="text-[12.5px] text-muted-foreground">
-              {t('apps.controlPanel.localPathDesktopOnly', '本机路径仅在桌面客户端可用。')}
-            </p>
-          ) : localWorkdir ? (
-            <div className="space-y-2">
-              {localDeviceName ? (
-                <p className="text-[12px] text-muted-foreground">
-                  {t('apps.controlPanel.localPathOnDevice', '设备：{{name}}', {
-                    name: localDeviceName,
-                  })}
-                </p>
-              ) : null}
-              <p
-                className="break-all font-mono text-[11.5px] text-ink-2"
-                data-testid="app-control-local-workdir"
+      <div className="min-h-0 flex-1 overflow-auto px-3.5 py-3.5">
+        {/* Everything about the app itself: what it is called, where its
+            code sits on this machine, who may touch it, and removing it. */}
+        <Group title={t('apps.controlPanel.appGroup', '应用')}>
+          <Field label={t('apps.rename', '重命名')}>
+            <div className="flex gap-1.5">
+              <Input
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                className="h-8 flex-1 rounded-[7px] text-[13px]"
+                disabled={renaming}
+              />
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 shrink-0 gap-1 rounded-[7px] px-2.5"
+                disabled={renaming || !nameDraft.trim() || nameDraft.trim() === app.name}
+                onClick={() => void handleRename()}
               >
-                {localWorkdir}
+                {renaming ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" />
+                )}
+              </Button>
+            </div>
+          </Field>
+          <Field label={t('apps.controlPanel.localPath', '本机路径')}>
+            {localPathLoading ? (
+              <div className="flex items-center gap-2 py-1 text-[12.5px] text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {t('common.loading', 'Loading…')}
+              </div>
+            ) : !isTauri() ? (
+              <p className="text-[12.5px] text-muted-foreground">
+                {t('apps.controlPanel.localPathDesktopOnly', '本机路径仅在桌面客户端可用。')}
+              </p>
+            ) : localWorkdir ? (
+              <div className="space-y-2">
+                {localDeviceName ? (
+                  <p className="text-[12px] text-muted-foreground">
+                    {t('apps.controlPanel.localPathOnDevice', '设备：{{name}}', {
+                      name: localDeviceName,
+                    })}
+                  </p>
+                ) : null}
+                <p
+                  className="break-all font-mono text-[11.5px] text-ink-2"
+                  data-testid="app-control-local-workdir"
+                >
+                  {localWorkdir}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 rounded-[7px] text-[12px]"
+                  onClick={() => {
+                    setMoveDest('')
+                    setMoveOpen(true)
+                  }}
+                >
+                  <FolderInput className="h-3.5 w-3.5" />
+                  {t('apps.controlPanel.moveDirectory', '移动目录')}
+                </Button>
+              </div>
+            ) : (
+              <p className="text-[12.5px] text-muted-foreground">
+                {t(
+                  'apps.controlPanel.localPathUnavailable',
+                  '本机 daemon 未就绪，或此应用尚未在本机初始化目录。',
+                )}
+              </p>
+            )}
+          </Field>
+          {showReseed && (
+            <Field label={t('apps.reseed', '重新播种')}>
+              <p className="mb-2 text-[12px] text-muted-foreground">
+                {t(
+                  'apps.controlPanel.reseedHint',
+                  '重新写入模板或克隆仓库。仅在初始化失败或目录为空时使用。',
+                )}
               </p>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 className="h-8 gap-1.5 rounded-[7px] text-[12px]"
-                onClick={() => {
-                  setMoveDest('')
-                  setMoveOpen(true)
-                }}
+                disabled={reseeding}
+                onClick={() => void handleReseed()}
               >
-                <FolderInput className="h-3.5 w-3.5" />
-                {t('apps.controlPanel.moveDirectory', '移动目录')}
+                {reseeding ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                {t('apps.reseed', 'Reseed')}
               </Button>
-            </div>
-          ) : (
-            <p className="text-[12.5px] text-muted-foreground">
-              {t(
-                'apps.controlPanel.localPathUnavailable',
-                '本机 daemon 未就绪，或此应用尚未在本机初始化目录。',
-              )}
-            </p>
+            </Field>
           )}
-        </SectionCard>
-
-        <SectionCard title={t('apps.data.section', '线上数据')}>
-          {/* `canManageAccess` is the same signal the grants block uses: the
-              access list is readable only by the creator or an app admin, which
-              is exactly the tier design §6 lets edit data. */}
-          <AppDataSection app={app} canEdit={canManageAccess} />
-        </SectionCard>
-
-        <SectionCard title={t('apps.controlPanel.authMode', '登录方式')}>
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <Select
-              value={authModeDraft}
-              onValueChange={(v) => setAuthModeDraft(v as AppAuthMode)}
-              disabled={authModeSaving}
-            >
-              <SelectTrigger
-                className="h-8 w-full max-w-[220px] rounded-[7px] text-[12px]"
-                data-testid="app-control-auth-mode"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {AUTH_MODES.map((mode) => (
-                  <SelectItem
-                    key={mode}
-                    value={mode}
-                    disabled={mode === 'third'}
-                    className="text-[12px]"
-                  >
-                    {t(`apps.controlPanel.authModeOption.${mode}`, mode)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              type="button"
-              size="sm"
-              className="h-8 rounded-[7px] text-[12px]"
-              disabled={authModeSaving || !authModeDirty || authModeDraft === 'third'}
-              onClick={() => void handleSaveAuthMode()}
-            >
-              {authModeSaving ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                t('common.save', 'Save')
-              )}
-            </Button>
-            {showAuthModePending && (
-              <span
-                className="rounded-[7px] border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-                data-testid="app-control-auth-pending-redeploy"
-              >
-                {t('apps.controlPanel.pendingRedeploy', '待重新部署')}
+          <Field label={t('apps.controlPanel.permissions', '成员权限')}>
+            <div className="mb-2 flex items-center gap-1.5 text-[12px] text-muted-foreground">
+              <Shield className="h-3.5 w-3.5 shrink-0" />
+              <span>
+                {t(
+                  'apps.controlPanel.permissionsHint',
+                  'view 仅可见；prompt 可协作改代码；admin 可部署与授权。',
+                )}
               </span>
-            )}
-          </div>
-          {showAuthModePending && (
-            <p
-              className="mb-2 text-[12px] text-destructive"
-              data-testid="app-control-auth-live-warning"
-            >
-              {t(
-                'apps.controlPanel.authModeLiveWarning',
-                '登录方式已保存，但线上站点仍运行旧配置。在重新部署之前，站点访问方式不会变（无登录的应用仍然对持有链接的人公开）。',
-              )}
-            </p>
-          )}
-          {authModeDraft === 'third' && (
-            <p className="text-[12px] text-muted-foreground">
-              {t(
-                'apps.controlPanel.authModeThirdDisabled',
-                '第三方登录暂不支持部署，请选择其他方式。',
-              )}
-            </p>
-          )}
-          {showAuthModePending && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="mt-2 h-8 gap-1.5 rounded-[7px] text-[12px]"
-              disabled={deploying || app.provisionStatus !== 'ready'}
-              onClick={() => void deploy(app.id)}
-              data-testid="app-control-redeploy-now"
-            >
-              {deploying ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="h-3.5 w-3.5" />
-              )}
-              {t('apps.controlPanel.redeployNow', '立即重新部署')}
-            </Button>
-          )}
-        </SectionCard>
-
-        <SectionCard title={t('apps.controlPanel.permissions', '成员权限')}>
-          <div className="mb-2 flex items-center gap-1.5 text-[12px] text-muted-foreground">
-            <Shield className="h-3.5 w-3.5 shrink-0" />
-            <span>
-              {t(
-                'apps.controlPanel.permissionsHint',
-                'view 仅可见；prompt 可协作改代码；admin 可部署与授权。',
-              )}
-            </span>
-          </div>
-
-          {accessLoading ? (
-            <div className="flex items-center gap-2 py-2 text-[12.5px] text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              {t('common.loading', 'Loading…')}
             </div>
-          ) : !canManageAccess ? (
-            <p
-              className="text-[12.5px] text-muted-foreground"
-              data-testid="app-control-permissions-readonly"
-            >
-              {t(
-                'apps.controlPanel.permissionsReadOnly',
-                '仅创建者或 admin 可管理成员权限。',
-              )}
-            </p>
-          ) : (
-            <>
-              {accessRows && accessRows.length > 0 ? (
-                <ul className="mb-3 space-y-1.5">
-                  {accessRows.map((row) => (
-                    <li
-                      key={row.memberId}
-                      className="flex items-center justify-between gap-2 rounded-lg border border-border-soft bg-background/40 px-2.5 py-2"
-                    >
-                      <span className="min-w-0 truncate text-[13px] text-foreground">
-                        {memberName(row.memberId)}
-                      </span>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <Select
-                          value={row.permissionLevel}
-                          onValueChange={(v) =>
-                            void handleUpdateAccess(row.memberId, v as AppPermissionLevel)
-                          }
-                          disabled={accessSaving}
-                        >
-                          <SelectTrigger className="h-7 w-[88px] rounded-[7px] font-mono text-[11px]">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {PERMISSION_LEVELS.map((level) => (
-                              <SelectItem key={level} value={level} className="font-mono text-[11px]">
-                                {t(`apps.controlPanel.permission.${level}`, level)}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 shrink-0 text-muted-foreground"
-                          disabled={accessSaving}
-                          onClick={() => void handleRevoke(row.memberId)}
-                          title={t('apps.controlPanel.revokeAccess', '撤销')}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mb-3 text-[12.5px] text-muted-foreground">
-                  {t('apps.controlPanel.noAccessRows', '尚未授权其他成员')}
-                </p>
-              )}
 
-              {grantCandidates.length > 0 && (
-                <div className="flex flex-wrap items-end gap-1.5 border-t border-border-soft pt-2.5">
-                  <div className="min-w-[120px] flex-1">
+            {accessLoading ? (
+              <div className="flex items-center gap-2 py-2 text-[12.5px] text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {t('common.loading', 'Loading…')}
+              </div>
+            ) : !canManageAccess ? (
+              <p
+                className="text-[12.5px] text-muted-foreground"
+                data-testid="app-control-permissions-readonly"
+              >
+                {t(
+                  'apps.controlPanel.permissionsReadOnly',
+                  '仅创建者或 admin 可管理成员权限。',
+                )}
+              </p>
+            ) : (
+              <>
+                {accessRows && accessRows.length > 0 ? (
+                  <ul className="mb-3 space-y-1.5">
+                    {accessRows.map((row) => (
+                      <li
+                        key={row.memberId}
+                        className="flex items-center justify-between gap-2 rounded-lg border border-border-soft bg-background/40 px-2.5 py-2"
+                      >
+                        <span className="min-w-0 truncate text-[13px] text-foreground">
+                          {memberName(row.memberId)}
+                        </span>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <Select
+                            value={row.permissionLevel}
+                            onValueChange={(v) =>
+                              void handleUpdateAccess(row.memberId, v as AppPermissionLevel)
+                            }
+                            disabled={accessSaving}
+                          >
+                            <SelectTrigger className="h-7 w-[88px] rounded-[7px] font-mono text-[11px]">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {PERMISSION_LEVELS.map((level) => (
+                                <SelectItem key={level} value={level} className="font-mono text-[11px]">
+                                  {t(`apps.controlPanel.permission.${level}`, level)}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0 text-muted-foreground"
+                            disabled={accessSaving}
+                            onClick={() => void handleRevoke(row.memberId)}
+                            title={t('apps.controlPanel.revokeAccess', '撤销')}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mb-3 text-[12.5px] text-muted-foreground">
+                    {t('apps.controlPanel.noAccessRows', '尚未授权其他成员')}
+                  </p>
+                )}
+
+                {grantCandidates.length > 0 && (
+                  <div className="flex flex-wrap items-end gap-1.5 border-t border-border-soft pt-2.5">
+                    <div className="min-w-[120px] flex-1">
+                      <Select
+                        value={grantMemberId}
+                        onValueChange={setGrantMemberId}
+                        disabled={accessSaving}
+                      >
+                        <SelectTrigger className="h-8 rounded-[7px] text-[12px]">
+                          <SelectValue placeholder={t('apps.controlPanel.pickMember', '选择成员')} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {grantCandidates.map((m) => (
+                            <SelectItem key={m.id} value={m.id}>
+                              {m.displayName}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                     <Select
-                      value={grantMemberId}
-                      onValueChange={setGrantMemberId}
+                      value={grantLevel}
+                      onValueChange={(v) => setGrantLevel(v as AppPermissionLevel)}
                       disabled={accessSaving}
                     >
-                      <SelectTrigger className="h-8 rounded-[7px] text-[12px]">
-                        <SelectValue placeholder={t('apps.controlPanel.pickMember', '选择成员')} />
+                      <SelectTrigger className="h-8 w-[88px] rounded-[7px] font-mono text-[11px]">
+                        <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {grantCandidates.map((m) => (
-                          <SelectItem key={m.id} value={m.id}>
-                            {m.displayName}
+                        {PERMISSION_LEVELS.map((level) => (
+                          <SelectItem key={level} value={level} className="font-mono text-[11px]">
+                            {t(`apps.controlPanel.permission.${level}`, level)}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8 rounded-[7px] text-[12px]"
+                      disabled={accessSaving || !grantMemberId}
+                      onClick={() => void handleGrant()}
+                    >
+                      {t('apps.controlPanel.grantAccess', '授权')}
+                    </Button>
                   </div>
-                  <Select
-                    value={grantLevel}
-                    onValueChange={(v) => setGrantLevel(v as AppPermissionLevel)}
-                    disabled={accessSaving}
-                  >
-                    <SelectTrigger className="h-8 w-[88px] rounded-[7px] font-mono text-[11px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {PERMISSION_LEVELS.map((level) => (
-                        <SelectItem key={level} value={level} className="font-mono text-[11px]">
-                          {t(`apps.controlPanel.permission.${level}`, level)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="h-8 rounded-[7px] text-[12px]"
-                    disabled={accessSaving || !grantMemberId}
-                    onClick={() => void handleGrant()}
-                  >
-                    {t('apps.controlPanel.grantAccess', '授权')}
-                  </Button>
-                </div>
-              )}
-            </>
-          )}
-        </SectionCard>
+                )}
+              </>
+            )}
+          </Field>
+        </Group>
 
-        <SectionCard title={t('apps.delete', 'Delete')}>
+        {/* Everything about the deployed site: who may open it, its live
+            data, and the address it answers on. */}
+        <Group title={t('apps.controlPanel.liveGroup', '线上')}>
+          <Field label={t('apps.controlPanel.authMode', '登录方式')}>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              {/* The select stretches and the button sits beside it: `w-full`
+                  on the trigger used to take the whole row and wrap Save onto
+                  a line of its own. */}
+              <Select
+                value={authModeDraft}
+                onValueChange={(v) => setAuthModeDraft(v as AppAuthMode)}
+                disabled={authModeSaving}
+              >
+                <SelectTrigger
+                  className="h-8 min-w-0 flex-1 rounded-[7px] text-[12px]"
+                  data-testid="app-control-auth-mode"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {AUTH_MODES.map((mode) => (
+                    <SelectItem
+                      key={mode}
+                      value={mode}
+                      disabled={mode === 'third'}
+                      className="text-[12px]"
+                    >
+                      {t(`apps.controlPanel.authModeOption.${mode}`, mode)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 shrink-0 rounded-[7px] text-[12px]"
+                disabled={authModeSaving || !authModeDirty || authModeDraft === 'third'}
+                onClick={() => void handleSaveAuthMode()}
+              >
+                {authModeSaving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  t('common.save', 'Save')
+                )}
+              </Button>
+              {showAuthModePending && (
+                <span
+                  className="rounded-[7px] border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                  data-testid="app-control-auth-pending-redeploy"
+                >
+                  {t('apps.controlPanel.pendingRedeploy', '待重新部署')}
+                </span>
+              )}
+            </div>
+            {showAuthModePending && (
+              <p
+                className="mb-2 text-[12px] text-destructive"
+                data-testid="app-control-auth-live-warning"
+              >
+                {t(
+                  'apps.controlPanel.authModeLiveWarning',
+                  '登录方式已保存，但线上站点仍运行旧配置。在重新部署之前，站点访问方式不会变（无登录的应用仍然对持有链接的人公开）。',
+                )}
+              </p>
+            )}
+            {authModeDraft === 'third' && (
+              <p className="text-[12px] text-muted-foreground">
+                {t(
+                  'apps.controlPanel.authModeThirdDisabled',
+                  '第三方登录暂不支持部署，请选择其他方式。',
+                )}
+              </p>
+            )}
+            {showAuthModePending && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2 h-8 gap-1.5 rounded-[7px] text-[12px]"
+                disabled={deploying || app.provisionStatus !== 'ready'}
+                onClick={() => void deploy(app.id)}
+                data-testid="app-control-redeploy-now"
+              >
+                {deploying ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                {t('apps.controlPanel.redeployNow', '立即重新部署')}
+              </Button>
+            )}
+          </Field>
+          <Field label={t('apps.data.section', '线上数据')}>
+            {/* `canManageAccess` is the same signal the grants block uses: the
+                access list is readable only by the creator or an app admin, which
+                is exactly the tier design §6 lets edit data. */}
+            <AppDataSection app={app} canEdit={canManageAccess} />
+          </Field>
+          <Field label={t('apps.controlPanel.customDomain', '自定义域名')}>
+            {/* Placeholder. The plumbing exists — every deploy already binds
+                <slug>-<id8>.$APPS_FC_ROUTE_DOMAIN on Function Compute — but a
+                user-chosen domain also needs DNS proof and a certificate, so
+                the field is shown disabled rather than implying it works. */}
+            <div className="flex gap-1.5">
+              <Input
+                value=""
+                readOnly
+                disabled
+                placeholder={t('apps.controlPanel.customDomainPlaceholder', 'app.example.com')}
+                className="h-8 flex-1 rounded-[7px] text-[12.5px]"
+              />
+              <Button type="button" size="sm" variant="outline" disabled className="h-8 rounded-[7px]">
+                {t('apps.controlPanel.customDomainBind', '绑定')}
+              </Button>
+            </div>
+            <p className="mt-1.5 text-[11.5px] text-faint">
+              {t('apps.controlPanel.customDomainSoon', '即将支持。上线后可用自己的域名访问这个应用。')}
+            </p>
+          </Field>
+        </Group>
+
+        {/* Last, and on its own: the only irreversible control in the panel. */}
+        <Group title={t('apps.delete', '删除')}>
           <p className="mb-2 text-[12px] text-muted-foreground">
             {t(
               'apps.controlPanel.deleteHint',
@@ -698,7 +756,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
             <Trash2 className="h-3.5 w-3.5" />
             {t('apps.delete', 'Delete')}
           </Button>
-        </SectionCard>
+        </Group>
       </div>
 
       <AlertDialog
