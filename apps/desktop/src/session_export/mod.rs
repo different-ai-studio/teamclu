@@ -337,12 +337,10 @@ pub fn export_from_rows(
 mod tests {
     use super::*;
 
-    const TURN_MESSAGES_FIXTURE: &str = include_str!(
-        "../../../../packages/app/src/lib/session-export/__fixtures__/turn-messages.json"
-    );
-    const EXPECTED_OPENCODE_FIXTURE: &str = include_str!(
-        "../../../../packages/app/src/lib/session-export/__fixtures__/expected-opencode.json"
-    );
+    // Fixtures live beside these tests; the TS client-side export that once
+    // shared them was removed as unreferenced.
+    const TURN_MESSAGES_FIXTURE: &str = include_str!("fixtures/turn-messages.json");
+    const EXPECTED_OPENCODE_FIXTURE: &str = include_str!("fixtures/expected-opencode.json");
 
     #[test]
     fn session_export_matches_fixture_messages() {

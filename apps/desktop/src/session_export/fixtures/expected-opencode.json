@@ -1,0 +1,52 @@
+[
+  {
+    "info": {
+      "id": "msg-user-1",
+      "sessionID": "sess-export-1",
+      "role": "user",
+      "time": {
+        "created": 1782208800000
+      },
+      "senderActorId": "actor-user"
+    },
+    "parts": [
+      {
+        "type": "text",
+        "text": "Hello agent"
+      }
+    ]
+  },
+  {
+    "info": {
+      "id": "msg-reply-1",
+      "sessionID": "sess-export-1",
+      "role": "assistant",
+      "time": {
+        "created": 1782208801000
+      },
+      "modelID": "claude-opus-4",
+      "senderActorId": "agent-1"
+    },
+    "parts": [
+      {
+        "type": "reasoning",
+        "text": "Let me check that."
+      },
+      {
+        "type": "tool",
+        "tool": "read",
+        "state": {
+          "status": "completed",
+          "input": {
+            "path": "/tmp/foo"
+          },
+          "output": "file contents"
+        }
+      },
+      {
+        "type": "text",
+        "text": "Here's what I found."
+      }
+    ]
+  }
+]
