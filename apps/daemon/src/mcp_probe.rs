@@ -470,6 +470,15 @@ mod tests {
 
     #[test]
     fn resolve_spawn_program_finds_npx_on_minimal_path() {
+        // `PATH` is process-global, and ~1260 tests share this process. While
+        // it is narrowed here, any concurrent test that spawns a program by
+        // name gets `NotFound` — which is how this one took down
+        // `managed_skill_three_runtime`'s `node` spawn on CI. Same lock as the
+        // `HOME` / `AMUXD_HOME` movers: one mutex for process-global path
+        // resolution, whichever variable is doing the resolving.
+        let _lock = crate::config::global_team_store::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var("PATH").ok();
         unsafe {
             std::env::set_var("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");

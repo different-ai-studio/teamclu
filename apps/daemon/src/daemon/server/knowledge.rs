@@ -12,7 +12,7 @@
 //! - `create`        — create one page from a template (adr / runbook / domain-index / page)
 //! - `write`         — write or edit a page (overwrite, path-locked to the vault)
 //! - `salvage`       — capture a conversation conclusion into a vault page
-//! - `search`        — full-text search (SQLite FTS5 index under vault/.index/)
+//! - `search`        — full-text search (SQLite FTS5; index kept outside the vault)
 //! - `manifest_get`  — read knowledge.manifest.yaml
 //! - `manifest_set`  — update manifest fields (visibility change needs confirm:true)
 //! - `health`        — freshness / coverage stats
@@ -34,6 +34,9 @@ use super::DaemonServer;
 
 const MAX_SEARCH_RESULTS: usize = 50;
 const SALVAGE_DIR: &str = "00-salvage";
+/// How far `salvage` will walk the `-2`, `-3`, … suffixes before giving up.
+/// Only a runaway caller reaches this; a human salvaging by hand never will.
+const MAX_SALVAGE_SUFFIX: usize = 50;
 const FRESH_KINDS: &[&str] = &["runbook"];
 const STALE_DAYS_RUNBOOK: i64 = 90;
 const STALE_DAYS_UPDATED: i64 = 90;
@@ -48,9 +51,9 @@ fn ok(result: Value) -> String {
     json!({ "ok": true, "result": result }).to_string()
 }
 
-/// The active team's vault root, or an error envelope when the daemon is
-/// unclaimed — knowledge is team-scoped by construction.
-fn vault_root() -> Result<PathBuf, String> {
+/// The active team, or an error envelope when the daemon is unclaimed —
+/// knowledge is team-scoped by construction.
+fn active_team_id() -> Result<String, String> {
     let team_id = layout::active_team();
     if team_id == layout::UNCLAIMED_TEAM {
         return Err(err(
@@ -58,7 +61,26 @@ fn vault_root() -> Result<PathBuf, String> {
             "daemon is not onboarded to a team; knowledge vault is team-scoped",
         ));
     }
-    Ok(sync_content_root(&team_id).join("knowledge"))
+    Ok(team_id)
+}
+
+/// `<team>/shared/team-sync/knowledge` — the synced vault itself.
+fn vault_root(team_id: &str) -> PathBuf {
+    sync_content_root(team_id).join("knowledge")
+}
+
+/// `<team>/state/knowledge-index` — where the derived search index lives.
+///
+/// Under `state/`, which is a sibling of `shared/` and therefore outside the
+/// synced tree by construction. It must not live in the vault: the scanner
+/// walks `knowledge/` with `WalkDir` and no rule skips dot-directories, so an
+/// index in there is uploaded to the team as ordinary content (a second, full
+/// plaintext copy of every page), and each `search` writes to its WAL, which
+/// wakes the notify watcher and kicks off another sync. Each device also
+/// writes its own — the `.obsidian/` shape `ignore_rules` calls a permanent
+/// conflict factory.
+fn index_root(team_id: &str) -> PathBuf {
+    layout::team_state_dir(team_id).join("knowledge-index")
 }
 
 /// Resolve a caller-supplied relative path against the vault root, rejecting
@@ -111,16 +133,17 @@ impl DaemonServer {
 
     async fn handle_knowledge_inner(&self, payload: Value) -> String {
         let action = str_field(&payload, "action").unwrap_or("");
-        let root = match vault_root() {
-            Ok(root) => root,
+        let team_id = match active_team_id() {
+            Ok(id) => id,
             Err(e) => return e,
         };
+        let root = vault_root(&team_id);
         match action {
             "scaffold" => knowledge_scaffold(&root, &payload),
             "create" => knowledge_create(&root, &payload),
             "write" => knowledge_write(&root, &payload),
             "salvage" => knowledge_salvage(&root, &payload),
-            "search" => index::search(&root, &payload),
+            "search" => index::search(&root, &index_root(&team_id), &payload),
             "manifest_get" => manifest_get(&root),
             "manifest_set" => manifest_set(&root, &payload),
             "health" => health(&root),
@@ -240,42 +263,75 @@ fn knowledge_salvage(root: &Path, payload: &Value) -> String {
     let session_id = str_field(payload, "session_id").unwrap_or("");
     let today = today_iso();
     let slug = slugify(title);
-    let path = format!("{SALVAGE_DIR}/{today}-{slug}.md");
     let body = format!(
         "---\ntype: salvage\nsource: {source}\nsession-id: {session_id}\nsalvaged: {today}\n---\n\n# {title}\n\n{content}\n"
     );
-    let target = match resolve_in_vault(root, &path) {
-        Ok(t) => t,
+    let dir = match resolve_in_vault(root, SALVAGE_DIR) {
+        Ok(d) => d,
         Err(e) => return e,
     };
-    if target.exists() {
-        return err("already_exists", format!("'{path}' already exists"));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return err("write_failed", format!("creating salvage dir failed: {e}"));
     }
-    if let Some(parent) = target.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return err("write_failed", format!("creating salvage dir failed: {e}"));
+
+    // Two conclusions salvaged the same day can legitimately share a slug.
+    // Refusing the second one loses it — the content exists nowhere but the
+    // conversation the caller is salvaging *from*. Take the next free suffix
+    // instead, with `create_new` so the check and the write are one step.
+    for n in 1..=MAX_SALVAGE_SUFFIX {
+        let name = if n == 1 {
+            format!("{today}-{slug}.md")
+        } else {
+            format!("{today}-{slug}-{n}.md")
+        };
+        let target = dir.join(&name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
+            Ok(mut file) => {
+                return match std::io::Write::write_all(&mut file, body.as_bytes()) {
+                    Ok(()) => ok(json!({ "path": format!("{SALVAGE_DIR}/{name}") })),
+                    Err(e) => err("write_failed", format!("write failed: {e}")),
+                };
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return err("write_failed", format!("write failed: {e}")),
         }
     }
-    match std::fs::write(&target, body) {
-        Ok(()) => ok(json!({ "path": path })),
-        Err(e) => err("write_failed", format!("write failed: {e}")),
-    }
+    err(
+        "already_exists",
+        format!("'{SALVAGE_DIR}/{today}-{slug}' already has {MAX_SALVAGE_SUFFIX} notes"),
+    )
 }
 
+/// Filename slug for a human title. Keeps letters and digits of any script,
+/// turns every other run into a single `-`.
+///
+/// It used to keep only `is_ascii_alphanumeric`, and to *skip* whitespace
+/// rather than separate on it. Both halves were wrong for the language this
+/// vault is mostly written in: a title of pure Chinese produced an empty slug
+/// and fell back to `note`, so every Chinese salvage on a given day landed on
+/// the same filename — and salvage refused to overwrite, which meant the
+/// second note of the day was simply lost. `Push 文案公式` kept only `push`
+/// and `Push outage runbook` came out as `pushoutagerunbook`.
 fn slugify(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-        } else if !c.is_whitespace() && !out.ends_with('-') && !out.is_empty() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
             out.push('-');
         }
     }
-    let trimmed = out.trim_matches('-');
+    // Truncate first, then trim: cutting at 48 can land on a separator.
+    let capped: String = out.trim_matches('-').chars().take(48).collect();
+    let trimmed = capped.trim_matches('-');
     if trimmed.is_empty() {
         "note".to_string()
     } else {
-        trimmed.chars().take(48).collect()
+        trimmed.to_string()
     }
 }
 
@@ -551,6 +607,55 @@ mod tests {
         let today = "2026-09-04";
         let n = days_between(verified.as_deref().unwrap(), today).unwrap();
         assert!(n > 90);
+    }
+
+    #[test]
+    fn slugify_keeps_cjk_and_separates_on_space() {
+        // The four titles from the review, and what each used to produce.
+        assert_eq!(slugify("Push 文案公式"), "push-文案公式"); // was "push"
+        assert_eq!(slugify("双11备战复盘"), "双11备战复盘"); // was "11"
+        assert_eq!(slugify("对账口径"), "对账口径"); // was "note"
+        assert_eq!(slugify("Push outage runbook"), "push-outage-runbook"); // was one word
+
+        // Separator runs collapse, edges are trimmed, and a title with nothing
+        // to keep still yields a usable name.
+        assert_eq!(slugify("  a --- b  "), "a-b");
+        assert_eq!(slugify("!!!"), "note");
+        assert_eq!(slugify(""), "note");
+        assert!(slugify(&"字".repeat(80)).chars().count() <= 48);
+        assert!(!slugify("abc ---").ends_with('-'));
+    }
+
+    /// Two Chinese titles on the same day used to slug identically, and the
+    /// second salvage was refused — losing a conclusion that existed nowhere
+    /// else. Distinct titles must now get distinct files either way.
+    #[test]
+    fn salvage_suffixes_instead_of_losing_the_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let salvage = |title: &str, content: &str| {
+            let reply = knowledge_salvage(root, &json!({ "title": title, "content": content }));
+            let v: Value = serde_json::from_str(&reply).unwrap();
+            assert_eq!(v["ok"], true, "{v}");
+            v["result"]["path"].as_str().unwrap().to_string()
+        };
+
+        let first = salvage("对账口径", "一");
+        let second = salvage("对账口径", "二");
+        assert_ne!(first, second);
+        assert!(second.ends_with("-2.md"), "unexpected second path {second}");
+
+        // Both notes are on disk, with their own content.
+        assert!(std::fs::read_to_string(root.join(&first))
+            .unwrap()
+            .contains('一'));
+        assert!(std::fs::read_to_string(root.join(&second))
+            .unwrap()
+            .contains('二'));
+
+        // A different Chinese title is a different file, not another suffix.
+        let other = salvage("渠道状态", "三");
+        assert!(other.contains("渠道状态"), "unexpected path {other}");
     }
 
     #[test]
