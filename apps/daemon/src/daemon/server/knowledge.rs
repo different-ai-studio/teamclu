@@ -12,7 +12,7 @@
 //! - `create`        — create one page from a template (adr / runbook / domain-index / page)
 //! - `write`         — write or edit a page (overwrite, path-locked to the vault)
 //! - `salvage`       — capture a conversation conclusion into a vault page
-//! - `search`        — full-text search (SQLite FTS5; index kept outside the vault)
+//! - `search`        — substring search across the vault, no index (see `search.rs`)
 //! - `manifest_get`  — read knowledge.manifest.yaml
 //! - `manifest_set`  — update manifest fields (visibility change needs confirm:true)
 //! - `health`        — freshness / coverage stats
@@ -43,7 +43,7 @@ const FRESH_KINDS: &[&str] = &["runbook"];
 const STALE_DAYS_RUNBOOK: i64 = 90;
 const STALE_DAYS_UPDATED: i64 = 90;
 
-mod index;
+mod search;
 
 fn err(code: &str, message: impl Into<String>) -> String {
     json!({ "ok": false, "error": message.into(), "errorCode": code }).to_string()
@@ -71,17 +71,13 @@ fn vault_root(team_id: &str) -> PathBuf {
     sync_content_root(team_id).join("knowledge")
 }
 
-/// `<team>/state/knowledge-index` — where the derived search index lives.
+/// `<team>/state/knowledge-index` — where a build that kept an index put it.
 ///
-/// Under `state/`, which is a sibling of `shared/` and therefore outside the
-/// synced tree by construction. It must not live in the vault: the scanner
-/// walks `knowledge/` with `WalkDir` and no rule skips dot-directories, so an
-/// index in there is uploaded to the team as ordinary content (a second, full
-/// plaintext copy of every page), and each `search` writes to its WAL, which
-/// wakes the notify watcher and kicks off another sync. Each device also
-/// writes its own — the `.obsidian/` shape `ignore_rules` calls a permanent
-/// conflict factory.
-fn index_root(team_id: &str) -> PathBuf {
+/// Nothing writes here any more: `search` reads the pages directly. The path
+/// survives so the next search can delete what an older daemon left, the same
+/// way it deletes the even older copy from inside the vault — that one was
+/// being uploaded to the whole team as ordinary content.
+fn stale_index_root(team_id: &str) -> PathBuf {
     layout::team_state_dir(team_id).join("knowledge-index")
 }
 
@@ -205,7 +201,7 @@ impl DaemonServer {
             "create" => knowledge_create(&root, &payload, &blocked),
             "write" => knowledge_write(&root, &payload, &blocked),
             "salvage" => knowledge_salvage(&root, &payload, &blocked),
-            "search" => index::search(&root, &index_root(&team_id), &payload),
+            "search" => search::search(&root, &stale_index_root(&team_id), &payload),
             "manifest_get" => manifest_get(&root),
             "manifest_set" => manifest_set(&root, &payload),
             "health" => health(&root),
