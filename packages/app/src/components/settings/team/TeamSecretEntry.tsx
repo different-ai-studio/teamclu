@@ -22,7 +22,7 @@ interface Props {
 const HEX64 = /^[0-9a-fA-F]{64}$/
 
 /** Random 32-byte key rendered as 64 lowercase hex chars. */
-export function randomSecretHex(): string {
+function randomSecretHex(): string {
   const bytes = new Uint8Array(32)
   crypto.getRandomValues(bytes)
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
@@ -34,7 +34,7 @@ export function randomSecretHex(): string {
  *   - any other non-empty passphrase → SHA-256 derived to 32 bytes / 64 hex
  * Deterministic, so members typing the same passphrase land on the same key.
  */
-export async function resolveSecretHex(raw: string): Promise<string> {
+async function resolveSecretHex(raw: string): Promise<string> {
   const trimmed = raw.trim()
   if (HEX64.test(trimmed)) return trimmed.toLowerCase()
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(trimmed))

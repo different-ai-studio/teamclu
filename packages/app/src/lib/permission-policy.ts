@@ -4,7 +4,7 @@
 
 import { appStoragePrefix } from "@/lib/build-config";
 
-export type PermissionPolicy = "ask" | "batch" | "bypass";
+type PermissionPolicy = "ask" | "batch" | "bypass";
 
 const PERMISSION_POLICY_KEY = `${appStoragePrefix}-permission-policy`;
 const PERMISSION_BATCH_DONE_KEY = `${appStoragePrefix}-permission-batch-done`;
@@ -42,7 +42,7 @@ export function setPermissionPolicy(policy: PermissionPolicy): void {
  * Check whether the batch authorization flow has been completed.
  * Returns true only if the stored value is exactly "true".
  */
-export function isBatchDone(): boolean {
+function isBatchDone(): boolean {
   try {
     return localStorage.getItem(PERMISSION_BATCH_DONE_KEY) === "true";
   } catch {

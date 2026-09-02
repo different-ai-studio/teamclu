@@ -192,23 +192,6 @@ describe('resolveAgentImagePath (SEC-5)', () => {
   })
 })
 
-describe('MessageBranch components', () => {
-  it('renders MessageBranch, MessageBranchContent, MessageBranchSelector', async () => {
-    const { MessageBranch, MessageBranchContent, MessageBranchSelector, MessageBranchPage } =
-      await import('@/packages/ai/message')
-    render(
-      React.createElement(MessageBranch, null,
-        React.createElement(MessageBranchContent, null, 'content'),
-        React.createElement(MessageBranchSelector, null,
-          React.createElement(MessageBranchPage, null, '1 / 2')
-        )
-      )
-    )
-    expect(screen.getByText('content')).toBeDefined()
-    expect(screen.getByText('1 / 2')).toBeDefined()
-  })
-})
-
 describe('image preview rendering', () => {
   it('renders SVG previews with an iframe canvas', async () => {
     const { ClickableImage } = await import('@/packages/ai/message')

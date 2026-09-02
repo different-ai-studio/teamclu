@@ -191,15 +191,3 @@ function isValidUITree(obj: unknown): obj is UITree {
   )
 }
 
-/**
- * 比较两个 UITree 是否有变化
- */
-export function hasTreeChanged(prev: UITree | null, next: UITree | null): boolean {
-  if (prev === null && next === null) return false
-  if (prev === null || next === null) return true
-  
-  const prevCount = Object.keys(prev.elements).length
-  const nextCount = Object.keys(next.elements).length
-  
-  return prevCount !== nextCount
-}

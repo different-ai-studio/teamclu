@@ -23,7 +23,7 @@ type Visibility = 'personal' | 'team'
  * only three: a repo we provision, a repo someone else already has, or a
  * checkout already sitting on this machine.
  */
-export type AppSource = 'new' | 'local' | 'remote'
+type AppSource = 'new' | 'local' | 'remote'
 
 /**
  * Whether a repo URL is one `git clone` will treat as an address.

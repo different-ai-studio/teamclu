@@ -56,7 +56,7 @@ async function waitForDaemonHttpReady(timeoutMs = 8000): Promise<boolean> {
 
 /** A single selectable model in the cron dialog, carrying its backend so the
  *  scheduler can pin the job to the right agent runtime. */
-export interface CronModelOption {
+interface CronModelOption {
   /** ACP model id (often `provider/model`) — stored verbatim as `payload.model`. */
   ref: string
   name: string
@@ -72,7 +72,7 @@ export interface CronModelGroup {
   models: CronModelOption[]
 }
 
-export function cronBackendFromAgentType(agentType: AgentType): string {
+function cronBackendFromAgentType(agentType: AgentType): string {
   switch (agentType) {
     case AgentType.CLAUDE_CODE:
       return 'claude'
@@ -135,7 +135,7 @@ export function modelsFromLiveRuntime(workspacePath: string): CronModelGroup[] {
 
 /** When no live runtime advertises models, fall back to
  * `GET …/model-catalog` for the default (or preferred) backend. */
-export async function modelsFromCatalogFallback(
+async function modelsFromCatalogFallback(
   workspacePath: string,
   preferBackend?: string | null,
 ): Promise<{
@@ -166,7 +166,7 @@ export async function modelsFromCatalogFallback(
   }
 }
 
-export type CronDialogModelLoadResult = {
+type CronDialogModelLoadResult = {
   groups: CronModelGroup[]
   /** Backend the daemon picks when a job specifies none ("auto"); the dialog
    *  surfaces it as the default. `null` when no backend is configured. */

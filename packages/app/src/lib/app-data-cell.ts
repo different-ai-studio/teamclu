@@ -17,9 +17,9 @@
 
 export const CELL_TRUNCATE_AT = 140
 
-export type AppDataCellKind = 'null' | 'json' | 'bytes' | 'timestamp' | 'boolean' | 'text'
+type AppDataCellKind = 'null' | 'json' | 'bytes' | 'timestamp' | 'boolean' | 'text'
 
-export interface AppDataCell {
+interface AppDataCell {
   kind: AppDataCellKind
   /** What the cell shows, already truncated. */
   display: string

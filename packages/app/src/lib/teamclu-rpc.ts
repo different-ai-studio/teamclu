@@ -42,13 +42,13 @@ let requesterActorId: string | null = null
 let initialized = false
 const DEFAULT_TIMEOUT_MS = 30_000
 
-export type TeamcluRpcTransportErrorKind =
+type TeamcluRpcTransportErrorKind =
   | 'transport-not-ready'
   | 'publish-failed'
   | 'target-timeout'
   | 'cancelled'
 
-export class TeamcluRpcTransportError extends Error {
+class TeamcluRpcTransportError extends Error {
   constructor(
     public readonly kind: TeamcluRpcTransportErrorKind,
     message: string,
@@ -430,7 +430,7 @@ function fetchWorkspacesResponseError(response: RpcResponse): Error | null {
 // Public helper: fetchWorkspaces
 // ---------------------------------------------------------------------------
 
-export interface FetchWorkspacesArgs {
+interface FetchWorkspacesArgs {
   targetActorId: string
   timeoutMs?: number
 }
@@ -593,7 +593,7 @@ export async function runtimeStop(args: RuntimeStopArgs): Promise<RuntimeStopRes
 // Public helper: runtimeCommand
 // ---------------------------------------------------------------------------
 
-export interface RuntimeCommandArgs {
+interface RuntimeCommandArgs {
   targetActorId: string
   sessionId: string
   /** Serialised `amux.RuntimeCommandEnvelope`. */

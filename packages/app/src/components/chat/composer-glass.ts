@@ -13,10 +13,6 @@ export const composerGlassSurfaceClass = cn(composerGlassFillClass, "box-border 
 export const composerGlassChildClass =
   "box-border w-full border-0 bg-paper shadow-none";
 
-export const composerGlassHoverClass = "hover:bg-selected";
-
-export const composerGlassFocusClass = "focus-visible:bg-selected";
-
 /** Single outer card — prototype `.composer-stack`. */
 export const composerStackShellClass =
   "box-border w-full overflow-visible rounded-[14px] border border-border bg-paper shadow-[0_6px_28px_-14px_rgba(20,20,15,0.14)]";

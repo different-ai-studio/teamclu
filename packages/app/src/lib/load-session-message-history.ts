@@ -19,7 +19,7 @@ const kindMap: Record<string, MessageKind> = {
   agent_reply: MessageKind.AGENT_REPLY,
 };
 
-export type LoadSessionMessageHistoryOptions = {
+type LoadSessionMessageHistoryOptions = {
   sessionId: string;
   teamId: string;
   workspacePath?: string | null;

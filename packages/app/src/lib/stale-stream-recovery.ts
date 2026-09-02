@@ -14,7 +14,7 @@ import type { AgentStreamEntry } from "@/stores/v2-streaming-store";
  * when the terminal event itself is dropped (daemon stall, reconnect gap) no
  * timer is ever armed and the composer dock spins forever.
  */
-export type StaleLiveStream = {
+type StaleLiveStream = {
   sessionId: string;
   actorId: string;
   /** `runtime-terminal`: the runtime retain proves the turn ended. */

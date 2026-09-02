@@ -170,7 +170,7 @@ async function gateAgentsForRuntimeStart(
   return { eligible, failures };
 }
 
-export type EnsureAgentRuntimeArgs = {
+type EnsureAgentRuntimeArgs = {
   sessionId: string;
   teamId: string;
   agentActorIds: string[];
@@ -186,7 +186,7 @@ export type EnsureAgentRuntimeArgs = {
   sessionRuntimeByAgent?: ReadonlyMap<string, string>;
 };
 
-export type EnsureRuntimeThenSetModelArgs = {
+type EnsureRuntimeThenSetModelArgs = {
   sessionId: string;
   teamId: string;
   agentActorId: string;

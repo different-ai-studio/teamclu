@@ -309,18 +309,6 @@ async function loadDaemonProviderSnapshot(
   }
 }
 
-/** Load configured models for an explicit workspace path (cron scope, etc.). */
-export async function loadConfiguredProvidersForWorkspace(
-  workspacePath: string,
-): Promise<{ configuredProviders: ConfiguredProvider[]; models: ModelOption[] } | null> {
-  const snapshot = await loadDaemonProviderSnapshot(workspacePath, new Set())
-  if (!snapshot) return null
-  return {
-    configuredProviders: snapshot.configuredProviders,
-    models: flattenConfiguredProviders(snapshot.configuredProviders),
-  }
-}
-
 export interface ProviderAuthMethod {
   type: 'oauth' | 'api'
   label: string
@@ -328,21 +316,21 @@ export interface ProviderAuthMethod {
 }
 
 // A model option available for selection in the ChatPanel
-export interface ModelOption {
+interface ModelOption {
   id: string
   name: string
   provider: string
 }
 
 // Provider entry for the Settings provider list
-export interface ProviderEntry {
+interface ProviderEntry {
   id: string
   name: string
   configured: boolean // true if in the `connected` list
 }
 
 // Configured provider with full model info (from GET /config/providers)
-export interface ConfiguredProvider {
+interface ConfiguredProvider {
   id: string
   name: string
   models: Array<{ id: string; name: string }>
@@ -358,7 +346,7 @@ function flattenConfiguredProviders(configuredProviders: ConfiguredProvider[]): 
   )
 }
 
-export interface ProviderState {
+interface ProviderState {
   // All available providers (from GET /provider), with configured status
   providers: ProviderEntry[]
   providersLoading: boolean

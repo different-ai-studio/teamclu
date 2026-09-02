@@ -27,7 +27,7 @@ const KNOWLEDGE_TOOLING_DIRS = new Set(['.obsidian'])
  */
 const CONFLICTS_SYNC_KEY = 'knowledge/.conflicts'
 
-export interface KnowledgeScopeOpts {
+interface KnowledgeScopeOpts {
   syncRoot?: string | null
   workspacePath?: string | null
 }

@@ -1,6 +1,6 @@
 import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
 
-export type ActorOnlineRow = {
+type ActorOnlineRow = {
   id: string
   /** Any directory kind, `external` included — see the note below. */
   actor_type: 'member' | 'agent' | 'external'

@@ -4,7 +4,6 @@ import {
   matchesSkillTool,
   matchesWriteTool,
   parseManageSkillsToolResult,
-  resolveWireToolName,
   routeToolPresentation,
 } from "../tool-call-utils";
 
@@ -92,25 +91,6 @@ describe("parseManageSkillsToolResult", () => {
       runtimeActivation: "next_start",
       warnings: ["claude_local_override"],
     });
-  });
-});
-
-describe("resolveWireToolName (legacy)", () => {
-  it("maps execute kind to bash for old metadata", () => {
-    expect(resolveWireToolName("execute", "other", { command: "ls" })).toBe("bash");
-  });
-
-  it("maps ACP other + skill title to skill route", () => {
-    expect(
-      resolveWireToolName("other", "other", {
-        name: "brainstorming",
-        description: "skill",
-      }),
-    ).toBe("skill");
-  });
-
-  it("keeps explicit skill wire name", () => {
-    expect(resolveWireToolName(undefined, "skill", { name: "demo" })).toBe("skill");
   });
 });
 

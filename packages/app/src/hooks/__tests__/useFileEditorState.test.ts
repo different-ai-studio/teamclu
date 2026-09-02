@@ -99,10 +99,3 @@ describe('useFileTabSync', () => {
   })
 })
 
-describe('useTabToFileSync', () => {
-  it('renders without error', async () => {
-    const { useTabToFileSync } = await import('@/hooks/useFileEditorState')
-    const { result } = renderHook(() => useTabToFileSync())
-    expect(result.current).toBeUndefined()
-  })
-})

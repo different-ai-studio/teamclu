@@ -21,7 +21,7 @@ export function nameMatchesToken(displayName: string, token: string): boolean {
   return dn === t || dn.startsWith(t) || t.startsWith(dn);
 }
 
-export type TextMentionResolution = {
+type TextMentionResolution = {
   agentIds: string[];
   memberIds: string[];
 };

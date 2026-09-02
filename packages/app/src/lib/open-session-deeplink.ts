@@ -10,7 +10,7 @@ import { toast } from 'sonner'
 
 const PENDING_SESSION_DEEPLINK_KEY = 'teamclu.pendingSessionDeeplink'
 
-export type PendingSessionDeeplink = {
+type PendingSessionDeeplink = {
   sessionId: string
   teamId: string | null
   /**

@@ -31,9 +31,9 @@ import { useSyncExternalStore } from "react";
 import { buildConfig, type ChannelsFeatureConfig } from "@/lib/build-config";
 import { getCloudApiUrlOverride, getDefaultCloudApiUrl } from "@/lib/server-config";
 
-export type FeatureScope = "public" | "session";
+type FeatureScope = "public" | "session";
 
-export interface AuthFeatures {
+interface AuthFeatures {
   google: boolean;
   wechat: boolean;
   phone: boolean;
@@ -41,7 +41,7 @@ export interface AuthFeatures {
   webSSO: boolean;
 }
 
-export interface ResolvedFeatures {
+interface ResolvedFeatures {
   /** Build-time only, never remote — see the note on the allowlists below. */
   updater: boolean;
   auth: AuthFeatures;
@@ -62,7 +62,7 @@ const AUTH_KEYS = ["google", "wechat", "phone", "password", "webSSO"] as const;
 const CHANNEL_KEYS = ["discord", "feishu", "email", "kook", "wecom", "wechat"] as const;
 const BOOL_KEYS = ["apps", "lockLlmConfig"] as const;
 
-export interface RemoteFeaturePatch {
+interface RemoteFeaturePatch {
   auth?: Partial<AuthFeatures>;
   channels?: Partial<ChannelsFeatureConfig>;
   apps?: boolean;
@@ -128,7 +128,7 @@ function storageKey(scope: FeatureScope, origin: string): string {
 }
 
 /** Origin of the Cloud API this app is currently pointed at, or "" when none. */
-export function currentCloudApiOrigin(): string {
+function currentCloudApiOrigin(): string {
   try {
     const url = getCloudApiUrlOverride() ?? getDefaultCloudApiUrl();
     return url ? new URL(url).origin : "";
@@ -277,7 +277,7 @@ export function clearSessionFeatures(): void {
  * one caller, not a guarantee. Wiring this to the change notification keeps the
  * behaviour correct if an in-place server switch is ever added.
  */
-export function reloadFeaturesForCurrentOrigin(): void {
+function reloadFeaturesForCurrentOrigin(): void {
   originAtLoad = currentCloudApiOrigin();
   patches.public = readSnapshot("public", originAtLoad);
   patches.session = readSnapshot("session", originAtLoad);
@@ -321,6 +321,3 @@ export function useFeatures(): ResolvedFeatures {
   return useSyncExternalStore(subscribeFeatures, getFeatures, getFeatures);
 }
 
-export function useFeature<K extends keyof ResolvedFeatures>(key: K): ResolvedFeatures[K] {
-  return useFeatures()[key];
-}

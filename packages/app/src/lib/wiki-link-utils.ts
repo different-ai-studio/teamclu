@@ -1,4 +1,4 @@
-export interface WikiLinkParts {
+interface WikiLinkParts {
   target: string
   alias: string | null
   heading: string | null

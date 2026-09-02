@@ -21,7 +21,7 @@ function boundParentToolIds(slice: SubagentRoutingSlice): Set<string> {
 }
 
 /** Calling task tools whose child ACP session is not bound yet. */
-export function listUnboundCallingTaskToolIds(
+function listUnboundCallingTaskToolIds(
   sessionId: string,
   actorId: string,
   slice: SubagentRoutingSlice,
@@ -40,15 +40,6 @@ export function countUnboundCallingTasks(
   slice: SubagentRoutingSlice,
 ): number {
   return listUnboundCallingTaskToolIds(sessionId, actorId, slice).length;
-}
-
-/** @deprecated Use countUnboundCallingTasks / listUnboundCallingTaskToolIds. */
-export function hasUnboundActiveTaskTool(
-  sessionId: string,
-  actorId: string,
-  slice: SubagentRoutingSlice,
-): boolean {
-  return countUnboundCallingTasks(sessionId, actorId, slice) > 0;
 }
 
 /** Buffer when this childSid is not bound yet (per-child, not global). */

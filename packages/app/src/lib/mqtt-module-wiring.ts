@@ -1,11 +1,11 @@
 import type { SharedModuleLease } from '@/lib/shared-module-lease'
 
-export type MqttModuleSetup = {
+type MqttModuleSetup = {
   name: string
   acquire: () => SharedModuleLease
 }
 
-export type MqttModuleSetupResult =
+type MqttModuleSetupResult =
   | { name: string; status: 'fulfilled' }
   | { name: string; status: 'rejected'; reason: unknown }
 

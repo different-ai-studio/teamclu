@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { useThreadListPanelStore } from "@/stores/thread-list-panel-store";
 import { useThreadSummariesStore } from "@/stores/thread-summaries-store";
 
-export type ThreadPanelState = {
+type ThreadPanelState = {
   isOpen: boolean;
   parentSessionId: string | null;
   threadSessionId: string | null;

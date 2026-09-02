@@ -13,7 +13,7 @@ import {
  * defect that has to stay visible. Report it, then carry on.
  */
 
-export type LocalCacheFailureKind =
+type LocalCacheFailureKind =
   /** Current-team gate rejected the row/team the caller asked for. */
   | 'team_gate_mismatch'
   /** The caller passed an empty team id — a bug in the caller, not the gate. */

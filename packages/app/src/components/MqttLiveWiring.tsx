@@ -90,7 +90,7 @@ import {
   touchLiveEventActivity,
 } from "@/lib/session-live-subscriptions";
 
-export interface MqttLiveWiringProps {
+interface MqttLiveWiringProps {
   /** Signed-in user id, or null while auth is still resolving. */
   userId: string | null;
   /** Active team id — the MQTT ACL scope. Null until current-team lands. */

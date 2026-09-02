@@ -642,17 +642,3 @@ export function useTelemetryConsent() {
 // Layout mode keyboard shortcut + panel auto-open
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function useLayoutModeShortcut() {
-  const toggleLayoutMode = useUIStore((s) => s.toggleLayoutMode);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
-        e.preventDefault();
-        toggleLayoutMode();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [toggleLayoutMode]);
-}

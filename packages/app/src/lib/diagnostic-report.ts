@@ -32,7 +32,7 @@ import type { SettingsSection } from '@/stores/ui'
 export type DiagnosticStatus = 'ok' | 'warn' | 'fail'
 
 /** Qualifying reasons to offer `amuxd clear` from diagnostics. */
-export type DaemonResetTrigger =
+type DaemonResetTrigger =
   | 'daemon_http_token_invalid'
   | 'daemon_http_port_missing'
   | 'daemon_info_unreadable'
@@ -49,13 +49,13 @@ export interface DiagnosticCheck {
   resetTrigger?: DaemonResetTrigger
 }
 
-export interface DaemonResetRemediationContext {
+interface DaemonResetRemediationContext {
   /** When true, cloud-auth expiry qualifies for reset (auto-heal already failed). */
   cloudAuthHealFailed?: boolean
   teamMismatch?: boolean
 }
 
-export interface DaemonResetRemediation {
+interface DaemonResetRemediation {
   suggest: boolean
   triggers: DiagnosticCheck[]
 }
@@ -113,7 +113,7 @@ export interface TeamEnvDiagnostics {
   secretConfigured: boolean
 }
 
-export interface DiagnosticBundleParts {
+interface DiagnosticBundleParts {
   doctor: unknown | null
   requirements: RequirementStatus[]
   teamEnv: TeamEnvDiagnostics | null
@@ -123,7 +123,7 @@ export interface DiagnosticBundleParts {
   }
 }
 
-export interface DaemonInfoBody {
+interface DaemonInfoBody {
   version?: string
   uptime_seconds?: number
   actor_id?: string
@@ -165,7 +165,7 @@ export interface DiagnosticReport {
   }
 }
 
-export interface NetworkDiagnosticDetails {
+interface NetworkDiagnosticDetails {
   online: boolean | null
   /** Primary: the same unauthenticated endpoint the client uses (bootstrap public config). */
   cloudReachabilitySeries: CloudProbeSeries | null
@@ -1133,7 +1133,7 @@ export async function collectDiagnosticReport(): Promise<DiagnosticReport> {
   }
 }
 
-export function formatDiagnosticReportJson(report: DiagnosticReport): string {
+function formatDiagnosticReportJson(report: DiagnosticReport): string {
   return JSON.stringify(report, null, 2)
 }
 
@@ -1142,7 +1142,7 @@ export async function copyDiagnosticReport(report: DiagnosticReport): Promise<vo
   await navigator.clipboard.writeText(text)
 }
 
-export async function buildDiagnosticZipBytes(report: DiagnosticReport): Promise<Uint8Array> {
+async function buildDiagnosticZipBytes(report: DiagnosticReport): Promise<Uint8Array> {
   const json = formatDiagnosticReportJson(report)
   const bytes = await invoke<number[]>('build_diagnostic_zip', { reportJson: json })
   return new Uint8Array(bytes)

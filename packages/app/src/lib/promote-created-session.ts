@@ -3,7 +3,7 @@ import { useSessionListStore, type SessionListEntry } from '@/stores/session-lis
 import { useSessionStore } from '@/stores/session'
 import { useUIStore } from '@/stores/ui'
 
-export type PromoteCreatedSessionArgs = {
+type PromoteCreatedSessionArgs = {
   sessionId: string
   teamId: string
   title: string

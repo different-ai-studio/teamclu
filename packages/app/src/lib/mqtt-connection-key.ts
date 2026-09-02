@@ -1,4 +1,4 @@
-export interface MqttConnectionKeyInput {
+interface MqttConnectionKeyInput {
   userId: string | null;
   teamId: string | null;
   accessToken: string | null;

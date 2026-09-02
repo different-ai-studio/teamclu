@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { useSessionStore } from "@/stores/session";
 import type { PendingQuestionState } from "@/stores/session-types";
 
-export type QuestionInputAppearance = "overlay" | "stack";
+type QuestionInputAppearance = "overlay" | "stack";
 
 interface QuestionInputDockProps {
   pendingQuestion: PendingQuestionState;

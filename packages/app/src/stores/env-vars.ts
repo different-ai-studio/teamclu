@@ -7,7 +7,7 @@ import { getFreshAccessToken } from '@/lib/auth/session-store'
 import { getEffectiveServerConfigSync } from '@/lib/server-config'
 
 /** Environment variable entry (key + description, no secret value). */
-export interface EnvVarEntry {
+interface EnvVarEntry {
   key: string
   description?: string
   /**
@@ -42,12 +42,12 @@ export interface TeamEnvListing {
 }
 
 /** Unified catalog returned by `env_catalog_list`. */
-export interface EnvCatalog {
+interface EnvCatalog {
   personal: EnvVarEntry[]
   team: TeamEnvListing[]
 }
 
-export type EnvScope = 'personal' | 'team'
+type EnvScope = 'personal' | 'team'
 
 interface EnvVarsState {
   envVars: EnvVarEntry[]

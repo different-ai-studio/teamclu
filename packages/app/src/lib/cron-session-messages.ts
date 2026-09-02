@@ -109,7 +109,7 @@ function fallbackSummaryMessage(
   });
 }
 
-export type HydrateCronSessionMessagesOpts = {
+type HydrateCronSessionMessagesOpts = {
   /** When Cloud has no rows yet, show this text so the run is not a blank thread. */
   fallbackSummary?: string | null;
   runId?: string;

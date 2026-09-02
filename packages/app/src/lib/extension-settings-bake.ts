@@ -30,7 +30,7 @@ export interface ExtensionPackConfig {
   settings: ExtensionSettingsBake
 }
 
-export const DEFAULT_EXTENSION_SETTINGS_BAKE: ExtensionSettingsBake = {
+const DEFAULT_EXTENSION_SETTINGS_BAKE: ExtensionSettingsBake = {
   hideButton: false,
   linkHover: { domains: [], urlPatterns: [] },
 }

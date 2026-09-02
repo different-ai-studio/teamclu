@@ -3,14 +3,14 @@ import { redactLogString } from '@/lib/diag-redact'
 
 export type ConsoleLevel = 'debug' | 'info' | 'log' | 'warn' | 'error'
 
-export interface ConsoleEntry {
+interface ConsoleEntry {
   ts: number
   level: ConsoleLevel
   message: string
   args: string[]
 }
 
-export interface ConsoleFilter {
+interface ConsoleFilter {
   level?: ConsoleLevel | 'all'
   search?: string
   limit?: number

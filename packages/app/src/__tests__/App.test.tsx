@@ -120,7 +120,6 @@ vi.mock('@/hooks/useAppInit', () => ({
   useExternalLinkHandler: vi.fn(),
   useTauriBodyClass: vi.fn(),
   useTelemetryConsent: () => ({ showConsentDialog: false, setShowConsentDialog: vi.fn() }),
-  useLayoutModeShortcut: vi.fn(),
 }))
 vi.mock('@/hooks/useMCPFileWatcher', () => ({ useMCPFileWatcher: vi.fn() }))
 vi.mock('@/hooks/useFileEditorState', () => ({

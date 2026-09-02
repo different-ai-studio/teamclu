@@ -28,7 +28,7 @@ import {
 
 type LiveTab = 'console' | 'state' | 'disk'
 
-export interface LogTailsExpanded {
+interface LogTailsExpanded {
   app: string | null
   amuxdManaged: string | null
   amuxdOut: string | null

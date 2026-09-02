@@ -43,7 +43,7 @@ function key(sessionId: string, agentId: string): string {
   return `${sessionId}::${agentId}`;
 }
 
-export type AgentModelPickEntry = {
+type AgentModelPickEntry = {
   modelId: string;
 };
 

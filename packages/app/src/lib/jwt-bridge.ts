@@ -21,11 +21,3 @@ export function initJwtBridge(): void {
   // intentionally empty — see module header.
 }
 
-/**
- * No-op. The daemon now supplies its own FC JWT; the desktop no longer writes a
- * token into teamclu.json. Kept for call-site compatibility with the
- * team-share store and TeamSharedLlmPane, which awaited this before FC calls.
- */
-export async function ensureJwtSynced(_workspacePath?: string): Promise<void> {
-  // intentionally empty — see module header.
-}

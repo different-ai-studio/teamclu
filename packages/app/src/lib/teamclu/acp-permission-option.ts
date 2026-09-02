@@ -1,25 +1,11 @@
 import type { StreamingPermissionRequest } from "@/stores/v2-streaming-store";
 import type { AcpPermissionDecision } from "@/lib/teamclu/reply-acp-permission";
 
-export type StreamingPermissionOption = {
+type StreamingPermissionOption = {
   optionId: string;
   kind: string;
   name: string;
 };
-
-/** Map ACP / OpenCode option list from MQTT into the v2 streaming shape. */
-export function mapAcpPermissionOptions(
-  options: ReadonlyArray<{ optionId?: string; kind?: string; name?: string }> | undefined,
-): StreamingPermissionOption[] {
-  if (!options?.length) return defaultOpenCodePermissionOptions();
-  return options
-    .map((o) => ({
-      optionId: o.optionId?.trim() ?? "",
-      kind: o.kind?.trim() ?? "",
-      name: o.name?.trim() ?? "",
-    }))
-    .filter((o) => o.optionId.length > 0);
-}
 
 /** OpenCode ACP agent default option ids (packages/opencode/src/acp/agent.ts). */
 export function defaultOpenCodePermissionOptions(): StreamingPermissionOption[] {

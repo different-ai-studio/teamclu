@@ -6,7 +6,7 @@ import {
 } from '@/stores/agent-default-workspace-store'
 
 /** Inputs for picking the cloud workspace id sent in runtimeStart. */
-export type AgentWorkspaceLookup = {
+type AgentWorkspaceLookup = {
   /** Explicit hint from send/outbox — highest priority. */
   callerWorkspaceId?: string | null
   /** Latest `agent_runtimes.workspace_id` for this agent *in this session*. */
@@ -150,7 +150,7 @@ export async function resolveCloudWorkspaceIdForLocalPath(
 }
 
 /** Prefer the sole cloud workspace row bound to an agent when path matching fails. */
-export async function resolveCloudWorkspaceIdForAgents(
+async function resolveCloudWorkspaceIdForAgents(
   teamId: string,
   agentActorIds: string[],
 ): Promise<string | null> {

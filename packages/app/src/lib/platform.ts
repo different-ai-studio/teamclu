@@ -1,6 +1,6 @@
 import { isTauri } from './utils'
 
-export type AppPlatform = 'desktop' | 'extension' | 'web'
+type AppPlatform = 'desktop' | 'extension' | 'web'
 
 type ChromeRuntimeLike = { id?: string }
 

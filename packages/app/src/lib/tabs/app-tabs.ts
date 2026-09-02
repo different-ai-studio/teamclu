@@ -4,7 +4,7 @@ import type { AppRow } from '@/lib/backend/types'
 const APP_DATA_PREFIX = 'app-data:'
 
 /** Tab target for one table in an app's live Postgres. */
-export function encodeAppDataTarget(appId: string, table: string): string {
+function encodeAppDataTarget(appId: string, table: string): string {
   return `${APP_DATA_PREFIX}${appId}/${table}`
 }
 

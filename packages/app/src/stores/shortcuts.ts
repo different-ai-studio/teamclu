@@ -18,7 +18,7 @@ import { useWorkspaceStore } from './workspace'
 
 export type { ShortcutNode, TeamRole } from '@/lib/shortcuts-rpc'
 
-export interface NewShortcutInput {
+interface NewShortcutInput {
   label: string
   type: ShortcutNodeType
   target: string

@@ -58,7 +58,7 @@ function normalizeLlmBaseUrl(url: string): string {
   }
 }
 
-export interface TeamModelConfig {
+interface TeamModelConfig {
   baseUrl: string
   model: string
   modelName: string

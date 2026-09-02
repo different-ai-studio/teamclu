@@ -7,7 +7,7 @@ import { LocalAgentWelcomeEmptyState } from "./LocalAgentWelcomeEmptyState";
 import { SessionEmptyThreadState } from "./SessionEmptyThreadState";
 import { SessionContinueBanner } from "./SessionContinueBanner";
 
-export interface ChatEmptyStateProps {
+interface ChatEmptyStateProps {
   activeSessionId: string | null;
   compact: boolean;
   t: ReturnType<typeof useTranslation>["t"];

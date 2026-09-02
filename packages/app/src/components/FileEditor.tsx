@@ -86,7 +86,7 @@ export function getFileType(
 }
 
 // Image Viewer component
-export function ImageViewer({
+function ImageViewer({
   content,
   filename,
   filePath,

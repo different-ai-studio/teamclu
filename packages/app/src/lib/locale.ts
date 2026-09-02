@@ -1,6 +1,6 @@
 import { appStoragePrefix } from '@/lib/build-config'
 
-export const LANGUAGE_STORAGE_KEY = `${appStoragePrefix}-language`
+const LANGUAGE_STORAGE_KEY = `${appStoragePrefix}-language`
 export const SUPPORTED_LANGUAGES = ['en', 'zh-CN'] as const
 
 export type SupportedLanguage = typeof SUPPORTED_LANGUAGES[number]
@@ -56,7 +56,7 @@ export function normalizeSupportedLanguage(language: string | null | undefined):
   return 'en'
 }
 
-export function getStoredLanguage(): string | null {
+function getStoredLanguage(): string | null {
   const storage = getStorage()
   if (!storage) return null
 

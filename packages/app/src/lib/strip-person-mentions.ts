@@ -1,4 +1,4 @@
-export interface PersonMentionLabel {
+interface PersonMentionLabel {
   name: string;
 }
 

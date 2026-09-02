@@ -1,9 +1,9 @@
 import { probeAgentRpcReachability } from '@/lib/teamclu-rpc'
 import { probeDaemonHttp } from '@/lib/daemon-local-client'
 
-export type AgentReachability = 'pending' | 'reachable' | 'unreachable' | 'indeterminate'
+type AgentReachability = 'pending' | 'reachable' | 'unreachable' | 'indeterminate'
 
-export const SESSION_AGENT_RPC_PROBE_TIMEOUT_MS = 3_000
+const SESSION_AGENT_RPC_PROBE_TIMEOUT_MS = 3_000
 
 /** Probe whether the engaged agent's daemon answers on this machine or over MQTT RPC. */
 export async function probeAgentReachability(args: {

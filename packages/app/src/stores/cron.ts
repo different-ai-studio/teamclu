@@ -157,7 +157,7 @@ export interface CronPayload {
 
 export type CronPermissionMode = 'full_access' | 'default'
 
-export type DeliveryMode = 'announce' | 'none'
+type DeliveryMode = 'announce' | 'none'
 export type DeliveryChannel = 'discord' | 'feishu' | 'email' | 'kook' | 'wechat' | 'wecom' | 'seatalk'
 
 export interface CronDelivery {
@@ -167,7 +167,7 @@ export interface CronDelivery {
   bestEffort: boolean
 }
 
-export type RunStatus = 'success' | 'failed' | 'timeout' | 'running' | 'stale'
+type RunStatus = 'success' | 'failed' | 'timeout' | 'running' | 'stale'
 
 export interface CronJob {
   id: string

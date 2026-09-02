@@ -10,7 +10,7 @@ const DAEMON_MQTT_STARTUP_SETTLE_MS = 15_000
 const DAEMON_MQTT_STARTUP_RETRY_MS = 1_000
 
 /** Consecutive raw false polls before UI surfaces a disconnect (sidebar, pill). */
-export const DAEMON_MQTT_UI_FALSE_STREAK_REQUIRED = 2
+const DAEMON_MQTT_UI_FALSE_STREAK_REQUIRED = 2
 
 type DaemonMqttStatusState = {
   /** Latest raw reading from `GET /v1/info`. `null` = unknown / daemon unreachable. */

@@ -82,7 +82,7 @@ function parseSlashToken(body: string): { type: "role" | "skill" | "command"; na
   return { type: "skill", name: body };
 }
 
-export interface ChatSendDeps {
+interface ChatSendDeps {
   t: ReturnType<typeof useTranslation>["t"];
   activeSessionId: string | null;
   displaySessionId: string | null;

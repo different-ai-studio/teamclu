@@ -5,7 +5,7 @@ import type { TFunction } from 'i18next'
  * `crates/teamclu-gateway/*` passes as `source` to `ensure_external_actor`, so
  * this list is the client-side mirror of those call sites — keep them in step.
  */
-export const EXTERNAL_ACTOR_SOURCES = [
+const EXTERNAL_ACTOR_SOURCES = [
   'wecom',
   'wechat',
   'feishu',
@@ -15,9 +15,9 @@ export const EXTERNAL_ACTOR_SOURCES = [
   'email',
 ] as const
 
-export type ExternalActorSource = (typeof EXTERNAL_ACTOR_SOURCES)[number]
+type ExternalActorSource = (typeof EXTERNAL_ACTOR_SOURCES)[number]
 
-export function isKnownExternalSource(source: string | null | undefined): source is ExternalActorSource {
+function isKnownExternalSource(source: string | null | undefined): source is ExternalActorSource {
   return !!source && (EXTERNAL_ACTOR_SOURCES as readonly string[]).includes(source)
 }
 

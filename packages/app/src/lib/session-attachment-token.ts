@@ -107,7 +107,7 @@ export function parseSessionAttachmentToken(token: string): SessionAttachmentPay
   return parseSessionAttachmentBody(token.slice(2, -1));
 }
 
-export const SESSION_ATTACHMENT_TOKEN_RE = /@\{att:b64:[^}]+\}/g;
+const SESSION_ATTACHMENT_TOKEN_RE = /@\{att:b64:[^}]+\}/g;
 
 export function parseSessionAttachmentTokensFromText(
   text: string,

@@ -14,7 +14,7 @@ export type QuickChatState =
   | { kind: 'no_agent' }
   | { kind: 'ready'; target: QuickChatTarget }
 
-export type QuickChatWelcomeAgent = {
+type QuickChatWelcomeAgent = {
   id: string
   displayName: string
 }

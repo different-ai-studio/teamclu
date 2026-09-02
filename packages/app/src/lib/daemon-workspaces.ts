@@ -23,11 +23,6 @@ export interface DaemonAgent {
   lastActiveAt: string | null
 }
 
-function normalizeAgentTypes(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return value.filter((item): item is string => typeof item === 'string')
-}
-
 function mapWorkspace(row: any): DaemonWorkspace {
   return {
     id: row.id,
@@ -40,30 +35,6 @@ function mapWorkspace(row: any): DaemonWorkspace {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
-}
-
-export async function listDaemonAgents(teamId: string): Promise<DaemonAgent[]> {
-  const connectedRows = await getBackend().actors.listConnectedAgents(teamId)
-
-  const connectedIds = connectedRows
-    .map((row) => row.agent_id ?? row.id)
-    .filter((id: unknown): id is string => typeof id === 'string')
-
-  if (connectedIds.length === 0) return []
-
-  const data = (await getBackend().actors.listActorDirectory(teamId))
-    .filter((row) => row.actor_type === 'agent' && connectedIds.includes(row.id))
-    .sort((a, b) => (a.display_name || a.id).localeCompare(b.display_name || b.id))
-
-  return data.map((row) => ({
-    id: row.id,
-    displayName: row.display_name || row.id,
-    agentTypes: normalizeAgentTypes(row.agent_types),
-    defaultAgentType: row.default_agent_type ?? null,
-    defaultWorkspaceId: row.default_workspace_id ?? null,
-    status: row.agent_status ?? null,
-    lastActiveAt: row.last_active_at ?? null,
-  }))
 }
 
 export async function getCurrentDaemonWorkspaceAgent(teamId: string): Promise<DaemonAgent | null> {

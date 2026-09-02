@@ -41,7 +41,7 @@ export function buildAgentReplyMessageRow(
   };
 }
 
-export function upsertAgentReplyToCache(
+function upsertAgentReplyToCache(
   teamId: string,
   reply: TeamcluMessage,
   logLabel = "flush agent_reply",
@@ -51,7 +51,7 @@ export function upsertAgentReplyToCache(
   });
 }
 
-export function releaseStreamAfterAgentReplyPersist(
+function releaseStreamAfterAgentReplyPersist(
   sessionId: string,
   actorId: string,
   enrichedReply: TeamcluMessage,
@@ -83,7 +83,7 @@ export function releaseStreamAfterAgentReplyPersist(
   });
 }
 
-export function bumpPreviewFromAgentReply(
+function bumpPreviewFromAgentReply(
   sessionId: string,
   reply: TeamcluMessage,
 ): void {
@@ -113,7 +113,7 @@ export function bumpPreviewFromAgentReply(
  * UI handoff order: put AGENT_REPLY (with partsJson) into the message store
  * before releasing the live stream, so ChatMessage can show「处理过程」
  * without a blank gap after the Composer dock closes. */
-export function commitFlushedAgentReply(
+function commitFlushedAgentReply(
   sessionId: string,
   actorId: string,
   enrichedReply: TeamcluMessage,

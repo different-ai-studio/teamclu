@@ -34,7 +34,7 @@ export interface KnowledgeAclImpact {
   affectedMembers: number;
 }
 
-export interface KnowledgeAclWrite {
+interface KnowledgeAclWrite {
   pathPrefix: string;
   actorIds?: string[];
   /**

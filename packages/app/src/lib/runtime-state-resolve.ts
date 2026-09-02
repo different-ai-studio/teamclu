@@ -278,7 +278,7 @@ export function runtimeHintsForAgents(
     .filter((row): row is NonNullable<typeof row> => row !== null);
 }
 
-export type PermissionCommandTarget = {
+type PermissionCommandTarget = {
   actorId: string;
   runtimeId: string;
 };
@@ -457,25 +457,7 @@ export function resolveSetModelId(
 // every place that needs to answer "which model should this agent run?".
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Wire format stored in provider store and sent to the daemon (`provider/model`). */
-export function formatProviderModelKey(
-  provider: string,
-  modelId: string,
-): string {
-  const p = provider.trim();
-  const m = modelId.trim();
-  if (!p || !m) return m || p;
-  return `${p}/${m}`;
-}
-
-export function providerModelKeyFromOption(
-  option: { provider: string; id: string } | null | undefined,
-): string {
-  if (!option) return "";
-  return formatProviderModelKey(option.provider, option.id);
-}
-
-export type AgentModelSource =
+type AgentModelSource =
   | "pick"
   | "retain"
   | "fallback"

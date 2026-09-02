@@ -68,7 +68,7 @@ function summaryLabel(status: SkillDiagnosticStatus, t: (key: string, fallback: 
   }
 }
 
-export interface SkillsDiagnosticsDialogProps {
+interface SkillsDiagnosticsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   workspacePath: string | null

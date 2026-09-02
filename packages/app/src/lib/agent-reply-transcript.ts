@@ -5,7 +5,7 @@ import {
 import type { Message as TeamcluMessage } from "@/lib/proto/teamclu_pb";
 import type { MessagePart } from "@/stores/session-types";
 
-export type TranscriptPart = {
+type TranscriptPart = {
   type?: string;
   text?: string;
   content?: string;
@@ -75,7 +75,7 @@ function lastToolPartIndex(parts: MessagePart[]): number {
 }
 
 /** Text bodies that appear before the last tool-call boundary. */
-export function priorTextBodiesBeforeLastTool(parts: MessagePart[]): string[] {
+function priorTextBodiesBeforeLastTool(parts: MessagePart[]): string[] {
   const lastToolIndex = lastToolPartIndex(parts);
   if (lastToolIndex < 0) return [];
   const end = lastToolIndex;

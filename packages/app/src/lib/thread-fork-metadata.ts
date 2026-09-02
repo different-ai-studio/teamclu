@@ -1,7 +1,7 @@
 import { getBackend } from "@/lib/backend";
 import type { SessionDetailRow } from "@/lib/backend/types";
 
-export type ThreadForkAnchor = {
+type ThreadForkAnchor = {
   parentSessionId: string;
   rootMessageId: string;
 };

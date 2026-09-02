@@ -347,13 +347,6 @@ export function PromptInput({
   )
 }
 
-export function PromptInputHeader({
-  className,
-  ...props
-}: React.ComponentProps<"div">) {
-  return <div className={cn("px-3 pt-3", className)} {...props} />
-}
-
 export function PromptInputBody({
   className,
   ...props

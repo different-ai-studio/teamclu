@@ -9,7 +9,7 @@ export type ViewerWorkspaceContext = {
   localWorkspacesByCloudId: Map<string, { path: string; agentId: string | null }>;
 };
 
-export type ViewerSessionBinding = {
+type ViewerSessionBinding = {
   agentId: string;
   cloudWorkspaceId: string;
   localPath: string | null;

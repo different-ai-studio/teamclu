@@ -17,7 +17,7 @@ import { useWorkspaceStore } from '@/stores/workspace'
  */
 export type QuickSessionFailureReason = 'no_team' | 'no_agent' | 'no_actor' | 'server_error'
 
-export type QuickSessionOutcome =
+type QuickSessionOutcome =
   | { ok: true; agentDisplayName: string }
   | { ok: false; reason: QuickSessionFailureReason; error?: unknown }
 

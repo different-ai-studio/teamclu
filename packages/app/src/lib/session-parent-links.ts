@@ -1,7 +1,7 @@
 import type { Session } from "@/stores/session-types";
 
 /** Minimal session shape needed to resolve child→parent activity owners. */
-export type SessionParentLink = Pick<Session, "id" | "parentID">;
+type SessionParentLink = Pick<Session, "id" | "parentID">;
 
 export function selectSessionParentLinks(
   sessions: ReadonlyArray<Pick<Session, "id" | "parentID">>,

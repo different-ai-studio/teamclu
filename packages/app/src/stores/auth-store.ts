@@ -22,7 +22,7 @@ import { markStartup } from "@/lib/startup-perf";
 
 export type { AuthClaimResult } from "@/lib/backend";
 
-export type AuthFlow = "idle" | "invite";
+type AuthFlow = "idle" | "invite";
 
 // Held outside the store because the subscription is process-wide, not part of
 // the rendered state: `hydrate` may run more than once (StrictMode) and each

@@ -3,7 +3,7 @@
  * Determines which editor to use based on file extension.
  */
 
-export type EditorType = 'markdown' | 'code';
+type EditorType = 'markdown' | 'code';
 
 function isMarkdownExtension(filename: string): boolean {
   const ext = filename.split('.').pop()?.toLowerCase();

@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 /** Save status for the status indicator */
-export type SaveStatus = "saved" | "modified" | "saving";
+type SaveStatus = "saved" | "modified" | "saving";
 
 /** Hash content using SHA-256 (Web Crypto API) */
 async function hashContent(content: string): Promise<string> {
@@ -24,14 +24,14 @@ async function hashContent(content: string): Promise<string> {
 /** Auto-save debounce delay in milliseconds */
 const AUTOSAVE_DELAY = 1000;
 
-export interface UseAutoSaveOptions {
+interface UseAutoSaveOptions {
   filePath: string;
   content: string;
   isModified: boolean;
   enabled?: boolean;
 }
 
-export interface UseAutoSaveResult {
+interface UseAutoSaveResult {
   saveStatus: SaveStatus;
   /** Check if a file-change event is from our own auto-save */
   isSelfWrite: (fileContent: string) => Promise<boolean>;

@@ -1,6 +1,6 @@
 import type { MentionedPerson } from "@/packages/ai/prompt-input-types";
 import { buildHumanMentionChip } from "@/lib/outgoing-mention-content";
-export const MEMBER_MENTION_TOKEN_RE = /@\{member:([^|]+)\|([^}]+)\}/g;
+const MEMBER_MENTION_TOKEN_RE = /@\{member:([^|]+)\|([^}]+)\}/g;
 
 export function encodeMemberMentionToken(person: {
   id: string;

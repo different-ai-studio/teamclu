@@ -1,8 +1,8 @@
 import { useCurrentTeamStore } from '@/stores/current-team'
 
-export type CloudRole = 'owner' | 'admin' | 'member'
+type CloudRole = 'owner' | 'admin' | 'member'
 
-export interface TeamPermissions {
+interface TeamPermissions {
   /** Cloud membership role, normalized. null = no cloud team / not yet loaded. */
   role: CloudRole | null
   /** Most sensitive gates: enable team-share, configure team-shared model. */

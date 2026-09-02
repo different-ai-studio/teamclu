@@ -9,7 +9,7 @@ export interface MqttProbeResult {
   brokerUrl: string
 }
 
-export interface MqttProbeArgs {
+interface MqttProbeArgs {
   brokerUrl?: string
   brokerHost: string
   brokerPort: number

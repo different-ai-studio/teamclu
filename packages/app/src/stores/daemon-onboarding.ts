@@ -95,7 +95,7 @@ async function applyPendingLocalAgent(): Promise<void> {
 // that make `refresh` bind this machine's agent, and the user sees 'starting'
 // while it happens. They stay in the type because they are still the honest
 // description of what the daemon's config says.
-export type OnboardingStatus = 'unknown' | 'needs-onboard' | 'mismatch' | 'starting' | 'ready' | 'error'
+type OnboardingStatus = 'unknown' | 'needs-onboard' | 'mismatch' | 'starting' | 'ready' | 'error'
 
 /**
  * The distinct operations hiding behind `status === 'starting'` (#881).

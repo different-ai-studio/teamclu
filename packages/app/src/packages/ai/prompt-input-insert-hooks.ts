@@ -291,7 +291,7 @@ export function createInsertFileMention(context: PromptInputContextValue) {
   }
 }
 
-export function createInsertSkillMention(context: PromptInputContextValue) {
+function createInsertSkillMention(context: PromptInputContextValue) {
   const { text, setText, onCommandClose, textareaRef, commandStartRef } = context
 
   return (skillName: string, type: 'role' | 'skill' | 'command' = 'skill') => {
@@ -334,7 +334,7 @@ export function createInsertSkillMention(context: PromptInputContextValue) {
   }
 }
 
-export function createInsertPageLink(context: PromptInputContextValue) {
+function createInsertPageLink(context: PromptInputContextValue) {
   const { text, setText, textareaRef } = context
 
   return (page: PageContext) => {

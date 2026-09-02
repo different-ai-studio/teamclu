@@ -62,7 +62,7 @@ import type { Message as ProtoMessage } from "@/lib/proto/teamclu_pb";
 const EMPTY_AGENTS: AttachedAgent[] = [];
 const EMPTY_PROTO_MESSAGES: ProtoMessage[] = [];
 
-export type SessionChatColumnProps = {
+type SessionChatColumnProps = {
   /** Persisted session for messages / MQTT (null before lazy thread create). */
   sessionId: string | null;
   /** Key for composer-scoped state (engaged agent, model pick). Always set. */

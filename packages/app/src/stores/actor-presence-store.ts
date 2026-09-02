@@ -14,7 +14,7 @@ import { createSharedModuleLeaseManager, type SharedModuleLease } from '@/lib/sh
 // The topic's `{actor}` segment is the agent's `actor_id`, so callers index
 // this store by the agent's actor id when they want agent presence.
 
-export type ActorPresenceEntry = {
+type ActorPresenceEntry = {
   online: boolean
   displayName: string
   lastUpdated: number // ms epoch

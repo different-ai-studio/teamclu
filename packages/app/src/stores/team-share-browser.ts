@@ -156,14 +156,12 @@ async function manageAgent(args: {
 /** The four browsable team-shared content kinds. */
 export type TeamShareSection = 'skills' | 'mcp' | 'env' | 'knowledge'
 
-export const TEAM_SHARE_SECTIONS: TeamShareSection[] = ['skills', 'mcp', 'env', 'knowledge']
-
 export type TeamSkillKind = 'team-available' | 'team-installed' | 'personal'
 
 export type TeamMcpKind = 'team-available' | 'team-installed' | 'personal' | 'builtin'
 
 /** What became of a local pack when the team deleted the skill. */
-export type SkillRetirement = 'removed' | 'kept'
+type SkillRetirement = 'removed' | 'kept'
 
 /**
  * A row in the unified skills list.
@@ -230,13 +228,13 @@ export interface TeamMcpItem {
   installed: boolean
 }
 
-export interface TeamKnowledgeItem {
+interface TeamKnowledgeItem {
   path: string
   relPath: string
   name: string
 }
 
-export interface TeamSkillShareInput {
+interface TeamSkillShareInput {
   slug: string
   summary: string
   category: TeamSkillCategory
@@ -381,7 +379,7 @@ interface TeamShareBrowserState {
   loadCounts: () => Promise<void>
 }
 
-export interface TeamSkillVersionInput {
+interface TeamSkillVersionInput {
   changelog: string
   summary?: string
   category?: TeamSkillCategory
@@ -701,7 +699,7 @@ export function mergeTeamMcpCatalogAndDaemon(
  * Keep the last known probe for a surviving row so switching sections does not
  * briefly repaint it as "0 tools" before the daemon's cached probe returns.
  */
-export function preserveMcpProbes(items: TeamMcpItem[], previousItems: TeamMcpItem[]): TeamMcpItem[] {
+function preserveMcpProbes(items: TeamMcpItem[], previousItems: TeamMcpItem[]): TeamMcpItem[] {
   const previousById = new Map(previousItems.map((item) => [item.id, item]))
   return items.map((item) => {
     const previous = previousById.get(item.id)
@@ -900,7 +898,7 @@ export class StaleDirtySkillPublishError extends Error {
   }
 }
 
-export function isStaleTeamSkillPublish(e: unknown): boolean {
+function isStaleTeamSkillPublish(e: unknown): boolean {
   if (e instanceof StaleTeamSkillPublishError) return true
   if (e && typeof e === 'object' && 'code' in e) {
     return (e as { code?: string }).code === 'stale_team_skill_base'

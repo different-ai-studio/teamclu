@@ -40,7 +40,7 @@ import { useCurrentTeamStore } from '@/stores/current-team'
  * accumulates one external actor per person who ever wrote in, which buried the
  * actual teammates. They are one filter click away instead.
  */
-export type ActorTypeFilter = 'all' | 'agent' | 'member' | 'external'
+type ActorTypeFilter = 'all' | 'agent' | 'member' | 'external'
 
 /** Whether a row survives the type filter. Exported so the rule is unit-testable
  *  without driving the filter popover. */

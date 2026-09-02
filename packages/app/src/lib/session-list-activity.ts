@@ -5,8 +5,8 @@ import type {
 } from "@/stores/session-types";
 import type { SessionStatusInfo } from "@/stores/session-types";
 
-export type SessionActivityState = "running" | "waiting";
-export type SessionActivityKind = "streaming" | "retry" | "question" | "permission";
+type SessionActivityState = "running" | "waiting";
+type SessionActivityKind = "streaming" | "retry" | "question" | "permission";
 
 export interface SessionListActivity {
   state: SessionActivityState;
@@ -14,78 +14,8 @@ export interface SessionListActivity {
   count?: number;
 }
 
-export type SessionStatusesById = Record<string, SessionStatusInfo | undefined>;
-export type PendingQuestionIdsBySession = Record<string, string[] | undefined>;
-
-export function pendingQuestionActivityKey(question: Pick<PendingQuestionState, "questionId" | "toolCallId">): string {
-  return question.questionId || question.toolCallId;
-}
-
-function unique(values: string[]): string[] {
-  return Array.from(new Set(values.filter(Boolean)));
-}
-
-export function addPendingQuestionActivity(
-  current: PendingQuestionIdsBySession,
-  sessionId: string | undefined | null,
-  key: string | undefined | null,
-): PendingQuestionIdsBySession {
-  if (!sessionId || !key) return current;
-  const nextKeys = unique([...(current[sessionId] || []), key]);
-  if (nextKeys.length === (current[sessionId] || []).length) return current;
-  return { ...current, [sessionId]: nextKeys };
-}
-
-export function removePendingQuestionActivity(
-  current: PendingQuestionIdsBySession,
-  sessionId: string | undefined | null,
-  key: string | undefined | null,
-): PendingQuestionIdsBySession {
-  if (!sessionId || !key || !current[sessionId]) return current;
-  const nextKeys = (current[sessionId] || []).filter((item) => item !== key);
-  const next = { ...current };
-  if (nextKeys.length > 0) {
-    next[sessionId] = nextKeys;
-  } else {
-    delete next[sessionId];
-  }
-  return next;
-}
-
-export function removeSessionActivityEntries<T>(
-  current: Record<string, T | undefined>,
-  sessionId: string,
-): Record<string, T | undefined> {
-  if (!(sessionId in current)) return current;
-  const next = { ...current };
-  delete next[sessionId];
-  return next;
-}
-
-export function updateSessionStatusEntry(
-  current: SessionStatusesById,
-  sessionId: string,
-  status: SessionStatusInfo,
-): SessionStatusesById {
-  if (status.type === "idle") {
-    return removeSessionActivityEntries(current, sessionId) as SessionStatusesById;
-  }
-  return { ...current, [sessionId]: status };
-}
-
-export function pruneSessionStatuses(
-  current: SessionStatusesById,
-  sessions: Session[],
-): SessionStatusesById {
-  const ids = new Set(sessions.map((session) => session.id));
-  const next: SessionStatusesById = {};
-  for (const [sessionId, status] of Object.entries(current)) {
-    if (ids.has(sessionId) && status && status.type !== "idle") {
-      next[sessionId] = status;
-    }
-  }
-  return next;
-}
+type SessionStatusesById = Record<string, SessionStatusInfo | undefined>;
+type PendingQuestionIdsBySession = Record<string, string[] | undefined>;
 
 export function resolveSessionActivityOwner(
   sessionId: string | undefined | null,
@@ -121,18 +51,6 @@ export function resolvePendingPermissionActivityOwner(
     entry.childSessionId || entry.permission.sessionID,
     sessions,
     entry.permission.sessionID || fallbackSessionId,
-  );
-}
-
-export function resolvePendingQuestionActivityOwner(
-  question: Pick<PendingQuestionState, "sessionId">,
-  sessions: Pick<Session, "id" | "parentID">[],
-  fallbackSessionId?: string | null,
-): string | null {
-  return resolveSessionActivityOwner(
-    question.sessionId,
-    sessions,
-    question.sessionId || fallbackSessionId,
   );
 }
 

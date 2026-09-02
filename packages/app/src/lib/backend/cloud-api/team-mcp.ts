@@ -11,7 +11,7 @@ import type { CloudApiClient } from "./http";
  * act on another actor's install set, deliberately.
  */
 
-export type TeamMcpTransport = "local" | "remote";
+type TeamMcpTransport = "local" | "remote";
 
 export interface TeamMcpServer {
   id: string;
@@ -43,7 +43,7 @@ export interface TeamMcpServerWrite {
   description?: string | null;
 }
 
-export interface TeamMcpInstall {
+interface TeamMcpInstall {
   id: string;
   teamId: string;
   actorId: string;
@@ -62,10 +62,10 @@ export interface TeamMcpInstall {
  * still typing, rather than surfacing a 422 after they hit save. The server
  * remains the authority — this copy is a courtesy, not a gate.
  */
-export const MCP_SECRET_KEY_RE = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)/i;
+const MCP_SECRET_KEY_RE = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)/i;
 
 /** `${FOO}` or `$FOO`, the forms the daemon resolves from team env at runtime. */
-export const MCP_PLACEHOLDER_RE = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$|^\$[A-Za-z_][A-Za-z0-9_]*$/;
+const MCP_PLACEHOLDER_RE = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$|^\$[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
  * Returns the offending key names, or an empty array when the map is fine.

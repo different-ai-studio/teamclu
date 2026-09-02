@@ -9,7 +9,7 @@ import { ExtensionGeneralSection } from './ExtensionGeneralSection'
 type ExtensionSettingsSection = 'general'
 
 /** Sidebar collapses to icon-only below this container width (px). */
-export const EXTENSION_SETTINGS_COMPACT_MAX_WIDTH = 560
+const EXTENSION_SETTINGS_COMPACT_MAX_WIDTH = 560
 
 interface Section {
   id: ExtensionSettingsSection

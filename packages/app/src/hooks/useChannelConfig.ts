@@ -10,12 +10,12 @@ import * as React from 'react'
 import { toast } from 'sonner'
 import i18n from '@/lib/i18n'
 
-export interface GatewayStatusLike {
+interface GatewayStatusLike {
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
   errorMessage?: string
 }
 
-export interface UseChannelConfigOptions<TConfig> {
+interface UseChannelConfigOptions<TConfig> {
   /** Current config from the store (may be null if not loaded) */
   storeConfig: TConfig | null
   /** Default config value */
@@ -40,7 +40,7 @@ export interface UseChannelConfigOptions<TConfig> {
   toggleEnabled?: (enabled: boolean, config: TConfig) => void
 }
 
-export interface UseChannelConfigResult<TConfig> {
+interface UseChannelConfigResult<TConfig> {
   /** Local config state (editable copy) */
   localConfig: TConfig
   /** Update fields on the local config */

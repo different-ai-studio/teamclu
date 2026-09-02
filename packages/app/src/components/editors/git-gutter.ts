@@ -20,10 +20,10 @@ import {
 } from '@codemirror/view';
 
 /** Type of line change */
-export type LineChangeType = 'added' | 'modified' | 'deleted';
+type LineChangeType = 'added' | 'modified' | 'deleted';
 
 /** A line-level change entry */
-export interface LineChange {
+interface LineChange {
   /** 1-based line number in the new (current) content */
   line: number;
   /** Type of change */

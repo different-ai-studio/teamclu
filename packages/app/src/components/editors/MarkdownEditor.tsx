@@ -486,5 +486,3 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, EditorProps>(
 
 export default MarkdownEditor;
 
-// Exported for callers that want to clear highlights programmatically.
-export { clearAllHighlights };

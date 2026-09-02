@@ -45,7 +45,7 @@ export interface PermissionAskedEvent {
 }
 
 /** Structured agent-turn error rendered by SessionErrorAlert. */
-export interface SessionErrorEventDetail {
+interface SessionErrorEventDetail {
   name?: string;
   data?: {
     message?: string;
@@ -223,7 +223,7 @@ export interface Message {
   };
 }
 
-export interface PlanEntry {
+interface PlanEntry {
   content: string;
   priority: "high" | "medium" | "low";
   status: "pending" | "in_progress" | "completed";

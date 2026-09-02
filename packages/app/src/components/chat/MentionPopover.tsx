@@ -19,7 +19,7 @@ import type { AttachedAgent } from '@/packages/ai/prompt-input-insert-hooks'
 
 export type { MentionedPerson }
 
-export type MemberMentionSelectOptions = {
+type MemberMentionSelectOptions = {
   clearEngagedAgent: boolean
 }
 
@@ -48,7 +48,7 @@ type MentionItem = ParticipantRow & { itemType: 'member' | 'agent' | 'external' 
 
 type PopoverStep = 'browse' | 'confirm'
 
-export function participantsToMentionRows(
+function participantsToMentionRows(
   participants: SessionParticipantInfo[],
   excludeMemberActorId?: string | null,
 ): ParticipantRow[] {

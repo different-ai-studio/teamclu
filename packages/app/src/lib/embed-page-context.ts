@@ -41,7 +41,7 @@ export function isPageContextPayload(payload: unknown): payload is PageContext {
   return typeof p.url === 'string' && typeof p.text === 'string' && typeof p.title === 'string'
 }
 
-export function isPageContextMessage(m: unknown): m is { type: 'page-context'; payload: PageContext } {
+function isPageContextMessage(m: unknown): m is { type: 'page-context'; payload: PageContext } {
   return (
     typeof m === 'object' && m !== null &&
     (m as { type?: unknown }).type === 'page-context' &&

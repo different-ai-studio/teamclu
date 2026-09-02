@@ -13,13 +13,13 @@ import {
 } from "@/lib/active-session-read";
 import { mqttSubscribe } from "@/lib/mqtt-bridge";
 
-export interface InboxPing {
+interface InboxPing {
   session_id: string;
   type?: "message" | "read";
   ts?: number;
 }
 
-export interface InboxEnvelope {
+interface InboxEnvelope {
   topic: string;
   // Accepts the live bridge's Uint8Array as well as plain number[] (tests).
   // The handler always wraps via `new Uint8Array(env.bytes)`, which takes both.
@@ -36,7 +36,7 @@ let subscribedInboxUserId: string | null = null;
 let pendingInboxSubscribe: Promise<void> | null = null;
 let inboxSubscribeEpoch = 0;
 
-export function inboxTopicForUser(userId: string): string {
+function inboxTopicForUser(userId: string): string {
   return `inbox/${userId.trim()}`;
 }
 
@@ -107,7 +107,7 @@ export interface InboxStore {
   loadFirstPage: () => Promise<void>;
 }
 
-export interface HandleInboxEnvelopeOptions {
+interface HandleInboxEnvelopeOptions {
   /** Called for message pings (not read); used to SUB session/live on inbox activity. */
   onMessagePing?: (sessionId: string) => void;
 }

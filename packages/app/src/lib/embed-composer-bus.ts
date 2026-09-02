@@ -2,11 +2,7 @@ import type { PageContext } from '@/lib/embed-page-context'
 import { useUIStore } from '@/stores/ui'
 
 type InsertHandler = (text: string) => void
-type PageLinkHandler = (ctx: PageContext) => void
-
 const handlers = new Set<InsertHandler>()
-const pageLinkHandlers = new Set<PageLinkHandler>()
-
 /** Append text into the currently mounted chat composer. No-op if none mounted. */
 export function emitComposerInsert(text: string): void {
   for (const h of handlers) h(text)
@@ -22,7 +18,3 @@ export function emitPageLinkInsert(ctx: PageContext): void {
   useUIStore.getState().requestPageLinkInsert(ctx)
 }
 
-export function subscribePageLinkInsert(handler: PageLinkHandler): () => void {
-  pageLinkHandlers.add(handler)
-  return () => pageLinkHandlers.delete(handler)
-}

@@ -33,7 +33,7 @@ const LOAD_EARLIER_MESSAGE_COUNT = 60;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface MessageListProps {
+interface MessageListProps {
   messages: Message[];
   activeSessionId: string | null;
   isStreaming: boolean;

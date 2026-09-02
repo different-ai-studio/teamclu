@@ -25,7 +25,7 @@ function percentile(sorted: number[], p: number): number {
   return sorted[Math.max(0, idx)];
 }
 
-export function latencyProbeSummary() {
+function latencyProbeSummary() {
   const sorted = [...samples].sort((a, b) => a - b);
   return {
     count: sorted.length,

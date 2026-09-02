@@ -77,11 +77,6 @@ export function getKnownLocalDaemonActorId(): string | null {
   return lastKnownLocalActorId ?? readPersistedLocalDaemonActorId()
 }
 
-/** Mark a prior local daemon identity as superseded (e.g. after amuxd reset). */
-export function markSupersededLocalActorId(actorId: string): void {
-  markSuperseded(actorId)
-}
-
 /** @internal test helper */
 export function __resetLocalDaemonIdentityForTest(): void {
   supersededLocalActorIds.clear()

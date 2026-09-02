@@ -21,7 +21,7 @@ export interface SkillDiagnosticCheck {
   hint?: string
 }
 
-export interface SkillDirectoryScan {
+interface SkillDirectoryScan {
   path: string
   label: string
   exists: boolean

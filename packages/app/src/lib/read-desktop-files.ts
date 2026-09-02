@@ -21,7 +21,7 @@ function mimeFromExt(ext: string): string {
   }
 }
 
-export interface ReadDesktopFilesResult {
+interface ReadDesktopFilesResult {
   files: File[];
   /** Filenames rejected because they exceed the non-image size limit. */
   oversize: string[];

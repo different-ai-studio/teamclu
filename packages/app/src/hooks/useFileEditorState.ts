@@ -5,9 +5,9 @@
  *  - Resizable panel widths (right panel)
  *  - Syncing selectedFile <-> TabsStore
  */
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useCallback } from "react";
 import { useWorkspaceStore } from "@/stores/workspace";
-import { useTabsStore, selectActiveTab } from "@/stores/tabs";
+import { useTabsStore } from "@/stores/tabs";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Legacy no-op retained for callers/tests while file mode is removed.
@@ -40,20 +40,6 @@ export function useFileTabSync() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Sync tab switch -> workspace selectFile
 // ─────────────────────────────────────────────────────────────────────────────
-
-export function useTabToFileSync() {
-  const selectFile = useWorkspaceStore((s) => s.selectFile);
-  const activeTab = useTabsStore(selectActiveTab);
-  const prevActiveTabId = useRef<string | null>(activeTab?.id ?? null);
-
-  useEffect(() => {
-    const tabChanged = activeTab?.id !== prevActiveTabId.current;
-    prevActiveTabId.current = activeTab?.id ?? null;
-    if (tabChanged && activeTab?.type === "file") {
-      selectFile(activeTab.target);
-    }
-  }, [activeTab?.id, activeTab?.type, activeTab?.target, selectFile]);
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Resizable panel state

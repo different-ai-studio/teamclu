@@ -14,24 +14,24 @@ export interface ClawHubSearchResults {
   results: ClawHubSearchResultEntry[]
 }
 
-export interface ClawHubSkillVersionInfo {
+interface ClawHubSkillVersionInfo {
   version: string
   createdAt?: number
   changelog: string
 }
 
-export interface ClawHubSkillOwner {
+interface ClawHubSkillOwner {
   handle: string | null
   displayName?: string | null
   image?: string | null
 }
 
-export interface ClawHubSkillModeration {
+interface ClawHubSkillModeration {
   isSuspicious: boolean
   isMalwareBlocked: boolean
 }
 
-export interface ClawHubSkillInfo {
+interface ClawHubSkillInfo {
   slug: string
   displayName: string
   tags: unknown
@@ -64,16 +64,9 @@ export interface ClawHubExploreResults {
   nextCursor: string | null
 }
 
-export interface ClawHubUpdateInfo {
-  slug: string
-  currentVersion: string | null
-  latestVersion: string | null
-  hasUpdate: boolean
-}
-
 // ─── Lockfile Types ──────────────────────────────────────────────────────────
 
-export interface ClawHubLockfileEntry {
+interface ClawHubLockfileEntry {
   version: string | null
   installedAt: number
   /** Absent on pre-team-registry rows, which are all ClawHub. */
@@ -99,7 +92,7 @@ export function clawhubInstalledSlugs(lock: ClawHubLockfile): string[] {
 
 // ─── Stats helper (stats field is untyped from API) ──────────────────────────
 
-export interface ClawHubStats {
+interface ClawHubStats {
   stars?: number
   downloads?: number
   installsCurrent?: number

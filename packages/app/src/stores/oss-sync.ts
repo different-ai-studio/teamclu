@@ -28,14 +28,14 @@ export interface VersionInfo {
 }
 
 /** How far the running daemon tick has got (`GET /v1/team/sync/status`). */
-export interface SyncProgress {
+interface SyncProgress {
   phase: 'checking' | 'pulling' | 'pushing' | 'deleting'
   done: number
   /** `0` means the phase cannot say — render indeterminate, not 0%. */
   total: number
 }
 
-export interface VersionPage {
+interface VersionPage {
   versions: VersionInfo[]
   nextCursor: string | null
 }
@@ -49,7 +49,7 @@ export interface VersionPage {
 // `lastServerSeq` fields no longer exist.
 // ---------------------------------------------------------------------------
 
-export interface OssSyncState {
+interface OssSyncState {
   /** Active team id (from the current-team store), null when no team. */
   teamId: string | null
   /** Daemon-reported share mode, or null when team-share isn't enabled. */

@@ -23,9 +23,9 @@ export type IdeaRow = {
   updated_at: string
 }
 
-export type IdeaCreatorMap = Map<string, string>
+type IdeaCreatorMap = Map<string, string>
 
-export interface UseIdeasForTeamResult {
+interface UseIdeasForTeamResult {
   ideas: IdeaRow[]
   creators: IdeaCreatorMap
   loading: boolean
@@ -34,7 +34,7 @@ export interface UseIdeasForTeamResult {
   refetch: () => void
 }
 
-export function useIdeasForTeam(): UseIdeasForTeamResult {
+function useIdeasForTeam(): UseIdeasForTeamResult {
   const currentTeamId = useCurrentTeamStore(s => s.team?.id ?? null)
   const [teamId, setTeamId] = React.useState<string | null>(null)
   const [ideas, setIdeas] = React.useState<IdeaRow[]>([])
@@ -169,7 +169,7 @@ type DragOverlay = {
   width: number
 }
 
-export function reorderIdeaRows(rows: IdeaRow[], activeId: string, overId: string): IdeaRow[] {
+function reorderIdeaRows(rows: IdeaRow[], activeId: string, overId: string): IdeaRow[] {
   if (activeId === overId) return rows
   const activeIndex = rows.findIndex((row) => row.id === activeId)
   const overIndex = rows.findIndex((row) => row.id === overId)

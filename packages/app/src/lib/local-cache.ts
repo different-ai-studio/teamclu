@@ -194,30 +194,7 @@ export type IdeaRow = {
   syncedAt: string;
 };
 
-export type ClaimRow = {
-  id: string;
-  ideaId: string;
-  actorId: string;
-  claimedAt: string;
-  createdAt: string;
-  updatedAt: string;
-  deletedAt?: string | null;
-  syncedAt: string;
-};
-
-export type SubmissionRow = {
-  id: string;
-  ideaId: string;
-  actorId: string;
-  content?: string | null;
-  submittedAt: string;
-  createdAt: string;
-  updatedAt: string;
-  deletedAt?: string | null;
-  syncedAt: string;
-};
-
-export type AgentRuntimeEventRow = {
+type AgentRuntimeEventRow = {
   id: string;
   sessionId: string;
   turnId?: string | null;
@@ -467,61 +444,9 @@ export async function loadIdeasForTeam(
   return invoke("local_cache_idea_load_team", { teamId, includeDeleted });
 }
 
-export async function softDeleteIdea(
-  id: string,
-  deletedAt: string,
-): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("local_cache_idea_soft_delete", { id, deletedAt });
-}
-
 // ── claim ──────────────────────────────────────────────────────────────────
 
-export async function upsertClaimsBatch(rows: ClaimRow[]): Promise<void> {
-  if (!isTauri() || rows.length === 0) return;
-  await invoke("local_cache_claim_upsert_batch", { rows });
-}
-
-export async function loadClaimsForIdea(
-  ideaId: string,
-  includeDeleted = false,
-): Promise<ClaimRow[]> {
-  if (!isTauri()) return [];
-  return invoke("local_cache_claim_load_idea", { ideaId, includeDeleted });
-}
-
-export async function softDeleteClaim(
-  id: string,
-  deletedAt: string,
-): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("local_cache_claim_soft_delete", { id, deletedAt });
-}
-
 // ── submission ─────────────────────────────────────────────────────────────
-
-export async function upsertSubmissionsBatch(
-  rows: SubmissionRow[],
-): Promise<void> {
-  if (!isTauri() || rows.length === 0) return;
-  await invoke("local_cache_submission_upsert_batch", { rows });
-}
-
-export async function loadSubmissionsForIdea(
-  ideaId: string,
-  includeDeleted = false,
-): Promise<SubmissionRow[]> {
-  if (!isTauri()) return [];
-  return invoke("local_cache_submission_load_idea", { ideaId, includeDeleted });
-}
-
-export async function softDeleteSubmission(
-  id: string,
-  deletedAt: string,
-): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("local_cache_submission_soft_delete", { id, deletedAt });
-}
 
 // ── sync watermark ─────────────────────────────────────────────────────────
 
@@ -564,17 +489,3 @@ export async function insertAgentRuntimeEvent(
   await invoke("local_cache_agent_runtime_event_insert", { record: row });
 }
 
-export async function loadAgentRuntimeEvents(
-  sessionId: string,
-): Promise<AgentRuntimeEventRow[]> {
-  if (!isTauri()) return [];
-  return invoke<AgentRuntimeEventRow[]>(
-    "local_cache_agent_runtime_event_load",
-    { sessionId },
-  );
-}
-
-export async function pruneAgentRuntimeEvents(maxRows = 5000): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("local_cache_agent_runtime_event_prune", { maxRows });
-}

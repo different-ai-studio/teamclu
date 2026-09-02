@@ -5,7 +5,7 @@ import { buildConfig, TEAMCLU_DIR } from '@/lib/build-config'
 /**
  * Default entries that should be in workspace .gitignore
  */
-export const TEAMCLU_GITIGNORE_ENTRIES = [
+const TEAMCLU_GITIGNORE_ENTRIES = [
   `# ${buildConfig.app.name} system directories`,
   `${TEAMCLU_DIR}/`,
   // Machine-local runtime config, not project content: the daemon materializes

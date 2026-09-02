@@ -33,7 +33,7 @@ import { adminConsoleTarget } from "@/lib/auth/web-sso"
 import { normalizeUrl, urlToLabel } from "@/lib/webview-utils"
 import { useTabsStore } from "@/stores/tabs"
 
-export interface AdminSsoInjection {
+interface AdminSsoInjection {
   storageKey: string
   sessionJson: string
 }

@@ -15,7 +15,7 @@ export function getDesktopDeviceId(): string {
  * fall back would be handed the same row. Guest-team reuse is exactly that —
  * see AuthGate, which sends null rather than let strangers share a team.
  */
-export function getDesktopDeviceIdOrNull(): string | null {
+function getDesktopDeviceIdOrNull(): string | null {
   try {
     const existing = localStorage.getItem(KEY);
     if (existing) return existing;

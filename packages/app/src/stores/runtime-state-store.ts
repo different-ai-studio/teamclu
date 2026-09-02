@@ -208,17 +208,6 @@ export const useRuntimeStateStore = createZustand<RuntimeStateState>((set, get) 
   clear: () => set({ byRuntimeId: {}, defaultCatalogByActorId: {} }),
 }))
 
-export function parseRuntimeStateTopic(
-  topic: string
-): { teamId: string; daemonActorId: string; runtimeId: string } | null {
-  const parts = topic.split('/')
-  if (parts.length !== 6) return null
-  if (parts[0] !== 'amux') return null
-  if (parts[3] !== 'runtime') return null
-  if (parts[5] !== 'state') return null
-  return { teamId: parts[1], daemonActorId: parts[2], runtimeId: parts[4] }
-}
-
 /** `amux/{team}/{actor}/state` — the one retained topic per actor. */
 export function parseActorStateTopic(
   topic: string
@@ -267,7 +256,7 @@ function enqueueActorPresenceSync(
 }
 
 /** Live-probed default-workspace catalog from `{actor}/state`. */
-export function extractActorDefaultCatalog(
+function extractActorDefaultCatalog(
   presence: ActorPresence,
 ): ActorDefaultCatalogEntry | null {
   const worktree = presence.defaultWorktree?.trim() ?? ''

@@ -1,15 +1,15 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type TerminalStatus = "running" | "exited";
+type TerminalStatus = "running" | "exited";
 
-export interface OpenResult {
+interface OpenResult {
   id: string;
   shell: string;
   pid: number;
 }
 
-export interface SubscribeResult {
+interface SubscribeResult {
   /** Handed back to `terminal_detach` when the view goes away. */
   sink_id: number;
   cols: number;
@@ -24,7 +24,7 @@ export interface TerminalAttachment extends SubscribeResult {
   detach(): Promise<void>;
 }
 
-export interface TerminalSummary {
+interface TerminalSummary {
   id: string;
   shell: string;
   pid: number;
@@ -32,7 +32,7 @@ export interface TerminalSummary {
   exit_code: number | null;
 }
 
-export interface OpenParams {
+interface OpenParams {
   workspaceId: string;
   cwd: string;
   cols: number;

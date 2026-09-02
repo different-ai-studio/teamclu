@@ -9,7 +9,7 @@ import { icons, type LucideIcon, type LucideProps } from 'lucide-react'
  * first time a shortcut with a custom icon renders. Import it through
  * `LucideIconByName`, never directly.
  */
-export function resolveLucideIcon(name: string | null | undefined): LucideIcon | null {
+function resolveLucideIcon(name: string | null | undefined): LucideIcon | null {
   if (!name) return null
   return name in icons ? icons[name as keyof typeof icons] : null
 }
