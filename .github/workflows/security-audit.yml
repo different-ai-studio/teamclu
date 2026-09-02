@@ -1,0 +1,191 @@
+name: Security Audit
+
+# Dependency advisories for the three lockfiles in this repo:
+#   Cargo.lock                      desktop (teamclu), daemon (amuxd), crates/*
+#   pnpm-lock.yaml                  the pnpm workspace (packages/app, apps/expo, ...)
+#   services/fc/package-lock.json   the Cloud API container; plain npm, outside
+#                                   the pnpm workspace
+#
+# Policy: fail on any HIGH or CRITICAL advisory that is not on the allowlist for
+# that lockfile. The allowlists are the baseline found on 2026-09-02, the day
+# this workflow was added, so it passed on day one and only NEW advisories turn
+# it red. Every entry names the advisory, the package and the fixed version; an
+# entry leaves the list when the dependency is bumped, and a new entry needs the
+# same one-line justification. Moderate and lower are printed but never fail the
+# job, and neither do cargo-audit's unmaintained / unsound / yanked warnings
+# (about 35 today, mostly the gtk-rs 0.18 bindings Tauri on Linux still needs).
+#
+# Runs when a lockfile changes and once a week, because advisories get published
+# against lockfiles that have not changed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - pnpm-lock.yaml
+      - services/fc/package-lock.json
+      - .github/workflows/security-audit.yml
+  pull_request:
+    paths:
+      - Cargo.lock
+      - pnpm-lock.yaml
+      - services/fc/package-lock.json
+      - .github/workflows/security-audit.yml
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-audit:
+    name: cargo audit (Cargo.lock)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Prebuilt binary; `cargo install cargo-audit` compiles for ~6 minutes.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Baseline 2026-09-02: 12 advisories over 18 package versions, all
+      # transitive (`cargo tree -i <crate>@<version>` prints the chain):
+      #   RUSTSEC-2026-0204  crossbeam-epoch 0.9.18         fixed 0.9.20    via crossbeam-deque
+      #   RUSTSEC-2026-0258  h2 0.3.27 + 0.4.13             fixed 0.4.16    via hyper 0.14 (tonic / libsql) and hyper 1 (reqwest)
+      #   RUSTSEC-2026-0141  lettre 0.11.21                 fixed 0.11.22   crates/teamclu-gateway; affects the Boring TLS backend only,
+      #                                                                     we build lettre with native-tls and boring is not in the lock
+      #   RUSTSEC-2026-0194  quick-xml 0.30.0/0.37.5/0.38.4 fixed 0.41.0    0.38 via plist (macOS); the two older ones deeper transitive
+      #   RUSTSEC-2026-0195  quick-xml (same three)         fixed 0.41.0
+      #   RUSTSEC-2026-0185  quinn-proto 0.11.14            fixed 0.11.15   transitive
+      #   RUSTSEC-2026-0235  rkyv 0.7.46                    fixed 0.8.17    transitive
+      #   RUSTSEC-2026-0049  rustls-webpki 0.102.8          fixed 0.103.10  via rustls 0.22 (rumqttc 0.24)
+      #   RUSTSEC-2026-0098  rustls-webpki 0.102.8          fixed 0.103.12  via rustls 0.22 (rumqttc 0.24)
+      #   RUSTSEC-2026-0099  rustls-webpki 0.102.8          fixed 0.103.12  via rustls 0.22 (rumqttc 0.24)
+      #   RUSTSEC-2026-0104  rustls-webpki 0.102.8+0.103.12 fixed 0.103.13  via rustls 0.22 (rumqttc) and rustls 0.23 (async-nats, reqwest)
+      #   RUSTSEC-2026-0257  webbrowser 1.2.1               fixed 1.2.2     crates/teamclu-gateway; Unix BROWSER env argument injection
+      #
+      # RUSTUP_TOOLCHAIN=stable: `cargo audit` only reads Cargo.lock, so it does
+      # not need the compiler pinned by rust-toolchain.toml. Without the
+      # override rustup would download that toolchain just to run the proxy.
+      - name: cargo audit
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: >-
+          cargo audit
+          --ignore RUSTSEC-2026-0204
+          --ignore RUSTSEC-2026-0258
+          --ignore RUSTSEC-2026-0141
+          --ignore RUSTSEC-2026-0194
+          --ignore RUSTSEC-2026-0195
+          --ignore RUSTSEC-2026-0185
+          --ignore RUSTSEC-2026-0235
+          --ignore RUSTSEC-2026-0049
+          --ignore RUSTSEC-2026-0098
+          --ignore RUSTSEC-2026-0099
+          --ignore RUSTSEC-2026-0104
+          --ignore RUSTSEC-2026-0257
+
+  node-audit:
+    name: pnpm audit + npm audit (production deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      # pnpm version comes from package.json#packageManager, as in ci.yml.
+      - uses: pnpm/action-setup@v6.0.10
+
+      # No `pnpm install`: audit posts the lockfile to the registry and needs no
+      # node_modules.
+      #
+      # Baseline 2026-09-02: 9 high, 0 critical. All sit in the Expo app's
+      # build toolchain or in one Tauri plugin's schema library, none in the
+      # desktop bundle. The root of each dependency path is in parentheses.
+      #   GHSA-vqpr-j7v3-hqw9  valibot <1.2.0           ReDoS in EMOJI_REGEX               (packages/app > tauri-plugin-clipboard-api)
+      #   GHSA-22p9-wv53-3rq4  linkify-it <=5.0.0       quadratic match scan               (apps/expo > react-native-markdown-display)
+      #   GHSA-v245-v573-v5vm  linkify-it <=5.0.1       quadratic mailto: scan             (apps/expo > react-native-markdown-display)
+      #   GHSA-3jxr-9vmj-r5cp  brace-expansion 3.x/4.x  exponential-time expansion         (apps/expo > expo > @expo/cli > metro, 100 paths)
+      #   GHSA-mh99-v99m-4gvg  brace-expansion 4.x      unbounded expansion, OOM           (same)
+      #   GHSA-rgw5-rvv9-x895  brace-expansion 4.x      unbounded intermediate arrays      (same)
+      #   GHSA-w3rx-r6r6-pgpr  image-size <=2.0.2       ICNS parser infinite loop          (apps/expo > expo > @expo/cli > metro)
+      #   GHSA-5p2g-fcmc-qvqq  image-size <=2.0.2       JXL / HEIF parser infinite loops   (same)
+      #   GHSA-2v37-7h3g-55p8  nanoid <3.3.18           custom generator loops at size 0   (apps/expo > expo > expo-router)
+      - name: pnpm audit (workspace)
+        run: >-
+          pnpm audit --prod --audit-level high
+          --ignore GHSA-vqpr-j7v3-hqw9
+          --ignore GHSA-22p9-wv53-3rq4
+          --ignore GHSA-v245-v573-v5vm
+          --ignore GHSA-3jxr-9vmj-r5cp
+          --ignore GHSA-mh99-v99m-4gvg
+          --ignore GHSA-rgw5-rvv9-x895
+          --ignore GHSA-w3rx-r6r6-pgpr
+          --ignore GHSA-5p2g-fcmc-qvqq
+          --ignore GHSA-2v37-7h3g-55p8
+
+      # services/fc is plain npm and `npm audit` has no allowlist flag, so the
+      # gate is a filter over its JSON report: fail on any high/critical
+      # advisory not listed below. `|| true` keeps npm's own exit code (1 the
+      # moment anything is found) from pre-empting the filter; a registry error
+      # still fails, because the report then carries an `error` object.
+      #
+      # Baseline 2026-09-02: 7 high advisories on 5 packages, ALL with a fix
+      # available (`npm audit fix`; nodemailer needs its 9.x major). These are
+      # the Cloud API's real production dependencies, so the move is to bump
+      # them and delete these lines, not to keep them here.
+      #   GHSA-88fw-hqm2-52qc  hono <=4.12.33        CORS middleware reflects any Origin with credentials on the wildcard default
+      #   GHSA-mwp4-54f8-5fhr  ip-address <=10.3.0   leading-zero octets decoded as decimal: SSRF / trust-boundary bypass
+      #   GHSA-r5fr-rjxr-66jc  lodash <=4.17.23      code injection via _.template import key names
+      #   GHSA-28wg-ghj8-5hjv  nanoid 4.0.0-5.1.15   non-secure generator loops on negative size
+      #   GHSA-xwg4-73v4-xw9w  nanoid 4.0.0-5.1.15   integer overflow / wraparound
+      #   GHSA-p6gq-j5cr-w38f  nodemailer <=9.0.0    raw option bypasses disableFileAccess / disableUrlAccess: file read + SSRF
+      #   GHSA-rcmh-qjqh-p98v  nodemailer <=9.0.0    addressparser recursive DoS
+      - name: npm audit (services/fc)
+        working-directory: services/fc
+        run: |
+          npm audit --omit=dev --json > "$RUNNER_TEMP/npm-audit.json" || true
+          AUDIT_JSON="$RUNNER_TEMP/npm-audit.json" node - <<'JS'
+          const fs = require('node:fs');
+          const allow = new Set([
+            'GHSA-88fw-hqm2-52qc',
+            'GHSA-mwp4-54f8-5fhr',
+            'GHSA-r5fr-rjxr-66jc',
+            'GHSA-28wg-ghj8-5hjv',
+            'GHSA-xwg4-73v4-xw9w',
+            'GHSA-p6gq-j5cr-w38f',
+            'GHSA-rcmh-qjqh-p98v',
+          ]);
+          const report = JSON.parse(fs.readFileSync(process.env.AUDIT_JSON, 'utf8'));
+          if (report.error) {
+            console.error('npm audit did not produce a report:', report.error.summary || report.error);
+            process.exit(1);
+          }
+          const failing = [];
+          for (const [name, v] of Object.entries(report.vulnerabilities || {})) {
+            for (const via of v.via) {
+              // A string entry means "reached through <other package>"; the
+              // advisory itself is an object on that other package's entry.
+              if (typeof via !== 'object') continue;
+              if (via.severity !== 'high' && via.severity !== 'critical') continue;
+              const id = String(via.url || '').split('/').pop();
+              if (!allow.has(id)) failing.push(`${via.severity}  ${name}  ${id}  ${via.title}`);
+            }
+          }
+          console.log('npm audit totals:', JSON.stringify(report.metadata?.vulnerabilities ?? {}));
+          if (failing.length) {
+            console.error('high/critical advisories not on the allowlist:\n' + failing.join('\n'));
+            process.exit(1);
+          }
+          console.log('every high/critical advisory is on the allowlist');
+          JS
