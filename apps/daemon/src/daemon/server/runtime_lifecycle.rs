@@ -249,10 +249,13 @@ impl DaemonServer {
                 ws_id.clone()
             };
             registry
-                .upsert_workspace(crate::runtime::refresh::refresh_watch::WatchedWorkspace {
-                    workspace_id: refresh_workspace_id,
-                    workspace_path: PathBuf::from(&resolved_worktree),
-                })
+                .upsert_workspace(
+                    crate::runtime::refresh::refresh_watch::WatchedWorkspace::new(
+                        refresh_workspace_id,
+                        PathBuf::from(&resolved_worktree),
+                        Some(team_id.as_str()),
+                    ),
+                )
                 .await;
         }
 

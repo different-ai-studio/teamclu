@@ -400,44 +400,14 @@ pub async fn apply_team_skill_outcome(
         return;
     };
 
-    let mut cloud_targets = Vec::new();
-    if let Some(backend) = backend {
-        match backend
-            .get_workspaces_by_agent(team_id, backend.actor_id())
-            .await
-        {
-            Ok(rows) => {
-                for row in rows {
-                    let Some((path, _)) =
-                        crate::config::workspace_path::listable_local_workspace(&row)
-                    else {
-                        continue;
-                    };
-                    cloud_targets.push(crate::runtime::refresh::refresh_watch::WatchedWorkspace {
-                        workspace_id: row.id,
-                        workspace_path: PathBuf::from(path),
-                    });
-                }
-            }
-            Err(e) => tracing::warn!(
-                team_id,
-                error = %e,
-                "team skills changed but cloud workspace list failed; using runtime refresh targets"
-            ),
-        }
-    }
-
-    let runtime_targets = match refresh_watch_registry {
-        Some(registry) => registry.snapshot().await,
-        None => Vec::new(),
-    };
-    for target in merge_refresh_targets(cloud_targets, runtime_targets) {
+    for target in resolve_team_skill_refresh_targets(team_id, backend, refresh_watch_registry).await
+    {
         if let Err(error) = refresh
             .record_change(
                 &target.workspace_id,
                 &target.workspace_path,
                 crate::runtime::refresh::RefreshChangeKind::Skills,
-                crate::runtime::refresh::RefreshSource::UiMutation,
+                crate::runtime::refresh::RefreshSource::TeamSkillReconcile,
             )
             .await
         {
@@ -447,8 +417,113 @@ pub async fn apply_team_skill_outcome(
                 error = %error,
                 "failed to record skills refresh after team skill reconcile"
             );
+            continue;
+        }
+        tracing::info!(
+            team_id,
+            workspace_id = %target.workspace_id,
+            workspace_path = %target.workspace_path.display(),
+            "team_skill_refresh_recorded"
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloudLookupStatus {
+    Success,
+    Failed,
+    Unavailable,
+}
+
+impl CloudLookupStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failed => "failed",
+            Self::Unavailable => "unavailable",
         }
     }
+}
+
+async fn resolve_team_skill_refresh_targets(
+    team_id: &str,
+    backend: Option<&Arc<dyn Backend>>,
+    registry: Option<&Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
+) -> Vec<crate::runtime::refresh::refresh_watch::WatchedWorkspace> {
+    use crate::runtime::refresh::refresh_watch::WatchedWorkspace;
+
+    let (cloud_targets, cloud_lookup_status) = match backend {
+        Some(backend) => match backend
+            .get_workspaces_by_agent(team_id, backend.actor_id())
+            .await
+        {
+            Ok(rows) => {
+                let mut cloud_targets = Vec::new();
+                for row in rows {
+                    let Some((path, _)) =
+                        crate::config::workspace_path::listable_local_workspace(&row)
+                    else {
+                        continue;
+                    };
+                    cloud_targets.push(WatchedWorkspace::new(
+                        row.id,
+                        PathBuf::from(path),
+                        Some(team_id),
+                    ));
+                }
+                (cloud_targets, CloudLookupStatus::Success)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    team_id,
+                    error = %e,
+                    "team skills changed but cloud workspace list failed; using team-matched runtime refresh targets"
+                );
+                (Vec::new(), CloudLookupStatus::Failed)
+            }
+        },
+        None => (Vec::new(), CloudLookupStatus::Unavailable),
+    };
+
+    let (runtime_targets, unknown_skipped) = match registry {
+        Some(registry) => {
+            let snapshot = registry.snapshot().await;
+            let unknown_skipped = snapshot
+                .iter()
+                .filter(|workspace| workspace.team_id.is_none())
+                .count();
+            if unknown_skipped > 0 {
+                tracing::warn!(
+                    team_id,
+                    unknown_skipped,
+                    "skipping refresh-watch workspaces with unknown team_id"
+                );
+            }
+            (registry.snapshot_for_team(team_id).await, unknown_skipped)
+        }
+        None => (Vec::new(), 0),
+    };
+
+    let cloud_count = cloud_targets.len();
+    let runtime_count = runtime_targets.len();
+    let targets = merge_refresh_targets(cloud_targets, runtime_targets);
+    tracing::info!(
+        team_id,
+        cloud_count,
+        runtime_count,
+        unknown_skipped,
+        deduped_count = targets.len(),
+        cloud_lookup_status = cloud_lookup_status.as_str(),
+        "team_skill_refresh_targets_resolved"
+    );
+    if targets.is_empty() {
+        tracing::warn!(
+            team_id,
+            cloud_lookup_status = cloud_lookup_status.as_str(),
+            "team skills changed but no trusted refresh targets were found"
+        );
+    }
+    targets
 }
 
 fn merge_refresh_targets(
@@ -639,19 +714,64 @@ mod tests {
         assert!(!tmp.path().join("escaped.md").exists());
     }
 
+    fn watched(
+        id: &str,
+        path: &str,
+        team_id: Option<&str>,
+    ) -> crate::runtime::refresh::refresh_watch::WatchedWorkspace {
+        crate::runtime::refresh::refresh_watch::WatchedWorkspace::new(
+            id,
+            PathBuf::from(path),
+            team_id,
+        )
+    }
+
+    fn changed_outcome() -> TeamSkillReconcileOutcome {
+        TeamSkillReconcileOutcome {
+            installed: 1,
+            removed: 0,
+        }
+    }
+
+    async fn apply_changed(
+        team_id: &str,
+        backend: Option<&Arc<dyn Backend>>,
+        refresh: &Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>,
+        registry: &Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>,
+    ) {
+        apply_team_skill_outcome(
+            team_id,
+            changed_outcome(),
+            backend,
+            Some(refresh),
+            Some(registry),
+        )
+        .await;
+    }
+
+    fn seed_workspace(
+        mock: &crate::backend::mock::MockBackend,
+        id: &str,
+        team_id: &str,
+        path: &Path,
+    ) {
+        mock.state.lock().unwrap().workspaces_by_id.insert(
+            id.to_string(),
+            crate::backend::WorkspaceRow {
+                id: id.to_string(),
+                team_id: team_id.to_string(),
+                path: Some(path.display().to_string()),
+                archived: false,
+                agent_id: Some(mock.actor_id().to_string()),
+            },
+        );
+    }
+
     #[test]
     fn runtime_refresh_target_overrides_stale_cloud_path() {
-        use crate::runtime::refresh::refresh_watch::WatchedWorkspace;
-
         let targets = merge_refresh_targets(
-            vec![WatchedWorkspace {
-                workspace_id: "ws-1".into(),
-                workspace_path: PathBuf::from("/tmp/stale-cloud-path"),
-            }],
-            vec![WatchedWorkspace {
-                workspace_id: "ws-1".into(),
-                workspace_path: PathBuf::from("/tmp/actual-runtime-path"),
-            }],
+            vec![watched("ws-1", "/tmp/stale-cloud-path", Some("team-1"))],
+            vec![watched("ws-1", "/tmp/actual-runtime-path", Some("team-1"))],
         );
         assert_eq!(
             targets[0].workspace_path,
@@ -661,17 +781,70 @@ mod tests {
 
     #[tokio::test]
     async fn team_skill_change_refreshes_runtime_target_without_cloud_inventory() {
-        use crate::runtime::refresh::refresh_watch::{RefreshWatchRegistry, WatchedWorkspace};
+        use crate::runtime::refresh::refresh_watch::RefreshWatchRegistry;
 
-        let registry = RefreshWatchRegistry::new(vec![WatchedWorkspace {
-            workspace_id: "ws-runtime".into(),
-            workspace_path: PathBuf::from("/tmp/actual-runtime-path"),
-        }]);
+        let registry = RefreshWatchRegistry::new(vec![watched(
+            "ws-runtime",
+            "/tmp/actual-runtime-path",
+            Some("team-1"),
+        )]);
+        let refresh = crate::runtime::refresh::RuntimeRefreshCoordinator::new();
+        apply_changed("team-1", None, &refresh, &registry).await;
+
+        let state = refresh.workspace_state("ws-runtime").await.unwrap();
+        assert_eq!(state.workspace_path, "/tmp/actual-runtime-path");
+        assert!(state
+            .change_kinds
+            .contains(&crate::runtime::refresh::RefreshChangeKind::Skills));
+        assert!(state
+            .sources
+            .contains(&crate::runtime::refresh::RefreshSource::TeamSkillReconcile));
+    }
+
+    #[tokio::test]
+    async fn team_skill_change_skips_unknown_team_runtime_target() {
+        use crate::runtime::refresh::refresh_watch::RefreshWatchRegistry;
+
+        let registry = RefreshWatchRegistry::new(vec![watched(
+            "ws-unknown",
+            "/tmp/unknown-runtime-path",
+            None,
+        )]);
+        let refresh = crate::runtime::refresh::RuntimeRefreshCoordinator::new();
+        apply_changed("team-1", None, &refresh, &registry).await;
+
+        assert!(refresh.workspace_state("ws-unknown").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn team_skill_change_does_not_refresh_other_team_workspace() {
+        use crate::runtime::refresh::refresh_watch::RefreshWatchRegistry;
+
+        let registry = RefreshWatchRegistry::new(vec![
+            watched("ws-team-1", "/tmp/team-1", Some("team-1")),
+            watched("ws-team-2", "/tmp/team-2", Some("team-2")),
+        ]);
+        let refresh = crate::runtime::refresh::RuntimeRefreshCoordinator::new();
+        apply_changed("team-1", None, &refresh, &registry).await;
+
+        assert!(refresh.workspace_state("ws-team-1").await.is_some());
+        assert!(refresh.workspace_state("ws-team-2").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn unchanged_reconcile_outcome_does_not_record_refresh() {
+        use crate::runtime::refresh::refresh_watch::RefreshWatchRegistry;
+
+        let registry = RefreshWatchRegistry::new(vec![watched(
+            "ws-runtime",
+            "/tmp/actual-runtime-path",
+            Some("team-1"),
+        )]);
         let refresh = crate::runtime::refresh::RuntimeRefreshCoordinator::new();
         apply_team_skill_outcome(
             "team-1",
             TeamSkillReconcileOutcome {
-                installed: 1,
+                installed: 0,
                 removed: 0,
             },
             None,
@@ -680,11 +853,87 @@ mod tests {
         )
         .await;
 
-        let state = refresh.workspace_state("ws-runtime").await.unwrap();
-        assert_eq!(state.workspace_path, "/tmp/actual-runtime-path");
-        assert!(state
-            .change_kinds
-            .contains(&crate::runtime::refresh::RefreshChangeKind::Skills));
+        assert!(refresh.workspace_state("ws-runtime").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cloud_lookup_failure_uses_only_exact_team_match() {
+        use crate::runtime::refresh::refresh_watch::RefreshWatchRegistry;
+
+        let mock = crate::backend::mock::MockBackend::with_identity("team-1", "agent-1");
+        mock.state.lock().unwrap().get_workspaces_by_team_error = Some("cloud down".to_string());
+        let backend: Arc<dyn Backend> = Arc::new(mock);
+        let registry = RefreshWatchRegistry::new(vec![
+            watched("ws-team-1", "/tmp/team-1", Some("team-1")),
+            watched("ws-team-2", "/tmp/team-2", Some("team-2")),
+            watched("ws-unknown", "/tmp/unknown", None),
+        ]);
+        let refresh = crate::runtime::refresh::RuntimeRefreshCoordinator::new();
+        apply_changed("team-1", Some(&backend), &refresh, &registry).await;
+
+        assert!(refresh.workspace_state("ws-team-1").await.is_some());
+        assert!(refresh.workspace_state("ws-team-2").await.is_none());
+        assert!(refresh.workspace_state("ws-unknown").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn backend_none_does_not_cross_team_refresh() {
+        use crate::runtime::refresh::refresh_watch::RefreshWatchRegistry;
+
+        let registry = RefreshWatchRegistry::new(vec![
+            watched("ws-team-1", "/tmp/team-1", Some("team-1")),
+            watched("ws-team-2", "/tmp/team-2", Some("team-2")),
+        ]);
+        let refresh = crate::runtime::refresh::RuntimeRefreshCoordinator::new();
+        apply_changed("team-1", None, &refresh, &registry).await;
+
+        assert!(refresh.workspace_state("ws-team-1").await.is_some());
+        assert!(refresh.workspace_state("ws-team-2").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cloud_success_overlays_runtime_path_for_same_workspace_id() {
+        use crate::runtime::refresh::refresh_watch::RefreshWatchRegistry;
+
+        let cloud_dir = tempfile::tempdir().unwrap();
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let mock = crate::backend::mock::MockBackend::with_identity("team-1", "agent-1");
+        seed_workspace(&mock, "ws-1", "team-1", cloud_dir.path());
+        let backend: Arc<dyn Backend> = Arc::new(mock);
+        let registry = RefreshWatchRegistry::new(vec![watched(
+            "ws-1",
+            runtime_dir.path().to_str().unwrap(),
+            Some("team-1"),
+        )]);
+        let refresh = crate::runtime::refresh::RuntimeRefreshCoordinator::new();
+        apply_changed("team-1", Some(&backend), &refresh, &registry).await;
+
+        let state = refresh.workspace_state("ws-1").await.unwrap();
+        assert_eq!(
+            state.workspace_path,
+            runtime_dir.path().display().to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn cloud_success_does_not_refresh_other_team_runtime_target() {
+        use crate::runtime::refresh::refresh_watch::RefreshWatchRegistry;
+
+        let cloud_dir = tempfile::tempdir().unwrap();
+        let mock = crate::backend::mock::MockBackend::with_identity("team-1", "agent-1");
+        seed_workspace(&mock, "ws-cloud", "team-1", cloud_dir.path());
+        let backend: Arc<dyn Backend> = Arc::new(mock);
+        let registry =
+            RefreshWatchRegistry::new(vec![watched("ws-other", "/tmp/other-team", Some("team-2"))]);
+        let refresh = crate::runtime::refresh::RuntimeRefreshCoordinator::new();
+        apply_changed("team-1", Some(&backend), &refresh, &registry).await;
+
+        let cloud_state = refresh.workspace_state("ws-cloud").await.unwrap();
+        assert_eq!(
+            cloud_state.workspace_path,
+            cloud_dir.path().display().to_string()
+        );
+        assert!(refresh.workspace_state("ws-other").await.is_none());
     }
 
     fn seed_installed_pack(root: &Path, slug: &str, version: i64, body: &str) {
