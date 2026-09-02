@@ -889,12 +889,49 @@ impl DaemonServer {
                 &start.worktree,
                 &start.session_id,
                 &start.initial_prompt,
-                initial_model_override,
+                initial_model_override.clone(),
                 &request.requester_actor_id,
                 start.reset_backend_binding,
-                fork_from,
+                fork_from.clone(),
             )
             .await;
+
+        // User-facing only: one idle-attachment eviction then a single retry.
+        // Auto-recovery calls `apply_start_runtime` directly and must not
+        // steal a host slot from a session the user still has open.
+        let outcome = match outcome {
+            Err(err) if err.error_message.contains("host_capacity_timeout") => {
+                let evicted = self
+                    .agents
+                    .lock()
+                    .await
+                    .evict_one_idle_attachment_for_capacity(&start.session_id)
+                    .await;
+                match evicted {
+                    Some(runtime_id) => {
+                        info!(
+                            session_id = %start.session_id,
+                            evicted_runtime_id = %runtime_id,
+                            "runtimeStart: evicted idle attachment after host_capacity_timeout; retrying once"
+                        );
+                        self.apply_start_runtime(
+                            at,
+                            &start.workspace_id,
+                            &start.worktree,
+                            &start.session_id,
+                            &start.initial_prompt,
+                            initial_model_override,
+                            &request.requester_actor_id,
+                            start.reset_backend_binding,
+                            fork_from,
+                        )
+                        .await
+                    }
+                    None => Err(err),
+                }
+            }
+            other => other,
+        };
 
         match outcome {
             Ok(res) => RpcResponse {

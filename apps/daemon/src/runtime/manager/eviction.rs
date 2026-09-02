@@ -77,6 +77,46 @@ impl RuntimeManager {
         evicted
     }
 
+    /// Stop one idle attachment so a user-facing `runtimeStart` can retry after
+    /// `host_capacity_timeout`. Picks the least-recently-active runtime that:
+    /// - is not mid-turn (`turn_lock` free),
+    /// - still owns `event_rx` (not checked out),
+    /// - is not `exclude_session_id` (the session we are trying to start).
+    ///
+    /// Goes through [`Self::stop_runtime`] so the OpenCode host is detached,
+    /// never killed. Auto-recovery must not call this — only the user RPC path.
+    pub async fn evict_one_idle_attachment_for_capacity(
+        &mut self,
+        exclude_session_id: &str,
+    ) -> Option<String> {
+        let exclude = exclude_session_id.trim();
+        let candidate = self
+            .agents
+            .iter()
+            .filter(|(id, handle)| {
+                let excluded =
+                    !exclude.is_empty() && (*id == exclude || handle.session_id == exclude);
+                !excluded && handle.event_rx.is_some() && handle.turn_lock.try_lock().is_ok()
+            })
+            .min_by(|(a_id, a), (b_id, b)| {
+                a.last_active_at
+                    .cmp(&b.last_active_at)
+                    .then_with(|| a_id.cmp(b_id))
+            })
+            .map(|(id, _)| id.clone());
+        let id = candidate?;
+        if self.stop_runtime(&id).await.is_some() {
+            info!(
+                agent_id = %id,
+                "capacity: evicted idle attachment to free a host slot"
+            );
+            self.evicted_pending_publish.push(id.clone());
+            Some(id)
+        } else {
+            None
+        }
+    }
+
     /// Drain the buffer of idle-evicted agent_ids whose terminal MQTT state
     /// still needs publishing. Called once per main-loop tick.
     pub fn drain_evicted(&mut self) -> Vec<String> {
