@@ -709,6 +709,12 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn install_command_path_includes_system_dirs_when_empty() {
+        // Removing `PATH` removes it for every thread in this process. Held
+        // under the same lock as the other process-global env movers — see the
+        // note in `mcp_probe::tests::resolve_spawn_program_finds_npx_on_minimal_path`.
+        let _lock = crate::config::global_team_store::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("PATH").ok();
         std::env::remove_var("PATH");
         let p = install_command_path();
