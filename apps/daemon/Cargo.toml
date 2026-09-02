@@ -65,16 +65,6 @@ zip = { version = "5", default-features = false, features = ["deflate"] }
 # staging dir before swapping it over the installed pack.
 tempfile = "3"
 tar = "0.4"
-# Full-text search for the knowledge vault (SQLite FTS5, no external service)
-# The libsql fork of rusqlite, not rusqlite itself. It keeps the crate name
-# `rusqlite` and the same API, so callers need no change — but it links
-# libsql-ffi's sqlite, which teamclu-gateway already pulls in via `libsql`.
-#
-# Plain `rusqlite` with `bundled` compiles a SECOND copy of sqlite3.c into this
-# binary, and both copies define the same symbols. Apple's linker tolerates
-# that, so it builds fine on macOS; rust-lld does not, so Linux and Windows
-# fail with `duplicate symbol: sqlite3_*`. Keep this on the libsql fork.
-rusqlite = { package = "libsql-rusqlite", version = "0.9", features = ["bundled"] }
 humantime-serde = "1"
 parking_lot = "0.12"
 
