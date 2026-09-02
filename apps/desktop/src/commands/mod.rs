@@ -220,7 +220,15 @@ pub fn get_device_hostname() -> String {
 
 /// Reveal a file or folder in the native file manager (Finder on macOS, Explorer on Windows).
 #[tauri::command]
-pub fn show_in_folder(path: String) -> Result<(), String> {
+pub async fn show_in_folder(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || show_in_folder_blocking(path))
+        .await
+        .map_err(|e| format!("show_in_folder task failed: {e}"))?
+}
+
+/// Blocking body of [`show_in_folder`], shared with the Rust callers that are
+/// already off the main thread (diagnostics, acp debug log).
+pub(crate) fn show_in_folder_blocking(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")

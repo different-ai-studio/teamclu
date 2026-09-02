@@ -562,20 +562,6 @@ pub async fn refresh_actor_id(endpoint: &DaemonEndpoint) -> Result<Option<String
     Ok(actor)
 }
 
-/// Fire-and-forget [`refresh_actor_id`] for sync callers that cannot await.
-pub fn refresh_actor_id_in_background() {
-    tauri::async_runtime::spawn(async {
-        match discover() {
-            Ok(endpoint) => {
-                if let Err(err) = refresh_actor_id(&endpoint).await {
-                    tracing::debug!("[daemon-client] setup status unavailable: {err}");
-                }
-            }
-            Err(err) => tracing::debug!("[daemon-client] {err}"),
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

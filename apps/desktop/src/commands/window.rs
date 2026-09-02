@@ -131,13 +131,25 @@ pub async fn register_window_workspace(
     // The binding itself is a map insert and happens before the first await, so
     // a command issued right after this one already resolves the workspace.
     bind_window_to_workspace(&registry, window.label(), &workspace_path);
-    // Everything below touches disk (env index, personal secret blob, the
-    // daemon's backend.toml fallback) and used to run inline on the main thread
-    // (PERF-3).
+    // Identity == daemon actor_id (empty until the daemon is onboarded or
+    // reachable; a generator that needs it then yields None and seeds nothing).
+    // Steady state this is the cached answer of `GET /v1/setup/status`; on a
+    // cold cache we ask the daemon once instead of reading its private
+    // backend.toml.
+    let actor_id = match crate::daemon_client::cached_actor_id() {
+        Some(id) => id,
+        None => match crate::daemon_client::discover() {
+            Ok(endpoint) => crate::daemon_client::refresh_actor_id(&endpoint)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        },
+    };
+    // Everything below touches disk (env index, personal secret blob) and used
+    // to run inline on the main thread (PERF-3).
     tokio::task::spawn_blocking(move || {
-        // Identity == daemon actor_id (empty until the daemon is onboarded; the
-        // tc_api_key generator then yields None and no key is seeded).
-        let actor_id = super::daemon_http::read_daemon_actor_id();
         if let Err(e) = super::env_vars::ensure_system_env_vars(&workspace_path, &actor_id) {
             eprintln!(
                 "[EnvVars] Warning: failed to ensure system env vars on workspace bind: {}",

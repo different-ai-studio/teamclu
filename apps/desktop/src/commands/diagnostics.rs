@@ -322,7 +322,7 @@ pub async fn reveal_log_directory<R: Runtime>(
                 .map_err(|e| format!("create {}: {e}", path.display()))?;
         }
 
-        super::show_in_folder(path.to_string_lossy().into_owned())
+        super::show_in_folder_blocking(path.to_string_lossy().into_owned())
     })
     .await
     .map_err(|e| format!("reveal_log_directory task failed: {e}"))?

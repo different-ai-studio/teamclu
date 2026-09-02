@@ -110,7 +110,7 @@ pub async fn acp_debug_reveal_log(
                     std::fs::write(&file, "")
                         .map_err(|e| format!("create {}: {e}", file.display()))?;
                 }
-                crate::commands::show_in_folder(file.to_string_lossy().into_owned())
+                crate::commands::show_in_folder_blocking(file.to_string_lossy().into_owned())
             }
             None => open_path_in_file_manager(&dir),
         }

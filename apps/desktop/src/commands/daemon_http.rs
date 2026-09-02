@@ -72,64 +72,6 @@ pub async fn get_daemon_team_id() -> Result<Option<String>, String> {
     Ok(crate::commands::amuxd_active_team())
 }
 
-/// The daemon's actor_id, or an empty string while the daemon is not onboarded
-/// or not ready — callers treat empty as "not ready".
-///
-/// Steady state this is what `GET /v1/setup/status` last answered: `daemon_live`
-/// refreshes it every time the daemon (re)connects and onboarding records it on
-/// claim, so the desktop no longer opens the daemon's private `backend.toml`
-/// (which also carries a refresh token) to learn its own daemon's identity.
-///
-/// Sync because its caller, `register_window_workspace`, is a sync command. On a
-/// cold cache — a window bound before the daemon's first connect — it falls back
-/// to the file read one more time and kicks a background refresh so the next
-/// call is answered by the endpoint.
-pub(crate) fn read_daemon_actor_id() -> String {
-    if let Some(actor_id) = daemon::cached_actor_id() {
-        return actor_id;
-    }
-    daemon::refresh_actor_id_in_background();
-    read_backend_toml_actor_id()
-}
-
-/// Minimal view of `teams/<id>/state/backend.toml` — just the actor_id field.
-#[derive(Debug, serde::Deserialize)]
-struct BackendCloudApi {
-    #[serde(default)]
-    actor_id: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct BackendConfig {
-    #[serde(default)]
-    cloud_api: Option<BackendCloudApi>,
-}
-
-/// Cold-cache fallback for [`read_daemon_actor_id`]: the active team's
-/// `state/backend.toml` (`[cloud_api] actor_id`), followed through the
-/// `active_team` pointer in `daemon.toml`. Goes away once the one sync caller
-/// can await [`daemon::refresh_actor_id`] instead.
-fn read_backend_toml_actor_id() -> String {
-    let Some(team) = crate::commands::amuxd_active_team() else {
-        return String::new();
-    };
-    let config_path = crate::commands::amuxd_team_state_dir(&team).join("backend.toml");
-
-    let body = match std::fs::read_to_string(&config_path) {
-        Ok(s) => s,
-        Err(_) => return String::new(),
-    };
-    let parsed: BackendConfig = match toml::from_str(&body) {
-        Ok(c) => c,
-        Err(_) => return String::new(),
-    };
-    parsed
-        .cloud_api
-        .and_then(|c| c.actor_id)
-        .map(|a| a.trim().to_owned())
-        .unwrap_or_default()
-}
-
 /// Return this daemon's team's on-disk workspaces via the daemon's loopback
 /// `GET /v1/workspaces`, which sources from the cloud `amux.workspaces` table
 /// (the sole source of truth) filtered to paths that exist on this machine.
