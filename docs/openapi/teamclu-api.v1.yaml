@@ -137,7 +137,9 @@ paths:
           description: |
             Created team. Writes the teams row and seeds team_workspace_config;
             the team's AI gateway is configured separately via
-            `PUT /v1/teams/{teamId}/llm-config`.
+            `PUT /v1/teams/{teamId}/llm-config`. Until a team does that,
+            `GET /v1/teams/{teamId}/workspace-config` serves the deployment's
+            own gateway as the default (see `MergedWorkspaceConfig.llm`).
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -7296,6 +7298,34 @@ components:
           type:
             - string
             - "null"
+        llm:
+          type: object
+          description: |
+            The team's AI gateway as the client should use it. When the team
+            has stored a `baseUrl` (via `PUT /v1/teams/{teamId}/llm-config`)
+            that config is returned verbatim — including `enabled: false` with
+            a `baseUrl`, which is how a team opts out. A team with NO stored
+            `baseUrl` is served the deployment's own gateway instead: `enabled`
+            true, `baseUrl` `<request origin>/ai/v1/teams/{teamId}`, and the
+            three public tiers as `models` — provided this Cloud API runs a
+            gateway (`AI_GATEWAY_INTERNAL_URL` + `AI_GATEWAY_SERVICE_TOKEN`).
+            Nothing flips `llm_enabled` at team creation, so without this
+            default every new team had a signup credit grant and no model.
+          required: [enabled, baseUrl, models]
+          properties:
+            enabled: { type: boolean }
+            baseUrl:
+              type:
+                - string
+                - "null"
+            models:
+              type: array
+              items:
+                type: object
+                required: [id, name]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
     UsageSummary:
       type: object
       required: [credits, inputTokens, outputTokens, requests]
