@@ -137,8 +137,13 @@ Rust 文案（`local-cache-error-report.ts:37`、`ensure-agent-runtime.ts:86`）
 
 这些不是「等决定」，而是体量超出一个分支、或与上面某个决定强耦合：
 
-- **STR-2 巨型文件**（`MqttLiveWiring.tsx` 1,707 / `App.tsx` 1,447 / `store.rs` 2,683 …）：
-  拆分要和 ARCH-9（store 依赖环）一起设计，单独拆只会把环搬到别处。
+- **STR-2 巨型文件**：已在 `refactor/split-giant-files` 上拆掉六个——`store.rs` 3,198 → 13 个
+  文件、`team_skills.rs` 2,618 → 10 个、`env_vars.rs` 1,380 → 7 个、`SkillDetail.tsx` 2,245 →
+  1,221 + 10 个、`App.tsx` 1,476 → 909 + 4 个、`FileTree.tsx` 1,738 → 1,320 + 3 个。**剩下的是
+  真的要先设计**：`MqttLiveWiring.tsx`（1,705 行，其中一个 `useEffect` 1,100 行，闭包握着 12 个
+  ref 和整条流式对账链）、`v2-streaming-store.ts`（1,869，等 D3 切 b 时一起做）、
+  `team-share-browser.ts`（2,194，42 个 action 的 store 切片属于 ARCH-9）、
+  `daemon-local-client.ts`（1,772，属于 ARCH-8）。这四个单独拆只会把环搬到别处。
 - **STR-6 密钥/环境变量五模块四把锁**：和 D5 的错误形状、以及 `_secrets` 旧路径退役绑在一起。
 - **ARCH-8 前端四层 client、ARCH-9 18 个 store 依赖环**：先要 D4 定「什么状态住哪」。
 - **STR-3 import 时副作用**：一个统一重置注册表本身就要 import 35 个带副作用的模块，
