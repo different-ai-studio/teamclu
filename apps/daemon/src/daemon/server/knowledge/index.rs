@@ -1,8 +1,16 @@
 //! Full-text search over the knowledge vault via SQLite FTS5.
 //!
-//! The index lives at `<vault>/.index/fts.sqlite` — inside the vault root so
-//! it survives with the vault, but dot-prefixed so the sync scanner and the
-//! Obsidian file tree both ignore it (see `collect_md_files`'s dot-skip).
+//! The index lives at `<team>/state/knowledge-index/fts.sqlite`, outside the
+//! synced tree. It used to sit at `<vault>/.index/fts.sqlite` on the theory
+//! that a dot-prefix hides it from everyone — true of Obsidian and of
+//! `collect_md_files`, but **not** of the sync scanner, which walks
+//! `knowledge/` with `WalkDir` (no dot-skip) and has no `.index/` entry in
+//! `ignore_rules::BUILTIN_RULES`. In that spot the index is uploaded to the
+//! team as ordinary content — a second, full plaintext copy of every page —
+//! every `search` writes its WAL and so wakes the notify watcher into another
+//! sync, and each device pushes its own copy at the same paths.
+//!
+//! It is a derived local cache: losing it costs one reindex.
 //!
 //! Strategy: open-and-sync. Each `search` call first reconciles the index
 //! with the files currently on disk (cheap: we compare mtime per path),
@@ -27,15 +35,30 @@ use serde_json::{json, Value};
 
 use super::{collect_md_files, err, ok, str_field, MAX_SEARCH_RESULTS};
 
-fn db_path(root: &Path) -> PathBuf {
-    root.join(".index").join("fts.sqlite")
+fn db_path(index_dir: &Path) -> PathBuf {
+    index_dir.join("fts.sqlite")
 }
 
-fn open_db(root: &Path) -> Result<Connection, String> {
-    let path = db_path(root);
+/// Remove an index left behind in the vault by a build that kept it there.
+///
+/// Named files only, never the directory wholesale: this path is inside a
+/// user's vault. Best-effort — a failure here just leaves a stale file.
+fn drop_legacy_in_vault_index(root: &Path) {
+    let legacy = root.join(".index");
+    if !legacy.exists() {
+        return;
+    }
+    for name in ["fts.sqlite", "fts.sqlite-wal", "fts.sqlite-shm"] {
+        let _ = std::fs::remove_file(legacy.join(name));
+    }
+    // Only if we emptied it; anything else in there is not ours.
+    let _ = std::fs::remove_dir(&legacy);
+}
+
+fn open_db(index_dir: &Path) -> Result<Connection, String> {
+    let path = db_path(index_dir);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("creating index dir failed: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("creating index dir failed: {e}"))?;
     }
     let conn = Connection::open(&path).map_err(|e| format!("opening index failed: {e}"))?;
     conn.pragma_update(None, "journal_mode", "wal")
@@ -134,14 +157,15 @@ fn sync_index(conn: &Connection, root: &Path) -> Result<(usize, usize), String> 
     Ok((indexed, removed))
 }
 
-pub(super) fn search(root: &Path, payload: &Value) -> String {
+pub(super) fn search(root: &Path, index_dir: &Path, payload: &Value) -> String {
     let Some(query) = str_field(payload, "query") else {
         return err("invalid_query", "query is required");
     };
     if !root.is_dir() {
         return ok(json!({ "results": [], "vaultExists": false }));
     }
-    let conn = match open_db(root) {
+    drop_legacy_in_vault_index(root);
+    let conn = match open_db(index_dir) {
         Ok(c) => c,
         Err(e) => return err("index_failed", e),
     };
@@ -220,10 +244,16 @@ pub(super) fn search(root: &Path, payload: &Value) -> String {
 mod tests {
     use super::*;
 
+    /// A vault and an index directory that are not nested in each other —
+    /// the same relationship they have in production.
+    fn vault_and_index() -> (tempfile::TempDir, tempfile::TempDir) {
+        (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap())
+    }
+
     #[test]
     fn search_finds_cjk_and_english() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
+        let (tmp, idx) = vault_and_index();
+        let (root, index_dir) = (tmp.path(), idx.path());
         std::fs::create_dir_all(root.join("40-runbooks")).unwrap();
         std::fs::write(
             root.join("40-runbooks/push-outage.md"),
@@ -232,29 +262,95 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("00-home.md"), "# Home\nnothing relevant\n").unwrap();
 
-        let v: Value = serde_json::from_str(&search(root, &json!({ "query": "渠道" }))).unwrap();
+        let v: Value =
+            serde_json::from_str(&search(root, index_dir, &json!({ "query": "渠道" }))).unwrap();
         assert_eq!(v["ok"], true);
         let results = v["result"]["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["path"], "40-runbooks/push-outage.md");
 
-        let v2: Value =
-            serde_json::from_str(&search(root, &json!({ "query": "channel status" }))).unwrap();
+        let v2: Value = serde_json::from_str(&search(
+            root,
+            index_dir,
+            &json!({ "query": "channel status" }),
+        ))
+        .unwrap();
         assert_eq!(v2["result"]["results"].as_array().unwrap().len(), 1);
 
         // Re-run against the existing index — exercises the incremental path.
-        let v3: Value = serde_json::from_str(&search(root, &json!({ "query": "渠道" }))).unwrap();
+        let v3: Value =
+            serde_json::from_str(&search(root, index_dir, &json!({ "query": "渠道" }))).unwrap();
         assert_eq!(v3["result"]["results"].as_array().unwrap().len(), 1);
     }
 
     #[test]
     fn deleted_files_leave_the_index() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
+        let (tmp, idx) = vault_and_index();
+        let (root, index_dir) = (tmp.path(), idx.path());
         std::fs::write(root.join("a.md"), "# alpha\n").unwrap();
-        let _: Value = serde_json::from_str(&search(root, &json!({ "query": "alpha" }))).unwrap();
+        let _: Value =
+            serde_json::from_str(&search(root, index_dir, &json!({ "query": "alpha" }))).unwrap();
         std::fs::remove_file(root.join("a.md")).unwrap();
-        let v: Value = serde_json::from_str(&search(root, &json!({ "query": "alpha" }))).unwrap();
+        let v: Value =
+            serde_json::from_str(&search(root, index_dir, &json!({ "query": "alpha" }))).unwrap();
         assert_eq!(v["result"]["results"].as_array().unwrap().len(), 0);
+    }
+
+    /// The whole point of the move: searching must not write anything into the
+    /// vault, because everything in the vault is uploaded to the team.
+    #[test]
+    fn search_writes_nothing_into_the_vault() {
+        let (tmp, idx) = vault_and_index();
+        let (root, index_dir) = (tmp.path(), idx.path());
+        std::fs::write(root.join("a.md"), "# alpha\n对账口径\n").unwrap();
+
+        for query in ["alpha", "对账"] {
+            let v: Value =
+                serde_json::from_str(&search(root, index_dir, &json!({ "query": query }))).unwrap();
+            assert_eq!(v["ok"], true, "query {query} failed: {v}");
+        }
+
+        let left: Vec<String> = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            left,
+            vec!["a.md".to_string()],
+            "vault gained files: {left:?}"
+        );
+        assert!(db_path(index_dir).exists(), "index was not written");
+    }
+
+    /// An index written by an older build sits inside the vault. Searching
+    /// once must clear it out, or it keeps being uploaded to the team.
+    #[test]
+    fn legacy_in_vault_index_is_removed() {
+        let (tmp, idx) = vault_and_index();
+        let (root, index_dir) = (tmp.path(), idx.path());
+        let legacy = root.join(".index");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("fts.sqlite"), b"stale").unwrap();
+        std::fs::write(legacy.join("fts.sqlite-wal"), b"stale").unwrap();
+        std::fs::write(root.join("a.md"), "# alpha\n").unwrap();
+
+        let _: Value =
+            serde_json::from_str(&search(root, index_dir, &json!({ "query": "alpha" }))).unwrap();
+        assert!(!legacy.exists(), "legacy index survived the search");
+    }
+
+    /// …but only the files we put there. A `.index/` holding something else is
+    /// the user's, and this runs against a real vault.
+    #[test]
+    fn legacy_cleanup_leaves_foreign_files_alone() {
+        let (tmp, _idx) = vault_and_index();
+        let root = tmp.path();
+        let legacy = root.join(".index");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("notes.txt"), b"mine").unwrap();
+
+        drop_legacy_in_vault_index(root);
+        assert!(legacy.join("notes.txt").exists());
     }
 }
