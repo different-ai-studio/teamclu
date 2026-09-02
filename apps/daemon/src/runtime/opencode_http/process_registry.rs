@@ -449,6 +449,13 @@ mod tests {
 
     #[test]
     fn default_registry_uses_branded_amuxd_home() {
+        // Resolves `amuxd_home_from_env()` twice — once inside `default()`,
+        // once in the assertion — and that reads process-global `HOME` /
+        // `AMUXD_HOME`. Another test moving those in between compares two
+        // different homes. Same shape as the `resolve_workdir` tests fixed in
+        // #1219; the guard pins a home and holds `TEST_HOME_LOCK`.
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
         let registry = ServeProcessRegistry::default();
         assert_eq!(
             registry.path,
