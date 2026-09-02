@@ -450,8 +450,12 @@ mod tests {
 
         // MockBackend with no seeded config resolves to Disabled, not Unknown,
         // so drive the untouched global path through the sync helper directly.
-        teamclu_runtime_env::sync_global_team_provider(&ManagedLlmState::Unknown, &HashMap::new())
-            .unwrap();
+        teamclu_runtime_env::sync_global_team_provider(
+            &ManagedLlmState::Unknown,
+            &HashMap::new(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(team_model_ids(), vec!["model-a".to_string()]);
     }

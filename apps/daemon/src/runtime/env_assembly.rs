@@ -228,6 +228,7 @@ mod tests {
             None,
             &ManagedLlmState::Unknown,
             None,
+            None,
         )
         .unwrap();
 
@@ -312,6 +313,7 @@ mod tests {
             None,
             &managed,
             None,
+            None,
         )
         .unwrap();
 
@@ -393,6 +395,7 @@ mod tests {
             None,
             &ManagedLlmState::Unknown,
             None,
+            None,
         )
         .unwrap();
         let from_enabled = assemble_spawn_runtime_env(
@@ -402,6 +405,7 @@ mod tests {
             "FP Agent",
             None,
             &enabled,
+            None,
             None,
         )
         .unwrap();
