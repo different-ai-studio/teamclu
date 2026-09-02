@@ -1,6 +1,7 @@
-use crate::config::{
-    ActorConfig, AgentsConfig, DaemonConfig, HttpConfig, MqttConfig, TeamShareConfig,
-};
+use crate::config::{DaemonConfig, HttpConfig};
+// Test-only: only the fixtures below construct a whole daemon.toml.
+#[cfg(test)]
+use crate::config::{ActorConfig, AgentsConfig, MqttConfig, TeamShareConfig};
 use crate::onboarding::invite_url::{self, ParsedInvite};
 use crate::provider_config::{CloudApiConfig, ProviderConfig};
 use anyhow::{anyhow, Context, Result};
@@ -16,7 +17,8 @@ pub struct InitOutcome {
 /// Execute `amuxd init <teamclu://invite?token=...>`:
 ///  1. parse token
 ///  2. POST `/v1/invites/claim` against the Cloud API (anonymous — no bearer)
-///  3. persist `~/.amuxd/backend.toml` with `kind = "cloud_api"`
+///  3. persist `teams/<team>/state/backend.toml` with `kind = "cloud_api"`
+///     (per-team, not the home root — see `ProviderConfig::path_for_team`)
 ///  4. write `daemon.toml` if absent (broker_url left empty unless the invite
 ///     carries a `?broker=` override — the daemon resolves it from
 ///     `/v1/config/bootstrap` at startup), or preserve the existing one's

@@ -16,7 +16,11 @@ use crate::backend::{
 };
 use crate::channels::{AmuxdAgentHandle, AmuxdChannelStore, ChannelManager};
 use crate::collab::{AuthManager, AuthResult, PeerState, PeerTracker, PermissionManager};
-use crate::config::{DaemonConfig, SessionBinding, SessionStore};
+use crate::config::{DaemonConfig, SessionStore};
+// Test-only: the fixtures below build bindings directly. Ungated it warns in
+// the bin build, which does not compile them.
+#[cfg(test)]
+use crate::config::SessionBinding;
 use crate::daemon::binding_target::parse_binding_to_target;
 use crate::daemon::runtime_cursor::{
     compute_effective_cursor_from_messages, last_unanswered_mention_idx,
@@ -30,7 +34,6 @@ use crate::daemon::runtime_resolution::{
 use crate::daemon::session_events::{
     format_idea_prompt, message_attachment_urls, parse_mention_actor_ids, resolve_mention_actor_ids,
 };
-use crate::daemon::session_resume::resolve_backend_session_id;
 
 #[path = "cloud_token_file.rs"]
 mod cloud_token_file;

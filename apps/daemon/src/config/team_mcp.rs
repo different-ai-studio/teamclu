@@ -17,7 +17,6 @@ use serde::Deserialize;
 
 use super::global_team_store::{resolve_team_dir, TEAM_LINK_NAME};
 use super::workspace_control::{McpServerConfig, WorkspaceControlError};
-use teamclu_runtime_env::opencode_config::OpencodeConfigError;
 
 pub const INHERENT_MCP_NAMES: &[&str] = &[
     "playwright",

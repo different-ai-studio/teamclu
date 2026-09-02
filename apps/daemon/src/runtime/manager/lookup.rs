@@ -8,7 +8,6 @@
 //! Child module of `runtime::manager`, so the `impl RuntimeManager` block
 //! reaches `agents` directly.
 
-use crate::proto::amux;
 
 use super::super::handle::RuntimeHandle;
 use super::RuntimeManager;
