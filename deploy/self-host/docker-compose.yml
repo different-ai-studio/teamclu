@@ -460,6 +460,11 @@ services:
       SMS_DEBUG_MODE: "${SMS_DEBUG_MODE:-}"
       # Postgres pool size for the apps admin connection.
       PG_POOL_MAX: "${PG_POOL_MAX:-}"
+      # Extra browser origins allowed by Hono's CORS policy (comma-separated,
+      # exact match). Tauri, localhost and chrome-extension origins are always
+      # allowed; set this only for a browser-hosted web build
+      # (services/fc/src/lib/cors-origin.ts).
+      CORS_ORIGINS: "${CORS_ORIGINS:-}"
       # NOTE: CORS_HANDLED_BY_PROXY is deliberately NOT here. Caddy is a
       # transparent proxy that adds no CORS headers, so Hono must own CORS
       # (see services/fc/src/app.ts). Setting it would strip CORS entirely.
