@@ -10,9 +10,9 @@ import {
   Plus,
   RefreshCw,
   Settings,
-  icons,
   type LucideIcon,
 } from 'lucide-react'
+import { LucideIconByName } from '@/components/icons/LucideIconByName'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useShortcutsStore, buildTree, type ShortcutNode } from '@/stores/shortcuts'
@@ -23,8 +23,8 @@ import { TrafficLights } from '@/components/ui/traffic-lights'
 import { useSidebar } from '@/components/ui/sidebar'
 import { useUIStore } from '@/stores/ui'
 
-function resolveIcon(node: ShortcutNode): LucideIcon {
-  if (node.icon && node.icon in icons) return icons[node.icon as keyof typeof icons]
+// Icon shown when the node names no Lucide icon (and while the icon set loads).
+function resolveFallbackIcon(node: ShortcutNode): LucideIcon {
   if (node.type === 'folder') return Folder
   if (node.type === 'native') return FileText
   return ExternalLink
@@ -61,7 +61,7 @@ function ShortcutTreeRow({
   const isExpanded = expandedIds.has(node.id)
   const isActive = !!node.target && node.target === activeTarget
   const isOpen = !!node.target && openTargets.has(node.target)
-  const Icon = resolveIcon(node)
+  const FallbackIcon = resolveFallbackIcon(node)
 
   return (
     <div>
@@ -91,7 +91,11 @@ function ShortcutTreeRow({
         ) : (
           <span className="h-3.5 w-3.5 shrink-0" />
         )}
-        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <LucideIconByName
+          name={node.icon}
+          fallback={FallbackIcon}
+          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+        />
         <span className="min-w-0 flex-1 truncate">{node.label}</span>
         {isOpen && !isActive ? (
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-faint" />

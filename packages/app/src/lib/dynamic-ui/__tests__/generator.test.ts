@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@/lib/dynamic-ui/catalog', () => ({
-  catalogPrompt: 'mock catalog prompt',
+  getCatalogPrompt: () => 'mock catalog prompt',
 }))
 
 beforeEach(() => {
@@ -10,14 +10,14 @@ beforeEach(() => {
 
 describe('buildUIGenerationPrompt', () => {
   it('returns a string containing the user request', async () => {
-    const { buildUIGenerationPrompt } = await import('@/lib/dynamic-ui/generator')
+    const { buildUIGenerationPrompt } = await import('@/lib/dynamic-ui/prompt')
     const result = buildUIGenerationPrompt('create a login form')
     expect(result).toContain('create a login form')
     expect(typeof result).toBe('string')
   })
 
   it('includes catalog prompt in output', async () => {
-    const { buildUIGenerationPrompt } = await import('@/lib/dynamic-ui/generator')
+    const { buildUIGenerationPrompt } = await import('@/lib/dynamic-ui/prompt')
     const result = buildUIGenerationPrompt('test')
     expect(result).toContain('mock catalog prompt')
   })

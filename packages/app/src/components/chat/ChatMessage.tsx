@@ -10,11 +10,12 @@ import {
   MessageContent,
   MessageResponse,
 } from "@/packages/ai/message";
-import {
-  DynamicUIMessage,
-  extractUITreeFromResponse,
-  parseStreamingUITree,
-} from "@/lib/dynamic-ui";
+// Leaf imports on purpose: the dynamic-ui barrel pulls the component catalog
+// (zod + json-render schema) and the renderer, none of which a message needs
+// until it actually carries a UI tree. The renderer loads on first use.
+import { extractUITreeFromResponse } from "@/lib/dynamic-ui/generator";
+import { parseStreamingUITree } from "@/lib/dynamic-ui/streaming";
+import { lazyNamed } from "@/lib/lazy-component";
 import { ToolCallCard } from "./ToolCallCard";
 import { StreamMarkdown } from "./StreamMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -38,6 +39,11 @@ import { ThreadBadge } from "./ThreadBadge";
 import { MessageActionIconButton } from "./MessageActionIconButton";
 import { useActorDisplayName } from "@/hooks/useActorDisplayName";
 import { useCurrentTeamStore } from "@/stores/current-team";
+
+const DynamicUIMessage = lazyNamed(
+  () => import("@/lib/dynamic-ui/DynamicUI"),
+  "DynamicUIMessage",
+);
 
 function formatProcessMetaSummary(meta: {
   toolCount: number;
@@ -595,7 +601,9 @@ export const ChatMessage = React.memo(function ChatMessage({
           {uiTree ? (
             <div className="mt-2">
               <ErrorBoundary scope="Dynamic UI" inline>
-                <DynamicUIMessage tree={uiTree} loading={isStreamingUI} />
+                <React.Suspense fallback={null}>
+                  <DynamicUIMessage tree={uiTree} loading={isStreamingUI} />
+                </React.Suspense>
               </ErrorBoundary>
               {isStreamingUI && (
                 <div className="flex items-center gap-2 mt-2 text-xs text-muted-foreground">
