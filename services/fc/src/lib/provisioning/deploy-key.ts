@@ -130,11 +130,17 @@ export function generateDeployKeyPair(comment = "teamclu-app-deploy"): DeployKey
 
 // ── JIT deploy keys ────────────────────────────────────────────────────────
 //
-// Each seed/deploy asks for a fresh key and gets its private half handed to a
-// desktop client. Nothing calls back to say "done with it", so the only thing
-// that bounds how many live write credentials a repo accumulates is a sweep on
-// the next request. Without it every deploy left one more permanent key behind
-// and the `expiresAt` in the response was pure decoration.
+// Each request mints a fresh key and hands its private half to one holder.
+//
+// Holders that can say "done with it" do: `amuxd git-ssh` revokes its own key
+// as soon as ssh exits (`revokeOwnJitDeployKey`), which is the normal path for
+// an agent's `git push` and leaves nothing behind at all.
+//
+// The expiry sweep is the backstop for holders that cannot — a desktop seed or
+// deploy that dies mid-flight, or a revoke that fails. It only runs when some
+// request touches the same repo again, so a repo nobody comes back to keeps
+// whatever it was left holding; that is the residual, and it is why revoking
+// at the holder matters rather than being an optimisation.
 
 /** How long a JIT deploy key is advertised as usable. */
 export const JIT_DEPLOY_KEY_TTL_MS = 15 * 60 * 1000;
@@ -226,6 +232,54 @@ export function actorJitDeployKeyIds(
 ): number[] {
   const prefix = jitActorKeyPrefix(actorId);
   return keys.filter((k) => k.title.startsWith(prefix)).map((k) => k.id);
+}
+
+/**
+ * Hand one JIT key back the moment its holder is done with it.
+ *
+ * This is what turns the expiry sweep from the only bound on live credentials
+ * into a backstop. A key is only revocable by the actor whose title it carries:
+ * without that check any team member could revoke a key another machine is
+ * mid-push with, which is a denial of service dressed as hygiene.
+ *
+ * Returns false when the key is not this actor's (or is already gone) — the
+ * caller reports success either way, because "the key is not usable any more"
+ * is the outcome being asked for.
+ */
+export async function revokeOwnJitDeployKey(
+  gitea: GiteaClient,
+  appId: string,
+  actorId: string,
+  deployKeyId: number,
+  now = Date.now(),
+): Promise<boolean> {
+  let keys: { id: number; title: string }[];
+  try {
+    keys = await gitea.listDeployKeys(appId);
+  } catch {
+    return false;
+  }
+  // The listing is already paid for, so sweep the expired ones while we hold
+  // it. This is the only place a quiet repo gets tidied without a fresh mint.
+  for (const id of expiredJitDeployKeyIds(keys, now)) {
+    if (id === deployKeyId) continue;
+    try {
+      await gitea.deleteDeployKey(appId, id);
+    } catch {
+      // Another request may have swept it already.
+    }
+  }
+
+  const target = keys.find((k) => k.id === deployKeyId);
+  if (!target || !target.title.startsWith(jitActorKeyPrefix(actorId))) {
+    return false;
+  }
+  try {
+    await gitea.deleteDeployKey(appId, deployKeyId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

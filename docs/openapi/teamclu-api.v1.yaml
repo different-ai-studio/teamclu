@@ -5773,14 +5773,29 @@ paths:
       description: |
         Generates an ed25519 deploy key, registers the public half on the app's
         Gitea repo (`tc-app-{appId}`), and returns the private key for one-time
-        use by the local daemon. Requires `prompt` or `admin` permission on the
-        app (the creator is treated as admin); `view` receives 404. The private
-        key is never persisted, and is in OpenSSH format (`BEGIN OPENSSH PRIVATE
-        KEY`) — OpenSSH cannot load an ed25519 key from a PKCS#8 block. Secret
-        — never log the response body.
+        use by the local daemon. The private key is never persisted, and is in
+        OpenSSH format (`BEGIN OPENSSH PRIVATE KEY`) — OpenSSH cannot load an
+        ed25519 key from a PKCS#8 block. Secret — never log the response body.
 
-        Each call also revokes the keys it minted more than 15 minutes ago, so
-        `expiresAt` bounds how long a handed-out credential stays usable.
+        Two kinds of caller are authorised:
+
+        - A **member** needs `prompt` or `admin` permission on the app (the
+          creator is treated as admin); `view` receives 404.
+        - An **agent actor** in the app's team is authorised for any
+          Gitea-managed app in that team. This is how a daemon credentials the
+          `git push` an agent runs in an app checkout: a daemon holds its own
+          cloud account, so it never resolves to a member, and
+          `app_member_access` is keyed on members and cannot carry a per-app
+          grant for it. The key's title names the agent actor.
+
+        Each call also revokes the keys it minted more than 15 minutes ago. That
+        sweep is a backstop, not the primary bound: it only runs when something
+        asks the same repo for another key, so a repo nobody returns to keeps
+        whatever it was left holding. Holders that can say "done with it" should
+        instead `DELETE` the key (see below) — `amuxd git-ssh` does this as soon
+        as ssh exits.
+
+        The response carries `deployKeyId` for exactly that purpose.
 
         404 when the app is not Gitea-managed (`gitAuthKind` is null): there is
         no repo of ours to register a key on.
@@ -5793,6 +5808,45 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AppGitCredential" }
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/git-credential/{deployKeyId}:
+    delete:
+      operationId: revokeAppGitCredential
+      summary: Return a deploy key once its holder is done with it
+      description: |
+        Revokes one JIT deploy key. Authorised exactly like minting, and the key
+        must carry the caller's own actor in its title — otherwise revoking
+        would be a way to kill a push another machine is in the middle of.
+
+        Idempotent: a key that is already gone, or is not the caller's, answers
+        200 with `revoked: false`. "Not usable any more" is what the caller
+        asked for either way, and the push it follows has already happened.
+
+        The call also sweeps that repo's expired keys while it holds the
+        listing, which is the only tidying a quiet repo ever gets.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - name: deployKeyId
+          in: path
+          required: true
+          schema: { type: integer }
+          description: Gitea's id for the key, as returned by `getAppGitCredential`.
+      responses:
+        "200":
+          description: Whether this call was the one that removed the key.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: boolean }
+        "400":
+          $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
         "503":
@@ -6540,12 +6594,18 @@ components:
     AppType:
       type: string
       description: |
-        What kind of app this is. All three deploy through the same pipeline;
-        the type selects the starter template the local daemon writes and
-        decides whether the deploy provisions a Postgres schema (`data_app`
-        only). `fullstack_tanstack_postgres` is the legacy id for `data_app`
-        and is still stored on apps created before the split.
-      enum: [static_web, slides, data_app, fullstack_tanstack_postgres]
+        What kind of app this is. All deploy through the same pipeline; the type
+        selects the starter template the local daemon writes and decides whether
+        the deploy provisions a Postgres schema (`data_app` only).
+
+        `imported` is not chosen by anyone — it is what the two import paths
+        store, because `type` is NOT NULL and every unrecognized value is read
+        as `data_app`, which would make an imported repo demand a Postgres
+        schema and the team's org on its first deploy.
+
+        `fullstack_tanstack_postgres` is the legacy id for `data_app` and is
+        still stored on apps created before the split.
+      enum: [static_web, slides, data_app, imported, fullstack_tanstack_postgres]
     AppFcStatus:
       type: string
       description: |
@@ -6574,6 +6634,13 @@ components:
       properties:
         id: { type: string, format: uuid }
         teamId: { type: string, format: uuid }
+        createdByActorId:
+          type: [string, "null"]
+          format: uuid
+          description: >-
+            Actor that created the app. Clients resolve it to a name through the
+            team's actor directory; a team app list without it is a list of
+            names nobody can place.
         name: { type: string }
         slug: { type: string }
         type:

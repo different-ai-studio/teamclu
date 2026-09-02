@@ -10,8 +10,10 @@ import {
   buildDaemonApp,
   cloneDaemonApp,
   daemonAppWorkdir,
+  daemonLocalAppIds,
   encodeWorkspaceId,
   getDaemonEnvActivationDiagnostics,
+  type BuildAppResult,
   type SeedAppResult,
 } from "@/lib/daemon-local-client";
 import { isTauri } from "@/lib/utils";
@@ -33,6 +35,15 @@ interface AppsState {
   appIdBySessionId: Record<string, string>;
   /** App highlighted in column 1; drives column 2 session list when filter is apps. */
   selectedAppId: string | null;
+  /**
+   * Ids of the apps this machine holds a checkout for, or null when the daemon
+   * has not answered yet.
+   *
+   * Null is not "none": the sidebar shows every app until the daemon reports,
+   * because a daemon that is merely slow to start must not make the list look
+   * empty and send the user off to download apps they already have.
+   */
+  localAppIds: string[] | null;
   recordAppSession: (appId: string, sessionId: string) => void;
   selectApp: (appId: string | null) => void;
   load: (teamId: string, opts?: { force?: boolean }) => Promise<void>;
@@ -44,7 +55,14 @@ interface AppsState {
     /** Optional repo to import — the app is cloned from it instead of seeded
      *  with a starter template. */
     gitRemoteUrl?: string | null;
+    /** The code is a checkout already on this machine: no repo is provisioned
+     *  and no template is written. Set by the "browse a local directory" path. */
+    localOnly?: boolean;
   }) => Promise<AppRow>;
+  /** Re-ask the daemon which apps are on this machine. */
+  refreshLocalApps: (teamId?: string | null) => Promise<void>;
+  /** Clone a team app onto this machine (the library dialog's "download"). */
+  download: (app: AppRow) => Promise<void>;
   reseed: (appId: string) => Promise<void>;
   /** Full FC deploy: startDeploy → daemon build+upload → finalize. */
   deploy: (appId: string) => Promise<void>;
@@ -206,6 +224,7 @@ function mapCloudDeployError(e: unknown): string {
  */
 async function runSeed(set: SetState, app: AppRow): Promise<void> {
   let deployKeyPem: string | null = null;
+  let deployKeyId: number | null = null;
   // Keyed on how the repo is authenticated, not on the status the row happens
   // to be sitting at. Requiring `repo_created` meant a reseed — which is
   // offered on `pending` and `error` — fetched no deploy key and fell into the
@@ -217,6 +236,7 @@ async function runSeed(set: SetState, app: AppRow): Promise<void> {
     try {
       const cred = await getBackend().apps.getGitCredential(app.id);
       deployKeyPem = cred?.privateKeyPem ?? null;
+      deployKeyId = cred?.deployKeyId ?? null;
       if (!deployKeyPem) {
         await patchStatus(set, app.id, "error");
         await toastError("仓库初始化失败", "无法获取 Gitea 部署密钥");
@@ -242,6 +262,8 @@ async function runSeed(set: SetState, app: AppRow): Promise<void> {
     );
   } catch (e) {
     console.warn("app seed kick failed (non-fatal)", e);
+  } finally {
+    await returnGitCredential(app.id, deployKeyId);
   }
   if (result.outcome === "seeded") {
     if (result.workdir) {
@@ -258,6 +280,24 @@ async function runSeed(set: SetState, app: AppRow): Promise<void> {
     }
   }
   // unreachable → no status change; reseed remains available.
+}
+
+/**
+ * Give a minted deploy key back now that the daemon has finished with it.
+ *
+ * The server revokes expired keys only when something asks the same repo for
+ * another one, so a repo that is seeded or deployed and then left alone keeps
+ * every key it was ever issued. Returning it here is what makes that bound
+ * real. Never throws and never blocks the outcome — the work it follows has
+ * already happened.
+ */
+async function returnGitCredential(appId: string, deployKeyId: number | null): Promise<void> {
+  if (deployKeyId == null) return;
+  try {
+    await getBackend().apps.revokeGitCredential(appId, deployKeyId);
+  } catch (e) {
+    console.warn("revokeGitCredential failed (non-fatal)", e);
+  }
 }
 
 /** True when the daemon workdir already has a checkout (non-empty directory). */
@@ -280,29 +320,56 @@ async function localWorkdirHasCheckout(workdir: string): Promise<boolean> {
  * workdir. Skips when the directory already has files; dirty trees are left
  * alone (deploy/build reuse ERR_DIRTY — we never clone over them).
  */
-export async function ensureAppCheckout(app: AppRow): Promise<void> {
+export async function ensureAppCheckout(
+  app: AppRow,
+  opts: { surfaceErrors?: boolean } = {},
+): Promise<void> {
+  // Every early return below is silent on the automatic path — it fires on
+  // selection, where a toast about a daemon that is still starting would be
+  // noise. A download the user clicked is the opposite: saying nothing looks
+  // like a dead button, so `surfaceErrors` turns each one into a reason.
+  const { surfaceErrors = false } = opts;
+  const bail = async (reason: string) => {
+    if (surfaceErrors) await toastError("下载失败", reason);
+  };
+
   if (!isTauri()) return;
-  if (app.provisionStatus !== "ready") return;
+  if (app.provisionStatus !== "ready") {
+    await bail("应用尚未就绪");
+    return;
+  }
 
   const workdirInfo = await daemonAppWorkdir(app.id, app.teamId);
-  if (!workdirInfo) return;
+  if (!workdirInfo) {
+    await bail(mapDeployErrorReason("amuxd daemon is not connected"));
+    return;
+  }
   const workdir = workdirInfo.workdir;
   if (await localWorkdirHasCheckout(workdir)) return;
 
   let gitRemoteUrl: string | null = app.gitRemoteUrl?.trim() || null;
   let deployKeyPem: string | null = null;
+  let deployKeyId: number | null = null;
 
   if (isGiteaManaged(app)) {
     try {
       const cred = await getBackend().apps.getGitCredential(app.id);
-      if (!cred?.privateKeyPem || !cred.remoteUrl) return;
+      if (!cred?.privateKeyPem || !cred.remoteUrl) {
+        await bail("没有这个应用仓库的访问权限");
+        return;
+      }
       gitRemoteUrl = cred.remoteUrl;
       deployKeyPem = cred.privateKeyPem;
+      deployKeyId = cred.deployKeyId ?? null;
     } catch (e) {
       console.warn("getGitCredential failed during checkout (non-fatal)", e);
+      await bail(e instanceof Error ? e.message : String(e));
       return;
     }
   } else if (!gitRemoteUrl) {
+    // An app with no remote of any kind has nothing to fetch — its code only
+    // ever existed on the machine that made it.
+    await bail("这个应用没有可下载的仓库地址");
     return;
   }
 
@@ -311,6 +378,8 @@ export async function ensureAppCheckout(app: AppRow): Promise<void> {
     result = await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem);
   } catch (e) {
     console.warn("app clone kick failed (non-fatal)", e);
+  } finally {
+    await returnGitCredential(app.id, deployKeyId);
   }
 
   if (result.outcome === "seeded" && result.workdir) {
@@ -332,6 +401,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
   sessionIdByAppId: {},
   appIdBySessionId: {},
   selectedAppId: null,
+  localAppIds: null,
   recordAppSession: (appId, sessionId) => {
     set((s) => {
       const sessionChanged = s.sessionIdByAppId[appId] !== sessionId;
@@ -367,15 +437,35 @@ export const useAppsStore = create<AppsState>((set, get) => ({
   create: async (input) => {
     const row = await getBackend().apps.createApp(input);
     set((s) => ({ items: [row, ...s.items] }));
-    // The cloud API only inserts the row; the app's files come from the local
-    // daemon, which writes its own embedded template. Non-fatal — a daemon that
-    // is down (unreachable) leaves the row `pending` so the user can reseed.
+    // A local checkout is already on disk and comes back `ready`; seeding it
+    // would write the starter template over the user's own files. The guard is
+    // the status rather than the flag so an app that somehow arrives `ready` by
+    // another route is treated the same way.
     if (row.provisionStatus === "pending" || row.provisionStatus === "repo_created") {
+      // The cloud API only inserts the row; the app's files come from the local
+      // daemon, which writes its own embedded template. Non-fatal — a daemon
+      // that is down (unreachable) leaves the row `pending` so the user can
+      // reseed.
       await runSeed(set, row);
     }
+    await get().refreshLocalApps(input.teamId);
     // Return the row as it stands AFTER seeding — the caller decides what to do
     // next based on whether the app actually has its files.
     return get().items.find((a) => a.id === row.id) ?? row;
+  },
+  refreshLocalApps: async (teamId) => {
+    if (!isTauri()) return;
+    const team = teamId ?? get().teamId;
+    const ids = await daemonLocalAppIds(team);
+    // A null answer means the daemon did not reply. Keep whatever we had —
+    // overwriting it with "nothing is local" would empty the sidebar every time
+    // the daemon restarts.
+    if (ids === null) return;
+    set({ localAppIds: ids });
+  },
+  download: async (app) => {
+    await ensureAppCheckout(app, { surfaceErrors: true });
+    await get().refreshLocalApps(app.teamId);
   },
   reseed: async (appId) => {
     const app = get().items.find((a) => a.id === appId);
@@ -439,6 +529,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       setDeployProgress(set, appId, "build");
       let gitRemoteUrl: string | undefined;
       let deployKeyPem: string | undefined;
+      let deployKeyId: number | null = null;
       if (viaGitea) {
         const cred = await getBackend().apps.getGitCredential(appId);
         if (!cred?.privateKeyPem || !cred.remoteUrl) {
@@ -446,14 +537,22 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         }
         gitRemoteUrl = cred.remoteUrl;
         deployKeyPem = cred.privateKeyPem;
+        deployKeyId = cred.deployKeyId ?? null;
       }
 
-      const build = await buildDaemonApp(appId, app.teamId, {
-        gitCommitSha,
-        gitRemoteUrl,
-        deployKeyPem,
-        presignedPut: started.presignedPut,
-      });
+      let build: BuildAppResult;
+      try {
+        build = await buildDaemonApp(appId, app.teamId, {
+          gitCommitSha,
+          gitRemoteUrl,
+          deployKeyPem,
+          presignedPut: started.presignedPut,
+        });
+      } finally {
+        // The daemon only needs the key for the fetch inside the build; hand it
+        // back whether that succeeded or not.
+        await returnGitCredential(appId, deployKeyId);
+      }
       if (build.outcome !== "built") {
         const reason =
           build.outcome === "unreachable"

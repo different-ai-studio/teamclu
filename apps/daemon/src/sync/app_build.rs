@@ -33,6 +33,9 @@ pub const MAX_ARTIFACT_BYTES: usize = 50 * 1024 * 1024;
 /// Absent for an app imported from an external remote: this deployment holds
 /// no credential for it, so its build is of the workdir as it sits.
 pub struct BuildGitContext<'a> {
+    /// The app being built. Used to re-point the checkout at the
+    /// `amuxd git-ssh` shim, which bakes in the amuxd path.
+    pub app_id: &'a str,
     pub commit_sha: &'a str,
     pub remote_url: &'a str,
     pub deploy_key_pem: &'a str,
@@ -179,6 +182,12 @@ fn kill_process_tree(child: &mut std::process::Child) {
 /// local work — every deploy after the first one was refused as dirty.
 pub fn prepare_git_build(workdir: &Path, git: &BuildGitContext<'_>) -> anyhow::Result<()> {
     app_git::init_if_needed(workdir)?;
+    // Re-stamped on every deploy so the shim path survives an amuxd upgrade
+    // that moves the binary. Cheap, idempotent, and the only self-healing this
+    // needs for a checkout that deploys at all.
+    if let Err(e) = app_git::set_repo_ssh_command(workdir, git.app_id) {
+        tracing::warn!(app_id = git.app_id, error = %e, "could not refresh core.sshCommand");
+    }
     let ssh = SshEnv::from_deploy_key_pem(git.deploy_key_pem)?;
     app_git::set_remote_origin(workdir, git.remote_url, Some(&ssh))?;
     app_git::fetch_origin(workdir, Some(&ssh))?;

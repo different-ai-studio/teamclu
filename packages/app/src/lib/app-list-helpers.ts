@@ -45,3 +45,26 @@ export function appStatusMeta(
   }
   return provisionMeta(app.provisionStatus)
 }
+
+/**
+ * Where an app's code actually lives — the three-way distinction the create
+ * flow makes, said back to the user in the list.
+ *
+ * It decides real behaviour, not just wording: only `hosted` deploys a commit
+ * off the forge, and only `hosted` or `remote` can be downloaded onto another
+ * machine at all. `local` exists on exactly one machine until someone gives it
+ * a remote.
+ */
+export type AppGitKind = 'hosted' | 'remote' | 'local'
+
+export function appGitKind(
+  app: Pick<AppRow, 'gitAuthKind' | 'gitRemoteUrl'>,
+): { kind: AppGitKind; key: string; fallback: string } {
+  if (app.gitAuthKind === 'gitea_deploy_key') {
+    return { kind: 'hosted', key: 'apps.gitHosted', fallback: '托管仓库' }
+  }
+  if (app.gitRemoteUrl?.trim()) {
+    return { kind: 'remote', key: 'apps.gitRemote', fallback: '外部仓库' }
+  }
+  return { kind: 'local', key: 'apps.gitLocal', fallback: '仅本机' }
+}

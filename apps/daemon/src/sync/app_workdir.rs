@@ -23,6 +23,22 @@ pub fn read_override(team_id: &str, app_id: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Every override this team has, as `(app_id, path)`.
+///
+/// An app checked out somewhere of the user's choosing lives nowhere near the
+/// derived root, so a scan of that root alone would report it as "not on this
+/// machine" and offer to download it again.
+pub fn all_overrides(team_id: &str) -> Vec<(String, PathBuf)> {
+    load_overrides(team_id)
+        .map(|file| {
+            file.overrides
+                .into_iter()
+                .map(|(app_id, path)| (app_id, PathBuf::from(path)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Persist an override, creating the state dir if needed.
 pub fn set_override(team_id: &str, app_id: &str, workdir: &Path) -> std::io::Result<()> {
     let app_id = app_id.trim();

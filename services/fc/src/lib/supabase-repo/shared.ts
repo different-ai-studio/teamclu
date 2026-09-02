@@ -104,7 +104,7 @@ export function mapDefaultAgentError(error: any) {
 // the client contract. Selecting it keeps finalizeDeploy and the data browser
 // from needing a second round trip.
 export const APP_COLUMNS =
-  "id, team_id, org_id, name, slug, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, auth_mode, deployed_auth_mode, oauth_client_id, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
+  "id, team_id, org_id, created_by_actor_id, name, slug, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, auth_mode, deployed_auth_mode, oauth_client_id, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
 
 export function slugify(name: string): string {
   return (
@@ -129,6 +129,9 @@ export function mapApp(r: any) {
     type: r.type,
     visibility: r.visibility,
     workspaceId: r.workspace_id ?? null,
+    // Who made it. The apps list names them, which is the difference between a
+    // team list you can act on and a list of names nobody recognises.
+    createdByActorId: r.created_by_actor_id ?? null,
     gitRemoteUrl: r.git_remote_url ?? null,
     // `gitea_deploy_key` marks an app whose repo this deployment provisioned
     // and holds a credential for; null marks one imported from a remote we have

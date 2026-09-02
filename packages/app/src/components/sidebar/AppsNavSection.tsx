@@ -4,14 +4,14 @@ import {
   AppWindow,
   ChevronDown,
   ChevronRight,
+  LayoutGrid,
   Loader2,
-  Plus,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useUIStore } from '@/stores/ui'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { CreateAppDialog } from '@/components/apps/CreateAppDialog'
+import { AppLibraryDialog } from '@/components/apps/AppLibraryDialog'
 import { resolveAppType } from '@/lib/app-types'
 import { appStatusMeta, showsPublicBadge } from '@/lib/app-list-helpers'
 import type { AppRow } from '@/lib/backend/types'
@@ -21,7 +21,8 @@ const APPS_LIST_MAX_HEIGHT = 'max-h-[min(240px,40vh)]'
 
 function readStoredAppsExpanded(): boolean {
   try {
-    // Default collapsed — only expand when the user (or selection auto-expand) wrote 'true'.
+    // Default collapsed, and nothing but the chevron ever changes that — the
+    // stored value only ever comes from a deliberate click.
     return localStorage.getItem(APPS_EXPANDED_STORAGE_KEY) === 'true'
   } catch {
     return false
@@ -113,14 +114,16 @@ export function AppsNavSection() {
   const filter = useUIStore((s) => s.sidebarFilter)
   const setFilter = useUIStore((s) => s.setSidebarFilter)
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? '')
-  const items = useAppsStore((s) => s.items)
+  const allItems = useAppsStore((s) => s.items)
+  const localAppIds = useAppsStore((s) => s.localAppIds)
   const loading = useAppsStore((s) => s.loading)
   const load = useAppsStore((s) => s.load)
+  const refreshLocalApps = useAppsStore((s) => s.refreshLocalApps)
   const selectedAppId = useAppsStore((s) => s.selectedAppId)
   const selectApp = useAppsStore((s) => s.selectApp)
 
   const [listExpanded, setListExpanded] = React.useState(readStoredAppsExpanded)
-  const [createOpen, setCreateOpen] = React.useState(false)
+  const [libraryOpen, setLibraryOpen] = React.useState(false)
   const selectedRowRef = React.useRef<HTMLButtonElement>(null)
   const prevSelectedAppId = React.useRef<string | null>(null)
 
@@ -129,13 +132,34 @@ export function AppsNavSection() {
   React.useEffect(() => {
     if (!teamId) return
     void load(teamId)
-  }, [teamId, load])
+    void refreshLocalApps(teamId)
+  }, [teamId, load, refreshLocalApps])
+
+  /**
+   * Only what is actually on this machine. Everything else lives in the library
+   * dialog behind a download.
+   *
+   * `localAppIds === null` means the daemon has not answered yet, which is not
+   * the same as "nothing is local": showing an empty list then would tell the
+   * user their apps are gone every time the daemon is slow to start.
+   */
+  const items = React.useMemo(() => {
+    if (localAppIds === null) return allItems
+    const local = new Set(localAppIds)
+    return allItems.filter((app) => local.has(app.id))
+  }, [allItems, localAppIds])
 
   React.useEffect(() => {
     if (!selectedAppId || selectedAppId === prevSelectedAppId.current) return
     prevSelectedAppId.current = selectedAppId
-    setListExpanded(true)
-    writeStoredAppsExpanded(true)
+    // Selecting an app never opens this list. The chevron is the only thing
+    // that does, so the row keeps whatever height the user chose for it — an
+    // app opened from anywhere else no longer unfolds a list underneath the
+    // rows above it.
+    //
+    // The scroll still runs: when the list *is* open, a selection made
+    // elsewhere should bring its row into view. Collapsed, the ref is null and
+    // this is a no-op.
     requestAnimationFrame(() => {
       selectedRowRef.current?.scrollIntoView({ block: 'nearest' })
     })
@@ -188,18 +212,23 @@ export function AppsNavSection() {
             <span className="min-w-0 flex-1 truncate">{t('sidebar.apps', '应用')}</span>
             <span className="text-[10.5px] font-mono tabular-nums text-faint">· {items.length}</span>
           </button>
+          {/*
+            The library, not a create button. Creating is one of two ways an app
+            lands in this list — downloading a team app is the other — and both
+            live behind here so the list itself stays a list of what is present.
+          */}
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation()
-              setCreateOpen(true)
+              setLibraryOpen(true)
             }}
             disabled={!teamId}
-            title={t('apps.create', '新建')}
-            aria-label={t('apps.create', '新建')}
+            title={t('apps.libraryTitle', '所有应用')}
+            aria-label={t('apps.libraryTitle', '所有应用')}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground disabled:opacity-40"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <LayoutGrid className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
@@ -240,7 +269,7 @@ export function AppsNavSection() {
         )}
       </div>
 
-      <CreateAppDialog open={createOpen} onOpenChange={setCreateOpen} teamId={teamId} />
+      <AppLibraryDialog open={libraryOpen} onOpenChange={setLibraryOpen} teamId={teamId} />
     </>
   )
 }

@@ -189,6 +189,20 @@ pub fn is_git_repo(dir: &Path) -> bool {
         .is_some_and(|o| o.status.success())
 }
 
+/// `origin`'s URL, when the checkout has one.
+///
+/// Used when binding an app to a repo the user already had: the app records
+/// where its code came from, so a teammate opening it later is told the
+/// address rather than left with a name and nothing else.
+pub fn origin_url(dir: &Path) -> Option<String> {
+    let out = run_git(dir, None, &["remote", "get-url", "origin"]).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!url.is_empty()).then_some(url)
+}
+
 /// `git init` when `dir` is not yet a repo.
 pub fn init_if_needed(dir: &Path) -> anyhow::Result<()> {
     if is_git_repo(dir) {
@@ -246,6 +260,34 @@ pub fn set_repo_user_identity(
     let out = run_git(dir, None, &["config", "user.email", email])?;
     ensure_success(&out, "git config user.email")?;
     Ok(())
+}
+
+/// Point the checkout's git at the `amuxd git-ssh` shim, so an agent's own
+/// `git push` gets a just-in-time deploy key instead of falling through to the
+/// machine's ssh identity — which Gitea has never been shown and never accepts.
+///
+/// Repo-local (`.git/config`), so it is scoped to exactly this checkout and
+/// touches no other repo the agent works in. `current_exe` is re-resolved on
+/// every seed, clone and deploy fetch, which is what keeps the path honest
+/// across an app upgrade that moves the binary.
+///
+/// Best-effort: a checkout that cannot be pointed at the shim still seeds and
+/// clones fine (the daemon does those pushes itself with a key it already
+/// holds). Only the agent's later `git push` is affected, and it reports its
+/// own reason.
+pub fn set_repo_ssh_command(dir: &Path, app_id: &str) -> anyhow::Result<()> {
+    let exe = std::env::current_exe()
+        .map_err(|e| anyhow::anyhow!("could not resolve the amuxd binary: {e}"))?;
+    // The trailing `--` is not decoration: git appends its own ssh arguments to
+    // this string, and they lead with flags (`-o SendEnv=…`, `-p`). Without the
+    // separator those flags are offered to our own argument parser first.
+    let command = format!(
+        "{} git-ssh --app {} --",
+        shell_quote(&exe.to_string_lossy()),
+        shell_quote(app_id)
+    );
+    let out = run_git(dir, None, &["config", "core.sshCommand", &command])?;
+    ensure_success(&out, "git config core.sshCommand")
 }
 
 /// Create a commit when there are staged changes; no-op when the tree is clean.
@@ -486,6 +528,7 @@ pub fn ensure_on_branch(dir: &Path) -> anyhow::Result<()> {
 /// Seed-time push: init, remote, commit, push; returns HEAD sha when pushed.
 pub fn init_commit_push(
     dir: &Path,
+    app_id: &str,
     remote_url: &str,
     deploy_key_pem: &str,
     commit_message: &str,
@@ -495,6 +538,9 @@ pub fn init_commit_push(
     let ssh = SshEnv::from_deploy_key_pem(deploy_key_pem)?;
     init_if_needed(dir)?;
     set_repo_user_identity(dir, git_user_name, git_user_email)?;
+    if let Err(e) = set_repo_ssh_command(dir, app_id) {
+        tracing::warn!(app_id, error = %e, "could not point the checkout at git-ssh");
+    }
     set_remote_origin(dir, remote_url, Some(&ssh))?;
     ensure_on_branch(dir)?;
     add_all(dir)?;
@@ -628,6 +674,39 @@ mod tests {
         std::fs::write(work.join("README.md"), b"dirty").unwrap();
         assert!(has_uncommitted_changes(&work).unwrap());
         ensure_clean_and_pushed(&work).unwrap_err();
+    }
+
+    #[test]
+    fn the_checkout_is_pointed_at_the_git_ssh_shim() {
+        // This config entry is the whole fix: without it an agent's `git push`
+        // falls through to the machine's own ssh identity, which Gitea has
+        // never been shown.
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(&work).unwrap();
+        if init_if_needed(&work).is_err() {
+            eprintln!("git not usable; skipping");
+            return;
+        }
+        set_repo_ssh_command(&work, "app-42").unwrap();
+
+        let out = run_git(&work, None, &["config", "--get", "core.sshCommand"]).unwrap();
+        let configured = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert!(
+            configured.contains("git-ssh --app app-42"),
+            "got {configured}"
+        );
+        // Repo-local only: it must not leak into any other repo on the machine.
+        let out = run_git(&work, None, &["config", "--local", "--get", "core.sshCommand"]).unwrap();
+        assert!(out.status.success(), "core.sshCommand must be repo-local");
+    }
+
+    #[test]
+    fn a_shim_path_with_spaces_stays_one_argument() {
+        // amuxd ships inside an .app bundle, so its path routinely has spaces.
+        // Unquoted, git splits it and reports a missing command instead.
+        let quoted = shell_quote("/Applications/My App.app/Contents/MacOS/amuxd");
+        assert!(quoted.starts_with('"') && quoted.ends_with('"'), "got {quoted}");
     }
 
     #[test]

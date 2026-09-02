@@ -101,6 +101,20 @@ export function registerApps(router) {
     return { body: out };
   });
 
+  // Handing a key back the moment ssh exits — see `amuxd git-ssh`. Idempotent:
+  // a key already gone answers 200 with `revoked: false`, because "not usable
+  // any more" is what the caller asked for either way.
+  router.delete("/v1/apps/:appId/git-credential/:deployKeyId", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const deployKeyId = Number.parseInt(decodeURIComponent(ctx.params.deployKeyId), 10);
+    if (!Number.isInteger(deployKeyId)) {
+      throw new ApiError(400, "bad_request", "deployKeyId must be an integer");
+    }
+    const out = await ctx.repository.revokeAppGitCredential(appId, deployKeyId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
   router.get("/v1/apps/:appId/git-head", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const out = await ctx.repository.getAppGitHead(appId);

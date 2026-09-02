@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AppWindow, ChevronRight, Loader2, Save } from 'lucide-react'
+import { AppWindow, ChevronRight, FolderOpen, Loader2, Save } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -12,9 +12,18 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { useAppsStore } from '@/stores/apps-store'
-import { APP_TYPES, DEFAULT_APP_TYPE, type AppTypeId } from '@/lib/app-types'
+import { APP_TYPES, DEFAULT_APP_TYPE, IMPORTED_APP_TYPE, type AppTypeId } from '@/lib/app-types'
+import { bindDaemonAppWorkdir, inspectDaemonDir } from '@/lib/daemon-local-client'
+import { isTauri } from '@/lib/utils'
 
 type Visibility = 'personal' | 'team'
+
+/**
+ * Where a new app's code comes from. The three the product supports, and the
+ * only three: a repo we provision, a repo someone else already has, or a
+ * checkout already sitting on this machine.
+ */
+export type AppSource = 'new' | 'local' | 'remote'
 
 /**
  * Whether a repo URL is one `git clone` will treat as an address.
@@ -29,6 +38,39 @@ export function isValidGitRemoteUrl(raw: string): boolean {
   return /^(https?|ssh|git):\/\/[^\s]+$/.test(url) || /^[^\s:/@]+@[^\s:/@]+:[^\s]+$/.test(url)
 }
 
+interface AppSourceMeta {
+  id: AppSource
+  labelKey: string
+  label: string
+  descriptionKey: string
+  description: string
+}
+
+/** Order matters: the default — we make the repo — reads first. */
+const SOURCES: AppSourceMeta[] = [
+  {
+    id: 'new',
+    labelKey: 'apps.sourceNew',
+    label: '新建一个',
+    descriptionKey: 'apps.sourceNewDesc',
+    description: '从模板起一个新目录，代码托管在我们这里。',
+  },
+  {
+    id: 'local',
+    labelKey: 'apps.sourceLocal',
+    label: '用本机已有的目录',
+    descriptionKey: 'apps.sourceLocalDesc',
+    description: '选一个已经是 git 仓库的目录，留在原地。',
+  },
+  {
+    id: 'remote',
+    labelKey: 'apps.sourceRemote',
+    label: '从 git 地址克隆',
+    descriptionKey: 'apps.sourceRemoteDesc',
+    description: '把一个已有的仓库克隆下来当作应用的代码。',
+  },
+]
+
 interface CreateAppDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -38,18 +80,26 @@ interface CreateAppDialogProps {
 export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogProps) {
   const { t } = useTranslation()
   const [name, setName] = React.useState('')
+  const [source, setSource] = React.useState<AppSource>('new')
   const [appType, setAppType] = React.useState<AppTypeId>(DEFAULT_APP_TYPE)
   const [visibility, setVisibility] = React.useState<Visibility>('personal')
   const [gitRemoteUrl, setGitRemoteUrl] = React.useState('')
+  const [localDir, setLocalDir] = React.useState('')
+  const [localOrigin, setLocalOrigin] = React.useState<string | null>(null)
+  const [picking, setPicking] = React.useState(false)
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
   React.useEffect(() => {
     if (!open) {
       setName('')
+      setSource('new')
       setAppType(DEFAULT_APP_TYPE)
       setVisibility('personal')
       setGitRemoteUrl('')
+      setLocalDir('')
+      setLocalOrigin(null)
+      setPicking(false)
       setSubmitting(false)
       setError(null)
     }
@@ -58,20 +108,75 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
   const trimmed = name.trim()
   const trimmedRepo = gitRemoteUrl.trim()
   const repoValid = isValidGitRemoteUrl(gitRemoteUrl)
-  const canSubmit = !!trimmed && !!teamId && repoValid && !submitting
+  const sourceReady =
+    source === 'new' ||
+    (source === 'remote' && !!trimmedRepo && repoValid) ||
+    (source === 'local' && !!localDir)
+  const canSubmit = !!trimmed && !!teamId && sourceReady && !submitting
+
+  /**
+   * Pick a directory and check it before anything is created.
+   *
+   * The check has to happen here rather than at bind time: by then the app row
+   * exists, so a wrong folder would leave an app pointing nowhere with no
+   * obvious way to tell that is what happened.
+   */
+  const pickLocalDir = async () => {
+    if (!isTauri()) return
+    setPicking(true)
+    setError(null)
+    try {
+      const { open: openDialog } = await import('@tauri-apps/plugin-dialog')
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: t('apps.sourceLocalPick', '选择一个 git 目录'),
+      })
+      if (typeof selected !== 'string' || !selected) return
+      const probe = await inspectDaemonDir(selected)
+      if (!probe) {
+        setError(t('apps.sourceLocalDaemonOffline', '本机 amuxd 未连接，无法检查这个目录。'))
+        return
+      }
+      if (!probe.isGitRepo) {
+        setError(t('apps.sourceLocalNotGit', '这个目录不是 git 仓库。'))
+        return
+      }
+      setLocalDir(selected)
+      setLocalOrigin(probe.gitRemoteUrl)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPicking(false)
+    }
+  }
 
   const submit = async () => {
     if (!canSubmit) return
     setSubmitting(true)
     setError(null)
     try {
+      // Imports carry no template and no type choice — `imported` is what keeps
+      // them out of `needsDatabase`, which treats every unknown type as a data
+      // app and would demand a Postgres schema on their first deploy.
+      const importing = source !== 'new'
       const app = await useAppsStore.getState().create({
         teamId,
         name: trimmed,
-        type: appType,
+        type: importing ? IMPORTED_APP_TYPE.id : appType,
         visibility,
-        gitRemoteUrl: trimmedRepo || null,
+        // Both import paths record where the code came from. For a local
+        // checkout that is its own `origin`, which may legitimately be absent.
+        gitRemoteUrl: source === 'remote' ? trimmedRepo : source === 'local' ? localOrigin : null,
+        // A local checkout is already on disk: provision nothing, clone
+        // nothing, and above all write no template over the user's files.
+        localOnly: source === 'local',
       })
+
+      if (source === 'local') {
+        await bindDaemonAppWorkdir(app.id, teamId, localDir)
+        await useAppsStore.getState().refreshLocalApps(teamId)
+      }
       onOpenChange(false)
       setName('')
       setAppType(DEFAULT_APP_TYPE)
@@ -101,7 +206,7 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex w-[min(520px,calc(100vw-3rem))] max-w-none flex-col overflow-hidden border-border bg-background p-0 shadow-xl">
+      <DialogContent className="flex max-h-[calc(100vh-6rem)] w-[min(760px,calc(100vw-4rem))] max-w-none flex-col overflow-hidden border-border bg-background p-0 shadow-xl">
         <DialogHeader className="border-b border-border-soft bg-paper px-5 py-4">
           <div className="flex items-center gap-3 pr-8">
             <span className="inline-flex h-7 items-center gap-1.5 rounded-[7px] border border-coral-soft bg-coral/5 px-2.5 text-[12.5px] font-semibold text-coral">
@@ -118,7 +223,7 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-5 px-6 py-6">
+        <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 py-6">
           <div className="flex flex-col gap-1.5">
             <label htmlFor="create-app-name" className="text-[12.5px] font-semibold text-muted-foreground">
               {t('apps.nameLabel', 'Name')}
@@ -140,33 +245,115 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="create-app-repo" className="text-[12.5px] font-semibold text-muted-foreground">
-              {t('apps.repoLabel', 'Repository URL (optional)')}
-            </label>
-            <Input
-              id="create-app-repo"
-              value={gitRemoteUrl}
-              onChange={(e) => setGitRemoteUrl(e.target.value)}
-              placeholder={t('apps.repoPlaceholder', 'https://github.com/owner/repo.git')}
-              disabled={submitting}
-              spellCheck={false}
-              autoCapitalize="off"
-              autoCorrect="off"
-              aria-invalid={!repoValid}
-              className={cn(!repoValid && 'border-amber-500/60')}
-            />
-            <span className={cn('text-[11.5px]', repoValid ? 'text-faint' : 'text-amber-700')}>
-              {repoValid
-                ? t('apps.repoHint', "Fill this in and the repo is cloned as the app's code, with no template written.")
-                : t('apps.repoInvalid', 'Must be an http(s), ssh or git@host:owner/repo.git address.')}
+            <span className="text-[12.5px] font-semibold text-muted-foreground">
+              {t('apps.sourceLabel', '代码从哪来')}
             </span>
+            {/* Across, not down: three stacked cards were most of this
+                dialog's height, and they are short enough to sit side by side. */}
+            <div className="grid grid-cols-3 gap-1.5">
+              {SOURCES.map((meta) => {
+                const selected = source === meta.id
+                return (
+                  <button
+                    key={meta.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    disabled={submitting}
+                    onClick={() => {
+                      setSource(meta.id)
+                      setError(null)
+                    }}
+                    className={cn(
+                      'flex flex-col gap-0.5 rounded-[9px] border px-3 py-2.5 text-left transition-colors disabled:opacity-50',
+                      selected
+                        ? 'border-coral bg-coral/5'
+                        : 'border-border-soft bg-paper hover:bg-selected/30',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'text-[13px] font-semibold',
+                        selected ? 'text-coral' : 'text-foreground',
+                      )}
+                    >
+                      {t(meta.labelKey, meta.label)}
+                    </span>
+                    <span className="text-[12px] text-muted-foreground">
+                      {t(meta.descriptionKey, meta.description)}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
           </div>
 
-          <div className="flex flex-col gap-1.5">
+          {source === 'remote' && (
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="create-app-repo" className="text-[12.5px] font-semibold text-muted-foreground">
+                {t('apps.repoLabel', 'Repository URL')}
+              </label>
+              <Input
+                id="create-app-repo"
+                autoFocus
+                value={gitRemoteUrl}
+                onChange={(e) => setGitRemoteUrl(e.target.value)}
+                placeholder={t('apps.repoPlaceholder', 'https://github.com/owner/repo.git')}
+                disabled={submitting}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                aria-invalid={!repoValid}
+                className={cn(!repoValid && 'border-amber-500/60')}
+              />
+              <span className={cn('text-[11.5px]', repoValid ? 'text-faint' : 'text-amber-700')}>
+                {repoValid
+                  ? t('apps.repoHint', "Fill this in and the repo is cloned as the app's code, with no template written.")
+                  : t('apps.repoInvalid', 'Must be an http(s), ssh or git@host:owner/repo.git address.')}
+              </span>
+            </div>
+          )}
+
+          {source === 'local' && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[12.5px] font-semibold text-muted-foreground">
+                {t('apps.sourceLocalLabel', '本地目录')}
+              </span>
+              <Button
+                variant="ghost"
+                onClick={() => void pickLocalDir()}
+                disabled={submitting || picking}
+                className="h-9 justify-start gap-2 rounded-[9px] border border-border-soft bg-paper px-3 text-[13px] font-normal"
+              >
+                {picking ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
+                )}
+                <span className="min-w-0 truncate">
+                  {localDir || t('apps.sourceLocalPick', '选择一个 git 目录')}
+                </span>
+              </Button>
+              <span className="text-[11.5px] text-faint">
+                {localOrigin
+                  ? t('apps.sourceLocalOrigin', '远端：{{url}}', { url: localOrigin })
+                  : localDir
+                    ? t('apps.sourceLocalNoOrigin', '这个仓库还没有远端，应用会先只留在本机。')
+                    : t('apps.sourceLocalHint', '目录留在原地，不会被移动或覆盖。')}
+              </span>
+            </div>
+          )}
+
+          {/*
+            Only a new app picks a type. An import's type is `imported`, which
+            is not something anyone would choose from a list — it exists so the
+            deploy path knows not to provision a database for it.
+          */}
+          <div className={cn('flex flex-col gap-1.5', source !== 'new' && 'hidden')}>
             <span className="text-[12.5px] font-semibold text-muted-foreground">
               {t('apps.typeLabel', 'Type')}
             </span>
-            <div className="flex flex-col gap-1.5">
+            <div className="grid grid-cols-3 gap-1.5">
               {APP_TYPES.map((meta) => {
                 const selected = appType === meta.id
                 return (
@@ -199,11 +386,6 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
                 )
               })}
             </div>
-            {!!trimmedRepo && (
-              <span className="text-[11.5px] text-faint">
-                {t('apps.typeWithRepoHint', 'When importing a repo, the type only decides how it deploys — no template files are written.')}
-              </span>
-            )}
           </div>
 
           <div className="flex flex-col gap-1.5">
