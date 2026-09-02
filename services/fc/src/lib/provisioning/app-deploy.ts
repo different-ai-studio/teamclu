@@ -1,3 +1,4 @@
+import { appFcRouteHost } from "../apps-public-host.js";
 import { randomBytes } from "node:crypto";
 import {
   provisionAppPostgres,
@@ -201,6 +202,8 @@ export interface FinalizeDeps {
   fcOps: {
     ensureFunction: (name: string, a: { ossObjectName: string; env: Record<string, string> }) => Promise<void>;
     ensureHttpTrigger: (name: string) => Promise<string>;
+    /** Absent on a deployment that has no route domain configured. */
+    ensureCustomDomain?: (functionName: string, domainName: string) => Promise<string>;
   };
   genPassword?: () => string;
   extraEnv?: (input: FinalizeInput) => Record<string, string>;
@@ -276,6 +279,17 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     ossObjectName: input.ossObjectName,
     env,
   });
-  const fcEndpoint = await deps.fcOps.ensureHttpTrigger(input.fcFunctionName);
-  return { fcEndpoint };
+  // The trigger URL is still created: it is what the function is reachable on
+  // before a custom domain exists, and the only address a deployment without a
+  // route domain has.
+  const triggerUrl = await deps.fcOps.ensureHttpTrigger(input.fcFunctionName);
+
+  // Prefer the custom domain. `*.fcapp.run` refuses to forward any 3xx
+  // (`ExternalRedirectForbidden`), so an app that merely normalises a trailing
+  // slash is broken on it — see `ensureCustomDomain`.
+  const routeHost = appFcRouteHost(input.slug, input.appId);
+  if (routeHost && deps.fcOps.ensureCustomDomain) {
+    return { fcEndpoint: await deps.fcOps.ensureCustomDomain(input.fcFunctionName, routeHost) };
+  }
+  return { fcEndpoint: triggerUrl };
 }

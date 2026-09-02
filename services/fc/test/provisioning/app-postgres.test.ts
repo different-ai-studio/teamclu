@@ -5,6 +5,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { ensureAppSchema } from "../../src/lib/provisioning/app-postgres.js";
 import { getAppsAdminExecutor } from "../../src/lib/provisioning/app-postgres.js";
 import {
+  percentEncodeOptions,
   resolveAppConnectionString,
   withDbHost,
 } from "../../src/lib/provisioning/app-postgres.js";
@@ -92,10 +93,35 @@ test("ensureAppSchema creates the schema and a scoped role on a real PG (pglite)
   assert.equal(roles.rows.length, 1);
   assert.match(conn.connectionString, /app_3f1c9a2e_0000_4000_8000_000000000abc/);
   assert.equal(conn.database, "teamclu_apps");
+  // `%20`, not `.*`: the old pattern matched the broken `-c+search_path=…` just
+  // as happily, which is why every deployed data_app shipped unable to connect.
   assert.match(
     conn.connectionString,
-    new RegExp(`[?&]options=.*search_path%3D${expectedSchema}`),
+    new RegExp(`[?&]options=-c%20search_path%3D${expectedSchema}(&|$)`),
   );
+  assert.ok(
+    !/[?&]options=[^&]*\+/.test(conn.connectionString),
+    `a '+' in options is read literally by Postgres: ${conn.connectionString}`,
+  );
+});
+
+test("options encodes its space as %20, not the form-encoded +", () => {
+  // A Postgres connection URI is read per RFC 3986, where `+` is a plus and
+  // nothing else — the server answers
+  // `FATAL: unrecognized configuration parameter "+search_path"`.
+  // Verified against a real RDS instance, which is how this was found.
+  const encoded = percentEncodeOptions(
+    "postgres://u:p@h:5432/db?options=-c+search_path%3Dapp_x&sslmode=require",
+  );
+  assert.equal(
+    encoded,
+    "postgres://u:p@h:5432/db?options=-c%20search_path%3Dapp_x&sslmode=require",
+  );
+});
+
+test("a + outside options is left exactly as the URL serializer wrote it", () => {
+  const untouched = "postgres://u:pa+ss@h:5432/db?sslmode=require";
+  assert.equal(percentEncodeOptions(untouched), untouched);
 });
 
 test("ensureAppSchema is safe to run twice (idempotent re-deploy)", async () => {

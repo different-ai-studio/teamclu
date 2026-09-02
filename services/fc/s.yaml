@@ -84,6 +84,7 @@ resources:
         # account-scoped (<accountId>.<region>.fc.aliyuncs.com) and unrelated to
         # the OSS ENDPOINT above. Set one of the two.
         APPS_FC_ENDPOINT: ${env('APPS_FC_ENDPOINT', '')}
+        APPS_FC_ROUTE_DOMAIN: ${env('APPS_FC_ROUTE_DOMAIN', '')}
         ALIYUN_ACCOUNT_ID: ${env('ALIYUN_ACCOUNT_ID', '')}
         # Optional dedicated OSS profile for app code artifacts. On THIS target
         # everything already lives in one Alibaba account, so leaving these

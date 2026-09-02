@@ -3857,6 +3857,8 @@ export function createSupabaseBusinessRepository(options) {
       const admin = await serviceRoleClient("delete app and archive workspace");
       const teardownInput = {
         appId,
+        // Carries the app's custom-domain host, which is built from the slug.
+        slug: existing.slug,
         fcFunctionName: existing.fc_function_name,
         authMode: existing.auth_mode,
         oauthClientId: existing.oauth_client_id,

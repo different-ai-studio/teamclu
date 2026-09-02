@@ -5,11 +5,14 @@ import { appFunctionName, appOssObjectName } from "./app-deploy.js";
 import type { GotrueOAuthClient } from "./gotrue-oauth.js";
 import { GITEA_AUTH_KIND, type GiteaClient } from "./gitea.js";
 import { revokeAllDeployKeys } from "./deploy-key.js";
+import { appFcRouteHost } from "../apps-public-host.js";
 
 export type TeardownAppDeps = {
   fcOps?: {
     deleteHttpTrigger?: (functionName: string) => Promise<void>;
     deleteFunction: (functionName: string) => Promise<void>;
+    /** Absent on a deployment with no route domain, and on older callers. */
+    deleteCustomDomain?: (domainName: string) => Promise<void>;
   };
   deleteOssObject?: (ossObjectName: string) => Promise<void>;
   gotrue?: GotrueOAuthClient;
@@ -19,6 +22,8 @@ export type TeardownAppDeps = {
 
 export type TeardownAppInput = {
   appId: string;
+  /** Needed to rebuild the app's custom-domain host, which carries the slug. */
+  slug?: string | null;
   fcFunctionName?: string | null;
   authMode?: AuthMode | string | null;
   oauthClientId?: string | null;
@@ -41,6 +46,17 @@ export async function teardownAppResources(
       await deps.fcOps.deleteFunction(functionName);
     } catch {
       // FC may already be gone; delete must still proceed.
+    }
+    // Separate try: a custom domain outlives its function, and a quota is
+    // account-wide — leaking one per deleted app is how the next create starts
+    // failing for an unrelated app.
+    const routeHost = appFcRouteHost(input.slug, input.appId);
+    if (routeHost && deps.fcOps.deleteCustomDomain) {
+      try {
+        await deps.fcOps.deleteCustomDomain(routeHost);
+      } catch {
+        // Same reasoning as above: teardown is best-effort.
+      }
     }
   }
 

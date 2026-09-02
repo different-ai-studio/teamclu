@@ -380,6 +380,12 @@ services:
       # Function Compute trigger URL and Caddy never asks about a certificate.
       # Requires a wildcard A record for *.<this> pointing at this box.
       APPS_PUBLIC_DOMAIN: "${APPS_PUBLIC_DOMAIN:-}"
+      # Zone the app's FC custom domain lives in, e.g. fc-apps.example.com.
+      # MUST be a different zone from APPS_PUBLIC_DOMAIN: that one resolves to
+      # this proxy, so forwarding to it would resolve straight back here. Blank
+      # keeps apps on their *.fcapp.run trigger URL, which refuses to forward
+      # any 3xx (ExternalRedirectForbidden).
+      APPS_FC_ROUTE_DOMAIN: "${APPS_FC_ROUTE_DOMAIN:-}"
       # Per-app git repos on Gitea. Blank disables repo provisioning (503
       # gitea_unavailable naming the empty variable). May be the Caddy-proxied
       # public HTTPS URL (https://${GITEA_DOMAIN}) or the in-network address

@@ -245,5 +245,50 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       if (!url) throw new Error("http trigger has no urlInternet");
       return url;
     },
+
+    /**
+     * Bind `domainName` to `functionName`, so requests carrying that Host reach
+     * this app.
+     *
+     * The default `*.fcapp.run` hostname refuses to forward **any** 3xx with
+     * `ExternalRedirectForbidden` (Alibaba product change, 2025-04-01) and is
+     * documented as test-only. A trailing-slash normalisation or a login
+     * redirect is enough to break an app on it, so every deployed app gets a
+     * custom domain instead.
+     *
+     * `HTTP`, not HTTPS: the only client is our own proxy, reaching FC over
+     * Alibaba's internal network. Serving HTTPS here would mean uploading a
+     * certificate to FC, which is a manual PEM snapshot that CAS never renews.
+     *
+     * Idempotent — a redeploy re-points the same domain at the same function.
+     */
+    async ensureCustomDomain(functionName: string, domainName: string): Promise<string> {
+      const routeConfig = new $fc.RouteConfig({
+        routes: [
+          new $fc.PathConfig({ path: "/*", functionName, qualifier: "LATEST" }),
+        ],
+      });
+      const body = { protocol: "HTTP", routeConfig };
+      try {
+        await client.createCustomDomain(new $fc.CreateCustomDomainRequest({
+          body: new $fc.CreateCustomDomainInput({ domainName, ...body }),
+        }));
+      } catch (e) {
+        if (!isAlreadyExists(e)) throw e;
+        await client.updateCustomDomain(domainName, new $fc.UpdateCustomDomainRequest({
+          body: new $fc.UpdateCustomDomainInput(body),
+        }));
+      }
+      return `http://${domainName}`;
+    },
+
+    /** Drop an app's custom domain. Best-effort: a missing one is done. */
+    async deleteCustomDomain(domainName: string): Promise<void> {
+      try {
+        await client.deleteCustomDomain(domainName);
+      } catch (e) {
+        if (!isNotFound(e)) throw e;
+      }
+    },
   };
 }
