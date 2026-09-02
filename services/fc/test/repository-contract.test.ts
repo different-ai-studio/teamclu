@@ -155,7 +155,7 @@ function contractRepo() {
         },
       ];
     },
-    async listSessions({ teamId } = {}) {
+    async listSessions({ teamId }: { teamId?: string | null } = {}) {
       // Mirrors the repositories: the list is team-scoped, and a caller with no
       // team has no actor to resolve (20260804020000).
       if (!teamId) throw new Error("listSessions requires teamId");
