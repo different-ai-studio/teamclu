@@ -10,7 +10,11 @@
  *   `ctx.ui.confirm` — exercising the per-session extension UI channel.
  * - `abort` settles the running fake turn immediately (its remaining deltas
  *   are dropped, `agent_end` still fires) without touching other sessions.
- * - `SessionManager.open` fails on a missing file, like the real one.
+ * - `SessionManager.open` fails on a missing file, like the real one, and
+ *   reads back the entries a previous turn wrote — `fork_session` opens the
+ *   parent from disk, so without that a branch would always come out empty.
+ * - a completed turn appends its user and assistant entries to the JSONL, which
+ *   is what gives the session a leaf id to fork from.
  */
 
 import * as fs from "node:fs";
@@ -67,7 +71,13 @@ export class SessionManager {
     if (!fs.existsSync(file)) {
       throw new Error(`Session file not found: ${file}`);
     }
-    return new SessionManager(process.cwd(), file);
+    const entries = fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.type !== "header");
+    return new SessionManager(process.cwd(), file, entries);
   }
 
   getCwd() {
@@ -84,6 +94,15 @@ export class SessionManager {
   }
   getEntries() {
     return this.entries;
+  }
+
+  /// Record one entry, in memory and on disk. The real SessionManager writes
+  /// the turn as it runs; the stub does it in one step at the end of the turn.
+  appendEntry(role, content) {
+    const entry = { type: "message", id: crypto.randomUUID(), role, content };
+    this.entries.push(entry);
+    fs.appendFileSync(this.file, `${JSON.stringify(entry)}\n`);
+    return entry;
   }
 
   createBranchedSession(leafId) {
@@ -229,6 +248,12 @@ class StubAgentSession {
       });
     }
     this.running = false;
+    if (!this.aborted) {
+      // A finished turn leaves a leaf to fork from. Skipped when aborted, for
+      // the same reason the real one has nothing complete to record.
+      this.sessionManager.appendEntry("user", text);
+      this.sessionManager.appendEntry("assistant", `echo:${text}!`);
+    }
     this.emit({ type: "agent_end", aborted: this.aborted });
   }
 

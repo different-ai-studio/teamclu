@@ -433,4 +433,17 @@ async fn fork_session_branches_jsonl() {
         .as_str()
         .unwrap()
         .starts_with("pi:"));
+    // The branch has to be cut *at* the leaf, not merely be a new file: the
+    // host opens the parent from disk and slices its entries, so a fork that
+    // silently produced an empty session would satisfy everything above.
+    assert_eq!(
+        fork_resp["data"]["leafId"].as_str(),
+        Some(leaf_id.as_str()),
+        "fork should end on the leaf it branched from"
+    );
+    let forked = std::fs::read_to_string(fork_path).unwrap();
+    assert!(
+        forked.contains("echo:hello!"),
+        "fork should carry the parent turn: {forked}"
+    );
 }
