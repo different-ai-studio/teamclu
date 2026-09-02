@@ -238,11 +238,13 @@ fn cached_token(key: &TokenKey) -> Option<String> {
 fn store_token(key: TokenKey, token: String, ttl: Duration) {
     let mut cache = token_cache().lock().unwrap_or_else(|p| p.into_inner());
     let now = Instant::now();
-    // A different endpoint means the daemon restarted: everything the old
-    // listener minted is dead, and expired entries are dead weight either way.
-    cache.retain(|k, v| {
-        k.base_url == key.base_url && k.root_token == key.root_token && now < v.expires_at
-    });
+    // Only expired entries are evicted. Tokens minted by a previous daemon
+    // listener are unreachable once the endpoint changes (the key includes
+    // base_url and root_token), so they age out on their own within the TTL.
+    // Evicting by endpoint here made the cache a process-wide side effect:
+    // two callers on different endpoints in one process (the wiremock tests)
+    // kept deleting each other's entries between store and lookup.
+    cache.retain(|_, v| now < v.expires_at);
     cache.insert(
         key,
         CachedToken {
@@ -569,10 +571,13 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn exchange_mock(token: &str) -> Mock {
+    fn exchange_mock(ep: &DaemonEndpoint, token: &str) -> Mock {
         Mock::given(method("POST"))
             .and(path("/v1/auth/exchange"))
-            .and(header("authorization", "Bearer root-1"))
+            .and(header(
+                "authorization",
+                format!("Bearer {}", ep.root_token).as_str(),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "token": token,
                 "token_id": "00000000-0000-0000-0000-000000000001",
@@ -582,7 +587,12 @@ mod tests {
     }
 
     fn endpoint(server: &MockServer) -> DaemonEndpoint {
-        DaemonEndpoint::new(server.uri(), "root-1")
+        // Unique per call: wiremock reuses ports across tests in one process, and the
+        // token cache is keyed by (base_url, root_token), so a shared root token let a
+        // previous test's cached session token satisfy a later test on the same port.
+        static NEXT_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let n = NEXT_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        DaemonEndpoint::new(server.uri(), format!("root-{n}"))
     }
 
     #[test]
@@ -639,8 +649,8 @@ mod tests {
     #[tokio::test]
     async fn session_token_is_exchanged_once_per_endpoint_and_scope_set() {
         let server = MockServer::start().await;
-        exchange_mock("sess-1").expect(1).mount(&server).await;
         let ep = endpoint(&server);
+        exchange_mock(&ep, "sess-1").expect(1).mount(&server).await;
 
         let a = session_token(&ep, TokenSpec::new(&["workspace:read"]))
             .await
@@ -670,7 +680,8 @@ mod tests {
     #[tokio::test]
     async fn a_401_drops_the_cached_token_and_retries_once() {
         let server = MockServer::start().await;
-        exchange_mock("sess-2").expect(2).mount(&server).await;
+        let ep = endpoint(&server);
+        exchange_mock(&ep, "sess-2").expect(2).mount(&server).await;
         // First attempt: revoked. wiremock evaluates mocks in mount order and
         // retires this one after a single match, so the retry sees the 200.
         Mock::given(method("GET"))
@@ -686,7 +697,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        let ep = endpoint(&server);
         let body: serde_json::Value =
             call(&ep, RequestSpec::get("/v1/ping", &["events:read"]), NO_BODY)
                 .await
@@ -697,7 +707,8 @@ mod tests {
     #[tokio::test]
     async fn a_body_that_does_not_decode_is_an_error_not_an_empty_default() {
         let server = MockServer::start().await;
-        exchange_mock("sess-3").mount(&server).await;
+        let ep = endpoint(&server);
+        exchange_mock(&ep, "sess-3").mount(&server).await;
         Mock::given(method("GET"))
             .and(path("/v1/workspaces"))
             .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
@@ -705,7 +716,7 @@ mod tests {
             .await;
 
         let err = call::<(), wire::ListWorkspacesResponse>(
-            &endpoint(&server),
+            &ep,
             RequestSpec::get("/v1/workspaces", &["workspace:read"]),
             NO_BODY,
         )
@@ -724,7 +735,8 @@ mod tests {
     #[tokio::test]
     async fn non_2xx_surfaces_status_and_body_for_unit_calls_too() {
         let server = MockServer::start().await;
-        exchange_mock("sess-4").mount(&server).await;
+        let ep = endpoint(&server);
+        exchange_mock(&ep, "sess-4").mount(&server).await;
         Mock::given(method("POST"))
             .and(path("/v1/team/link"))
             .respond_with(ResponseTemplate::new(422).set_body_string("path is not a dir"))
@@ -732,7 +744,7 @@ mod tests {
             .await;
 
         let err = call_unit(
-            &endpoint(&server),
+            &ep,
             RequestSpec::post("/v1/team/link", &["workspace:write"]),
             Some(&wire::TeamLinkRequest {
                 path: Some("/nowhere".into()),
