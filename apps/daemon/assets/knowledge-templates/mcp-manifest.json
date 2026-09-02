@@ -81,7 +81,7 @@
     },
     {
       "name": "knowledge_manifest_set",
-      "description": "Update publish settings. Changing visibility to 'org' REQUIRES confirm=true — publishing exposes the vault org-wide and is a considered action. 修改发布设置；把 visibility 改为 org 必须带 confirm=true。",
+      "description": "Update publish settings. Changing visibility to 'org' REQUIRES confirm=true — publishing exposes the vault org-wide and is a considered action. 修改发布设置；把 visibility 改为 org 必须带 confirm=true。 A key the manifest does not already contain is refused (errorCode unknown_key) and nothing is written — scaffold creates the full set. 清单里没有的键会被拒绝（unknown_key）且不写入任何内容；完整的键由 scaffold 生成。",
       "inputSchema": {
         "type": "object",
         "properties": {
