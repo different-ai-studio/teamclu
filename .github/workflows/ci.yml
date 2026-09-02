@@ -164,6 +164,28 @@ jobs:
       # plain pg_isready health check can go green against the instance that is
       # about to shut down; the wait below looks for the second "ready to accept
       # connections" instead.
+      # `public.ecr.aws` rate-limits anonymous pulls by source IP, and hosted
+      # runners share theirs — so a burst of runs (ours or anyone else's on the
+      # same egress) gets `toomanyrequests: Rate exceeded`. Left to the implicit
+      # pull inside `docker run`, that is an instant exit 125 with no container,
+      # which reads as "the image would not start" and has been filed as an
+      # infrastructure mystery more than once. Pull explicitly, and back off:
+      # the image never changes between attempts, so a retry is only ever
+      # waiting out somebody else's quota.
+      - name: Pull the Postgres image
+        run: |
+          image=public.ecr.aws/supabase/postgres:17.6.1.106
+          for attempt in 1 2 3 4 5; do
+            if docker pull "$image"; then
+              exit 0
+            fi
+            delay=$((attempt * 15))
+            echo "pull attempt $attempt failed; retrying in ${delay}s"
+            sleep "$delay"
+          done
+          echo "could not pull $image after 5 attempts"
+          exit 1
+
       - name: Start Postgres (same image as the deployment)
         run: |
           docker run -d --name pgtap \
