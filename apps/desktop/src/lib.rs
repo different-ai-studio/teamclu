@@ -440,6 +440,7 @@ pub fn run() {
             commands::deps::install_dependency,
             commands::deps::update_dependency,
             commands::env_vars::env_var_get,
+            commands::env_vars::env_var_reveal,
             commands::env_vars::env_catalog_list,
             commands::env_vars::team_env_diagnostics,
             commands::diagnostics::collect_diagnostic_bundle,

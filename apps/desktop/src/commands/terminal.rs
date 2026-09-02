@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request};
 use tauri::{AppHandle, Emitter, State};
 
+use super::window::{current_workspace_for_window, WindowRegistry};
 use crate::terminal::pty::{DataSink, EmitContext, PtyHandle, SpawnArgs};
 use crate::terminal::registry::{Registry, TerminalError, TerminalStatus, TerminalSummary};
 
@@ -27,18 +28,33 @@ pub struct SubscribeResult {
     pub exit_code: Option<i32>,
 }
 
+/// Open a PTY inside the calling window's workspace.
+///
+/// The cwd fence is derived from the workspace this window registered
+/// (`register_window_workspace`), not from what the webview sends: the origin
+/// that renders agent output must not be the one that decides where a shell
+/// may start (SEC-10). `allowed_roots` stays in the signature for API
+/// compatibility and is accepted only when every entry lies inside that
+/// workspace.
 #[tauri::command]
 pub async fn terminal_open(
     app: AppHandle,
+    window: tauri::WebviewWindow,
+    window_registry: State<'_, WindowRegistry>,
     registry: State<'_, Arc<Registry>>,
     workspace_id: String,
     cwd: String,
     cols: u16,
     rows: u16,
     shell: Option<String>,
-    allowed_roots: Vec<String>,
+    allowed_roots: Option<Vec<String>>,
 ) -> Result<OpenResult, TerminalError> {
-    let cwd_path = canonicalize_cwd(&cwd, &allowed_roots)?;
+    let workspace_root = current_workspace_for_window(&window, &window_registry)
+        .map_err(TerminalError::CwdNotAllowed)?;
+    if let Some(requested) = allowed_roots.as_deref() {
+        ensure_roots_within(requested, &workspace_root)?;
+    }
+    let cwd_path = canonicalize_cwd(&cwd, std::slice::from_ref(&workspace_root))?;
     let shell = resolve_shell(shell);
     let id = uuid::Uuid::now_v7().to_string();
 
@@ -223,4 +239,67 @@ fn canonicalize_cwd(cwd: &str, allowed_roots: &[String]) -> Result<PathBuf, Term
     }
 
     Ok(canon)
+}
+
+/// Every caller-supplied root must resolve inside the window's registered
+/// workspace; anything else is a bug in the frontend or an attempt to widen the
+/// fence, and both get the same answer.
+fn ensure_roots_within(requested: &[String], workspace_root: &str) -> Result<(), TerminalError> {
+    let root = PathBuf::from(workspace_root)
+        .canonicalize()
+        .map_err(|_| TerminalError::CwdNotFound(workspace_root.to_string()))?;
+    for r in requested {
+        let canon = PathBuf::from(r)
+            .canonicalize()
+            .map_err(|_| TerminalError::CwdNotAllowed(r.clone()))?;
+        if !canon.starts_with(&root) {
+            return Err(TerminalError::CwdNotAllowed(r.clone()));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roots_inside_the_workspace_pass() {
+        let ws = tempfile::tempdir().unwrap();
+        let sub = ws.path().join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        let root = ws.path().display().to_string();
+        let requested = vec![root.clone(), sub.display().to_string()];
+        assert!(ensure_roots_within(&requested, &root).is_ok());
+        assert!(ensure_roots_within(&[], &root).is_ok());
+    }
+
+    #[test]
+    fn roots_outside_the_workspace_are_rejected() {
+        let ws = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let root = ws.path().display().to_string();
+        let err = ensure_roots_within(&[other.path().display().to_string()], &root).unwrap_err();
+        assert!(matches!(err, TerminalError::CwdNotAllowed(_)));
+    }
+
+    #[test]
+    fn roots_that_do_not_exist_are_rejected() {
+        let ws = tempfile::tempdir().unwrap();
+        let root = ws.path().display().to_string();
+        let missing = ws.path().join("nope").display().to_string();
+        let err = ensure_roots_within(&[missing], &root).unwrap_err();
+        assert!(matches!(err, TerminalError::CwdNotAllowed(_)));
+    }
+
+    #[test]
+    fn cwd_is_fenced_to_the_registered_root() {
+        let ws = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let root = ws.path().display().to_string();
+        let roots = vec![root.clone()];
+        assert!(canonicalize_cwd(&root, &roots).is_ok());
+        let err = canonicalize_cwd(&other.path().display().to_string(), &roots).unwrap_err();
+        assert!(matches!(err, TerminalError::CwdNotAllowed(_)));
+    }
 }

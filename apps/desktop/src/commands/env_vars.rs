@@ -444,7 +444,28 @@ pub(crate) async fn env_var_set_for_workspace(
     write_env_index(workspace_path, &entries)
 }
 
-/// Retrieve an environment variable value from the local encrypted store.
+/// What `env_var_get` hands the webview in place of a stored value.
+pub(crate) const ENV_VAR_MASKED: &str = "••••••••";
+
+/// Read one value from the local encrypted store, or `Err` when the key is
+/// absent. Shared by the masked and the explicit-reveal command.
+async fn read_env_value(workspace_path: String, key: &str) -> Result<String, String> {
+    let blob = tokio::task::spawn_blocking(move || read_env_blob(&workspace_path))
+        .await
+        .map_err(|e| e.to_string())??;
+    blob.get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("Key '{}' not found", key))
+}
+
+/// Tell the webview whether a value exists for `key`, without the value.
+///
+/// Returns [`ENV_VAR_MASKED`] when the key is set and `Err` when it is not, so
+/// callers that only test presence keep working. The plaintext used to come
+/// back from here (SEC-8); the origin that renders agent output is not the one
+/// that should hold decrypted credentials by default. Plaintext is a separate,
+/// explicit step: [`env_var_reveal`].
 #[tauri::command]
 pub async fn env_var_get(
     window: tauri::WebviewWindow,
@@ -453,17 +474,24 @@ pub async fn env_var_get(
     workspace_path: Option<String>,
 ) -> Result<String, String> {
     let workspace_path = resolve_workspace_path(workspace_path, &window, &registry)?;
-    let blob = tokio::task::spawn_blocking({
-        let wp = workspace_path.clone();
-        move || read_env_blob(&wp)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    read_env_value(workspace_path, &key).await?;
+    Ok(ENV_VAR_MASKED.to_string())
+}
 
-    blob.get(&key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("Key '{}' not found", key))
+/// Plaintext for one key, on an explicit user action (the reveal / copy button
+/// in settings). Separate from [`env_var_get`] so a caller that only needs
+/// presence never receives the secret, and logged so a reveal leaves a trace.
+#[tauri::command]
+pub async fn env_var_reveal(
+    window: tauri::WebviewWindow,
+    registry: State<'_, super::window::WindowRegistry>,
+    key: String,
+    workspace_path: Option<String>,
+) -> Result<String, String> {
+    let workspace_path = resolve_workspace_path(workspace_path, &window, &registry)?;
+    let value = read_env_value(workspace_path, &key).await?;
+    log::info!("[EnvVars] value revealed to the webview: {}", key);
+    Ok(value)
 }
 
 /// Internal: delete env var from blob + teamclu.json index for a given workspace.

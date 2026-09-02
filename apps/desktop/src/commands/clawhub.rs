@@ -727,7 +727,13 @@ fn clawhub_install_blocking(
 }
 
 #[tauri::command]
-pub fn clawhub_uninstall(workspace_path: String, slug: String) -> Result<String, String> {
+pub async fn clawhub_uninstall(workspace_path: String, slug: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || clawhub_uninstall_blocking(workspace_path, slug))
+        .await
+        .map_err(|e| format!("clawhub_uninstall task failed: {e}"))?
+}
+
+fn clawhub_uninstall_blocking(workspace_path: String, slug: String) -> Result<String, String> {
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
 
@@ -762,7 +768,13 @@ pub fn clawhub_uninstall(workspace_path: String, slug: String) -> Result<String,
 }
 
 #[tauri::command]
-pub fn clawhub_list_installed(workspace_path: String) -> Result<Lockfile, String> {
+pub async fn clawhub_list_installed(workspace_path: String) -> Result<Lockfile, String> {
+    tokio::task::spawn_blocking(move || clawhub_list_installed_blocking(workspace_path))
+        .await
+        .map_err(|e| format!("clawhub_list_installed task failed: {e}"))?
+}
+
+fn clawhub_list_installed_blocking(workspace_path: String) -> Result<Lockfile, String> {
     Ok(read_lockfile(&workspace_path))
 }
 
@@ -847,7 +859,7 @@ mod tests {
         write_clawhub_lock(ws.path(), "deploy-check");
         std::fs::create_dir_all(global_skills_dir().unwrap().join("deploy-check")).unwrap();
 
-        clawhub_uninstall(ws.path().display().to_string(), "deploy-check".into())
+        clawhub_uninstall_blocking(ws.path().display().to_string(), "deploy-check".into())
             .expect("uninstall");
 
         let skills = skill_permissions(ws.path());
@@ -868,7 +880,7 @@ mod tests {
         write_clawhub_lock(ws.path(), "deploy-check");
         let before = std::fs::read_to_string(&config).unwrap();
 
-        clawhub_uninstall(ws.path().display().to_string(), "deploy-check".into())
+        clawhub_uninstall_blocking(ws.path().display().to_string(), "deploy-check".into())
             .expect("uninstall");
 
         assert_eq!(std::fs::read_to_string(&config).unwrap(), before);

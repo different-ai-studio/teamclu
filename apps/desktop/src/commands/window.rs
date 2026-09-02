@@ -120,7 +120,7 @@ pub fn open_local_agent_panel_window(app: AppHandle) -> Result<(), String> {
 /// must call this after `setWorkspace` so window-scoped IPC commands can resolve
 /// the active workspace (env catalog, MCP, etc.).
 #[tauri::command]
-pub fn register_window_workspace(
+pub async fn register_window_workspace(
     window: WebviewWindow,
     registry: tauri::State<'_, WindowRegistry>,
     workspace_path: String,
@@ -128,25 +128,33 @@ pub fn register_window_workspace(
     if workspace_path.trim().is_empty() {
         return Err("workspace_path is empty".to_string());
     }
+    // The binding itself is a map insert and happens before the first await, so
+    // a command issued right after this one already resolves the workspace.
     bind_window_to_workspace(&registry, window.label(), &workspace_path);
-    // Identity == daemon actor_id (empty until the daemon is onboarded; the
-    // tc_api_key generator then yields None and no key is seeded).
-    let actor_id = super::daemon_http::read_daemon_actor_id();
-    if let Err(e) = super::env_vars::ensure_system_env_vars(&workspace_path, &actor_id) {
-        eprintln!(
-            "[EnvVars] Warning: failed to ensure system env vars on workspace bind: {}",
-            e
-        );
-    }
-    // Personal values are machine-global; backfill this workspace's envVars
-    // cache so settings/diagnostics stay aligned after switching projects.
-    if let Err(e) = super::env_vars::derive_personal_env_index_from_blob(&workspace_path) {
-        eprintln!(
-            "[EnvVars] Warning: failed to derive personal env index on workspace bind: {}",
-            e
-        );
-    }
-    Ok(())
+    // Everything below touches disk (env index, personal secret blob, the
+    // daemon's backend.toml fallback) and used to run inline on the main thread
+    // (PERF-3).
+    tokio::task::spawn_blocking(move || {
+        // Identity == daemon actor_id (empty until the daemon is onboarded; the
+        // tc_api_key generator then yields None and no key is seeded).
+        let actor_id = super::daemon_http::read_daemon_actor_id();
+        if let Err(e) = super::env_vars::ensure_system_env_vars(&workspace_path, &actor_id) {
+            eprintln!(
+                "[EnvVars] Warning: failed to ensure system env vars on workspace bind: {}",
+                e
+            );
+        }
+        // Personal values are machine-global; backfill this workspace's envVars
+        // cache so settings/diagnostics stay aligned after switching projects.
+        if let Err(e) = super::env_vars::derive_personal_env_index_from_blob(&workspace_path) {
+            eprintln!(
+                "[EnvVars] Warning: failed to derive personal env index on workspace bind: {}",
+                e
+            );
+        }
+    })
+    .await
+    .map_err(|e| format!("register_window_workspace task failed: {e}"))
 }
 
 /// Update the title of the calling window (used by the frontend after workspace selection).

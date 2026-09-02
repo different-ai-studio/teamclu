@@ -255,7 +255,13 @@ pub fn show_in_folder(path: String) -> Result<(), String> {
 
 /// Open a file with the system default application.
 #[tauri::command]
-pub fn open_with_default_app(path: String) -> Result<(), String> {
+pub async fn open_with_default_app(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || open_with_default_app_blocking(path))
+        .await
+        .map_err(|e| format!("open_with_default_app task failed: {e}"))?
+}
+
+fn open_with_default_app_blocking(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
@@ -290,7 +296,13 @@ pub fn open_with_default_app(path: String) -> Result<(), String> {
 
 /// Open a terminal at the given directory path.
 #[tauri::command]
-pub fn open_in_terminal(path: String) -> Result<(), String> {
+pub async fn open_in_terminal(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || open_in_terminal_blocking(path))
+        .await
+        .map_err(|e| format!("open_in_terminal task failed: {e}"))?
+}
+
+fn open_in_terminal_blocking(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")

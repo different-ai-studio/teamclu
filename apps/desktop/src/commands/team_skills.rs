@@ -586,7 +586,19 @@ fn team_skill_install_blocking(
 }
 
 #[tauri::command]
-pub fn team_skill_uninstall(
+pub async fn team_skill_uninstall(
+    workspace_path: Option<String>,
+    slug: String,
+    is_global: Option<bool>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        team_skill_uninstall_blocking(workspace_path, slug, is_global)
+    })
+    .await
+    .map_err(|e| format!("team_skill_uninstall task failed: {e}"))?
+}
+
+fn team_skill_uninstall_blocking(
     workspace_path: Option<String>,
     slug: String,
     is_global: Option<bool>,
@@ -827,7 +839,15 @@ pub async fn team_skill_install_from_dir(
 /// independently bring the lower-priority member projection to the new version
 /// when the effective copy is hosted by the daemon.
 #[tauri::command]
-pub fn team_skill_rebaseline(
+pub async fn team_skill_rebaseline(
+    request: TeamSkillRebaselineRequest,
+) -> Result<TeamSkillInstallResult, String> {
+    tokio::task::spawn_blocking(move || team_skill_rebaseline_blocking(request))
+        .await
+        .map_err(|e| format!("team_skill_rebaseline task failed: {e}"))?
+}
+
+fn team_skill_rebaseline_blocking(
     request: TeamSkillRebaselineRequest,
 ) -> Result<TeamSkillInstallResult, String> {
     let slug = request.slug.trim().to_string();
@@ -920,7 +940,13 @@ pub struct InstalledTeamSkill {
 }
 
 #[tauri::command]
-pub fn team_skill_list_installed() -> Result<Vec<InstalledTeamSkill>, String> {
+pub async fn team_skill_list_installed() -> Result<Vec<InstalledTeamSkill>, String> {
+    tokio::task::spawn_blocking(team_skill_list_installed_blocking)
+        .await
+        .map_err(|e| format!("team_skill_list_installed task failed: {e}"))?
+}
+
+fn team_skill_list_installed_blocking() -> Result<Vec<InstalledTeamSkill>, String> {
     let skills = global_skills_dir()?;
     let Ok(entries) = std::fs::read_dir(&skills) else {
         return Ok(Vec::new());
@@ -1015,7 +1041,19 @@ fn preferred_team_skill_dir(
 /// Hosted Agent edits its higher-priority cloud copy, that is the content the
 /// team expects to ship.
 #[tauri::command]
-pub fn team_skill_installed_dir(slug: String, team_id: Option<String>) -> Result<String, String> {
+pub async fn team_skill_installed_dir(
+    slug: String,
+    team_id: Option<String>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || team_skill_installed_dir_blocking(slug, team_id))
+        .await
+        .map_err(|e| format!("team_skill_installed_dir task failed: {e}"))?
+}
+
+fn team_skill_installed_dir_blocking(
+    slug: String,
+    team_id: Option<String>,
+) -> Result<String, String> {
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
     Ok(effective_team_skill_dir(&slug, team_id.as_deref())?
@@ -1418,7 +1456,16 @@ pub struct TeamSkillDraftMetadata {
 
 /// Read structured metadata from the working copy's SKILL.md frontmatter.
 #[tauri::command]
-pub fn team_skill_read_draft_metadata(
+pub async fn team_skill_read_draft_metadata(
+    slug: String,
+    team_id: Option<String>,
+) -> Result<TeamSkillDraftMetadata, String> {
+    tokio::task::spawn_blocking(move || team_skill_read_draft_metadata_blocking(slug, team_id))
+        .await
+        .map_err(|e| format!("team_skill_read_draft_metadata task failed: {e}"))?
+}
+
+fn team_skill_read_draft_metadata_blocking(
     slug: String,
     team_id: Option<String>,
 ) -> Result<TeamSkillDraftMetadata, String> {
@@ -1525,7 +1572,19 @@ fn load_draft_recovery_records(trash: &std::path::Path) -> Vec<DraftRecoveryReco
 
 /// Recent draft recovery records (discarded packs moved to trash).
 #[tauri::command]
-pub fn team_skill_list_draft_recoveries(
+pub async fn team_skill_list_draft_recoveries(
+    slug: Option<String>,
+    team_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<DraftRecoveryRecord>, String> {
+    tokio::task::spawn_blocking(move || {
+        team_skill_list_draft_recoveries_blocking(slug, team_id, limit)
+    })
+    .await
+    .map_err(|e| format!("team_skill_list_draft_recoveries task failed: {e}"))?
+}
+
+fn team_skill_list_draft_recoveries_blocking(
     slug: Option<String>,
     team_id: Option<String>,
     limit: Option<usize>,
@@ -1552,7 +1611,19 @@ pub fn team_skill_list_draft_recoveries(
 /// protect the rare misclick, the undo protects the misclick without
 /// interrupting anyone.
 #[tauri::command]
-pub fn team_skill_discard_local(slug: String, team_id: Option<String>) -> Result<String, String> {
+pub async fn team_skill_discard_local(
+    slug: String,
+    team_id: Option<String>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || team_skill_discard_local_blocking(slug, team_id))
+        .await
+        .map_err(|e| format!("team_skill_discard_local task failed: {e}"))?
+}
+
+fn team_skill_discard_local_blocking(
+    slug: String,
+    team_id: Option<String>,
+) -> Result<String, String> {
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
     let (target, _) = effective_team_skill_dir(&slug, team_id.as_deref())?;
@@ -1693,7 +1764,13 @@ fn draft_recovery_context(
 ///
 /// Goes to the trash, never `remove_dir_all`: the caller offers an undo.
 #[tauri::command]
-pub fn team_skill_retire_personal(dir_path: String, slug: String) -> Result<String, String> {
+pub async fn team_skill_retire_personal(dir_path: String, slug: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || team_skill_retire_personal_blocking(dir_path, slug))
+        .await
+        .map_err(|e| format!("team_skill_retire_personal task failed: {e}"))?
+}
+
+fn team_skill_retire_personal_blocking(dir_path: String, slug: String) -> Result<String, String> {
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
 
@@ -1746,7 +1823,19 @@ fn resolve_trashed_source(
 /// Undo a discard. The trashed copy wins over whatever is installed now, which
 /// is the point: the user asked for their edits back.
 #[tauri::command]
-pub fn team_skill_restore_trashed(
+pub async fn team_skill_restore_trashed(
+    trashed_path: String,
+    slug: String,
+    team_id: Option<String>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        team_skill_restore_trashed_blocking(trashed_path, slug, team_id)
+    })
+    .await
+    .map_err(|e| format!("team_skill_restore_trashed task failed: {e}"))?
+}
+
+fn team_skill_restore_trashed_blocking(
     trashed_path: String,
     slug: String,
     team_id: Option<String>,
@@ -1798,7 +1887,17 @@ pub fn team_skill_restore_trashed(
 /// shadow the team copy and quietly cancel the auto-follow it was supposed to
 /// let the user keep.
 #[tauri::command]
-pub fn team_skill_fork(
+pub async fn team_skill_fork(
+    slug: String,
+    new_slug: String,
+    team_id: Option<String>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || team_skill_fork_blocking(slug, new_slug, team_id))
+        .await
+        .map_err(|e| format!("team_skill_fork task failed: {e}"))?
+}
+
+fn team_skill_fork_blocking(
     slug: String,
     new_slug: String,
     team_id: Option<String>,
@@ -1947,7 +2046,7 @@ mod tests {
         assert_eq!(before.source, "hosted-agent");
         assert_eq!(before.modified, vec!["SKILL.md"]);
 
-        let result = team_skill_rebaseline(rebaseline_request("say-hello", 3))
+        let result = team_skill_rebaseline_blocking(rebaseline_request("say-hello", 3))
             .expect("rebaseline hosted edit");
         assert_eq!(std::path::PathBuf::from(result.path), hosted);
         assert_eq!(read_origin(&hosted).unwrap().installed_version, "3");
@@ -1983,7 +2082,7 @@ mod tests {
         let ws = workspace_with_permission("allow");
         std::fs::create_dir_all(global_skills_dir().unwrap().join("deploy-check")).unwrap();
 
-        team_skill_uninstall(
+        team_skill_uninstall_blocking(
             Some(ws.path().display().to_string()),
             "deploy-check".into(),
             Some(true),
@@ -2016,7 +2115,7 @@ mod tests {
         .unwrap();
         let before = std::fs::read_to_string(&config).unwrap();
 
-        team_skill_uninstall(
+        team_skill_uninstall_blocking(
             Some(ws.path().display().to_string()),
             "deploy-check".into(),
             Some(true),
@@ -2034,7 +2133,7 @@ mod tests {
         let _home = crate::test_home::HomeGuard::set(home.path());
 
         let bare = tempfile::tempdir().expect("tempdir");
-        team_skill_uninstall(
+        team_skill_uninstall_blocking(
             Some(bare.path().display().to_string()),
             "deploy-check".into(),
             Some(true),
@@ -2043,7 +2142,7 @@ mod tests {
 
         let broken = tempfile::tempdir().expect("tempdir");
         std::fs::write(broken.path().join("opencode.json"), "{not json").unwrap();
-        team_skill_uninstall(
+        team_skill_uninstall_blocking(
             Some(broken.path().display().to_string()),
             "deploy-check".into(),
             Some(true),
@@ -2392,15 +2491,18 @@ mod tests {
         let source = global_skills_dir().unwrap().join("say-hello");
         write_installed_skill(&source, "team-a", 1);
 
-        let trashed = team_skill_discard_local("say-hello".into(), Some("team-a".into()))
+        let trashed = team_skill_discard_local_blocking("say-hello".into(), Some("team-a".into()))
             .expect("discard writes recovery metadata");
         assert!(std::path::Path::new(&trashed)
             .join(".clawhub/recovery.json")
             .is_file());
 
-        let restored =
-            team_skill_restore_trashed(trashed.clone(), "say-hello".into(), Some("team-a".into()))
-                .expect("same team + slug restores");
+        let restored = team_skill_restore_trashed_blocking(
+            trashed.clone(),
+            "say-hello".into(),
+            Some("team-a".into()),
+        )
+        .expect("same team + slug restores");
         assert!(std::path::Path::new(&restored).is_dir());
     }
 
@@ -2419,7 +2521,7 @@ mod tests {
         let orphan = trash.join(format!("say-hello-{}", now_millis() - 1_000));
         write_installed_skill(&orphan, "team-a", 1);
 
-        let err = team_skill_restore_trashed(
+        let err = team_skill_restore_trashed_blocking(
             orphan.display().to_string(),
             "say-hello".into(),
             Some("team-a".into()),
@@ -2429,17 +2531,23 @@ mod tests {
 
         let source = global_skills_dir().unwrap().join("say-hello");
         write_installed_skill(&source, "team-a", 1);
-        let trashed =
-            team_skill_discard_local("say-hello".into(), Some("team-a".into())).expect("discard");
+        let trashed = team_skill_discard_local_blocking("say-hello".into(), Some("team-a".into()))
+            .expect("discard");
 
-        let wrong_team =
-            team_skill_restore_trashed(trashed.clone(), "say-hello".into(), Some("team-b".into()))
-                .expect_err("other team");
+        let wrong_team = team_skill_restore_trashed_blocking(
+            trashed.clone(),
+            "say-hello".into(),
+            Some("team-b".into()),
+        )
+        .expect_err("other team");
         assert!(wrong_team.contains("another team"), "{wrong_team}");
 
-        let wrong_slug =
-            team_skill_restore_trashed(trashed, "other-skill".into(), Some("team-a".into()))
-                .expect_err("other slug");
+        let wrong_slug = team_skill_restore_trashed_blocking(
+            trashed,
+            "other-skill".into(),
+            Some("team-a".into()),
+        )
+        .expect_err("other slug");
         assert!(wrong_slug.contains("different skill"), "{wrong_slug}");
     }
 
@@ -2457,8 +2565,9 @@ mod tests {
         // every platform, without the chmod dance the sibling test needs.
         std::fs::create_dir_all(source.join(".clawhub").join("recovery.json")).unwrap();
 
-        let err = team_skill_discard_local("blocked-recovery".into(), Some("team-a".into()))
-            .expect_err("sidecar write should fail");
+        let err =
+            team_skill_discard_local_blocking("blocked-recovery".into(), Some("team-a".into()))
+                .expect_err("sidecar write should fail");
         assert!(err.contains("recovery metadata"), "{err}");
         assert!(source.is_dir(), "skill restored to original location");
 
@@ -2492,15 +2601,18 @@ mod tests {
         let source = global_skills_dir().unwrap().join("say-hello");
         write_installed_skill(&source, "team-a", 1);
 
-        let trashed = team_skill_discard_local("say-hello".into(), Some("team-a".into()))
+        let trashed = team_skill_discard_local_blocking("say-hello".into(), Some("team-a".into()))
             .expect("sidecar success is enough");
         assert!(std::path::Path::new(&trashed)
             .join(".clawhub/recovery.json")
             .is_file());
 
-        let listed =
-            team_skill_list_draft_recoveries(Some("say-hello".into()), Some("team-a".into()), None)
-                .expect("list scans sidecars");
+        let listed = team_skill_list_draft_recoveries_blocking(
+            Some("say-hello".into()),
+            Some("team-a".into()),
+            None,
+        )
+        .expect("list scans sidecars");
         assert!(listed.iter().any(|rec| rec.path == trashed));
     }
 }

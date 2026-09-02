@@ -82,7 +82,20 @@ fn validate_skill_import_slug(slug: &str) -> Result<(), String> {
 /// The parent directory of that file is copied as the skill folder. If `SKILL.md` is at the
 /// archive root, the install folder name is derived from the zip file name.
 #[tauri::command]
-pub fn import_skill_from_zip(
+pub async fn import_skill_from_zip(
+    workspace_path: Option<String>,
+    zip_path: String,
+    is_global: bool,
+    force: Option<bool>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        import_skill_from_zip_blocking(workspace_path, zip_path, is_global, force)
+    })
+    .await
+    .map_err(|e| format!("import_skill_from_zip task failed: {e}"))?
+}
+
+fn import_skill_from_zip_blocking(
     workspace_path: Option<String>,
     zip_path: String,
     is_global: bool,
@@ -261,7 +274,7 @@ mod tests {
     }
 
     fn import(zip: &std::path::Path, force: Option<bool>) -> Result<String, String> {
-        import_skill_from_zip(None, zip.display().to_string(), true, force)
+        import_skill_from_zip_blocking(None, zip.display().to_string(), true, force)
     }
 
     #[test]

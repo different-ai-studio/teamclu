@@ -152,8 +152,10 @@ export const useEnvVarsStore = create<EnvVarsState>((set) => ({
     }, { rethrow: true })
   },
 
+  // Plaintext on an explicit user action only. `env_var_get` answers presence
+  // with a mask; the reveal/copy button is the one place the value is needed.
   getEnvVarValue: async (key: string) => {
-    return invoke<string>('env_var_get', {
+    return invoke<string>('env_var_reveal', {
       key,
       workspacePath: currentWorkspacePath(),
     })

@@ -532,6 +532,7 @@ const CURSOR_API_KEY_ENV = 'CURSOR_API_KEY'
  */
 export async function getCursorAgentSettings(): Promise<CursorAgentSettings> {
   const [apiKeyValue, modelEntry] = await Promise.all([
+    // Presence only: `env_var_get` returns a mask when set, rejects when absent.
     invoke<string>('env_var_get', { key: CURSOR_API_KEY_ENV }).catch(() => ''),
     getDaemonConfigEntry('agents.cursor.default_model'),
   ])

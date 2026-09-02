@@ -60,8 +60,6 @@ jobs:
       # transitive (`cargo tree -i <crate>@<version>` prints the chain):
       #   RUSTSEC-2026-0204  crossbeam-epoch 0.9.18         fixed 0.9.20    via crossbeam-deque
       #   RUSTSEC-2026-0258  h2 0.3.27 + 0.4.13             fixed 0.4.16    via hyper 0.14 (tonic / libsql) and hyper 1 (reqwest)
-      #   RUSTSEC-2026-0141  lettre 0.11.21                 fixed 0.11.22   crates/teamclu-gateway; affects the Boring TLS backend only,
-      #                                                                     we build lettre with native-tls and boring is not in the lock
       #   RUSTSEC-2026-0194  quick-xml 0.30.0/0.37.5/0.38.4 fixed 0.41.0    0.38 via plist (macOS); the two older ones deeper transitive
       #   RUSTSEC-2026-0195  quick-xml (same three)         fixed 0.41.0
       #   RUSTSEC-2026-0185  quinn-proto 0.11.14            fixed 0.11.15   transitive
@@ -70,7 +68,6 @@ jobs:
       #   RUSTSEC-2026-0098  rustls-webpki 0.102.8          fixed 0.103.12  via rustls 0.22 (rumqttc 0.24)
       #   RUSTSEC-2026-0099  rustls-webpki 0.102.8          fixed 0.103.12  via rustls 0.22 (rumqttc 0.24)
       #   RUSTSEC-2026-0104  rustls-webpki 0.102.8+0.103.12 fixed 0.103.13  via rustls 0.22 (rumqttc) and rustls 0.23 (async-nats, reqwest)
-      #   RUSTSEC-2026-0257  webbrowser 1.2.1               fixed 1.2.2     crates/teamclu-gateway; Unix BROWSER env argument injection
       #
       # RUSTUP_TOOLCHAIN=stable: `cargo audit` only reads Cargo.lock, so it does
       # not need the compiler pinned by rust-toolchain.toml. Without the
@@ -82,7 +79,6 @@ jobs:
           cargo audit
           --ignore RUSTSEC-2026-0204
           --ignore RUSTSEC-2026-0258
-          --ignore RUSTSEC-2026-0141
           --ignore RUSTSEC-2026-0194
           --ignore RUSTSEC-2026-0195
           --ignore RUSTSEC-2026-0185
@@ -91,7 +87,6 @@ jobs:
           --ignore RUSTSEC-2026-0098
           --ignore RUSTSEC-2026-0099
           --ignore RUSTSEC-2026-0104
-          --ignore RUSTSEC-2026-0257
 
   node-audit:
     name: pnpm audit + npm audit (production deps)
