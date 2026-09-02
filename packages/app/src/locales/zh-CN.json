@@ -3366,6 +3366,8 @@
     "agentRuntime": {
       "notStartedTitle": "Agent runtime 未启动",
       "notStartedDesc": "Agent {{shortId}} 的 daemon 未响应 runtimeStart（可能未在线或未加入团队）。",
+      "hostCapacityTitle": "本机 Agent 运行容量已满",
+      "hostCapacityDesc": "当前 OpenCode host 均在使用中，暂时无法启动此会话。请等待其他会话完成或停止一个会话后重试。",
       "binaryMissingDesc": "当前团队的 agent 运行时是 {{agent}}，但这台机器上没有安装它。请到「设置 → Agent」为本团队换一个已安装的运行时，或先安装 {{agent}}。运行时是每个团队独立配置的。",
       "rpcNotReadyTitle": "MQTT/RPC 未就绪",
       "rpcNotReadyDesc": "无法向 daemon 发送 runtimeStart。请检查 MQTT 连接与团队登录状态。",
