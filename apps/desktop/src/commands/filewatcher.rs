@@ -8,17 +8,6 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
-/// File change event sent to frontend, one per changed path.
-///
-/// Kept for the listeners that key off a single path (the open editor, the
-/// team-config reloader, the skill watcher). The file tree does not use it any
-/// more — it listens to [`FileChangeBatch`] and re-lists only what changed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileChangeEvent {
-    pub path: String,
-    pub kind: String, // "create", "modify", "remove", "rename", "any"
-}
-
 /// Every path that changed in one debounce window, emitted once per window as
 /// `file-change-batch`.
 ///
@@ -36,7 +25,7 @@ pub struct FileChangeBatch {
 ///
 /// Dependency and build output: a `pnpm install` or a `cargo build` writes tens
 /// of thousands of files under these, and before this list every one of them
-/// woke every `file-change` listener in every window. Written as gitignore
+/// woke every watcher listener in every window. Written as gitignore
 /// patterns so the trailing slash means "directory", at any depth.
 ///
 /// The workspace's own `.gitignore` is deliberately *not* applied. This app
@@ -171,9 +160,10 @@ pub async fn watch_directory(
     // already filters by `path.startsWith(workspacePath)`. Tauri skips webviews
     // with no listener for the event, so the broadcast itself is cheap.
     //
-    // Two emits per window: one `file-change` per surviving path for the
-    // single-path listeners, then one `file-change-batch` carrying the whole
-    // window for the tree. Before this it was one emit per event with nothing
+    // One emit per window: `file-change-batch` carrying every surviving path
+    // and the directories whose listing may differ. Every listener (the tree,
+    // the open editor, the team-config reloader, the skill watcher) reads the
+    // paths array. Before this it was one emit per event with nothing
     // filtered, so a `pnpm install` was thousands of wakeups.
     let mut debouncer = new_debouncer(
         Duration::from_millis(500),
@@ -184,15 +174,6 @@ pub async fn watch_directory(
                         collapse_events(matcher.as_ref(), events.into_iter().map(|e| e.path));
                     if batch.paths.is_empty() {
                         return;
-                    }
-                    for path in &batch.paths {
-                        let change_event = FileChangeEvent {
-                            path: path.clone(),
-                            kind: "any".to_string(),
-                        };
-                        if let Err(e) = app_handle.emit("file-change", change_event) {
-                            eprintln!("[FileWatcher] Failed to emit event: {}", e);
-                        }
                     }
                     if let Err(e) = app_handle.emit("file-change-batch", batch) {
                         eprintln!("[FileWatcher] Failed to emit batch: {}", e);

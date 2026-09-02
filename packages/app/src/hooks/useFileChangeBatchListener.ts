@@ -7,7 +7,7 @@ import { isTauri } from '@/lib/utils'
  * directories whose listing may differ now. Build and dependency trees
  * (`node_modules`, `.git`, `target`, …) are already filtered out.
  */
-type FileChangeBatch = {
+export type FileChangeBatch = {
   paths: string[]
   directories: string[]
 }

@@ -51,17 +51,16 @@ export function useToolCallFileOnDisk(
     void (async () => {
       try {
         const { listen } = await import("@tauri-apps/api/event");
-        const u = await listen<{ path: string; kind: string }>(
-          "file-change",
+        const u = await listen<{ paths: string[]; directories: string[] }>(
+          "file-change-batch",
           (event) => {
-            const p = event.payload.path;
-            if (
-              p === absolutePath ||
-              absolutePath.startsWith(`${p}/`) ||
-              p.startsWith(`${absolutePath}/`)
-            ) {
-              void check();
-            }
+            const touched = event.payload.paths.some(
+              (p) =>
+                p === absolutePath ||
+                absolutePath.startsWith(`${p}/`) ||
+                p.startsWith(`${absolutePath}/`),
+            );
+            if (touched) void check();
           },
         );
         if (!cancelled) unlistenRef.fn = u;

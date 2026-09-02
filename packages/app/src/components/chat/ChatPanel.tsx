@@ -829,10 +829,13 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
 
     (async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      unlisten = await listen<{ path: string; kind: string }>('file-change', (event) => {
-        const isTeamConfigChange = event.payload.path.includes(`${TEAMCLU_DIR}/${CONFIG_FILE_NAME}`);
-        const isProviderMetaChange = event.payload.path.includes(`${TEAM_REPO_DIR}/_meta/provider.json`);
-        if (!isTeamConfigChange && !isProviderMetaChange) return;
+      unlisten = await listen<{ paths: string[]; directories: string[] }>('file-change-batch', (event) => {
+        const touched = event.payload.paths.some(
+          (path) =>
+            path.includes(`${TEAMCLU_DIR}/${CONFIG_FILE_NAME}`) ||
+            path.includes(`${TEAM_REPO_DIR}/_meta/provider.json`),
+        );
+        if (!touched) return;
         if (debounceTimer) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(async () => {
           console.log('[TeamMode] Team config changed, reloading team config');

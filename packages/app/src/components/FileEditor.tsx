@@ -222,21 +222,22 @@ export function FileContentViewer({
       try {
         const { listen } = await import("@tauri-apps/api/event");
 
-        unlisten = await listen<{ path: string; kind: string }>(
-          "file-change",
+        unlisten = await listen<{ paths: string[]; directories: string[] }>(
+          "file-change-batch",
           (event) => {
-            const changedPath = event.payload.path;
-
-            // Check if the changed file matches our selected file
             // Normalize paths for comparison
             const normalizedSelected = selectedFile.replace(/^\/+|\/+$/g, "");
-            const normalizedChanged = changedPath.replace(/^\/+|\/+$/g, "");
+            // One event per watcher window; reload if any path in it is our file.
+            const touched = event.payload.paths.some((changedPath) => {
+              const normalizedChanged = changedPath.replace(/^\/+|\/+$/g, "");
+              return (
+                normalizedSelected === normalizedChanged ||
+                normalizedSelected.endsWith("/" + normalizedChanged) ||
+                normalizedChanged.endsWith("/" + normalizedSelected)
+              );
+            });
 
-            if (
-              normalizedSelected === normalizedChanged ||
-              normalizedSelected.endsWith("/" + normalizedChanged) ||
-              normalizedChanged.endsWith("/" + normalizedSelected)
-            ) {
+            if (touched) {
               console.log(
                 "[FileContentViewer] Current file changed, reloading:",
                 selectedFile,

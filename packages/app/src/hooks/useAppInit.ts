@@ -321,8 +321,8 @@ export function useWorkspaceInit() {
 
         if (cancelled) return;
 
-        unlisten = await listen<{ path: string; kind: string }>("file-change", (event) => {
-          if (!isSkillFileChange(event.payload.path)) return;
+        unlisten = await listen<{ paths: string[]; directories: string[] }>("file-change-batch", (event) => {
+          if (!event.payload.paths.some(isSkillFileChange)) return;
 
           changeVersion += 1;
           const versionAtSchedule = changeVersion;
