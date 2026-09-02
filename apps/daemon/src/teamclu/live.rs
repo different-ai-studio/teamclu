@@ -6,6 +6,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::mqtt::Topics;
+use crate::runtime::acp_live_transport::prepare_acp_event_body_for_live;
 use crate::proto::amux;
 use crate::proto::amux::Envelope as AmuxEnvelope;
 use crate::proto::teamclu::{IdeaEvent, LiveEventEnvelope, Participant, SessionMessageEnvelope};
@@ -89,7 +90,7 @@ impl LivePublisher {
             "acp.event",
             session_id,
             actor_id,
-            envelope.encode_to_vec(),
+            prepare_acp_event_body_for_live(envelope),
             acp_event_guarantee(envelope),
         )
         .await
