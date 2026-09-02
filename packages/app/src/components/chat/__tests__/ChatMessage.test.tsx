@@ -133,23 +133,33 @@ describe('ChatMessage', () => {
       updatedAt: new Date(),
     } as never);
 
+    // `activeSessionId` is the session this list belongs to, and it gates the
+    // assistant actions row — ThreadBadge forks from it, so it cannot fall back
+    // to whatever the store calls active. Both production call sites in
+    // MessageList pass it; rendering without it is not a real configuration.
     const { rerender } = render(
       <ChatMessage
         message={firstMessage}
+        activeSessionId="sess-1"
         tokenGroupInfo={{ hideTokenUsage: true }}
       />,
     );
 
-    expect(screen.queryByTitle('Copy')).toBeNull();
+    // The assistant copy action moved into ThreadBadge's `copySlot`, where it
+    // renders as a MessageActionIconButton: a Radix tooltip plus `aria-label`
+    // instead of a native `title`. The accessible name is what the reader
+    // actually gets, so assert on that.
+    expect(screen.queryByLabelText('Copy')).toBeNull();
 
     rerender(
       <ChatMessage
         message={lastMessage}
+        activeSessionId="sess-1"
         tokenGroupInfo={{ hideTokenUsage: false }}
       />,
     );
 
-    expect(screen.getByTitle('Copy')).toBeTruthy();
+    expect(screen.getByLabelText('Copy')).toBeTruthy();
   });
 
   it('code blocks within messages render correctly', () => {
