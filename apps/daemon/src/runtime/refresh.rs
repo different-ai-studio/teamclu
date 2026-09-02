@@ -114,6 +114,7 @@ pub enum RefreshSource {
     UiMutation,
     FilesystemWatch,
     StartupRescan,
+    TeamSkillReconcile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]

@@ -313,11 +313,19 @@ impl DaemonServer {
             }
         }
         if let Some(registry) = self.refresh_watch_registry.as_ref() {
+            let watch_team_id = if remote.team_id.trim().is_empty() {
+                team_id
+            } else {
+                remote.team_id.as_str()
+            };
             registry
-                .upsert_workspace(crate::runtime::refresh::refresh_watch::WatchedWorkspace {
-                    workspace_id: remote.id.clone(),
-                    workspace_path: canonical.clone(),
-                })
+                .upsert_workspace(
+                    crate::runtime::refresh::refresh_watch::WatchedWorkspace::new(
+                        remote.id.clone(),
+                        canonical.clone(),
+                        Some(watch_team_id),
+                    ),
+                )
                 .await;
         }
         info!(workspace_id = %remote.id, path = %canonical_str, "workspace added");

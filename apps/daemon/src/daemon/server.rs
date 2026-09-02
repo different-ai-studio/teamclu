@@ -1356,15 +1356,17 @@ impl DaemonServer {
         // loop reads the registry live via `snapshot()`, so upserting here takes
         // effect on the next tick without a restart.
         if let Some(registry) = self.refresh_watch_registry.clone() {
+            let team_id = self.backend.team_id().to_string();
             let workspaces = self.cloud_workspace_list().await;
             tokio::spawn(async move {
                 for workspace in workspaces {
                     registry
                         .upsert_workspace(
-                            crate::runtime::refresh::refresh_watch::WatchedWorkspace {
-                                workspace_id: workspace.workspace_id,
-                                workspace_path: PathBuf::from(&workspace.path),
-                            },
+                            crate::runtime::refresh::refresh_watch::WatchedWorkspace::new(
+                                workspace.workspace_id,
+                                PathBuf::from(&workspace.path),
+                                Some(team_id.as_str()),
+                            ),
                         )
                         .await;
                 }

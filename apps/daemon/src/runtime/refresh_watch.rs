@@ -67,6 +67,27 @@ const WATCH_DEBOUNCE_WINDOW: Duration = Duration::from_millis(250);
 pub struct WatchedWorkspace {
     pub workspace_id: String,
     pub workspace_path: PathBuf,
+    /// Team that owns this workspace. `None` when membership is unknown —
+    /// filesystem watches still apply, but team Skill reconcile must not
+    /// fan out to it.
+    pub team_id: Option<String>,
+}
+
+impl WatchedWorkspace {
+    pub fn new(
+        workspace_id: impl Into<String>,
+        workspace_path: PathBuf,
+        team_id: Option<&str>,
+    ) -> Self {
+        Self {
+            workspace_id: workspace_id.into(),
+            workspace_path,
+            team_id: team_id.and_then(|id| {
+                let trimmed = id.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +135,16 @@ impl RefreshWatchRegistry {
 
     pub(crate) async fn snapshot(&self) -> Vec<WatchedWorkspace> {
         self.workspaces.read().await.values().cloned().collect()
+    }
+
+    pub async fn snapshot_for_team(&self, team_id: &str) -> Vec<WatchedWorkspace> {
+        self.workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| workspace.team_id.as_deref() == Some(team_id))
+            .cloned()
+            .collect()
     }
 
     #[cfg(test)]
@@ -499,10 +530,7 @@ mod tests {
     use tokio::sync::Mutex as AsyncMutex;
 
     fn watched_workspace(id: &str, path: &str) -> WatchedWorkspace {
-        WatchedWorkspace {
-            workspace_id: id.to_string(),
-            workspace_path: PathBuf::from(path),
-        }
+        WatchedWorkspace::new(id, PathBuf::from(path), None)
     }
 
     #[test]
@@ -588,10 +616,7 @@ mod tests {
         std::fs::create_dir_all(shared_skills.join("multiply-add")).unwrap();
         std::os::unix::fs::symlink(&shared_team, workspace.join(TEAM_LINK_NAME)).unwrap();
 
-        let workspaces = vec![WatchedWorkspace {
-            workspace_id: "ws-symlink".to_string(),
-            workspace_path: workspace.clone(),
-        }];
+        let workspaces = vec![WatchedWorkspace::new("ws-symlink", workspace.clone(), None)];
         let canonical_skills = std::fs::canonicalize(&shared_skills).unwrap();
         let roots = watch_roots(&workspaces, None);
         assert!(roots.iter().any(|root| root.path == canonical_skills));
@@ -658,10 +683,11 @@ mod tests {
     async fn watcher_state_surfaces_through_runtime_status_with_http_workspace_id() {
         let dir = tempfile::tempdir().unwrap();
         let workspace_id = workspace_runtime_id(dir.path());
-        let workspaces = vec![WatchedWorkspace {
-            workspace_id: workspace_id.clone(),
-            workspace_path: dir.path().to_path_buf(),
-        }];
+        let workspaces = vec![WatchedWorkspace::new(
+            workspace_id.clone(),
+            dir.path().to_path_buf(),
+            None,
+        )];
         let manager = RuntimeManager::new(RuntimeManager::default_launch_configs(), None);
         let supervisor = RuntimeSupervisor::new(Arc::new(AsyncMutex::new(manager)));
         let mut debounce = RefreshDebounce::new(Duration::from_millis(250));
@@ -709,10 +735,11 @@ mod tests {
             ))),
             pool.clone(),
         );
-        let workspaces = vec![WatchedWorkspace {
-            workspace_id: workspace_id.clone(),
-            workspace_path: dir.path().to_path_buf(),
-        }];
+        let workspaces = vec![WatchedWorkspace::new(
+            workspace_id.clone(),
+            dir.path().to_path_buf(),
+            None,
+        )];
         let mut debounce = RefreshDebounce::new(Duration::from_millis(250));
 
         record_classified_changes(
@@ -752,10 +779,11 @@ mod tests {
         let coordinator = RuntimeRefreshCoordinator::new();
         let dir = tempfile::tempdir().unwrap();
         let workspace_id = workspace_runtime_id(dir.path());
-        let workspaces = vec![WatchedWorkspace {
-            workspace_id: workspace_id.clone(),
-            workspace_path: dir.path().to_path_buf(),
-        }];
+        let workspaces = vec![WatchedWorkspace::new(
+            workspace_id.clone(),
+            dir.path().to_path_buf(),
+            None,
+        )];
         let mut debounce = RefreshDebounce::new(Duration::from_millis(250));
 
         coordinator.suppress_workspace_watch(
@@ -793,10 +821,11 @@ mod tests {
     async fn suppress_after_await_covers_opencode_write_unlike_suppress_before_await() {
         let dir = tempfile::tempdir().unwrap();
         let workspace_id = workspace_runtime_id(dir.path());
-        let workspaces = vec![WatchedWorkspace {
-            workspace_id: workspace_id.clone(),
-            workspace_path: dir.path().to_path_buf(),
-        }];
+        let workspaces = vec![WatchedWorkspace::new(
+            workspace_id.clone(),
+            dir.path().to_path_buf(),
+            None,
+        )];
         let opencode = dir.path().join("opencode.json");
         let content = r#"{"$schema":"https://opencode.ai/config.json"}"#;
 
@@ -885,6 +914,28 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn snapshot_for_team_keeps_matching_and_skips_unknown() {
+        let registry = RefreshWatchRegistry::new(vec![
+            WatchedWorkspace::new("ws-1", PathBuf::from("/tmp/ws-1"), Some("team-1")),
+            WatchedWorkspace::new("ws-2", PathBuf::from("/tmp/ws-2"), Some("team-2")),
+            WatchedWorkspace::new("ws-unknown", PathBuf::from("/tmp/unknown"), None),
+        ]);
+
+        let mut team_1 = registry.snapshot_for_team("team-1").await;
+        team_1.sort_by(|a, b| a.workspace_id.cmp(&b.workspace_id));
+        assert_eq!(
+            team_1
+                .iter()
+                .map(|workspace| workspace.workspace_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ws-1"]
+        );
+
+        assert!(registry.snapshot_for_team("team-missing").await.is_empty());
+        assert_eq!(registry.snapshot().await.len(), 3);
+    }
+
     #[test]
     fn desired_targets_map_existing_dirs_and_skip_missing() {
         let dir = tempfile::tempdir().unwrap();
@@ -892,10 +943,7 @@ mod tests {
         // Only this recursive skill root exists; the other skill/_secrets roots do not.
         std::fs::create_dir_all(ws.join(".claude/skills")).unwrap();
 
-        let workspaces = vec![WatchedWorkspace {
-            workspace_id: "ws-1".to_string(),
-            workspace_path: ws.to_path_buf(),
-        }];
+        let workspaces = vec![WatchedWorkspace::new("ws-1", ws.to_path_buf(), None)];
 
         let targets = desired_watch_targets(&workspaces, None);
 
