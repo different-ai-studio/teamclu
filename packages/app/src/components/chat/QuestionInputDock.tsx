@@ -18,6 +18,8 @@ interface QuestionInputDockProps {
   compact?: boolean;
   onHeightChange?: (height: number) => void;
   bottomOffsetPx?: number;
+  /** When true, ESC is left to other overlays (e.g. enlarged live panel). */
+  disableEscapeShortcut?: boolean;
 }
 
 function getOptionValue(option: { label: string; value?: string }) {
@@ -111,6 +113,7 @@ export function QuestionInputDock({
   compact = false,
   onHeightChange,
   bottomOffsetPx = 0,
+  disableEscapeShortcut = false,
 }: QuestionInputDockProps) {
   const { t } = useTranslation();
   const answerQuestion = useSessionStore((s) => s.answerQuestion);
@@ -241,15 +244,17 @@ export function QuestionInputDock({
   ]);
 
   React.useEffect(() => {
+    if (disableEscapeShortcut) return;
+
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || !canSkip) return;
       event.preventDefault();
       void handleSkip();
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleSkip]);
+  }, [canSkip, disableEscapeShortcut, handleSkip]);
 
   if (!currentQuestion) return null;
 

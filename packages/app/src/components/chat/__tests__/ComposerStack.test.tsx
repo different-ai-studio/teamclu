@@ -231,6 +231,107 @@ describe("ComposerStack", () => {
     expect(screen.getByTestId("composer-input-zone").className).toContain("hidden");
   });
 
+  it("anchors pending question to the agent that owns the tool call, not the newest agent", () => {
+    render(
+      <ComposerStack
+        agents={[
+          { actorId: "a1", displayName: "A1", entry: makeEntry("a1", 2) as never },
+          {
+            actorId: "a2",
+            displayName: "A2",
+            entry: {
+              ...makeEntry("a2", 1),
+              toolCalls: [
+                {
+                  id: "tool-q",
+                  name: "question",
+                  status: "waiting",
+                  arguments: {},
+                  startTime: new Date(),
+                },
+              ],
+            } as never,
+          },
+        ]}
+        onInterrupt={vi.fn()}
+        pendingQuestion={{
+          questionId: "q-event-1",
+          toolCallId: "tool-q",
+          messageId: "msg-1",
+          questions: [
+            {
+              id: "q-1",
+              header: "Pick one",
+              question: "Which option?",
+              options: [{ label: "A", value: "a" }],
+            },
+          ],
+        }}
+      >
+        <div>input</div>
+      </ComposerStack>,
+    );
+
+    const rows = screen.getAllByTestId("streaming-agent-row");
+    expect(rows[0]?.getAttribute("data-expanded")).toBe("false");
+    expect(rows[1]?.getAttribute("data-expanded")).toBe("true");
+  });
+
+  it("closes enlarge float on Escape without skipping an in-stack question", () => {
+    const skipQuestion = vi.fn(() => Promise.resolve());
+    useSessionStore.setState({
+      pendingQuestions: [
+        {
+          questionId: "q-event-1",
+          toolCallId: "tool-q",
+          messageId: "msg-1",
+          questions: [
+            {
+              id: "q-1",
+              header: "Pick one",
+              question: "Which option?",
+              options: [{ label: "A", value: "a" }],
+            },
+          ],
+          agentActorId: "a1",
+        },
+      ],
+      skipQuestion,
+    });
+
+    render(
+      <ComposerStack
+        agents={[{ actorId: "a1", displayName: "A1", entry: makeEntry("a1", 1) as never }]}
+        onInterrupt={vi.fn()}
+        pendingQuestion={{
+          questionId: "q-event-1",
+          toolCallId: "tool-q",
+          messageId: "msg-1",
+          questions: [
+            {
+              id: "q-1",
+              header: "Pick one",
+              question: "Which option?",
+              options: [{ label: "A", value: "a" }],
+            },
+          ],
+          agentActorId: "a1",
+        }}
+      >
+        <div>input</div>
+      </ComposerStack>,
+    );
+
+    fireEvent.click(screen.getByTestId("streaming-agent-enlarge"));
+    expect(screen.getByTestId("streaming-agent-live-float")).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(screen.queryByTestId("streaming-agent-live-float")).toBeNull();
+    expect(skipQuestion).not.toHaveBeenCalled();
+    expect(screen.getByTestId("question-input-dock")).toBeTruthy();
+  });
+
   it("restores the enlarge float on Escape", () => {
     render(
       <ComposerStack

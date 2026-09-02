@@ -41,6 +41,39 @@ const LIVE_INLINE_SCROLL_CLASS =
 const LIVE_FLOAT_SCROLL_CLASS =
   "min-h-0 flex-1 overflow-y-auto bg-gradient-to-b from-[#fbf9f4] to-white px-3 py-2.5 dark:from-background dark:to-paper";
 
+function agentEntryHasToolCall(
+  entry: AgentStreamEntry | undefined,
+  toolCallId: string,
+): boolean {
+  if (!entry || !toolCallId) return false;
+  if (entry.toolCalls.some((toolCall) => toolCall.id === toolCallId)) return true;
+  return entry.parts.some(
+    (part) =>
+      part.type === "tool-call" &&
+      (part.toolCallId === toolCallId || part.toolCall?.id === toolCallId),
+  );
+}
+
+function resolveQuestionAgentId(
+  pendingQuestion: PendingQuestionState,
+  agents: ReadonlyArray<ActiveStreamingAgent>,
+): string | null {
+  const { agentActorId, toolCallId } = pendingQuestion;
+  if (toolCallId) {
+    const byToolCall = agents.find((agent) =>
+      agentEntryHasToolCall(agent.entry, toolCallId),
+    );
+    if (byToolCall) return byToolCall.actorId;
+  }
+  if (
+    agentActorId &&
+    agents.some((agent) => agent.actorId === agentActorId)
+  ) {
+    return agentActorId;
+  }
+  return null;
+}
+
 function useLiveScrollFollow(active: boolean, entry: AgentStreamEntry | undefined) {
   const liveScrollRef = React.useRef<HTMLDivElement>(null);
   const stickToBottomRef = React.useRef(true);
@@ -532,14 +565,8 @@ export function ComposerStack({
   const hasPendingQuestion = pendingQuestion !== null;
   const questionActorId = React.useMemo(() => {
     if (!pendingQuestion) return null;
-    if (
-      pendingQuestion.agentActorId &&
-      agents.some((agent) => agent.actorId === pendingQuestion.agentActorId)
-    ) {
-      return pendingQuestion.agentActorId;
-    }
-    return newestActorId ?? agents[0]?.actorId ?? pendingQuestion.agentActorId ?? null;
-  }, [agents, newestActorId, pendingQuestion]);
+    return resolveQuestionAgentId(pendingQuestion, agents);
+  }, [agents, pendingQuestion]);
 
   React.useEffect(() => {
     if (!hasPendingQuestion) return;
@@ -754,6 +781,7 @@ export function ComposerStack({
                   <QuestionInputDock
                     appearance="stack"
                     pendingQuestion={pendingQuestion}
+                    disableEscapeShortcut={Boolean(enlargedActorId)}
                   />
                 ) : null}
               </div>
