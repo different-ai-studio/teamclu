@@ -98,9 +98,22 @@ it('renders nothing at all when the caller cannot see the app', async () => {
   await waitFor(() => expect(container.textContent).toBe(''))
 })
 
-it('opens a main-column tab for the table that was clicked', async () => {
+it('opens the data browser on the first table', async () => {
+  // One entry rather than a row per table: the browser it opens has its own
+  // table switcher, so listing every name here only made the panel long.
   backend.listAppDataTables.mockResolvedValue({ status: 'ok', tables: [ITEMS] })
   render(<AppDataSection app={APP} canEdit />)
-  await userEvent.click(await screen.findByTestId('app-data-open-items'))
+  await userEvent.click(await screen.findByTestId('app-data-open'))
   expect(openAppDataTable).toHaveBeenCalledWith(APP, 'items')
+})
+
+it('says how many tables there are without naming them', async () => {
+  backend.listAppDataTables.mockResolvedValue({
+    status: 'ok',
+    tables: [ITEMS, { ...ITEMS, name: 'orders' }],
+  })
+  render(<AppDataSection app={APP} canEdit />)
+  await screen.findByTestId('app-data-open')
+  expect(screen.getByText(/2/)).toBeInTheDocument()
+  expect(screen.queryByText('orders')).not.toBeInTheDocument()
 })

@@ -17,7 +17,15 @@ import { appStatusMeta, showsPublicBadge } from '@/lib/app-list-helpers'
 import type { AppRow } from '@/lib/backend/types'
 
 const APPS_EXPANDED_STORAGE_KEY = 'teamclu.nav.appsExpanded'
-const APPS_LIST_MAX_HEIGHT = 'max-h-[min(240px,40vh)]'
+/**
+ * The list takes whatever vertical space is left in the rail.
+ *
+ * It used to be capped at 240px, which left most of the column empty below it
+ * — the rail scrolled as a whole, so a fixed cap was the only thing that could
+ * bound the list. The rail is a bounded flex column now, and this is the one
+ * part of it that should grow.
+ */
+const APPS_LIST_GROW = 'min-h-0 flex-1'
 
 function readStoredAppsExpanded(): boolean {
   try {
@@ -188,10 +196,10 @@ export function AppsNavSection() {
 
   return (
     <>
-      <div className="flex flex-col gap-0.5">
+      <div className={cn('flex min-h-0 flex-col gap-0.5', listExpanded && 'flex-1')}>
         <div
           className={cn(
-            'flex w-full items-center gap-1 rounded-lg pr-1 transition-[background-color,box-shadow,color] duration-150',
+            'flex w-full shrink-0 items-center gap-1 rounded-lg pr-1 transition-[background-color,box-shadow,color] duration-150',
             sectionActive && 'bg-paper shadow-[0_1px_2px_rgba(28,27,25,0.04)] ring-1 ring-black/[0.05]',
           )}
         >
@@ -246,7 +254,7 @@ export function AppsNavSection() {
         </div>
 
         {listExpanded && (
-          <div className={cn('min-h-0 overflow-y-auto overflow-x-hidden', APPS_LIST_MAX_HEIGHT)}>
+          <div className={cn('min-h-0 overflow-y-auto overflow-x-hidden', APPS_LIST_GROW)}>
             {loading && items.length === 0 ? (
               <div className="flex items-center justify-center gap-2 py-4 text-[12px] text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />

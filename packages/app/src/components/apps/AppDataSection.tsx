@@ -79,31 +79,26 @@ export function AppDataSection({ app, canEdit: _canEdit }: AppDataSectionProps) 
     )
   }
 
+  // One entry, not a table list. The browser this opens has its own table
+  // switcher, so repeating every name here only made the panel long — and the
+  // count is the part worth seeing at a glance.
+  const first = result.tables[0]
   return (
-    <ul className="space-y-1">
-      {result.tables.map((table) => (
-        <li key={table.name} className="flex items-center justify-between gap-2">
-          <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-2">
-            {table.name}
-            {!table.editable && (
-              <span className="ml-1.5 text-[10px] text-faint">
-                {t('apps.data.readOnlyBadge', '只读')}
-              </span>
-            )}
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-6 shrink-0 gap-1 rounded-[6px] px-2 text-[11px]"
-            data-testid={`app-data-open-${table.name}`}
-            onClick={() => openAppDataTable(app, table.name)}
-          >
-            <Database className="h-3 w-3" />
-            {t('apps.data.browse', '查看')}
-          </Button>
-        </li>
-      ))}
-    </ul>
+    <div className="flex items-center justify-between gap-2">
+      <span className="min-w-0 truncate text-[12.5px] text-muted-foreground">
+        {t('apps.data.tableCount', '{{count}} 张表', { count: result.tables.length })}
+      </span>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="h-7 shrink-0 gap-1.5 rounded-[7px] px-2.5 text-[11.5px]"
+        data-testid="app-data-open"
+        onClick={() => openAppDataTable(app, first.name)}
+      >
+        <Database className="h-3 w-3" />
+        {t('apps.data.open', '打开数据')}
+      </Button>
+    </div>
   )
 }
