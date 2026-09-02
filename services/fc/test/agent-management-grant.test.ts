@@ -41,8 +41,22 @@ test("agent management grant binds requester, target, team and scopes", async ()
       scopes: ["skills:list", "skills:install"],
       nonce: "nonce-1",
     });
+    // Tamper in the middle of the signature, not at its end. An HS256
+    // signature is 32 bytes encoded as 43 base64url characters, and the last
+    // character carries only 4 significant bits — the rest are padding the
+    // decoder throws away. `grant.slice(0, -1) + "x"` therefore decodes to the
+    // *same* 32 bytes whenever that character happened to be `w`, the
+    // signature still verifies, and this rejection never happens. That is
+    // about 5% of runs, one for every `w`.
+    const [header, payload, signature] = grant.split(".");
+    const at = Math.floor(signature.length / 2);
+    const tampered =
+      signature.slice(0, at) +
+      (signature[at] === "A" ? "B" : "A") +
+      signature.slice(at + 1);
+    assert.notEqual(tampered, signature, "the tamper must change something");
     await assert.rejects(
-      verifyAgentManagementGrant(`${grant.slice(0, -1)}x`),
+      verifyAgentManagementGrant(`${header}.${payload}.${tampered}`),
       /invalid or expired/,
     );
   } finally {
