@@ -7,7 +7,7 @@
 mod client;
 mod pool;
 
-pub use client::{LiveProviderCatalog, LiveProviderSummary, OpenCodeSettingsClient};
+pub use client::{LiveProviderCatalog};
 pub use pool::{OpenCodeSettingsService, WorkspaceSettingsContextResolver};
 
 use std::path::Path;

@@ -7,7 +7,6 @@
 //! Child module of `runtime::manager`, so the `impl RuntimeManager` block
 //! reaches the private `agents` map directly.
 
-use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
 
 use super::RuntimeManager;

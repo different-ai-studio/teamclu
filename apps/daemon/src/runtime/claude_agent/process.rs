@@ -7,7 +7,7 @@
 //! so refusing to spawn without a key would break subscription users.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, BufReader};

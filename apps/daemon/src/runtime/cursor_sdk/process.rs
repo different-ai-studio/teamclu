@@ -1,11 +1,11 @@
 //! Per-worktree cursor-bridge process pool.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tracing::{info, warn};
+use tracing::info;
 
 use super::{events, Shared};
 use crate::process_util::CommandNoWindow;

@@ -119,7 +119,10 @@ pub struct CloudApiBackend {
     /// so concurrent requests can't submit the same (rotating) refresh token in
     /// parallel and trip Supabase's reuse detection.
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Where to persist a rotated refresh token (`~/.amuxd/backend.toml`).
+    /// Where to persist a rotated refresh token —
+    /// `teams/<team>/state/backend.toml`, not the home root. Every field in
+    /// that file is per-team, so each team keeps its own credentials instead of
+    /// one set overwriting another.
     /// `None` in tests that don't exercise persistence.
     persist_path: Option<PathBuf>,
     /// Cloud-auth health, shared across clones. Latched when a refresh is

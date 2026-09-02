@@ -13,12 +13,11 @@ use super::handle::RuntimeHandle;
 use super::refresh::RuntimeRefreshCoordinator;
 
 use crate::backend::Backend;
-use crate::config::{DaemonConfig, DeviceModelCatalog};
+use crate::config::DeviceModelCatalog;
 use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
 use crate::runtime::permission_policy::PermissionPolicy;
 use crate::runtime::turn_aggregator::TurnAggregator;
-use chrono::Utc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentLaunchConfig {
