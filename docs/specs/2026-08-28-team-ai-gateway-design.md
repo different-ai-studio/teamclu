@@ -972,7 +972,23 @@ UPDATE amux.team_workspace_config
 
 切换动作：三个 `llm_enabled` 团队的 `llm_base_url` 统一改为
 `https://<FC_DOMAIN>/ai/v1/teams/<teamId>`；25 行残留的 `ai_gateway_endpoint`
-一并清空（已无任何读者）。`litellm_team_id` 列保留：老客户端仍解析它。
+一并清空（已无任何读者）。`litellm_team_id` 列和 `_litellm` 库保留：老客户端仍
+解析前者，而删库删列都是对生产数据的单向门。
+
+#### 落地结果（PR #1186，合并 2026-09-01 10:56，self-host 自动部署成功）
+
+| 验证项 | 结果 |
+|---|---|
+| `litellm` / `litellm-init` 容器 | 已消失（`docker ps -a` 无残留） |
+| `ai-gateway` / `fc` / `caddy` / `kong` | 全部 healthy |
+| 三个团队的 `/ai/v1/teams/<id>/models` | 401（路由活、要 token，未带凭证时的正确响应） |
+| `/llm/health/liveliness` | 404（FC 兜底 —— Caddy 那三段确实没了） |
+| `/healthz`、`/v1/config/public` | 200 / 200 |
+
+**仍待验证的一件事**：切换之后 `ai_usage_logs` 没有新增记录（最后一条停在
+2026-09-01 08:39）。三个团队都指对了、路由也通，但**运行层面还没有真实流量
+走过新路径**——目前只有配置层面的证据。找一个团队实际跑一次会话，才算端到端
+验证完成。
 
 ---
 
