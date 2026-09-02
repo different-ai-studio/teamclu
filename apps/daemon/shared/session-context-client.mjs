@@ -94,6 +94,9 @@ export async function injectSessionIdForTool(toolName, args, backendSessionId, d
  * OpenCode 1.18.x `tool.execute.before` hook handler.
  *
  * Contract: input.tool (string), input.sessionID (string), output.args (mutable).
+ * Mutate output.args in place — OpenCode's MCP path keeps the original args
+ * object (`trigger(..., { args: b })` then `execute(b)`), so replacing
+ * output.args would drop the injected session_id.
  */
 export async function handleToolExecuteBefore(input, output, deps = {}) {
   if (!input || typeof input !== "object" || !output || typeof output !== "object") {
@@ -108,7 +111,17 @@ export async function handleToolExecuteBefore(input, output, deps = {}) {
     throw new Error("session_context_unavailable");
   }
   const inject = deps.injectSessionIdForTool ?? injectSessionIdForTool;
-  output.args = await inject(toolName, output.args ?? {}, String(backendSessionId).trim(), deps);
+  const injected = await inject(
+    toolName,
+    output.args ?? {},
+    String(backendSessionId).trim(),
+    deps,
+  );
+  if (output.args && typeof output.args === "object" && !Array.isArray(output.args)) {
+    Object.assign(output.args, injected);
+    return;
+  }
+  output.args = injected;
 }
 
 export function sessionContextUnavailableResult() {
