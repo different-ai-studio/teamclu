@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
+use crate::sync::oss::state::{ForbiddenPaths, LocalSyncState};
+
 use crate::config::{
     global_team_store::sync_content_root,
     knowledge_scaffold::{domain_index_template, scaffold_at, today_iso},
@@ -113,6 +115,59 @@ fn resolve_in_vault(root: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(root.join(clean))
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The sync path for a vault-relative page — what the engine and the path ACL
+/// key on. The vault is the `knowledge/` prefix of the synced tree.
+fn sync_path(rel: &str) -> String {
+    format!("knowledge/{}", rel.trim_start_matches('/'))
+}
+
+/// Fields to add to a write's reply when the sync engine already knows this
+/// path — or the directory holding it — is not reaching the team.
+///
+/// **Reported, never refused.** The caller asked for the page to exist, and a
+/// page that exists locally is strictly better than one that exists nowhere.
+/// What these tools must stop doing is answering a bare `ok: true`, which an
+/// agent reads as "shared with the team" and then tells the user so. The write
+/// lands, the server 403s on the next tick, `engine::record_forbidden` drops it
+/// from the dirty set at debug level — deliberately quiet — and the page never
+/// reaches a single teammate while everyone involved believes it did.
+///
+/// The wording is deliberately about what is observable rather than about
+/// permissions. The ACL design keeps a restricted directory's existence away
+/// from a device that is not granted it: the refusal is logged at debug rather
+/// than warn, kept out of the error counts, and expires so a later grant heals
+/// silently. Saying "not syncing" honours that; saying "you lack access to
+/// this directory" would not.
+///
+/// Absence of these fields is **not** a promise that the page will sync. It
+/// means no refusal has been recorded — which is also the answer for a team
+/// that has never had a sync failure at all.
+fn team_sync_fields(blocked: &ForbiddenPaths, rel: &str) -> Option<(&'static str, String)> {
+    if !blocked.blocks(&sync_path(rel), now_secs()) {
+        return None;
+    }
+    Some((
+        "not-syncing",
+        "saved on this device; this path is not currently syncing to the team".to_string(),
+    ))
+}
+
+/// Merge [`team_sync_fields`] into a reply body.
+fn with_team_sync(mut body: serde_json::Map<String, Value>, note: Option<(&str, String)>) -> Value {
+    if let Some((status, message)) = note {
+        body.insert("teamSync".into(), Value::String(status.to_string()));
+        body.insert("teamSyncNote".into(), Value::String(message));
+    }
+    Value::Object(body)
+}
+
 fn str_field<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
     payload
         .get(key)
@@ -138,11 +193,18 @@ impl DaemonServer {
             Err(e) => return e,
         };
         let root = vault_root(&team_id);
+        // Read once per command rather than per file. Cheap (one small JSON)
+        // and only for the actions that write — `search` and `health` have
+        // nothing to say about whether a page reaches the team.
+        let blocked = match action {
+            "create" | "write" | "salvage" => LocalSyncState::peek_forbidden(&team_id),
+            _ => ForbiddenPaths::default(),
+        };
         match action {
             "scaffold" => knowledge_scaffold(&root, &payload),
-            "create" => knowledge_create(&root, &payload),
-            "write" => knowledge_write(&root, &payload),
-            "salvage" => knowledge_salvage(&root, &payload),
+            "create" => knowledge_create(&root, &payload, &blocked),
+            "write" => knowledge_write(&root, &payload, &blocked),
+            "salvage" => knowledge_salvage(&root, &payload, &blocked),
             "search" => index::search(&root, &index_root(&team_id), &payload),
             "manifest_get" => manifest_get(&root),
             "manifest_set" => manifest_set(&root, &payload),
@@ -206,6 +268,7 @@ fn create_or_write(
     root: &Path,
     payload: &Value,
     overwrite: bool,
+    blocked: &ForbiddenPaths,
 ) -> String {
     let Some(path) = str_field(payload, "path") else {
         return err("invalid_path", "path is required (relative to the vault)");
@@ -235,26 +298,32 @@ fn create_or_write(
         }
     }
     match std::fs::write(&target, body) {
-        Ok(()) => ok(json!({
-            "path": target
+        Ok(()) => {
+            let rel = target
                 .strip_prefix(root)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| target.to_string_lossy().into_owned()),
-            "overwritten": overwrite && target.exists(),
-        })),
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| target.to_string_lossy().into_owned());
+            let mut body = serde_json::Map::new();
+            body.insert("path".into(), Value::String(rel.clone()));
+            body.insert(
+                "overwritten".into(),
+                Value::Bool(overwrite && target.exists()),
+            );
+            ok(with_team_sync(body, team_sync_fields(blocked, &rel)))
+        }
         Err(e) => err("write_failed", format!("write failed: {e}")),
     }
 }
 
-fn knowledge_create(root: &Path, payload: &Value) -> String {
-    create_or_write(root, payload, false)
+fn knowledge_create(root: &Path, payload: &Value, blocked: &ForbiddenPaths) -> String {
+    create_or_write(root, payload, false, blocked)
 }
 
-fn knowledge_write(root: &Path, payload: &Value) -> String {
-    create_or_write(root, payload, true)
+fn knowledge_write(root: &Path, payload: &Value, blocked: &ForbiddenPaths) -> String {
+    create_or_write(root, payload, true, blocked)
 }
 
-fn knowledge_salvage(root: &Path, payload: &Value) -> String {
+fn knowledge_salvage(root: &Path, payload: &Value, blocked: &ForbiddenPaths) -> String {
     let Some(content) = str_field(payload, "content") else {
         return err("invalid_content", "content is required for salvage");
     };
@@ -292,7 +361,12 @@ fn knowledge_salvage(root: &Path, payload: &Value) -> String {
         {
             Ok(mut file) => {
                 return match std::io::Write::write_all(&mut file, body.as_bytes()) {
-                    Ok(()) => ok(json!({ "path": format!("{SALVAGE_DIR}/{name}") })),
+                    Ok(()) => {
+                        let rel = format!("{SALVAGE_DIR}/{name}");
+                        let mut body = serde_json::Map::new();
+                        body.insert("path".into(), Value::String(rel.clone()));
+                        ok(with_team_sync(body, team_sync_fields(blocked, &rel)))
+                    }
                     Err(e) => err("write_failed", format!("write failed: {e}")),
                 };
             }
@@ -634,7 +708,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let salvage = |title: &str, content: &str| {
-            let reply = knowledge_salvage(root, &json!({ "title": title, "content": content }));
+            let reply = knowledge_salvage(
+                root,
+                &json!({ "title": title, "content": content }),
+                &ForbiddenPaths::default(),
+            );
             let v: Value = serde_json::from_str(&reply).unwrap();
             assert_eq!(v["ok"], true, "{v}");
             v["result"]["path"].as_str().unwrap().to_string()
@@ -667,7 +745,7 @@ mod tests {
             "content": "标题 + 利益点 + 行动指令",
             "source": "chat",
         });
-        let reply = knowledge_salvage(root, &payload);
+        let reply = knowledge_salvage(root, &payload, &ForbiddenPaths::default());
         let v: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(v["ok"], true);
         let path = v["result"]["path"].as_str().unwrap();
@@ -676,6 +754,71 @@ mod tests {
         let raw = std::fs::read_to_string(root.join(path)).unwrap();
         assert!(raw.contains("type: salvage"));
         assert!(raw.contains("source: chat"));
+    }
+
+    /// The refusals the sync engine would have on record, as of now.
+    fn refused(paths: &[&str]) -> ForbiddenPaths {
+        ForbiddenPaths::from_entries(paths.iter().map(|p| {
+            (
+                (*p).to_string(),
+                crate::sync::oss::state::ForbiddenPath {
+                    last_tried_at: now_secs(),
+                    reason: "not accessible".into(),
+                },
+            )
+        }))
+    }
+
+    /// A page written into a directory the server refuses must not come back
+    /// as a bare `ok` — that is what an agent turns into "saved for the team".
+    #[test]
+    fn a_write_into_a_refused_directory_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // The refusal the engine recorded for a sibling. A page written into
+        // the same directory for the first time has no entry of its own, which
+        // is exactly the case this has to catch.
+        let blocked = refused(&["knowledge/hr/salary.md"]);
+
+        let reply = create_or_write(
+            root,
+            &json!({ "path": "hr/onboarding.md", "title": "Onboarding", "content": "x" }),
+            false,
+            &blocked,
+        );
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["ok"], true, "the page still gets written: {v}");
+        assert_eq!(v["result"]["teamSync"], "not-syncing", "{v}");
+        assert!(
+            root.join("hr/onboarding.md").exists(),
+            "page must exist locally"
+        );
+
+        // A page somewhere else in the vault is untouched by that refusal.
+        let elsewhere = create_or_write(
+            root,
+            &json!({ "path": "20-domains/pricing.md", "title": "Pricing", "content": "x" }),
+            false,
+            &blocked,
+        );
+        let v2: Value = serde_json::from_str(&elsewhere).unwrap();
+        assert!(v2["result"].get("teamSync").is_none(), "{v2}");
+    }
+
+    #[test]
+    fn salvage_reports_a_refused_path_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let blocked = refused(&[&sync_path("00-salvage/2026-01-01-old.md")]);
+        let reply = knowledge_salvage(
+            root,
+            &json!({ "title": "对账口径", "content": "一" }),
+            &blocked,
+        );
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["result"]["teamSync"], "not-syncing", "{v}");
     }
 
     #[test]

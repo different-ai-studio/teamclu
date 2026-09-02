@@ -19,7 +19,7 @@
     },
     {
       "name": "knowledge_create",
-      "description": "Create a new vault page from a template. Refuses to overwrite an existing path — use knowledge_write to edit. 从模板新建页面；已存在则拒绝，改请用 knowledge_write。",
+      "description": "Create a new vault page from a template. Refuses to overwrite an existing path — use knowledge_write to edit. 从模板新建页面；已存在则拒绝，改请用 knowledge_write。 If the reply carries teamSync:\"not-syncing\", the page was saved on this device only and is not reaching the team — say so rather than reporting it as shared. 若返回 teamSync:\"not-syncing\"，说明只存在本机、没有同步给团队，要如实告知，不要说成已共享。",
       "inputSchema": {
         "type": "object",
         "required": ["path"],
@@ -34,7 +34,7 @@
     },
     {
       "name": "knowledge_write",
-      "description": "Write or replace a vault page. All paths are validated to stay inside the vault. 写入/覆盖页面，路径被限制在 vault 内。",
+      "description": "Write or replace a vault page. All paths are validated to stay inside the vault. 写入/覆盖页面，路径被限制在 vault 内。 If the reply carries teamSync:\"not-syncing\", the page was saved on this device only and is not reaching the team — say so rather than reporting it as shared. 若返回 teamSync:\"not-syncing\"，说明只存在本机、没有同步给团队，要如实告知，不要说成已共享。",
       "inputSchema": {
         "type": "object",
         "required": ["path", "content"],
@@ -48,7 +48,7 @@
     },
     {
       "name": "knowledge_salvage",
-      "description": "Capture a conclusion from the current conversation into the vault as a salvage draft (00-salvage/<date>-<slug>.md with provenance frontmatter). Use when the user says something is worth keeping. 把对话中值得固化的结论存入知识库（打捞草稿）。",
+      "description": "Capture a conclusion from the current conversation into the vault as a salvage draft (00-salvage/<date>-<slug>.md with provenance frontmatter). Use when the user says something is worth keeping. 把对话中值得固化的结论存入知识库（打捞草稿）。 If the reply carries teamSync:\"not-syncing\", the page was saved on this device only and is not reaching the team — say so rather than reporting it as shared. 若返回 teamSync:\"not-syncing\"，说明只存在本机、没有同步给团队，要如实告知，不要说成已共享。",
       "inputSchema": {
         "type": "object",
         "required": ["title", "content"],
