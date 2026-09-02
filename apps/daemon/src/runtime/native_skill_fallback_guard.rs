@@ -557,6 +557,8 @@ mod tests {
 
     #[test]
     fn child_session_guard_does_not_consume_parent_turn_end() {
+        // Same reason as `ensure_turn_guard_only_opens_once`.
+        let _env = crate::test_brand_env::BrandEnvGuard::set("teamclu");
         let ws = tempfile::tempdir().unwrap();
         let baseline = snapshot_baseline(ws.path());
         let mut guard = Some(NativeSkillTurnGuard {
@@ -576,6 +578,15 @@ mod tests {
 
     #[test]
     fn ensure_turn_guard_only_opens_once() {
+        // `guard_mode()` reads the process-global
+        // `TEAMCLU_NATIVE_SKILL_FALLBACK_GUARD`, and `guard_respects_off_flag`
+        // sets it to "off" for the width of its own body. Without the same
+        // guard — which holds `TEST_HOME_LOCK` — this test can run inside that
+        // window, `ensure_turn_guard` returns early because the feature reads
+        // as disabled, and the `unwrap` below hits a `None` that has nothing to
+        // do with what is being tested. Every other test in this module that
+        // touches the guard already takes it.
+        let _env = crate::test_brand_env::BrandEnvGuard::set("teamclu");
         let ws = tempfile::tempdir().unwrap();
         let mut guard = None;
         ensure_turn_guard(&mut guard, ws.path(), "parent", Some("turn-1"));
