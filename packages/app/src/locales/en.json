@@ -593,6 +593,7 @@
     "streamingBar": {
       "streamingActive": "Replying",
       "waitingApproval": "Waiting for your approval…",
+      "waitingQuestion": "Waiting for your answer",
       "expand": "Expand",
       "collapse": "Collapse",
       "enlarge": "Enlarge",

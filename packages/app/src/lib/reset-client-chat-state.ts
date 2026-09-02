@@ -53,6 +53,7 @@ export function resetClientChatState(): void {
     pendingPermissions: [],
     pendingQuestions: [],
     pendingQuestionIdsBySession: {},
+    answeredQuestionsByToolCallId: {},
     sessionStatuses: {},
     sessionStatus: null,
     sessionError: null,

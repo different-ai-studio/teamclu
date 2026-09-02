@@ -86,6 +86,7 @@ function renderOrderedPart(
   isStreamingReasoning: boolean,
   revealText: boolean,
   skipToolNames?: Set<string>,
+  indicatorToolCallIds?: ReadonlySet<string>,
 ) {
   if (part.type === "reasoning") {
     const text = part.text || part.content || "";
@@ -102,6 +103,9 @@ function renderOrderedPart(
 
   if (part.type === "tool-call" && part.toolCall) {
     if (skipToolNames?.has(part.toolCall.name)) return null;
+    const toolId = part.toolCallId ?? part.toolCall.id;
+    const questionPresentation =
+      toolId && indicatorToolCallIds?.has(toolId) ? "indicator" : "full";
     return (
       <div
         key={part.id}
@@ -109,7 +113,10 @@ function renderOrderedPart(
         data-tool-id={part.toolCall.id}
         data-tool-status={part.toolCall.status}
       >
-        <ToolCallCard toolCall={part.toolCall} />
+        <ToolCallCard
+          toolCall={part.toolCall}
+          questionPresentation={questionPresentation}
+        />
       </div>
     );
   }
@@ -129,10 +136,13 @@ function renderOrderedPart(
 export const StreamingAgentBubble = React.memo(function StreamingAgentBubble({
   entry,
   variant = "default",
+  indicatorToolCallIds,
 }: {
   entry: AgentStreamEntry;
   /** `dock` hides ActorLabel — Composer agent strip already shows identity. */
   variant?: "default" | "nested" | "dock";
+  /** Question tools answered in composer — show compact row in live panel. */
+  indicatorToolCallIds?: ReadonlySet<string>;
 }) {
   // After finalize (active=false), the persisted AGENT_REPLY ChatMessage
   // takes over the reply text — suppress outputText here to avoid showing
@@ -275,6 +285,7 @@ export const StreamingAgentBubble = React.memo(function StreamingAgentBubble({
                     part.type === "text" &&
                     index === lastLiveTextPartIndex,
                   skipToolNames,
+                  indicatorToolCallIds,
                 ),
               )}
             </div>
@@ -291,7 +302,12 @@ export const StreamingAgentBubble = React.memo(function StreamingAgentBubble({
                   data-tool-id={tc.id}
                   data-tool-status={tc.status}
                 >
-                  <ToolCallCard toolCall={tc} />
+                  <ToolCallCard
+                    toolCall={tc}
+                    questionPresentation={
+                      indicatorToolCallIds?.has(tc.id) ? "indicator" : "full"
+                    }
+                  />
                 </div>
               ))}
             </div>

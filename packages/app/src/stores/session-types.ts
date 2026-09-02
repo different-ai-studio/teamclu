@@ -272,6 +272,11 @@ export interface SessionState {
   // Pending questions (from question tool; multiple concurrent)
   pendingQuestions: PendingQuestionState[];
   pendingQuestionIdsBySession: Record<string, string[] | undefined>;
+  /** Snapshot Q&A by toolCallId so Process cards stay populated after answer. */
+  answeredQuestionsByToolCallId: Record<
+    string,
+    { questions: Question[]; answers: Record<string, string> }
+  >;
 
   // Todo list (from todowrite tool)
   todos: Todo[];

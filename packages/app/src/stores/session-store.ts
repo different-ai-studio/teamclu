@@ -104,6 +104,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   pendingPermissions: [],
   pendingQuestions: [],
   pendingQuestionIdsBySession: {},
+  answeredQuestionsByToolCallId: {},
   sessionStatuses: {},
   sessionStatus: null,
   cronSessionIds: [],
@@ -196,6 +197,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       requestId: pending.questionId,
       answers: ordered,
     });
+    set((s: Compat) => ({
+      answeredQuestionsByToolCallId: {
+        ...(s.answeredQuestionsByToolCallId ?? {}),
+        [pending.toolCallId]: { questions: list, answers },
+      },
+    }));
     // Pi (and some backends) never emit question_replied — dismiss locally once
     // the command succeeds, same as skipQuestion.
     get().resolveQuestion(pending.questionId);
@@ -205,6 +212,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       (q: Compat) => !questionId || q.questionId === questionId,
     );
     if (!pending) return;
+    const list: Compat[] = Array.isArray(pending.questions) ? pending.questions : [];
     const { answerAcpQuestion } = await import("@/lib/teamclu/answer-question");
     await answerAcpQuestion({
       sessionId: pending.sessionId ?? "",
@@ -213,6 +221,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       answers: [],
       reject: true,
     });
+    set((s: Compat) => ({
+      answeredQuestionsByToolCallId: {
+        ...(s.answeredQuestionsByToolCallId ?? {}),
+        [pending.toolCallId]: { questions: list, answers: {} },
+      },
+    }));
     get().resolveQuestion(pending.questionId);
   },
   getSessionMessages: () => [],

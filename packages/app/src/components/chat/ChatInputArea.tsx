@@ -32,7 +32,7 @@ import type { EngagedAgentUiEntry } from "@/hooks/use-engaged-agent-ui-states";
 import { hasAnyNonReadyEngaged } from "@/hooks/use-engaged-agent-ui-states";
 import { useOfflineSendPreferenceStore } from "@/stores/offline-send-preference-store";
 import { ComposerStack, type ActiveStreamingAgent } from "./ComposerStack";
-import type { Todo } from "@/stores/session-types";
+import type { Todo, PendingQuestionState } from "@/stores/session-types";
 import { CommandPopover } from "./CommandPopover";
 import type { Command as ChatCommand } from "./CommandPopover";
 import { FileInputButton } from "./FileInputButton";
@@ -189,6 +189,8 @@ interface ChatInputAreaProps {
   stackTodos?: Todo[];
   stackQueue?: QueuedMessage[];
   planSlotHidden?: boolean;
+  /** When set, question UI renders in ComposerStack and the text input is hidden. */
+  pendingQuestion?: PendingQuestionState | null;
   engagedAgents: AttachedAgent[];
   engagedUiEntries?: EngagedAgentUiEntry[];
   agentToRuntimeId?: Map<string, string>;
@@ -269,6 +271,7 @@ export function ChatInputArea({
   stackTodos = [],
   stackQueue = [],
   planSlotHidden = false,
+  pendingQuestion = null,
   engagedAgents = [],
   engagedUiEntries = [],
   agentToRuntimeId = new Map(),
@@ -536,6 +539,7 @@ export function ChatInputArea({
           onRemoveFromQueue={_onRemoveFromQueue}
           planSlotHidden={planSlotHidden}
           permissionSessionId={permissionSessionId}
+          pendingQuestion={pendingQuestion}
         >
           <PromptInput
             value={inputValue}

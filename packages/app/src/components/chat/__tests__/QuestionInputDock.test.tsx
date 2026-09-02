@@ -132,6 +132,58 @@ describe('QuestionInputDock', () => {
     expect(screen.queryByText(/### \*\*Title\*\*/)).toBeNull();
   });
 
+  it('renders stack appearance without absolute positioning', () => {
+    render(
+      <QuestionInputDock
+        appearance="stack"
+        pendingQuestion={{
+          questionId: 'question-event-stack',
+          toolCallId: 'tool-call-stack',
+          messageId: 'message-stack',
+          questions: [
+            {
+              id: 'q-1',
+              header: '下一步',
+              question: '继续吗？',
+              options: [{ label: '继续', value: 'continue' }],
+            },
+          ],
+          source: 'agent',
+        }}
+      />,
+    );
+
+    const dock = screen.getByTestId('question-input-dock');
+    expect(dock.getAttribute('data-appearance')).toBe('stack');
+    expect(dock.className).not.toContain('absolute');
+  });
+
+  it('does not intercept Escape when disableEscapeShortcut is set', () => {
+    render(
+      <QuestionInputDock
+        disableEscapeShortcut
+        pendingQuestion={{
+          questionId: 'question-event-esc',
+          toolCallId: 'tool-call-esc',
+          messageId: 'message-esc',
+          questions: [
+            {
+              id: 'q-1',
+              header: '下一步',
+              question: '继续吗？',
+              options: [{ label: '继续', value: 'continue' }],
+            },
+          ],
+          source: 'agent',
+        }}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(mockSkipQuestion).not.toHaveBeenCalled();
+  });
+
   it('can be offset above a bottom terminal panel', () => {
     render(
       <QuestionInputDock
