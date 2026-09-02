@@ -104,6 +104,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   pendingPermissions: [],
   pendingQuestions: [],
   pendingQuestionIdsBySession: {},
+  answeredQuestionsByToolCallId: {},
   sessionStatuses: {},
   sessionStatus: null,
   cronSessionIds: [],
@@ -189,6 +190,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const answer = answers[key];
       return answer ? [answer] : [];
     });
+    set((s: Compat) => ({
+      answeredQuestionsByToolCallId: {
+        ...(s.answeredQuestionsByToolCallId ?? {}),
+        [pending.toolCallId]: { questions: list, answers },
+      },
+    }));
     const { answerAcpQuestion } = await import("@/lib/teamclu/answer-question");
     await answerAcpQuestion({
       sessionId: pending.sessionId ?? "",
@@ -205,6 +212,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       (q: Compat) => !questionId || q.questionId === questionId,
     );
     if (!pending) return;
+    const list: Compat[] = Array.isArray(pending.questions) ? pending.questions : [];
+    set((s: Compat) => ({
+      answeredQuestionsByToolCallId: {
+        ...(s.answeredQuestionsByToolCallId ?? {}),
+        [pending.toolCallId]: { questions: list, answers: {} },
+      },
+    }));
     const { answerAcpQuestion } = await import("@/lib/teamclu/answer-question");
     await answerAcpQuestion({
       sessionId: pending.sessionId ?? "",

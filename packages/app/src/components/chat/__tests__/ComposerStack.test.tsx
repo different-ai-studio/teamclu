@@ -200,6 +200,37 @@ describe("ComposerStack", () => {
     expect(screen.queryByTestId("streaming-agent-live-float")).toBeNull();
   });
 
+  it("keeps live context visible with an in-stack question and hides text input", () => {
+    render(
+      <ComposerStack
+        agents={[{ actorId: "a1", displayName: "A1", entry: makeEntry("a1", 1) as never }]}
+        onInterrupt={vi.fn()}
+        pendingQuestion={{
+          questionId: "q-event-1",
+          toolCallId: "tool-q",
+          messageId: "msg-1",
+          questions: [
+            {
+              id: "q-1",
+              header: "Pick one",
+              question: "Which option?",
+              options: [{ label: "A", value: "a" }],
+            },
+          ],
+          agentActorId: "a1",
+        }}
+      >
+        <div data-testid="child-input">input</div>
+      </ComposerStack>,
+    );
+
+    expect(screen.getByTestId("streaming-agent-live-panel").getAttribute("data-open")).toBe(
+      "true",
+    );
+    expect(screen.getByTestId("question-input-dock")).toBeTruthy();
+    expect(screen.getByTestId("composer-input-zone").className).toContain("hidden");
+  });
+
   it("restores the enlarge float on Escape", () => {
     render(
       <ComposerStack

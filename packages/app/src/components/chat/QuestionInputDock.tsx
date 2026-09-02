@@ -9,8 +9,12 @@ import { cn } from "@/lib/utils";
 import { useSessionStore } from "@/stores/session";
 import type { PendingQuestionState } from "@/stores/session-types";
 
+export type QuestionInputAppearance = "overlay" | "stack";
+
 interface QuestionInputDockProps {
   pendingQuestion: PendingQuestionState;
+  /** `overlay` floats over the thread; `stack` embeds in ComposerStack. */
+  appearance?: QuestionInputAppearance;
   compact?: boolean;
   onHeightChange?: (height: number) => void;
   bottomOffsetPx?: number;
@@ -103,6 +107,7 @@ function QuestionMarkdown({ children }: { children: string }) {
 
 export function QuestionInputDock({
   pendingQuestion,
+  appearance = "overlay",
   compact = false,
   onHeightChange,
   bottomOffsetPx = 0,
@@ -248,29 +253,29 @@ export function QuestionInputDock({
 
   if (!currentQuestion) return null;
 
-  return (
-    <div
-      ref={rootRef}
-      data-testid="question-input-dock"
-      style={bottomOffsetPx ? { bottom: bottomOffsetPx } : undefined}
-      className={cn(
-        "z-10",
-        compact
-          ? "absolute bottom-0 left-0 right-0 px-2 pb-2 pt-2 bg-background"
-          : "absolute bottom-0 left-0 right-0 px-4 pb-4 pt-5",
-      )}
-    >
-      <div className={cn("relative w-full", compact ? "" : "mx-auto max-w-[46rem]")}>
-        <div
-          aria-hidden="true"
+  const isStack = appearance === "stack";
+
+  const questionSection = (
+        <section
           className={cn(
-            "pointer-events-none absolute left-[-1px] right-[-1px] top-0 bottom-[-1.75rem] bg-background",
-            compact && "hidden",
+            "relative z-10 overflow-hidden",
+            isStack
+              ? "border-t border-border/50 bg-paper"
+              : "rounded-[20px] border border-border/70 bg-card shadow-[0_18px_44px_rgba(15,23,42,0.12)]",
           )}
-        />
-        <section className="relative z-10 overflow-hidden rounded-[20px] border border-border/70 bg-card shadow-[0_18px_44px_rgba(15,23,42,0.12)]">
-          <div className="flex items-center justify-between gap-4 px-4 pb-1 pt-3">
-            <div className="min-w-0">
+        >
+          <div
+            className={cn(
+              "flex items-center justify-between gap-4",
+              isStack ? "px-3.5 pb-1 pt-3" : "px-4 pb-1 pt-3",
+            )}
+          >
+            <div className="min-w-0 flex items-center gap-2">
+              {isStack ? (
+                <span className="shrink-0 rounded border border-coral/35 px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-wide text-coral">
+                  {t("chat.toolCall.question.title", "Question")}
+                </span>
+              ) : null}
               <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
                 {questionTitle}
               </div>
@@ -300,7 +305,7 @@ export function QuestionInputDock({
             ) : null}
           </div>
 
-          <div className="px-4 pb-3 pt-3">
+          <div className={cn(isStack ? "px-3.5 pb-3 pt-2" : "px-4 pb-3 pt-3")}>
             <QuestionMarkdown>{currentQuestion.question}</QuestionMarkdown>
 
             <div className="space-y-1">
@@ -374,7 +379,12 @@ export function QuestionInputDock({
                   type="button"
                   onClick={() => void handleContinue()}
                   disabled={!canContinue}
-                  className="h-7 shrink-0 whitespace-nowrap rounded-full bg-[#111111] px-3 text-xs font-semibold text-white shadow-sm hover:bg-[#262626] disabled:bg-[#111111]/45 disabled:text-white/75 dark:bg-[#f4f4f5] dark:text-[#18181b] dark:hover:bg-white dark:disabled:bg-[#f4f4f5]/45 dark:disabled:text-[#18181b]/70"
+                  className={cn(
+                    "h-7 shrink-0 whitespace-nowrap px-3 text-xs font-semibold shadow-sm disabled:opacity-40",
+                    isStack
+                      ? "rounded-lg bg-coral text-white hover:bg-coral/90"
+                      : "rounded-full bg-[#111111] text-white hover:bg-[#262626] disabled:bg-[#111111]/45 disabled:text-white/75 dark:bg-[#f4f4f5] dark:text-[#18181b] dark:hover:bg-white dark:disabled:bg-[#f4f4f5]/45 dark:disabled:text-[#18181b]/70",
+                  )}
                 >
                   <CornerDownLeft className="h-2.5 w-2.5" />
                   {isSubmitting
@@ -387,6 +397,38 @@ export function QuestionInputDock({
             </div>
           </div>
         </section>
+  );
+
+  if (isStack) {
+    return (
+      <div ref={rootRef} data-testid="question-input-dock" data-appearance="stack">
+        {questionSection}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={rootRef}
+      data-testid="question-input-dock"
+      data-appearance="overlay"
+      style={bottomOffsetPx ? { bottom: bottomOffsetPx } : undefined}
+      className={cn(
+        "z-10",
+        compact
+          ? "absolute bottom-0 left-0 right-0 px-2 pb-2 pt-2 bg-background"
+          : "absolute bottom-0 left-0 right-0 px-4 pb-4 pt-5",
+      )}
+    >
+      <div className={cn("relative w-full", compact ? "" : "mx-auto max-w-[46rem]")}>
+        <div
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none absolute left-[-1px] right-[-1px] top-0 bottom-[-1.75rem] bg-background",
+            compact && "hidden",
+          )}
+        />
+        {questionSection}
       </div>
     </div>
   );

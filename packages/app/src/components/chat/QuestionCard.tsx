@@ -17,13 +17,18 @@ interface QuestionCardProps {
 export const QuestionCard = React.memo(function QuestionCard({ toolCallId, questions, isCompleted }: QuestionCardProps) {
   const { t } = useTranslation()
   const pendingQuestions = useSessionStore(s => s.pendingQuestions)
+  const answeredSnapshot = useSessionStore(
+    (s) => s.answeredQuestionsByToolCallId?.[toolCallId],
+  )
   const pendingQuestion = pendingQuestions.find(q => q.toolCallId === toolCallId)
   const propQuestions = Array.isArray(questions) ? (questions as Question[]) : []
   // Tool-call arguments may lag or omit questions; the question.asked event
-  // (pendingQuestion) is authoritative.
+  // (pendingQuestion) is authoritative. After answer, read the local snapshot.
   const questionList: Question[] = propQuestions.length
     ? propQuestions
-    : ((pendingQuestion?.questions ?? []) as Question[])
+    : pendingQuestion?.questions?.length
+      ? ((pendingQuestion.questions ?? []) as Question[])
+      : ((answeredSnapshot?.questions ?? []) as Question[])
   const answerQuestion = useSessionStore(s => s.answerQuestion)
   const [answers, setAnswers] = React.useState<Record<string, string>>({})
   const [customInputs, setCustomInputs] = React.useState<Record<string, string>>({})
@@ -80,6 +85,7 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
   // Determine if we should show the interactive UI (options to select)
   const showInteractiveUI = isPending && !hasSubmitted
   const firstQuestion = questionList[0]
+  const savedAnswers = answeredSnapshot?.answers ?? {}
   const stateLabel = isCompleted
     ? t('chat.toolCall.question.answered', 'Answered')
     : isWaitingForCompletion
@@ -96,14 +102,16 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
       target={firstQuestion?.header || firstQuestion?.question}
       meta={stateLabel}
       status={isCompleted ? <Check className="h-3 w-3 text-green-600" /> : undefined}
-      defaultOpen={!isCompleted}
+      defaultOpen={questionList.length > 0}
     >
       {/* Questions */}
       <div className="space-y-4 px-3 py-3">
         {questionList.map((question, qIndex) => {
           const questionId = question.id || String(qIndex)
-          const selectedOption = answers[questionId]
+          const selectedOption = answers[questionId] ?? savedAnswers[questionId]
           const customInput = customInputs[questionId] || ''
+          const savedAnswer = savedAnswers[questionId]
+          const displayAnswer = customInput || selectedOption || savedAnswer
 
           return (
             <div key={questionId} className="space-y-1.5">
@@ -182,12 +190,12 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
               )}
 
               {/* Show selected answer for completed or submitted questions */}
-              {(isCompleted || isWaitingForCompletion) && (selectedOption || customInput) && (
+              {(isCompleted || isWaitingForCompletion) && displayAnswer && (
                 <div className="px-4 py-2 rounded-lg bg-muted/30 text-sm">
                   <span className="text-muted-foreground">
                     {t('chat.toolCall.question.answerLabel', 'Answer: ')}
                   </span>
-                  <span className="font-medium">{customInput || selectedOption}</span>
+                  <span className="font-medium">{displayAnswer}</span>
                 </div>
               )}
             </div>

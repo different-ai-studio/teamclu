@@ -26,6 +26,7 @@ import { ReadToolCard } from "./tool-calls/ReadToolCard";
 import { RoleLoadToolCard } from "./tool-calls/RoleLoadToolCard";
 import { PageNavLinksToolCard } from "./tool-calls/PageNavLinksToolCard";
 import { QuestionCard } from "./QuestionCard";
+import { QuestionToolIndicator } from "./tool-calls/QuestionToolIndicator";
 import { RoleSkillToolCard, ManageSkillsToolCard, SkillToolCard, TaskToolCard } from "./tool-calls/TaskToolCard";
 import {
   getStatusConfig,
@@ -52,9 +53,15 @@ interface ToolCallCardProps {
     type: "search" | "file" | "terminal" | "mcp",
     data: unknown,
   ) => void;
+  /** Question tool: full card vs compact row (live dock while answering below). */
+  questionPresentation?: "full" | "indicator";
 }
 
-export const ToolCallCard = React.memo(function ToolCallCard({ toolCall, onOpenDetail }: ToolCallCardProps) {
+export const ToolCallCard = React.memo(function ToolCallCard({
+  toolCall,
+  onOpenDetail,
+  questionPresentation = "full",
+}: ToolCallCardProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const config = getStatusConfig((key, fallback, options) =>
@@ -142,11 +149,17 @@ export const ToolCallCard = React.memo(function ToolCallCard({ toolCall, onOpenD
   // opencode `question` tool → interactive QuestionCard (options + custom
   // answer), fed by the `question_asked` raw acp event (pendingQuestions).
   if (routeName === "question") {
+    if (questionPresentation === "indicator") {
+      return <QuestionToolIndicator toolCall={toolCall} />;
+    }
     const args = toolCall.arguments as { questions?: unknown } | undefined;
+    const questions =
+      (Array.isArray(toolCall.questions) ? toolCall.questions : undefined) ??
+      args?.questions;
     return (
       <QuestionCard
         toolCallId={toolCall.id}
-        questions={args?.questions}
+        questions={questions}
         isCompleted={toolCall.status === "completed"}
       />
     );
@@ -309,38 +322,7 @@ export const ToolCallCard = React.memo(function ToolCallCard({ toolCall, onOpenD
   }
 
   if (matchesQuestionTool(toolCall)) {
-    const questionCount = getQuestionCount();
-    const isQuestionLoading = questionCount === 0 && (toolCall.status === "calling" || toolCall.status === "waiting");
-    const questionCountText = t(
-      questionCount === 1 ? "chat.toolCall.question.countOne" : "chat.toolCall.question.count",
-      questionCount === 1 ? "{{count}} question" : "{{count}} questions",
-      { count: questionCount },
-    );
-
-    return (
-      <div
-        data-testid="tool-row-question"
-        className="flex items-center gap-1.5 px-[10px] py-[4px] text-[12px] text-muted-foreground"
-      >
-        <HelpCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-        <span className="font-medium text-foreground/80">
-          {t("chat.toolCall.question.title", "Question")}
-        </span>
-        {questionCount > 0 ? (
-          <>
-            <span className="text-muted-foreground">·</span>
-            <span>{questionCountText}</span>
-          </>
-        ) : null}
-        {isQuestionLoading ? (
-          <Loader2
-            data-testid="question-tool-loading"
-            className="h-3 w-3 animate-spin text-muted-foreground"
-            aria-hidden="true"
-          />
-        ) : null}
-      </div>
-    );
+    return <QuestionToolIndicator toolCall={toolCall} />;
   }
 
   if (isCommand) {

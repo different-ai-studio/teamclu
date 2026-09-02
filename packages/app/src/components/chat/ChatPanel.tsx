@@ -65,7 +65,6 @@ import { ThreadListPanel } from "./ThreadListPanel";
 import { useThreadPanelStore } from "@/stores/thread-panel-store";
 import { useThreadListPanelStore } from "@/stores/thread-list-panel-store";
 import type { Todo } from "@/stores/session-types";
-import { QuestionInputDock } from "./QuestionInputDock";
 import {
   isStreamInterruptible,
   useV2StreamingStore,
@@ -1376,16 +1375,8 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
           </div>
         </div>
       ) : (
-        activeInputQuestion ? (
-          <QuestionInputDock
-            compact={compact}
-            pendingQuestion={activeInputQuestion}
-            onHeightChange={handleInputHeightChange}
-            bottomOffsetPx={terminalBottomOffset}
-          />
-        ) : activeSessionId || draftPreselectedActor ? (
-          <>
-            <ChatInputArea
+        activeSessionId || draftPreselectedActor ? (
+          <ChatInputArea
             activeSessionId={activeSessionId}
             compact={compact}
             pendingFiles={pendingFiles}
@@ -1428,8 +1419,8 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
             stackTodos={hasComposerPlanData ? (combinedTodos as Todo[]) : []}
             stackQueue={hasComposerPlanData ? messageQueue : []}
             planSlotHidden={hasComposerPlanData && !showInlineTodo}
+            pendingQuestion={activeInputQuestion}
           />
-          </>
         ) : null
       )}
 

@@ -14,7 +14,9 @@ import {
 import { PermissionApprovalPanel } from "./PermissionApprovalPanel";
 import { PermissionWaitingBanner } from "./PermissionWaitingBanner";
 import { ComposerPlanSlot } from "./ComposerPlanSlot";
+import { QuestionInputDock } from "./QuestionInputDock";
 import { StreamingAgentBubble } from "./StreamingAgentBubble";
+import type { PendingQuestionState } from "@/stores/session-types";
 import {
   composerGlassChildClass,
   composerGlassFillClass,
@@ -85,6 +87,7 @@ function ComposerAgentStrip({
   actorId,
   displayNameHint,
   waitingForApproval,
+  waitingForQuestion = false,
   showInterrupt,
   onInterrupt,
   roundsTop = false,
@@ -94,10 +97,12 @@ function ComposerAgentStrip({
   onToggleExpand,
   onToggleEnlarge,
   entry,
+  suppressQuestionToolCallId,
 }: {
   actorId: string;
   displayNameHint?: string;
   waitingForApproval: boolean;
+  waitingForQuestion?: boolean;
   showInterrupt: boolean;
   onInterrupt: (agentId: string) => void;
   roundsTop?: boolean;
@@ -107,6 +112,7 @@ function ComposerAgentStrip({
   onToggleExpand: () => void;
   onToggleEnlarge: () => void;
   entry?: AgentStreamEntry;
+  suppressQuestionToolCallId?: string;
 }) {
   const { t } = useTranslation();
   const resolvedName = useActorDisplayName(actorId);
@@ -116,6 +122,13 @@ function ComposerAgentStrip({
   const canExpand = Boolean(entry);
   const showInlinePanel = expanded && canExpand && !enlarged;
   const { liveScrollRef, handleLiveScroll } = useLiveScrollFollow(showInlinePanel, entry);
+  const indicatorToolCallIds = React.useMemo(
+    () =>
+      suppressQuestionToolCallId
+        ? new Set([suppressQuestionToolCallId])
+        : undefined,
+    [suppressQuestionToolCallId],
+  );
   const interrupting = useV2StreamingStore((s) =>
     entry?.sessionId
       ? s.isInterruptedFlushPending(entry.sessionId, actorId)
@@ -129,6 +142,14 @@ function ComposerAgentStrip({
 
   const statusLabel = waitingForApproval ? (
     t("chat.streamingBar.waitingApproval", "Waiting for your approval…")
+  ) : waitingForQuestion ? (
+    <>
+      {t("chat.streamingBar.waitingQuestion", "等待你的回答")}
+      <span
+        className="ml-1.5 inline-block h-[5px] w-[5px] animate-pulse rounded-full bg-coral align-middle"
+        aria-hidden
+      />
+    </>
   ) : interrupting ? (
     <span className="inline-flex items-center gap-1.5 text-muted-foreground">
       <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
@@ -294,7 +315,11 @@ function ComposerAgentStrip({
               data-testid="streaming-agent-live-scroll"
               className={LIVE_INLINE_SCROLL_CLASS}
             >
-              <StreamingAgentBubble entry={entry} variant="dock" />
+              <StreamingAgentBubble
+                entry={entry}
+                variant="dock"
+                indicatorToolCallIds={indicatorToolCallIds}
+              />
             </div>
           ) : null}
         </div>
@@ -308,11 +333,13 @@ function LiveEnlargeFloat({
   onRestore,
   onInterrupt,
   showInterrupt,
+  suppressQuestionToolCallId,
 }: {
   agent: ActiveStreamingAgent;
   onRestore: () => void;
   onInterrupt?: (agentId: string) => void;
   showInterrupt: boolean;
+  suppressQuestionToolCallId?: string;
 }) {
   const { t } = useTranslation();
   const entry = agent.entry!;
@@ -322,6 +349,13 @@ function LiveEnlargeFloat({
   const colors = actorAvatarColor(agent.actorId);
   const initial = displayName.trim().charAt(0).toUpperCase() || "A";
   const { liveScrollRef, handleLiveScroll } = useLiveScrollFollow(true, entry);
+  const indicatorToolCallIds = React.useMemo(
+    () =>
+      suppressQuestionToolCallId
+        ? new Set([suppressQuestionToolCallId])
+        : undefined,
+    [suppressQuestionToolCallId],
+  );
   const restoreRef = React.useRef<HTMLButtonElement>(null);
   const interrupting = useV2StreamingStore((s) =>
     s.isInterruptedFlushPending(entry.sessionId, agent.actorId),
@@ -424,7 +458,11 @@ function LiveEnlargeFloat({
         data-testid="streaming-agent-live-scroll"
         className={LIVE_FLOAT_SCROLL_CLASS}
       >
-        <StreamingAgentBubble entry={entry} variant="dock" />
+        <StreamingAgentBubble
+          entry={entry}
+          variant="dock"
+          indicatorToolCallIds={indicatorToolCallIds}
+        />
       </div>
     </div>
   );
@@ -438,6 +476,7 @@ export function ComposerStack({
   onRemoveFromQueue,
   planSlotHidden = false,
   permissionSessionId = null,
+  pendingQuestion = null,
   children,
 }: {
   agents: ReadonlyArray<ActiveStreamingAgent>;
@@ -449,6 +488,8 @@ export function ComposerStack({
   planSlotHidden?: boolean;
   /** Session whose pending ACP permissions render in this stack (defaults to main active). */
   permissionSessionId?: string | null;
+  /** Pending agent question — renders in-stack above input and keeps live context visible. */
+  pendingQuestion?: PendingQuestionState | null;
   children?: React.ReactNode;
 }) {
   const activeSessionId = useSessionSelectionStore((s) => s.activeSessionId);
@@ -488,12 +529,34 @@ export function ComposerStack({
   );
   const [userPinnedExpand, setUserPinnedExpand] = React.useState(false);
 
+  const hasPendingQuestion = pendingQuestion !== null;
+  const questionActorId = React.useMemo(() => {
+    if (!pendingQuestion) return null;
+    if (
+      pendingQuestion.agentActorId &&
+      agents.some((agent) => agent.actorId === pendingQuestion.agentActorId)
+    ) {
+      return pendingQuestion.agentActorId;
+    }
+    return newestActorId ?? agents[0]?.actorId ?? pendingQuestion.agentActorId ?? null;
+  }, [agents, newestActorId, pendingQuestion]);
+
+  React.useEffect(() => {
+    if (!hasPendingQuestion) return;
+    if (questionActorId) {
+      setExpandedActorId(questionActorId);
+      setEnlargedActorId(null);
+    }
+  }, [hasPendingQuestion, questionActorId, pendingQuestion?.questionId]);
+
   React.useEffect(() => {
     const ids = new Set(agents.map((agent) => agent.actorId));
     if (agents.length === 0) {
-      setExpandedActorId(null);
-      setEnlargedActorId(null);
-      setUserPinnedExpand(false);
+      if (!hasPendingQuestion) {
+        setExpandedActorId(null);
+        setEnlargedActorId(null);
+        setUserPinnedExpand(false);
+      }
       return;
     }
     if (expandedActorId && !ids.has(expandedActorId)) {
@@ -505,12 +568,12 @@ export function ComposerStack({
     if (enlargedActorId && !ids.has(enlargedActorId)) {
       setEnlargedActorId(null);
     }
-    if (!userPinnedExpand) {
+    if (!userPinnedExpand && !hasPendingQuestion) {
       setExpandedActorId(newestActorId);
-    } else if (expandedActorId === null && newestActorId) {
+    } else if (expandedActorId === null && newestActorId && !hasPendingQuestion) {
       // User closed all panels — stay closed until they open one.
     }
-  }, [agents, newestActorId, expandedActorId, enlargedActorId, userPinnedExpand]);
+  }, [agents, newestActorId, expandedActorId, enlargedActorId, userPinnedExpand, hasPendingQuestion]);
 
   const toggleExpand = React.useCallback((actorId: string) => {
     setUserPinnedExpand(true);
@@ -552,20 +615,24 @@ export function ComposerStack({
   const showApprovalOnly =
     currentEntry !== null &&
     agents.length === 0 &&
-    sessionPermissionMode !== "fullAccess";
+    sessionPermissionMode !== "fullAccess" &&
+    !hasPendingQuestion;
 
   const showWaitingOnly =
     currentEntry === null &&
     waitingRequesterActorId !== null &&
-    agents.length === 0;
+    agents.length === 0 &&
+    !hasPendingQuestion;
 
   const hasApproval = currentEntry !== null;
   const hasPermissionChrome =
     hasApproval || waitingRequesterActorId !== null;
-  const showAgentSection = agents.length > 0 || showApprovalOnly || showWaitingOnly;
+  const showAgentSection =
+    agents.length > 0 || showApprovalOnly || showWaitingOnly || hasPendingQuestion;
   const showPlan = todos.length > 0 || queue.length > 0;
   const showTopChrome = showAgentSection || showPlan;
   const planRoundsTop = showPlan && !showAgentSection;
+  const hideComposerInput = hasPendingQuestion;
 
   const approvalExpandClasses = cn(
     "grid transition-[grid-template-rows] duration-[400ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
@@ -590,6 +657,11 @@ export function ComposerStack({
           onRestore={restoreEnlarge}
           onInterrupt={onInterrupt}
           showInterrupt={Boolean(onInterrupt) && anchorActorId !== enlargedAgent.actorId}
+          suppressQuestionToolCallId={
+            hasPendingQuestion && questionActorId === enlargedAgent.actorId
+              ? pendingQuestion?.toolCallId
+              : undefined
+          }
         />
       ) : null}
 
@@ -646,25 +718,44 @@ export function ComposerStack({
                   ? agents.map((agent, index) => {
                       const isAnchor =
                         anchorActorId === agent.actorId && currentEntry !== null;
+                      const isQuestionAnchor =
+                        hasPendingQuestion && questionActorId === agent.actorId;
                       return (
                         <ComposerAgentStrip
                           key={agent.actorId}
                           actorId={agent.actorId}
                           displayNameHint={agent.displayName}
                           waitingForApproval={isAnchor}
-                          showInterrupt={Boolean(onInterrupt) && !isAnchor}
+                          waitingForQuestion={isQuestionAnchor}
+                          showInterrupt={
+                            Boolean(onInterrupt) && !isAnchor && !isQuestionAnchor
+                          }
                           onInterrupt={onInterrupt ?? (() => {})}
-                          roundsTop={!hasPermissionChrome && index === 0}
-                          embeddedInGlass={hasPermissionChrome}
-                          expanded={expandedActorId === agent.actorId}
+                          roundsTop={!hasPermissionChrome && index === 0 && !hasPendingQuestion}
+                          embeddedInGlass={hasPermissionChrome || hasPendingQuestion}
+                          expanded={
+                            hasPendingQuestion && isQuestionAnchor
+                              ? true
+                              : expandedActorId === agent.actorId
+                          }
                           enlarged={enlargedActorId === agent.actorId}
                           onToggleExpand={() => toggleExpand(agent.actorId)}
                           onToggleEnlarge={() => toggleEnlarge(agent.actorId)}
                           entry={agent.entry}
+                          suppressQuestionToolCallId={
+                            isQuestionAnchor ? pendingQuestion?.toolCallId : undefined
+                          }
                         />
                       );
                     })
                   : null}
+
+                {hasPendingQuestion && pendingQuestion ? (
+                  <QuestionInputDock
+                    appearance="stack"
+                    pendingQuestion={pendingQuestion}
+                  />
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -683,7 +774,11 @@ export function ComposerStack({
 
       <div
         data-testid="composer-input-zone"
-        className={cn("relative z-20", composerStackFormSlotClass(showTopChrome))}
+        className={cn(
+          "relative z-20",
+          composerStackFormSlotClass(showTopChrome),
+          hideComposerInput && "hidden",
+        )}
       >
         {children}
       </div>

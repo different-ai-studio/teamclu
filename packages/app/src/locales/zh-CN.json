@@ -593,6 +593,7 @@
     "streamingBar": {
       "streamingActive": "正在回复",
       "waitingApproval": "等待你审批后继续…",
+      "waitingQuestion": "等待你的回答",
       "expand": "展开",
       "collapse": "收起",
       "enlarge": "放大",

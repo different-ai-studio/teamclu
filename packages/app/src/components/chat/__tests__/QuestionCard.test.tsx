@@ -17,6 +17,10 @@ const mockSessionState = {
     messageId: string;
     questions: unknown[];
   }>,
+  answeredQuestionsByToolCallId: {} as Record<
+    string,
+    { questions: unknown[]; answers: Record<string, string> }
+  >,
   answerQuestion: vi.fn(() => Promise.resolve()),
 };
 
@@ -46,6 +50,7 @@ describe('QuestionCard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSessionState.pendingQuestions = [];
+    mockSessionState.answeredQuestionsByToolCallId = {};
     mockSessionState.answerQuestion = vi.fn(() => Promise.resolve());
   });
 
@@ -113,5 +118,22 @@ describe('QuestionCard', () => {
     await waitFor(() => {
       expect(answerMock).toHaveBeenCalledWith({ 'q-1': 'option-a' }, 'event-1');
     });
+  });
+
+  it('renders answered snapshot after completion when pending question is gone', () => {
+    const question = makeQuestion();
+    mockSessionState.answeredQuestionsByToolCallId = {
+      'tc-1': {
+        questions: [question],
+        answers: { 'q-1': 'Option A' },
+      },
+    };
+
+    render(
+      <QuestionCard toolCallId="tc-1" isCompleted />,
+    );
+
+    expect(screen.getByText('What would you like to do?')).toBeTruthy();
+    expect(screen.getByText('Option A')).toBeTruthy();
   });
 });
