@@ -1,3 +1,4 @@
+import type { Breadcrumb } from '@sentry/react'
 import { redactLogString } from '@/lib/diag-redact'
 
 export type ConsoleLevel = 'debug' | 'info' | 'log' | 'warn' | 'error'
@@ -48,6 +49,38 @@ function pushEntry(level: ConsoleLevel, args: unknown[]): void {
     entries.splice(0, entries.length - MAX_ENTRIES)
   }
   for (const cb of subscribers) cb()
+}
+
+const MAX_REDACT_DEPTH = 4
+
+function redactUnknown(value: unknown, depth: number): unknown {
+  if (typeof value === 'string') return redactLogString(value)
+  if (value === null || typeof value !== 'object') return value
+  if (depth >= MAX_REDACT_DEPTH) return redactLogString(safeSerialize(value))
+  if (value instanceof Error) return redactLogString(safeSerialize(value))
+  if (Array.isArray(value)) return value.map((item) => redactUnknown(item, depth + 1))
+  const out: Record<string, unknown> = {}
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = redactUnknown(item, depth + 1)
+  }
+  return out
+}
+
+/**
+ * SEC-4: Sentry `beforeBreadcrumb` hook. The ring buffer above redacts what the
+ * Diagnostics viewer shows, but Sentry's console integration captures the raw
+ * `console.*` arguments on its own and ships them as breadcrumbs — every
+ * bearer/JWT/`sk-` key that a log line carried went out unredacted. Runs the
+ * same `redactLogString` over the message and every string in `data`
+ * (console `arguments`, fetch/xhr URLs, navigation targets alike).
+ */
+export function redactSentryBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb {
+  const out: Breadcrumb = { ...breadcrumb }
+  if (typeof out.message === 'string') out.message = redactLogString(out.message)
+  if (out.data && typeof out.data === 'object') {
+    out.data = redactUnknown(out.data, 0) as Breadcrumb['data']
+  }
+  return out
 }
 
 export function installConsoleCapture(): void {

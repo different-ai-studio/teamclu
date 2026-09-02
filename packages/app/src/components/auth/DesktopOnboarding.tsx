@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { probeCloudApi } from "@/lib/bootstrap";
 import { parseInviteTokenInput } from "@/lib/invite-deeplink";
+import { confirmInviteLinkToken } from "@/lib/invite-link-confirmation";
 import {
   displayHost,
   getCloudApiUrlOverride,
@@ -309,6 +310,8 @@ function InviteStep({ onBack, onNeedLogin }: { onBack: () => void; onNeedLogin: 
     // Member invites require a real account: stash the token and send the user
     // to sign in. The invite is claimed automatically once they're signed in.
     setPendingInviteToken(token);
+    // The user typed this token themselves; skip the deep-link confirmation prompt.
+    confirmInviteLinkToken(token);
     onNeedLogin();
   };
 

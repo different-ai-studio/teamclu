@@ -3348,6 +3348,14 @@
     "acceptFailed": "Failed to join team: {{msg}}",
     "declineFailed": "Failed to decline: {{msg}}"
   },
+  "inviteLink": {
+    "title": "Join a team from this invite link?",
+    "description": "Accepting joins the team this link belongs to, switches your active organization, and re-binds the local agent to that team. Continue only if you trust whoever sent it.",
+    "tokenLabel": "Invite token",
+    "signInFirst": "You'll sign in first; the invite is claimed right after.",
+    "cancel": "Not now",
+    "accept": "Join team"
+  },
   "terminal": {
     "label": "Terminal",
     "toggle": "Toggle terminal (⌃`)",

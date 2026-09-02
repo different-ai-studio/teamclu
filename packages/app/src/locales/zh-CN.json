@@ -3348,6 +3348,14 @@
     "acceptFailed": "加入团队失败：{{msg}}",
     "declineFailed": "拒绝失败：{{msg}}"
   },
+  "inviteLink": {
+    "title": "通过这条邀请链接加入团队？",
+    "description": "接受后会加入链接所属的团队、切换当前组织，并把本机 agent 重新绑定到该团队。只有信任发送者时才继续。",
+    "tokenLabel": "邀请令牌",
+    "signInFirst": "会先登录，登录后立即认领邀请。",
+    "cancel": "暂不",
+    "accept": "加入团队"
+  },
   "terminal": {
     "label": "终端",
     "toggle": "切换终端 (⌃`)",

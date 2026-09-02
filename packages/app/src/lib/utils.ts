@@ -33,12 +33,36 @@ export async function copyToClipboard(text: string, _successMessage?: string): P
   }
 }
 
+// SEC-11: `shell.open` is configured wide open in tauri.conf.json, so this is
+// the only scheme check between a content-controlled string and the OS handler
+// for it (`file:`, `javascript:`, custom app schemes…).
+const EXTERNAL_URL_SCHEMES: ReadonlySet<string> = new Set(["http:", "https:", "mailto:"])
+
+export function isAllowedExternalUrl(url: string): boolean {
+  try {
+    return EXTERNAL_URL_SCHEMES.has(new URL(url).protocol)
+  } catch {
+    return false
+  }
+}
+
 export async function openExternalUrl(url: string): Promise<void> {
+  if (!isAllowedExternalUrl(url)) {
+    console.warn("[openExternalUrl] refused: only http(s) and mailto links open externally")
+    return
+  }
+  // Browser / extension builds have no shell plugin; a same-scheme window.open
+  // with no opener is the whole capability there. Under Tauri there is no such
+  // fallback: a failed shell.open is reported, not retried through the webview.
+  if (!isTauri()) {
+    window.open(url, "_blank", "noopener,noreferrer")
+    return
+  }
   try {
     const { open } = await import("@tauri-apps/plugin-shell")
     await open(url)
-  } catch {
-    window.open(url, "_blank")
+  } catch (err) {
+    console.warn("[openExternalUrl] shell.open failed", err)
   }
 }
 

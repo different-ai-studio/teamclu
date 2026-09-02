@@ -154,6 +154,44 @@ describe('resolveImagePath', () => {
   })
 })
 
+describe('resolveAgentImagePath (SEC-5)', () => {
+  it('passes data and http(s) URLs through', async () => {
+    const { resolveAgentImagePath } = await import('@/packages/ai/message')
+    expect(resolveAgentImagePath('data:image/png;base64,abc', '/ws')).toBe('data:image/png;base64,abc')
+    expect(resolveAgentImagePath('https://example.com/img.png')).toBe('https://example.com/img.png')
+  })
+
+  it('resolves relative paths inside the session directory', async () => {
+    const { resolveAgentImagePath } = await import('@/packages/ai/message')
+    expect(resolveAgentImagePath('img.png', '/ws')).toBe('/ws/img.png')
+    expect(resolveAgentImagePath('./shots//a.png', '/ws/')).toBe('/ws/shots/a.png')
+    expect(resolveAgentImagePath('sub/../img.png', '/ws')).toBe('/ws/img.png')
+  })
+
+  it('accepts an absolute path only when it stays inside the root', async () => {
+    const { resolveAgentImagePath } = await import('@/packages/ai/message')
+    expect(resolveAgentImagePath('/ws/out/img.png', '/ws')).toBe('/ws/out/img.png')
+    expect(resolveAgentImagePath('/ws', '/ws')).toBe('/ws')
+    expect(resolveAgentImagePath('/Users/me/.ssh/id_rsa', '/ws')).toBeNull()
+    expect(resolveAgentImagePath('/wsx/img.png', '/ws')).toBeNull()
+  })
+
+  it('refuses .. escapes and local paths with no root', async () => {
+    const { resolveAgentImagePath } = await import('@/packages/ai/message')
+    expect(resolveAgentImagePath('../../etc/passwd', '/ws')).toBeNull()
+    expect(resolveAgentImagePath('a/../../b.png', '/ws')).toBeNull()
+    expect(resolveAgentImagePath('/absolute/path.png')).toBeNull()
+    expect(resolveAgentImagePath('relative.png')).toBeNull()
+    expect(resolveAgentImagePath('', '/ws')).toBeNull()
+  })
+
+  it('handles Windows drive paths and backslashes', async () => {
+    const { resolveAgentImagePath } = await import('@/packages/ai/message')
+    expect(resolveAgentImagePath('shots\\a.png', 'C:\\ws')).toBe('C:/ws/shots/a.png')
+    expect(resolveAgentImagePath('C:\\Windows\\win.ini', 'C:\\ws')).toBeNull()
+  })
+})
+
 describe('MessageBranch components', () => {
   it('renders MessageBranch, MessageBranchContent, MessageBranchSelector', async () => {
     const { MessageBranch, MessageBranchContent, MessageBranchSelector, MessageBranchPage } =
@@ -202,6 +240,19 @@ describe('image preview rendering', () => {
     const images = screen.getAllByAltText('photo.png')
     expect(images.length).toBeGreaterThan(0)
     expect(images[0].getAttribute('src')).toBe(pngDataUrl)
+  })
+
+  it('loads content images lazily and without a referrer (SEC-5)', async () => {
+    const { ClickableImage } = await import('@/packages/ai/message')
+    render(
+      React.createElement(ClickableImage, {
+        src: 'https://tracker.example.test/pixel.png',
+        alt: 'remote.png',
+      })
+    )
+    const img = screen.getAllByAltText('remote.png')[0]
+    expect(img.getAttribute('loading')).toBe('lazy')
+    expect(img.getAttribute('referrerpolicy')).toBe('no-referrer')
   })
 })
 

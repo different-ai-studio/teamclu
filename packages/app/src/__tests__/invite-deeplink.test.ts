@@ -6,14 +6,16 @@ describe('parseInviteDeeplink', () => {
     expect(parseInviteDeeplink('teamclu://invite?token=ABCXYZ_24bytes')).toBe('ABCXYZ_24bytes')
   })
 
-  it('still accepts the pre-rebrand teamclaw:// scheme', () => {
-    // Invite links handed out before the rename carry it; rejecting them makes
-    // every one of those links dead.
-    expect(parseInviteDeeplink('teamclaw://invite?token=OLD_LINK')).toBe('OLD_LINK')
+  it('rejects the pre-rebrand teamclaw:// scheme (SEC-3)', () => {
+    // No build registers it with the OS any more, so the only way such a URL
+    // reaches the parser is something other than a real deep link.
+    expect(parseInviteDeeplink('teamclaw://invite?token=OLD_LINK')).toBeNull()
   })
 
-  it('also accepts amux://invite?token=… (RPC native scheme)', () => {
-    expect(parseInviteDeeplink('amux://invite?token=XYZ')).toBe('XYZ')
+  it('rejects amux:// as a deep link (SEC-3)', () => {
+    // The RPC still emits it, but the OS never delivers it — tauri.conf.json
+    // registers exactly the build scheme. Pasted input accepts it (below).
+    expect(parseInviteDeeplink('amux://invite?token=XYZ')).toBeNull()
   })
 
   it('returns null for non-invite paths', () => {
@@ -27,13 +29,23 @@ describe('parseInviteDeeplink', () => {
   it('returns null for malformed urls', () => {
     expect(parseInviteDeeplink('not a url')).toBeNull()
   })
+})
 
+describe('parseInviteTokenInput', () => {
   it('accepts bare invite tokens for pasted onboarding input', () => {
     expect(parseInviteTokenInput('  bare_token_123  ')).toBe('bare_token_123')
   })
 
   it('accepts deeplinks for pasted onboarding input', () => {
     expect(parseInviteTokenInput('teamclu://invite?token=FROM_LINK')).toBe('FROM_LINK')
+  })
+
+  it('still accepts the amux:// link the create-invite RPC emits when pasted', () => {
+    expect(parseInviteTokenInput('amux://invite?token=XYZ')).toBe('XYZ')
+  })
+
+  it('rejects a pasted pre-rebrand teamclaw:// link', () => {
+    expect(parseInviteTokenInput('teamclaw://invite?token=OLD')).toBeNull()
   })
 
   it('rejects non-invite urls for pasted onboarding input', () => {
@@ -58,7 +70,7 @@ describe('a build with its own app.scheme', () => {
     vi.doMock('@/lib/build-config', async () => {
       const actual =
         await vi.importActual<typeof import('@/lib/build-config')>('@/lib/build-config')
-      return { ...actual, appScheme: scheme, deeplinkSchemes: actual.resolveDeeplinkSchemes(scheme) }
+      return { ...actual, appScheme: scheme }
     })
     return import('@/lib/invite-deeplink')
   }
@@ -79,8 +91,10 @@ describe('a build with its own app.scheme', () => {
     expect(build('TOK')).toBe('copilot361://invite?token=TOK')
   })
 
-  it('still takes a bare pasted token', async () => {
+  it('still takes a bare pasted token and a pasted amux:// link', async () => {
     const { parseInviteTokenInput: parseInput } = await loadForScheme('copilot361')
     expect(parseInput('  bare_token_123  ')).toBe('bare_token_123')
+    expect(parseInput('amux://invite?token=RPC')).toBe('RPC')
+    expect(parseInput('teamclu://invite?token=OTHER_BRAND')).toBeNull()
   })
 })
