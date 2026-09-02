@@ -10,40 +10,25 @@
 //! the other.
 //!
 //! Lifecycle: one background task spawned at app setup. It loops forever:
-//! discover the daemon HTTP listener via `~/.amuxd/amuxd.http.{port,token}`,
-//! exchange a scoped token, hold the SSE open, and on any error/EOF back off
-//! and retry — daemon restarts and re-onboards are picked up automatically.
+//! discover the daemon through [`crate::daemon_client`], exchange an
+//! `events:read` token, hold the SSE open, and on any error/EOF back off and
+//! retry — daemon restarts and re-onboards are picked up automatically.
+//!
+//! Each successful connect also refreshes the cached daemon identity
+//! (`/v1/setup/status`), which is what lets sync callers answer "who is my
+//! daemon" without opening its private config.
 
 use futures_util::StreamExt;
-use serde::Deserialize;
 use tauri::Emitter;
 
-#[derive(Debug, Deserialize)]
-struct AuthExchangeResponse {
-    token: String,
-}
-
-fn daemon_http_base() -> Option<(String, String)> {
-    let amuxd_dir = super::amuxd_run_dir();
-    let port: u16 = std::fs::read_to_string(amuxd_dir.join("amuxd.http.port"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    let root_token = std::fs::read_to_string(amuxd_dir.join("amuxd.http.token"))
-        .ok()?
-        .trim()
-        .to_string();
-    Some((format!("http://127.0.0.1:{port}"), root_token))
-}
+use crate::daemon_client::{self as daemon, RequestSpec, NO_BODY};
 
 /// Spawn the persistent SSE subscriber. Call once from the Tauri setup hook.
 pub fn spawn(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let client = reqwest::Client::new();
         let mut announced_up = false;
         loop {
-            match run_once(&client, &app, &mut announced_up).await {
+            match run_once(&app, &mut announced_up).await {
                 Ok(()) => {
                     // Stream ended cleanly (daemon shutdown) — retry soon.
                 }
@@ -60,37 +45,25 @@ pub fn spawn(app: tauri::AppHandle) {
     });
 }
 
-async fn run_once(
-    client: &reqwest::Client,
-    app: &tauri::AppHandle,
-    announced_up: &mut bool,
-) -> Result<(), String> {
-    let Some((base, root_token)) = daemon_http_base() else {
-        return Err("daemon http port/token files not present".into());
-    };
+async fn run_once(app: &tauri::AppHandle, announced_up: &mut bool) -> Result<(), String> {
+    let endpoint = daemon::discover()?;
 
-    let exchange: AuthExchangeResponse = client
-        .post(format!("{base}/v1/auth/exchange"))
-        .header("Authorization", format!("Bearer {root_token}"))
-        .json(&serde_json::json!({
-            "scopes": ["events:read"],
-            "ttl_seconds": 86400,
-        }))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("auth exchange: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("auth exchange decode: {e}"))?;
+    // The daemon is reachable: remember who it is. Best-effort — the stream is
+    // the job here, identity is a side benefit.
+    if let Err(e) = daemon::refresh_actor_id(&endpoint).await {
+        tracing::debug!("[daemon-live] setup status unavailable: {e}");
+    }
 
-    let resp = client
-        .get(format!("{base}/v1/live/events"))
-        .header("Authorization", format!("Bearer {}", exchange.token))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("sse connect: {e}"))?;
+    // A day-long token so the stream is not cut by its own expiry; the client
+    // keys the cache by endpoint, so a restarted daemon gets a fresh one.
+    let spec =
+        RequestSpec::get("/v1/live/events", &["events:read"]).ttl(daemon::MAX_TOKEN_TTL_SECS);
+    let resp = daemon::send(&endpoint, spec, NO_BODY).await?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("sse connect: {status}"));
+    }
+    let base = &endpoint.base_url;
 
     tracing::info!("[daemon-live] connected to {base}/v1/live/events");
     *announced_up = true;

@@ -6,14 +6,10 @@
 //! *delivers* the secrets and *triggers* link/sync over the daemon's local
 //! HTTP server.
 //!
-//! This mirrors the auth dance in [`crate::commands::daemon_http`]:
-//!   1. Read `~/.amuxd/amuxd.http.port` + `~/.amuxd/amuxd.http.token`.
-//!   2. `POST /v1/auth/exchange` with `Authorization: Bearer {root_token}` and
-//!      `{ "scopes": [...], "ttl_seconds": 300 }` → scoped session token.
-//!   3. Call `/v1/team/*` with `Authorization: Bearer {session_token}`.
-//!
-//! Endpoints (all loopback, bearer-scoped):
-//!   - `POST /v1/team/sync`              `{ workspacePath }`            scope `workspace:write`
+//! Discovery, the shared HTTP client and the root→session token exchange (with
+//! its cache — one exchange per scope set, not one per call) live in
+//! [`crate::daemon_client`]. This file knows the routes:
+//!   - `POST /v1/team/sync`              `{ workspacePath?, forceSync, allowBulkAdd }` scope `workspace:write`
 //!   - `GET  /v1/team/sync/status?teamId`                              scope `workspace:read`
 //!   - `POST /v1/team/secrets`           `{ teamId, ossTeamSecret? }`   scope `workspace:write`
 //!   - `POST /v1/team/link`              `{ path }`                    scope `workspace:write`
@@ -22,69 +18,22 @@
 //!   - `POST /v1/team/conflicts/resolve` `{ teamId, path, sidecar?, choice }` scope `workspace:write`
 //!   - `GET  /v1/team/versions?teamId&path[&cursor]`                  scope `workspace:read`
 //!   - `POST /v1/team/versions/restore`  `{ teamId, path, contentHash }` scope `workspace:write`
+//!
+//! Request bodies are the shared wire structs in `teamclu_types::daemon_http`.
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-#[derive(Debug, Deserialize)]
-struct DaemonAuthExchangeResponse {
-    token: String,
-}
+use crate::daemon_client::{self as daemon, wire, RequestSpec, NO_BODY};
 
-/// Read brand amuxd home `amuxd.http.{port,token}` and return `(base_url, root_token)`.
-fn daemon_endpoint() -> Result<(String, String), String> {
-    let amuxd_dir = super::amuxd_run_dir();
-    let port: u16 = std::fs::read_to_string(amuxd_dir.join("amuxd.http.port"))
-        .map_err(|e| format!("daemon HTTP port unavailable (is amuxd running?): {e}"))?
-        .trim()
-        .parse()
-        .map_err(|e| format!("invalid daemon HTTP port: {e}"))?;
-    let root_token = std::fs::read_to_string(amuxd_dir.join("amuxd.http.token"))
-        .map_err(|e| format!("daemon HTTP token unavailable (is amuxd running?): {e}"))?
-        .trim()
-        .to_string();
-    Ok((format!("http://127.0.0.1:{port}"), root_token))
-}
+const READ: &[&str] = &["workspace:read"];
+const WRITE: &[&str] = &["workspace:write"];
 
-/// Exchange the daemon root token for a scoped session token.
-async fn daemon_session_token(base: &str, scopes: &[&str]) -> Result<String, String> {
-    let (_, root_token) = daemon_endpoint()?;
-    daemon_session_token_with(&reqwest::Client::new(), base, &root_token, scopes).await
-}
-
-async fn daemon_session_token_with(
-    client: &reqwest::Client,
-    base: &str,
-    root_token: &str,
-    scopes: &[&str],
-) -> Result<String, String> {
-    let resp = client
-        .post(format!("{base}/v1/auth/exchange"))
-        .header("Authorization", format!("Bearer {root_token}"))
-        .json(&serde_json::json!({
-            "scopes": scopes,
-            "ttl_seconds": 300,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("daemon auth/exchange request failed: {e}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("daemon auth/exchange {status}: {body}"));
-    }
-    let parsed: DaemonAuthExchangeResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("daemon auth/exchange decode failed: {e}"))?;
-    Ok(parsed.token)
-}
-
-/// Read port+token, exchange root→session for `scopes`, then issue
-/// `method base/path` with the session bearer. Non-2xx maps to `Err(String)`.
+/// Discover the daemon, take a session token for `scopes` (cached), issue
+/// `method base/path/query`, decode the JSON answer. Non-2xx and undecodable
+/// bodies both map to `Err(String)`.
 ///
-/// `body` is sent as JSON for write methods; `query` is appended verbatim
-/// (already-encoded, leading `?` included) for read methods.
+/// `query` is appended verbatim (already-encoded, leading `?` included).
 async fn daemon_request<B: Serialize, R: DeserializeOwned>(
     method: reqwest::Method,
     path: &str,
@@ -92,33 +41,11 @@ async fn daemon_request<B: Serialize, R: DeserializeOwned>(
     scopes: &[&str],
     body: Option<&B>,
 ) -> Result<R, String> {
-    let (base, root_token) = daemon_endpoint()?;
-    let client = reqwest::Client::new();
-    let session = daemon_session_token_with(&client, &base, &root_token, scopes).await?;
-
-    let url = format!("{base}{path}{query}");
-    let mut req = client
-        .request(method, &url)
-        .header("Authorization", format!("Bearer {session}"));
-    if let Some(b) = body {
-        req = req.json(b);
-    }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("daemon request {path} failed: {e}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("daemon {path} {status}: {text}"));
-    }
-    resp.json::<R>()
-        .await
-        .map_err(|e| format!("daemon {path} decode failed: {e}"))
+    let spec = RequestSpec::new(method, path, scopes).query(query);
+    Ok(daemon::call_discovered(spec, body).await?)
 }
 
-/// Like [`daemon_request`] but for endpoints that return an empty/`{}` body and
-/// the caller only needs success/failure.
+/// Like [`daemon_request`] but for endpoints whose body the caller ignores.
 async fn daemon_request_unit<B: Serialize>(
     method: reqwest::Method,
     path: &str,
@@ -126,27 +53,8 @@ async fn daemon_request_unit<B: Serialize>(
     scopes: &[&str],
     body: Option<&B>,
 ) -> Result<(), String> {
-    let (base, root_token) = daemon_endpoint()?;
-    let client = reqwest::Client::new();
-    let session = daemon_session_token_with(&client, &base, &root_token, scopes).await?;
-
-    let url = format!("{base}{path}{query}");
-    let mut req = client
-        .request(method, &url)
-        .header("Authorization", format!("Bearer {session}"));
-    if let Some(b) = body {
-        req = req.json(b);
-    }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("daemon request {path} failed: {e}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("daemon {path} {status}: {text}"));
-    }
-    Ok(())
+    let spec = RequestSpec::new(method, path, scopes).query(query);
+    Ok(daemon::call_unit_discovered(spec, body).await?)
 }
 
 fn urlencode(value: &str) -> String {
@@ -177,18 +85,19 @@ pub async fn daemon_team_sync(
     force_sync: bool,
     allow_bulk_add: bool,
 ) -> Result<serde_json::Value, String> {
-    let mut body = serde_json::json!({
-        "forceSync": force_sync,
-        "allowBulkAdd": allow_bulk_add,
-    });
-    if let Some(path) = workspace_path.map(str::trim).filter(|p| !p.is_empty()) {
-        body["workspacePath"] = serde_json::Value::String(path.to_string());
-    }
+    let body = wire::TeamSyncRequest {
+        workspace_path: workspace_path
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned),
+        force_sync,
+        allow_bulk_add,
+    };
     daemon_request(
         reqwest::Method::POST,
         "/v1/team/sync",
         "",
-        &["workspace:write"],
+        WRITE,
         Some(&body),
     )
     .await
@@ -198,12 +107,15 @@ pub async fn daemon_team_sync(
 /// cache now. Called after a successful Cloud API env-secret write/delete so
 /// the agent runtime does not wait up to 5 minutes for the background tick.
 pub async fn daemon_team_cloud_reconcile(team_id: &str) -> Result<(), String> {
+    let body = wire::ReconcileCloudConfigRequest {
+        team_id: Some(team_id.to_owned()),
+    };
     daemon_request_unit(
         reqwest::Method::POST,
         "/v1/team/cloud-config/reconcile",
         "",
-        &["workspace:write"],
-        Some(&serde_json::json!({ "teamId": team_id })),
+        WRITE,
+        Some(&body),
     )
     .await
 }
@@ -211,40 +123,29 @@ pub async fn daemon_team_cloud_reconcile(team_id: &str) -> Result<(), String> {
 /// `GET /v1/team/sync/status?teamId=<id>` — current sync status.
 pub async fn daemon_team_sync_status(team_id: &str) -> Result<serde_json::Value, String> {
     let query = format!("?teamId={}", urlencode(team_id));
-    daemon_request::<(), _>(
+    daemon_request(
         reqwest::Method::GET,
         "/v1/team/sync/status",
         &query,
-        &["workspace:read"],
-        None,
+        READ,
+        NO_BODY,
     )
     .await
 }
 
-/// Non-sensitive status of the team secret held by the local daemon.
+/// Whether the local daemon holds this team's OSS secret.
 ///
 /// The daemon deliberately returns only whether the secret is present (and a
 /// masked fingerprint); this desktop surface further reduces that to a boolean
 /// for the Environment Variables settings panel.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DaemonTeamSecretStatus {
-    oss_team_secret: DaemonSecretSetStatus,
-}
-
-#[derive(Debug, Deserialize)]
-struct DaemonSecretSetStatus {
-    set: bool,
-}
-
 pub async fn daemon_team_env_available(team_id: &str) -> Result<bool, String> {
     let query = format!("?teamId={}", urlencode(team_id));
-    let status: DaemonTeamSecretStatus = daemon_request::<(), _>(
+    let status: wire::TeamSecretsStatusResponse = daemon_request(
         reqwest::Method::GET,
         "/v1/team/secrets",
         &query,
-        &["workspace:read"],
-        None,
+        READ,
+        NO_BODY,
     )
     .await?;
     Ok(status.oss_team_secret.set)
@@ -257,41 +158,46 @@ pub async fn daemon_team_secrets(
     team_id: &str,
     oss_team_secret: Option<&str>,
 ) -> Result<(), String> {
-    let mut body = serde_json::Map::new();
-    body.insert("teamId".to_string(), serde_json::json!(team_id));
-    if let Some(v) = oss_team_secret {
-        body.insert("ossTeamSecret".to_string(), serde_json::json!(v));
-    }
+    let body = wire::TeamSecretsRequest {
+        team_id: team_id.to_owned(),
+        oss_team_secret: oss_team_secret.map(str::to_owned),
+    };
     daemon_request_unit(
         reqwest::Method::POST,
         "/v1/team/secrets",
         "",
-        &["workspace:write"],
-        Some(&serde_json::Value::Object(body)),
+        WRITE,
+        Some(&body),
     )
     .await
 }
 
 /// `POST /v1/team/link` `{ path }` — materialize the global team dir + symlink.
 pub async fn daemon_team_link(workspace_path: &str) -> Result<serde_json::Value, String> {
+    let body = wire::TeamLinkRequest {
+        path: Some(workspace_path.to_owned()),
+    };
     daemon_request(
         reqwest::Method::POST,
         "/v1/team/link",
         "",
-        &["workspace:write"],
-        Some(&serde_json::json!({ "path": workspace_path })),
+        WRITE,
+        Some(&body),
     )
     .await
 }
 
 /// `POST /v1/team/unlink` `{ path }` — drop workspace symlink + empty global scaffold.
 pub async fn daemon_team_unlink(workspace_path: &str) -> Result<(), String> {
+    let body = wire::TeamLinkRequest {
+        path: Some(workspace_path.to_owned()),
+    };
     daemon_request_unit(
         reqwest::Method::POST,
         "/v1/team/unlink",
         "",
-        &["workspace:write"],
-        Some(&serde_json::json!({ "path": workspace_path })),
+        WRITE,
+        Some(&body),
     )
     .await
 }
@@ -301,12 +207,12 @@ pub async fn daemon_team_unlink(workspace_path: &str) -> Result<(), String> {
 /// `GET /v1/team/conflicts?teamId=<id>`.
 pub async fn daemon_team_conflicts(team_id: &str) -> Result<serde_json::Value, String> {
     let query = format!("?teamId={}", urlencode(team_id));
-    daemon_request::<(), _>(
+    daemon_request(
         reqwest::Method::GET,
         "/v1/team/conflicts",
         &query,
-        &["workspace:read"],
-        None,
+        READ,
+        NO_BODY,
     )
     .await
 }
@@ -322,19 +228,20 @@ pub async fn daemon_team_resolve_conflict(
     sidecar: Option<&str>,
     choice: &str,
 ) -> Result<(), String> {
-    let mut body = serde_json::json!({
-        "teamId": team_id,
-        "path": path,
-        "choice": choice,
-    });
-    if let Some(sidecar) = sidecar.map(str::trim).filter(|s| !s.is_empty()) {
-        body["sidecar"] = serde_json::Value::String(sidecar.to_string());
-    }
+    let body = wire::ResolveConflictRequest {
+        team_id: team_id.to_owned(),
+        path: path.to_owned(),
+        sidecar: sidecar
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        choice: choice.to_owned(),
+    };
     daemon_request_unit(
         reqwest::Method::POST,
         "/v1/team/conflicts/resolve",
         "",
-        &["workspace:write"],
+        WRITE,
         Some(&body),
     )
     .await
@@ -350,12 +257,12 @@ pub async fn daemon_team_versions(
     if let Some(c) = cursor {
         query.push_str(&format!("&cursor={}", urlencode(c)));
     }
-    daemon_request::<(), _>(
+    daemon_request(
         reqwest::Method::GET,
         "/v1/team/versions",
         &query,
-        &["workspace:read"],
-        None,
+        READ,
+        NO_BODY,
     )
     .await
 }
@@ -366,16 +273,17 @@ pub async fn daemon_team_restore_version(
     path: &str,
     content_hash: &str,
 ) -> Result<(), String> {
+    let body = wire::RestoreVersionRequest {
+        team_id: team_id.to_owned(),
+        path: path.to_owned(),
+        content_hash: content_hash.to_owned(),
+    };
     daemon_request_unit(
         reqwest::Method::POST,
         "/v1/team/versions/restore",
         "",
-        &["workspace:write"],
-        Some(&serde_json::json!({
-            "teamId": team_id,
-            "path": path,
-            "contentHash": content_hash,
-        })),
+        WRITE,
+        Some(&body),
     )
     .await
 }
@@ -671,14 +579,7 @@ pub async fn team_file_content(
         urlencode(&path),
         urlencode(&r#ref)
     );
-    daemon_request::<(), _>(
-        reqwest::Method::GET,
-        "/v1/team/file",
-        &query,
-        &["workspace:read"],
-        None,
-    )
-    .await
+    daemon_request::<(), _>(reqwest::Method::GET, "/v1/team/file", &query, READ, NO_BODY).await
 }
 
 /// `GET /v1/team/changed` — files with local changes.
@@ -689,8 +590,8 @@ pub async fn team_changed_files(team_id: String) -> Result<serde_json::Value, St
         reqwest::Method::GET,
         "/v1/team/changed",
         &query,
-        &["workspace:read"],
-        None,
+        READ,
+        NO_BODY,
     )
     .await
 }
@@ -708,8 +609,8 @@ pub async fn team_remote_pending(team_id: String) -> Result<serde_json::Value, S
         reqwest::Method::GET,
         "/v1/team/remote-pending",
         &query,
-        &["workspace:read"],
-        None,
+        READ,
+        NO_BODY,
     )
     .await
 }

@@ -1,15 +1,28 @@
-//! Tauri commands that let the frontend discover the daemon's local HTTP server.
+//! Tauri commands that let the frontend discover the daemon's local HTTP
+//! server, plus the desktop-side helpers over its `/v1/workspaces*`,
+//! `/v1/agent/*` and `/v1/rpc` routes.
 //!
 //! The daemon writes two runtime files when it starts its HTTP listener:
-//! - `<amuxd-home>/amuxd.http.port`  — the bound TCP port (decimal)
-//! - `<amuxd-home>/amuxd.http.token` — the root bearer token
+//! - `<amuxd-home>/run/amuxd.http.port`  — the bound TCP port (decimal)
+//! - `<amuxd-home>/run/amuxd.http.token` — the root bearer token
 //!
 //! Official brands use `~/.amuxd`; white-label uses `~/.amuxd-<brand>`.
 //!
-//! The desktop reads both and returns them to the frontend webview so it can
-//! build authenticated requests against `http://127.0.0.1:{port}/v1/*`.
+//! Discovery, the shared HTTP client and scoped-token exchange all live in
+//! [`crate::daemon_client`]; this file only knows the endpoints.
 
-use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::time::Duration;
+
+use serde::Serialize;
+
+use crate::daemon_client::{self as daemon, wire, DaemonError, RequestSpec, NO_BODY};
+
+pub use wire::MaterializeTeamMcpResponse;
+
+const WORKSPACE_READ: &[&str] = &["workspace:read"];
+const WORKSPACE_WRITE: &[&str] = &["workspace:write"];
+const WORKSPACE_READ_WRITE: &[&str] = &["workspace:read", "workspace:write"];
 
 fn amuxd_dir() -> std::path::PathBuf {
     super::amuxd_home_dir()
@@ -34,47 +47,15 @@ pub struct LocalDaemonWorkspace {
     pub is_default: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct ListWorkspacesResponse {
-    #[serde(default)]
-    workspaces: Vec<ListedWorkspaceRecord>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListedWorkspaceRecord {
-    workspace_id: String,
-    path: String,
-    display_name: String,
-    #[serde(default)]
-    is_default: bool,
-}
-
 /// Return the daemon HTTP base URL and root token, or `None` if the daemon is
 /// not running or has not started its HTTP listener yet.
 #[tauri::command]
 pub async fn get_daemon_http_info() -> Result<Option<DaemonHttpInfo>, String> {
-    let amuxd_dir = crate::commands::amuxd_run_dir();
-
-    let port_path = amuxd_dir.join("amuxd.http.port");
-    let token_path = amuxd_dir.join("amuxd.http.token");
-
-    let port_str = match std::fs::read_to_string(&port_path) {
-        Ok(s) => s.trim().to_owned(),
-        Err(_) => return Ok(None),
-    };
-    let port: u16 = match port_str.parse() {
-        Ok(p) => p,
-        Err(_) => return Ok(None),
-    };
-
-    let root_token = match std::fs::read_to_string(&token_path) {
-        Ok(s) => s.trim().to_owned(),
-        Err(_) => return Ok(None),
-    };
-
-    Ok(Some(DaemonHttpInfo {
-        base_url: format!("http://127.0.0.1:{port}"),
-        root_token,
+    // `discover` only fails when there is no usable listener published, which
+    // is exactly the `None` this command promises.
+    Ok(daemon::discover().ok().map(|ep| DaemonHttpInfo {
+        base_url: ep.base_url,
+        root_token: ep.root_token,
     }))
 }
 
@@ -91,7 +72,27 @@ pub async fn get_daemon_team_id() -> Result<Option<String>, String> {
     Ok(crate::commands::amuxd_active_team())
 }
 
-/// Minimal view of `~/.amuxd/backend.toml` — just the actor_id field.
+/// The daemon's actor_id, or an empty string while the daemon is not onboarded
+/// or not ready — callers treat empty as "not ready".
+///
+/// Steady state this is what `GET /v1/setup/status` last answered: `daemon_live`
+/// refreshes it every time the daemon (re)connects and onboarding records it on
+/// claim, so the desktop no longer opens the daemon's private `backend.toml`
+/// (which also carries a refresh token) to learn its own daemon's identity.
+///
+/// Sync because its caller, `register_window_workspace`, is a sync command. On a
+/// cold cache — a window bound before the daemon's first connect — it falls back
+/// to the file read one more time and kicks a background refresh so the next
+/// call is answered by the endpoint.
+pub(crate) fn read_daemon_actor_id() -> String {
+    if let Some(actor_id) = daemon::cached_actor_id() {
+        return actor_id;
+    }
+    daemon::refresh_actor_id_in_background();
+    read_backend_toml_actor_id()
+}
+
+/// Minimal view of `teams/<id>/state/backend.toml` — just the actor_id field.
 #[derive(Debug, serde::Deserialize)]
 struct BackendCloudApi {
     #[serde(default)]
@@ -104,14 +105,11 @@ struct BackendConfig {
     cloud_api: Option<BackendCloudApi>,
 }
 
-/// The daemon's actor_id, read from the active team's
-/// `teams/<id>/state/backend.toml` (`[cloud_api] actor_id`) — the file's only
-/// home since the layout sank credentials into the team directory, and the only
-/// place this identity is persisted at all: `daemon.toml` carries just the
-/// `active_team` pointer this function follows.
-/// Returns an empty string when the daemon hasn't been onboarded (no config /
-/// no actor_id) or the file can't be read — callers treat empty as "not ready".
-pub(crate) fn read_daemon_actor_id() -> String {
+/// Cold-cache fallback for [`read_daemon_actor_id`]: the active team's
+/// `state/backend.toml` (`[cloud_api] actor_id`), followed through the
+/// `active_team` pointer in `daemon.toml`. Goes away once the one sync caller
+/// can await [`daemon::refresh_actor_id`] instead.
+fn read_backend_toml_actor_id() -> String {
     let Some(team) = crate::commands::amuxd_active_team() else {
         return String::new();
     };
@@ -136,61 +134,22 @@ pub(crate) fn read_daemon_actor_id() -> String {
 /// `GET /v1/workspaces`, which sources from the cloud `amux.workspaces` table
 /// (the sole source of truth) filtered to paths that exist on this machine.
 ///
-/// Replaces reading `~/.amuxd/workspaces.toml` directly — that local mirror
-/// was deleted; cron's workspace picker now goes through the same cloud-backed
-/// endpoint the gateway's `list_workspaces`/`set_workspace` use.
-///
 /// Returns an empty list (not an error) when the daemon HTTP listener isn't
 /// up yet (port/token files missing) so callers can treat it as a soft no-op.
+/// A daemon that is up but answers badly — non-2xx, or a body that does not
+/// decode — is an error: the caller (`local-daemon-workspaces.ts`) catches it,
+/// and an empty picker with a logged cause beats one with no cause.
 #[tauri::command]
 pub async fn list_local_daemon_workspaces() -> Result<Vec<LocalDaemonWorkspace>, String> {
-    let amuxd_dir = crate::commands::amuxd_run_dir();
-    let port: u16 = match std::fs::read_to_string(amuxd_dir.join("amuxd.http.port")) {
-        Ok(s) => match s.trim().parse() {
-            Ok(p) => p,
-            Err(_) => return Ok(vec![]),
-        },
-        Err(_) => return Ok(vec![]),
+    let Ok(endpoint) = daemon::discover() else {
+        return Ok(vec![]);
     };
-    let root_token = match std::fs::read_to_string(amuxd_dir.join("amuxd.http.token")) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => return Ok(vec![]),
-    };
-    let base = format!("http://127.0.0.1:{port}");
-    let client = reqwest::Client::new();
-
-    let exchange: DaemonAuthExchangeResponse = match client
-        .post(format!("{base}/v1/auth/exchange"))
-        .header("Authorization", format!("Bearer {root_token}"))
-        .json(&serde_json::json!({
-            "scopes": ["workspace:read"],
-            "ttl_seconds": 300,
-        }))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-    {
-        Ok(resp) => match resp.json().await {
-            Ok(v) => v,
-            Err(_) => return Ok(vec![]),
-        },
-        Err(_) => return Ok(vec![]),
-    };
-
-    let listed: ListWorkspacesResponse = match client
-        .get(format!("{base}/v1/workspaces"))
-        .header("Authorization", format!("Bearer {}", exchange.token))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-    {
-        Ok(resp) => match resp.json().await {
-            Ok(v) => v,
-            Err(_) => return Ok(vec![]),
-        },
-        Err(_) => return Ok(vec![]),
-    };
-
+    let listed: wire::ListWorkspacesResponse = daemon::call(
+        &endpoint,
+        RequestSpec::get("/v1/workspaces", WORKSPACE_READ),
+        NO_BODY,
+    )
+    .await?;
     Ok(listed
         .workspaces
         .into_iter()
@@ -208,37 +167,6 @@ fn encode_workspace_id(workspace_path: &str) -> String {
     URL_SAFE_NO_PAD.encode(workspace_path.as_bytes())
 }
 
-#[derive(Debug, Deserialize)]
-pub struct MaterializeTeamMcpResponse {
-    pub changed: bool,
-    pub added_count: usize,
-}
-
-async fn exchange_daemon_workspace_token(
-    scopes: &[&str],
-    ttl_seconds: u64,
-) -> Result<(String, String), String> {
-    let (base, root_token) =
-        daemon_http_base().ok_or_else(|| "daemon http port/token files not present".to_string())?;
-    let client = reqwest::Client::new();
-    let exchange: DaemonAuthExchangeResponse = client
-        .post(format!("{base}/v1/auth/exchange"))
-        .header("Authorization", format!("Bearer {root_token}"))
-        .json(&serde_json::json!({
-            "scopes": scopes,
-            "ttl_seconds": ttl_seconds,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("auth exchange: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("auth exchange: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("auth exchange decode: {e}"))?;
-    Ok((base, exchange.token))
-}
-
 /// Ask the local daemon to materialize team MCP definitions into `opencode.json`.
 ///
 /// Best-effort from team-git join: returns `Err` when the daemon HTTP listener
@@ -247,40 +175,16 @@ async fn exchange_daemon_workspace_token(
 pub async fn materialize_team_mcp_via_daemon(
     workspace_path: &str,
 ) -> Result<MaterializeTeamMcpResponse, String> {
-    let (base, token) = exchange_daemon_workspace_token(&["workspace:write"], 300).await?;
-
     let ws_id = encode_workspace_id(workspace_path);
-    let client = reqwest::Client::new();
-    client
-        .post(format!("{base}/v1/workspaces/{ws_id}/mcp/materialize-team"))
-        .header("Authorization", format!("Bearer {token}"))
-        .send()
-        .await
-        .map_err(|e| format!("materialize-team request: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("materialize-team: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("materialize-team decode: {e}"))
+    let path = format!("/v1/workspaces/{ws_id}/mcp/materialize-team");
+    Ok(daemon::call_discovered(RequestSpec::post(&path, WORKSPACE_WRITE), NO_BODY).await?)
 }
 
 /// `GET /v1/workspaces/:id/mcp` — merged MCP map for the workspace.
 pub async fn get_mcp_via_daemon(workspace_path: &str) -> Result<serde_json::Value, String> {
-    let (base, token) =
-        exchange_daemon_workspace_token(&["workspace:read", "workspace:write"], 300).await?;
     let ws_id = encode_workspace_id(workspace_path);
-    let client = reqwest::Client::new();
-    client
-        .get(format!("{base}/v1/workspaces/{ws_id}/mcp"))
-        .header("Authorization", format!("Bearer {token}"))
-        .send()
-        .await
-        .map_err(|e| format!("mcp get request: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("mcp get: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("mcp get decode: {e}"))
+    let path = format!("/v1/workspaces/{ws_id}/mcp");
+    Ok(daemon::call_discovered(RequestSpec::get(&path, WORKSPACE_READ_WRITE), NO_BODY).await?)
 }
 
 /// `PUT /v1/workspaces/:id/mcp` — replace workspace MCP map. Returns `{ outcome }`.
@@ -288,64 +192,12 @@ pub async fn put_mcp_via_daemon(
     workspace_path: &str,
     servers: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let (base, token) =
-        exchange_daemon_workspace_token(&["workspace:read", "workspace:write"], 300).await?;
     let ws_id = encode_workspace_id(workspace_path);
-    let client = reqwest::Client::new();
-    client
-        .put(format!("{base}/v1/workspaces/{ws_id}/mcp"))
-        .header("Authorization", format!("Bearer {token}"))
-        .json(servers)
-        .send()
-        .await
-        .map_err(|e| format!("mcp put request: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("mcp put: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("mcp put decode: {e}"))
-}
-
-#[derive(Debug, Deserialize)]
-struct DaemonAuthExchangeResponse {
-    token: String,
-}
-
-/// Cached `sessions:write` session token for the local RPC fast path, keyed
-/// by base URL (the daemon binds a fresh loopback port on every restart).
-/// Avoids one `/v1/auth/exchange` round-trip per RPC.
-static DAEMON_RPC_TOKEN: std::sync::Mutex<Option<(String, String, std::time::Instant)>> =
-    std::sync::Mutex::new(None);
-
-async fn daemon_rpc_session_token(
-    client: &reqwest::Client,
-    base: &str,
-    root_token: &str,
-) -> Result<String, String> {
-    if let Some((cached_base, token, expires_at)) = DAEMON_RPC_TOKEN.lock().unwrap().clone() {
-        if cached_base == base && std::time::Instant::now() < expires_at {
-            return Ok(token);
-        }
-    }
-    let exchange: DaemonAuthExchangeResponse = client
-        .post(format!("{base}/v1/auth/exchange"))
-        .header("Authorization", format!("Bearer {root_token}"))
-        .json(&serde_json::json!({
-            "scopes": ["sessions:write"],
-            "ttl_seconds": 3600,
-        }))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("auth exchange: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("auth exchange decode: {e}"))?;
-    // Refresh 5 minutes before the daemon-side expiry.
-    let expires_at = std::time::Instant::now() + std::time::Duration::from_secs(3600 - 300);
-    *DAEMON_RPC_TOKEN.lock().unwrap() =
-        Some((base.to_string(), exchange.token.clone(), expires_at));
-    Ok(exchange.token)
+    let path = format!("/v1/workspaces/{ws_id}/mcp");
+    Ok(
+        daemon::call_discovered(RequestSpec::put(&path, WORKSPACE_READ_WRITE), Some(servers))
+            .await?,
+    )
 }
 
 /// Local fast-path RPC: POST the given `teamclu.RpcRequest` protobuf bytes
@@ -355,6 +207,8 @@ async fn daemon_rpc_session_token(
 /// The webview calls this only when the target actor is this machine's
 /// daemon; any error here makes the frontend fall back to the MQTT RPC path
 /// transparently, so failures are returned as plain strings, never panics.
+/// The `sessions:write` token is cached by the client and re-exchanged once on
+/// a `401` (daemon restarted on a reused port).
 #[tauri::command]
 pub async fn daemon_rpc(payload_b64: String) -> Result<String, String> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -362,113 +216,43 @@ pub async fn daemon_rpc(payload_b64: String) -> Result<String, String> {
     let payload = STANDARD
         .decode(payload_b64.as_bytes())
         .map_err(|e| format!("invalid base64 payload: {e}"))?;
-    let (base, root_token) =
-        daemon_http_base().ok_or_else(|| "daemon http port/token files not present".to_string())?;
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
-
-    let token = daemon_rpc_session_token(&client, &base, &root_token).await?;
-    let send = |token: String, payload: Vec<u8>| {
-        let client = client.clone();
-        let base = base.clone();
-        async move {
-            client
-                .post(format!("{base}/v1/rpc"))
-                .header("Authorization", format!("Bearer {token}"))
-                .header("Content-Type", "application/x-protobuf")
-                .body(payload)
-                .send()
-                .await
-                .map_err(|e| format!("rpc post: {e}"))
-        }
-    };
-
-    let mut resp = send(token, payload.clone()).await?;
-    if resp.status().as_u16() == 401 {
-        // Session token revoked (e.g. daemon restart with a reused port) —
-        // drop the cache and retry once with a fresh exchange.
-        *DAEMON_RPC_TOKEN.lock().unwrap() = None;
-        let token = daemon_rpc_session_token(&client, &base, &root_token).await?;
-        resp = send(token, payload).await?;
+    let endpoint = daemon::discover()?;
+    let spec = RequestSpec::post("/v1/rpc", &["sessions:write"]).timeout(Duration::from_secs(10));
+    let resp = daemon::send_bytes(&endpoint, spec, "application/x-protobuf", &payload).await?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("rpc status: {status}"));
     }
-    let resp = resp
-        .error_for_status()
-        .map_err(|e| format!("rpc status: {e}"))?;
     let bytes = resp.bytes().await.map_err(|e| format!("rpc body: {e}"))?;
     Ok(STANDARD.encode(&bytes))
 }
 
-fn daemon_http_base() -> Option<(String, String)> {
-    let amuxd_dir = crate::commands::amuxd_run_dir();
-    let port: u16 = std::fs::read_to_string(amuxd_dir.join("amuxd.http.port"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    let root_token = std::fs::read_to_string(amuxd_dir.join("amuxd.http.token"))
-        .ok()?
-        .trim()
-        .to_string();
-    Some((format!("http://127.0.0.1:{port}"), root_token))
-}
-
-#[derive(Debug, Deserialize)]
-struct DaemonProviderInfo {
-    id: String,
-    #[serde(default)]
-    models: Vec<String>,
+/// The `fetch_*` helpers below answer `None` on any failure because their
+/// callers (cron) treat "unknown" as "skip validation". The failure still gets
+/// logged, at debug level when the daemon is simply not running and as a
+/// warning for anything the daemon actually answered.
+fn log_soft_failure(what: &str, err: &DaemonError) {
+    if err.is_unavailable() {
+        tracing::debug!("[daemon-http] {what}: {err}");
+    } else {
+        tracing::warn!("[daemon-http] {what}: {err}");
+    }
 }
 
 /// `GET /v1/workspaces/:id/providers` — canonical LLM provider list for a workspace.
-pub async fn fetch_workspace_provider_model_keys(
-    workspace_path: &str,
-) -> Option<std::collections::HashSet<String>> {
-    let amuxd_dir = crate::commands::amuxd_run_dir();
-    let port: u16 = std::fs::read_to_string(amuxd_dir.join("amuxd.http.port"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    let root_token = std::fs::read_to_string(amuxd_dir.join("amuxd.http.token"))
-        .ok()?
-        .trim()
-        .to_string();
-    let base = format!("http://127.0.0.1:{port}");
-    let client = reqwest::Client::new();
-
-    let exchange: DaemonAuthExchangeResponse = client
-        .post(format!("{base}/v1/auth/exchange"))
-        .header("Authorization", format!("Bearer {root_token}"))
-        .json(&serde_json::json!({
-            "scopes": ["workspace:read"],
-            "ttl_seconds": 300,
-        }))
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .await
-        .ok()?;
-
+pub async fn fetch_workspace_provider_model_keys(workspace_path: &str) -> Option<HashSet<String>> {
     let ws_id = encode_workspace_id(workspace_path);
-    let providers: Vec<DaemonProviderInfo> = client
-        .get(format!("{base}/v1/workspaces/{ws_id}/providers"))
-        .header("Authorization", format!("Bearer {}", exchange.token))
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .await
-        .ok()?;
+    let path = format!("/v1/workspaces/{ws_id}/providers");
+    let providers: Vec<wire::ProviderInfo> =
+        match daemon::call_discovered(RequestSpec::get(&path, WORKSPACE_READ), NO_BODY).await {
+            Ok(v) => v,
+            Err(err) => {
+                log_soft_failure("workspace providers", &err);
+                return None;
+            }
+        };
 
-    let mut keys = std::collections::HashSet::new();
+    let mut keys = HashSet::new();
     for provider in providers {
         for model_id in provider.models {
             keys.insert(format!(
@@ -481,87 +265,30 @@ pub async fn fetch_workspace_provider_model_keys(
     Some(keys)
 }
 
-#[derive(Debug, Deserialize)]
-struct DaemonCatalogModel {
-    #[serde(rename = "ref")]
-    model_ref: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct DaemonBackendCatalog {
-    #[serde(default)]
-    models: Vec<DaemonCatalogModel>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DaemonModelCatalog {
-    #[serde(default)]
-    backends: Vec<DaemonBackendCatalog>,
-}
-
 /// `GET /v1/workspaces/:id/model-catalog` — model refs across every configured
 /// backend (OpenCode, Claude Code, Codex), lowercased for case-insensitive
 /// validation. Unlike `fetch_workspace_provider_model_keys` (OpenCode only)
 /// this is the source of truth for cron model validation, since a cron job may
 /// pin a Claude or Codex model that the OpenCode provider list never reports.
-pub async fn fetch_workspace_model_catalog_keys(
-    workspace_path: &str,
-) -> Option<std::collections::HashSet<String>> {
-    let amuxd_dir = crate::commands::amuxd_run_dir();
-    let port: u16 = std::fs::read_to_string(amuxd_dir.join("amuxd.http.port"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    let root_token = std::fs::read_to_string(amuxd_dir.join("amuxd.http.token"))
-        .ok()?
-        .trim()
-        .to_string();
-    let base = format!("http://127.0.0.1:{port}");
-    let client = reqwest::Client::new();
-
-    let exchange: DaemonAuthExchangeResponse = client
-        .post(format!("{base}/v1/auth/exchange"))
-        .header("Authorization", format!("Bearer {root_token}"))
-        .json(&serde_json::json!({
-            "scopes": ["workspace:read"],
-            "ttl_seconds": 300,
-        }))
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .await
-        .ok()?;
-
+pub async fn fetch_workspace_model_catalog_keys(workspace_path: &str) -> Option<HashSet<String>> {
     let ws_id = encode_workspace_id(workspace_path);
-    let catalog: DaemonModelCatalog = client
-        .get(format!("{base}/v1/workspaces/{ws_id}/model-catalog"))
-        .header("Authorization", format!("Bearer {}", exchange.token))
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .await
-        .ok()?;
+    let path = format!("/v1/workspaces/{ws_id}/model-catalog");
+    let catalog: wire::ModelCatalog =
+        match daemon::call_discovered(RequestSpec::get(&path, WORKSPACE_READ), NO_BODY).await {
+            Ok(v) => v,
+            Err(err) => {
+                log_soft_failure("workspace model catalog", &err);
+                return None;
+            }
+        };
 
-    let mut keys = std::collections::HashSet::new();
+    let mut keys = HashSet::new();
     for backend in catalog.backends {
         for model in backend.models {
             keys.insert(model.model_ref.to_lowercase());
         }
     }
     Some(keys)
-}
-
-#[derive(Debug, Deserialize)]
-struct DaemonDefaultWorkspaceResponse {
-    #[serde(default)]
-    path: Option<String>,
 }
 
 /// `GET /v1/agent/default-workspace` — the daemon's own agent's default
@@ -576,58 +303,24 @@ struct DaemonDefaultWorkspaceResponse {
 /// isn't onboarded, or the daemon has no resolvable default (no agent
 /// default configured and no on-disk team workspace either).
 pub async fn fetch_daemon_default_workspace_path() -> Option<String> {
-    let amuxd_dir = crate::commands::amuxd_run_dir();
-    let port: u16 = std::fs::read_to_string(amuxd_dir.join("amuxd.http.port"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    let root_token = std::fs::read_to_string(amuxd_dir.join("amuxd.http.token"))
-        .ok()?
-        .trim()
-        .to_string();
-    let base = format!("http://127.0.0.1:{port}");
-    let client = reqwest::Client::new();
-
-    let exchange: DaemonAuthExchangeResponse = client
-        .post(format!("{base}/v1/auth/exchange"))
-        .header("Authorization", format!("Bearer {root_token}"))
-        .json(&serde_json::json!({
-            "scopes": ["workspace:read"],
-            "ttl_seconds": 300,
-        }))
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .await
-        .ok()?;
-
-    let resp: DaemonDefaultWorkspaceResponse = client
-        .get(format!("{base}/v1/agent/default-workspace"))
-        .header("Authorization", format!("Bearer {}", exchange.token))
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .await
-        .ok()?;
-
+    let resp: wire::DefaultWorkspaceResponse = match daemon::call_discovered(
+        RequestSpec::get("/v1/agent/default-workspace", WORKSPACE_READ),
+        NO_BODY,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(err) => {
+            log_soft_failure("agent default workspace", &err);
+            return None;
+        }
+    };
     resp.path.filter(|p| !p.trim().is_empty())
 }
 
 /// Workspace record returned by the daemon's `POST /v1/workspaces` endpoint.
 /// Fields mirror the daemon's snake_case JSON (`RegisterWorkspaceResponseBody`).
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RegisteredDaemonWorkspace {
-    pub workspace_id: String,
-    pub path: String,
-    pub display_name: String,
-}
+pub type RegisteredDaemonWorkspace = wire::RegisterWorkspaceResponse;
 
 /// Register `workspace_path` into the cloud `amux.workspaces` table (the
 /// sole source of truth) by calling the daemon's loopback
@@ -663,49 +356,14 @@ pub async fn register_daemon_workspace(
     if let Err(e) = std::fs::create_dir_all(&path) {
         return Err(format!("create workspace dir {path}: {e}"));
     }
-    let run_dir = crate::commands::amuxd_run_dir();
-    let port: u16 = match std::fs::read_to_string(run_dir.join("amuxd.http.port")) {
-        Ok(s) => match s.trim().parse() {
-            Ok(p) => p,
-            Err(_) => return Ok(None),
-        },
-        Err(_) => return Ok(None),
+    let Ok(endpoint) = daemon::discover() else {
+        return Ok(None);
     };
-    let root_token = match std::fs::read_to_string(run_dir.join("amuxd.http.token")) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => return Ok(None),
-    };
-    let base = format!("http://127.0.0.1:{port}");
-    let client = reqwest::Client::new();
-
-    let exchange: DaemonAuthExchangeResponse = client
-        .post(format!("{base}/v1/auth/exchange"))
-        .header("Authorization", format!("Bearer {root_token}"))
-        .json(&serde_json::json!({
-            "scopes": ["workspace:write"],
-            "ttl_seconds": 300,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("auth exchange request failed: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("auth exchange rejected: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("auth exchange decode failed: {e}"))?;
-
-    let registered: RegisteredDaemonWorkspace = client
-        .post(format!("{base}/v1/workspaces"))
-        .header("Authorization", format!("Bearer {}", exchange.token))
-        .json(&serde_json::json!({ "path": path }))
-        .send()
-        .await
-        .map_err(|e| format!("register workspace request failed: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("register workspace rejected: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("register workspace decode failed: {e}"))?;
-
+    let registered: RegisteredDaemonWorkspace = daemon::call(
+        &endpoint,
+        RequestSpec::post("/v1/workspaces", WORKSPACE_WRITE),
+        Some(&wire::RegisterWorkspaceRequest { path }),
+    )
+    .await?;
     Ok(Some(registered))
 }

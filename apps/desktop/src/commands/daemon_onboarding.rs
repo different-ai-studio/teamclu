@@ -70,8 +70,13 @@ pub async fn daemon_init<R: Runtime>(
             stderr_buf.trim()
         ));
     }
-    parse_init_outcome(&stdout_buf)
-        .ok_or_else(|| format!("could not parse amuxd init output: {}", stdout_buf.trim()))
+    let outcome = parse_init_outcome(&stdout_buf)
+        .ok_or_else(|| format!("could not parse amuxd init output: {}", stdout_buf.trim()))?;
+    // The daemon's identity is known the moment the claim succeeds; record it
+    // so a workspace bound before the daemon's next connect does not have to
+    // read the daemon's private config for it.
+    crate::daemon_client::note_actor_id(&outcome.actor_id);
+    Ok(outcome)
 }
 
 /// Run `amuxd <args>` to completion, returning Err with stderr on non-zero exit.
@@ -110,7 +115,10 @@ async fn run_amuxd<R: Runtime>(app: &AppHandle<R>, args: &[&str]) -> Result<(), 
 #[tauri::command]
 pub async fn daemon_clear<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     crate::commands::amuxd_supervisor::AmuxdSupervisor::shutdown(&app).await;
-    run_amuxd(&app, &["clear", "--force"]).await
+    run_amuxd(&app, &["clear", "--force"]).await?;
+    // The identity the cleared state carried is gone with it.
+    crate::daemon_client::clear_actor_id();
+    Ok(())
 }
 
 #[cfg(test)]

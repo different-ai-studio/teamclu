@@ -42,6 +42,7 @@ use tauri_plugin_aptabase::EventTracker;
 
 mod branding;
 pub mod commands;
+pub mod daemon_client;
 mod local_cache;
 pub mod mqtt;
 pub mod opencode_paths;
