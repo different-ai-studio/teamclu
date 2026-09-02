@@ -48,6 +48,7 @@ mod messaging;
 mod peers_workspaces;
 mod remote_tools;
 mod rpc;
+mod app_git_credential;
 mod skills_manage;
 mod knowledge;
 mod runtime_lifecycle;
@@ -352,6 +353,14 @@ pub(crate) enum SockCommand {
     /// Knowledge-base MCP tools (scaffold / create / search) from the
     /// agent-facing MCP bridge. Pure vault file ops on the active team.
     Knowledge {
+        payload: serde_json::Value,
+        reply_tx: oneshot::Sender<String>,
+    },
+    /// A JIT Gitea deploy key for one app, asked for by
+    /// `amuxd git-ssh` — the `core.sshCommand` shim that stands behind every
+    /// `git push` an agent runs in an app checkout. Minted per ssh connection
+    /// and never written anywhere but the shim's own `0600` temp file.
+    AppGitCredential {
         payload: serde_json::Value,
         reply_tx: oneshot::Sender<String>,
     },
@@ -2030,6 +2039,9 @@ impl DaemonServer {
                             Some(SockCommand::SkillsManage { payload, reply_tx }) => {
                                 self.handle_skills_manage(payload, reply_tx).await;
                             }
+                            Some(SockCommand::AppGitCredential { payload, reply_tx }) => {
+                                self.handle_app_git_credential(payload, reply_tx).await;
+                            }
                             Some(SockCommand::Knowledge { payload, reply_tx }) => {
                                 self.handle_knowledge(payload, reply_tx).await;
                             }
@@ -2485,6 +2497,9 @@ impl DaemonServer {
                             }
                             Some(SockCommand::SkillsManage { payload, reply_tx }) => {
                                 self.handle_skills_manage(payload, reply_tx).await;
+                            }
+                            Some(SockCommand::AppGitCredential { payload, reply_tx }) => {
+                                self.handle_app_git_credential(payload, reply_tx).await;
                             }
                             Some(SockCommand::Knowledge { payload, reply_tx }) => {
                                 self.handle_knowledge(payload, reply_tx).await;
@@ -3010,6 +3025,32 @@ where
                                 }
                                 Err(_) => {
                                     warn!("amuxd.sock: skills-manage reply dropped");
+                                }
+                            }
+                        } else if cmd == "app-git-credential" {
+                            let (reply_tx, reply_rx) = oneshot::channel();
+                            if tx
+                                .send(SockCommand::AppGitCredential {
+                                    payload: v,
+                                    reply_tx,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                            match reply_rx.await {
+                                Ok(body) => {
+                                    let mut stream = reader.into_inner();
+                                    if let Err(e) = stream.write_all(body.as_bytes()).await {
+                                        warn!("amuxd.sock: app-git-credential write failed: {e}");
+                                        return;
+                                    }
+                                    let _ = stream.write_all(b"\n").await;
+                                    let _ = stream.shutdown().await;
+                                }
+                                Err(_) => {
+                                    warn!("amuxd.sock: app-git-credential reply dropped");
                                 }
                             }
                         } else if cmd == "knowledge" {

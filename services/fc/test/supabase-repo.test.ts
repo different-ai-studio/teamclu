@@ -1459,6 +1459,16 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
     auth: appsAuth(),
     from(table: string) {
       const ctx: any = { table, op: null, filters: {}, isFilters: {}, inFilters: {}, limitCount: null };
+      // `resolveCurrentMemberActor` filters `actor_type = 'member'` and the
+      // agent git-credential path filters `'agent'`. A seeded `actorRow` that
+      // names its own type must answer only the matching lookup; one that does
+      // not (most tests) still answers both, as it always has.
+      const matchActor = () => {
+        if (!actorRow) return null;
+        const wanted = ctx.filters.actor_type;
+        if (wanted && actorRow.actor_type && actorRow.actor_type !== wanted) return null;
+        return actorRow;
+      };
       const matchRows = () => {
         let rows = [...(state[table] ?? [])];
         for (const [col, val] of Object.entries(ctx.filters)) {
@@ -1561,11 +1571,11 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
             return Promise.resolve({ data: merged, error: null });
           }
           // plain select: actors lookup returns the actor row
-          if (table === "actors") return Promise.resolve({ data: actorRow, error: null });
+          if (table === "actors") return Promise.resolve({ data: matchActor(), error: null });
           return Promise.resolve({ data: matchRows()[0] ?? null, error: null });
         },
         maybeSingle() {
-          if (table === "actors") return Promise.resolve({ data: actorRow, error: null });
+          if (table === "actors") return Promise.resolve({ data: matchActor(), error: null });
           if (ctx.op === "delete") {
             const matched = matchRows();
             state[table] = (state[table] ?? []).filter((r: any) => !matched.includes(r));
@@ -1653,8 +1663,8 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   const items = await repo.listApps({ teamId: "team-1", limit: 100 });
   assert.equal(items.length, 1);
   assert.deepEqual(Object.keys(items[0]).sort(), [
-    "authMode", "authModePendingRedeploy", "createdAt", "fcStatus", "fcEndpoint",
-    "fcFunctionName", "fcRegion",
+    "authMode", "authModePendingRedeploy", "createdAt", "createdByActorId",
+    "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
     "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "name", "oauthClientId",
     "provisionStatus", "publicUrl",
     "runtime", "slug", "teamId", "type", "updatedAt", "visibility", "workspaceId",
@@ -1668,6 +1678,8 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   assert.equal(items[0].teamId, "team-1");
   assert.equal(items[0].workspaceId, "ws-1");
   assert.equal(items[0].provisionStatus, "pending");
+  // The apps list names who made each app; without this it can only show ids.
+  assert.equal(items[0].createdByActorId, "actor-app-1");
 });
 
 test("apps: authModePendingRedeploy is derived from the deployed mode", async () => {
@@ -2194,6 +2206,170 @@ test("apps: getAppGitCredential mints a deploy key for admin permission", async 
   assert.ok(deployKeyCalled, "admin grant must register a deploy key");
   assert.equal(cred?.remoteUrl, GITEA_MANAGED_APP.git_remote_url);
   assert.match(cred!.privateKeyPem, /BEGIN OPENSSH PRIVATE KEY/);
+});
+
+// ── agent-actor git credential (方案 A) ───────────────────────────────────
+//
+// The daemon holds its own cloud account and so never resolves to a member
+// actor. Without this path the shim behind `core.sshCommand` gets a 404 and
+// the agent's `git push` fails — which is the bug these tests exist for.
+
+test("apps: an agent actor in the app's team gets a deploy key", async () => {
+  let title = "";
+  const gitea = fakeGitea({
+    createDeployKey: async (_appId: string, t: string) => { title = t; return { id: 7 }; },
+  });
+  const repo = appsRepo(
+    appsSupabase({
+      seed: { apps: [GITEA_MANAGED_APP] },
+      actorRow: { id: "agent-actor-1", actor_type: "agent" },
+    }),
+    { gitea },
+  );
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.equal(cred?.remoteUrl, GITEA_MANAGED_APP.git_remote_url);
+  assert.match(cred!.privateKeyPem, /BEGIN OPENSSH PRIVATE KEY/);
+  assert.ok(
+    title.startsWith("jit-agent-actor-1-"),
+    `key title must name the agent actor, got ${title}`,
+  );
+});
+
+test("apps: the agent path reads past RLS for a personal app", async () => {
+  // `apps.visibility` defaults to `personal`, which `apps_select_if_visible`
+  // hides from every actor but the creator — including the daemon on the very
+  // machine the app is checked out on. Without the service-role re-read the
+  // agent path 404s on exactly the apps it is needed for.
+  const personal = { ...GITEA_MANAGED_APP, visibility: "personal" };
+  const invisible = appsSupabase({
+    seed: { apps: [] },
+    actorRow: { id: "agent-actor-1", actor_type: "agent" },
+  });
+  const admin = appsSupabase({ seed: { apps: [personal] } });
+  const repo = appsRepo(invisible, { createServiceRoleClient: () => admin });
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.equal(cred?.remoteUrl, personal.git_remote_url);
+});
+
+test("apps: a view-only member is denied, not handed the agent path", async () => {
+  const gitea = fakeGitea({
+    createDeployKey: async () => { throw new Error("must not be called"); },
+  });
+  const repo = appAccessRepo("view", "member-other", { gitea });
+  assert.equal(await repo.getAppGitCredential("app-1"), null);
+});
+
+test("apps: an agent actor from another team gets nothing", async () => {
+  const gitea = fakeGitea({
+    createDeployKey: async () => { throw new Error("must not be called"); },
+  });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] }, actorRow: null }),
+    { gitea },
+  );
+  assert.equal(await repo.getAppGitCredential("app-1"), null);
+});
+
+test("apps: the agent path still refuses an imported app", async () => {
+  const gitea = fakeGitea({
+    createDeployKey: async () => { throw new Error("must not be called"); },
+  });
+  const imported = { ...GITEA_MANAGED_APP, git_auth_kind: null };
+  const repo = appsRepo(
+    appsSupabase({
+      seed: { apps: [imported] },
+      actorRow: { id: "agent-actor-1", actor_type: "agent" },
+    }),
+    { gitea },
+  );
+  assert.equal(await repo.getAppGitCredential("app-1"), null);
+});
+
+test("apps: revoking returns the key when it belongs to the caller", async () => {
+  const now = Date.now();
+  const deleted: number[] = [];
+  const gitea = fakeGitea({
+    listDeployKeys: async () => [{ id: 7, title: `jit-actor-app-1-${now}-aaaa` }],
+    deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
+  });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), { gitea });
+  assert.deepEqual(await repo.revokeAppGitCredential("app-1", 7), { revoked: true });
+  assert.deepEqual(deleted, [7]);
+});
+
+test("apps: an agent actor can return the key it was issued", async () => {
+  const now = Date.now();
+  const deleted: number[] = [];
+  const gitea = fakeGitea({
+    listDeployKeys: async () => [{ id: 8, title: `jit-agent-actor-1-${now}-bbbb` }],
+    deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
+  });
+  const repo = appsRepo(
+    appsSupabase({
+      seed: { apps: [GITEA_MANAGED_APP] },
+      actorRow: { id: "agent-actor-1", actor_type: "agent" },
+    }),
+    { gitea },
+  );
+  assert.deepEqual(await repo.revokeAppGitCredential("app-1", 8), { revoked: true });
+  assert.deepEqual(deleted, [8]);
+});
+
+test("apps: revoking is refused to a caller with no access", async () => {
+  const gitea = fakeGitea({
+    deleteDeployKey: async () => { throw new Error("must not be called"); },
+  });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] }, actorRow: null }),
+    { gitea },
+  );
+  assert.equal(await repo.revokeAppGitCredential("app-1", 7), null);
+});
+
+test("apps: revoking never touches another actor's key", async () => {
+  const now = Date.now();
+  const deleted: number[] = [];
+  const gitea = fakeGitea({
+    listDeployKeys: async () => [{ id: 9, title: `jit-someone-else-${now}-cccc` }],
+    deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
+  });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), { gitea });
+  assert.deepEqual(await repo.revokeAppGitCredential("app-1", 9), { revoked: false });
+  assert.deepEqual(deleted, [], "a live key of another actor's is left alone");
+});
+
+test("apps: a local checkout creates no repo and lands ready", async () => {
+  // Option 1 of the create flow: the user pointed us at a git directory that
+  // already exists. Provisioning anything would be wrong twice over — there is
+  // no repo of ours to make, and `pending` would send the desktop down the seed
+  // path, which writes the starter template over their files.
+  const gitea = fakeGitea({
+    createAppRepo: async () => { throw new Error("must not be called"); },
+  });
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ calls }), { gitea });
+  const app = await repo.createApp({
+    teamId: "team-1",
+    name: "My Repo",
+    type: "imported",
+    visibility: "team",
+    localOnly: true,
+  });
+  const insert = calls.find((c) => c.table === "apps" && c.op === "insert");
+  assert.equal(insert?.row.provision_status, "ready");
+  assert.equal(insert?.row.git_remote_url, null);
+  assert.equal(app.type, "imported");
+});
+
+test("apps: a local checkout does not need Gitea configured at all", async () => {
+  const repo = appsRepo(appsSupabase(), { gitea: null, giteaUnavailableReason: "GITEA_URL is empty" });
+  const app = await repo.createApp({
+    teamId: "team-1",
+    name: "My Repo",
+    type: "imported",
+    localOnly: true,
+  });
+  assert.ok(app.id);
 });
 
 test("apps: createApp inserts a pending app when importing an external repo", async () => {

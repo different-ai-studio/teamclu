@@ -220,7 +220,6 @@ export function NavRail() {
                 onClick={() => setFilter({ kind: 'ideas' })}
               />
             ) : null}
-            {features.apps && <AppsNavSection />}
             {!embedMode ? (
               <TopEntry
                 label={t('common.shortcuts', 'Shortcuts')}
@@ -230,6 +229,12 @@ export function NavRail() {
               />
             ) : null}
             <TeamShareNavSection sections={['mcp', 'env']} />
+            {/*
+              Last, and collapsed until asked for: this is the only row here
+              that unfolds into a list of its own, so anywhere above it the
+              rows below would move every time it opened.
+            */}
+            {features.apps && <AppsNavSection />}
           </div>
         )}
       </div>

@@ -1290,6 +1290,97 @@ export interface DaemonAppWorkdirInfo {
   deviceName: string
 }
 
+/**
+ * Which apps this machine actually holds a checkout for.
+ *
+ * One call, not one per app: the sidebar list filters on this, and resolving a
+ * workdir and reading it for each app separately was two round trips apiece on
+ * every refresh.
+ *
+ * Returns null when the daemon is unreachable — the caller must tell that apart
+ * from "no apps are local", because the two mean opposite things for what the
+ * sidebar should show.
+ */
+export async function daemonLocalAppIds(teamId?: string | null): Promise<string[] | null> {
+  try {
+    const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
+    const result = await daemonFetch<{ appIds?: string[] }>(`/v1/apps/local${query}`)
+    if (!result.ok) {
+      console.warn('[daemon-local-client] local apps unavailable (non-fatal):', result.error)
+      return null
+    }
+    return Array.isArray(result.data.appIds) ? result.data.appIds : []
+  } catch (err) {
+    console.warn('[daemon-local-client] local apps unavailable:', err)
+    return null
+  }
+}
+
+export interface InspectDirResult {
+  isGitRepo: boolean
+  /** `origin` on that checkout, when it has one. */
+  gitRemoteUrl: string | null
+}
+
+/**
+ * Ask the daemon whether a picked directory is a git checkout, and where it
+ * came from — before any app row exists.
+ *
+ * Returns null when the daemon cannot answer, which the caller must not treat
+ * as "not a git repo": one is a reason to block the pick, the other is a reason
+ * to say the daemon is offline.
+ */
+export async function inspectDaemonDir(path: string): Promise<InspectDirResult | null> {
+  try {
+    const result = await daemonFetch<{ isGitRepo?: boolean; gitRemoteUrl?: string }>(
+      '/v1/apps/inspect-dir',
+      { method: 'POST', body: JSON.stringify({ path }) },
+    )
+    if (!result.ok) {
+      console.warn('[daemon-local-client] inspect-dir failed (non-fatal):', result.error)
+      return null
+    }
+    return {
+      isGitRepo: result.data.isGitRepo === true,
+      gitRemoteUrl: result.data.gitRemoteUrl?.trim() || null,
+    }
+  } catch (err) {
+    console.warn('[daemon-local-client] inspect-dir unavailable:', err)
+    return null
+  }
+}
+
+export interface BindAppWorkdirResult {
+  workdir: string
+  /** `origin` on the bound checkout, when it has one. */
+  gitRemoteUrl: string | null
+}
+
+/**
+ * Point an app at a git checkout that already exists on this machine.
+ *
+ * Nothing is moved or written — unlike {@link moveDaemonAppWorkdir}, which
+ * relocates the tree. Throws with the daemon's own reason so the picker can say
+ * "not a git repository" at the moment of choosing rather than failing later.
+ */
+export async function bindDaemonAppWorkdir(
+  appId: string,
+  teamId: string,
+  workdir: string,
+): Promise<BindAppWorkdirResult> {
+  const result = await daemonFetch<{ workdir: string; gitRemoteUrl?: string }>(
+    `/v1/apps/${encodeURIComponent(appId)}/bind-workdir`,
+    { method: 'POST', body: JSON.stringify({ teamId, workdir }) },
+  )
+  if (!result.ok) {
+    throw new Error(result.error ?? 'could not bind the app to that directory')
+  }
+  return {
+    workdir: result.data.workdir,
+    gitRemoteUrl: result.data.gitRemoteUrl?.trim() || null,
+  }
+}
+
 export async function daemonAppWorkdir(
   appId: string,
   teamId?: string | null,

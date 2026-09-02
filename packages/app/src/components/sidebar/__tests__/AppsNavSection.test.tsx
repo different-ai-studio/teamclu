@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { AppsNavSection } from '../AppsNavSection'
 import { useUIStore } from '@/stores/ui'
 import { useAppsStore } from '@/stores/apps-store'
@@ -12,8 +12,11 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
-vi.mock('@/components/apps/CreateAppDialog', () => ({
-  CreateAppDialog: () => null,
+// The section opens the library now, not the create dialog — creating moved
+// inside it. Mocked so these tests stay about the nav row.
+vi.mock('@/components/apps/AppLibraryDialog', () => ({
+  AppLibraryDialog: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="app-library-dialog" /> : null,
 }))
 
 vi.mock('@tauri-apps/plugin-shell', () => ({
@@ -58,10 +61,32 @@ describe('AppsNavSection', () => {
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
   })
 
+  it('the header button opens the library, not a create dialog', () => {
+    render(<AppsNavSection />)
+    expect(screen.queryByTestId('app-library-dialog')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /所有应用/ }))
+    expect(screen.getByTestId('app-library-dialog')).toBeInTheDocument()
+  })
+
+  it('selecting an app never opens the list', () => {
+    // It used to expand AND persist 'true', so one click on one app left the
+    // list unfolded on every launch from then on — "default collapsed" held
+    // only until the first time anyone opened an app.
+    render(<AppsNavSection />)
+    expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
+    act(() => {
+      useAppsStore.setState({ selectedAppId: 'app-1' })
+    })
+    expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
+    expect(localStorage.getItem('teamclu.nav.appsExpanded')).toBe(null)
+  })
+
   it('title row selects apps filter without toggling the list', () => {
     render(<AppsNavSection />)
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /应用/ }))
+    // Anchored: the library button next to it is named 所有应用, which an
+    // unanchored /应用/ also matches.
+    fireEvent.click(screen.getByRole('button', { name: /^应用/ }))
     expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'apps' })
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
   })

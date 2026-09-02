@@ -9,10 +9,12 @@ const mocks = vi.hoisted(() => ({
   deployApp: vi.fn(),
   finalizeDeploy: vi.fn(),
   getGitCredential: vi.fn(),
+  revokeGitCredential: vi.fn(),
   getGitHead: vi.fn(),
   seedDaemonApp: vi.fn(),
   cloneDaemonApp: vi.fn(),
   daemonAppWorkdir: vi.fn(),
+  daemonLocalAppIds: vi.fn(),
   buildDaemonApp: vi.fn(),
   bindAppWorkdir: vi.fn(),
   getDaemonEnvActivationDiagnostics: vi.fn(),
@@ -37,6 +39,7 @@ vi.mock("@/lib/backend", () => ({
       deployApp: mocks.deployApp,
       finalizeDeploy: mocks.finalizeDeploy,
       getGitCredential: mocks.getGitCredential,
+      revokeGitCredential: mocks.revokeGitCredential,
       getGitHead: mocks.getGitHead,
     },
   }),
@@ -47,6 +50,7 @@ vi.mock("@/lib/daemon-local-client", () => ({
   seedDaemonApp: mocks.seedDaemonApp,
   cloneDaemonApp: mocks.cloneDaemonApp,
   daemonAppWorkdir: mocks.daemonAppWorkdir,
+  daemonLocalAppIds: mocks.daemonLocalAppIds,
   buildDaemonApp: mocks.buildDaemonApp,
   getDaemonEnvActivationDiagnostics: mocks.getDaemonEnvActivationDiagnostics,
 }));
@@ -485,6 +489,29 @@ describe("ensureAppCheckout", () => {
       expect.objectContaining({ id: "app-1" }),
       "/home/.amuxd/teams/team-1/apps/app-1",
     );
+  });
+
+  it("returns the deploy key once the clone is done", async () => {
+    // The server only revokes expired keys when something asks the same repo
+    // for another one, so a repo that is cloned and then left alone would keep
+    // every key it was ever issued.
+    const { ensureAppCheckout } = await import("./apps-store");
+    await ensureAppCheckout(readyGitea());
+    expect(mocks.revokeGitCredential).toHaveBeenCalledWith("app-1", gitCred.deployKeyId);
+  });
+
+  it("returns the deploy key even when the clone fails", async () => {
+    mocks.cloneDaemonApp.mockRejectedValueOnce(new Error("daemon exploded"));
+    const { ensureAppCheckout } = await import("./apps-store");
+    await ensureAppCheckout(readyGitea());
+    expect(mocks.revokeGitCredential).toHaveBeenCalledWith("app-1", gitCred.deployKeyId);
+  });
+
+  it("a failing revoke never breaks the clone it follows", async () => {
+    mocks.revokeGitCredential.mockRejectedValueOnce(new Error("cloud down"));
+    const { ensureAppCheckout } = await import("./apps-store");
+    await ensureAppCheckout(readyGitea());
+    expect(mocks.bindAppWorkdir).toHaveBeenCalled();
   });
 
   it("does not clone when getGitCredential is denied (view-only)", async () => {

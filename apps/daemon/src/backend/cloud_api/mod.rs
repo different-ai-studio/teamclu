@@ -3,7 +3,8 @@ mod gateway;
 mod messages;
 
 use super::{
-    AgentDefaults, Backend, BackendError, BackendResult, BackendSessionAndParticipants,
+    AgentDefaults, AppGitCredential, Backend, BackendError, BackendResult,
+    BackendSessionAndParticipants,
     BootstrapMqttOverride, ClaimResult, CloudAuthSnapshot, GatewaySessionRow, ManagedLlmConfig,
     ManagedLlmModelInfo, StoredMessage, TeamEnvSecretRow, TeamSkillDownload, TeamSkillRow,
     WorkspaceRow, WorkspaceUpsert,
@@ -743,6 +744,23 @@ impl Backend for CloudApiBackend {
             Err(BackendError::NotFound(_)) => Ok(serde_json::json!({ "mcpServers": {} })),
             Err(e) => Err(e),
         }
+    }
+
+    async fn app_git_credential(&self, app_id: &str) -> BackendResult<AppGitCredential> {
+        // No actor id in the path: the endpoint authorises whoever the bearer
+        // token resolves to, and for this daemon that is its own agent actor in
+        // the app's team.
+        let path = format!("/v1/apps/{app_id}/git-credential");
+        self.get::<AppGitCredential>(&path).await
+    }
+
+    async fn revoke_app_git_credential(
+        &self,
+        app_id: &str,
+        deploy_key_id: i64,
+    ) -> BackendResult<()> {
+        let path = format!("/v1/apps/{app_id}/git-credential/{deploy_key_id}");
+        self.delete_no_content(&path).await
     }
 
     async fn install_team_mcp(&self, team_id: &str, name: &str) -> BackendResult<()> {

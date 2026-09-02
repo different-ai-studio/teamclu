@@ -76,6 +76,17 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         throw e;
       }
     },
+    async revokeGitCredential(appId, deployKeyId) {
+      try {
+        await client.delete<{ revoked: boolean }>(
+          `/v1/apps/${encodeURIComponent(appId)}/git-credential/${encodeURIComponent(String(deployKeyId))}`,
+        );
+      } catch (e) {
+        // Tidiness, not correctness — the operation this follows has already
+        // finished, and the server sweeps expired keys anyway.
+        console.warn("revokeGitCredential failed (non-fatal)", e);
+      }
+    },
     async getGitHead(appId) {
       try {
         return await client.get<AppGitHead>(`/v1/apps/${encodeURIComponent(appId)}/git-head`);

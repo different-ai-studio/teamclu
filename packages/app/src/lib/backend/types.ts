@@ -1012,6 +1012,8 @@ export interface AppRow {
   type: string;
   visibility: "personal" | "team";
   workspaceId: string | null;
+  /** Actor that created the app; resolved to a name via the actor directory. */
+  createdByActorId: string | null;
   gitRemoteUrl: string | null;
   /** `"gitea_deploy_key"` when this deployment provisioned the app's repo and
    *  holds a deploy key for it; null when the app was imported from a remote we
@@ -1170,6 +1172,11 @@ export interface AppsBackend {
   /** Mint a JIT Gitea deploy key for git push (creator only). Returns null on
    *  404, and for an app that is not Gitea-managed. */
   getGitCredential(appId: string): Promise<AppGitCredential | null>;
+  /** Return a minted key once the operation that needed it has finished. The
+   *  server's expiry sweep only runs when something asks the same repo for
+   *  another key, so a repo nobody comes back to keeps whatever it was left
+   *  holding. Best-effort: never throws. */
+  revokeGitCredential(appId: string, deployKeyId: number): Promise<void>;
   /** Default-branch HEAD on the app's Gitea repo (same visibility as getApp).
    *  Null for an app that is not Gitea-managed. */
   getGitHead(appId: string): Promise<AppGitHead | null>;
