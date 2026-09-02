@@ -55,6 +55,7 @@ vi.mock('@/lib/effective-workspace', () => ({
   useEffectiveWorkspacePath: () => '/ws',
 }))
 
+import { CloudApiError } from '@/lib/backend/cloud-api/http'
 import { useTeamShareBrowserStore } from '../team-share-browser'
 import { useCurrentTeamStore } from '../current-team'
 
@@ -159,5 +160,13 @@ describe('a team skill deleted out from under this machine', () => {
     await store().reconcileSkills()
     store().dismissRetired('deploy-check')
     expect(store().skillRetired).toEqual({})
+  })
+
+  test('an expired session is not swallowed as a transient fetch failure', async () => {
+    listTeamSkills.mockRejectedValue(
+      new CloudApiError(401, 'missing_auth', 'Missing auth session access token.', null),
+    )
+    await expect(store().reconcileSkills()).rejects.toBeInstanceOf(CloudApiError)
+    expect(uninstalled).toEqual([])
   })
 })

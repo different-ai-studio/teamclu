@@ -76,11 +76,25 @@ export interface ClawHubUpdateInfo {
 export interface ClawHubLockfileEntry {
   version: string | null
   installedAt: number
+  /** Absent on pre-team-registry rows, which are all ClawHub. */
+  source?: string | null
 }
 
 export interface ClawHubLockfile {
   version: number
   skills: Record<string, ClawHubLockfileEntry>
+}
+
+/** Lockfile `source` values that the ClawHub marketplace may treat as installed. */
+export function isClawHubLockfileSource(source?: string | null): boolean {
+  return source == null || source === '' || source === 'clawhub'
+}
+
+/** Slugs the ClawHub UI may show as Installed / Uninstall. Team rows stay out. */
+export function clawhubInstalledSlugs(lock: ClawHubLockfile): string[] {
+  return Object.entries(lock.skills)
+    .filter(([, entry]) => isClawHubLockfileSource(entry.source))
+    .map(([slug]) => slug)
 }
 
 // ─── Stats helper (stats field is untyped from API) ──────────────────────────

@@ -76,15 +76,11 @@ export function registerTeamSkills(router) {
     const contentHash = String(body.contentHash ?? "").trim().toLowerCase();
     // Re-resolve placeholder so we know expected size before checking storage.
     const prepared = await ctx.repository.prepareTeamSkillBlob(ctx.params.teamId, body);
-    const { statSkillObject } = await import("../skills-storage.js");
-    const stat = await statSkillObject(prepared.ossKey);
-    if (!stat || stat.size !== prepared.size) {
-      throw new ApiError(
-        422,
-        "blob_missing",
-        `Blob missing or size mismatch: expected ${prepared.size}, got ${stat?.size ?? "none"}`,
-      );
-    }
+    const { verifySkillPackageObject } = await import("../skills-storage.js");
+    await verifySkillPackageObject(prepared.ossKey, {
+      contentHash,
+      size: prepared.size,
+    });
     const done = await ctx.repository.completeTeamSkillBlob(ctx.params.teamId, {
       contentHash,
       size: prepared.size,

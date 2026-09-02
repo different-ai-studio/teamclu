@@ -753,6 +753,10 @@ pub fn clawhub_uninstall(workspace_path: String, slug: String) -> Result<String,
 
     lock.skills.remove(&slug);
     write_lockfile(&workspace_path, &lock)?;
+    // Slug is reusable. Left behind, the old decision governs whatever pack
+    // claims the name next -- set_skill_permission_ask only writes ask
+    // when the key is absent. Same helper, same reason as team uninstall.
+    clear_skill_permission(&workspace_path, &slug);
 
     Ok(format!("Uninstalled {}", slug))
 }
@@ -861,5 +865,73 @@ mod tests {
         let _home = HomeGuard::set(home_dir.path());
         let dir = global_skills_dir().unwrap();
         assert_eq!(dir, home_dir.path().join(".agents/skills"));
+    }
+
+    fn workspace_with_permission(value: &str) -> tempfile::TempDir {
+        let ws = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            ws.path().join("opencode.json"),
+            serde_json::json!({
+                "permission": { "bash": "ask", "skill": { "deploy-check": value, "other": "allow" } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        ws
+    }
+
+    fn skill_permissions(ws: &std::path::Path) -> serde_json::Value {
+        let raw = std::fs::read_to_string(ws.join("opencode.json")).unwrap();
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap()["permission"]["skill"].clone()
+    }
+
+    fn write_clawhub_lock(ws: &std::path::Path, slug: &str) {
+        let mut lock = Lockfile::default();
+        lock.skills.insert(
+            slug.to_string(),
+            LockfileEntry {
+                version: Some("1.0.0".into()),
+                installed_at: 1,
+                source: Some(SOURCE_CLAWHUB.to_string()),
+            },
+        );
+        write_lockfile(&ws.display().to_string(), &lock).unwrap();
+    }
+
+    /// A slug is reusable, so an approval that outlives its pack ends up
+    /// governing whatever content claims the name next.
+    #[test]
+    fn uninstall_forgets_the_skills_permission() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = HomeGuard::set(home.path());
+        let ws = workspace_with_permission("allow");
+        write_clawhub_lock(ws.path(), "deploy-check");
+        std::fs::create_dir_all(global_skills_dir().unwrap().join("deploy-check")).unwrap();
+
+        clawhub_uninstall(ws.path().display().to_string(), "deploy-check".into())
+            .expect("uninstall");
+
+        let skills = skill_permissions(ws.path());
+        assert!(skills.get("deploy-check").is_none(), "the entry must go");
+        assert_eq!(skills["other"], "allow");
+        let raw = std::fs::read_to_string(ws.path().join("opencode.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(json["permission"]["bash"], "ask");
+    }
+
+    #[test]
+    fn uninstall_leaves_the_config_untouched_when_there_is_no_entry() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = HomeGuard::set(home.path());
+        let ws = tempfile::tempdir().expect("tempdir");
+        let config = ws.path().join("opencode.json");
+        std::fs::write(&config, r#"{"permission":{"skill":{"other":"allow"}}}"#).unwrap();
+        write_clawhub_lock(ws.path(), "deploy-check");
+        let before = std::fs::read_to_string(&config).unwrap();
+
+        clawhub_uninstall(ws.path().display().to_string(), "deploy-check".into())
+            .expect("uninstall");
+
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
     }
 }

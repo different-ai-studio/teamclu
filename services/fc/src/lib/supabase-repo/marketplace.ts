@@ -8,7 +8,7 @@
 
 import { ApiError } from "../http-utils.js";
 import { marketplaceObjectPath } from "../validation/marketplace-paths.js";
-import { statSkillObject } from "../skills-storage.js";
+import { statSkillObject, verifySkillPackageObject } from "../skills-storage.js";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
 const CATEGORIES = [
@@ -310,15 +310,17 @@ export function makeSupabaseMarketplaceMethods({
     },
 
     async completeMarketplaceSkillBlob(body: any = {}) {
-      const prepared = await this.prepareMarketplaceSkillBlob(body);
-      if (prepared.requiresUpload) {
-        throw new ApiError(
-          422,
-          "blob_missing",
-          `Blob missing or size mismatch: expected ${prepared.size}`,
-        );
+      const contentHash = String(body.contentHash ?? "").trim().toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(contentHash)) {
+        throw new ApiError(400, "validation_failed", "contentHash must be a sha256 hex digest");
       }
-      return { ...prepared, verified: true };
+      const size = Number(body.size ?? NaN);
+      if (!Number.isFinite(size) || size < 0) {
+        throw new ApiError(400, "validation_failed", "size must be a non-negative number");
+      }
+      const objectPath = marketplaceObjectPath(contentHash);
+      await verifySkillPackageObject(objectPath, { contentHash, size });
+      return { contentHash, size, objectPath, verified: true };
     },
 
     async createMarketplaceSkill(body: any = {}) {

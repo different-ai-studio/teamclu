@@ -155,3 +155,19 @@ test("marketplace object paths never look team-scoped (GC assertion)", () => {
     true,
   );
 });
+
+test("GET /v1/marketplace/skills forwards limit", async () => {
+  const repo = fakeRepo();
+  await request(
+    {
+      httpMethod: "GET",
+      path: "/v1/marketplace/skills",
+      queryStringParameters: { limit: "1" },
+    },
+    repo,
+  );
+  assert.deepEqual(repo.calls[0], {
+    method: "listMarketplaceSkills",
+    args: [{ limit: 1 }],
+  });
+});

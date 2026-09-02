@@ -31,7 +31,7 @@ import type {
   ClawHubSkillDetail,
   ClawHubLockfile,
 } from "@/lib/clawhub/types"
-import { parseStats } from "@/lib/clawhub/types"
+import { clawhubInstalledSlugs, parseStats } from "@/lib/clawhub/types"
 import { useEffectiveWorkspacePath } from "@/lib/effective-workspace"
 import {
   Dialog,
@@ -94,43 +94,17 @@ export const ClawHubMarketplace = React.memo(function ClawHubMarketplace({
   const loadInstalled = React.useCallback(async () => {
     if (!workspacePath) return
     const loadGen = ++installedLoadGenRef.current
-    const allSlugs = new Set<string>()
-
-    const [, fsModule, pathModule] = await Promise.all([
-      invoke<ClawHubLockfile>("clawhub_list_installed", { workspacePath })
-        .then(lock => { for (const slug of Object.keys(lock.skills)) allSlugs.add(slug) })
-        .catch(() => {}),
-      import("@tauri-apps/plugin-fs").catch(() => null),
-      import("@tauri-apps/api/path").catch(() => null),
-    ])
-
-    if (loadGen !== installedLoadGenRef.current) return
-
-    if (fsModule && pathModule) {
-      try {
-        const home = await pathModule.homeDir()
-        const dirsToCheck = [
-          `${workspacePath}/.claude/skills`,
-          `${workspacePath}/.agents/skills`,
-          `${home.replace(/\/$/, '')}/.claude/skills`,
-          `${home.replace(/\/$/, '')}/.agents/skills`,
-        ]
-
-        await Promise.allSettled(dirsToCheck.map(async (dir) => {
-          if (await fsModule.exists(dir)) {
-            const entries = await fsModule.readDir(dir)
-            entries
-              .filter((e: { isDirectory?: boolean; name?: string }) => e.isDirectory && e.name)
-              .forEach((e: { name?: string }) => allSlugs.add(e.name!))
-          }
-        }))
-      } catch {
-        // fs scan failed
-      }
+    try {
+      const lock = await invoke<ClawHubLockfile>("clawhub_list_installed", { workspacePath })
+      if (loadGen !== installedLoadGenRef.current) return
+      // Lockfile is shared with the team registry. Only ClawHub rows (and
+      // legacy rows with no source) belong in this marketplace's Installed set;
+      // a team pack looking installed here makes Uninstall error.
+      setInstalledSlugs(new Set(clawhubInstalledSlugs(lock)))
+    } catch {
+      if (loadGen !== installedLoadGenRef.current) return
+      setInstalledSlugs(new Set())
     }
-
-    if (loadGen !== installedLoadGenRef.current) return
-    setInstalledSlugs(allSlugs)
   }, [workspacePath])
 
   const loadExplore = React.useCallback(

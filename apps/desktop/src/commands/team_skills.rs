@@ -18,9 +18,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use teamclu_skillpack::{
-    build_manifest, build_manifest_for, inspect, list_managed_paths, read_origin,
-    remove_managed_files, swap_managed_files, write_origin, write_registry_frontmatter, DirtyState,
-    RegistryFields, SkillOrigin, ORIGIN_VERSION,
+    build_manifest, build_manifest_for, commit_staged_pack, inspect, list_managed_paths,
+    read_origin, remove_managed_files, swap_managed_files, write_origin,
+    write_registry_frontmatter, DirtyState, RegistryFields, SkillOrigin, ORIGIN_VERSION,
 };
 use teamclu_types::skill_frontmatter::{parse_frontmatter, write_frontmatter, FrontmatterValue};
 use zip::write::SimpleFileOptions;
@@ -539,18 +539,14 @@ fn team_skill_install_blocking(
         tempfile::tempdir().map_err(|e| format!("Failed to create staging dir: {}", e))?;
     extract_zip_to_dir(&zip_bytes, staging.path())?;
 
-    // Deletions are authorised only by a baseline we recorded ourselves at
-    // install time. Nothing else ever writes one — a directory with no record
-    // is reported `missing` and reinstalled rather than claimed.
-    let baseline = read_origin(&target).and_then(|o| o.files);
-    swap_managed_files(&target, staging.path(), baseline.as_ref())
-        .map_err(|e| format!("Failed to install skill files: {}", e))?;
-
+    // Finish the new tree in staging (frontmatter + origin) before making it
+    // live. Swap-then-origin left mixed versions when origin write failed —
+    // see docs/architecture/hosted-skill-reconcile-fail-closed.md.
     let shipped = list_managed_paths(staging.path())
         .map_err(|e| format!("Failed to list package files: {}", e))?;
-    let frontmatter_written = write_install_frontmatter(&target, &req)?;
+    let frontmatter_written = write_install_frontmatter(staging.path(), &req)?;
     stamp_installed_state(
-        &target,
+        staging.path(),
         InstalledStamp {
             slug: &slug,
             version: req.version,
@@ -558,6 +554,8 @@ fn team_skill_install_blocking(
             shipped: Some(&shipped),
         },
     )?;
+    commit_staged_pack(&target, staging.path())
+        .map_err(|e| format!("Failed to install skill files: {}", e))?;
 
     // Lockfile stays workspace-scoped for update checks, even though the pack
     // itself always lives under ~/.agents/skills.

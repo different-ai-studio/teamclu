@@ -88,11 +88,14 @@ impl DirtyState {
     }
 }
 
-pub fn file_sha256(path: &Path) -> std::io::Result<String> {
-    let bytes = std::fs::read(path)?;
+pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Ok(format!("{:x}", hasher.finalize()))
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+pub fn file_sha256(path: &Path) -> std::io::Result<String> {
+    Ok(sha256_hex(&std::fs::read(path)?))
 }
 
 fn mtime_ms(meta: &std::fs::Metadata) -> u64 {

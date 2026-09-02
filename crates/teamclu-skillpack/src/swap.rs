@@ -293,7 +293,10 @@ mod tests {
         assert!(!gone, "files the pack never owned keep the directory alive");
         assert!(!target.join("SKILL.md").exists());
         assert!(!target.join("scripts").exists());
-        assert!(!target.join(".clawhub").exists(), "our bookkeeping goes too");
+        assert!(
+            !target.join(".clawhub").exists(),
+            "our bookkeeping goes too"
+        );
         assert_eq!(
             std::fs::read_to_string(target.join("NOTES.md")).unwrap(),
             "mine\n"

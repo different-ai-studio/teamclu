@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handleBusinessApiRequest } from "../src/lib/business-api.js";
+import { skillPackageBytesMatch, SKILL_PACKAGE_HASH_CAP_BYTES } from "../src/lib/skills-storage.js";
 
 // Route-level coverage for the team skills registry.
 // Design: docs/architecture/team-skills-registry.md
@@ -21,6 +22,7 @@ function fakeRepo(overrides: Record<string, unknown> = {}) {
     createTeamSkill: record("createTeamSkill", { slug: "deploy-check" }),
     createTeamSkillVersion: record("createTeamSkillVersion", { version: 2 }),
     getTeamSkillVersion: record("getTeamSkillVersion", { version: 1, contentHash: "abc" }),
+    getTeamSkillDownload: record("getTeamSkillDownload", { ossKey: "teams/t/blobs/x", contentHash: "abc", size: 12 }),
     updateTeamSkill: record("updateTeamSkill", { slug: "deploy-check", status: "deprecated" }),
     deleteTeamSkill: record("deleteTeamSkill"),
     prepareTeamSkillBlob: record("prepareTeamSkillBlob", {
@@ -288,4 +290,59 @@ test("POST skill-blobs/prepare skips the upload URL when the blob is already ver
   const body = JSON.parse(res.body);
   assert.equal(body.requiresUpload, false);
   assert.equal(body.presignedPut, null);
+});
+
+test("GET versions/:v/download is routed to the repository before storage", async () => {
+  const { ApiError } = await import("../src/lib/http-utils.js");
+  const seen: unknown[] = [];
+  const repo = fakeRepo({
+    getTeamSkillDownload: async (...args: unknown[]) => {
+      seen.push(args);
+      throw new ApiError(409, "blob_missing", "skip-storage-for-test");
+    },
+  });
+  const res = await request(
+    { httpMethod: "GET", path: "/v1/teams/team-1/skills/deploy-check/versions/1/download" },
+    repo,
+  );
+  assert.equal(res.statusCode, 409);
+  assert.deepEqual(seen[0], ["team-1", "deploy-check", 1]);
+});
+
+test("GET versions/:v/download rejects a non-numeric version", async () => {
+  const repo = fakeRepo();
+  const res = await request(
+    { httpMethod: "GET", path: "/v1/teams/team-1/skills/deploy-check/versions/latest/download" },
+    repo,
+  );
+  assert.equal(res.statusCode, 400);
+  assert.equal(repo.calls.length, 0);
+});
+
+test("skillPackageBytesMatch requires size then hash", () => {
+  const hash = "a".repeat(64);
+  assert.equal(skillPackageBytesMatch(null, hash, { contentHash: hash, size: 12 }).ok, false);
+  assert.equal(
+    skillPackageBytesMatch({ size: 11 }, hash, { contentHash: hash, size: 12 }).ok,
+    false,
+  );
+  const sizeMismatch = skillPackageBytesMatch({ size: 11 }, hash, { contentHash: hash, size: 12 });
+  if (sizeMismatch.ok !== false) throw new Error("expected fail");
+  assert.equal(sizeMismatch.code, "blob_missing");
+
+  const hashMismatch = skillPackageBytesMatch({ size: 12 }, "b".repeat(64), {
+    contentHash: hash,
+    size: 12,
+  });
+  if (hashMismatch.ok !== false) throw new Error("expected fail");
+  assert.equal(hashMismatch.code, "blob_hash_mismatch");
+
+  assert.equal(skillPackageBytesMatch({ size: 12 }, hash, { contentHash: hash, size: 12 }).ok, true);
+
+  // Oversized packages skip the hash (size-only fallback).
+  const big = SKILL_PACKAGE_HASH_CAP_BYTES + 1;
+  assert.equal(
+    skillPackageBytesMatch({ size: big }, null, { contentHash: hash, size: big }).ok,
+    true,
+  );
 });
