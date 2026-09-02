@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useSessionStore } from '@/stores/session';
+import { useSessionSelectionStore } from '@/stores/session-selection-store';
 import { useStreamingStore } from '@/stores/streaming';
 import { useV2StreamingStore } from '@/stores/v2-streaming-store';
 import {
@@ -22,8 +23,20 @@ vi.mock('@/hooks/useActorDisplayName', () => ({
   useActorDisplayName: (actorId: string) => `Agent-${actorId}`,
 }));
 
+/// Session selection lives in `useSessionSelectionStore`. `useSessionStore`
+/// carries a copy, kept current by a one-way subscription in `session-store.ts`
+/// — so seeding the copy leaves the source null, and `ComposerStack` reads the
+/// source. Drive the source and the copy follows, the same way it does in the app.
+function seedActiveSession(sessionId: string | null) {
+  useSessionSelectionStore.setState({
+    activeSessionId: sessionId,
+    currentSessionId: sessionId,
+  });
+}
+
 function resetStores() {
   resetSessionPermissionModesForTests();
+  seedActiveSession(null);
   useStreamingStore.setState({ childSessionStreaming: {} });
   useV2StreamingStore.setState({ byKey: {} });
   useSessionStore.setState({
@@ -42,8 +55,8 @@ describe('PendingPermissionInline', () => {
 
   it('does not render when session is in fullAccess mode', async () => {
     setSessionPermissionMode('sess-full', 'fullAccess');
+    seedActiveSession('sess-full');
     useSessionStore.setState({
-      activeSessionId: 'sess-full',
       pendingPermissions: [
         {
           permission: {
@@ -274,8 +287,8 @@ describe('PendingPermissionInline', () => {
   });
 
   it('does not render a global pending permission owned by a different active session', async () => {
+    seedActiveSession('session-2');
     useSessionStore.setState({
-      activeSessionId: 'session-2',
       sessions: [
         { id: 'session-1', messages: [] },
         { id: 'session-2', messages: [] },
@@ -301,8 +314,8 @@ describe('PendingPermissionInline', () => {
   });
 
   it('renders a child-session global pending permission for its owning active session', async () => {
+    seedActiveSession('parent-1');
     useSessionStore.setState({
-      activeSessionId: 'parent-1',
       sessions: [
         { id: 'parent-1', messages: [] },
       ],
@@ -327,8 +340,8 @@ describe('PendingPermissionInline', () => {
   });
 
   it('uses the same stacked approval UI for tool-attached and child-session permissions together', async () => {
+    seedActiveSession('session-1');
     useSessionStore.setState({
-      activeSessionId: 'session-1',
       sessions: [
         {
           id: 'session-1',
@@ -403,8 +416,8 @@ describe('PendingPermissionInline', () => {
   });
 
   it('renders tool-attached permissions from the active session above the input', async () => {
+    seedActiveSession('session-1');
     useSessionStore.setState({
-      activeSessionId: 'session-1',
       sessions: [
         {
           id: 'session-1',
@@ -436,8 +449,8 @@ describe('PendingPermissionInline', () => {
   });
 
   it('uses the source tool context for external directory approvals', async () => {
+    seedActiveSession('session-1');
     useSessionStore.setState({
-      activeSessionId: 'session-1',
       sessions: [
         {
           id: 'session-1',

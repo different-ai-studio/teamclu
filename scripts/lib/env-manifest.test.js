@@ -79,10 +79,27 @@ const INTENTIONAL_FC_ONLY = {
  */
 const KNOWN_GAPS = {};
 
-/** In the compose fc allowlist and deliberately not in s.yaml. */
+/**
+ * In the compose fc allowlist and deliberately not in s.yaml.
+ *
+ * `services/fc/test/deploy-env-parity.test.ts` keeps the same list under the
+ * name `EXPECTED_ONLY_IN_COMPOSE`. An entry belongs in both: that suite runs
+ * under npm inside `services/fc/` and has no CI job, this one runs in
+ * `pnpm test:scripts` and does — so a var documented only there still fails
+ * the build here.
+ */
 const INTENTIONAL_COMPOSE_ONLY = {
   PORT: "container listens on a port; FC invokes a handler instead",
   HOST: "container bind address; not a thing under FC",
+  // Function Compute reserves the entire `FC_` prefix, and rejects the WHOLE
+  // function update that carries such a key — not just the key:
+  //   InvalidArgument: code: 400, The environment variable name
+  //   'FC_SUPABASE_URL' is reserved by Function Compute
+  // It is pointless there anyway: src/index.ts reads it only as an override of
+  // SUPABASE_URL, which s.yaml sets directly. Self-host is what needs it, to
+  // point FC at an external Supabase while keeping the bundled stack as
+  // rollback. Removed from s.yaml in 00e798b7; this list is the other half.
+  FC_SUPABASE_URL: "FC_ is a reserved prefix on Function Compute; a deploy carrying it is rejected outright",
 };
 
 function readVars() {
