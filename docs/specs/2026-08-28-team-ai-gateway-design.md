@@ -181,6 +181,8 @@ public_models = { default, pro, max }     ← 唯一对外契约
 
 Tauri 端不再从云端拉团队的模型列表：`provider.team` 的形状与这三个 id 由客户端固定持有，只有 baseURL 在运行时拼（本地 amuxd 端口 + teamId），`llm_enabled` 仍来自云端。
 
+⚠️ **谁把 `llm_enabled` 打开**（2026-09-02 补记）：原设计没有定这一条。`llm_enabled` 列默认 false，建团队不碰它，唯一写入方 `PUT /llm-config` 的设置页又在钉死三档时删掉了（a12259df），结果 305 个团队只有 3 个开着——赠送额度都发了，客户端却到不了网关。现在由 FC 兜底：`GET /workspace-config` 对没有存过 `llm_base_url` 的团队按请求 origin 下发本部署的网关（附录 B）。
+
 **为什么写死是安全的**：三档 tier 本来就是**稳定名字**，真正会变的是它们指向哪个上游 —— 而那层映射在服务端的 catalog 里（§4.3）。改后端、调价、加权重、切供应商都**不需要发客户端**。今天 `litellm/config.yaml` 的注释写的就是这个意图：「The app selects a capability tier, not a vendor model.」本设计把它变成硬契约。
 
 代价说清楚：**真要加第四档就需要发一次客户端**。这是刻意接受的 —— 加档是产品决策，不该是一次配置改动。
@@ -1145,7 +1147,7 @@ UPDATE amux.team_workspace_config
 |---|---|
 | provider 形状、三档 model id | **客户端写死** |
 | baseURL | 运行时拼：本地 amuxd 端口 + teamId |
-| `llm_enabled` | 云端 `workspace-config.llm.enabled` |
+| `llm_enabled` | 云端 `workspace-config.llm.enabled`。**没有存过 `llm_base_url` 的团队，FC 直接按请求 origin 下发本部署的网关**（`<origin>/ai/v1/teams/<id>` + 三档），见 `services/fc/src/lib/team-llm-defaults.ts`；显式 `PUT /llm-config` 存了 baseUrl 的团队以存的为准，`enabled=false` + baseUrl 即退出 |
 | **上游到底打新网关还是老 LiteLLM** | **云端 `llm_base_url`，由 amuxd 解析**（见 §11.2） |
 
 最后一行是关键：解析上游的职责从客户端**往后移了一跳**到 amuxd。客户端写死的同时，§11.2 那个「一条 UPDATE 灰度、一条 UPDATE 回滚」的杠杆完整保留 —— 只是现在读 `llm_base_url` 的是 daemon 而不是客户端。daemon 侧优先级不变：`llm.baseUrl` → `llm.aiGatewayEndpoint`（`apps/daemon/src/backend/cloud_api/mod.rs:718-721`）。

@@ -1,4 +1,5 @@
 import { ApiError } from "../http-utils.js";
+import { withTeamLlmDefaults } from "../team-llm-defaults.js";
 
 function validateLlmConfigInput(body) {
   const enabled = body?.enabled;
@@ -28,7 +29,9 @@ function validateLlmConfigInput(body) {
 export function registerTeamShare(router) {
   router.get("/v1/teams/:teamId/workspace-config", async (ctx) => {
     const result = await ctx.repository.getWorkspaceConfig(ctx.params.teamId);
-    return { body: result };
+    // A team that never configured a gateway is served this deployment's own
+    // (see team-llm-defaults.ts); a stored baseUrl always stands.
+    return { body: withTeamLlmDefaults(result, ctx.params.teamId, ctx.getHeader) };
   });
 
   router.put("/v1/teams/:teamId/llm-config", async (ctx) => {
