@@ -152,6 +152,10 @@ fn main() -> anyhow::Result<()> {
             // pipeline builds whatever sits at the new path, so a checkout left
             // behind would keep shipping the seed template.
             http::apps::migrate_legacy_apps_root();
+            // Existing checkouts predate the `git-ssh` shim (and an upgrade can
+            // move the amuxd it names), so stamp them all here — otherwise an
+            // agent's `git push` keeps failing until that app's next deploy.
+            http::apps::refresh_app_ssh_commands();
             cli::process::write_pidfile()?;
             let _pid_guard = PidfileGuard;
             // Absent config bootstraps rather than failing: a fresh install must
@@ -306,6 +310,16 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(config::DaemonConfig::sock_path);
             let _ = (&args.session_id, &args.team_id, &args.member_actor_id);
             cli::remote_tools_mcp::run(&sock)?;
+        }
+        Commands::GitSsh(args) => {
+            let sock = args
+                .sock
+                .clone()
+                .unwrap_or_else(config::DaemonConfig::sock_path);
+            // `exit` rather than returning: git reads ssh's exit code, and
+            // anyhow's `?` would turn a clean "no credential" into a panic-ish
+            // 1 that git reports as an unrelated failure.
+            std::process::exit(cli::git_ssh::run(&sock, &args.app, &args.args));
         }
         Commands::CursorPermissionHook(args) => {
             let sock = args

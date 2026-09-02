@@ -10,6 +10,7 @@ import {
   parseOpenSshPrivateKey,
   parseOpenSshPublicKey,
   revokeActorDeployKeys,
+  revokeOwnJitDeployKey,
   sweepExpiredDeployKeys,
   JIT_DEPLOY_KEY_TTL_MS,
 } from "../../src/lib/provisioning/deploy-key.js";
@@ -159,4 +160,73 @@ test("revokeActorDeployKeys is best-effort when Gitea is unreachable", async () 
     deleteDeployKey: async () => { throw new Error("already gone"); },
   };
   assert.equal(await revokeActorDeployKeys(stubborn, "app-1", "member-2"), 0);
+});
+
+// ── returning a key when its holder is done ───────────────────────────────
+//
+// The sweep only runs when something asks the same repo for another key, so a
+// repo nobody returns to keeps every key it was ever issued. `amuxd git-ssh`
+// calls this as soon as ssh exits, which is what makes that residual small.
+
+test("a holder returning its own key revokes it", async () => {
+  const now = 1_700_000_000_000;
+  const deleted: number[] = [];
+  const gitea: any = {
+    listDeployKeys: async () => [
+      { id: 42, title: `jit-actor-1-${now - 1000}-aaaa` },
+    ],
+    deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
+  };
+  assert.equal(await revokeOwnJitDeployKey(gitea, "app-1", "actor-1", 42, now), true);
+  assert.deepEqual(deleted, [42]);
+});
+
+test("a key belonging to another actor is never revoked", async () => {
+  // Otherwise any team member could kill a push another machine is mid-way
+  // through — denial of service dressed up as hygiene.
+  const now = 1_700_000_000_000;
+  const deleted: number[] = [];
+  const gitea: any = {
+    listDeployKeys: async () => [
+      { id: 42, title: `jit-someone-else-${now - 1000}-aaaa` },
+    ],
+    deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
+  };
+  assert.equal(await revokeOwnJitDeployKey(gitea, "app-1", "actor-1", 42, now), false);
+  assert.deepEqual(deleted, [], "another actor's live key stays");
+});
+
+test("returning a key also sweeps the expired ones on that repo", async () => {
+  const now = 1_700_000_000_000;
+  const deleted: number[] = [];
+  const gitea: any = {
+    listDeployKeys: async () => [
+      { id: 1, title: `jit-actor-1-${now - JIT_DEPLOY_KEY_TTL_MS - 1}-aaaa` },
+      { id: 2, title: `jit-someone-else-${now - JIT_DEPLOY_KEY_TTL_MS - 1}-bbbb` },
+      { id: 3, title: `jit-someone-else-${now - 1000}-cccc` },
+      { id: 42, title: `jit-actor-1-${now - 1000}-dddd` },
+    ],
+    deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
+  };
+  assert.equal(await revokeOwnJitDeployKey(gitea, "app-1", "actor-1", 42, now), true);
+  // Both expired keys go regardless of whose they are — that is what the sweep
+  // has always done — and the caller's own key goes last.
+  assert.deepEqual(deleted, [1, 2, 42]);
+  assert.ok(!deleted.includes(3), "another actor's live key stays");
+});
+
+test("returning a key that is already gone is not an error", async () => {
+  const gitea: any = {
+    listDeployKeys: async () => [],
+    deleteDeployKey: async () => { throw new Error("gone"); },
+  };
+  assert.equal(await revokeOwnJitDeployKey(gitea, "app-1", "actor-1", 42), false);
+});
+
+test("a revoke that cannot reach Gitea never throws", async () => {
+  const gitea: any = {
+    listDeployKeys: async () => { throw new Error("gitea down"); },
+    deleteDeployKey: async () => { throw new Error("unreachable"); },
+  };
+  assert.equal(await revokeOwnJitDeployKey(gitea, "app-1", "actor-1", 42), false);
 });

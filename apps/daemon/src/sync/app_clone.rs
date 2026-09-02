@@ -54,6 +54,7 @@ pub fn clone_app_repo(url: &str, workdir: &Path) -> anyhow::Result<()> {
 /// collaborators — §5.4). Same empty-dir rule as [`clone_app_repo`].
 pub fn clone_app_repo_with_deploy_key(
     url: &str,
+    app_id: &str,
     workdir: &Path,
     deploy_key_pem: &str,
     git_user_name: Option<&str>,
@@ -77,7 +78,14 @@ pub fn clone_app_repo_with_deploy_key(
     // take that machine's global git config or fail outright with "Please tell
     // me who you are" — and the attribution the deploy-key title provides ends
     // at "which machine pushed", not "who wrote it".
-    app_git::set_repo_user_identity(workdir, git_user_name, git_user_email)
+    app_git::set_repo_user_identity(workdir, git_user_name, git_user_email)?;
+    // A collaborator's checkout is the one that most needs this: they never run
+    // the seed push, so without the shim their very first `git push` is the one
+    // that fails.
+    if let Err(e) = app_git::set_repo_ssh_command(workdir, app_id) {
+        tracing::warn!(app_id, error = %e, "could not point the clone at git-ssh");
+    }
+    Ok(())
 }
 
 /// `git clone <remote> <workdir>`, with the environment that keeps it

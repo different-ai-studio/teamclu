@@ -12,6 +12,9 @@ use crate::sync::app_templates::{write_template, TemplateVars};
 
 /// Remote + deploy key for the Gitea seed-and-push path.
 pub struct SeedGitPush<'a> {
+    /// The app this checkout belongs to. Baked into the checkout's
+    /// `core.sshCommand` so the agent's own pushes can fetch a key later.
+    pub app_id: &'a str,
     pub remote_url: &'a str,
     pub deploy_key_pem: &'a str,
     pub git_user_name: Option<&'a str>,
@@ -45,6 +48,7 @@ pub fn seed_app_repo(
     };
     let sha = app_git::init_commit_push(
         workdir,
+        push.app_id,
         push.remote_url,
         push.deploy_key_pem,
         "Initial app seed",

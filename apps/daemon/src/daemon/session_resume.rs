@@ -29,6 +29,34 @@ pub(crate) fn binding_for(
         .cloned()
 }
 
+/// Parent session binding for thread fork. Tries the thread's workspace first, then
+/// any binding row for the parent session (parent may have run under another workspace).
+pub(crate) fn resolve_parent_binding_for_fork(
+    store: &SessionStore,
+    parent_session_id: &str,
+    preferred_workspace_id: &str,
+    agent_type: amux::AgentType,
+) -> Option<SessionBinding> {
+    if !preferred_workspace_id.is_empty() {
+        if let Some(binding) = binding_for(
+            store,
+            parent_session_id,
+            agent_type,
+            preferred_workspace_id,
+        ) {
+            return Some(binding);
+        }
+    }
+    store
+        .all_for_session(parent_session_id)
+        .into_iter()
+        .filter(|b| {
+            b.agent_type == agent_type as i32 && !b.acp_session_id.trim().is_empty()
+        })
+        .next_back()
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +87,25 @@ mod tests {
             .as_deref(),
             Some("acp-a")
         );
+    }
+
+    #[test]
+    fn parent_binding_for_fork_falls_back_to_other_workspace() {
+        let mut store = SessionStore::default();
+        store.upsert(SessionBinding::new(
+            "parent-1",
+            "ws-parent",
+            amux::AgentType::Opencode as i32,
+            "acp-parent",
+        ));
+        let binding = resolve_parent_binding_for_fork(
+            &store,
+            "parent-1",
+            "ws-thread",
+            amux::AgentType::Opencode,
+        )
+        .expect("parent binding");
+        assert_eq!(binding.workspace_id, "ws-parent");
+        assert_eq!(binding.acp_session_id, "acp-parent");
     }
 }

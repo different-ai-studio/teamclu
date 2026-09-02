@@ -144,6 +144,19 @@ pub fn build(state: HttpState) -> Router {
         // matched the path `/v1/apps/%7Bapp_id%7D/workdir` and answered 404 for
         // every real app — which is exactly what it did, from the day it landed.
         .route("/v1/apps/:app_id/workdir", get(apps::app_workdir))
+        // Which apps this machine actually holds. The sidebar's app list shows
+        // only these; everything else lives in the library dialog behind a
+        // download.
+        .route("/v1/apps/local", get(apps::list_local_apps))
+        // Asked before an app row exists, so the create flow can reject a
+        // folder that is not a git checkout without leaving one behind.
+        .route("/v1/apps/inspect-dir", post(apps::inspect_dir))
+        // Point an app at a checkout that is already here, leaving it in place
+        // — unlike move-workdir, which relocates the tree.
+        .route(
+            "/v1/apps/:app_id/bind-workdir",
+            post(apps::bind_app_workdir),
+        )
         .route(
             "/v1/apps/:app_id/move-workdir",
             post(apps::move_app_workdir),

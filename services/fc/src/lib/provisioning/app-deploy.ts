@@ -219,10 +219,18 @@ export interface FinalizeInput {
   platformOAuthEnv?: Record<string, string>;
 }
 
-/** Only data apps get a Postgres schema; the other types are static files. */
+/**
+ * Only data apps get a Postgres schema; the other types are static files.
+ *
+ * `imported` is listed explicitly rather than left to the default: an app whose
+ * code came from someone else's repo is not a data app, and defaulting it there
+ * made every imported repo demand a Postgres schema (and the team's org id) on
+ * its first deploy. Everything still-unrecognized stays `data_app`, which is
+ * what apps created before types existed actually are.
+ */
 export function needsDatabase(appType: string): boolean {
   const t = appType.trim();
-  return t !== "static_web" && t !== "slides";
+  return t !== "static_web" && t !== "slides" && t !== "imported";
 }
 
 export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): Promise<{ fcEndpoint: string }> {

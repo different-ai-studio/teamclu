@@ -101,16 +101,27 @@ describe('NavRail', () => {
     expect(screen.queryByRole('button', { name: /Ideas|想法/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /快捷方式|Shortcuts/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /MCP/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /环境变量|Team Env/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /密钥保险箱|Secret Vault/ })).not.toBeInTheDocument()
   })
 
-  it('reveals Ideas, Shortcuts, MCP and Team Env once 更多 is expanded', () => {
+  it('reveals Ideas, Shortcuts, MCP and 密钥保险箱 once 更多 is expanded', () => {
     render(<NavRail />)
     expandMore()
     expect(screen.getByRole('button', { name: /Ideas|想法/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /快捷方式|Shortcuts/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /MCP/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /环境变量|Team Env/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /密钥保险箱|Secret Vault/ })).toBeInTheDocument()
+  })
+
+  it('puts 应用 last in 更多, after the 密钥保险箱 row', () => {
+    // It is the only row there that unfolds into a list of its own, so above
+    // the others it would shove them down every time it opened.
+    render(<NavRail />)
+    expandMore()
+    const vault = screen.getByRole('button', { name: /密钥保险箱|Secret Vault/ })
+    const apps = screen.getByTestId('apps-nav-section')
+    // DOCUMENT_POSITION_FOLLOWING — apps comes after the vault row in the DOM.
+    expect(vault.compareDocumentPosition(apps) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('clicking Shortcuts inside 更多 sets filter to { kind: "shortcuts" }', () => {

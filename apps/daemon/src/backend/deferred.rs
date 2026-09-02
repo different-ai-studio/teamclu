@@ -27,7 +27,8 @@ use super::records::{
     StoredMessage, WorkspaceRow, WorkspaceUpsert,
 };
 use super::{
-    AgentDefaults, Backend, BackendError, BackendResult, BootstrapMqttOverride, CloudAuthSnapshot,
+    AgentDefaults, AppGitCredential, Backend, BackendError, BackendResult, BootstrapMqttOverride,
+    CloudAuthSnapshot,
     ManagedLlmConfig, TeamEnvSecretRow, TeamSkillDownload, TeamSkillRow,
 };
 
@@ -155,6 +156,22 @@ impl Backend for DeferredBackend {
 
     async fn managed_llm_config(&self, team_id: &str) -> BackendResult<ManagedLlmConfig> {
         self.inner()?.managed_llm_config(team_id).await
+    }
+
+    // Both of these back `amuxd git-ssh`, the shim every `git push` inside an
+    // app checkout runs. Left unforwarded they fell through to the trait's
+    // default, and the agent's push failed with "app git credentials
+    // unavailable on this backend" on a fully onboarded daemon.
+    async fn app_git_credential(&self, app_id: &str) -> BackendResult<AppGitCredential> {
+        self.inner()?.app_git_credential(app_id).await
+    }
+
+    async fn revoke_app_git_credential(
+        &self,
+        app_id: &str,
+        deploy_key_id: i64,
+    ) -> BackendResult<()> {
+        self.inner()?.revoke_app_git_credential(app_id, deploy_key_id).await
     }
 
     async fn team_mcp_config(&self, team_id: &str) -> BackendResult<serde_json::Value> {
@@ -620,6 +637,22 @@ mod tests {
         assert!(b.cloud_auth_health().is_none());
         assert!(b.cloud_base_url().is_none());
         b.invalidate_cached_credential();
+    }
+
+    #[tokio::test]
+    async fn app_git_credentials_reach_the_installed_backend() {
+        // Regression: these two were added to the `Backend` trait with default
+        // impls and never forwarded here, so on a fully onboarded daemon every
+        // agent `git push` died with "app git credentials unavailable on this
+        // backend" — the default, not the real answer. A trait default is a
+        // silent opt-out for every wrapper in this file.
+        let b = DeferredBackend::unclaimed();
+        assert!(b.app_git_credential("app-1").await.is_err(), "unclaimed must refuse");
+
+        b.install(Arc::new(MockBackend::with_identity("team-1", "actor-1")));
+        let cred = b.app_git_credential("app-1").await.expect("must delegate");
+        assert!(cred.remote_url.contains("app-1"));
+        assert!(b.revoke_app_git_credential("app-1", 1).await.is_ok());
     }
 
     #[tokio::test]

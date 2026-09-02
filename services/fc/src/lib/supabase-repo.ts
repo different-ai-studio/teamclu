@@ -51,7 +51,11 @@ import { appOssObjectName, deployUnavailable, parseOptionalGitCommitSha, parseDe
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
 import { giteaUnavailable, GITEA_AUTH_KIND } from "./provisioning/gitea.js";
-import { issueJitDeployKey, revokeActorDeployKeys } from "./provisioning/deploy-key.js";
+import {
+  issueJitDeployKey,
+  revokeActorDeployKeys,
+  revokeOwnJitDeployKey,
+} from "./provisioning/deploy-key.js";
 import {
   applyAuthModeChange,
   buildPlatformOAuthEnv,
@@ -435,6 +439,61 @@ export function createSupabaseBusinessRepository(options) {
   }
 
 
+
+  /** The app row the agent path authorises against, read past `apps` RLS. */
+  async function readAppForAgentGitCredential(appId: string) {
+    const admin = await serviceRoleClient("read app for agent git credential");
+    const { data, error } = await admin
+      .from("apps")
+      .select("id, team_id, git_remote_url, git_auth_kind, created_by_actor_id")
+      .eq("id", appId)
+      .maybeSingle();
+    if (error) throw error;
+    return data ?? null;
+  }
+
+  /**
+   * The caller's `agent` actor in `teamId`, or null when the caller is not an
+   * agent there. `actors_team_user_idx` allows one actor per (team, user), so
+   * this is the daemon's own actor and never a human's.
+   */
+  async function resolveCurrentAgentActor(teamId: string): Promise<string | null> {
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    if (userErr) throw userErr;
+    const userId = userData?.user?.id;
+    if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+    const { data, error } = await supabase
+      .from("actors")
+      .select("id")
+      .eq("team_id", teamId)
+      .eq("user_id", userId)
+      .eq("actor_type", "agent")
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    const id = data?.id;
+    return typeof id === "string" && id.trim() ? id : null;
+  }
+
+  /** Mint a JIT deploy key for a Gitea-managed app, titled for `actorId`. */
+  async function mintAppGitCredential(
+    appId: string,
+    app: { git_remote_url?: string | null; git_auth_kind?: string | null },
+    actorId: string,
+  ) {
+    if (!app.git_remote_url) return null;
+    // An imported app has a remote this deployment holds no credential for;
+    // minting a Gitea key for it would 404 on a repo that does not exist.
+    if (app.git_auth_kind !== GITEA_AUTH_KIND) return null;
+    if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
+
+    const jit = await issueJitDeployKey(gitea, appId, actorId);
+    return {
+      remoteUrl: app.git_remote_url,
+      authKind: "deploy_key" as const,
+      ...jit,
+    };
+  }
 
   return {
     async authorizeAgentManagement(agentActorId, teamId) {
@@ -1955,6 +2014,23 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (existingErr) throw existingErr;
       if (existing) {
+        if (existing.parent_session_id !== parentSessionId) {
+          throw new ApiError(
+            400,
+            "validation_failed",
+            "rootMessageId is already bound to a different parent session",
+          );
+        }
+        const { data: threadSeat, error: threadSeatErr } = await supabase
+          .from("session_participants")
+          .select("actor_id")
+          .eq("session_id", existing.id)
+          .eq("actor_id", callerActorId)
+          .maybeSingle();
+        if (threadSeatErr) throw threadSeatErr;
+        if (!threadSeat) {
+          throw new ApiError(403, "forbidden", "not a participant in the thread session");
+        }
         const { items } = await this.listSessionParticipants(existing.id);
         return { ...mapSessionFull(existing), participants: items };
       }
@@ -2967,6 +3043,16 @@ export function createSupabaseBusinessRepository(options) {
       type: string;
       visibility?: string;
       gitRemoteUrl?: string | null;
+      /**
+       * The code is already a git checkout on the caller's machine, so this
+       * deployment provisions no repo for it.
+       *
+       * Distinct from "no `gitRemoteUrl`", which has always meant "mint a Gitea
+       * repo": a local checkout with no `origin` supplies neither a URL nor a
+       * reason to create one, and without this flag it would silently get a
+       * Gitea repo it never pushes to.
+       */
+      localOnly?: boolean;
     }) {
       // Resolve the caller's actor in this team — the RLS insert policy
       // (created_by_actor_id = app.current_actor_id_for_team(team_id)) requires
@@ -2982,7 +3068,10 @@ export function createSupabaseBusinessRepository(options) {
       const slug = slugify(input.name);
       const visibility = input.visibility === "team" ? "team" : "personal";
       const importUrl = input.gitRemoteUrl?.trim() || null;
-      if (!importUrl && !gitea) throw giteaUnavailable(giteaUnavailableReason);
+      const localOnly = input.localOnly === true;
+      if (!importUrl && !localOnly && !gitea) {
+        throw giteaUnavailable(giteaUnavailableReason);
+      }
 
       // 1:1 workspace for the app. created_by_member_id = the resolved actor so
       // the workspace RLS insert policy is satisfied (same actor identity).
@@ -3008,13 +3097,21 @@ export function createSupabaseBusinessRepository(options) {
           visibility,
           workspace_id: ws.id,
           git_remote_url: importUrl,
-          provision_status: "pending",
+          // A local checkout needs no provisioning at all — the files are
+          // already there. Leaving it `pending` would send the desktop down
+          // the seed path, which writes the starter template over whatever the
+          // user pointed us at.
+          provision_status: localOnly ? "ready" : "pending",
         })
         .select(APP_COLUMNS)
         .single();
       if (appErr) throw appErr;
 
-      if (importUrl) return mapApp(row);
+      // Both import paths stop here: the app's code lives somewhere we did not
+      // provision, so there is no repo of ours to create and no deploy key to
+      // hold. `git_auth_kind` stays null, which is what makes deploy build the
+      // workdir as it sits.
+      if (importUrl || localOnly) return mapApp(row);
 
       try {
         // The SSH URL, not `clone_url`: the deploy key is the only credential
@@ -3548,30 +3645,79 @@ export function createSupabaseBusinessRepository(options) {
       return null;
     },
 
-    async getAppGitCredential(appId: string) {
-      const { data: existing, error: selErr } = await supabase
+    /**
+     * Who, if anyone, the caller is for this app's git credentials — and the
+     * app row to act on. One rule, shared by mint and revoke, so the two can
+     * never drift apart.
+     */
+    async resolveAppGitCredentialActor(
+      appId: string,
+    ): Promise<{ actorId: string; app: Record<string, any> } | null> {
+      const { data: visible, error: selErr } = await supabase
         .from("apps")
         .select("id, team_id, git_remote_url, git_auth_kind, created_by_actor_id")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
-      if (!existing) return null;
 
-      const permission = await this.resolveAppCallerPermissionForApp(existing);
-      if (!permission || permission.level === "view") return null;
+      if (visible) {
+        const permission = await this.resolveAppCallerPermissionForApp(visible);
+        // A member the app knows about is answered on the member rules alone —
+        // an explicit `view` grant is a deny, never a fall-through to the
+        // agent path below.
+        if (permission) {
+          if (permission.level === "view") return null;
+          return { actorId: permission.callerMemberId, app: visible };
+        }
+      }
 
-      if (!existing.git_remote_url) return null;
-      // An imported app has a remote this deployment holds no credential for;
-      // minting a Gitea key for it would 404 on a repo that does not exist.
-      if (existing.git_auth_kind !== GITEA_AUTH_KIND) return null;
+      // Agent-actor path. The daemon holds its own cloud account, so it never
+      // resolves to a member actor and the member rules above always decline
+      // it — yet the daemon is the only thing on the machine that can hand
+      // `git push` a credential (the agent's own push has none, and the key is
+      // deliberately not persisted anywhere). Authorisation is therefore
+      // team-scoped: any agent actor in the app's team may mint a key for a
+      // Gitea-managed app in that team.
+      //
+      // Coarser than the per-app member rules on purpose — `app_member_access`
+      // is keyed on `amux.members`, so an agent actor cannot hold a per-app
+      // grant at all — and accepted when this path was chosen. The blast radius
+      // is one repo per key, and the key's title names the agent actor.
+      //
+      // The row is re-read with the service role because `apps.visibility`
+      // defaults to `personal`, which `apps_select_if_visible` hides from every
+      // actor but the creator — including the daemon of the very machine the
+      // app is checked out on.
+      const app = visible ?? (await readAppForAgentGitCredential(appId));
+      if (!app) return null;
+      const agentActorId = await resolveCurrentAgentActor(app.team_id);
+      if (!agentActorId) return null;
+      return { actorId: agentActorId, app };
+    },
+
+    async getAppGitCredential(appId: string) {
+      const resolved = await this.resolveAppGitCredentialActor(appId);
+      if (!resolved) return null;
+      return mintAppGitCredential(appId, resolved.app, resolved.actorId);
+    },
+
+    /**
+     * Hand a JIT key back the moment its holder is done with it
+     * (`amuxd git-ssh` calls this as soon as ssh exits).
+     *
+     * Authorised exactly like minting, and the key must carry the caller's own
+     * actor in its title — otherwise revoking would be a way to kill a push
+     * another machine is in the middle of.
+     */
+    async revokeAppGitCredential(appId: string, deployKeyId: number) {
+      const resolved = await this.resolveAppGitCredentialActor(appId);
+      if (!resolved) return null;
+      const { actorId } = resolved;
       if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
-
-      const jit = await issueJitDeployKey(gitea, appId, permission.callerMemberId);
-      return {
-        remoteUrl: existing.git_remote_url,
-        authKind: "deploy_key" as const,
-        ...jit,
-      };
+      const revoked = await revokeOwnJitDeployKey(gitea, appId, actorId, deployKeyId);
+      // `revoked: false` is not an error the caller can act on — the key is
+      // unusable either way, which is the whole point of asking.
+      return { revoked };
     },
 
     async getAppGitHead(appId: string) {

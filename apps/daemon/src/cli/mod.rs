@@ -3,6 +3,7 @@ pub mod clear;
 pub mod config_cmd;
 pub mod cursor_permission_hook;
 pub mod doctor;
+pub mod git_ssh;
 pub mod install_opencode;
 pub mod manage;
 pub mod process;
@@ -113,6 +114,10 @@ pub enum Commands {
     /// Cursor `preToolUse` hook. Spawned by `@cursor/sdk` per tool call;
     /// reads the hook request on stdin and prints an allow/deny decision.
     CursorPermissionHook(CursorPermissionHookArgs),
+    /// The `ssh` git runs inside an app checkout. Set as `core.sshCommand` by
+    /// seed/clone; fetches a JIT Gitea deploy key from the daemon per
+    /// connection so an agent's plain `git push` works with nothing persisted.
+    GitSsh(GitSshArgs),
 }
 
 #[derive(Args, Debug)]
@@ -210,6 +215,20 @@ pub struct CursorPermissionHookArgs {
     pub worktree: String,
     #[arg(long)]
     pub sock: Option<std::path::PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct GitSshArgs {
+    /// App whose repo this connection is for. Baked into `core.sshCommand`.
+    #[arg(long)]
+    pub app: String,
+    #[arg(long)]
+    pub sock: Option<std::path::PathBuf>,
+    /// git's own ssh arguments — host, `-o` flags, and the remote command.
+    /// `trailing_var_arg` keeps git's leading `-o`/`-p` flags from being
+    /// parsed as ours.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Args, Debug)]

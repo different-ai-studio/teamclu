@@ -137,6 +137,24 @@ pub struct TeamSkillDownload {
     pub size: u64,
 }
 
+/// A just-in-time Gitea deploy key for one app's repo
+/// (`GET /v1/apps/:id/git-credential`).
+///
+/// Minted per request and never persisted: the daemon writes the PEM to a
+/// `0600` temp file for the length of one `ssh` invocation and deletes it. The
+/// cloud advertises a ~15 minute lifetime and revokes the public half on a
+/// later sweep, so a key held past its use is worthless rather than dangerous.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppGitCredential {
+    pub remote_url: String,
+    pub private_key_pem: String,
+    /// Gitea's id for the registered public half, so the holder can hand the
+    /// key back the moment it is done (see `Backend::revoke_app_git_credential`).
+    #[serde(default)]
+    pub deploy_key_id: Option<i64>,
+}
+
 /// The team's managed (shared) LLM, as sourced from
 /// `GET /v1/teams/:id/workspace-config` (`llm.*`). This replaces the old
 /// disk-mirrored `_meta/provider.json` so the shared provider converges on first
@@ -241,6 +259,35 @@ pub trait Backend: Send + Sync {
     /// here would add a second schema to keep in sync for no gain.
     async fn team_mcp_config(&self, _team_id: &str) -> BackendResult<serde_json::Value> {
         Ok(serde_json::json!({ "mcpServers": {} }))
+    }
+
+    /// A JIT Gitea deploy key for `app_id`, minted by the cloud against this
+    /// daemon's own agent actor.
+    ///
+    /// This is what makes the agent's `git push` work. The deploy key handed to
+    /// the desktop at seed/clone time is gone by the time an agent commits, and
+    /// nothing durable is left in the checkout on purpose — so `core.sshCommand`
+    /// points at [`crate::sync::app_git_ssh`], which calls this for every single
+    /// ssh connection git opens.
+    async fn app_git_credential(&self, _app_id: &str) -> BackendResult<AppGitCredential> {
+        Err(BackendError::NotFound(
+            "app git credentials unavailable on this backend".to_string(),
+        ))
+    }
+
+    /// Return a JIT deploy key the moment its holder is finished with it
+    /// (`DELETE /v1/apps/:id/git-credential/:keyId`).
+    ///
+    /// Best-effort by contract: the cloud sweeps expired keys anyway, so a
+    /// failed revoke costs tidiness, never correctness.
+    async fn revoke_app_git_credential(
+        &self,
+        _app_id: &str,
+        _deploy_key_id: i64,
+    ) -> BackendResult<()> {
+        Err(BackendError::NotFound(
+            "app git credentials unavailable on this backend".to_string(),
+        ))
     }
 
     /// Install a team MCP server for the calling actor

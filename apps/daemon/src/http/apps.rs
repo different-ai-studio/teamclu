@@ -100,6 +100,50 @@ fn migrate_legacy_apps_root_from(legacy: &std::path::Path, dest: &std::path::Pat
     }
 }
 
+/// Point every existing app checkout at the `amuxd git-ssh` shim. Called once
+/// at startup.
+///
+/// Seed, clone and deploy each stamp `core.sshCommand` themselves, but a
+/// checkout made before the shim existed — or one whose amuxd moved in an
+/// upgrade — would otherwise keep failing the agent's `git push` until its next
+/// deploy. Startup is the one moment that reaches all of them.
+///
+/// Best-effort and silent about repos it cannot touch: a directory that is not
+/// a git checkout, or belongs to another tool, is simply skipped.
+pub fn refresh_app_ssh_commands() {
+    let root = crate::config::layout::teams_dir();
+    let Ok(teams) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let mut refreshed = 0usize;
+    for team in teams.flatten() {
+        let apps = team.path().join("apps");
+        let Ok(entries) = std::fs::read_dir(&apps) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            // The directory name is the app id — the same rule `resolve_workdir`
+            // uses when it creates them.
+            let Some(app_id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if !dir.join(".git").exists() {
+                continue;
+            }
+            match crate::sync::app_git::set_repo_ssh_command(&dir, &app_id) {
+                Ok(()) => refreshed += 1,
+                Err(e) => {
+                    tracing::debug!(app_id, error = %e, "apps: could not stamp core.sshCommand")
+                }
+            }
+        }
+    }
+    if refreshed > 0 {
+        tracing::info!(refreshed, "apps: pointed app checkouts at the git-ssh shim");
+    }
+}
+
 /// `teams/<teamId>/apps` — the app root for one specific team.
 ///
 /// Falls back to the active team's root when the caller names no team, which
@@ -357,6 +401,7 @@ pub async fn seed_app(
             (Some(url), Some(key)) if clone_only => {
                 crate::sync::app_clone::clone_app_repo_with_deploy_key(
                     url,
+                    &app_id,
                     &workdir_path,
                     key,
                     git_user_name.as_deref(),
@@ -366,6 +411,7 @@ pub async fn seed_app(
             }
             (Some(url), Some(key)) => {
                 let push = crate::sync::app_seed::SeedGitPush {
+                    app_id: &app_id,
                     remote_url: url,
                     deploy_key_pem: key,
                     git_user_name: git_user_name.as_deref(),
@@ -474,6 +520,7 @@ pub async fn build_app(
         return Err(HttpError::validation("presignedPut must not be empty"));
     }
 
+    let app_id = body.app_id.trim().to_string();
     let git_commit_sha = body.git_commit_sha.trim().to_string();
     let git_remote_url = body.git_remote_url.trim().to_string();
     let deploy_key_pem = body.deploy_key_pem.trim().to_string();
@@ -503,6 +550,7 @@ pub async fn build_app(
 
     let bytes = tokio::task::spawn_blocking(move || {
         let git_ctx = use_git.then(|| crate::sync::app_build::BuildGitContext {
+            app_id: &app_id,
             commit_sha: &git_commit_sha,
             remote_url: &git_remote_url,
             deploy_key_pem: &deploy_key_pem,
@@ -532,6 +580,227 @@ pub async fn build_app(
     }
 
     Ok(Json(BuildAppResponse { status: "built" }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindAppWorkdirBody {
+    /// The app's team — names the override file and derived root.
+    #[serde(default)]
+    pub team_id: String,
+    /// Absolute path to a git checkout that already exists on this machine.
+    pub workdir: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindAppWorkdirResponse {
+    pub workdir: String,
+    /// `origin` on the bound checkout, when it has one. The desktop writes this
+    /// onto the app row so the app records where its code came from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_remote_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectDirBody {
+    /// Absolute path the user picked in the directory chooser.
+    pub path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectDirResponse {
+    pub is_git_repo: bool,
+    /// `origin`, when the checkout has one. The create flow stores this on the
+    /// app so an imported repo records where its code came from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_remote_url: Option<String>,
+}
+
+/// `POST /v1/apps/inspect-dir` — is this a git checkout, and where is it from?
+///
+/// Asked *before* the app row exists. Binding is the natural place to check,
+/// but by then the app has been created — so a user who picked the wrong folder
+/// would be left with an app row pointing nowhere, and no obvious way to tell
+/// that is what happened.
+pub async fn inspect_dir(
+    principal: Principal,
+    State(_state): State<HttpState>,
+    Json(body): Json<InspectDirBody>,
+) -> Result<Json<InspectDirResponse>, HttpError> {
+    require_scope(&principal, "workspace:read")?;
+    let raw = body.path.trim().to_string();
+    if raw.is_empty() {
+        return Err(HttpError::validation("path must not be empty"));
+    }
+    let path = PathBuf::from(&raw);
+    if !path.is_absolute() {
+        return Err(HttpError::validation("path must be an absolute path"));
+    }
+
+    let probe = tokio::task::spawn_blocking(move || {
+        if !path.is_dir() {
+            return InspectDirResponse {
+                is_git_repo: false,
+                git_remote_url: None,
+            };
+        }
+        if !crate::sync::app_git::is_git_repo(&path) {
+            return InspectDirResponse {
+                is_git_repo: false,
+                git_remote_url: None,
+            };
+        }
+        InspectDirResponse {
+            is_git_repo: true,
+            git_remote_url: crate::sync::app_git::origin_url(&path),
+        }
+    })
+    .await
+    .map_err(|e| HttpError::internal(format!("inspect task panicked: {e}")))?;
+
+    Ok(Json(probe))
+}
+
+/// `POST /v1/apps/:appId/bind-workdir` — point an app at a checkout that is
+/// already here, without touching a single file.
+///
+/// Deliberately not [`move_app_workdir`]: that one relocates the whole tree,
+/// which is exactly wrong for "I already have this repo, use it where it is".
+/// A user who picks their own project directory expects it to stay put.
+pub async fn bind_app_workdir(
+    principal: Principal,
+    State(_state): State<HttpState>,
+    axum::extract::Path(app_id): axum::extract::Path<String>,
+    Json(body): Json<BindAppWorkdirBody>,
+) -> Result<Json<BindAppWorkdirResponse>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+
+    let app_id = app_id.trim().to_string();
+    if app_id.is_empty() {
+        return Err(HttpError::validation("appId must not be empty"));
+    }
+    let workdir = body.workdir.trim();
+    if workdir.is_empty() {
+        return Err(HttpError::validation("workdir must not be empty"));
+    }
+    let path = PathBuf::from(workdir);
+    if !path.is_absolute() {
+        return Err(HttpError::validation("workdir must be an absolute path"));
+    }
+    if !path.is_dir() {
+        return Err(HttpError::validation(format!(
+            "not a directory: {}",
+            path.display()
+        )));
+    }
+    // The requirement is a *git* directory, and checking it here is what turns
+    // "nothing deploys and no one knows why" into a message at the moment of
+    // choosing. `rev-parse` rather than a `.git` stat: that also accepts a
+    // worktree or a submodule, whose `.git` is a file.
+    if !crate::sync::app_git::is_git_repo(&path) {
+        return Err(HttpError::validation(format!(
+            "not a git repository: {}",
+            path.display()
+        )));
+    }
+
+    let team_id = body.team_id.clone();
+    let bound = path.clone();
+    // Resolved out here: it is pure path arithmetic, and it reports failure as
+    // an `HttpError`, which the io-typed closure below cannot carry.
+    let derived = derived_workdir(&app_id, &team_id)?;
+    tokio::task::spawn_blocking(move || {
+        if bound == derived {
+            // Already where the app would look by default — an override would
+            // be a pointer to the place it already points.
+            crate::sync::app_workdir::clear_override(&team_id, &app_id)?;
+        } else {
+            crate::sync::app_workdir::set_override(&team_id, &app_id, &bound)?;
+        }
+        Ok::<(), std::io::Error>(())
+    })
+    .await
+    .map_err(|e| HttpError::internal(format!("bind task panicked: {e}")))?
+    .map_err(|e| HttpError::internal(format!("could not record the workdir: {e}")))?;
+
+    Ok(Json(BindAppWorkdirResponse {
+        workdir: path.to_string_lossy().into_owned(),
+        git_remote_url: crate::sync::app_git::origin_url(&path),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAppsResponse {
+    /// Ids of the apps this machine holds a non-empty checkout for.
+    pub app_ids: Vec<String>,
+}
+
+/// `GET /v1/apps/local?teamId=…` — which apps are actually on this machine.
+///
+/// One call rather than the desktop asking per app: the first column filters
+/// its list on this, and resolving a workdir plus reading it for every app was
+/// two IPC round trips each, on every refresh.
+pub async fn list_local_apps(
+    principal: Principal,
+    State(_state): State<HttpState>,
+    axum::extract::Query(query): axum::extract::Query<LocalAppsQuery>,
+) -> Result<Json<LocalAppsResponse>, HttpError> {
+    require_scope(&principal, "workspace:read")?;
+    let team_id = query.team_id.trim().to_string();
+    let app_ids = tokio::task::spawn_blocking(move || local_app_ids(&team_id))
+        .await
+        .map_err(|e| HttpError::internal(format!("scan task panicked: {e}")))?;
+    Ok(Json(LocalAppsResponse { app_ids }))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAppsQuery {
+    #[serde(default)]
+    pub team_id: String,
+}
+
+/// Apps with a non-empty checkout here: the derived root plus every override.
+///
+/// An empty directory does not count. The seed path creates the directory
+/// before it writes anything into it, so a seed that failed leaves one behind —
+/// and counting it as "downloaded" would hide the app from the very list whose
+/// job is to offer the download again.
+fn local_app_ids(team_id: &str) -> Vec<String> {
+    let mut ids: std::collections::BTreeSet<String> = Default::default();
+
+    let root = apps_root_for_team(team_id);
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+            if dir_has_files(&entry.path()) {
+                ids.insert(name);
+            }
+        }
+    }
+
+    for (app_id, path) in crate::sync::app_workdir::all_overrides(team_id) {
+        if dir_has_files(&path) {
+            ids.insert(app_id);
+        }
+    }
+
+    ids.into_iter().collect()
+}
+
+fn dir_has_files(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Deserialize)]
