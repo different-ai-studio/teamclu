@@ -207,6 +207,7 @@ mod opencode_snapshot;
 mod lookup;
 // Workspace-scoped runtime queries (active handles / stop-all for a workspace).
 mod workspace_query;
+pub use workspace_query::WorkspaceOccupancy;
 // Idle-runtime eviction (idle sweeper + drain buffer).
 mod eviction;
 // ACP event draining (poll_events / poll_events_for).

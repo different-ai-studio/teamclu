@@ -15,6 +15,27 @@ const HOST_IDLE_TTL: Duration = Duration::from_secs(300);
 const HOST_SOFT_LIMIT: usize = 2;
 const HOST_HARD_LIMIT: usize = 3;
 
+/// Why a caller is taking a host slot. Prewarm must never wait in the
+/// capacity queue or consume the hard-limit spare; user runtimes and
+/// replacements may.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostAcquireClass {
+    UserRuntime,
+    /// Rolling replacement of a live generation (PR3 draining self-heal).
+    #[allow(dead_code)]
+    Replacement,
+    Prewarm,
+}
+
+#[derive(Debug)]
+pub enum PrewarmOutcome {
+    Reused(HostLease),
+    Started(HostLease),
+    SkippedCapacity,
+    SkippedDemandQueued,
+    SkippedDraining,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostLifecycle {
@@ -35,7 +56,8 @@ pub struct HostGeneration {
     pub(crate) sse_tasks: parking_lot::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     pub(crate) reconcile_tasks: parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     pub(crate) sse_transport: parking_lot::Mutex<HashMap<String, SseTransportState>>,
-    context_service: parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
+    context_service:
+        parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
     lifecycle: parking_lot::RwLock<HostLifecycle>,
     route_count: AtomicUsize,
     idle_since: parking_lot::Mutex<Option<Instant>>,
@@ -73,7 +95,9 @@ impl HostGeneration {
         *self.lifecycle.read()
     }
 
-    pub(crate) fn context_service(&self) -> Option<Arc<crate::runtime::context_service::RuntimeContextService>> {
+    pub(crate) fn context_service(
+        &self,
+    ) -> Option<Arc<crate::runtime::context_service::RuntimeContextService>> {
         self.context_service.read().clone()
     }
 
@@ -268,7 +292,8 @@ pub trait GenerationFactory: Send + Sync {
 pub struct SupervisorGenerationFactory {
     registry: Arc<ServeProcessRegistry>,
     binary_hint: parking_lot::RwLock<Option<String>>,
-    context_service: parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
+    context_service:
+        parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
 }
 
 impl SupervisorGenerationFactory {
@@ -304,7 +329,9 @@ impl GenerationFactory for SupervisorGenerationFactory {
         mut env: HashMap<String, String>,
     ) -> Result<Arc<ServeSupervisor>, String> {
         if let Some(service) = self.context_service.read().as_ref() {
-            env.extend(service.env_for_generation(crate::proto::amux::AgentType::Opencode, &generation_id));
+            env.extend(
+                service.env_for_generation(crate::proto::amux::AgentType::Opencode, &generation_id),
+            );
         }
         let serve = Arc::new(ServeSupervisor::new(
             generation_id,
@@ -374,6 +401,11 @@ enum CapacityReservation<'a> {
     Reused(HostLease),
 }
 
+enum ActivationOutcome {
+    Reused(HostLease),
+    Started(HostLease),
+}
+
 impl CapacityPermit<'_> {
     fn commit(&mut self) {
         self.committed = true;
@@ -405,7 +437,8 @@ impl Drop for QueueTicket<'_> {
 
 pub struct OpenCodeHostPool {
     factory: Arc<dyn GenerationFactory>,
-    context_service: parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
+    context_service:
+        parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
     domains: parking_lot::Mutex<HashMap<IsolationDomainKey, Arc<DomainSlot>>>,
     capacity: parking_lot::Mutex<CapacityState>,
     capacity_changed: tokio::sync::Notify,
@@ -443,6 +476,7 @@ impl OpenCodeHostPool {
         env: HashMap<String, String>,
         deadline: Instant,
     ) -> Result<HostLease, HostPoolError> {
+        let _class = HostAcquireClass::UserRuntime;
         let slot = self.slot_for(&domain);
         let protected_idle_generation = {
             let _activation = slot.activation_lock.lock().await;
@@ -491,10 +525,77 @@ impl OpenCodeHostPool {
             }
             Err(error) => return Err(error),
         };
-        let mut capacity_permit = match capacity_reservation {
+        let capacity_permit = match capacity_reservation {
             CapacityReservation::Permit(permit) => permit,
             CapacityReservation::Reused(lease) => return Ok(lease),
         };
+        match self
+            .activate_generation(slot, domain, revision, env, capacity_permit)
+            .await?
+        {
+            ActivationOutcome::Reused(lease) | ActivationOutcome::Started(lease) => Ok(lease),
+        }
+    }
+
+    pub async fn try_prewarm(
+        &self,
+        domain: IsolationDomainKey,
+        revision: ProcessEnvRevision,
+        env: HashMap<String, String>,
+    ) -> Result<PrewarmOutcome, HostPoolError> {
+        let _class = HostAcquireClass::Prewarm;
+        let slot = self.slot_for(&domain);
+        {
+            let _activation = slot.activation_lock.lock().await;
+            let mut state = slot.state.lock();
+            state.requested_revision = Some(revision.clone());
+            if let Some(current) = state.current.clone() {
+                if current.process_env_revision == revision
+                    && current.lifecycle() == HostLifecycle::Ready
+                    && !state.replacement_requested
+                {
+                    state.last_error = None;
+                    return Ok(PrewarmOutcome::Reused(current.reserve_route(self)));
+                }
+            }
+        }
+
+        if self.capacity_counts().1 > 0 {
+            return Ok(PrewarmOutcome::SkippedDraining);
+        }
+        let capacity_permit = {
+            let mut capacity = self.capacity.lock();
+            if !capacity.queue.is_empty() {
+                return Ok(PrewarmOutcome::SkippedDemandQueued);
+            }
+            if capacity.active >= HOST_SOFT_LIMIT {
+                return Ok(PrewarmOutcome::SkippedCapacity);
+            }
+            capacity.active += 1;
+            CapacityPermit {
+                pool: self,
+                committed: false,
+            }
+        };
+
+        match self
+            .activate_generation(slot, domain, revision, env, capacity_permit)
+            .await
+        {
+            Ok(ActivationOutcome::Reused(lease)) => Ok(PrewarmOutcome::Reused(lease)),
+            Ok(ActivationOutcome::Started(lease)) => Ok(PrewarmOutcome::Started(lease)),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn activate_generation(
+        &self,
+        slot: Arc<DomainSlot>,
+        domain: IsolationDomainKey,
+        revision: ProcessEnvRevision,
+        env: HashMap<String, String>,
+        mut capacity_permit: CapacityPermit<'_>,
+    ) -> Result<ActivationOutcome, HostPoolError> {
         let _activation = slot.activation_lock.lock().await;
         {
             let mut state = slot.state.lock();
@@ -505,7 +606,7 @@ impl OpenCodeHostPool {
                     && !state.replacement_requested
                 {
                     state.last_error = None;
-                    return Ok(current.reserve_route(self));
+                    return Ok(ActivationOutcome::Reused(current.reserve_route(self)));
                 }
             }
         }
@@ -557,7 +658,7 @@ impl OpenCodeHostPool {
             }
         }
         capacity_permit.commit();
-        Ok(generation.reserve_route(self))
+        Ok(ActivationOutcome::Started(generation.reserve_route(self)))
     }
 
     async fn reserve_capacity(
@@ -721,7 +822,10 @@ impl OpenCodeHostPool {
         let sse_directories = generation.abort_sse_tasks();
         generation.abort_reconcile_tasks();
         if let Some(service) = generation.context_service() {
-            service.clear_generation(crate::proto::amux::AgentType::Opencode, &generation.generation_id);
+            service.clear_generation(
+                crate::proto::amux::AgentType::Opencode,
+                &generation.generation_id,
+            );
         }
         match self.factory.stop(generation) {
             ShutdownOutcome::Idle | ShutdownOutcome::Stopped => {
@@ -884,10 +988,7 @@ impl OpenCodeHostPool {
     ///
     /// A dispose that fails on the wire propagates as `Err` so callers can
     /// retry instead of silently leaving a stale instance cache behind.
-    pub async fn dispose_workspace_instance(
-        &self,
-        directory: &str,
-    ) -> crate::error::Result<usize> {
+    pub async fn dispose_workspace_instance(&self, directory: &str) -> crate::error::Result<usize> {
         let generations: Vec<Arc<HostGeneration>> = {
             let domains = self.domains.lock();
             domains
@@ -2020,5 +2121,119 @@ mod tests {
         pool.dispose_workspace_instance("/tmp/ws-a")
             .await
             .expect_err("a failed dispose must surface so the caller retries");
+    }
+
+    #[tokio::test]
+    async fn prewarm_reuses_ready_generation_without_starting() {
+        let factory = FakeGenerationFactory::new();
+        let pool = OpenCodeHostPool::new(factory.clone());
+        let lease = pool
+            .acquire(domain("a"), revision("1"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+
+        let outcome = pool
+            .try_prewarm(domain("a"), revision("1"), HashMap::new())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, PrewarmOutcome::Reused(_)));
+        assert_eq!(factory.start_count(), 1);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn prewarm_does_not_use_hard_limit_slot() {
+        let factory = FakeGenerationFactory::new();
+        let pool = OpenCodeHostPool::new(factory.clone());
+        let _a = pool
+            .acquire(domain("a"), revision("1"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+        let _b = pool
+            .acquire(domain("b"), revision("1"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+
+        let outcome = pool
+            .try_prewarm(domain("c"), revision("1"), HashMap::new())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, PrewarmOutcome::SkippedCapacity));
+        assert_eq!(factory.start_count(), 2);
+
+        let user = pool
+            .acquire(domain("c"), revision("1"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+        assert_eq!(factory.start_count(), 3);
+        drop(user);
+    }
+
+    #[tokio::test]
+    async fn prewarm_does_not_queue_ahead_of_user_acquire() {
+        let factory = FakeGenerationFactory::new();
+        let pool = OpenCodeHostPool::new(factory.clone());
+        let a = pool
+            .acquire(domain("a"), revision("1"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+        let _b = pool
+            .acquire(domain("b"), revision("1"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+        let _c = pool
+            .acquire(domain("c"), revision("1"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+
+        let waiting_pool = Arc::clone(&pool);
+        let waiting = tokio::spawn(async move {
+            waiting_pool
+                .acquire(domain("d"), revision("1"), HashMap::new(), deadline())
+                .await
+        });
+        wait_for_queue(&pool, &domain("d"), 1).await;
+
+        let outcome = pool
+            .try_prewarm(domain("e"), revision("1"), HashMap::new())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, PrewarmOutcome::SkippedDemandQueued));
+        assert_eq!(factory.start_count(), 3);
+        assert_eq!(pool.stats_for(&domain("e")).queued_acquisitions, 0);
+
+        drop(a);
+        let user = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("user acquire must not wait behind a prewarm")
+            .unwrap()
+            .unwrap();
+        assert_eq!(factory.start_count(), 4);
+        drop(user);
+    }
+
+    #[tokio::test]
+    async fn prewarm_skips_when_a_generation_is_draining() {
+        let factory = FakeGenerationFactory::new();
+        let pool = OpenCodeHostPool::new(factory.clone());
+        let old = pool
+            .acquire(domain("a"), revision("1"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+        let replacement = pool
+            .acquire(domain("a"), revision("2"), HashMap::new(), deadline())
+            .await
+            .unwrap();
+        assert_eq!(old.generation.lifecycle(), HostLifecycle::Draining);
+        assert_eq!(pool.stats_for(&domain("a")).draining_generations, 1);
+
+        let outcome = pool
+            .try_prewarm(domain("b"), revision("1"), HashMap::new())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, PrewarmOutcome::SkippedDraining));
+        assert_eq!(factory.start_count(), 2);
+        drop(old);
+        drop(replacement);
     }
 }

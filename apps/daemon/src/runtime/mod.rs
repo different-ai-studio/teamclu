@@ -51,7 +51,7 @@ pub use instruction_delivery::{
 };
 pub use manager::{
     is_gateway_workspace_id, restore_gateway_shape_for_resume, AgentLaunchConfig, CheckedOutTurn,
-    RuntimeManager, SpawnRuntimeEnv,
+    RuntimeManager, SpawnRuntimeEnv, WorkspaceOccupancy,
 };
 pub use permission_policy::PermissionPolicy;
 // Kept importable for external callers/tests even though in-crate code now

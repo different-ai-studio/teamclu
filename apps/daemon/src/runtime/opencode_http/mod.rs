@@ -28,7 +28,9 @@ pub mod translate;
 pub use envelope::*;
 
 use client::{PromptBody, PromptPart};
-use host_pool::{HostGeneration, HostPoolError, OpenCodeHostPool, SupervisorGenerationFactory};
+use host_pool::{
+    HostGeneration, HostPoolError, OpenCodeHostPool, PrewarmOutcome, SupervisorGenerationFactory,
+};
 use supervisor::ServeSupervisor;
 use translate::TranslateState;
 
@@ -440,17 +442,19 @@ impl OpencodeHost {
         self.apply_binary_hint(launch_configs);
         match self
             .pool
-            .acquire(
-                isolation_domain.clone(),
-                process_env_revision,
-                extra_env,
-                std::time::Instant::now() + std::time::Duration::from_secs(30),
-            )
+            .try_prewarm(isolation_domain.clone(), process_env_revision, extra_env)
             .await
         {
-            Ok(lease) => {
+            Ok(PrewarmOutcome::Reused(lease) | PrewarmOutcome::Started(lease)) => {
                 events::ensure_sse_task(&lease.generation, &canonical_dir(worktree));
                 info!(?isolation_domain, "workspace opencode host prewarmed");
+            }
+            Ok(
+                PrewarmOutcome::SkippedCapacity
+                | PrewarmOutcome::SkippedDemandQueued
+                | PrewarmOutcome::SkippedDraining,
+            ) => {
+                info!(?isolation_domain, "workspace opencode host prewarm skipped");
             }
             Err(error) => {
                 warn!(?isolation_domain, %error, "workspace opencode host prewarm failed");
