@@ -4,7 +4,6 @@ import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
-import { useStreamingStore } from "@/stores/streaming";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
 import { useSessionNoticeStore } from "@/stores/session-notice-store";
 import { useAgentModelPickStore } from "@/stores/agent-model-pick-store";
@@ -55,11 +54,9 @@ export function resetClientChatState(): void {
     pendingQuestionIdsBySession: {},
     answeredQuestionsByToolCallId: {},
     sessionStatuses: {},
-    sessionStatus: null,
     sessionError: null,
+    error: null,
     errorSessionId: null,
-    todos: [],
-    sessionDiff: [],
   });
   useV2StreamingStore.setState({
     byKey: {},
@@ -67,8 +64,6 @@ export function resetClientChatState(): void {
     persistedPlansBySession: {},
     interruptedFlushPending: {},
   });
-  useStreamingStore.getState().clearStreaming();
-  useStreamingStore.getState().clearAllChildStreaming();
   useEngagedAgentStore.setState({
     bySession: {},
   });

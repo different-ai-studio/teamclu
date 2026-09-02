@@ -3,8 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Check, Copy, Loader2, ScrollText } from "lucide-react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { cn, copyToClipboard } from "@/lib/utils";
-import { type Message as StoreMessage, useSessionStore, getSessionById } from "@/stores/session";
-import { useStreamingStore } from "@/stores/streaming";
+import type { Message as StoreMessage } from "@/stores/session";
 import {
   Message,
   MessageContent,
@@ -143,48 +142,11 @@ export const ChatMessage = React.memo(function ChatMessage({
     return replyAuthorResolved || t("chat.someone", "某人");
   }, [replyToMessage, myActorId, replyAuthorResolved, t]);
 
-  // Use streaming content for the actively streaming message.
-  // PERF: Only the streaming message subscribes to high-frequency updates (trigger/content).
-  // Non-streaming messages subscribe to streamingMessageId only (changes ~2x per conversation).
-  const streamingMessageId = useStreamingStore(s => s.streamingMessageId);
-  const isViewingThisSession = !!activeSessionId && message.sessionId === activeSessionId;
-  const childStreamingState = useStreamingStore(s =>
-    message.isStreaming && isViewingThisSession && activeSessionId
-      ? s.childSessionStreaming[activeSessionId]
-      : undefined,
-  );
-  const isChildSessionStreaming =
-    message.isStreaming &&
-    isViewingThisSession &&
-    !!childStreamingState?.isStreaming;
-  const isThisMessageStreaming =
-    message.isStreaming &&
-    (message.id === streamingMessageId || isChildSessionStreaming);
-
-  // Only subscribe to per-frame updates when THIS message is streaming.
-  // This prevents all other ChatMessage instances from re-rendering every frame.
-  const streamingContent = useStreamingStore(s =>
-    isThisMessageStreaming && !isChildSessionStreaming ? s.streamingContent : "",
-  );
-  const streamingUpdateTrigger = useStreamingStore(s =>
-    isThisMessageStreaming && !isChildSessionStreaming ? s.streamingUpdateTrigger : 0,
-  );
-  const storeActiveSessionId = useSessionStore(s => s.activeSessionId);
-  const resolvedSessionId = activeSessionId ?? storeActiveSessionId;
-
-  // When streaming, get the latest message data from sessionLookupCache
-  // which includes updated reasoning parts from typewriterTick
-  const latestMessage = React.useMemo(() => {
-    if (!isThisMessageStreaming || !resolvedSessionId) return message;
-    const session = getSessionById(resolvedSessionId);
-    if (!session) return message;
-    const latest = session.messages.find(m => m.id === message.id);
-    return latest || message;
-  }, [isThisMessageStreaming, resolvedSessionId, message, streamingUpdateTrigger]);
-
-  const textContent = isThisMessageStreaming
-    ? (isChildSessionStreaming ? (childStreamingState?.text || "") : streamingContent)
-    : (latestMessage.content || "");
+  // Live agent output is rendered by the v2 stream bubbles
+  // (StreamingAgentBubble); a persisted ChatMessage always shows its own
+  // content.
+  const latestMessage = message;
+  const textContent = latestMessage.content || "";
 
   const isDeferredProcess =
     !latestMessage.isStreaming && Boolean(latestMessage.processDeferred);
@@ -213,13 +175,7 @@ export const ChatMessage = React.memo(function ChatMessage({
   // re-filtering on every render during streaming.
   const { reasoningContent, hasReasoning, hasThinking } = React.useMemo(() => {
     const rParts = latestMessage.parts.filter((p) => p.type === "reasoning");
-    const streamedReasoning = isChildSessionStreaming
-      ? (childStreamingState?.reasoning || "")
-      : "";
-    const rContent = [
-      rParts.map((p) => p.text || "").filter(Boolean).join("\n"),
-      streamedReasoning,
-    ].filter(Boolean).join("\n");
+    const rContent = rParts.map((p) => p.text || "").filter(Boolean).join("\n");
     return {
       reasoningContent: rContent,
       hasReasoning: rContent.length > 0,
@@ -227,7 +183,7 @@ export const ChatMessage = React.memo(function ChatMessage({
         (p) => p.type === "step-start" || p.type === "step-finish",
       ),
     };
-  }, [childStreamingState?.reasoning, isChildSessionStreaming, latestMessage.parts]);
+  }, [latestMessage.parts]);
 
   const hasToolCalls = latestMessage.toolCalls && latestMessage.toolCalls.length > 0;
   const orderedRenderableParts = React.useMemo(

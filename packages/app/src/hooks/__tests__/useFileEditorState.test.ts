@@ -12,14 +12,6 @@ vi.mock('@/stores/workspace', () => ({
     }),
 }))
 
-vi.mock('@/stores/session', () => ({
-  useSessionStore: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      todos: [],
-      sessionDiff: [],
-    }),
-}))
-
 vi.mock('@/stores/ui', () => ({
   useUIStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
@@ -38,14 +30,6 @@ vi.mock('@/stores/tabs', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
-})
-
-describe('usePanelAutoOpen', () => {
-  it('renders without error', async () => {
-    const { usePanelAutoOpen } = await import('@/hooks/useFileEditorState')
-    const { result } = renderHook(() => usePanelAutoOpen())
-    expect(result.current).toBeUndefined()
-  })
 })
 
 describe('useLayoutModePanelSync', () => {

@@ -162,6 +162,19 @@ export function stripPriorTranscriptTextPrefix(
   return text;
 }
 
+/**
+ * The one place where two equivalent-after-normalization reply texts are
+ * reconciled. When both bodies say the same thing, the longer one wins,
+ * because MQTT QoS0 can drop post-tool deltas and the daemon's final content
+ * carries that tail. CLAUDE.md's "never take the longest on completion" rule
+ * has exactly this exception and only here; do not import
+ * pickCanonicalAgentReplyText anywhere else (guarded by
+ * agent-reply-single-reconciliation.test.ts).
+ */
+export function reconcileEquivalentAgentReplyText(current: string, incoming: string): string {
+  return pickCanonicalAgentReplyText(current, incoming);
+}
+
 /** Derive message.content from the live transcript; pending is metadata + drift hint only. */
 export function deriveAgentReplyContent(
   parts: TranscriptPart[],

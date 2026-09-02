@@ -112,19 +112,6 @@ function flattenSnapshot(snapshot: RuntimeStateSnapshot): Array<{ label: string;
     { label: 'Current session', value: snapshot.session.currentSessionId ?? '—' },
     { label: 'Active session', value: snapshot.session.activeSessionId ?? '—' },
     {
-      label: 'Streaming',
-      value: snapshot.streaming.streamingMessageId
-        ? `${snapshot.streaming.streamingMessageId} (${snapshot.streaming.streamingContentLength} chars)`
-        : 'idle',
-    },
-    {
-      label: 'Child streaming',
-      value:
-        snapshot.streaming.activeChildSessions.length > 0
-          ? snapshot.streaming.activeChildSessions.join(', ')
-          : 'none',
-    },
-    {
       label: 'Daemon HTTP',
       value: snapshot.daemon
         ? snapshot.daemon.ok

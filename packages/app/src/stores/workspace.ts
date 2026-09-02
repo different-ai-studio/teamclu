@@ -82,7 +82,7 @@ export interface FileNode {
 // the team repo dir, which is empty now that knowledge syncs to
 // `shared/knowledge`, and its header entry already moved to the left-nav
 // Knowledge column.
-export type RightPanelTab = "diff" | "shortcuts" | "files" | "actors";
+export type RightPanelTab = "shortcuts" | "files" | "actors";
 
 // Undo operation types for file operations
 interface UndoOperation {

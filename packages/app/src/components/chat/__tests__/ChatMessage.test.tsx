@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import { useStreamingStore } from '@/stores/streaming';
-import { useSessionStore, sessionLookupCache } from '@/stores/session';
+import { useSessionStore } from '@/stores/session';
 import { ChatMessage } from '../ChatMessage';
 
 // ── Mocks ──────────────────────────────────────────────────────────────
@@ -53,13 +52,6 @@ function makeMessage(overrides: Record<string, unknown> = {}) {
 
 describe('ChatMessage', () => {
   beforeEach(() => {
-    useStreamingStore.setState({
-      streamingMessageId: null,
-      streamingContent: '',
-      streamingUpdateTrigger: 0,
-      childSessionStreaming: {},
-    });
-    sessionLookupCache.clear();
     useSessionStore.setState({ activeSessionId: null });
   });
 
@@ -101,11 +93,6 @@ describe('ChatMessage', () => {
     });
 
     useSessionStore.setState({ activeSessionId: 'sess-1' });
-    sessionLookupCache.set('sess-1', {
-      id: 'sess-1',
-      messages: [message],
-      updatedAt: new Date(),
-    } as never);
 
     const { container } = render(<ChatMessage message={message} />);
     expect(container.textContent).toContain('Hello from the assistant');
@@ -127,11 +114,6 @@ describe('ChatMessage', () => {
     });
 
     useSessionStore.setState({ activeSessionId: 'sess-1' });
-    sessionLookupCache.set('sess-1', {
-      id: 'sess-1',
-      messages: [firstMessage, lastMessage],
-      updatedAt: new Date(),
-    } as never);
 
     // `activeSessionId` is the session this list belongs to, and it gates the
     // assistant actions row — ThreadBadge forks from it, so it cannot fall back
@@ -171,11 +153,6 @@ describe('ChatMessage', () => {
     });
 
     useSessionStore.setState({ activeSessionId: 'sess-1' });
-    sessionLookupCache.set('sess-1', {
-      id: 'sess-1',
-      messages: [message],
-      updatedAt: new Date(),
-    } as never);
 
     const { container } = render(<ChatMessage message={message} />);
     // Code blocks should render as code or pre elements
@@ -194,12 +171,6 @@ describe('ChatMessage', () => {
     });
 
     useSessionStore.setState({ activeSessionId: 'sess-1' });
-    useStreamingStore.setState({ streamingMessageId: 'msg-thinking-1', streamingContent: '' });
-    sessionLookupCache.set('sess-1', {
-      id: 'sess-1',
-      messages: [message],
-      updatedAt: new Date(),
-    } as never);
 
     const { container } = render(<ChatMessage message={message} shouldShowThinking={true} />);
     

@@ -273,23 +273,17 @@ export const useUIStore = create<UIState>((set, get) => ({
       useCronStore.getState().setShowCronSessions(false)
     })
     import('@/stores/session-selection-store').then(({ useSessionSelectionStore }) => {
-      import('@/stores/streaming').then(({ useStreamingStore }) => {
-        import('@/stores/session').then(({ useSessionStore }) => {
-            useStreamingStore.getState().clearStreaming()
-            useSessionSelectionStore.getState().clearActiveSession()
+      import('@/stores/session').then(({ useSessionStore }) => {
+        useSessionSelectionStore.getState().clearActiveSession()
 
-            // Clear session state to show "Start a New Chat" UI
-            // Actual session will be created when user sends first message
-            useSessionStore.setState({
-              isLoading: false,
-              messageQueue: [],
-              todos: [],
-              sessionDiff: [],
-              sessionError: null,
-              sessionStatus: null,
-              pendingQuestions: [],
-              pendingPermissions: [],
-            })
+        // Clear session state to show "Start a New Chat" UI
+        // Actual session will be created when user sends first message
+        useSessionStore.setState({
+          isLoading: false,
+          messageQueue: [],
+          sessionError: null,
+          pendingQuestions: [],
+          pendingPermissions: [],
         })
       })
     })
@@ -389,10 +383,7 @@ export const useUIStore = create<UIState>((set, get) => ({
       useSessionStore.setState({
         isLoading: false,
         messageQueue: [],
-        todos: [],
-        sessionDiff: [],
         sessionError: null,
-        sessionStatus: null,
         pendingQuestions: [],
         pendingPermissions: [],
       })

@@ -161,10 +161,22 @@ Do not bypass the Cloud API and call Supabase directly from client code. The fac
 ## Streaming Architecture (Critical)
 
 Single source of truth principle — **never mix content sources**:
-- **Streaming phase**: display from `streamingContent` (built from delta buffer)
+- **Streaming phase**: display from the v2 stream entry (`useV2StreamingStore`,
+  built from the delta buffer); the v1 `useStreamingStore` is gone
 - **Completed phase**: display from `message.content` (built from `message.parts[]`)
 - **Never** write to `msg.content` during streaming
 - **Never** use "longest content" strategy on completion
+
+**The one exception, and where it lives.** Completed content is reconciled in
+exactly one place: `deriveAgentReplyContent` in
+`packages/app/src/lib/agent-reply-transcript.ts`, and the finalize path in
+`stores/v2-stream-parts.ts` goes through its `reconcileEquivalentAgentReplyText`.
+When the streamed text and the daemon's final content are the *same text after
+whitespace normalization*, that helper keeps the longer one, because MQTT QoS0
+can drop post-tool deltas and the daemon final carries the tail. Texts that
+differ are never merged by length. `pickCanonicalAgentReplyText` may be imported
+only by that module; `lib/__tests__/agent-reply-single-reconciliation.test.ts`
+fails the build on a second importer.
 
 ## Team Collaboration
 

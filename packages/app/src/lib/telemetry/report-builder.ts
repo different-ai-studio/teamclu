@@ -16,10 +16,8 @@ export function buildSessionReport(
   const session = state.sessions.find((s) => s.id === sessionId)
   if (!session) return null
 
-  // Get session messages from cache
-  const messages: Message[] = state.getSessionMessages
-    ? state.getSessionMessages(sessionId)
-    : []
+  // Messages as loaded onto the mirrored session row by the telemetry store.
+  const messages: Message[] = session.messages
 
   if (messages.length === 0) return null
 

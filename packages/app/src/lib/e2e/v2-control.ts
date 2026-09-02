@@ -686,8 +686,6 @@ const control: V2E2EControl = {
       messageQueue: [],
       pendingPermissions: [],
       pendingQuestions: [],
-      todos: [],
-      sessionDiff: [],
     });
 
     return { runId: input.runId, warnings };
@@ -826,8 +824,6 @@ const control: V2E2EControl = {
         messageQueue: [],
         pendingPermissions: [],
         pendingQuestions: [],
-        todos: [],
-        sessionDiff: [],
         sessionError: null,
       };
     });

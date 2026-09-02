@@ -1,4 +1,3 @@
-import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { useActorDisplayName } from "@/hooks/useActorDisplayName";
 import { cn } from "@/lib/utils";

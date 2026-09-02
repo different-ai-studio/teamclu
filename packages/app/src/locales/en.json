@@ -510,7 +510,6 @@
     }
   },
   "navigation": {
-    "changes": "Changes",
     "shortcuts": "Shortcuts",
     "files": "Files",
     "hideTabs": "Hide files",
@@ -564,11 +563,6 @@
       "routingMultiAgent": "Multiple agents — @ a name to choose who replies.",
       "participantCount": "{{count}} participants · Waiting for the first message"
     },
-    "backToActiveSession": "Back to active session",
-    "archivedSession": "Archived session",
-    "restoreSession": "Restore",
-    "archivedSessionLoadError": "Could not load archived session",
-    "restoreArchivedHint": "Restore this session to continue chatting",
     "agent": "Agent",
     "startNewChat": "Start a New Chat",
     "askAboutFile": "Ask questions about the file",
@@ -754,12 +748,8 @@
     "inputPlaceholderContinue": "Continue typing...",
     "refreshMessages": "Refresh messages",
     "startingAgent": "Starting agent...",
-    "taskRunning": "Task running...",
     "waitingForAgent": "Sessions are ready. Waiting for agent runtime to finish starting.",
-    "waitingForConfirmationShort": "Waiting",
     "newSessionBadge": "NEW",
-    "messageCountShort": "{{count}} msg",
-    "messageCountShort_plural": "{{count}} msgs",
     "draftContinueBanner": "{{count}} session in progress with {{name}}",
     "draftContinueRecent": "Recent sessions",
     "draftWithAgentHint": "Type below — a session is created when you send",
@@ -1053,7 +1043,6 @@
     "teamLastSyncTooltip": "Last sync: {{time}}",
     "teamSyncing": "Syncing…",
     "duplicateFailed": "Duplicate failed",
-    "pathCopied": "Path copied",
     "undo": "Undo: {{desc}}"
   },
   "sessions": {
@@ -1112,11 +1101,6 @@
     "searchSessions": "Search Sessions",
     "searchDescription": "Search and navigate to a session",
     "searchPlaceholder": "Search sessions...",
-    "searchActive": "Active",
-    "searchArchived": "Archived",
-    "searchAll": "All",
-    "archivedAt": "Archived {{date}}",
-    "loadingArchivedSessions": "Loading archived sessions...",
     "sessions": "Sessions",
     "active": "Active",
     "selectWorkspaceFirst": "Please select a workspace first",
@@ -3114,7 +3098,6 @@
     "expandAll": "Expand all",
     "explainChange": "Explain Change",
     "generatePatch": "Generate Patch",
-    "openFile": "Open File",
     "pathCopied": "Path copied",
     "reviewCode": "Review Code",
     "suggestRefactor": "Suggest Refactor"

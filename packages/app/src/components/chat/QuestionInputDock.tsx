@@ -311,7 +311,7 @@ export function QuestionInputDock({
           </div>
 
           <div className={cn(isStack ? "px-3.5 pb-3 pt-2" : "px-4 pb-3 pt-3")}>
-            <QuestionMarkdown>{currentQuestion.question}</QuestionMarkdown>
+            <QuestionMarkdown>{currentQuestion.question ?? ""}</QuestionMarkdown>
 
             <div className="space-y-1">
               {currentQuestion.options?.map((option: any, optionIndex: number) => {

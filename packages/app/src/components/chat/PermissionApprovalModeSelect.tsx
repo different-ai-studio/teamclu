@@ -1,4 +1,3 @@
-import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Check, ChevronDown, Hand, Info } from "lucide-react";
 import { cn } from "@/lib/utils";

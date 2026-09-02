@@ -19,7 +19,6 @@ import { buildSessionDeeplink } from "@/lib/session-deeplink";
 import { markStartup } from "@/lib/startup-perf";
 import {
   BookOpen,
-  FolderGit,
   ChevronLeft,
   X,
   PanelRightClose,
@@ -47,7 +46,6 @@ import {
 import { useMemberPresenceHeartbeat } from "@/hooks/useMemberPresenceHeartbeat";
 import { useExtensionSessionCleanup } from "@/hooks/useExtensionSessionCleanup";
 import {
-  usePanelAutoOpen,
   useFileTabSync,
   useResizablePanels,
 } from "@/hooks/useFileEditorState";
@@ -674,7 +672,6 @@ function AppContent() {
   // / sessions change. Subscribing to the function ref alone never
   // re-renders since the ref is stable.
   const activeSession = useSessionStore((s) => s.getActiveSession());
-  const sessionDiff = useSessionStore((s) => s.sessionDiff);
   const reloadActiveSessionMessages = useSessionStore(
     (s) => s.reloadActiveSessionMessages,
   );
@@ -741,7 +738,6 @@ function AppContent() {
   // conditions below. Defaults hidden; users enable per-icon in Settings →
   // General → "会话头部图标". See stores/header-preferences-store.ts.
   const showTerminalToggle = useHeaderPreferencesStore((s) => s.showTerminalToggle);
-  const showChangesTab = useHeaderPreferencesStore((s) => s.showChangesTab);
   const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
   const hasActiveFileTab = !!useTabsStore(selectActiveTab);
   const hasHiddenTabs = useTabsStore(selectHasHiddenTabs);
@@ -824,7 +820,6 @@ function AppContent() {
   useCronInit();
   useWorkspaceRuntimeRefreshPoll();
   useExternalLinkHandler();
-  usePanelAutoOpen();
   useFileTabSync();
   useEffect(() => {
     const stopPageContext = startEmbedPageContextListener()
@@ -1128,7 +1123,7 @@ function AppContent() {
                 </div>
                 <div className="min-h-0 flex-1 overflow-hidden">
                   <React.Suspense fallback={<PaneLoading />}>
-                    <RightPanel diff={sessionDiff} />
+                    <RightPanel />
                   </React.Suspense>
                 </div>
               </>
@@ -1249,15 +1244,6 @@ function AppContent() {
                   left nav, where the same tree renders in column two with its
                   editor in column three. Kept out of the header so the two do
                   not diverge. */}
-              {capabilities.workspace && hasCurrentSession && showChangesTab && (
-                <HeaderPanelTab
-                  icon={FolderGit}
-                  label={t("navigation.changes", "Changes")}
-                  count={sessionDiff.length}
-                  isActive={isPanelOpen && activeTab === "diff"}
-                  onClick={() => isPanelOpen && activeTab === "diff" ? closePanel() : openPanel("diff")}
-                />
-              )}
               {controlPanelApp && (
                 <HeaderPanelTab
                   icon={SlidersHorizontal}
@@ -1303,7 +1289,7 @@ function AppContent() {
           <div className="h-full w-72">
             {showRightWorkspacePanel && (
               <React.Suspense fallback={<PaneLoading />}>
-                <RightPanel diff={sessionDiff} />
+                <RightPanel />
               </React.Suspense>
             )}
             {showAppControlPanel && controlPanelApp && (
