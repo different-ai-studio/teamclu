@@ -2,9 +2,7 @@ import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
-  HelpCircle,
   ListChecks,
-  Loader2,
   Search,
   Terminal,
 } from "lucide-react";
@@ -234,12 +232,6 @@ export const ToolCallCard = React.memo(function ToolCallCard({
       : toolCall.status === "waiting"
         ? t("chat.toolCall.status.waiting", "Waiting")
         : null;
-
-  const getQuestionCount = () => {
-    if (Array.isArray(toolCall.questions)) return toolCall.questions.length;
-    const args = toolCall.arguments as { questions?: unknown } | undefined;
-    return Array.isArray(args?.questions) ? args.questions.length : 0;
-  };
 
   const getCompactPrimary = () => {
     if (isCompactSearchTool) {
