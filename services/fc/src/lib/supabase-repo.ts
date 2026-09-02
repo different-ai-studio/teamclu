@@ -2014,6 +2014,23 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (existingErr) throw existingErr;
       if (existing) {
+        if (existing.parent_session_id !== parentSessionId) {
+          throw new ApiError(
+            400,
+            "validation_failed",
+            "rootMessageId is already bound to a different parent session",
+          );
+        }
+        const { data: threadSeat, error: threadSeatErr } = await supabase
+          .from("session_participants")
+          .select("actor_id")
+          .eq("session_id", existing.id)
+          .eq("actor_id", callerActorId)
+          .maybeSingle();
+        if (threadSeatErr) throw threadSeatErr;
+        if (!threadSeat) {
+          throw new ApiError(403, "forbidden", "not a participant in the thread session");
+        }
         const { items } = await this.listSessionParticipants(existing.id);
         return { ...mapSessionFull(existing), participants: items };
       }
