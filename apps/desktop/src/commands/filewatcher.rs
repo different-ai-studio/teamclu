@@ -265,45 +265,6 @@ pub async fn unwatch_directory(
     Ok(true)
 }
 
-/// Stop watching every directory the calling window has subscribed to.
-///
-/// Removes the calling window's label from every watcher. Watchers with no
-/// remaining subscribers are dropped. Other windows' subscriptions are
-/// preserved — this is what fixes the cross-window unwatch bug.
-#[tauri::command]
-pub async fn unwatch_all(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, FileWatcherState>,
-) -> Result<(), String> {
-    let label = window.label();
-    let mut watchers = state.watchers.lock().await;
-
-    let mut paths_to_drop: Vec<String> = Vec::new();
-    for (path, handle) in watchers.iter_mut() {
-        if handle.subscribers.remove(label) && handle.subscribers.is_empty() {
-            paths_to_drop.push(path.clone());
-        }
-    }
-    let dropped = paths_to_drop.len();
-    for path in paths_to_drop {
-        watchers.remove(&path);
-    }
-    println!(
-        "[FileWatcher] Unsubscribed {} from all watchers; {} watcher(s) dropped",
-        label, dropped
-    );
-    Ok(())
-}
-
-/// Get list of currently watched directories.
-#[tauri::command]
-pub async fn get_watched_directories(
-    state: tauri::State<'_, FileWatcherState>,
-) -> Result<Vec<String>, String> {
-    let watchers = state.watchers.lock().await;
-    Ok(watchers.keys().cloned().collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

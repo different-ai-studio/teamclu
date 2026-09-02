@@ -194,216 +194,16 @@ pub fn import_skill_from_zip(
     import_result
 }
 
-/// Discover skill directory in cloned repo following vercel-labs/skills pattern
-fn discover_skill_directory(
-    repo_path: &std::path::PathBuf,
-    slug: &str,
-) -> Result<std::path::PathBuf, String> {
-    use std::fs;
-
-    // Priority search paths (same as vercel-labs/skills)
-    let search_dirs = vec![
-        repo_path.clone(),
-        repo_path.join("skills"),
-        repo_path.join("skills").join(".curated"),
-        repo_path.join("skills").join(".experimental"),
-        repo_path.join("skills").join(".system"),
-        repo_path.join(".agent").join("skills"),
-        repo_path.join(".agents").join("skills"),
-        repo_path.join(".claude").join("skills"),
-        repo_path.join(".cline").join("skills"),
-        repo_path.join(".codebuddy").join("skills"),
-        repo_path.join(".codex").join("skills"),
-        repo_path.join(".commandcode").join("skills"),
-        repo_path.join(".continue").join("skills"),
-        repo_path.join(".github").join("skills"),
-        repo_path
-            .join(".github")
-            .join("plugins")
-            .join("azure-skills")
-            .join("skills"), // Microsoft Azure Skills
-        repo_path.join(".goose").join("skills"),
-        repo_path.join(".iflow").join("skills"),
-        repo_path.join(".junie").join("skills"),
-        repo_path.join(".kilocode").join("skills"),
-        repo_path.join(".kiro").join("skills"),
-        repo_path.join(".mux").join("skills"),
-        repo_path.join(".neovate").join("skills"),
-        repo_path.join(".opencode").join("skills"),
-        repo_path.join(".openhands").join("skills"),
-        repo_path.join(".pi").join("skills"),
-        repo_path.join(".qoder").join("skills"),
-        repo_path.join(".roo").join("skills"),
-        repo_path.join(".trae").join("skills"),
-        repo_path.join(".windsurf").join("skills"),
-        repo_path.join(".zencoder").join("skills"),
-    ];
-
-    let mut all_skills = Vec::new();
-
-    // First, search in priority directories
-    for dir in &search_dirs {
-        if dir.exists() && dir.is_dir() {
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() && path.join("SKILL.md").exists() {
-                        all_skills.push(path);
-                    }
-                }
-            }
-        }
-
-        // Also check if the directory itself has SKILL.md (for root-level skills)
-        if dir.join("SKILL.md").exists() {
-            all_skills.push(dir.clone());
-        }
-    }
-
-    // If nothing found in priority paths, do recursive search
-    if all_skills.is_empty() {
-        all_skills = find_all_skill_dirs(repo_path, 0, 5)?;
-    }
-
-    // Find the best match
-    let mut found_dir = None;
-
-    // Priority 1: Match by frontmatter name in SKILL.md
-    for skill_dir in &all_skills {
-        let skill_md = skill_dir.join("SKILL.md");
-        if let Ok(content) = fs::read_to_string(&skill_md) {
-            if let Some(name) = extract_frontmatter_name(&content) {
-                if name == slug {
-                    found_dir = Some(skill_dir.clone());
-                    break;
-                }
-            }
-        }
-    }
-
-    // Priority 2: Match by directory name
-    if found_dir.is_none() {
-        for skill_dir in &all_skills {
-            if let Some(dir_name) = skill_dir.file_name() {
-                if dir_name.to_string_lossy() == slug {
-                    found_dir = Some(skill_dir.clone());
-                    break;
-                }
-            }
-        }
-    }
-
-    // Priority 3: If only one skill found, use it
-    if found_dir.is_none() && all_skills.len() == 1 {
-        found_dir = Some(all_skills[0].clone());
-    }
-
-    found_dir.ok_or_else(|| format!("Could not find skill '{}' in repository", slug))
-}
-
-/// Recursively find all directories containing SKILL.md (parallel version)
-/// Uses rayon for parallel directory traversal, significantly faster for large repositories
-fn find_all_skill_dirs(
-    dir: &std::path::PathBuf,
-    depth: usize,
-    max_depth: usize,
-) -> Result<Vec<std::path::PathBuf>, String> {
-    use rayon::prelude::*;
-    use std::fs;
-
-    if depth > max_depth {
-        return Ok(Vec::new());
-    }
-
-    let skip_dirs = vec![
-        ".git",
-        "node_modules",
-        "dist",
-        "build",
-        "__pycache__",
-        "target",
-    ];
-    let mut result = Vec::new();
-
-    // Check if current dir has SKILL.md
-    if dir.join("SKILL.md").exists() {
-        result.push(dir.clone());
-    }
-
-    // Search subdirectories in parallel
-    // Performance: 3-10x speedup compared to serial search (scales with CPU cores)
-    if let Ok(entries) = fs::read_dir(dir) {
-        // Phase 1: Collect all valid subdirectories (sequential, fast)
-        // Filter out .git, node_modules, etc. to avoid wasting thread resources
-        let subdirs: Vec<std::path::PathBuf> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                if path.is_dir() {
-                    if let Some(name) = path.file_name() {
-                        let name_str = name.to_string_lossy();
-                        if !skip_dirs.contains(&name_str.as_ref()) {
-                            return Some(path);
-                        }
-                    }
-                }
-                None
-            })
-            .collect();
-
-        // Phase 2: Parallel recursive search on all subdirectories
-        // Each subdir is processed by a separate thread from rayon's thread pool
-        // Threads automatically "steal" work from each other for load balancing
-        let parallel_results: Vec<std::path::PathBuf> = subdirs
-            .par_iter() // 🚀 Parallel iterator - uses all CPU cores
-            .flat_map(|subdir| {
-                // Recursively search each subdir in parallel
-                // unwrap_or_default() isolates errors (one failing subdir doesn't affect others)
-                find_all_skill_dirs(subdir, depth + 1, max_depth).unwrap_or_default()
-            })
-            .collect();
-
-        result.extend(parallel_results);
-    }
-
-    Ok(result)
-}
-
-/// Extract name from SKILL.md frontmatter (YAML)
-fn extract_frontmatter_name(content: &str) -> Option<String> {
-    // Simple YAML frontmatter parser for name field
-    let lines: Vec<&str> = content.lines().collect();
-
-    if lines.is_empty() || !lines[0].starts_with("---") {
-        return None;
-    }
-
-    for line in lines.iter().skip(1) {
-        if line.starts_with("---") {
-            break;
-        }
-
-        if line.trim_start().starts_with("name:") {
-            let name = line.split(':').nth(1)?.trim();
-            // Remove quotes if present
-            let name = name.trim_matches('"').trim_matches('\'');
-            return Some(name.to_string());
-        }
-    }
-
-    None
-}
-
 // ─── Legacy helpers (still used by import_skill_from_zip) ───────────────────
 
 /// Copy skill directory excluding .git and other metadata
-fn copy_skill_directory(src: &std::path::PathBuf, dst: &std::path::PathBuf) -> Result<(), String> {
+fn copy_skill_directory(src: &Path, dst: &Path) -> Result<(), String> {
     use std::fs;
 
-    let exclude_files = vec!["metadata.json"];
-    let exclude_dirs = vec![".git", "__pycache__", "__pypackages__"];
+    let exclude_files = ["metadata.json"];
+    let exclude_dirs = [".git", "__pycache__", "__pypackages__"];
 
-    let mut copy_dirs = vec![(src.clone(), dst.clone())];
+    let mut copy_dirs = vec![(src.to_path_buf(), dst.to_path_buf())];
 
     while let Some((src_dir, dst_dir)) = copy_dirs.pop() {
         if let Ok(entries) = fs::read_dir(&src_dir) {
@@ -423,7 +223,7 @@ fn copy_skill_directory(src: &std::path::PathBuf, dst: &std::path::PathBuf) -> R
                     }
 
                     let dst_path = dst_dir.join(&file_name);
-                    if let Ok(_) = fs::create_dir_all(&dst_path) {
+                    if fs::create_dir_all(&dst_path).is_ok() {
                         copy_dirs.push((src_path, dst_path));
                     }
                 } else {

@@ -142,13 +142,6 @@ pub async fn local_cache_set_current_team(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn local_cache_get_current_team(
-    state: tauri::State<'_, LocalCacheState>,
-) -> Result<Option<String>, String> {
-    Ok(state.current_team_id.read().await.clone())
-}
-
 // ─── actor commands ───────────────────────────────────────────────────────
 
 #[tauri::command]

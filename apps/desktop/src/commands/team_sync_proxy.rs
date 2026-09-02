@@ -492,62 +492,6 @@ pub async fn oss_sync_resolve_conflict(
     daemon_team_resolve_conflict(&team_id, &path, None, &choice).await
 }
 
-fn team_sync_success_payload() -> serde_json::Value {
-    serde_json::json!({
-        "success": true,
-        "message": "Synced",
-        "needsConfirmation": false,
-        "newFiles": [],
-        "totalBytes": 0,
-    })
-}
-
-async fn invoke_daemon_team_sync(
-    workspace_path: Option<&str>,
-    force_sync: bool,
-) -> Result<serde_json::Value, String> {
-    match daemon_team_sync(workspace_path, force_sync, false).await {
-        Ok(resp) => {
-            if resp.get("skipped").and_then(|v| v.as_bool()) == Some(true) {
-                return Ok(serde_json::json!({
-                    "success": false,
-                    "message": "Automatic sync is disabled on this daemon (team_share.auto_sync = false). Use Sync Now to sync manually.",
-                    "needsConfirmation": false,
-                    "newFiles": [],
-                    "totalBytes": 0,
-                    "skipped": true,
-                }));
-            }
-            team_sync_error_from_status(&resp)?;
-            Ok(team_sync_success_payload())
-        }
-        Err(err) => Err(err),
-    }
-}
-
-fn team_sync_error_from_status(status: &serde_json::Value) -> Result<(), String> {
-    if let Some(err) = status
-        .get("lastError")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-    {
-        return Err(err.to_string());
-    }
-    if status
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .is_none()
-    {
-        return Err(
-            "team share is not enabled for the daemon's team (share_mode unset). \
-             Re-bind amuxd to the current team if you switched teams, then enable team share again."
-                .to_string(),
-        );
-    }
-    Ok(())
-}
-
 // The `sync_mode` get/set pair lived here, "moved so they survive the Task 8
 // deletion of oss_sync/mod.rs". They did not survive contact with the product:
 // share mode became a one-shot switch with `oss` as its only value, so there

@@ -28,8 +28,7 @@ use zip::ZipWriter;
 
 use super::clawhub::{
     clear_skill_permission, extract_zip_to_dir, global_skills_dir, now_millis, read_lockfile,
-    set_skill_permission_ask, skills_dir, validate_slug, write_lockfile, LockfileEntry,
-    SOURCE_TEAM,
+    set_skill_permission_ask, validate_slug, write_lockfile, LockfileEntry, SOURCE_TEAM,
 };
 
 /// Cloud API / SGW-facing client — mirrors `oss_sync::fc_client::FcClient`.
@@ -731,36 +730,6 @@ pub async fn team_skill_pack_and_upload(
     })
     .await
     .map_err(|e| format!("team skill pack_and_upload task failed: {}", e))?
-}
-
-/// Zip a personal skill directory and return sha256 + size (local only — no OSS).
-/// Prefer `team_skill_pack_and_upload` for Share; this remains for hash checks.
-#[tauri::command]
-pub async fn team_skill_pack(
-    dir_path: String,
-    slug: String,
-) -> Result<TeamSkillPackResult, String> {
-    tokio::task::spawn_blocking(move || {
-        let slug = slug.trim().to_string();
-        validate_slug(&slug)?;
-        let dir = std::path::PathBuf::from(dir_path.trim());
-        if !dir.is_dir() {
-            return Err(format!("Skill directory not found: {}", dir.display()));
-        }
-        if !dir.join("SKILL.md").is_file() {
-            return Err("Skill directory must contain SKILL.md".to_string());
-        }
-        let zip_bytes = zip_skill_dir(&dir)?;
-        let mut hasher = Sha256::new();
-        hasher.update(&zip_bytes);
-        let content_hash = format!("{:x}", hasher.finalize());
-        Ok(TeamSkillPackResult {
-            content_hash,
-            size: zip_bytes.len() as u64,
-        })
-    })
-    .await
-    .map_err(|e| format!("team skill pack task failed: {}", e))?
 }
 
 /// Copy a personal skill folder into the workspace team-skills install location

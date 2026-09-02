@@ -495,7 +495,7 @@ pub async fn clawhub_explore(
         let registry = get_registry();
         let client = build_client()?;
 
-        let bounded_limit = limit.unwrap_or(25).min(200).max(1);
+        let bounded_limit = limit.unwrap_or(25).clamp(1, 200);
         let mut url = format!("{}/api/v1/search?q=&limit={}", registry, bounded_limit);
         if let Some(ref s) = sort {
             url.push_str(&format!("&sort={}", urlencoding::encode(s)));
@@ -764,67 +764,6 @@ pub fn clawhub_uninstall(workspace_path: String, slug: String) -> Result<String,
 #[tauri::command]
 pub fn clawhub_list_installed(workspace_path: String) -> Result<Lockfile, String> {
     Ok(read_lockfile(&workspace_path))
-}
-
-#[tauri::command]
-pub async fn clawhub_check_updates(
-    workspace_path: String,
-) -> Result<Vec<ClawHubUpdateInfo>, String> {
-    tokio::task::spawn_blocking(move || -> Result<Vec<ClawHubUpdateInfo>, String> {
-        let lock = read_lockfile(&workspace_path);
-        if lock.skills.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let registry = get_registry();
-        let client = build_client()?;
-        let mut results = Vec::new();
-
-        for (slug, entry) in &lock.skills {
-            if slug.contains('/') || slug.contains('\\') || slug.contains("..") {
-                continue;
-            }
-            // Team-registry skills share this lockfile but live on a different
-            // registry; asking ClawHub about them returns 404 at best.
-            if entry.source.as_deref() == Some(SOURCE_TEAM) {
-                continue;
-            }
-
-            let url = format!("{}/api/v1/skills/{}", registry, urlencoding::encode(slug));
-
-            match client.get(&url).header("Accept", "application/json").send() {
-                Ok(resp) if resp.status().is_success() => {
-                    if let Ok(meta) = resp.json::<ApiSkillResponse>() {
-                        let latest = meta.latest_version.as_ref().map(|v| v.version.clone());
-                        let current = entry.version.clone();
-                        let has_update = match (&current, &latest) {
-                            (Some(c), Some(l)) => c != l,
-                            (None, Some(_)) => true,
-                            _ => false,
-                        };
-                        results.push(ClawHubUpdateInfo {
-                            slug: slug.clone(),
-                            current_version: current,
-                            latest_version: latest,
-                            has_update,
-                        });
-                    }
-                }
-                _ => {
-                    results.push(ClawHubUpdateInfo {
-                        slug: slug.clone(),
-                        current_version: entry.version.clone(),
-                        latest_version: None,
-                        has_update: false,
-                    });
-                }
-            }
-        }
-
-        Ok(results)
-    })
-    .await
-    .map_err(|e| format!("clawhub task failed: {}", e))?
 }
 
 #[tauri::command]

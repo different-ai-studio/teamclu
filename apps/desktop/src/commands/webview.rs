@@ -757,15 +757,6 @@ pub async fn webview_set_bounds(
     Ok(())
 }
 
-/// Bring a native webview to front.
-#[tauri::command]
-pub async fn webview_focus(app: tauri::AppHandle, label: String) -> Result<(), String> {
-    if let Some(webview) = app.get_webview(&label) {
-        let _ = webview.set_focus();
-    }
-    Ok(())
-}
-
 /// Navigate back in the webview history.
 #[tauri::command]
 pub async fn webview_go_back(app: tauri::AppHandle, label: String) -> Result<(), String> {
@@ -1072,7 +1063,7 @@ pub async fn webview_set_zoom(
     level: f64,
 ) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&label) {
-        let _ = webview.eval(&format!("document.body.style.zoom = '{}'", level));
+        let _ = webview.eval(format!("document.body.style.zoom = '{}'", level));
     }
     Ok(())
 }

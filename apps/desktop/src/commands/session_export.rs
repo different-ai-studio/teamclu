@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use tauri::State;
 
 use crate::local_cache::{
     commands::LocalCacheState,
@@ -85,26 +84,4 @@ pub async fn export_session_handler(
     )?;
 
     serde_json::to_string(&bundle).map_err(|e| format!("Failed to serialize export bundle: {e}"))
-}
-
-#[tauri::command]
-pub async fn session_export(
-    state: State<'_, LocalCacheState>,
-    session_id: String,
-    include_thinking: Option<bool>,
-    include_tools: Option<bool>,
-    sanitize: Option<bool>,
-) -> Result<String, String> {
-    export_session_handler(
-        &state,
-        SessionExportRequest {
-            session_id: Some(session_id),
-            workspace_path: None,
-            format: Some(default_format().to_string()),
-            include_thinking,
-            include_tools,
-            sanitize,
-        },
-    )
-    .await
 }

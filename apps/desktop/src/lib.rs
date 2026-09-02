@@ -1,41 +1,12 @@
 // Suppress cfg warnings from the legacy `objc` crate's `msg_send!` / `sel_impl!` macros.
 #![allow(unexpected_cfgs)]
-// Suppress dead-code and unused-import warnings from legacy/in-progress code.
-#![allow(dead_code, unused_imports)]
-// Suppress new_without_default for types that intentionally use new() with no args.
-#![allow(clippy::new_without_default)]
-// Suppress style/complexity clippy lints that are non-critical for this codebase.
-#![allow(
-    clippy::cloned_ref_to_slice_refs,
-    clippy::collapsible_else_if,
-    clippy::collapsible_if,
-    clippy::derivable_impls,
-    clippy::for_kv_map,
-    clippy::io_other_error,
-    clippy::iter_nth_zero,
-    clippy::manual_clamp,
-    clippy::manual_is_multiple_of,
-    clippy::manual_map,
-    clippy::manual_strip,
-    clippy::map_identity,
-    clippy::needless_borrow,
-    clippy::needless_borrows_for_generic_args,
-    clippy::ptr_arg,
-    clippy::redundant_closure,
-    clippy::redundant_guards,
-    clippy::redundant_pattern_matching,
-    clippy::same_item_push,
-    clippy::too_many_arguments,
-    clippy::trim_split_whitespace,
-    clippy::type_complexity,
-    clippy::unnecessary_lazy_evaluations,
-    clippy::unnecessary_map_or,
-    clippy::unnecessary_unwrap,
-    clippy::unwrap_or_default,
-    clippy::useless_asref,
-    clippy::useless_format,
-    clippy::useless_vec
-)]
+// Eight Tauri command signatures take 8-14 flat arguments (env_catalog_set /
+// env_catalog_delete and their _for_workspace twins, mqtt_connect, mqtt_probe,
+// terminal_open, webview_create). Commands receive their arguments as flat JS
+// invoke() fields, so folding them into a struct changes the IPC shape; left as
+// a crate-level allow with that count until those commands are redesigned.
+// Every other lint that used to be allowed here hid zero warnings or was fixed.
+#![allow(clippy::too_many_arguments)]
 
 use tauri::Manager;
 use tauri_plugin_aptabase::EventTracker;
@@ -70,7 +41,7 @@ fn get_shell_profile_mtime(shell: &str, home: &str) -> u64 {
         .and_then(|m| m.modified())
         .and_then(|t| {
             t.duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                .map_err(std::io::Error::other)
         })
         .map(|d| d.as_secs())
         .unwrap_or(0)
@@ -369,7 +340,6 @@ pub fn run() {
             commands::open_with_default_app,
             commands::open_in_terminal,
             commands::system_appearance::get_system_accent_color,
-            commands::window::create_workspace_window,
             commands::window::open_local_agent_panel_window,
             commands::window::register_window_workspace,
             commands::window::set_window_title,
@@ -386,8 +356,6 @@ pub fn run() {
             commands::obsidian::obsidian_open_vault,
             commands::filewatcher::watch_directory,
             commands::filewatcher::unwatch_directory,
-            commands::filewatcher::unwatch_all,
-            commands::filewatcher::get_watched_directories,
             commands::gateway::list_channels,
             commands::gateway::list_wecom_bots_status,
             commands::gateway::list_wecom_chats,
@@ -420,8 +388,6 @@ pub fn run() {
             commands::daemon_onboarding::daemon_clear,
             commands::amuxd_supervisor::daemon_ensure_running,
             commands::amuxd_supervisor::daemon_restart_managed,
-            commands::amuxd_supervisor::daemon_stop_managed,
-            commands::amuxd_supervisor::daemon_supervisor_status,
             commands::setup::setup_list_requirements,
             commands::setup::setup_list_agent_runtimes,
             commands::setup::setup_install,
@@ -432,12 +398,10 @@ pub fn run() {
             commands::clawhub::clawhub_install,
             commands::clawhub::clawhub_uninstall,
             commands::clawhub::clawhub_list_installed,
-            commands::clawhub::clawhub_check_updates,
             commands::clawhub::clawhub_update,
             commands::team_skills::team_skill_install,
             commands::team_skills::team_skill_uninstall,
             commands::team_skills::team_skill_list_installed,
-            commands::team_skills::team_skill_pack,
             commands::team_skills::team_skill_pack_and_upload,
             commands::team_skills::team_skill_install_from_dir,
             commands::team_skills::team_skill_rebaseline,
@@ -463,7 +427,6 @@ pub fn run() {
             commands::terminal::terminal_subscribe,
             commands::terminal::terminal_detach,
             commands::terminal::terminal_write,
-            commands::team::workspace_read_team_meta,
             commands::team_sync_proxy::team_file_versions,
             commands::team_sync_proxy::team_file_content,
             commands::team_sync_proxy::team_changed_files,
@@ -479,15 +442,12 @@ pub fn run() {
             commands::env_vars::env_var_get,
             commands::env_vars::env_catalog_list,
             commands::env_vars::team_env_diagnostics,
-            commands::env_vars::personal_env_diagnostics,
             commands::diagnostics::collect_diagnostic_bundle,
             commands::diagnostics::build_diagnostic_zip,
             commands::diagnostics::tail_log_files,
             commands::diagnostics::reveal_log_directory,
             commands::env_vars::env_catalog_set,
             commands::env_vars::env_catalog_delete,
-            commands::env_vars::env_var_resolve,
-            commands::session_export::session_export,
             local_cache::commands::local_cache_actor_upsert_batch,
             local_cache::commands::local_cache_actor_load_team,
             local_cache::commands::local_cache_actor_load_by_ids,
@@ -525,7 +485,6 @@ pub fn run() {
             local_cache::commands::local_cache_watermark_set,
             local_cache::commands::local_cache_clear_team,
             local_cache::commands::local_cache_set_current_team,
-            local_cache::commands::local_cache_get_current_team,
             telemetry::commands::telemetry_get_consent,
             telemetry::commands::telemetry_set_consent,
             telemetry::commands::telemetry_track,
@@ -534,7 +493,6 @@ pub fn run() {
             commands::webview::webview_hide,
             commands::webview::webview_show,
             commands::webview::webview_set_bounds,
-            commands::webview::webview_focus,
             commands::webview::webview_go_back,
             commands::webview::webview_go_forward,
             commands::webview::webview_reload,

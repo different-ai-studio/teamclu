@@ -186,12 +186,6 @@ fn opencode_part_call_output(data: &str) -> Option<(String, String)> {
     Some((call_id, output))
 }
 
-fn opencode_part_output(data: &str, tool_call_id: &str) -> Option<String> {
-    opencode_part_call_output(data)
-        .filter(|(call_id, _)| call_id == tool_call_id)
-        .map(|(_, output)| output)
-}
-
 fn enrich_parts_json_with_opencode_outputs(
     parts_json: &str,
     outputs: &HashMap<String, String>,
@@ -2775,7 +2769,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_part_output_reads_real_tool_stdout() {
+    fn opencode_part_call_output_reads_real_tool_stdout() {
         let data = serde_json::json!({
             "type": "tool",
             "tool": "bash",
@@ -2795,11 +2789,9 @@ mod tests {
         })
         .to_string();
 
-        assert_eq!(
-            opencode_part_output(&data, "call_1").as_deref(),
-            Some("PID %CPU COMM\n1 launchd\n")
-        );
-        assert_eq!(opencode_part_output(&data, "call_2"), None);
+        let (call_id, output) = opencode_part_call_output(&data).expect("completed tool part");
+        assert_eq!(call_id, "call_1");
+        assert_eq!(output, "PID %CPU COMM\n1 launchd\n");
     }
 
     #[test]

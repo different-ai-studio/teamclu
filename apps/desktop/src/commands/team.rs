@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tauri::State;
 
 // Re-export for backward compat (other modules use `crate::commands::team::TEAM_REPO_DIR`)
 pub use super::TEAM_REPO_DIR;
@@ -109,51 +108,6 @@ pub fn write_workspace_config(
 }
 
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
-
-/// Read `teamclu-team/_meta/team.json` from the given workspace, if present.
-#[tauri::command]
-pub fn workspace_read_team_meta(workspace_path: String) -> Result<Option<TeamMeta>, String> {
-    let meta_path = Path::new(&workspace_path)
-        .join(TEAM_REPO_DIR)
-        .join("_meta")
-        .join("team.json");
-    if !meta_path.exists() {
-        return Ok(None);
-    }
-    let content = match std::fs::read_to_string(&meta_path) {
-        Ok(c) => c,
-        Err(_) => return Ok(None),
-    };
-    match serde_json::from_str::<TeamMeta>(&content) {
-        Ok(meta) => Ok(Some(meta)),
-        Err(_) => Ok(None),
-    }
-}
-
-/// Remove `<workspace>/teamclu-team` whether it is a symlink, junction, or real
-/// dir. Moved here from `team_share::disconnect` when that module went: this
-/// command was its only surviving caller.
-fn remove_workspace_team_repo_entry(workspace_path: &str) -> Result<(), String> {
-    let link = Path::new(workspace_path).join(TEAM_REPO_DIR);
-    match std::fs::symlink_metadata(&link) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("Failed to inspect {}: {}", link.display(), e)),
-        Ok(meta) if meta.file_type().is_symlink() => {
-            #[cfg(unix)]
-            {
-                std::fs::remove_file(&link)
-                    .map_err(|e| format!("Failed to remove symlink {}: {}", link.display(), e))
-            }
-            #[cfg(windows)]
-            {
-                std::fs::remove_dir(&link)
-                    .map_err(|e| format!("Failed to remove junction {}: {}", link.display(), e))
-            }
-        }
-        Ok(_) => std::fs::remove_dir_all(&link)
-            .map_err(|e| format!("Failed to remove directory {}: {}", link.display(), e)),
-    }
-}
 
 #[cfg(test)]
 mod tests {

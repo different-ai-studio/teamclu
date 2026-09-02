@@ -58,9 +58,11 @@ pub struct SpawnArgs {
     pub rows: u16,
 }
 
+/// Called once with `(event_name, code)` when the child exits or reader stops.
+pub type ExitEmitter = Arc<dyn Fn(&str, Option<i32>) + Send + Sync>;
+
 pub struct EmitContext {
-    /// Called once with `(event_name, code)` when the child exits or reader stops.
-    pub emit_exit: Arc<dyn Fn(&str, Option<i32>) + Send + Sync>,
+    pub emit_exit: ExitEmitter,
 }
 
 impl PtyHandle {

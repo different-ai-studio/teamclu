@@ -70,15 +70,11 @@ impl CronState {
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum CronScope {
+    #[default]
     Global,
     Workspace,
-}
-
-impl Default for CronScope {
-    fn default() -> Self {
-        Self::Global
-    }
 }
 
 fn global_cron_root() -> Result<String, String> {

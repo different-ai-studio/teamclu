@@ -19,9 +19,6 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::process_util::CommandNoWindow;
 
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
 const HEALTH_TICK: Duration = Duration::from_millis(200);
 /// Heal / restart can afford a longer wait.
@@ -961,19 +958,6 @@ pub async fn daemon_ensure_running<R: Runtime>(app: AppHandle<R>) -> Result<(), 
 #[tauri::command]
 pub async fn daemon_restart_managed<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     AmuxdSupervisor::restart(&app).await
-}
-
-#[tauri::command]
-pub async fn daemon_stop_managed<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    AmuxdSupervisor::shutdown(&app).await;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn daemon_supervisor_status<R: Runtime>(
-    app: AppHandle<R>,
-) -> Result<DaemonSupervisorStatus, String> {
-    Ok(AmuxdSupervisor::status(&app).await)
 }
 
 #[cfg(test)]

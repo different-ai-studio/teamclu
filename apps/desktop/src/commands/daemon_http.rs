@@ -239,32 +239,6 @@ fn log_soft_failure(what: &str, err: &DaemonError) {
     }
 }
 
-/// `GET /v1/workspaces/:id/providers` — canonical LLM provider list for a workspace.
-pub async fn fetch_workspace_provider_model_keys(workspace_path: &str) -> Option<HashSet<String>> {
-    let ws_id = encode_workspace_id(workspace_path);
-    let path = format!("/v1/workspaces/{ws_id}/providers");
-    let providers: Vec<wire::ProviderInfo> =
-        match daemon::call_discovered(RequestSpec::get(&path, WORKSPACE_READ), NO_BODY).await {
-            Ok(v) => v,
-            Err(err) => {
-                log_soft_failure("workspace providers", &err);
-                return None;
-            }
-        };
-
-    let mut keys = HashSet::new();
-    for provider in providers {
-        for model_id in provider.models {
-            keys.insert(format!(
-                "{}/{}",
-                provider.id.to_lowercase(),
-                model_id.to_lowercase()
-            ));
-        }
-    }
-    Some(keys)
-}
-
 /// `GET /v1/workspaces/:id/model-catalog` — model refs across every configured
 /// backend (OpenCode, Claude Code, Codex), lowercased for case-insensitive
 /// validation. Unlike `fetch_workspace_provider_model_keys` (OpenCode only)
