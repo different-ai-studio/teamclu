@@ -67,10 +67,9 @@ fn commit_staged_pack_with(
 
     if let Err(e) = result {
         if let Err(restore_err) = restore_tree(target, snapshot.as_ref().map(|d| d.path())) {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("commit failed ({e}); restore failed ({restore_err})"),
-            ));
+            return Err(io::Error::other(format!(
+                "commit failed ({e}); restore failed ({restore_err})"
+            )));
         }
         return Err(e);
     }

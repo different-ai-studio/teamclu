@@ -2424,7 +2424,11 @@ mod tests {
 
         let trash = trash_dir().unwrap();
         std::fs::create_dir_all(&trash).unwrap();
-        let orphan = trash.join(format!("say-hello-{}", now_millis()));
+        // A second in the past, deliberately: `move_to_trash` names its own
+        // destination `{slug}-{now_millis()}`, so on a runner fast enough to put
+        // this line and the discard below in the same millisecond, that rename
+        // would target this very directory and fail with ENOTEMPTY.
+        let orphan = trash.join(format!("say-hello-{}", now_millis() - 1_000));
         write_installed_skill(&orphan, "team-a", 1);
 
         let err = team_skill_restore_trashed(
