@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::ipc::{InvokeBody, Request};
+use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::terminal::pty::{EmitContext, PtyHandle, SpawnArgs};
+use crate::terminal::pty::{DataSink, EmitContext, PtyHandle, SpawnArgs};
 use crate::terminal::registry::{Registry, TerminalError, TerminalStatus, TerminalSummary};
 
 #[derive(serde::Serialize)]
@@ -14,9 +14,13 @@ pub struct OpenResult {
     pub pid: u32,
 }
 
+/// What `terminal_subscribe` answers. The scrollback itself is not in here: it
+/// arrives as the first message on the channel the caller passed, followed by
+/// live output, so the frontend never has to reconcile two snapshots.
 #[derive(serde::Serialize)]
 pub struct SubscribeResult {
-    pub ring_snapshot: Vec<u8>,
+    /// Hand this back to `terminal_detach` when the view goes away.
+    pub sink_id: u64,
     pub cols: u16,
     pub rows: u16,
     pub status: TerminalStatus,
@@ -38,12 +42,8 @@ pub async fn terminal_open(
     let shell = resolve_shell(shell);
     let id = uuid::Uuid::now_v7().to_string();
 
-    let app_for_data = app.clone();
     let app_for_exit = app.clone();
     let emit = EmitContext {
-        emit_data: Arc::new(move |name, payload| {
-            let _ = app_for_data.emit(name, payload);
-        }),
         emit_exit: Arc::new(move |name, code| {
             let _ = app_for_exit.emit(name, code);
         }),
@@ -66,19 +66,51 @@ pub async fn terminal_open(
     Ok(OpenResult { id, shell, pid })
 }
 
+/// Attach a view to a terminal's output.
+///
+/// `on_data` is a Tauri IPC channel: each PTY chunk is sent as raw bytes and
+/// lands in the webview as an `ArrayBuffer`, ordered, and only in the window
+/// that asked. The first message is the ring snapshot (the scrollback so far,
+/// possibly empty); everything after it is live. Before this, output went out
+/// as a `terminal://<id>/data` event whose payload was a JSON `number[]` —
+/// three to four bytes of text per byte, one `JSON.parse` per 4 KiB on the main
+/// thread, broadcast to every window — and the 8 MiB ring travelled the same
+/// way on every re-attach.
 #[tauri::command]
 pub async fn terminal_subscribe(
     registry: State<'_, Arc<Registry>>,
     id: String,
+    on_data: Channel<InvokeResponseBody>,
 ) -> Result<SubscribeResult, TerminalError> {
     let h = registry.get(&id).ok_or(TerminalError::NotFound(id))?;
+    let sink: DataSink = Arc::new(move |chunk: &[u8]| {
+        on_data
+            .send(InvokeResponseBody::Raw(chunk.to_vec()))
+            .is_ok()
+    });
+    let sink_id = h.attach(sink);
     Ok(SubscribeResult {
-        ring_snapshot: h.snapshot(),
+        sink_id,
         cols: 80,
         rows: 24,
         status: h.status(),
         exit_code: h.exit_code(),
     })
+}
+
+/// Stop delivering output to a sink `terminal_subscribe` registered. A view
+/// that unmounts without this leaves its channel attached until the terminal
+/// closes or a send fails.
+#[tauri::command]
+pub async fn terminal_detach(
+    registry: State<'_, Arc<Registry>>,
+    id: String,
+    sink_id: u64,
+) -> Result<(), TerminalError> {
+    if let Some(h) = registry.get(&id) {
+        h.detach(sink_id);
+    }
+    Ok(())
 }
 
 /// Writes raw bytes to a PTY.

@@ -173,6 +173,7 @@ interface WorkspaceState {
   collapseDirectory: (path: string) => void;
   collapseAll: () => void;
   refreshFileTree: () => Promise<void>;
+  refreshChangedDirectories: (directories: string[]) => Promise<void>;
   revealFile: (path: string) => Promise<void>;
 
   // File actions
@@ -906,6 +907,84 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       fileTree: refreshedTree,
       expandedPaths: stillValid,
     });
+  },
+
+  /**
+   * Re-list only the directories a file-change batch touched.
+   *
+   * `refreshFileTree` re-reads the root plus every expanded directory on any
+   * change — one IPC per open folder for every save in the editor. A batch
+   * names the parents whose listing can actually differ, so this reads those
+   * and nothing else. A directory that is not on screen (never expanded, or
+   * under no root this store owns) is skipped; the workspace root and every
+   * registered external root always count as on screen.
+   */
+  refreshChangedDirectories: async (directories: string[]) => {
+    if (directories.length === 0) return;
+    const { workspacePath, loadDirectory } = get();
+    const externalRoots = Object.keys(get().externalTrees);
+
+    const ownerOf = (dir: string): string | null => {
+      const external = externalRootFor(externalRoots, dir);
+      if (external) return external;
+      if (workspacePath && (dir === workspacePath || dir.startsWith(`${workspacePath}/`))) {
+        return workspacePath;
+      }
+      return null;
+    };
+
+    // Parents before children: a directory deleted along with its contents is
+    // dropped by its parent's re-list before its own read would come up empty.
+    const targets = [...new Set(directories)]
+      .filter((dir) => ownerOf(dir) !== null)
+      .sort((a, b) => a.length - b.length);
+    if (targets.length === 0) return;
+
+    for (const dir of targets) {
+      const external = externalRootFor(externalRoots, dir);
+      const isRoot = dir === (external ?? workspacePath);
+      const tree = external ? (get().externalTrees[external] ?? []) : get().fileTree;
+
+      if (!isRoot) {
+        const node = findNodeByPath(tree, dir);
+        // Not listed, or listed but never expanded: nothing on screen to update.
+        if (!node || node.type !== "directory" || node.children === undefined) continue;
+      }
+
+      const children = await loadDirectory(dir);
+
+      // Re-read after the await — another update may have landed meanwhile.
+      if (external) {
+        const current = get().externalTrees[external];
+        if (current === undefined) continue; // root was closed while listing
+        const next = isRoot
+          ? mergeLoadedChildren(current, children)
+          : updateNodeChildren(current, dir, children);
+        set({ externalTrees: { ...get().externalTrees, [external]: next } });
+      } else {
+        if (get().workspacePath !== workspacePath) return; // workspace switched
+        const next = isRoot
+          ? mergeLoadedChildren(get().fileTree, children)
+          : updateNodeChildren(get().fileTree, dir, children);
+        set({ fileTree: next });
+      }
+    }
+
+    // Expansions whose directory vanished are dropped, as refreshFileTree does.
+    // Roots stay: they are trees, not nodes in one.
+    const roots = new Set<string>([workspacePath ?? "", ...externalRoots]);
+    const trees = [get().fileTree, ...Object.values(get().externalTrees)];
+    const nextExpanded = new Set<string>();
+    let pruned = false;
+    for (const path of get().expandedPaths) {
+      const underTarget = targets.some((dir) => path.startsWith(`${dir}/`));
+      if (underTarget && !roots.has(path) && !trees.some((t) => findNodeByPath(t, path))) {
+        pruned = true;
+        continue;
+      }
+      nextExpanded.add(path);
+    }
+    if (pruned) set({ expandedPaths: nextExpanded });
   },
 
   // Helper function to flatten visible file tree into ordered list of file paths

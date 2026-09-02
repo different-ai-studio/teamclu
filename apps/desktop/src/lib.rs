@@ -461,6 +461,7 @@ pub fn run() {
             commands::terminal::terminal_open,
             commands::terminal::terminal_resize,
             commands::terminal::terminal_subscribe,
+            commands::terminal::terminal_detach,
             commands::terminal::terminal_write,
             commands::team::workspace_read_team_meta,
             commands::team_sync_proxy::team_file_versions,

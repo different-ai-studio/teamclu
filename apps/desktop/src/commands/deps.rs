@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as AsyncCommand;
@@ -96,24 +98,56 @@ fn probe_program_in(name: &str, dirs: &[PathBuf]) -> String {
         .unwrap_or_else(|| teamclu_binpath::spawn_name(name))
 }
 
+/// One external tool the Dependencies page reports on. All-static so a probe
+/// can be handed to a blocking task by value.
+#[derive(Debug, Clone, Copy)]
+struct DependencySpec {
+    name: &'static str,
+    version_args: &'static [&'static str],
+    required: bool,
+    description: &'static str,
+    affected_features: &'static [&'static str],
+    /// Install priority — lower numbers install first (Homebrew = 0, others = 1)
+    priority: u8,
+}
+
+fn dependency_info(
+    spec: &DependencySpec,
+    installed: bool,
+    version: Option<String>,
+) -> DependencyInfo {
+    DependencyInfo {
+        name: spec.name.to_string(),
+        installed,
+        version,
+        required: spec.required,
+        description: spec.description.to_string(),
+        install_commands: get_install_commands_map(spec.name).unwrap_or_else(|| {
+            PlatformInstallCommands {
+                macos: String::new(),
+                windows: String::new(),
+                linux: String::new(),
+            }
+        }),
+        affected_features: spec
+            .affected_features
+            .iter()
+            .map(|f| f.to_string())
+            .collect(),
+        priority: spec.priority,
+    }
+}
+
 /// Check a single dependency by running `cmd --version` (or a variant).
 /// Returns a DependencyInfo with installed status and parsed version.
-fn check_single_dependency(
-    name: &str,
-    version_args: &[&str],
-    required: bool,
-    description: &str,
-    install_commands: PlatformInstallCommands,
-    affected_features: Vec<String>,
-    priority: u8,
-) -> DependencyInfo {
+fn check_single_dependency(spec: &DependencySpec) -> DependencyInfo {
     // Finding the file is not always enough to run it: an npm-installed shim
     // starts with `#!/usr/bin/env node`, which needs node itself on the PATH of
     // the child. Same augmentation amuxd spawns its tools with.
-    let output = Command::new(probe_program(name))
+    let output = Command::new(probe_program(spec.name))
         .no_window()
         .env("PATH", teamclu_binpath::augmented_path())
-        .args(version_args)
+        .args(spec.version_args)
         .output();
 
     match output {
@@ -126,30 +160,9 @@ fn check_single_dependency(
             } else {
                 raw
             };
-
-            let version = parse_version(&combined);
-
-            DependencyInfo {
-                name: name.to_string(),
-                installed: true,
-                version,
-                required,
-                description: description.to_string(),
-                install_commands,
-                affected_features,
-                priority,
-            }
+            dependency_info(spec, true, parse_version(&combined))
         }
-        _ => DependencyInfo {
-            name: name.to_string(),
-            installed: false,
-            version: None,
-            required,
-            description: description.to_string(),
-            install_commands,
-            affected_features,
-            priority,
-        },
+        _ => dependency_info(spec, false, None),
     }
 }
 
@@ -331,101 +344,170 @@ pub async fn pi_versions<R: Runtime>(app: AppHandle<R>) -> Result<DependencyVers
     })
 }
 
-/// Check all external dependencies and return their status.
-/// Results are sorted by priority (lower first) for install ordering.
+/// The tools the page reports on, in display order.
 ///
-/// `local_agent` is the runtime this machine is configured to run
+/// `active_runtime` is the runtime this machine is configured to run
 /// (`agents.local_agent`, as the daemon reports it). It decides which of the
 /// two agent runtimes is *required*: before this, opencode was required
 /// unconditionally, so every machine set up to run pi was told it was missing
 /// something it does not need — a red "Required" row with nothing wrong.
-/// `None` keeps the old conservative answer, which is also what the frontend
-/// falls back to when the daemon cannot be asked.
-#[tauri::command]
-pub fn check_dependencies(local_agent: Option<String>) -> Vec<DependencyInfo> {
-    let active_runtime = active_runtime(local_agent.as_deref());
-    let mut deps = Vec::new();
+fn dependency_specs(active_runtime: &str) -> Vec<DependencySpec> {
+    let mut specs = Vec::with_capacity(6);
 
-    // Homebrew — macOS only, required, priority 0
+    // Homebrew — macOS only, priority 0 so it installs first
     if cfg!(target_os = "macos") {
-        deps.push(check_single_dependency(
-            "brew",
-            &["--version"],
-            false,
-            "Package manager - needed to install other tools on macOS",
-            get_install_commands_map("brew").unwrap(),
-            vec!["Package Management".to_string()],
-            0, // priority 0 — install first
-        ));
+        specs.push(DependencySpec {
+            name: "brew",
+            version_args: &["--version"],
+            required: false,
+            description: "Package manager - needed to install other tools on macOS",
+            affected_features: &["Package Management"],
+            priority: 0,
+        });
     }
 
-    // GitHub CLI — optional, priority 1
-    deps.push(check_single_dependency(
-        "gh",
-        &["--version"],
-        false,
-        "GitHub CLI - needed for spec-plan, spec-pr, and issue management",
-        get_install_commands_map("gh").unwrap(),
-        vec![
-            "spec-plan".to_string(),
-            "spec-pr".to_string(),
-            "GitHub Issues".to_string(),
-        ],
-        1,
-    ));
+    specs.push(DependencySpec {
+        name: "gh",
+        version_args: &["--version"],
+        required: false,
+        description: "GitHub CLI - needed for spec-plan, spec-pr, and issue management",
+        affected_features: &["spec-plan", "spec-pr", "GitHub Issues"],
+        priority: 1,
+    });
 
-    // Node.js — optional, priority 1
-    deps.push(check_single_dependency(
-        "node",
-        &["--version"],
-        false,
-        "Node.js runtime - needed to run some MCP servers (via npx)",
-        get_install_commands_map("node").unwrap(),
-        vec!["MCP Servers (npx-based)".to_string()],
-        1,
-    ));
+    specs.push(DependencySpec {
+        name: "node",
+        version_args: &["--version"],
+        required: false,
+        description: "Node.js runtime - needed to run some MCP servers (via npx)",
+        affected_features: &["MCP Servers (npx-based)"],
+        priority: 1,
+    });
 
-    // Python 3 — optional, priority 1
-    deps.push(check_single_dependency(
-        "python3",
-        &["--version"],
-        false,
-        "Python runtime - needed for uvx-based MCP servers and data analysis",
-        get_install_commands_map("python3").unwrap(),
-        vec![
-            "MCP Servers (uvx-based)".to_string(),
-            "Data Analysis".to_string(),
-        ],
-        1,
-    ));
+    specs.push(DependencySpec {
+        name: "python3",
+        version_args: &["--version"],
+        required: false,
+        description: "Python runtime - needed for uvx-based MCP servers and data analysis",
+        affected_features: &["MCP Servers (uvx-based)", "Data Analysis"],
+        priority: 1,
+    });
 
-    // opencode — priority 1. Required only when it is the runtime this machine
-    // actually runs. Install/update goes through `amuxd install-opencode`.
-    deps.push(check_single_dependency(
-        "opencode",
-        &["--version"],
-        active_runtime == "opencode",
-        "Agent runtime for the local AI agent",
-        get_install_commands_map("opencode").unwrap(),
-        vec!["Local Agent".to_string()],
-        1,
-    ));
+    // opencode — required only when it is the runtime this machine actually
+    // runs. Install/update goes through `amuxd install-opencode`.
+    specs.push(DependencySpec {
+        name: "opencode",
+        version_args: &["--version"],
+        required: active_runtime == "opencode",
+        description: "Agent runtime for the local AI agent",
+        affected_features: &["Local Agent"],
+        priority: 1,
+    });
 
     // pi — the other runtime this app can install. Same rule as opencode: the
     // one this machine runs is the one that is required. Both are always listed
     // so either can be installed, upgraded or repaired from here.
-    deps.push(check_single_dependency(
-        "pi",
-        &["--version"],
-        active_runtime == "pi",
-        "Agent runtime for the local AI agent",
-        get_install_commands_map("pi").unwrap(),
-        vec!["Local Agent".to_string()],
-        1,
-    ));
+    specs.push(DependencySpec {
+        name: "pi",
+        version_args: &["--version"],
+        required: active_runtime == "pi",
+        description: "Agent runtime for the local AI agent",
+        affected_features: &["Local Agent"],
+        priority: 1,
+    });
 
-    // Sort by priority (lower first)
+    specs
+}
+
+/// How long a `check_dependencies` answer is reused before the probes run
+/// again. The page re-asks on every mount; nothing about six `--version`
+/// answers changes between two mounts seconds apart, except an install this
+/// module performs itself — and that path calls [`forget_dependencies`].
+const DEPENDENCY_CACHE_TTL: Duration = Duration::from_secs(30);
+
+struct DependencySnapshot {
+    runtime: String,
+    checked_at: Instant,
+    deps: Vec<DependencyInfo>,
+}
+
+static DEPENDENCY_CACHE: Mutex<Option<DependencySnapshot>> = Mutex::new(None);
+
+fn cached_dependencies(runtime: &str) -> Option<Vec<DependencyInfo>> {
+    let guard = DEPENDENCY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let snapshot = guard.as_ref()?;
+    (snapshot.runtime == runtime && snapshot.checked_at.elapsed() < DEPENDENCY_CACHE_TTL)
+        .then(|| snapshot.deps.clone())
+}
+
+fn remember_dependencies(runtime: &str, deps: &[DependencyInfo]) {
+    let mut guard = DEPENDENCY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(DependencySnapshot {
+        runtime: runtime.to_string(),
+        checked_at: Instant::now(),
+        deps: deps.to_vec(),
+    });
+}
+
+/// Drop the cached answer. Called after anything this module installs, so the
+/// next `check_dependencies` sees the new binary rather than a 30-second-old
+/// "missing".
+pub(crate) fn forget_dependencies() {
+    let mut guard = DEPENDENCY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
+}
+
+/// Run every probe at once on blocking threads and collect them in spec order.
+///
+/// Each probe is a process spawn that can take hundreds of milliseconds (a
+/// shim that boots node, a `brew --version` on a cold disk). Serially that was
+/// one to three seconds; concurrently it is the slowest single probe.
+async fn probe_dependencies(active_runtime: &str) -> Vec<DependencyInfo> {
+    let specs = dependency_specs(active_runtime);
+    let handles: Vec<_> = specs
+        .iter()
+        .map(|spec| {
+            let spec = *spec;
+            tokio::task::spawn_blocking(move || check_single_dependency(&spec))
+        })
+        .collect();
+
+    let mut deps = Vec::with_capacity(specs.len());
+    for (spec, handle) in specs.iter().zip(handles) {
+        // A probe that panicked is reported as "not installed" rather than
+        // vanishing from the list — the row still has to render.
+        deps.push(
+            handle
+                .await
+                .unwrap_or_else(|_| dependency_info(spec, false, None)),
+        );
+    }
+
+    // Sort by priority (lower first); stable, so spec order holds within a tier.
     deps.sort_by_key(|d| d.priority);
+    deps
+}
+
+/// Check all external dependencies and return their status.
+/// Results are sorted by priority (lower first) for install ordering.
+///
+/// `local_agent` is the runtime this machine is configured to run — see
+/// [`dependency_specs`]. `None` keeps the old conservative answer, which is
+/// also what the frontend falls back to when the daemon cannot be asked.
+///
+/// `async`: a non-`async` Tauri command runs inline in the IPC handler, and on
+/// macOS that is the main thread. Six serial process spawns there froze the
+/// window for one to three seconds every time the Dependencies page mounted.
+/// Now the probes run concurrently on blocking threads, and the answer is
+/// cached for [`DEPENDENCY_CACHE_TTL`].
+#[tauri::command]
+pub async fn check_dependencies(local_agent: Option<String>) -> Vec<DependencyInfo> {
+    let runtime = active_runtime(local_agent.as_deref()).to_string();
+    if let Some(cached) = cached_dependencies(&runtime) {
+        return cached;
+    }
+    let deps = probe_dependencies(&runtime).await;
+    remember_dependencies(&runtime, &deps);
     deps
 }
 
@@ -437,19 +519,29 @@ pub async fn install_dependency<R: Runtime>(
     app: AppHandle<R>,
     name: String,
 ) -> Result<bool, String> {
+    let result = install_dependency_inner(&app, &name).await;
+    // Whatever happened, the cached "missing" is no longer trustworthy.
+    forget_dependencies();
+    result
+}
+
+async fn install_dependency_inner<R: Runtime>(
+    app: &AppHandle<R>,
+    name: &str,
+) -> Result<bool, String> {
     // opencode is installed via the same `amuxd install-opencode` path as the
     // first-run SetupWizard. Not forced: this is the "it's missing" case.
     if name == "opencode" {
-        return Ok(install_opencode_via_amuxd(&app, false).await);
+        return Ok(install_opencode_via_amuxd(app, false).await);
     }
     // pi likewise — `amuxd install-pi` is idempotent, so the same call installs
     // it or lifts it to the version `pi.lock.json` pins.
     if name == "pi" {
-        return Ok(install_pi_via_amuxd(&app).await);
+        return Ok(install_pi_via_amuxd(app).await);
     }
 
     // On macOS, if the dependency requires brew and brew is not installed, install brew first
-    if requires_brew(&name) {
+    if requires_brew(name) {
         // Through the same resolver as every other probe: a Dock-launched app
         // can hold a PATH without /opt/homebrew/bin in it, and a bare
         // `Command::new("brew")` there reports "Homebrew is missing" on a
@@ -461,7 +553,7 @@ pub async fn install_dependency<R: Runtime>(
             .output();
         let brew_installed = matches!(brew_check, Ok(o) if o.status.success());
         if !brew_installed {
-            let brew_result = run_install(&app, "brew").await;
+            let brew_result = run_install(app, "brew").await;
             if !brew_result {
                 return Err(
                     "Failed to install Homebrew, which is required to install this dependency"
@@ -471,7 +563,7 @@ pub async fn install_dependency<R: Runtime>(
         }
     }
 
-    let success = run_install(&app, &name).await;
+    let success = run_install(app, name).await;
     Ok(success)
 }
 
@@ -499,6 +591,7 @@ pub async fn update_dependency<R: Runtime>(
     if name == "opencode" {
         let ok = install_opencode_via_amuxd(&app, true).await;
         if ok {
+            forget_dependencies();
             restart_amuxd_after_update(&app, "opencode");
         }
         return Ok(ok);
@@ -506,6 +599,7 @@ pub async fn update_dependency<R: Runtime>(
     if name == "pi" {
         let ok = install_pi_via_amuxd(&app).await;
         if ok {
+            forget_dependencies();
             // pi needs the bounce too. "pi is spawned per session, so the next
             // spawn picks up the new binary" was wrong: the daemon pools a pi
             // *host* child per isolation key and only respawns when its

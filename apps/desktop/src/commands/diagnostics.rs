@@ -277,37 +277,55 @@ pub async fn collect_diagnostic_bundle<R: Runtime>(
     })
 }
 
+/// Tail every log the debug console shows.
+///
+/// `async` + `spawn_blocking` because this reads six files, several of them
+/// hundreds of KB, and the console polls it while open; inline it ran on the
+/// main thread once a second.
 #[tauri::command]
-pub fn tail_log_files<R: Runtime>(app: AppHandle<R>, max_lines: usize) -> LogTailsExpanded {
+pub async fn tail_log_files<R: Runtime>(
+    app: AppHandle<R>,
+    max_lines: usize,
+) -> Result<LogTailsExpanded, String> {
     let lines = if max_lines == 0 {
         LOG_TAIL_LINES
     } else {
         max_lines
     };
-    collect_log_tails_expanded(&app, lines)
+    tokio::task::spawn_blocking(move || collect_log_tails_expanded(&app, lines))
+        .await
+        .map_err(|e| format!("tail_log_files task failed: {e}"))
 }
 
 #[tauri::command]
-pub fn reveal_log_directory<R: Runtime>(app: AppHandle<R>, kind: String) -> Result<(), String> {
-    let path = match kind.as_str() {
-        "app" => app
-            .path()
-            .app_log_dir()
-            .map_err(|e| format!("app log dir: {e}"))?,
-        "daemon" => amuxd_dir().ok_or_else(|| "home dir unavailable".to_string())?,
-        "acp" => app
-            .path()
-            .app_log_dir()
-            .map_err(|e| format!("app log dir: {e}"))?
-            .join("acp-stream"),
-        other => return Err(format!("unknown log directory kind: {other}")),
-    };
+pub async fn reveal_log_directory<R: Runtime>(
+    app: AppHandle<R>,
+    kind: String,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let path = match kind.as_str() {
+            "app" => app
+                .path()
+                .app_log_dir()
+                .map_err(|e| format!("app log dir: {e}"))?,
+            "daemon" => amuxd_dir().ok_or_else(|| "home dir unavailable".to_string())?,
+            "acp" => app
+                .path()
+                .app_log_dir()
+                .map_err(|e| format!("app log dir: {e}"))?
+                .join("acp-stream"),
+            other => return Err(format!("unknown log directory kind: {other}")),
+        };
 
-    if !path.exists() {
-        std::fs::create_dir_all(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
-    }
+        if !path.exists() {
+            std::fs::create_dir_all(&path)
+                .map_err(|e| format!("create {}: {e}", path.display()))?;
+        }
 
-    super::show_in_folder(path.to_string_lossy().into_owned())
+        super::show_in_folder(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("reveal_log_directory task failed: {e}"))?
 }
 
 fn write_zip_entry(
@@ -325,13 +343,24 @@ fn write_zip_entry(
     Ok(())
 }
 
+/// Zip the report plus every log tail. Reads the same six files as
+/// [`tail_log_files`] and deflates them, so it is kept off the main thread too.
 #[tauri::command]
-pub fn build_diagnostic_zip<R: Runtime>(
+pub async fn build_diagnostic_zip<R: Runtime>(
     app: AppHandle<R>,
     report_json: String,
 ) -> Result<Vec<u8>, String> {
-    let log_tails = collect_log_tails(&app);
-    let expanded = collect_log_tails_expanded(&app, LOG_TAIL_LINES);
+    tokio::task::spawn_blocking(move || build_diagnostic_zip_blocking(&app, &report_json))
+        .await
+        .map_err(|e| format!("build_diagnostic_zip task failed: {e}"))?
+}
+
+fn build_diagnostic_zip_blocking<R: Runtime>(
+    app: &AppHandle<R>,
+    report_json: &str,
+) -> Result<Vec<u8>, String> {
+    let log_tails = collect_log_tails(app);
+    let expanded = collect_log_tails_expanded(app, LOG_TAIL_LINES);
     let version = app.package_info().version.to_string();
     let meta = format!(
         "app={}\nversion={}\nos={}\narch={}\ngenerated_at={}\n",
@@ -345,10 +374,10 @@ pub fn build_diagnostic_zip<R: Runtime>(
     let buf = Cursor::new(Vec::new());
     let mut writer = ZipWriter::new(buf);
 
-    write_zip_entry(&mut writer, "diagnostic-report.json", &report_json)?;
+    write_zip_entry(&mut writer, "diagnostic-report.json", report_json)?;
     write_zip_entry(&mut writer, "meta.txt", &meta)?;
 
-    if let Ok(report) = serde_json::from_str::<serde_json::Value>(&report_json) {
+    if let Ok(report) = serde_json::from_str::<serde_json::Value>(report_json) {
         if let Some(console) = report.pointer("/details/consoleTail") {
             let text =
                 serde_json::to_string_pretty(console).unwrap_or_else(|_| console.to_string());

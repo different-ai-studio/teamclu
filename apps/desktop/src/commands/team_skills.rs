@@ -1110,8 +1110,27 @@ fn belongs_to_another_team(origin: &SkillOrigin, team_id: Option<&str>) -> bool 
         .is_some_and(|(want, have)| want != have)
 }
 
+/// Compare an installed pack against its recorded baseline.
+///
+/// `async` + `spawn_blocking`: the comparison hashes every file in the pack,
+/// and the callers run it for every installed slug on team switch and again
+/// every ten minutes. Inline it ran on the main thread, so a team with a dozen
+/// packs stalled the window for the whole loop.
 #[tauri::command]
-pub fn team_skill_inspect(
+pub async fn team_skill_inspect(
+    slug: String,
+    expected_version: Option<i64>,
+    team_id: Option<String>,
+    registry_latest_version: Option<i64>,
+) -> Result<TeamSkillInspectResult, String> {
+    tokio::task::spawn_blocking(move || {
+        inspect_team_skill(slug, expected_version, team_id, registry_latest_version)
+    })
+    .await
+    .map_err(|e| format!("team_skill_inspect task failed: {e}"))?
+}
+
+pub(crate) fn inspect_team_skill(
     slug: String,
     expected_version: Option<i64>,
     team_id: Option<String>,
@@ -1953,7 +1972,7 @@ mod tests {
         )
         .unwrap();
 
-        let before = team_skill_inspect("say-hello".into(), Some(2), Some("team-a".into()), None)
+        let before = inspect_team_skill("say-hello".into(), Some(2), Some("team-a".into()), None)
             .expect("inspect hosted edit");
         assert_eq!(before.state, "dirty");
         assert_eq!(before.source, "hosted-agent");
