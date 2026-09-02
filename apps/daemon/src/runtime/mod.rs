@@ -1,4 +1,5 @@
 pub mod acp_event_frame;
+pub mod acp_live_transport;
 pub mod backend;
 pub mod backend_session_metadata;
 pub mod claude_agent;
