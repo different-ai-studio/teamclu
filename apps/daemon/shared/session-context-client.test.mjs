@@ -163,6 +163,29 @@ test("handleToolExecuteBefore injects for real OpenCode production tool id", asy
   assert.equal(output.args.session_id, "teamclu-a");
 });
 
+test("handleToolExecuteBefore mutates the original args object OpenCode keeps", async () => {
+  // OpenCode 1.18.x MCP path: trigger(..., { args: b }) then execute(b).
+  // Replacing output.args leaves b unchanged; introspect then sees no session_id.
+  const originalArgs = { scheme: "copilot361" };
+  const output = { args: originalArgs };
+  await handleToolExecuteBefore(
+    {
+      tool: "teamclu-introspect_get_session_deeplink",
+      sessionID: "backend-a",
+      callID: "call-a",
+    },
+    output,
+    {
+      injectSessionIdForTool: async (_tool, args) => ({
+        ...args,
+        session_id: "teamclu-a",
+      }),
+    },
+  );
+  assert.equal(originalArgs.session_id, "teamclu-a");
+  assert.equal(output.args, originalArgs);
+});
+
 test("concurrent A/B resolve injects distinct TeamClu sessions", async () => {
   const resolver = async (backendSessionId) => {
     if (backendSessionId === "backend-a") return "teamclu-a";

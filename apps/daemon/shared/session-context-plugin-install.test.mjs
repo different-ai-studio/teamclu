@@ -42,7 +42,8 @@ test("installed OpenCode plugin loads shared client and injects OpenCode tool id
     const hooks = await factory();
     assert.equal(typeof hooks["tool.execute.before"], "function");
 
-    const output = { args: { scheme: "copilot361" } };
+    const originalArgs = { scheme: "copilot361" };
+    const output = { args: originalArgs };
     await hooks["tool.execute.before"](
       {
         tool: "teamclu-introspect_get_session_deeplink",
@@ -57,7 +58,8 @@ test("installed OpenCode plugin loads shared client and injects OpenCode tool id
         }),
       },
     );
-    assert.equal(output.args.session_id, "teamclu-a");
+    assert.equal(originalArgs.session_id, "teamclu-a");
+    assert.equal(output.args, originalArgs);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
