@@ -1,8 +1,9 @@
-use libsql::{params, Builder, Connection, Value};
+use libsql::{params, Builder, Connection, TransactionBehavior, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 /// Convert an `Option<String>` to a libsql `Value`, producing `Value::Null` for `None`
@@ -15,8 +16,87 @@ fn opt_val(v: &Option<String>) -> Value {
     }
 }
 
+fn text(s: &str) -> Value {
+    Value::Text(s.to_string())
+}
+
+/// How long a writer waits on a locked database before giving up. The store
+/// runs every command through one connection, so contention here only comes
+/// from another process (a second window, the introspect sidecar) — a short
+/// wait beats a spurious `database is locked`.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Largest `IN (...)` list we hand SQLite in one statement. The compiled-in
+/// variable limit is far higher, but chunking keeps a pathological session
+/// from building a multi-megabyte statement.
+const MAX_IN_LIST: usize = 500;
+
+/// The runtime whose private database `enrich_*` reads. Every other runtime
+/// (pi, cursor, claude-code) never writes it, so for them the lookup is a
+/// guaranteed miss and is skipped up front.
+const OPENCODE_RUNTIME: &str = "opencode";
+
+/// Run one write statement for every row inside a single `BEGIN IMMEDIATE`
+/// transaction, preparing the statement once.
+///
+/// Before this, each batch was N autocommit statements — N journal writes and
+/// 2N fsyncs on the default rollback journal — executed while holding the
+/// store-wide mutex, so a 500-message history replay stalled every other
+/// cache command for the duration. One transaction is one commit, and a
+/// failure mid-batch rolls the whole batch back (libsql's local transaction
+/// rolls back on drop) instead of leaving a half-applied page.
+async fn run_write_batch<T>(
+    conn: &Connection,
+    label: &str,
+    sql: &str,
+    rows: &[T],
+    bind: impl Fn(&T) -> Vec<Value>,
+) -> Result<(), String> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await
+        .map_err(|e| format!("{label}: begin: {e}"))?;
+    let stmt = tx
+        .prepare(sql)
+        .await
+        .map_err(|e| format!("{label}: prepare: {e}"))?;
+    for row in rows {
+        // libsql binds without resetting; a second `execute` on a stepped
+        // statement is a misuse error, so reset explicitly between rows.
+        stmt.reset();
+        stmt.execute(bind(row))
+            .await
+            .map_err(|e| format!("{label}: {e}"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("{label}: commit: {e}"))
+}
+
+/// `?1,?2,...,?n` for an `IN` list of `n` entries starting at `?{offset+1}`.
+fn placeholders(count: usize, offset: usize) -> String {
+    (0..count)
+        .map(|i| format!("?{}", i + offset + 1))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn opencode_db_paths(workspace_path: Option<&str>) -> Vec<PathBuf> {
     crate::opencode_paths::opencode_db_candidates(workspace_path, dirs::home_dir().as_deref())
+}
+
+/// Whether the tool-output lookup in opencode's private database can ever hit
+/// for this message. `None` means the caller does not know the runtime (older
+/// frontends, `enrich_parts` with no message row) — then only the on-disk
+/// existence of the database gates the lookup, as before.
+fn opencode_enrichment_applies(runtime: Option<&str>) -> bool {
+    match runtime.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(runtime) => runtime.eq_ignore_ascii_case(OPENCODE_RUNTIME),
+        None => true,
+    }
 }
 
 fn string_at<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
@@ -89,16 +169,27 @@ fn collect_opencode_tool_ids_from_parts_json(parts_json: &str) -> HashSet<String
         .collect()
 }
 
-fn opencode_part_output(data: &str, tool_call_id: &str) -> Option<String> {
+/// JSON key on an opencode `part` row that carries the tool-call id. The
+/// `json_extract` in [`load_opencode_tool_outputs_from_paths`] and the
+/// post-filter here must agree on it.
+const OPENCODE_CALL_ID_KEY: &str = "callID";
+
+/// `(callID, output)` of an opencode tool part, if it has a non-empty output.
+fn opencode_part_call_output(data: &str) -> Option<(String, String)> {
     let value = serde_json::from_str::<serde_json::Value>(data).ok()?;
-    if string_at(&value, "callID") != Some(tool_call_id) {
-        return None;
-    }
+    let call_id = string_at(&value, OPENCODE_CALL_ID_KEY)?.to_string();
     let state = value.get("state")?;
-    string_at(state, "output")
+    let output = string_at(state, "output")
         .or_else(|| state.pointer("/metadata/output").and_then(|v| v.as_str()))
         .map(ToString::to_string)
-        .filter(|text| !text.trim().is_empty())
+        .filter(|text| !text.trim().is_empty())?;
+    Some((call_id, output))
+}
+
+fn opencode_part_output(data: &str, tool_call_id: &str) -> Option<String> {
+    opencode_part_call_output(data)
+        .filter(|(call_id, _)| call_id == tool_call_id)
+        .map(|(_, output)| output)
 }
 
 fn enrich_parts_json_with_opencode_outputs(
@@ -136,17 +227,26 @@ fn enrich_parts_json_with_opencode_outputs(
     }
 }
 
-async fn load_opencode_tool_outputs(
+/// Look up tool outputs for `tool_call_ids` in the opencode databases at
+/// `paths` (first hit per id wins; later paths only fill the gaps).
+///
+/// One statement per database: `json_extract(data, '$.callID') IN (...)`.
+/// The previous shape was one `LIKE '%<id>%'` scan of the whole `part` table
+/// *per tool call*, so a turn with 30 tool calls scanned the table 30 times —
+/// and the table holds every opencode session on the machine, not just this
+/// one. `json_valid` guards `json_extract`, which errors (aborting the query)
+/// on a malformed row instead of skipping it.
+async fn load_opencode_tool_outputs_from_paths(
     tool_call_ids: &HashSet<String>,
-    workspace_path: Option<&str>,
+    paths: &[PathBuf],
 ) -> HashMap<String, String> {
+    let mut outputs: HashMap<String, String> = HashMap::new();
     if tool_call_ids.is_empty() {
-        return HashMap::new();
+        return outputs;
     }
 
-    let mut outputs = HashMap::new();
-    for path in opencode_db_paths(workspace_path) {
-        if tokio::fs::metadata(&path).await.is_err() {
+    for path in paths {
+        if tokio::fs::metadata(path).await.is_err() {
             continue;
         }
         let db = match Builder::new_local(path.to_string_lossy().to_string())
@@ -161,29 +261,32 @@ async fn load_opencode_tool_outputs(
             Err(_) => continue,
         };
 
-        for tool_call_id in tool_call_ids {
-            if outputs.contains_key(tool_call_id) {
-                continue;
-            }
-            let pattern = format!("%{}%", tool_call_id);
-            let mut rows = match conn
-                .query(
-                    "SELECT data FROM part
-                     WHERE data LIKE ?1
-                     ORDER BY time_updated DESC, time_created DESC
-                     LIMIT 8",
-                    params![pattern],
-                )
-                .await
-            {
+        let missing = tool_call_ids
+            .iter()
+            .filter(|id| !outputs.contains_key(*id))
+            .cloned()
+            .collect::<Vec<_>>();
+        for chunk in missing.chunks(MAX_IN_LIST) {
+            let sql = format!(
+                "SELECT data FROM part
+                 WHERE json_valid(data)
+                   AND json_extract(data, '$.{OPENCODE_CALL_ID_KEY}') IN ({})
+                 ORDER BY time_updated DESC, time_created DESC",
+                placeholders(chunk.len(), 0)
+            );
+            let binds = chunk.iter().map(|id| text(id)).collect::<Vec<_>>();
+            let mut rows = match conn.query(&sql, binds).await {
                 Ok(rows) => rows,
                 Err(_) => continue,
             };
             while let Ok(Some(row)) = rows.next().await {
                 let data = row.get::<String>(0).unwrap_or_default();
-                if let Some(output) = opencode_part_output(&data, tool_call_id) {
-                    outputs.insert(tool_call_id.clone(), output);
-                    break;
+                let Some((call_id, output)) = opencode_part_call_output(&data) else {
+                    continue;
+                };
+                // Rows arrive newest first; keep the first output per id.
+                if tool_call_ids.contains(&call_id) {
+                    outputs.entry(call_id).or_insert(output);
                 }
             }
         }
@@ -195,13 +298,31 @@ async fn load_opencode_tool_outputs(
     outputs
 }
 
-async fn enrich_message_rows_from_opencode(rows: &mut [MessageRow], workspace_path: Option<&str>) {
+async fn load_opencode_tool_outputs(
+    tool_call_ids: &HashSet<String>,
+    workspace_path: Option<&str>,
+    runtime: Option<&str>,
+) -> HashMap<String, String> {
+    if tool_call_ids.is_empty() || !opencode_enrichment_applies(runtime) {
+        return HashMap::new();
+    }
+    load_opencode_tool_outputs_from_paths(tool_call_ids, &opencode_db_paths(workspace_path)).await
+}
+
+async fn enrich_message_rows_from_opencode(
+    rows: &mut [MessageRow],
+    workspace_path: Option<&str>,
+    runtime: Option<&str>,
+) {
+    if !opencode_enrichment_applies(runtime) {
+        return;
+    }
     let tool_call_ids = rows
         .iter()
         .filter_map(|row| row.parts_json.as_deref())
         .flat_map(collect_opencode_tool_ids_from_parts_json)
         .collect::<HashSet<_>>();
-    let outputs = load_opencode_tool_outputs(&tool_call_ids, workspace_path).await;
+    let outputs = load_opencode_tool_outputs(&tool_call_ids, workspace_path, runtime).await;
     if outputs.is_empty() {
         return;
     }
@@ -216,12 +337,19 @@ async fn enrich_message_rows_from_opencode(rows: &mut [MessageRow], workspace_pa
     }
 }
 
+/// Fill tool-call results from opencode's own database. `runtime` is the
+/// agent runtime that produced the parts when the caller knows it; anything
+/// but opencode short-circuits without touching the disk.
 pub async fn enrich_parts_json_from_opencode(
     parts_json: &str,
     workspace_path: Option<&str>,
+    runtime: Option<&str>,
 ) -> String {
+    if !opencode_enrichment_applies(runtime) {
+        return parts_json.to_string();
+    }
     let tool_call_ids = collect_opencode_tool_ids_from_parts_json(parts_json);
-    let outputs = load_opencode_tool_outputs(&tool_call_ids, workspace_path).await;
+    let outputs = load_opencode_tool_outputs(&tool_call_ids, workspace_path, runtime).await;
     if outputs.is_empty() {
         return parts_json.to_string();
     }
@@ -419,6 +547,15 @@ pub struct AgentRuntimeEventRow {
     pub created_at: String,
 }
 
+/// Optional knobs for [`LocalCacheStore::message_load_session_with`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MessageLoadOptions<'a> {
+    /// Newest N rows only (`None` or `<= 0` = everything).
+    pub limit: Option<i64>,
+    /// Agent runtime that produced the session's messages, when known.
+    pub runtime: Option<&'a str>,
+}
+
 // ─── Store ────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -446,12 +583,48 @@ impl LocalCacheStore {
         let conn = db
             .connect()
             .map_err(|e| format!("Failed to connect to local-cache database: {}", e))?;
+        Self::configure_connection(&conn).await;
 
         let instance = Self {
             conn: Arc::new(Mutex::new(conn)),
         };
         instance.migrate().await?;
         Ok(instance)
+    }
+
+    /// Per-connection SQLite tuning. libsql only turns WAL on for its (unused)
+    /// `sync` feature, so without this the cache ran on SQLite's defaults —
+    /// rollback journal plus `synchronous=FULL`, i.e. two fsyncs per statement
+    /// and readers blocked behind every writer. WAL + `NORMAL` is the standard
+    /// desktop-app setting: durable across application crashes, at most the
+    /// last transaction lost on power failure, readers never block on a write.
+    ///
+    /// Best effort: a filesystem that refuses WAL (some network mounts) still
+    /// gets a working, merely slower, cache.
+    async fn configure_connection(conn: &Connection) {
+        if let Err(e) = conn.busy_timeout(BUSY_TIMEOUT) {
+            log::warn!("local-cache: busy_timeout not applied: {e}");
+        }
+        // journal_mode returns a row (the resulting mode), so it goes through
+        // `query`; `execute` rejects statements that return rows.
+        match conn.query("PRAGMA journal_mode=WAL", ()).await {
+            Ok(mut rows) => {
+                let mode = rows
+                    .next()
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|row| row.get::<String>(0).ok())
+                    .unwrap_or_default();
+                if !mode.eq_ignore_ascii_case("wal") {
+                    log::warn!("local-cache: journal_mode stayed {mode:?}, wanted wal");
+                }
+            }
+            Err(e) => log::warn!("local-cache: journal_mode=WAL not applied: {e}"),
+        }
+        if let Err(e) = conn.execute("PRAGMA synchronous=NORMAL", ()).await {
+            log::warn!("local-cache: synchronous=NORMAL not applied: {e}");
+        }
     }
 
     /// Get a locked reference to the raw connection (rarely needed externally).
@@ -819,53 +992,54 @@ impl LocalCacheStore {
 
     pub async fn actor_upsert_batch(&self, rows: &[ActorRow]) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        for r in rows {
-            conn.execute(
-                "INSERT INTO actor
-                    (id, team_id, actor_type, display_name, avatar_url, member_status,
-                     agent_status, last_active_at, metadata_json, created_at, updated_at, deleted_at, synced_at,
-                     team_role, agent_visibility, owner_member_id)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
-                 ON CONFLICT(id) DO UPDATE SET
-                    team_id       = excluded.team_id,
-                    actor_type    = excluded.actor_type,
-                    display_name  = excluded.display_name,
-                    avatar_url    = excluded.avatar_url,
-                    member_status = excluded.member_status,
-                    agent_status  = excluded.agent_status,
-                    last_active_at = excluded.last_active_at,
-                    metadata_json = excluded.metadata_json,
-                    created_at    = excluded.created_at,
-                    updated_at    = excluded.updated_at,
-                    deleted_at    = excluded.deleted_at,
-                    synced_at     = excluded.synced_at,
-                    team_role     = excluded.team_role,
-                    agent_visibility = excluded.agent_visibility,
-                    owner_member_id = excluded.owner_member_id
-                 WHERE excluded.updated_at >= actor.updated_at",
-                params![
-                    r.id.clone(),
-                    r.team_id.clone(),
-                    r.actor_type.clone(),
-                    r.display_name.clone(),
+        run_write_batch(
+            &conn,
+            "actor_upsert_batch",
+            "INSERT INTO actor
+                (id, team_id, actor_type, display_name, avatar_url, member_status,
+                 agent_status, last_active_at, metadata_json, created_at, updated_at, deleted_at, synced_at,
+                 team_role, agent_visibility, owner_member_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+             ON CONFLICT(id) DO UPDATE SET
+                team_id       = excluded.team_id,
+                actor_type    = excluded.actor_type,
+                display_name  = excluded.display_name,
+                avatar_url    = excluded.avatar_url,
+                member_status = excluded.member_status,
+                agent_status  = excluded.agent_status,
+                last_active_at = excluded.last_active_at,
+                metadata_json = excluded.metadata_json,
+                created_at    = excluded.created_at,
+                updated_at    = excluded.updated_at,
+                deleted_at    = excluded.deleted_at,
+                synced_at     = excluded.synced_at,
+                team_role     = excluded.team_role,
+                agent_visibility = excluded.agent_visibility,
+                owner_member_id = excluded.owner_member_id
+             WHERE excluded.updated_at >= actor.updated_at",
+            rows,
+            |r| {
+                vec![
+                    text(&r.id),
+                    text(&r.team_id),
+                    text(&r.actor_type),
+                    text(&r.display_name),
                     opt_val(&r.avatar_url),
                     opt_val(&r.member_status),
                     opt_val(&r.agent_status),
                     opt_val(&r.last_active_at),
                     opt_val(&r.metadata_json),
-                    r.created_at.clone(),
-                    r.updated_at.clone(),
+                    text(&r.created_at),
+                    text(&r.updated_at),
                     opt_val(&r.deleted_at),
-                    r.synced_at.clone(),
+                    text(&r.synced_at),
                     opt_val(&r.team_role),
                     opt_val(&r.agent_visibility),
-                    opt_val(&r.owner_member_id)
-                ],
-            )
-            .await
-            .map_err(|e| format!("actor_upsert_batch: {}", e))?;
-        }
-        Ok(())
+                    opt_val(&r.owner_member_id),
+                ]
+            },
+        )
+        .await
     }
 
     pub async fn actor_load_team(
@@ -987,35 +1161,38 @@ impl LocalCacheStore {
 
     pub async fn session_upsert_batch(&self, rows: &[SessionRow]) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        for r in rows {
-            conn.execute(
-                "INSERT INTO session
-                    (id, team_id, title, mode, primary_agent_id, idea_id, summary,
-                     last_message_preview, last_message_at, created_by, metadata_json,
-                     source, cron_job_id,
-                     created_at, updated_at, deleted_at, synced_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
-                 ON CONFLICT(id) DO UPDATE SET
-                    team_id              = excluded.team_id,
-                    title                = excluded.title,
-                    mode                 = excluded.mode,
-                    primary_agent_id     = excluded.primary_agent_id,
-                    idea_id              = excluded.idea_id,
-                    summary              = excluded.summary,
-                    last_message_preview = excluded.last_message_preview,
-                    last_message_at      = excluded.last_message_at,
-                    created_by           = excluded.created_by,
-                    metadata_json        = excluded.metadata_json,
-                    source               = excluded.source,
-                    cron_job_id          = excluded.cron_job_id,
-                    created_at           = excluded.created_at,
-                    updated_at           = excluded.updated_at,
-                    deleted_at           = excluded.deleted_at,
-                    synced_at            = excluded.synced_at
-                 WHERE excluded.updated_at >= session.updated_at",
-                params![
-                    r.id.clone(),
-                    r.team_id.clone(),
+        run_write_batch(
+            &conn,
+            "session_upsert_batch",
+            "INSERT INTO session
+                (id, team_id, title, mode, primary_agent_id, idea_id, summary,
+                 last_message_preview, last_message_at, created_by, metadata_json,
+                 source, cron_job_id,
+                 created_at, updated_at, deleted_at, synced_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+             ON CONFLICT(id) DO UPDATE SET
+                team_id              = excluded.team_id,
+                title                = excluded.title,
+                mode                 = excluded.mode,
+                primary_agent_id     = excluded.primary_agent_id,
+                idea_id              = excluded.idea_id,
+                summary              = excluded.summary,
+                last_message_preview = excluded.last_message_preview,
+                last_message_at      = excluded.last_message_at,
+                created_by           = excluded.created_by,
+                metadata_json        = excluded.metadata_json,
+                source               = excluded.source,
+                cron_job_id          = excluded.cron_job_id,
+                created_at           = excluded.created_at,
+                updated_at           = excluded.updated_at,
+                deleted_at           = excluded.deleted_at,
+                synced_at            = excluded.synced_at
+             WHERE excluded.updated_at >= session.updated_at",
+            rows,
+            |r| {
+                vec![
+                    text(&r.id),
+                    text(&r.team_id),
                     opt_val(&r.title),
                     opt_val(&r.mode),
                     opt_val(&r.primary_agent_id),
@@ -1027,16 +1204,14 @@ impl LocalCacheStore {
                     opt_val(&r.metadata_json),
                     opt_val(&r.source),
                     opt_val(&r.cron_job_id),
-                    r.created_at.clone(),
-                    r.updated_at.clone(),
+                    text(&r.created_at),
+                    text(&r.updated_at),
                     opt_val(&r.deleted_at),
-                    r.synced_at.clone()
-                ],
-            )
-            .await
-            .map_err(|e| format!("session_upsert_batch: {}", e))?;
-        }
-        Ok(())
+                    text(&r.synced_at),
+                ]
+            },
+        )
+        .await
     }
 
     pub async fn session_load_team(
@@ -1096,32 +1271,33 @@ impl LocalCacheStore {
         rows: &[SessionWorkspaceRow],
     ) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        for r in rows {
-            conn.execute(
-                "INSERT INTO session_viewer_workspace
-                    (session_id, team_id, viewer_member_id, agent_id,
-                     workspace_id, workspace_path, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7)
-                 ON CONFLICT(session_id, viewer_member_id, agent_id) DO UPDATE SET
-                    team_id        = excluded.team_id,
-                    workspace_id   = excluded.workspace_id,
-                    workspace_path = excluded.workspace_path,
-                    updated_at     = excluded.updated_at
-                 WHERE excluded.updated_at >= session_viewer_workspace.updated_at",
-                params![
-                    r.session_id.clone(),
-                    r.team_id.clone(),
-                    r.viewer_member_id.clone(),
-                    r.agent_id.clone(),
+        run_write_batch(
+            &conn,
+            "session_workspace_upsert_batch",
+            "INSERT INTO session_viewer_workspace
+                (session_id, team_id, viewer_member_id, agent_id,
+                 workspace_id, workspace_path, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(session_id, viewer_member_id, agent_id) DO UPDATE SET
+                team_id        = excluded.team_id,
+                workspace_id   = excluded.workspace_id,
+                workspace_path = excluded.workspace_path,
+                updated_at     = excluded.updated_at
+             WHERE excluded.updated_at >= session_viewer_workspace.updated_at",
+            rows,
+            |r| {
+                vec![
+                    text(&r.session_id),
+                    text(&r.team_id),
+                    text(&r.viewer_member_id),
+                    text(&r.agent_id),
                     opt_val(&r.workspace_id),
                     opt_val(&r.workspace_path),
-                    r.updated_at.clone()
-                ],
-            )
-            .await
-            .map_err(|e| format!("session_workspace_upsert_batch: {}", e))?;
-        }
-        Ok(())
+                    text(&r.updated_at),
+                ]
+            },
+        )
+        .await
     }
 
     pub async fn session_workspace_load_team(
@@ -1178,38 +1354,39 @@ impl LocalCacheStore {
         rows: &[SessionParticipantRow],
     ) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        for r in rows {
-            conn.execute(
-                // Conflict on the natural key (session_id, actor_id) because
-                // session-create writes a synthesized "sess:actor" id locally
-                // before the cloud backend sync brings the real UUID. Both refer to
-                // the same logical participant — keep the latest id.
-                "INSERT INTO session_participant
-                    (id, session_id, actor_id, joined_at, created_at, updated_at, deleted_at, synced_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
-                 ON CONFLICT(session_id, actor_id) DO UPDATE SET
-                    id         = excluded.id,
-                    joined_at  = excluded.joined_at,
-                    created_at = excluded.created_at,
-                    updated_at = excluded.updated_at,
-                    deleted_at = excluded.deleted_at,
-                    synced_at  = excluded.synced_at
-                 WHERE excluded.updated_at >= session_participant.updated_at",
-                params![
-                    r.id.clone(),
-                    r.session_id.clone(),
-                    r.actor_id.clone(),
+        run_write_batch(
+            &conn,
+            "session_participant_upsert_batch",
+            // Conflict on the natural key (session_id, actor_id) because
+            // session-create writes a synthesized "sess:actor" id locally
+            // before the cloud backend sync brings the real UUID. Both refer to
+            // the same logical participant — keep the latest id.
+            "INSERT INTO session_participant
+                (id, session_id, actor_id, joined_at, created_at, updated_at, deleted_at, synced_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+             ON CONFLICT(session_id, actor_id) DO UPDATE SET
+                id         = excluded.id,
+                joined_at  = excluded.joined_at,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                deleted_at = excluded.deleted_at,
+                synced_at  = excluded.synced_at
+             WHERE excluded.updated_at >= session_participant.updated_at",
+            rows,
+            |r| {
+                vec![
+                    text(&r.id),
+                    text(&r.session_id),
+                    text(&r.actor_id),
                     opt_val(&r.joined_at),
-                    r.created_at.clone(),
-                    r.updated_at.clone(),
+                    text(&r.created_at),
+                    text(&r.updated_at),
                     opt_val(&r.deleted_at),
-                    r.synced_at.clone()
-                ],
-            )
-            .await
-            .map_err(|e| format!("session_participant_upsert_batch: {}", e))?;
-        }
-        Ok(())
+                    text(&r.synced_at),
+                ]
+            },
+        )
+        .await
     }
 
     pub async fn session_participant_load_session(
@@ -1302,55 +1479,56 @@ impl LocalCacheStore {
 
     pub async fn message_upsert_batch(&self, rows: &[MessageRow]) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        for r in rows {
-            conn.execute(
-                "INSERT INTO message
-                    (id, team_id, session_id, turn_id, sender_actor_id, reply_to_message_id,
-                     kind, content, metadata_json, model, mentions_json, origin,
-                     created_at, updated_at, deleted_at, synced_at, parts_json)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
-                 ON CONFLICT(id) DO UPDATE SET
-                    team_id             = excluded.team_id,
-                    session_id          = excluded.session_id,
-                    turn_id             = excluded.turn_id,
-                    sender_actor_id     = excluded.sender_actor_id,
-                    reply_to_message_id = excluded.reply_to_message_id,
-                    kind                = excluded.kind,
-                    content             = excluded.content,
-                    metadata_json       = excluded.metadata_json,
-                    model               = excluded.model,
-                    mentions_json       = excluded.mentions_json,
-                    origin              = excluded.origin,
-                    created_at          = excluded.created_at,
-                    updated_at          = excluded.updated_at,
-                    deleted_at          = excluded.deleted_at,
-                    synced_at           = excluded.synced_at,
-                    parts_json          = COALESCE(excluded.parts_json, message.parts_json)
-                 WHERE excluded.updated_at >= message.updated_at",
-                params![
-                    r.id.clone(),
-                    r.team_id.clone(),
-                    r.session_id.clone(),
+        run_write_batch(
+            &conn,
+            "message_upsert_batch",
+            "INSERT INTO message
+                (id, team_id, session_id, turn_id, sender_actor_id, reply_to_message_id,
+                 kind, content, metadata_json, model, mentions_json, origin,
+                 created_at, updated_at, deleted_at, synced_at, parts_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+             ON CONFLICT(id) DO UPDATE SET
+                team_id             = excluded.team_id,
+                session_id          = excluded.session_id,
+                turn_id             = excluded.turn_id,
+                sender_actor_id     = excluded.sender_actor_id,
+                reply_to_message_id = excluded.reply_to_message_id,
+                kind                = excluded.kind,
+                content             = excluded.content,
+                metadata_json       = excluded.metadata_json,
+                model               = excluded.model,
+                mentions_json       = excluded.mentions_json,
+                origin              = excluded.origin,
+                created_at          = excluded.created_at,
+                updated_at          = excluded.updated_at,
+                deleted_at          = excluded.deleted_at,
+                synced_at           = excluded.synced_at,
+                parts_json          = COALESCE(excluded.parts_json, message.parts_json)
+             WHERE excluded.updated_at >= message.updated_at",
+            rows,
+            |r| {
+                vec![
+                    text(&r.id),
+                    text(&r.team_id),
+                    text(&r.session_id),
                     opt_val(&r.turn_id),
                     opt_val(&r.sender_actor_id),
                     opt_val(&r.reply_to_message_id),
-                    r.kind.clone(),
-                    r.content.clone(),
+                    text(&r.kind),
+                    text(&r.content),
                     opt_val(&r.metadata_json),
                     opt_val(&r.model),
                     opt_val(&r.mentions_json),
-                    r.origin.clone(),
-                    r.created_at.clone(),
-                    r.updated_at.clone(),
+                    text(&r.origin),
+                    text(&r.created_at),
+                    text(&r.updated_at),
                     opt_val(&r.deleted_at),
-                    r.synced_at.clone(),
-                    opt_val(&r.parts_json)
-                ],
-            )
-            .await
-            .map_err(|e| format!("message_upsert_batch: {}", e))?;
-        }
-        Ok(())
+                    text(&r.synced_at),
+                    opt_val(&r.parts_json),
+                ]
+            },
+        )
+        .await
     }
 
     /// Merge parts_json into an existing message row. Used when the streaming
@@ -1362,8 +1540,9 @@ impl LocalCacheStore {
         message_id: &str,
         parts_json: &str,
         workspace_path: Option<&str>,
+        runtime: Option<&str>,
     ) -> Result<String, String> {
-        let parts_json = enrich_parts_json_from_opencode(parts_json, workspace_path).await;
+        let parts_json = enrich_parts_json_from_opencode(parts_json, workspace_path, runtime).await;
         let conn = self.conn.lock().await;
         conn.execute(
             "UPDATE message SET parts_json = ?1 WHERE id = ?2",
@@ -1374,26 +1553,57 @@ impl LocalCacheStore {
         Ok(parts_json)
     }
 
+    /// Every message of a session, oldest first, with opencode tool outputs
+    /// merged in where the runtime is unknown or opencode. Callers that know
+    /// more use [`Self::message_load_session_with`].
     pub async fn message_load_session(
         &self,
         session_id: &str,
         include_deleted: bool,
         workspace_path: Option<&str>,
     ) -> Result<Vec<MessageRow>, String> {
+        self.message_load_session_with(
+            session_id,
+            include_deleted,
+            workspace_path,
+            MessageLoadOptions::default(),
+        )
+        .await
+    }
+
+    /// Like [`Self::message_load_session`], but `limit` caps the result to the
+    /// newest N rows (still returned oldest first) and `runtime` lets the
+    /// opencode lookup be skipped for runtimes that never write that database.
+    pub async fn message_load_session_with(
+        &self,
+        session_id: &str,
+        include_deleted: bool,
+        workspace_path: Option<&str>,
+        options: MessageLoadOptions<'_>,
+    ) -> Result<Vec<MessageRow>, String> {
+        let limit = options.limit.filter(|n| *n > 0);
         let conn = self.conn.lock().await;
-        let sql = if include_deleted {
+        let mut sql = String::from(
             "SELECT id, team_id, session_id, turn_id, sender_actor_id, reply_to_message_id,
                     kind, content, metadata_json, model, mentions_json, origin,
                     created_at, updated_at, deleted_at, synced_at, parts_json
-             FROM message WHERE session_id = ?1 ORDER BY created_at ASC"
-        } else {
-            "SELECT id, team_id, session_id, turn_id, sender_actor_id, reply_to_message_id,
-                    kind, content, metadata_json, model, mentions_json, origin,
-                    created_at, updated_at, deleted_at, synced_at, parts_json
-             FROM message WHERE session_id = ?1 AND deleted_at IS NULL ORDER BY created_at ASC"
-        };
+             FROM message WHERE session_id = ?1",
+        );
+        if !include_deleted {
+            sql.push_str(" AND deleted_at IS NULL");
+        }
+        // With a limit we want the newest N, which means scanning from the
+        // end; the vector is flipped back to chronological order below.
+        let mut binds = vec![text(session_id)];
+        match limit {
+            Some(n) => {
+                sql.push_str(" ORDER BY created_at DESC LIMIT ?2");
+                binds.push(Value::Integer(n));
+            }
+            None => sql.push_str(" ORDER BY created_at ASC"),
+        }
         let mut rows = conn
-            .query(sql, params![session_id.to_string()])
+            .query(&sql, binds)
             .await
             .map_err(|e| format!("message_load_session: {}", e))?;
         let mut result = Vec::new();
@@ -1424,7 +1634,10 @@ impl LocalCacheStore {
         }
         drop(rows);
         drop(conn);
-        enrich_message_rows_from_opencode(&mut result, workspace_path).await;
+        if limit.is_some() {
+            result.reverse();
+        }
+        enrich_message_rows_from_opencode(&mut result, workspace_path, options.runtime).await;
         Ok(result)
     }
 
@@ -1444,50 +1657,51 @@ impl LocalCacheStore {
 
     pub async fn idea_upsert_batch(&self, rows: &[IdeaRow]) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        for r in rows {
-            conn.execute(
-                "INSERT INTO idea
-                    (id, team_id, workspace_id, parent_id, title, description, status,
-                     created_by, archived, sort_order, metadata_json, created_at, updated_at, deleted_at, synced_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
-                 ON CONFLICT(id) DO UPDATE SET
-                    team_id       = excluded.team_id,
-                    workspace_id  = excluded.workspace_id,
-                    parent_id     = excluded.parent_id,
-                    title         = excluded.title,
-                    description   = excluded.description,
-                    status        = excluded.status,
-                    created_by    = excluded.created_by,
-                    archived      = excluded.archived,
-                    sort_order    = excluded.sort_order,
-                    metadata_json = excluded.metadata_json,
-                    created_at    = excluded.created_at,
-                    updated_at    = excluded.updated_at,
-                    deleted_at    = excluded.deleted_at,
-                    synced_at     = excluded.synced_at
-                 WHERE excluded.updated_at >= idea.updated_at",
-                params![
-                    r.id.clone(),
-                    r.team_id.clone(),
+        run_write_batch(
+            &conn,
+            "idea_upsert_batch",
+            "INSERT INTO idea
+                (id, team_id, workspace_id, parent_id, title, description, status,
+                 created_by, archived, sort_order, metadata_json, created_at, updated_at, deleted_at, synced_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+             ON CONFLICT(id) DO UPDATE SET
+                team_id       = excluded.team_id,
+                workspace_id  = excluded.workspace_id,
+                parent_id     = excluded.parent_id,
+                title         = excluded.title,
+                description   = excluded.description,
+                status        = excluded.status,
+                created_by    = excluded.created_by,
+                archived      = excluded.archived,
+                sort_order    = excluded.sort_order,
+                metadata_json = excluded.metadata_json,
+                created_at    = excluded.created_at,
+                updated_at    = excluded.updated_at,
+                deleted_at    = excluded.deleted_at,
+                synced_at     = excluded.synced_at
+             WHERE excluded.updated_at >= idea.updated_at",
+            rows,
+            |r| {
+                vec![
+                    text(&r.id),
+                    text(&r.team_id),
                     opt_val(&r.workspace_id),
                     opt_val(&r.parent_id),
-                    r.title.clone(),
+                    text(&r.title),
                     opt_val(&r.description),
                     opt_val(&r.status),
                     opt_val(&r.created_by),
-                    r.archived,
-                    r.sort_order.unwrap_or(0),
+                    Value::Integer(r.archived),
+                    Value::Integer(r.sort_order.unwrap_or(0)),
                     opt_val(&r.metadata_json),
-                    r.created_at.clone(),
-                    r.updated_at.clone(),
+                    text(&r.created_at),
+                    text(&r.updated_at),
                     opt_val(&r.deleted_at),
-                    r.synced_at.clone()
-                ],
-            )
-            .await
-            .map_err(|e| format!("idea_upsert_batch: {}", e))?;
-        }
-        Ok(())
+                    text(&r.synced_at),
+                ]
+            },
+        )
+        .await
     }
 
     pub async fn idea_load_team(
@@ -1552,35 +1766,36 @@ impl LocalCacheStore {
 
     pub async fn claim_upsert_batch(&self, rows: &[ClaimRow]) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        for r in rows {
-            conn.execute(
-                "INSERT INTO claim
-                    (id, idea_id, actor_id, claimed_at, created_at, updated_at, deleted_at, synced_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
-                 ON CONFLICT(id) DO UPDATE SET
-                    idea_id    = excluded.idea_id,
-                    actor_id   = excluded.actor_id,
-                    claimed_at = excluded.claimed_at,
-                    created_at = excluded.created_at,
-                    updated_at = excluded.updated_at,
-                    deleted_at = excluded.deleted_at,
-                    synced_at  = excluded.synced_at
-                 WHERE excluded.updated_at >= claim.updated_at",
-                params![
-                    r.id.clone(),
-                    r.idea_id.clone(),
-                    r.actor_id.clone(),
-                    r.claimed_at.clone(),
-                    r.created_at.clone(),
-                    r.updated_at.clone(),
+        run_write_batch(
+            &conn,
+            "claim_upsert_batch",
+            "INSERT INTO claim
+                (id, idea_id, actor_id, claimed_at, created_at, updated_at, deleted_at, synced_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+             ON CONFLICT(id) DO UPDATE SET
+                idea_id    = excluded.idea_id,
+                actor_id   = excluded.actor_id,
+                claimed_at = excluded.claimed_at,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                deleted_at = excluded.deleted_at,
+                synced_at  = excluded.synced_at
+             WHERE excluded.updated_at >= claim.updated_at",
+            rows,
+            |r| {
+                vec![
+                    text(&r.id),
+                    text(&r.idea_id),
+                    text(&r.actor_id),
+                    text(&r.claimed_at),
+                    text(&r.created_at),
+                    text(&r.updated_at),
                     opt_val(&r.deleted_at),
-                    r.synced_at.clone()
-                ],
-            )
-            .await
-            .map_err(|e| format!("claim_upsert_batch: {}", e))?;
-        }
-        Ok(())
+                    text(&r.synced_at),
+                ]
+            },
+        )
+        .await
     }
 
     pub async fn claim_load_idea(
@@ -1636,37 +1851,38 @@ impl LocalCacheStore {
 
     pub async fn submission_upsert_batch(&self, rows: &[SubmissionRow]) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        for r in rows {
-            conn.execute(
-                "INSERT INTO submission
-                    (id, idea_id, actor_id, content, submitted_at, created_at, updated_at, deleted_at, synced_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
-                 ON CONFLICT(id) DO UPDATE SET
-                    idea_id      = excluded.idea_id,
-                    actor_id     = excluded.actor_id,
-                    content      = excluded.content,
-                    submitted_at = excluded.submitted_at,
-                    created_at   = excluded.created_at,
-                    updated_at   = excluded.updated_at,
-                    deleted_at   = excluded.deleted_at,
-                    synced_at    = excluded.synced_at
-                 WHERE excluded.updated_at >= submission.updated_at",
-                params![
-                    r.id.clone(),
-                    r.idea_id.clone(),
-                    r.actor_id.clone(),
+        run_write_batch(
+            &conn,
+            "submission_upsert_batch",
+            "INSERT INTO submission
+                (id, idea_id, actor_id, content, submitted_at, created_at, updated_at, deleted_at, synced_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+             ON CONFLICT(id) DO UPDATE SET
+                idea_id      = excluded.idea_id,
+                actor_id     = excluded.actor_id,
+                content      = excluded.content,
+                submitted_at = excluded.submitted_at,
+                created_at   = excluded.created_at,
+                updated_at   = excluded.updated_at,
+                deleted_at   = excluded.deleted_at,
+                synced_at    = excluded.synced_at
+             WHERE excluded.updated_at >= submission.updated_at",
+            rows,
+            |r| {
+                vec![
+                    text(&r.id),
+                    text(&r.idea_id),
+                    text(&r.actor_id),
                     opt_val(&r.content),
-                    r.submitted_at.clone(),
-                    r.created_at.clone(),
-                    r.updated_at.clone(),
+                    text(&r.submitted_at),
+                    text(&r.created_at),
+                    text(&r.updated_at),
                     opt_val(&r.deleted_at),
-                    r.synced_at.clone()
-                ],
-            )
-            .await
-            .map_err(|e| format!("submission_upsert_batch: {}", e))?;
-        }
-        Ok(())
+                    text(&r.synced_at),
+                ]
+            },
+        )
+        .await
     }
 
     pub async fn submission_load_idea(
@@ -1928,6 +2144,52 @@ impl LocalCacheStore {
             return Ok(row.get::<String>(0).ok());
         }
         Ok(None)
+    }
+
+    /// `id -> team_id` for every session in `ids` that exists locally. One
+    /// statement per 500 ids under one lock acquisition, instead of the
+    /// per-row `team_for_session` round trip the batch gates used to make.
+    pub async fn teams_for_sessions(
+        &self,
+        ids: &[String],
+    ) -> Result<HashMap<String, String>, String> {
+        self.owner_lookup("session", "teams_for_sessions", ids)
+            .await
+    }
+
+    /// `id -> team_id` for every idea in `ids` that exists locally.
+    pub async fn teams_for_ideas(&self, ids: &[String]) -> Result<HashMap<String, String>, String> {
+        self.owner_lookup("idea", "teams_for_ideas", ids).await
+    }
+
+    async fn owner_lookup(
+        &self,
+        table: &str,
+        label: &str,
+        ids: &[String],
+    ) -> Result<HashMap<String, String>, String> {
+        let mut owners = HashMap::new();
+        if ids.is_empty() {
+            return Ok(owners);
+        }
+        let conn = self.conn.lock().await;
+        for chunk in ids.chunks(MAX_IN_LIST) {
+            let sql = format!(
+                "SELECT id, team_id FROM {table} WHERE id IN ({})",
+                placeholders(chunk.len(), 0)
+            );
+            let binds = chunk.iter().map(|id| text(id)).collect::<Vec<_>>();
+            let mut rows = conn
+                .query(&sql, binds)
+                .await
+                .map_err(|e| format!("{label}: {e}"))?;
+            while let Some(row) = rows.next().await.map_err(|e| format!("{label} row: {e}"))? {
+                if let (Ok(id), Ok(team)) = (row.get::<String>(0), row.get::<String>(1)) {
+                    owners.insert(id, team);
+                }
+            }
+        }
+        Ok(owners)
     }
 
     pub async fn team_for_idea(&self, idea_id: &str) -> Result<Option<String>, String> {
@@ -2679,5 +2941,266 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows.len(), 2);
+    }
+
+    fn message(id: &str, session: &str, created_at: &str) -> MessageRow {
+        MessageRow {
+            id: id.to_string(),
+            team_id: "teamA".to_string(),
+            session_id: session.to_string(),
+            turn_id: None,
+            sender_actor_id: None,
+            reply_to_message_id: None,
+            kind: "text".to_string(),
+            content: format!("body of {id}"),
+            metadata_json: None,
+            model: None,
+            mentions_json: None,
+            origin: "test".to_string(),
+            created_at: created_at.to_string(),
+            updated_at: created_at.to_string(),
+            deleted_at: None,
+            synced_at: created_at.to_string(),
+            parts_json: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn store_opens_in_wal_with_normal_sync() {
+        let (store, _dir) = new_store().await;
+        let conn = store.conn().await;
+        let mut rows = conn.query("PRAGMA journal_mode", ()).await.unwrap();
+        let mode: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
+        assert_eq!(mode.to_lowercase(), "wal");
+        let mut rows = conn.query("PRAGMA synchronous", ()).await.unwrap();
+        let sync: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+        assert_eq!(sync, 1, "synchronous should be NORMAL (1)");
+    }
+
+    #[tokio::test]
+    async fn run_write_batch_rolls_back_the_whole_batch_on_error() {
+        let (store, _dir) = new_store().await;
+        let conn = store.conn().await;
+        conn.execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL CHECK(length(v) > 0))",
+            (),
+        )
+        .await
+        .unwrap();
+
+        let rows = vec!["a".to_string(), String::new(), "b".to_string()];
+        let err = run_write_batch(&conn, "t", "INSERT INTO t (v) VALUES (?1)", &rows, |v| {
+            vec![text(v)]
+        })
+        .await
+        .unwrap_err();
+        assert!(err.starts_with("t: "), "{err}");
+
+        // The row before the failure is gone too: one transaction, not three.
+        let mut rows = conn.query("SELECT COUNT(*) FROM t", ()).await.unwrap();
+        let n: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+        assert_eq!(n, 0);
+        assert!(
+            conn.is_autocommit(),
+            "failed batch must not leave a tx open"
+        );
+
+        // And the connection is usable for the next batch.
+        let rows = vec!["x".to_string(), "y".to_string()];
+        run_write_batch(&conn, "t", "INSERT INTO t (v) VALUES (?1)", &rows, |v| {
+            vec![text(v)]
+        })
+        .await
+        .unwrap();
+        let mut rows = conn.query("SELECT COUNT(*) FROM t", ()).await.unwrap();
+        let n: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+        assert_eq!(n, 2);
+        assert!(conn.is_autocommit());
+    }
+
+    #[tokio::test]
+    async fn message_upsert_batch_lands_every_row_and_keeps_newest_duplicate() {
+        let (store, _dir) = new_store().await;
+        let mut rows = (0..300)
+            .map(|i| {
+                message(
+                    &format!("m{i:03}"),
+                    "s1",
+                    &format!("2024-01-01T00:{:02}:{:02}Z", i / 60, i % 60),
+                )
+            })
+            .collect::<Vec<_>>();
+        // Same id twice in one batch: the later, newer row must win.
+        let mut dup = message("m000", "s1", "2024-01-02T00:00:00Z");
+        dup.content = "newer".to_string();
+        rows.push(dup);
+        store.message_upsert_batch(&rows).await.unwrap();
+
+        let loaded = store.message_load_session("s1", false, None).await.unwrap();
+        assert_eq!(loaded.len(), 300);
+        assert_eq!(loaded.first().unwrap().id, "m001");
+        assert_eq!(loaded.last().unwrap().id, "m000", "m000 now sorts last");
+        assert_eq!(loaded.last().unwrap().content, "newer");
+    }
+
+    #[tokio::test]
+    async fn message_load_session_limit_returns_newest_in_chronological_order() {
+        let (store, _dir) = new_store().await;
+        let rows = (1..=5)
+            .map(|i| message(&format!("m{i}"), "s1", &format!("2024-01-01T00:00:0{i}Z")))
+            .collect::<Vec<_>>();
+        store.message_upsert_batch(&rows).await.unwrap();
+
+        let ids = |rows: Vec<MessageRow>| rows.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        let newest_two = store
+            .message_load_session_with(
+                "s1",
+                false,
+                None,
+                MessageLoadOptions {
+                    limit: Some(2),
+                    runtime: Some("pi"),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(newest_two), vec!["m4", "m5"]);
+
+        for limit in [None, Some(0), Some(-1), Some(10)] {
+            let all = store
+                .message_load_session_with(
+                    "s1",
+                    false,
+                    None,
+                    MessageLoadOptions {
+                        limit,
+                        runtime: Some("pi"),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                ids(all),
+                vec!["m1", "m2", "m3", "m4", "m5"],
+                "limit {limit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn opencode_enrichment_applies_only_to_opencode_or_unknown_runtime() {
+        assert!(opencode_enrichment_applies(None));
+        assert!(opencode_enrichment_applies(Some("")));
+        assert!(opencode_enrichment_applies(Some("opencode")));
+        assert!(opencode_enrichment_applies(Some(" OpenCode ")));
+        assert!(!opencode_enrichment_applies(Some("pi")));
+        assert!(!opencode_enrichment_applies(Some("cursor")));
+        assert!(!opencode_enrichment_applies(Some("claude-code")));
+    }
+
+    #[tokio::test]
+    async fn enrich_parts_json_leaves_non_opencode_runtimes_untouched() {
+        let parts_json = serde_json::json!([{
+            "type": "tool-call",
+            "toolCallId": "call_1",
+            "toolCall": { "id": "call_1", "result": "", "arguments": {} }
+        }])
+        .to_string();
+        let out = enrich_parts_json_from_opencode(&parts_json, None, Some("pi")).await;
+        assert_eq!(out, parts_json);
+    }
+
+    fn opencode_part(call_id: &str, output: &str) -> String {
+        serde_json::json!({
+            "type": "tool",
+            "tool": "bash",
+            "callID": call_id,
+            "state": { "status": "completed", "output": output }
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn opencode_outputs_resolve_all_ids_with_one_json_extract_query() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("opencode.db");
+        {
+            let db = Builder::new_local(path.to_string_lossy().to_string())
+                .build()
+                .await
+                .unwrap();
+            let conn = db.connect().unwrap();
+            conn.execute(
+                "CREATE TABLE part (id TEXT PRIMARY KEY, session_id TEXT, message_id TEXT,
+                                    time_created INTEGER, time_updated INTEGER, data TEXT)",
+                (),
+            )
+            .await
+            .unwrap();
+            let rows: Vec<(&str, i64, String)> =
+                vec![
+                ("p1", 10, opencode_part("call_1", "older")),
+                ("p2", 20, opencode_part("call_1", "newer")),
+                ("p3", 15, opencode_part("call_2", "two")),
+                // Completed tool without any output: must not count as a hit.
+                (
+                    "p4",
+                    30,
+                    serde_json::json!({ "callID": "call_3", "state": { "status": "completed" } })
+                        .to_string(),
+                ),
+                // Not a tool part at all, and one malformed row json_valid must skip.
+                ("p5", 40, serde_json::json!({ "type": "text", "text": "call_1" }).to_string()),
+                ("p6", 50, "not json {".to_string()),
+            ];
+            for (id, t, data) in rows {
+                conn.execute(
+                    "INSERT INTO part (id, session_id, message_id, time_created, time_updated, data)
+                     VALUES (?1, 'ses', 'msg', ?2, ?2, ?3)",
+                    params![id.to_string(), t, data],
+                )
+                .await
+                .unwrap();
+            }
+        }
+
+        let ids = ["call_1", "call_2", "call_3", "missing"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        // A path that does not exist first: it is skipped, not fatal.
+        let paths = vec![dir.path().join("nope.db"), path];
+        let outputs = load_opencode_tool_outputs_from_paths(&ids, &paths).await;
+
+        assert_eq!(outputs.get("call_1").map(String::as_str), Some("newer"));
+        assert_eq!(outputs.get("call_2").map(String::as_str), Some("two"));
+        assert!(!outputs.contains_key("call_3"));
+        assert!(!outputs.contains_key("missing"));
+        assert_eq!(outputs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn teams_for_sessions_and_ideas_map_only_known_ids() {
+        let (store, _dir) = new_store().await;
+        store
+            .session_upsert_batch(&[session("s1", "teamA"), session("s2", "teamB")])
+            .await
+            .unwrap();
+        store
+            .idea_upsert_batch(&[idea("i1", "teamA")])
+            .await
+            .unwrap();
+
+        let owners = store
+            .teams_for_sessions(&["s1".into(), "s2".into(), "ghost".into()])
+            .await
+            .unwrap();
+        assert_eq!(owners.len(), 2);
+        assert_eq!(owners.get("s1").map(String::as_str), Some("teamA"));
+        assert_eq!(owners.get("s2").map(String::as_str), Some("teamB"));
+
+        let owners = store.teams_for_ideas(&["i1".into()]).await.unwrap();
+        assert_eq!(owners.get("i1").map(String::as_str), Some("teamA"));
+        assert!(store.teams_for_ideas(&[]).await.unwrap().is_empty());
     }
 }
