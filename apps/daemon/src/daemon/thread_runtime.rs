@@ -10,6 +10,7 @@ use crate::config::SessionStore;
 use crate::daemon::server::StartRuntimeError;
 use crate::proto::amux;
 use crate::runtime::backend::{AgentBackend, ForkSpec};
+use crate::daemon::session_resume::resolve_parent_binding_for_fork;
 use crate::runtime::execution_context::{ExecutionContext, ProcessEnvRevision};
 
 #[derive(Debug, Clone)]
@@ -52,19 +53,19 @@ pub(crate) async fn fork_thread_binding(
     context: &ExecutionContext,
     params: &ThreadForkParams,
 ) -> Result<String, StartRuntimeError> {
-    let parent_binding = sessions
-        .lookup(
-            &params.parent_session_id,
-            &params.workspace_id,
-            params.agent_type as i32,
+    let parent_binding = resolve_parent_binding_for_fork(
+        sessions,
+        &params.parent_session_id,
+        &params.workspace_id,
+        params.agent_type,
+    )
+    .ok_or_else(|| {
+        StartRuntimeError::new(
+            "PARENT_RUNTIME_NEVER_ATTACHED",
+            "parent session has no backend binding to fork from",
+            "thread_fork",
         )
-        .ok_or_else(|| {
-            StartRuntimeError::new(
-                "PARENT_RUNTIME_NEVER_ATTACHED",
-                "parent session has no backend binding to fork from",
-                "thread_fork",
-            )
-        })?;
+    })?;
 
     let (fork_leaf_id, fork_opencode_message_id) =
         resolve_fork_anchor(backend, params).await.ok_or_else(|| {
