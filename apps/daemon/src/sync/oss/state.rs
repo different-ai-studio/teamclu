@@ -76,6 +76,65 @@ pub struct ForbiddenPath {
     pub reason: String,
 }
 
+/// The directory part of a sync path, or `None` for a bare filename.
+fn parent_dir(path: &str) -> Option<&str> {
+    path.rsplit_once('/').map(|(dir, _)| dir)
+}
+
+/// A read-only view of [`LocalSyncState::forbidden`], for callers that want to
+/// know whether a write will reach the team without taking ownership of the
+/// state file. Built by [`LocalSyncState::peek_forbidden`].
+#[derive(Debug, Default)]
+pub struct ForbiddenPaths(HashMap<String, ForbiddenPath>);
+
+impl ForbiddenPaths {
+    /// Whether the server is currently refusing this path — or the directory
+    /// it sits in.
+    ///
+    /// Directory-level because the ACL is: a page written for the first time
+    /// has no refusal of its own yet, so the one recorded against a sibling is
+    /// the only evidence there is. Exact-path only would answer "fine" for
+    /// every new file in a restricted directory — which is precisely the case
+    /// worth reporting.
+    ///
+    /// Same expiry as [`LocalSyncState::is_forbidden_now`], so a later grant
+    /// stops being reported without anyone being told anything.
+    pub fn blocks(&self, path: &str, now_secs: u64) -> bool {
+        let fresh =
+            |p: &ForbiddenPath| now_secs.saturating_sub(p.last_tried_at) < FORBIDDEN_RETRY_SECS;
+        if self.0.get(path).is_some_and(fresh) {
+            return true;
+        }
+        // Same directory, compared exactly — NOT a prefix match. A prefix would
+        // make one refusal under `knowledge/hr/` report the whole of
+        // `knowledge/` as blocked, because every knowledge path starts with it.
+        //
+        // Descendants are left out for the opposite reason: the server's rules
+        // are prefixes at any depth, so a refusal on `knowledge/hr/salary.md`
+        // could come from a rule on `knowledge/hr/` or on that one file, and
+        // the recorded refusal does not say which. Reporting only the directory
+        // we have direct evidence for keeps this to what was observed.
+        let Some(dir) = parent_dir(path) else {
+            return false;
+        };
+        self.0
+            .iter()
+            .any(|(known, entry)| parent_dir(known) == Some(dir) && fresh(entry))
+    }
+
+    /// Whether anything is known at all — an empty set means "no evidence",
+    /// not "everything is fine".
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Build from explicit entries, for a caller that already holds the state
+    /// (or a test that wants a specific one) rather than the file on disk.
+    pub fn from_entries(entries: impl IntoIterator<Item = (String, ForbiddenPath)>) -> Self {
+        Self(entries.into_iter().collect())
+    }
+}
+
 /// How long to leave a forbidden path alone before trying once more.
 ///
 /// A day, because the only thing that changes the answer is an administrator
@@ -184,6 +243,23 @@ impl LocalSyncState {
             serde_json::to_string_pretty(self).map_err(|e| format!("state: serialize: {e}"))?;
         std::fs::write(&path, json).map_err(|e| format!("state: write {}: {e}", path.display()))?;
         Ok(())
+    }
+
+    /// The refusals recorded for a team, read WITHOUT [`Self::load_at`]'s
+    /// recovery behaviour.
+    ///
+    /// `load_at` renames an unparseable state file to `.corrupt` so the next
+    /// tick rebuilds from scratch. That is correct for the sync engine, which
+    /// owns this file — and wrong for a passing reader: a tool asking "would
+    /// this path reach my team?" must not be able to reset sync state as a
+    /// side effect of asking. Anything unreadable here answers "nothing
+    /// known", which degrades to today's behaviour rather than to a surprise.
+    pub fn peek_forbidden(team_id: &str) -> ForbiddenPaths {
+        let path = crate::config::global_team_store::global_sync_state_path(team_id);
+        let parsed = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|body| serde_json::from_str::<Self>(&body).ok());
+        ForbiddenPaths(parsed.map(|s| s.forbidden).unwrap_or_default())
     }
 
     /// Load OSS sync state for a team from the daemon global location
@@ -600,5 +676,63 @@ mod tests {
         assert!(dir.path().join(".copilot361/sync/state.json").is_file());
         let reloaded = LocalSyncState::load(ws, "team-x").unwrap();
         assert_eq!(reloaded.last_server_seq, 99);
+    }
+
+    fn at(secs: u64) -> ForbiddenPath {
+        ForbiddenPath {
+            last_tried_at: secs,
+            reason: "not accessible".into(),
+        }
+    }
+
+    #[test]
+    fn forbidden_view_answers_for_the_directory_not_just_the_file() {
+        let set = ForbiddenPaths::from_entries([("knowledge/hr/salary.md".to_string(), at(1_000))]);
+
+        // The file itself.
+        assert!(set.blocks("knowledge/hr/salary.md", 1_000));
+        // A sibling written for the first time — no entry of its own, and the
+        // case the whole view exists for.
+        assert!(set.blocks("knowledge/hr/onboarding.md", 1_000));
+        // Not the parent's other children, and not a prefix that merely starts
+        // with the same letters.
+        assert!(!set.blocks("knowledge/pricing.md", 1_000));
+        assert!(!set.blocks("knowledge/hr-public/notes.md", 1_000));
+        // Nested deeper is a different directory; the ACL is per-directory and
+        // guessing beyond the evidence would report a block nobody recorded.
+        assert!(!set.blocks("knowledge/hr/2026/q1.md", 1_000));
+    }
+
+    #[test]
+    fn forbidden_view_expires_with_the_same_window_as_the_engine() {
+        let set = ForbiddenPaths::from_entries([("knowledge/hr/salary.md".to_string(), at(1_000))]);
+        assert!(set.blocks("knowledge/hr/other.md", 1_000 + FORBIDDEN_RETRY_SECS - 1));
+        assert!(
+            !set.blocks("knowledge/hr/other.md", 1_000 + FORBIDDEN_RETRY_SECS),
+            "a grant must stop being reported without anyone being told"
+        );
+    }
+
+    /// `load_at` quarantines an unparseable state file so the next tick
+    /// rebuilds. A read-only caller asking "would this reach my team?" must not
+    /// be able to trigger that by asking.
+    #[test]
+    fn peeking_never_quarantines_a_corrupt_state_file() {
+        // `BrandEnvGuard` already takes `TEST_HOME_LOCK`, and that mutex is not
+        // reentrant — taking it here as well deadlocks the test against itself.
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+
+        let path = crate::config::global_team_store::global_sync_state_path("team-peek");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let set = LocalSyncState::peek_forbidden("team-peek");
+        assert!(set.is_empty(), "unreadable state answers 'nothing known'");
+        assert!(path.is_file(), "the state file must survive being read");
+        assert!(
+            !path.with_extension("json.corrupt").exists(),
+            "peeking must not run load_at's recovery"
+        );
     }
 }
