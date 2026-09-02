@@ -542,6 +542,21 @@ mod tests {
         let _guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
         let team_id = "concurrent-mcp-team";
 
+        // The generated file carries the device servers as well as the team's —
+        // `sync_opencode_generated_unlocked` inserts `~/.amuxd/mcp.json`
+        // verbatim, by design. Seed one so that difference is present on every
+        // run. Left to chance it appears only when another test in this binary
+        // boots a daemon, whose `ensure_device_mcp` writes through the
+        // process-global `AMUXD_HOME` — this tempdir, while this test holds it.
+        // That is what failed on CI under load and passed everywhere else.
+        let device_file = crate::config::device_mcp::device_mcp_file();
+        std::fs::create_dir_all(device_file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &device_file,
+            r#"{"mcp":{"playwright":{"type":"local","command":["npx","playwright"]}}}"#,
+        )
+        .unwrap();
+
         for round in 0..16 {
             let barrier = Arc::new(std::sync::Barrier::new(3));
             let mut workers = Vec::new();
@@ -581,9 +596,14 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .keys()
+                .filter(|name| !crate::config::device_mcp::is_device_scoped(name))
                 .cloned()
                 .collect();
             assert_eq!(cursor_names, generated_names);
+            assert!(
+                generated["mcp"].get("playwright").is_some(),
+                "device servers must survive a team replacement",
+            );
         }
     }
 
