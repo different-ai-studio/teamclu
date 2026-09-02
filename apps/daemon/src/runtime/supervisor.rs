@@ -4,6 +4,7 @@
 //! here before agent spawn, and `/v1/workspaces/:id/runtime/*` handlers
 //! delegate reload/status to the shared `RuntimeManager`.
 
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +19,7 @@ use tracing::{info, warn};
 pub(crate) const INTROSPECT_API_PORT: u16 = 13144;
 const TEAM_SKILLS_PATH: &str = "teamclu-team/skills";
 const REMOTE_TOOLS_MCP_SERVER_NAME: &str = "amuxd-remote-tools";
+const MAX_AUTO_SKILL_REFRESHES_PER_TICK: usize = 1;
 
 /// Inherent MCP servers that older builds wrote into workspace configs under a
 /// name this build no longer maintains. Removed on sight — see the call site.
@@ -44,10 +46,10 @@ use crate::config::workspace_control::{
 use crate::proto::amux;
 use crate::runtime::{
     refresh::{
-        RefreshChangeKind, RuntimeRefreshCoordinator, WorkspaceRefreshState,
+        RefreshChangeKind, RefreshSource, RuntimeRefreshCoordinator, WorkspaceRefreshState,
         APPLY_REFRESH_SUPPRESS, INTERNAL_PREPARE_KINDS, INTERNAL_WRITE_SUPPRESS,
     },
-    AgentLaunchConfig, RuntimeManager,
+    AgentLaunchConfig, RuntimeManager, WorkspaceOccupancy,
 };
 
 struct InherentSkill {
@@ -1036,20 +1038,26 @@ pub async fn prewarm_workspace_domains(
     pool: Arc<crate::runtime::opencode_http::host_pool::OpenCodeHostPool>,
     workspaces: Vec<(String, std::collections::HashMap<String, String>)>,
 ) {
-    for (workspace_id, env) in workspaces.into_iter().take(2) {
+    use crate::runtime::opencode_http::host_pool::PrewarmOutcome;
+
+    for (workspace_id, env) in workspaces {
         let domain =
             crate::runtime::execution_context::IsolationDomainKey::Workspace(workspace_id.clone());
         let revision = crate::runtime::execution_context::ProcessEnvRevision::from_bindings(&env);
-        if let Err(error) = pool
-            .acquire(
-                domain,
-                revision,
-                env,
-                std::time::Instant::now() + Duration::from_secs(30),
-            )
-            .await
-        {
-            warn!(workspace_id, %error, "workspace host prewarm failed");
+        match pool.try_prewarm(domain, revision, env).await {
+            Ok(PrewarmOutcome::Reused(_) | PrewarmOutcome::Started(_)) => {}
+            Ok(
+                PrewarmOutcome::SkippedCapacity
+                | PrewarmOutcome::SkippedDemandQueued
+                | PrewarmOutcome::SkippedDraining,
+            ) => {
+                info!(workspace_id, "workspace host prewarm skipped");
+                break;
+            }
+            Err(error) => {
+                warn!(workspace_id, %error, "workspace host prewarm failed");
+                break;
+            }
         }
     }
 }
@@ -1064,6 +1072,9 @@ pub struct RuntimeSupervisor {
     /// evicted hosts off the critical path. Without this, the first session
     /// after a provider/env change always paid the full cold start.
     prewarm_notify: parking_lot::Mutex<Option<tokio::sync::mpsc::Sender<(String, String)>>>,
+    /// Serializes Skills auto-apply, attach barrier, and manual apply for one
+    /// workspace so concurrent callers re-read the latest pending state.
+    refresh_apply_locks: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl RuntimeSupervisor {
@@ -1074,6 +1085,7 @@ impl RuntimeSupervisor {
             host_pool: None,
             context_resolver: None,
             prewarm_notify: parking_lot::Mutex::new(None),
+            refresh_apply_locks: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 
@@ -1087,6 +1099,7 @@ impl RuntimeSupervisor {
             host_pool: Some(host_pool),
             context_resolver: None,
             prewarm_notify: parking_lot::Mutex::new(None),
+            refresh_apply_locks: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 
@@ -1101,6 +1114,7 @@ impl RuntimeSupervisor {
             host_pool: Some(host_pool),
             context_resolver: Some(context_resolver),
             prewarm_notify: parking_lot::Mutex::new(None),
+            refresh_apply_locks: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 
@@ -1775,8 +1789,93 @@ impl RuntimeSupervisor {
 
     pub async fn auto_apply_pending_refreshes(&self) -> usize {
         let pending = self.refresh.pending_workspace_states().await;
+        let occupancy_by_id = {
+            let manager = self.agents.lock().await;
+            pending
+                .iter()
+                .map(|state| {
+                    (
+                        state.workspace_id.clone(),
+                        manager.workspace_occupancy(&state.workspace_path, &state.workspace_id),
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        };
+
+        for state in &pending {
+            if !auto_applicable_refresh(state) {
+                self.refresh
+                    .set_auto_apply_blocked_by_active_runtime(&state.workspace_id, false)
+                    .await;
+                continue;
+            }
+            let occupancy = occupancy_by_id
+                .get(&state.workspace_id)
+                .copied()
+                .unwrap_or(WorkspaceOccupancy::Unknown);
+            match occupancy {
+                WorkspaceOccupancy::Active => {
+                    self.refresh
+                        .set_auto_apply_blocked_by_active_runtime(&state.workspace_id, true)
+                        .await;
+                    info!(
+                        workspace_id = %state.workspace_id,
+                        workspace_path = %state.workspace_path,
+                        change_kinds = ?state.change_kinds,
+                        "team_skill_refresh_deferred_active_turn"
+                    );
+                }
+                WorkspaceOccupancy::Cold if team_skill_reconcile_only(state) => {
+                    info!(
+                        workspace_id = %state.workspace_id,
+                        workspace_path = %state.workspace_path,
+                        "team_skill_refresh_deferred_cold"
+                    );
+                }
+                WorkspaceOccupancy::Unknown => {
+                    info!(
+                        workspace_id = %state.workspace_id,
+                        workspace_path = %state.workspace_path,
+                        "team_skill_refresh_deferred_unknown_occupancy"
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        let mut candidates: Vec<WorkspaceRefreshState> = pending
+            .into_iter()
+            .filter(|state| {
+                auto_applicable_refresh(state)
+                    && auto_apply_candidate(
+                        occupancy_by_id
+                            .get(&state.workspace_id)
+                            .copied()
+                            .unwrap_or(WorkspaceOccupancy::Unknown),
+                        state,
+                    )
+            })
+            .collect();
+        candidates.sort_by(|left, right| {
+            let left_occupancy = occupancy_by_id
+                .get(&left.workspace_id)
+                .copied()
+                .unwrap_or(WorkspaceOccupancy::Unknown);
+            let right_occupancy = occupancy_by_id
+                .get(&right.workspace_id)
+                .copied()
+                .unwrap_or(WorkspaceOccupancy::Unknown);
+            auto_apply_priority(left, left_occupancy)
+                .cmp(&auto_apply_priority(right, right_occupancy))
+                .then(left.first_detected_at.cmp(&right.first_detected_at))
+                .then(left.workspace_id.cmp(&right.workspace_id))
+        });
+
         let mut applied = 0usize;
-        for state in pending {
+        for state in candidates {
+            if applied >= MAX_AUTO_SKILL_REFRESHES_PER_TICK {
+                break;
+            }
             if self.auto_apply_pending_refresh_state(state).await {
                 applied += 1;
             }
@@ -1821,7 +1920,38 @@ impl RuntimeSupervisor {
         current.fingerprint == previous.fingerprint
     }
 
+    fn refresh_apply_lock(&self, workspace_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.refresh_apply_locks
+            .lock()
+            .entry(workspace_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    async fn latest_pending_state(
+        &self,
+        workspace_id: &str,
+        workspace_path: &str,
+    ) -> Option<WorkspaceRefreshState> {
+        self.refresh
+            .pending_workspace_states()
+            .await
+            .into_iter()
+            .find(|state| {
+                state.workspace_id == workspace_id || state.workspace_path == workspace_path
+            })
+    }
+
     async fn auto_apply_pending_refresh_state(&self, state: WorkspaceRefreshState) -> bool {
+        let lock = self.refresh_apply_lock(&state.workspace_id);
+        let _guard = lock.lock().await;
+
+        let Some(state) = self
+            .latest_pending_state(&state.workspace_id, &state.workspace_path)
+            .await
+        else {
+            return false;
+        };
         if !auto_applicable_refresh(&state) {
             self.refresh
                 .set_auto_apply_blocked_by_active_runtime(&state.workspace_id, false)
@@ -1856,21 +1986,33 @@ impl RuntimeSupervisor {
             );
             return true;
         }
-        let busy = {
+        let occupancy = {
             let manager = self.agents.lock().await;
-            manager.workspace_has_active_turn(&state.workspace_path, &state.workspace_id)
+            manager.workspace_occupancy(&state.workspace_path, &state.workspace_id)
         };
-        if busy {
-            self.refresh
-                .set_auto_apply_blocked_by_active_runtime(&state.workspace_id, true)
-                .await;
-            info!(
-                workspace_id = %state.workspace_id,
-                workspace_path = %state.workspace_path,
-                change_kinds = ?state.change_kinds,
-                "deferred runtime refresh auto-apply because workspace has active turn"
-            );
-            return false;
+        match occupancy {
+            WorkspaceOccupancy::Active => {
+                self.refresh
+                    .set_auto_apply_blocked_by_active_runtime(&state.workspace_id, true)
+                    .await;
+                info!(
+                    workspace_id = %state.workspace_id,
+                    workspace_path = %state.workspace_path,
+                    change_kinds = ?state.change_kinds,
+                    "team_skill_refresh_deferred_active_turn"
+                );
+                return false;
+            }
+            WorkspaceOccupancy::Cold if team_skill_reconcile_only(&state) => {
+                info!(
+                    workspace_id = %state.workspace_id,
+                    workspace_path = %state.workspace_path,
+                    "team_skill_refresh_deferred_cold"
+                );
+                return false;
+            }
+            WorkspaceOccupancy::Unknown => return false,
+            WorkspaceOccupancy::WarmIdle | WorkspaceOccupancy::Cold => {}
         }
 
         self.refresh
@@ -1920,12 +2062,14 @@ impl RuntimeSupervisor {
         workspace_id: &str,
         workspace_path: &Path,
     ) -> Result<SkillsRefreshApplyStatus, WorkspaceControlError> {
+        let lock = self.refresh_apply_lock(workspace_id);
+        let _guard = lock.lock().await;
+
         let workspace_path_str = workspace_path.to_string_lossy();
-        let pending = self.refresh.pending_workspace_states().await;
-        let Some(state) = pending.into_iter().find(|state| {
-            state.workspace_id == workspace_id
-                || state.workspace_path == workspace_path_str.as_ref()
-        }) else {
+        let Some(state) = self
+            .latest_pending_state(workspace_id, workspace_path_str.as_ref())
+            .await
+        else {
             return Ok(SkillsRefreshApplyStatus::Applied(ApplyOutcome::AppliedLive));
         };
         if !state
@@ -2011,6 +2155,36 @@ fn auto_applicable_refresh(state: &WorkspaceRefreshState) -> bool {
             .change_kinds
             .iter()
             .all(|kind| matches!(kind, RefreshChangeKind::Skills))
+}
+
+fn team_skill_reconcile_only(state: &WorkspaceRefreshState) -> bool {
+    !state.sources.is_empty()
+        && state
+            .sources
+            .iter()
+            .all(|source| matches!(source, RefreshSource::TeamSkillReconcile))
+}
+
+fn auto_apply_candidate(occupancy: WorkspaceOccupancy, state: &WorkspaceRefreshState) -> bool {
+    match occupancy {
+        WorkspaceOccupancy::WarmIdle => true,
+        WorkspaceOccupancy::Cold => !team_skill_reconcile_only(state),
+        WorkspaceOccupancy::Active | WorkspaceOccupancy::Unknown => false,
+    }
+}
+
+fn auto_apply_priority(state: &WorkspaceRefreshState, occupancy: WorkspaceOccupancy) -> u8 {
+    if state.sources.contains(&RefreshSource::UiMutation) {
+        0
+    } else if occupancy == WorkspaceOccupancy::WarmIdle {
+        1
+    } else if state.sources.contains(&RefreshSource::FilesystemWatch)
+        || state.sources.contains(&RefreshSource::StartupRescan)
+    {
+        2
+    } else {
+        3
+    }
 }
 
 #[cfg(test)]
@@ -3142,6 +3316,363 @@ mod tests {
             .runtime_refresh_dto(&workspace_id)
             .await;
         assert_eq!(dto.status, "clean");
+    }
+
+    #[tokio::test]
+    async fn team_skill_reconcile_cold_stays_pending_without_dispose() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::TeamSkillReconcile,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 0);
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "pending");
+        assert!(dto.change_kinds.iter().any(|kind| kind == "skills"));
+    }
+
+    #[tokio::test]
+    async fn team_skill_reconcile_warm_idle_auto_applies_dispose() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let directory = dir.path().to_string_lossy().into_owned();
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param("directory", directory))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.add_test_workspace_runtime(
+                "rt-idle",
+                &dir.path().to_string_lossy(),
+                &workspace_id,
+                amux::AgentStatus::Idle,
+            );
+        }
+
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::TeamSkillReconcile,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "clean");
+    }
+
+    #[tokio::test]
+    async fn team_skill_reconcile_active_stays_pending_until_idle() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let directory = dir.path().to_string_lossy().into_owned();
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param("directory", directory))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.add_test_workspace_runtime(
+                "rt-busy",
+                &dir.path().to_string_lossy(),
+                &workspace_id,
+                amux::AgentStatus::Active,
+            );
+        }
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::TeamSkillReconcile,
+            )
+            .await
+            .unwrap();
+        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 0);
+
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.set_test_runtime_status("rt-busy", amux::AgentStatus::Idle);
+        }
+        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "clean");
+    }
+
+    #[tokio::test]
+    async fn repeated_team_skill_records_merge_to_one_apply() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let directory = dir.path().to_string_lossy().into_owned();
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param("directory", directory))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.add_test_workspace_runtime(
+                "rt-idle",
+                &dir.path().to_string_lossy(),
+                &workspace_id,
+                amux::AgentStatus::Idle,
+            );
+        }
+        for _ in 0..10 {
+            supervisor
+                .refresh_coordinator()
+                .record_change(
+                    &workspace_id,
+                    dir.path(),
+                    refresh::RefreshChangeKind::Skills,
+                    refresh::RefreshSource::TeamSkillReconcile,
+                )
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "clean");
+    }
+
+    #[tokio::test]
+    async fn auto_apply_applies_at_most_one_workspace_per_tick() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let workspace_a = refresh_watch::workspace_runtime_id(dir_a.path());
+        let workspace_b = refresh_watch::workspace_runtime_id(dir_b.path());
+        let supervisor = RuntimeSupervisor::new(Arc::new(AsyncMutex::new(RuntimeManager::new(
+            RuntimeManager::default_launch_configs(),
+            None,
+        ))));
+
+        for (workspace_id, path) in [
+            (workspace_a.as_str(), dir_a.path()),
+            (workspace_b.as_str(), dir_b.path()),
+        ] {
+            supervisor
+                .refresh_coordinator()
+                .record_change(
+                    workspace_id,
+                    path,
+                    refresh::RefreshChangeKind::Skills,
+                    refresh::RefreshSource::FilesystemWatch,
+                )
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
+        let dto_a = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_a)
+            .await;
+        let dto_b = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_b)
+            .await;
+        let clean = [&dto_a, &dto_b]
+            .iter()
+            .filter(|dto| dto.status == "clean")
+            .count();
+        let pending = [&dto_a, &dto_b]
+            .iter()
+            .filter(|dto| dto.status == "pending")
+            .count();
+        assert_eq!(clean, 1, "exactly one workspace should apply this tick");
+        assert_eq!(pending, 1, "the other workspace stays pending");
+    }
+
+    #[tokio::test]
+    async fn ui_mutation_priority_over_team_skill_reconcile() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let ui_dir = tempfile::tempdir().unwrap();
+        let team_dir = tempfile::tempdir().unwrap();
+        let ui_workspace = refresh_watch::workspace_runtime_id(ui_dir.path());
+        let team_workspace = refresh_watch::workspace_runtime_id(team_dir.path());
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param(
+                "directory",
+                ui_dir.path().to_string_lossy().into_owned(),
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/instance/dispose"))
+            .and(query_param(
+                "directory",
+                team_dir.path().to_string_lossy().into_owned(),
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
+            base_url: server.uri(),
+        }));
+        let supervisor = RuntimeSupervisor::new_with_host_pool(
+            Arc::new(AsyncMutex::new(RuntimeManager::new(
+                RuntimeManager::default_launch_configs(),
+                None,
+            ))),
+            pool.clone(),
+        );
+        let (_revision, _ui_lease) = seed_domain(&pool, &ui_workspace, "ui").await;
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.add_test_workspace_runtime(
+                "rt-idle",
+                &team_dir.path().to_string_lossy(),
+                &team_workspace,
+                amux::AgentStatus::Idle,
+            );
+        }
+
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &team_workspace,
+                team_dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::TeamSkillReconcile,
+            )
+            .await
+            .unwrap();
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &ui_workspace,
+                ui_dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::UiMutation,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
+        let ui_dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&ui_workspace)
+            .await;
+        let team_dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&team_workspace)
+            .await;
+        assert_eq!(ui_dto.status, "clean");
+        assert_eq!(team_dto.status, "pending");
     }
 
     #[tokio::test]
