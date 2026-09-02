@@ -1170,10 +1170,14 @@ mod tests {
         // Poll rather than sleep a fixed span: spawning a shell and getting its
         // first stderr line back takes longer than any constant is safe to
         // assume on a loaded machine.
-        for _ in 0..100 {
-            if !attached.stderr_tail().is_empty() {
-                break;
-            }
+        //
+        // The ceiling is a deadlock guard, not a latency estimate — the loop
+        // leaves the moment stderr arrives, so a generous budget costs nothing
+        // on an idle machine and is the difference between green and a
+        // `got ""` on a CI runner compiling and running 1200 other tests. Two
+        // seconds was not enough there.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while attached.stderr_tail().is_empty() && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(
