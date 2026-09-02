@@ -22,6 +22,38 @@ export function appPublicLabel(slug: string, appId: string): string {
   return `${slug}-${appId.slice(0, ID_PREFIX_LEN)}`;
 }
 
+/**
+ * The zone the app's FC custom domain lives in, e.g. `fc-apps.example.com`.
+ *
+ * Deliberately a DIFFERENT zone from `APPS_PUBLIC_DOMAIN`: the public name
+ * resolves to our own proxy, so if the proxy forwarded to that same name it
+ * would resolve straight back to itself. This zone resolves to Function
+ * Compute instead, which is how the request reaches the app at all — Node's
+ * fetch cannot override `Host`, so DNS has to carry the routing.
+ *
+ * Blank keeps the old behaviour: the app is served on its `*.fcapp.run`
+ * trigger URL, which cannot forward redirects.
+ */
+export const appsFcRouteDomain = (env: Env = process.env) =>
+  env.APPS_FC_ROUTE_DOMAIN?.trim() || "";
+
+/**
+ * The host FC matches against to find this app's function, or null when the
+ * deployment has not configured a route domain.
+ *
+ * Same label as the public host so the two are trivially correlatable when
+ * reading logs on either side.
+ */
+export function appFcRouteHost(
+  slug: string | null | undefined,
+  appId: string | null | undefined,
+  env: Env = process.env,
+): string | null {
+  const domain = appsFcRouteDomain(env);
+  if (!domain || !slug || !appId) return null;
+  return `${appPublicLabel(slug, appId)}.${domain}`;
+}
+
 /** Public URL for an app, or null when this deployment has no apps domain. */
 export function appPublicUrl(
   slug: string | null | undefined,

@@ -338,3 +338,119 @@ test("gitCommitSha is optional for an app with no forge repo", () => {
   assert.equal(parseOptionalGitCommitSha("ABC1234"), "abc1234");
   assert.throws(() => parseOptionalGitCommitSha("nope"), /gitCommitSha/);
 });
+
+// ── custom domain ─────────────────────────────────────────────────────────
+//
+// `*.fcapp.run` refuses to forward any 3xx with `ExternalRedirectForbidden`
+// (Alibaba product change, 2025-04-01), so an app that merely normalises a
+// trailing slash is broken on it. Every deploy binds a custom domain instead.
+
+test("finalizeDeploy binds a custom domain and serves the app on it", async () => {
+  const prev = process.env.APPS_FC_ROUTE_DOMAIN;
+  process.env.APPS_FC_ROUTE_DOMAIN = "fc-apps.example.com";
+  try {
+    const bound: string[][] = [];
+    const out = await finalizeDeploy(
+      {
+        fcOps: {
+          ensureFunction: async () => {},
+          ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
+          ensureCustomDomain: async (fn: string, domain: string) => {
+            bound.push([fn, domain]);
+            return `http://${domain}`;
+          },
+        },
+      },
+      {
+        appId: "3f1c9a2e-0000-4000-8000-000000000abc",
+        slug: "demo",
+        appType: "static_web",
+        fcFunctionName: "tc-app-3f1c9a2e-0000-4000-8000-000000000abc",
+        ossObjectName: "apps/x/code.zip",
+      },
+    );
+    // Same label as the public host, so the two correlate in logs on both sides.
+    assert.deepEqual(bound, [[
+      "tc-app-3f1c9a2e-0000-4000-8000-000000000abc",
+      "demo-3f1c9a2e.fc-apps.example.com",
+    ]]);
+    assert.deepEqual(out, { fcEndpoint: "http://demo-3f1c9a2e.fc-apps.example.com" });
+  } finally {
+    if (prev === undefined) delete process.env.APPS_FC_ROUTE_DOMAIN;
+    else process.env.APPS_FC_ROUTE_DOMAIN = prev;
+  }
+});
+
+test("finalizeDeploy falls back to the trigger URL with no route domain", async () => {
+  const prev = process.env.APPS_FC_ROUTE_DOMAIN;
+  delete process.env.APPS_FC_ROUTE_DOMAIN;
+  try {
+    const out = await finalizeDeploy(
+      {
+        fcOps: {
+          ensureFunction: async () => {},
+          ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
+          ensureCustomDomain: async () => { throw new Error("must not be called"); },
+        },
+      },
+      {
+        appId: "3f1c9a2e-0000-4000-8000-000000000abc",
+        slug: "demo",
+        appType: "static_web",
+        fcFunctionName: "tc-app-x",
+        ossObjectName: "apps/x/code.zip",
+      },
+    );
+    assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
+  } finally {
+    if (prev !== undefined) process.env.APPS_FC_ROUTE_DOMAIN = prev;
+  }
+});
+
+test("deleting an app drops its custom domain too", async () => {
+  // The domain outlives the function and the quota is account-wide, so leaking
+  // one per deleted app is how a later create starts failing for a different
+  // app entirely.
+  const prev = process.env.APPS_FC_ROUTE_DOMAIN;
+  process.env.APPS_FC_ROUTE_DOMAIN = "fc-apps.example.com";
+  try {
+    const dropped: string[] = [];
+    const { teardownAppResources } = await import("../../src/lib/provisioning/app-delete.js");
+    await teardownAppResources(
+      {
+        fcOps: {
+          deleteFunction: async () => {},
+          deleteCustomDomain: async (d: string) => { dropped.push(d); },
+        },
+      },
+      { appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "demo" },
+    );
+    assert.deepEqual(dropped, ["demo-3f1c9a2e.fc-apps.example.com"]);
+  } finally {
+    if (prev === undefined) delete process.env.APPS_FC_ROUTE_DOMAIN;
+    else process.env.APPS_FC_ROUTE_DOMAIN = prev;
+  }
+});
+
+test("a failing custom-domain delete never blocks the rest of teardown", async () => {
+  const prev = process.env.APPS_FC_ROUTE_DOMAIN;
+  process.env.APPS_FC_ROUTE_DOMAIN = "fc-apps.example.com";
+  try {
+    let deletedFn = false;
+    const { teardownAppResources } = await import("../../src/lib/provisioning/app-delete.js");
+    const out = await teardownAppResources(
+      {
+        fcOps: {
+          deleteFunction: async () => { deletedFn = true; },
+          deleteCustomDomain: async () => { throw new Error("gone"); },
+        },
+      },
+      { appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "demo" },
+    );
+    assert.ok(deletedFn);
+    assert.deepEqual(out, { archivedRepoUrl: null });
+  } finally {
+    if (prev === undefined) delete process.env.APPS_FC_ROUTE_DOMAIN;
+    else process.env.APPS_FC_ROUTE_DOMAIN = prev;
+  }
+});

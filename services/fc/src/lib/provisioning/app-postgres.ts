@@ -64,6 +64,26 @@ export interface AppConnection {
   connectionString: string;
 }
 
+/**
+ * Re-encode the space in `options=-c search_path=…` as `%20`.
+ *
+ * `URLSearchParams` form-encodes a space as `+`, but a Postgres connection URI
+ * is read per RFC 3986, where `+` is a literal plus and nothing else. libpq and
+ * postgres.js both hand the server an option named `+search_path`, and it
+ * answers `FATAL: unrecognized configuration parameter "+search_path"` — so
+ * every deployed data_app failed on its first query, with a 500 that named
+ * nothing.
+ *
+ * Only the `options` value is touched; a `+` anywhere else in the URL (a
+ * password, say) is left exactly as the URL serializer wrote it.
+ */
+export function percentEncodeOptions(connectionString: string): string {
+  return connectionString.replace(
+    /([?&]options=)([^&]*)/,
+    (_match, prefix: string, value: string) => prefix + value.replace(/\+/g, "%20"),
+  );
+}
+
 export async function ensureAppSchema(
   exec: SqlExecutor,
   { appId, slug, password, baseUrl }: EnsureAppSchemaParams,
@@ -78,7 +98,7 @@ export async function ensureAppSchema(
   u.password = password;
   u.searchParams.set("options", `-c search_path=${schema}`);
   const database = decodeURIComponent(u.pathname.replace(/^\//, "")) || "postgres";
-  return { schema, role, database, connectionString: u.toString() };
+  return { schema, role, database, connectionString: percentEncodeOptions(u.toString()) };
 }
 
 /** Rewrite a postgres URL so it targets `database` (pathname). */
