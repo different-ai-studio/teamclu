@@ -428,6 +428,7 @@ fn manifest_set(root: &Path, payload: &Value) -> String {
             "knowledge.manifest.yaml not found; run scaffold first",
         );
     };
+    let mut updates: Vec<(&str, &str)> = Vec::new();
     // Visibility flips demand an explicit confirm flag — an agent must not
     // silently open the vault to the org (附录 D 安全约束).
     if let Some(vis) = str_field(payload, "visibility") {
@@ -444,44 +445,105 @@ fn manifest_set(root: &Path, payload: &Value) -> String {
         if vis != "private" && vis != "org" {
             return err("invalid_value", "visibility must be 'private' or 'org'");
         }
-        raw = replace_lenient_yaml_scalar(&raw, "visibility", vis);
+        updates.push(("visibility", vis));
     }
-    if let Some(summary) = str_field(payload, "summary") {
-        raw = replace_lenient_yaml_scalar(&raw, "summary", summary);
+    for key in ["summary", "team", "title"] {
+        if let Some(value) = str_field(payload, key) {
+            updates.push((key, value));
+        }
     }
-    if let Some(team) = str_field(payload, "team") {
-        raw = replace_lenient_yaml_scalar(&raw, "team", team);
+    if updates.is_empty() {
+        return err(
+            "nothing_to_set",
+            "give at least one of visibility, summary, team, title",
+        );
     }
-    if let Some(title) = str_field(payload, "title") {
-        raw = replace_lenient_yaml_scalar(&raw, "title", title);
+
+    // All or nothing. A key the manifest does not have cannot be written by a
+    // line rewriter, and answering `ok` for it — which is what happened before
+    // — tells the caller a setting took effect that does not exist anywhere.
+    let mut missing = Vec::new();
+    for (key, value) in &updates {
+        match replace_lenient_yaml_scalar(&raw, key, value) {
+            Some(next) => raw = next,
+            None => missing.push(*key),
+        }
     }
+    if !missing.is_empty() {
+        return err(
+            "unknown_key",
+            format!(
+                "{MANIFEST} has no {} to set; nothing was written",
+                missing.join(", ")
+            ),
+        );
+    }
+
     match std::fs::write(&path, &raw) {
-        Ok(()) => ok(json!({ "written": MANIFEST })),
+        Ok(()) => {
+            let keys: Vec<&str> = updates.iter().map(|(k, _)| *k).collect();
+            ok(json!({ "written": MANIFEST, "keys": keys }))
+        }
         Err(e) => err("write_failed", format!("manifest write failed: {e}")),
     }
+}
+
+/// A value rendered as a YAML scalar, quoted and escaped when a bare word
+/// would not survive being read back.
+///
+/// The escaping is the point. The previous version wrapped the value in quotes
+/// without touching its contents, so a summary containing a quote — `他说"好"`
+/// — was written as `summary: "他说"好""`, which is not YAML at all: the next
+/// read of the manifest fails, and the tool that produced it reported success.
+fn yaml_scalar(value: &str) -> String {
+    let bare_is_safe = !value.is_empty()
+        && value.trim() == value
+        && !value.contains(['"', '\'', '#', ':', '\n', '\r', '\t', '\\'])
+        // A leading indicator changes what YAML thinks the value *is*.
+        && !value.starts_with([
+            '&', '*', '!', '|', '>', '%', '@', '`', '-', '?', '{', '[', ',',
+        ]);
+    if bare_is_safe {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Minimal line-based YAML scalar rewriter. Handles scalar values only —
 /// `version: 1`, `visibility: private`. List/map blocks pass through
 /// unchanged; users edit those by hand in Obsidian anyway.
-fn replace_lenient_yaml_scalar(raw: &str, key: &str, value: &str) -> String {
+///
+/// `None` when the key is not in the file. That distinction is the caller's
+/// whole basis for not reporting a write it never made: this used to return the
+/// input unchanged, and `manifest_set` wrote it back and answered `ok`.
+fn replace_lenient_yaml_scalar(raw: &str, key: &str, value: &str) -> Option<String> {
     let mut next = Vec::with_capacity(raw.lines().count());
+    let mut found = false;
     for line in raw.lines() {
         if let Some((k, _)) = line.split_once(':') {
-            if k.trim() == key && !line.trim_start().starts_with('#') {
+            if !found && k.trim() == key && !line.trim_start().starts_with('#') {
                 let indent = &line[..line.len() - line.trim_start().len()];
-                let formatted = if value.contains(&['"', '\'', '#', ':'][..]) || value.len() != value.trim().len() {
-                    format!("{indent}{key}: \"{value}\"")
-                } else {
-                    format!("{indent}{key}: {value}")
-                };
-                next.push(formatted);
+                next.push(format!("{indent}{key}: {}", yaml_scalar(value)));
+                found = true;
                 continue;
             }
         }
         next.push(line.to_string());
     }
-    next.join("\n") + if raw.ends_with('\n') { "\n" } else { "" }
+    found.then(|| next.join("\n") + if raw.ends_with('\n') { "\n" } else { "" })
 }
 
 // --- health (freshness / coverage) -----------------------------------------
@@ -642,10 +704,115 @@ mod tests {
     #[test]
     fn manifest_scalar_rewrite_preserves_lists() {
         let raw = "version: 1\nvisibility: private\ncollections:\n  - name: x\n";
-        let next = replace_lenient_yaml_scalar(raw, "visibility", "org");
+        let next = replace_lenient_yaml_scalar(raw, "visibility", "org").unwrap();
         assert!(next.contains("visibility: org"));
         assert!(next.contains("collections:"));
         assert!(next.contains("  - name: x"));
+        // A key the file does not have is reported, not silently skipped.
+        assert!(replace_lenient_yaml_scalar(raw, "summary", "x").is_none());
+    }
+
+    /// The manifest has to be readable again afterwards. A value carrying a
+    /// quote used to be wrapped in quotes without escaping, producing
+    /// `summary: "他说"好""` — which no YAML reader accepts.
+    #[test]
+    fn a_value_with_quotes_still_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join(MANIFEST),
+            "version: 1\nsummary: \"\"\nvisibility: private\n",
+        )
+        .unwrap();
+
+        let hostile = "他说\"好\" — a: b #tag \\ end";
+        let reply = manifest_set(root, &json!({ "summary": hostile }));
+        assert!(reply.contains("\"ok\":true"), "{reply}");
+
+        let raw = std::fs::read_to_string(root.join(MANIFEST)).unwrap();
+        let line = raw
+            .lines()
+            .find(|l| l.starts_with("summary:"))
+            .expect("summary line");
+        assert_eq!(
+            read_double_quoted(line.trim_start_matches("summary:").trim()).as_deref(),
+            Some(hostile),
+            "value must survive intact; line was {line}"
+        );
+        // The neighbours are untouched.
+        assert!(raw.contains("visibility: private"), "{raw}");
+        assert!(raw.contains("version: 1"), "{raw}");
+    }
+
+    /// Decode one YAML double-quoted scalar, refusing anything that does not
+    /// terminate cleanly.
+    ///
+    /// No YAML crate is in this tree, and adding one to assert a single line
+    /// would be a strange trade. This reads exactly the shape [`yaml_scalar`]
+    /// writes, which is what needs proving: the old output for a value holding
+    /// a quote — `summary: "他说"好""` — closes after 他说 and leaves `好""`
+    /// dangling, so this returns `None` for it.
+    fn read_double_quoted(text: &str) -> Option<String> {
+        let mut chars = text.chars();
+        if chars.next()? != '"' {
+            return None;
+        }
+        let mut out = String::new();
+        loop {
+            match chars.next()? {
+                '"' => break,
+                '\\' => out.push(match chars.next()? {
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    other => other,
+                }),
+                c => out.push(c),
+            }
+        }
+        // Nothing but a comment may follow the closing quote.
+        let rest = chars.as_str().trim();
+        (rest.is_empty() || rest.starts_with('#')).then_some(out)
+    }
+
+    #[test]
+    fn the_test_reader_rejects_the_old_unescaped_output() {
+        // Guards the guard: if this ever accepts the broken shape, the test
+        // above stops proving anything.
+        assert_eq!(read_double_quoted(r#""plain""#).as_deref(), Some("plain"));
+        assert!(read_double_quoted(r#""他说"好""#).is_none());
+        assert_eq!(
+            read_double_quoted(&yaml_scalar("他说\"好\"")).as_deref(),
+            Some("他说\"好\"")
+        );
+    }
+
+    /// Every requested key must exist, and a miss must leave the file alone —
+    /// a half-applied manifest is worse than a refused one.
+    #[test]
+    fn setting_a_key_the_manifest_lacks_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let before = "version: 1\nvisibility: private\n";
+        std::fs::write(root.join(MANIFEST), before).unwrap();
+
+        let reply = manifest_set(root, &json!({ "summary": "新的一句话" }));
+        assert!(reply.contains("unknown_key"), "{reply}");
+        assert_eq!(
+            std::fs::read_to_string(root.join(MANIFEST)).unwrap(),
+            before
+        );
+
+        // And a batch where only one key is missing changes nothing either.
+        let reply = manifest_set(
+            root,
+            &json!({ "visibility": "org", "confirm": true, "title": "t" }),
+        );
+        assert!(reply.contains("unknown_key"), "{reply}");
+        assert_eq!(
+            std::fs::read_to_string(root.join(MANIFEST)).unwrap(),
+            before
+        );
     }
 
     #[test]
