@@ -747,9 +747,26 @@ pub fn run() {
                         tauri::WindowEvent::Resized { .. } => {
                             commands::window_chrome::reposition_traffic_lights(&main_win_clone);
                         }
+                        // Same reason as `Resized`. The window is `visible: true`,
+                        // so it is on screen showing the skeleton before AppKit has
+                        // finished laying out the titlebar — that layout puts the
+                        // buttons back at their default origin, and the offset the
+                        // `setup` call applied is lost. Without a re-apply here the
+                        // buttons sit at the default position for the whole splash
+                        // and jump 10pt the first time anything resizes the window.
+                        //
+                        // Idempotent: the offset is always measured from the origins
+                        // captured once in `ORIGINAL_ORIGINS`, so repeated calls
+                        // land on the same place rather than drifting.
+                        #[cfg(target_os = "macos")]
+                        tauri::WindowEvent::Moved { .. } => {
+                            commands::window_chrome::reposition_traffic_lights(&main_win_clone);
+                        }
                         // DAU heartbeat: fires `app_active` once the app
                         // returns to focus after >=4h idle.
                         tauri::WindowEvent::Focused(true) => {
+                            #[cfg(target_os = "macos")]
+                            commands::window_chrome::reposition_traffic_lights(&main_win_clone);
                             maybe_emit_app_active(&close_app_handle);
                         }
                         _ => {}
