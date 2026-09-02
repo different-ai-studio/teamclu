@@ -52,6 +52,20 @@ pub fn test_mark_survivor_pgid(pgid: u32) {
         .insert(pgid);
 }
 
+/// Whether the reaper would currently recognise this group as one of ours.
+///
+/// Exposed for tests that spawn a fake `opencode serve` and then reap it: a
+/// just-`fork`ed child already has a pid and a process group, but until its
+/// `execve` completes `/proc/<pid>/cmdline` is EMPTY, so
+/// [`group_has_managed_member`] says no and the group is classified
+/// `StaleOrReused` rather than `Reaped`. Measured at ~4-8% per group on Linux;
+/// on macOS `cmdline_of` shells out to `ps`, and those milliseconds hide the
+/// window, which is why this only ever failed on CI.
+#[cfg(all(test, unix))]
+pub fn test_group_is_verifiable(pgid: u32) -> bool {
+    i32::try_from(pgid).is_ok_and(group_has_managed_member)
+}
+
 #[cfg(test)]
 pub fn test_clear_survivor_pgids() {
     TEST_SURVIVOR_PGIDS
@@ -421,11 +435,27 @@ mod tests {
             .spawn()
             .unwrap();
         let pgid = child.id();
+        // Do not hand back a fake the reaper cannot recognise yet: between
+        // `fork` and `execve` the child's `/proc/<pid>/cmdline` is empty, and a
+        // reap in that window reports `StaleOrReused` instead of `Reaped`. The
+        // deadline is a stuck-process guard, not a latency estimate — this
+        // normally settles in well under a millisecond.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline && !super::test_group_is_verifiable(pgid) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         (child, pgid)
     }
 
     #[test]
     fn default_registry_uses_branded_amuxd_home() {
+        // Resolves `amuxd_home_from_env()` twice — once inside `default()`,
+        // once in the assertion — and that reads process-global `HOME` /
+        // `AMUXD_HOME`. Another test moving those in between compares two
+        // different homes. Same shape as the `resolve_workdir` tests fixed in
+        // #1219; the guard pins a home and holds `TEST_HOME_LOCK`.
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
         let registry = ServeProcessRegistry::default();
         assert_eq!(
             registry.path,
