@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use async_trait::async_trait;
 
 use crate::backend::{
-    ActorDirectoryRow, AgentDefaults, Backend, BackendError, BackendResult,
+    ActorDirectoryRow, AgentDefaults, AppGitCredential, Backend, BackendError, BackendResult,
     BackendSessionAndParticipants, BootstrapMqttOverride, ClaimResult, GatewaySessionRow,
     ManagedLlmConfig, StoredMessage, WorkspaceRow, WorkspaceUpsert,
 };
@@ -217,6 +217,25 @@ impl Backend for MockBackend {
 
     async fn auth_token(&self) -> BackendResult<String> {
         Ok(self.auth_token.clone())
+    }
+
+    /// Enough for `DeferredBackend` to prove it forwards rather than falling
+    /// through to the trait default — which is how the agent's `git push` broke
+    /// on a fully onboarded daemon.
+    async fn app_git_credential(&self, app_id: &str) -> BackendResult<AppGitCredential> {
+        Ok(AppGitCredential {
+            remote_url: format!("ssh://git@gitea.test/apps/{app_id}.git"),
+            private_key_pem: "mock-key".to_string(),
+            deploy_key_id: Some(1),
+        })
+    }
+
+    async fn revoke_app_git_credential(
+        &self,
+        _app_id: &str,
+        _deploy_key_id: i64,
+    ) -> BackendResult<()> {
+        Ok(())
     }
 
     async fn managed_llm_config(&self, team_id: &str) -> BackendResult<ManagedLlmConfig> {

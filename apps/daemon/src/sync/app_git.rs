@@ -287,7 +287,15 @@ pub fn set_repo_ssh_command(dir: &Path, app_id: &str) -> anyhow::Result<()> {
         shell_quote(app_id)
     );
     let out = run_git(dir, None, &["config", "core.sshCommand", &command])?;
-    ensure_success(&out, "git config core.sshCommand")
+    ensure_success(&out, "git config core.sshCommand")?;
+
+    // Git guesses how to call `core.sshCommand` from its basename, and an
+    // unrecognised one is assumed to be the `simple` variant — which it
+    // believes cannot take `-p`. The app remotes are on port 2222, so without
+    // this every push died before the shim was even executed, with
+    // "ssh variant 'simple' does not support setting port".
+    let out = run_git(dir, None, &["config", "ssh.variant", "ssh"])?;
+    ensure_success(&out, "git config ssh.variant")
 }
 
 /// Create a commit when there are staged changes; no-op when the tree is clean.
@@ -696,6 +704,10 @@ mod tests {
             configured.contains("git-ssh --app app-42"),
             "got {configured}"
         );
+        // Without this git reads the shim's basename, assumes the `simple`
+        // variant, and refuses to pass `-p` — which every app remote needs.
+        let out = run_git(&work, None, &["config", "--get", "ssh.variant"]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ssh");
         // Repo-local only: it must not leak into any other repo on the machine.
         let out = run_git(&work, None, &["config", "--local", "--get", "core.sshCommand"]).unwrap();
         assert!(out.status.success(), "core.sshCommand must be repo-local");
