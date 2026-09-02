@@ -13,23 +13,202 @@
 //   POST /session-export    — export session messages as opencode-compatible JSON
 //
 // Uses raw TCP + manual HTTP parsing to stay minimal (no axum state needed).
+//
+// Access control (SEC-1). Every route here has side effects an agent runtime
+// must not be able to trigger by accident, and `/mcp-put` is local code
+// execution — so binding to loopback is not enough: any process on the machine,
+// and any web page via a `no-cors` fetch, can reach 127.0.0.1. Three checks
+// gate every request, before the route is even looked at:
+//
+//   1. `Authorization: Bearer <token>` must match the per-launch token this
+//      process generated and wrote 0600 to `<amuxd home>/run/introspect.http.token`
+//      (the same directory and convention as the daemon's `amuxd.http.token`).
+//      The sidecar reads that file; nothing else is meant to.
+//   2. Any `Origin` header is refused. Browsers always attach one to a
+//      cross-origin POST; the sidecar never does.
+//   3. `Host` must be a loopback name, closing the DNS-rebinding hole where a
+//      page on `evil.example` resolving to 127.0.0.1 would otherwise pass.
 
 pub const INTROSPECT_API_PORT: u16 = 13144;
+
+/// File name of the per-launch bearer, under `<amuxd home>/run/`. Must match
+/// `desktop_api::TOKEN_FILE` in the `teamclu-introspect` sidecar crate.
+pub const INTROSPECT_TOKEN_FILE: &str = "introspect.http.token";
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+/// Where this process publishes the bearer the sidecar has to present.
+pub fn introspect_token_path() -> PathBuf {
+    super::amuxd_run_dir().join(INTROSPECT_TOKEN_FILE)
+}
+
+/// 256-bit random token, base64url without padding (43 chars) — the daemon's
+/// root-token shape, so anyone reading the run dir sees one convention.
+fn generate_token() -> String {
+    use base64::Engine as _;
+    use rand::RngCore as _;
+    let mut buf = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut buf);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
+}
+
+/// Write the token owner-readable only. Truncates a stale file from a previous
+/// launch; a leftover token would otherwise keep authorising after the process
+/// that minted it is gone.
+fn write_token_file(path: &Path, token: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(token.as_bytes())?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        // `mode` only applies when the file is created; an existing file keeps
+        // whatever it had, so pin it down explicitly.
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// Why a request was turned away before dispatch. The status is what the
+/// client sees; the message is what gets logged.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Rejection {
+    /// 401 — no usable bearer, or the wrong one.
+    Unauthorized(&'static str),
+    /// 403 — a browser-shaped request (has `Origin`) or a non-loopback `Host`.
+    Forbidden(&'static str),
+}
+
+impl Rejection {
+    fn status(&self) -> u16 {
+        match self {
+            Rejection::Unauthorized(_) => 401,
+            Rejection::Forbidden(_) => 403,
+        }
+    }
+
+    fn message(&self) -> &'static str {
+        match self {
+            Rejection::Unauthorized(m) | Rejection::Forbidden(m) => m,
+        }
+    }
+}
+
+/// Constant-time byte comparison, so the bearer check does not leak how many
+/// leading bytes matched. Unequal lengths short-circuit — length is not secret.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Value of the first header named `name` (case-insensitive), trimmed.
+fn header_value<'a>(header_block: &'a str, name: &str) -> Option<&'a str> {
+    header_block.lines().skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim()
+            .eq_ignore_ascii_case(name)
+            .then_some(value.trim())
+    })
+}
+
+/// `127.0.0.1`, `localhost`, `::1` — with or without a port. Anything else
+/// means the request was addressed to some other name that happened to
+/// resolve here.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim();
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        // `[::1]` or `[::1]:13144`
+        match rest.split_once(']') {
+            Some((inner, tail)) if tail.is_empty() || tail.starts_with(':') => inner,
+            _ => return false,
+        }
+    } else {
+        host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host)
+    };
+    name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1" || name == "::1"
+}
+
+/// Gate one request on its header block (request line included). Pure: the
+/// caller has already read the headers, and nothing here touches the body.
+pub(crate) fn authorize_request(header_block: &str, expected_token: &str) -> Result<(), Rejection> {
+    if header_value(header_block, "origin").is_some() {
+        return Err(Rejection::Forbidden(
+            "Forbidden: browser-originated requests are not accepted",
+        ));
+    }
+    match header_value(header_block, "host") {
+        Some(host) if is_loopback_host(host) => {}
+        _ => {
+            return Err(Rejection::Forbidden(
+                "Forbidden: Host must be a loopback address",
+            ))
+        }
+    }
+    let presented = header_value(header_block, "authorization")
+        .and_then(|value| {
+            let (scheme, token) = value.split_once(' ')?;
+            scheme
+                .eq_ignore_ascii_case("bearer")
+                .then_some(token.trim())
+        })
+        .filter(|token| !token.is_empty())
+        .ok_or(Rejection::Unauthorized(
+            "Unauthorized: missing bearer token (read it from introspect.http.token)",
+        ))?;
+    if !constant_time_eq(presented.as_bytes(), expected_token.as_bytes()) {
+        return Err(Rejection::Unauthorized(
+            "Unauthorized: bearer token does not match this app instance",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn start_introspect_api(app: AppHandle) -> anyhow::Result<()> {
+    // Mint and publish the bearer before accepting anything, so there is no
+    // window where the listener is up and unauthenticated.
+    let token: Arc<str> = Arc::from(generate_token());
+    let token_path = introspect_token_path();
+    write_token_file(&token_path, &token).map_err(|e| {
+        anyhow::anyhow!(
+            "cannot write introspect token to {}: {e}",
+            token_path.display()
+        )
+    })?;
+
     let listener = TcpListener::bind(format!("127.0.0.1:{}", INTROSPECT_API_PORT)).await?;
     println!(
-        "[IntrospectAPI] Listening on 127.0.0.1:{}",
-        INTROSPECT_API_PORT
+        "[IntrospectAPI] Listening on 127.0.0.1:{} (bearer in {})",
+        INTROSPECT_API_PORT,
+        token_path.display()
     );
 
     loop {
         let (mut stream, _peer) = listener.accept().await?;
         let app_clone = app.clone();
+        let token = Arc::clone(&token);
 
         tokio::spawn(async move {
             // Read initial chunk (headers + maybe partial body)
@@ -60,6 +239,20 @@ pub async fn start_introspect_api(app: AppHandle) -> anyhow::Result<()> {
             let mut parts = first_line.splitn(3, ' ');
             let method = parts.next().unwrap_or("");
             let path = parts.next().unwrap_or("");
+
+            // Gate before reading the body or looking at the route: a rejected
+            // caller learns nothing about which paths exist, and we never
+            // buffer a body we are about to throw away.
+            if let Err(rejection) = authorize_request(header_str, &token) {
+                eprintln!(
+                    "[IntrospectAPI] rejected {} {}: {}",
+                    method,
+                    path,
+                    rejection.message()
+                );
+                let _ = write_response(&mut stream, rejection.status(), rejection.message()).await;
+                return;
+            }
 
             // Parse Content-Length for large bodies (e.g. image base64)
             let content_length: usize = header_str
@@ -101,7 +294,15 @@ pub async fn start_introspect_api(app: AppHandle) -> anyhow::Result<()> {
                 ("POST", "/session-participants") => {
                     handle_session_participants(&app_clone, body_bytes).await
                 }
-                _ => Err(format!("Not found: {} {}", method, path)),
+                _ => {
+                    let _ = write_response(
+                        &mut stream,
+                        404,
+                        &format!("Not found: {} {}", method, path),
+                    )
+                    .await;
+                    return;
+                }
             };
 
             let (status, body) = match resp {
@@ -931,13 +1132,212 @@ async fn write_response(
     status: u16,
     body: &str,
 ) -> std::io::Result<()> {
-    let reason = if status == 200 { "OK" } else { "Error" };
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        _ => "Error",
+    };
+    let challenge = if status == 401 {
+        "WWW-Authenticate: Bearer\r\n"
+    } else {
+        ""
+    };
     let resp = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n{}",
         status,
         reason,
         body.len(),
+        challenge,
         body
     );
     stream.write_all(resp.as_bytes()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOKEN: &str = "s3cr3t-token-value";
+
+    fn request(extra_headers: &str) -> String {
+        format!("POST /mcp-put HTTP/1.1\r\nHost: 127.0.0.1:13144\r\nContent-Type: application/json\r\n{extra_headers}")
+    }
+
+    #[test]
+    fn happy_path_with_matching_bearer() {
+        let headers = request(&format!("Authorization: Bearer {TOKEN}\r\n"));
+        assert_eq!(authorize_request(&headers, TOKEN), Ok(()));
+    }
+
+    #[test]
+    fn bearer_scheme_is_case_insensitive_and_header_name_too() {
+        let headers = request(&format!("authorization: BEARER {TOKEN}\r\n"));
+        assert_eq!(authorize_request(&headers, TOKEN), Ok(()));
+    }
+
+    #[test]
+    fn missing_token_is_401() {
+        let headers = request("");
+        assert!(matches!(
+            authorize_request(&headers, TOKEN),
+            Err(Rejection::Unauthorized(_))
+        ));
+    }
+
+    #[test]
+    fn empty_bearer_is_401() {
+        let headers = request("Authorization: Bearer \r\n");
+        assert!(matches!(
+            authorize_request(&headers, TOKEN),
+            Err(Rejection::Unauthorized(_))
+        ));
+    }
+
+    #[test]
+    fn wrong_token_is_401() {
+        let headers = request("Authorization: Bearer nope\r\n");
+        assert!(matches!(
+            authorize_request(&headers, TOKEN),
+            Err(Rejection::Unauthorized(_))
+        ));
+        // Same length, one byte off — the constant-time path, not the length
+        // short-circuit.
+        let near_miss = format!("{}X", &TOKEN[..TOKEN.len() - 1]);
+        let headers = request(&format!("Authorization: Bearer {near_miss}\r\n"));
+        assert!(matches!(
+            authorize_request(&headers, TOKEN),
+            Err(Rejection::Unauthorized(_))
+        ));
+    }
+
+    #[test]
+    fn non_bearer_scheme_is_401() {
+        let headers = request(&format!("Authorization: Basic {TOKEN}\r\n"));
+        assert!(matches!(
+            authorize_request(&headers, TOKEN),
+            Err(Rejection::Unauthorized(_))
+        ));
+    }
+
+    #[test]
+    fn any_origin_header_is_403_even_with_a_valid_token() {
+        let headers = request(&format!(
+            "Authorization: Bearer {TOKEN}\r\nOrigin: http://127.0.0.1:13144\r\n"
+        ));
+        assert!(matches!(
+            authorize_request(&headers, TOKEN),
+            Err(Rejection::Forbidden(_))
+        ));
+        // `Origin: null` (sandboxed iframes, file://) is still a browser.
+        let headers = request(&format!(
+            "Authorization: Bearer {TOKEN}\r\nOrigin: null\r\n"
+        ));
+        assert!(matches!(
+            authorize_request(&headers, TOKEN),
+            Err(Rejection::Forbidden(_))
+        ));
+    }
+
+    #[test]
+    fn non_loopback_host_is_403_even_with_a_valid_token() {
+        let headers = format!(
+            "POST /mcp-put HTTP/1.1\r\nHost: evil.example:13144\r\nAuthorization: Bearer {TOKEN}\r\n"
+        );
+        assert!(matches!(
+            authorize_request(&headers, TOKEN),
+            Err(Rejection::Forbidden(_))
+        ));
+    }
+
+    #[test]
+    fn missing_host_is_403() {
+        let headers = format!("POST /mcp-put HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\n");
+        assert!(matches!(
+            authorize_request(&headers, TOKEN),
+            Err(Rejection::Forbidden(_))
+        ));
+    }
+
+    #[test]
+    fn loopback_host_spellings() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.1:13144",
+            "localhost",
+            "LOCALHOST:13144",
+            "[::1]",
+            "[::1]:13144",
+        ] {
+            assert!(is_loopback_host(host), "{host} should be loopback");
+        }
+        for host in [
+            "evil.example",
+            "127.0.0.1.evil.example",
+            "10.0.0.1:13144",
+            "[::1]evil",
+            "",
+        ] {
+            assert!(!is_loopback_host(host), "{host} should not be loopback");
+        }
+    }
+
+    #[test]
+    fn origin_check_runs_before_host_and_bearer() {
+        // A browser request with a bad Host and no token: the message names
+        // the Origin, so the log says "browser" rather than something the
+        // sidecar could plausibly have done.
+        let headers = "POST /x HTTP/1.1\r\nOrigin: https://a.example\r\nHost: a.example\r\n";
+        assert_eq!(
+            authorize_request(headers, TOKEN),
+            Err(Rejection::Forbidden(
+                "Forbidden: browser-originated requests are not accepted"
+            ))
+        );
+    }
+
+    #[test]
+    fn constant_time_eq_basics() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn generated_tokens_are_long_random_and_url_safe() {
+        let a = generate_token();
+        let b = generate_token();
+        assert_eq!(a.len(), 43, "32 bytes base64url-no-pad is 43 chars");
+        assert_ne!(a, b);
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn token_file_is_written_owner_only_and_overwrites_stale_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run").join(INTROSPECT_TOKEN_FILE);
+
+        // Stale, world-readable leftover from a previous launch.
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "old-token-that-is-longer-than-the-new-one!!!!!!!!!!").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        write_token_file(&path, "fresh").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "fresh");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
 }

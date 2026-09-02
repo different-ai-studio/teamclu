@@ -61,7 +61,9 @@ fn build_overview(workspace: &str) -> Result<Value, String> {
     let config = crate::config::read_teamclu_config(workspace)?;
 
     let channels_val = config.get("channels").cloned().unwrap_or(json!({}));
-    let channel_names = ["wecom", "discord", "email", "feishu", "kook", "wechat", "seatalk"];
+    let channel_names = [
+        "wecom", "discord", "email", "feishu", "kook", "wechat", "seatalk",
+    ];
     let mut bound = Vec::new();
     let mut unbound = Vec::new();
     for name in channel_names {

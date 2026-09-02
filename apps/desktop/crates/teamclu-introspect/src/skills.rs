@@ -1,7 +1,11 @@
 use crate::daemon_sock;
 use serde_json::{json, Value};
 
-pub async fn handle(workspace: &str, sock: &std::path::Path, arguments: &Value) -> Result<Value, String> {
+pub async fn handle(
+    workspace: &str,
+    sock: &std::path::Path,
+    arguments: &Value,
+) -> Result<Value, String> {
     let action = arguments
         .get("action")
         .and_then(Value::as_str)

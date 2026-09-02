@@ -116,9 +116,7 @@ fn role_dir(workspace: &str, slug: &str) -> std::path::PathBuf {
 
 /// Like `read_roles` but includes the slug (directory name) in each entry.
 fn roles_with_slugs(workspace: &str) -> Vec<Value> {
-    let roles_dir = Path::new(workspace)
-        .join(config::TEAMCLU_DIR)
-        .join("roles");
+    let roles_dir = Path::new(workspace).join(config::TEAMCLU_DIR).join("roles");
 
     if !roles_dir.exists() {
         return vec![];

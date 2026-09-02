@@ -158,14 +158,9 @@ async fn action_run(workspace: &str, api_port: u16, args: &Value) -> Result<Valu
         return Err(format!("Cron job not found: {job_id}"));
     }
 
-    let url = format!("http://127.0.0.1:{api_port}/cron-run");
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .json(&json!({"job_id": job_id}))
-        .send()
+    let resp = crate::desktop_api::send(api_port, "/cron-run", &json!({"job_id": job_id}))
         .await
-        .map_err(|e| format!("Cron run request failed: {e}. Is the TeamClu app running?"))?;
+        .map_err(|e| format!("Cron run request failed: {e}"))?;
 
     if !resp.status().is_success() {
         let status = resp.status();

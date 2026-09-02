@@ -1,8 +1,9 @@
 mod capabilities;
 mod channels;
 mod config;
-mod daemon_sock;
 mod cron;
+mod daemon_sock;
+mod desktop_api;
 mod env_vars;
 mod mcp;
 mod participants;
@@ -44,7 +45,6 @@ struct Args {
     /// as on a cron run. Defaults to `<amuxd home>/run/amuxd.sock`.
     #[arg(long, default_value = "")]
     sock: String,
-
 }
 
 // ---------------------------------------------------------------------------

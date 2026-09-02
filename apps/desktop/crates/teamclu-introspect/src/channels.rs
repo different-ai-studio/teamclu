@@ -61,7 +61,9 @@ fn get_channels(workspace: &str, channel: Option<&str>) -> Result<Value, String>
             "config": redact(name, ch_cfg),
         }))
     } else {
-        let all_channels = ["wecom", "discord", "feishu", "email", "kook", "wechat", "seatalk"];
+        let all_channels = [
+            "wecom", "discord", "feishu", "email", "kook", "wechat", "seatalk",
+        ];
         let result: serde_json::Map<String, Value> = all_channels
             .iter()
             .map(|name| {
@@ -110,23 +112,7 @@ fn is_bound(name: &str, channels: &Value) -> bool {
 }
 
 async fn post_api(api_port: u16, path: &str, body: &Value) -> Result<Value, String> {
-    let url = format!("http://127.0.0.1:{api_port}{path}");
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .json(body)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {e}. Is the TeamClu app running?"))?;
-
-    if !resp.status().is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("API error: {text}"));
-    }
-
-    resp.json::<Value>()
-        .await
-        .map_err(|e| format!("Failed to parse response: {e}"))
+    crate::desktop_api::post(api_port, path, body).await
 }
 
 #[cfg(test)]

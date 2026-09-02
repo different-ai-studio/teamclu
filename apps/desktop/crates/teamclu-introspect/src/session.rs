@@ -117,23 +117,7 @@ pub async fn archive(workspace: &str, api_port: u16, arguments: &Value) -> Resul
         body["archivedAt"] = json!(at);
     }
 
-    let url = format!("http://127.0.0.1:{api_port}/session-archive");
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {e}. Is the TeamClu app running?"))?;
-
-    if !resp.status().is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("API error: {text}"));
-    }
-
-    resp.json::<Value>()
-        .await
-        .map_err(|e| format!("Failed to parse response: {e}"))
+    crate::desktop_api::post(api_port, "/session-archive", &body).await
 }
 
 #[cfg(test)]

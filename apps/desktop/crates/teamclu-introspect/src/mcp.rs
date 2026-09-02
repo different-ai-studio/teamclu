@@ -227,7 +227,11 @@ fn build_config(arguments: &Value, existing: Option<&Value>) -> Result<Value, St
     let server_type = arguments
         .get("type")
         .and_then(|v| v.as_str())
-        .or_else(|| existing.and_then(|e| e.get("type")).and_then(|v| v.as_str()))
+        .or_else(|| {
+            existing
+                .and_then(|e| e.get("type"))
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or("local");
 
     if server_type != "local" && server_type != "remote" {
@@ -239,7 +243,11 @@ fn build_config(arguments: &Value, existing: Option<&Value>) -> Result<Value, St
     let enabled = arguments
         .get("enabled")
         .and_then(|v| v.as_bool())
-        .or_else(|| existing.and_then(|e| e.get("enabled")).and_then(|v| v.as_bool()))
+        .or_else(|| {
+            existing
+                .and_then(|e| e.get("enabled"))
+                .and_then(|v| v.as_bool())
+        })
         .unwrap_or(true);
 
     let mut cfg = json!({
@@ -306,7 +314,11 @@ fn build_config(arguments: &Value, existing: Option<&Value>) -> Result<Value, St
     if let Some(timeout) = arguments
         .get("timeout")
         .and_then(|v| v.as_u64())
-        .or_else(|| existing.and_then(|e| e.get("timeout")).and_then(|v| v.as_u64()))
+        .or_else(|| {
+            existing
+                .and_then(|e| e.get("timeout"))
+                .and_then(|v| v.as_u64())
+        })
     {
         cfg["timeout"] = json!(timeout);
     }
@@ -388,23 +400,7 @@ fn redact_server(cfg: &Value) -> Value {
 }
 
 async fn post_api(api_port: u16, path: &str, body: &Value) -> Result<Value, String> {
-    let url = format!("http://127.0.0.1:{api_port}{path}");
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .json(body)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {e}. Is the TeamClu app running?"))?;
-
-    if !resp.status().is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("API error: {text}"));
-    }
-
-    resp.json::<Value>()
-        .await
-        .map_err(|e| format!("Failed to parse response: {e}"))
+    crate::desktop_api::post(api_port, path, body).await
 }
 
 #[cfg(test)]
@@ -414,7 +410,9 @@ mod tests {
     #[test]
     fn parse_command_string_and_array() {
         assert_eq!(
-            parse_command(Some(&json!("npx -y @modelcontextprotocol/server-filesystem /tmp"))),
+            parse_command(Some(&json!(
+                "npx -y @modelcontextprotocol/server-filesystem /tmp"
+            ))),
             Some(vec![
                 "npx".into(),
                 "-y".into(),
