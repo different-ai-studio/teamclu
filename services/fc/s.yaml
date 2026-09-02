@@ -183,6 +183,11 @@ resources:
         # Set to true when a reverse proxy (Caddy/FC gateway) handles CORS so
         # Hono's own CORS middleware is skipped — prevents duplicate headers.
         CORS_HANDLED_BY_PROXY: ${env('CORS_HANDLED_BY_PROXY', '')}
+        # Extra browser origins allowed by Hono's CORS policy (comma-separated,
+        # exact match). Tauri, localhost and chrome-extension origins are always
+        # allowed; set this only for a browser-hosted web build
+        # (services/fc/src/lib/cors-origin.ts).
+        CORS_ORIGINS: ${env('CORS_ORIGINS', '')}
         # Phone login (partner-aligned). DEFAULT_ORG_ID = the default tenant new
         # users join; PHONE_EMAIL_DOMAIN = domain of the synthetic auth email
         # (`<phone>@<domain>`) and therefore half the account identity — it must
