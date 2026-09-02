@@ -117,9 +117,15 @@ resources:
         # /v1/config/bootstrap there.
         MQTT_PUBLIC_TCP_BROKER_URL: ${env('MQTT_PUBLIC_TCP_BROKER_URL', '')}
         # Self-host may point FC at an external Supabase project while keeping
-        # the bundled stack as rollback. Compose maps FC_SUPABASE_* → SUPABASE_*;
-        # on this target set SUPABASE_* directly and leave these blank.
-        FC_SUPABASE_URL: ${env('FC_SUPABASE_URL', '')}
+        # the bundled stack as rollback; compose maps FC_SUPABASE_* → SUPABASE_*
+        # there. This target CANNOT declare FC_SUPABASE_URL: Function Compute
+        # reserves the whole `FC_` prefix, and a function update carrying one is
+        # rejected outright with `InvalidArgument: the environment variable name
+        # '...' is reserved by Function Compute` — that failure blocked the
+        # entire deploy, not just the variable. It costs nothing here anyway:
+        # src/index.ts reads FC_SUPABASE_URL only as an override and falls back
+        # to SUPABASE_URL, which this target sets directly. Listed in
+        # EXPECTED_ONLY_IN_COMPOSE in test/deploy-env-parity.test.ts.
         TRUSTED_EXTERNAL_JWT_SECRET: ${env('TRUSTED_EXTERNAL_JWT_SECRET', '')}
         SUPABASE_URL: ${env('SUPABASE_URL')}
         SUPABASE_PUBLIC_URL: ${env('SUPABASE_PUBLIC_URL', '')}

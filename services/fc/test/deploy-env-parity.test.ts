@@ -29,6 +29,14 @@ const EXPECTED_ONLY_IN_COMPOSE = new Set([
   // The container listens on these; FC's runtime supplies its own.
   "PORT",
   "HOST",
+  // Function Compute reserves the `FC_` prefix: a function update that carries
+  // this key is rejected with `InvalidArgument: the environment variable name
+  // 'FC_SUPABASE_URL' is reserved by Function Compute`, which fails the WHOLE
+  // deploy. Declaring it on that target was also pointless — src/index.ts reads
+  // it as an override over SUPABASE_URL, which s.yaml sets directly. Anything
+  // else the FC target must reach compose-side has to be named without the
+  // prefix; do not "fix" a parity failure by adding an FC_* key to s.yaml.
+  "FC_SUPABASE_URL",
 ]);
 const EXPECTED_ONLY_IN_S_YAML = new Set([
   // Self-host runs behind Caddy, which is a transparent proxy that adds no
