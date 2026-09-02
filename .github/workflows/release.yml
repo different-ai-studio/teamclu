@@ -11,13 +11,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Keep the OSS fallback populated from the exact Pi lock that ships in every
-  # manual stable release. The reusable workflow uploads the official npm
-  # package only after it has bundled and checks its production dependencies.
-  mirror-pi:
-    uses: ./.github/workflows/mirror-pi-oss.yml
-    secrets: inherit
-
   # Gate: refuse to build a release whose bundled amuxd (apps/daemon/Cargo.toml)
   # version was not bumped. The client only force-upgrades ~/.amuxd/bin/amuxd when
   # the bundled crate version is strictly greater than the installed one, so a
@@ -37,7 +30,7 @@ jobs:
 
   # macOS job creates the GitHub Release and uploads macOS artifacts
   release-macos:
-    needs: [verify-version-bump, mirror-pi]
+    needs: verify-version-bump
     permissions:
       contents: write
     strategy:
@@ -324,7 +317,7 @@ jobs:
 
   # Windows job uploads artifacts to the same GitHub Release created by macOS job
   release-windows:
-    needs: [verify-version-bump, mirror-pi]
+    needs: verify-version-bump
     permissions:
       contents: write
     runs-on: windows-latest

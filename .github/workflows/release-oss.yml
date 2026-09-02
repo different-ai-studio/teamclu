@@ -63,12 +63,7 @@ env:
   CDN_REFRESH_REGION_DEFAULT: ${{ vars.OSS_CDN_REFRESH_REGION || '' }}
 
 jobs:
-  mirror-pi:
-    uses: ./.github/workflows/mirror-pi-oss.yml
-    secrets: inherit
-
   build-macos:
-    needs: mirror-pi
     strategy:
       fail-fast: false
       matrix:
