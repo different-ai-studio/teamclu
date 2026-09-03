@@ -19,7 +19,7 @@
     },
     {
       "name": "knowledge_create",
-      "description": "Create a new vault page from a template. Refuses to overwrite an existing path — use knowledge_write to edit. 从模板新建页面；已存在则拒绝，改请用 knowledge_write。 If the reply carries teamSync:\"not-syncing\", the page was saved on this device only and is not reaching the team — say so rather than reporting it as shared. 若返回 teamSync:\"not-syncing\"，说明只存在本机、没有同步给团队，要如实告知，不要说成已共享。",
+      "description": "Create a new vault page from a template. Refuses to overwrite an existing path — use knowledge_write to edit. 从模板新建页面；已存在则拒绝，改请用 knowledge_write。 If the reply carries teamSync:\"not-syncing\", the page was saved on this device only and is not reaching the team — say so rather than reporting it as shared. 若返回 teamSync:\"not-syncing\"，说明只存在本机、没有同步给团队，要如实告知，不要说成已共享。 A page written from `content` is stamped with `type` and `updated` so it counts toward knowledge_health; supply your own frontmatter (content starting with `---`) and the page is written verbatim, heading included. 用 content 写入的页面会自动盖上 type 和 updated，以便计入 knowledge_health；若 content 以 `---` 开头则视为你自带 frontmatter，整页原样写入（含标题）。",
       "inputSchema": {
         "type": "object",
         "required": ["path"],
@@ -34,7 +34,7 @@
     },
     {
       "name": "knowledge_write",
-      "description": "Write or replace a vault page. All paths are validated to stay inside the vault. 写入/覆盖页面，路径被限制在 vault 内。 If the reply carries teamSync:\"not-syncing\", the page was saved on this device only and is not reaching the team — say so rather than reporting it as shared. 若返回 teamSync:\"not-syncing\"，说明只存在本机、没有同步给团队，要如实告知，不要说成已共享。",
+      "description": "Write or replace a vault page. All paths are validated to stay inside the vault. 写入/覆盖页面，路径被限制在 vault 内。 If the reply carries teamSync:\"not-syncing\", the page was saved on this device only and is not reaching the team — say so rather than reporting it as shared. 若返回 teamSync:\"not-syncing\"，说明只存在本机、没有同步给团队，要如实告知，不要说成已共享。 A page written from `content` is stamped with `type` and `updated` so it counts toward knowledge_health; supply your own frontmatter (content starting with `---`) and the page is written verbatim, heading included. 用 content 写入的页面会自动盖上 type 和 updated，以便计入 knowledge_health；若 content 以 `---` 开头则视为你自带 frontmatter，整页原样写入（含标题）。",
       "inputSchema": {
         "type": "object",
         "required": ["path", "content"],
