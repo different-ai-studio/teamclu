@@ -1663,11 +1663,11 @@ impl AgentBackend for PiRpcBackend {
             .filter(|t| *t == "auth_login_start")
             .and_then(|_| request.get("loginId").and_then(|v| v.as_str()))
             .map(str::to_string);
-        if let (Some(login_id), Some(provider_id)) = (
-            login_id.as_deref(),
-            request.get("providerId").and_then(|v| v.as_str()),
-        ) {
-            auth::register(login_id, provider_id, proc.client.clone());
+        // The slot was reserved by the HTTP layer (`auth::begin`); this binds
+        // the child that will run it, and must happen before the command goes
+        // out so an answer can be routed the moment a prompt appears.
+        if let Some(login_id) = login_id.as_deref() {
+            auth::attach_client(login_id, proc.client.clone());
         }
 
         let result = proc.client.request(request).await;

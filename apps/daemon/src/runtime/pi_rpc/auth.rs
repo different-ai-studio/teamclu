@@ -38,6 +38,12 @@ use super::client::PiClient;
 /// sees the outcome instead of "unknown login".
 const FINISHED_TTL: Duration = Duration::from_secs(120);
 
+/// How recently a login must have been polled to still hold its provider.
+///
+/// Short on purpose: it only has to outlast the gap between polls (400ms), and
+/// the shorter it is the sooner a provider frees up after its dialog is gone.
+const ACTIVE_WINDOW: Duration = Duration::from_secs(10);
+
 /// A flow with no traffic at all for this long is presumed dead (its host was
 /// killed mid-login) and reaped, so the registry cannot grow without bound.
 const STALE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -60,7 +66,10 @@ pub struct PendingPrompt {
 
 struct Login {
     provider_id: String,
-    client: PiClient,
+    /// Attached once the backend has picked the child that will run the flow.
+    /// `None` for the window between reserving the provider slot and that
+    /// choice — a prompt can already be recorded then, but not answered.
+    client: Option<PiClient>,
     status: LoginStatus,
     /// pi's `AuthEvent`s in arrival order. The UI reads them by index, so this
     /// only ever grows for the life of the flow — an auth flow emits a handful.
@@ -106,28 +115,60 @@ fn prune(map: &mut HashMap<String, Login>) {
     });
 }
 
-/// Register a flow just before its `auth_login_start` is sent.
+/// Reserve the provider slot and register the flow, before anything is sent.
 ///
 /// Registering *first* closes a race the other order loses: the host can emit
 /// `auth_prompt` before the ack reaches us, and a prompt for an unknown login
 /// would be dropped — leaving the UI waiting on a prompt that already happened.
-pub(crate) fn register(login_id: &str, provider_id: &str, client: PiClient) {
+///
+/// # One login per provider
+///
+/// Returns the id of the login already in flight when there is one. pi queues
+/// credential operations per provider and a login it never finishes stays in
+/// that queue, so a second login for the same provider waits behind the first —
+/// silently, producing no event of its own. That is not hypothetical: React's
+/// StrictMode double-invokes effects in development, the settings dialog
+/// started two logins a millisecond apart, and the second (the one the UI was
+/// polling) hung forever. Refusing here turns an invisible deadlock into a
+/// conflict the caller can act on.
+///
+/// Only a login someone is *still watching* conflicts. `poll` stamps `touched`,
+/// so a flow whose UI has gone away stops blocking after [`ACTIVE_WINDOW`]
+/// rather than locking the provider until its own timeout.
+pub(crate) fn begin(login_id: &str, provider_id: &str) -> Result<(), String> {
     let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
     prune(&mut map);
+    let now = Instant::now();
+    if let Some((existing, _)) = map.iter().find(|(_, l)| {
+        l.provider_id == provider_id
+            && l.status == LoginStatus::Running
+            && now.duration_since(l.touched) < ACTIVE_WINDOW
+    }) {
+        return Err(existing.clone());
+    }
     map.insert(
         login_id.to_string(),
         Login {
             provider_id: provider_id.to_string(),
-            client,
+            client: None,
             status: LoginStatus::Running,
             events: Vec::new(),
             prompt: None,
             error: None,
             refresh_error: None,
             finished_at: None,
-            touched: Instant::now(),
+            touched: now,
         },
     );
+    Ok(())
+}
+
+/// Bind the child that will run the flow, before its command is sent.
+pub(crate) fn attach_client(login_id: &str, client: PiClient) {
+    let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(login) = map.get_mut(login_id) {
+        login.client = Some(client);
+    }
 }
 
 /// Undo a [`register`] whose `auth_login_start` never got through, so a failed
@@ -209,7 +250,12 @@ pub(crate) fn record_end(
 pub(crate) fn fail_on_host_exit(client: &PiClient, reason: &str) {
     let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
     for login in map.values_mut() {
-        if login.status == LoginStatus::Running && login.client.same_process(client) {
+        if login.status == LoginStatus::Running
+            && login
+                .client
+                .as_ref()
+                .is_some_and(|c| c.same_process(client))
+        {
             login.status = LoginStatus::Failed;
             login.error = Some(reason.to_string());
             login.prompt = None;
@@ -262,7 +308,10 @@ pub async fn respond(
         }
         login.prompt = None;
         login.touched = Instant::now();
-        login.client.clone()
+        login
+            .client
+            .clone()
+            .ok_or_else(|| "pi login has not started yet".to_string())?
     };
 
     let mut msg = serde_json::json!({
@@ -286,7 +335,10 @@ pub async fn cancel(login_id: &str) -> Result<(), String> {
         let login = map
             .get(login_id)
             .ok_or_else(|| format!("unknown pi login: {login_id}"))?;
-        login.client.clone()
+        login
+            .client
+            .clone()
+            .ok_or_else(|| "pi login has not started yet".to_string())?
     };
     client
         .request(serde_json::json!({"type": "auth_login_cancel", "loginId": login_id}))
@@ -370,17 +422,28 @@ pub(crate) fn reset_for_tests() {
 mod tests {
     use super::*;
 
+    /// The registry is process-global by design, so these tests share it and
+    /// must not run concurrently: one test's `reset_for_tests` would wipe
+    /// another's entries, and `begin`'s per-provider uniqueness would make two
+    /// tests using the same provider refuse each other. Same reasoning as the
+    /// crate's `TEST_HOME_LOCK`.
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// `poll` is a cursor read, not a drain: two readers (a re-render, a retry)
     /// must both be able to replay from where they left off.
     #[tokio::test]
     async fn poll_returns_events_after_the_cursor() {
+        let _guard = test_lock();
         reset_for_tests();
         let mut map = registry().lock().unwrap();
         map.insert(
             "L".into(),
             Login {
                 provider_id: "openai-codex".into(),
-                client: PiClient::for_tests(),
+                client: Some(PiClient::for_tests()),
                 status: LoginStatus::Running,
                 events: vec![serde_json::json!({"type": "progress"})],
                 prompt: None,
@@ -405,8 +468,10 @@ mod tests {
     /// having asked something else in a retry.
     #[tokio::test]
     async fn stale_prompt_cancel_leaves_the_current_prompt() {
+        let _guard = test_lock();
         reset_for_tests();
-        register("L2", "openrouter", PiClient::for_tests());
+        begin("L2", "openrouter").expect("first login for the provider");
+        attach_client("L2", PiClient::for_tests());
         record_prompt("L2", "p1", serde_json::json!({"type": "manual_code"}));
         record_prompt("L2", "p2", serde_json::json!({"type": "secret"}));
         cancel_prompt("L2", "p1");
@@ -421,13 +486,17 @@ mod tests {
     /// leaving a login running on a different host alone.
     #[tokio::test]
     async fn host_exit_fails_only_that_hosts_running_logins() {
+        let _guard = test_lock();
         reset_for_tests();
         let dying = PiClient::for_tests();
         let other = PiClient::for_tests();
-        register("L3", "anthropic", dying.clone());
+        begin("L3", "anthropic").unwrap();
+        attach_client("L3", dying.clone());
         record_end("L3", true, None, None);
-        register("L4", "xai", dying.clone());
-        register("L5", "openrouter", other);
+        begin("L4", "xai").unwrap();
+        attach_client("L4", dying.clone());
+        begin("L5", "openrouter").unwrap();
+        attach_client("L5", other);
         fail_on_host_exit(&dying, "pi host exited");
 
         assert_eq!(poll("L3", 0).unwrap().status, LoginStatus::Succeeded);
@@ -439,8 +508,10 @@ mod tests {
 
     #[tokio::test]
     async fn respond_rejects_a_superseded_prompt_id() {
+        let _guard = test_lock();
         reset_for_tests();
-        register("L5", "github-copilot", PiClient::for_tests());
+        begin("L5", "github-copilot").unwrap();
+        attach_client("L5", PiClient::for_tests());
         record_prompt("L5", "p1", serde_json::json!({"type": "manual_code"}));
         let err = respond("L5", "p0", Some("x".into()), false)
             .await
@@ -448,11 +519,49 @@ mod tests {
         assert!(err.contains("superseded"), "{err}");
     }
 
+    /// The deadlock this round fixes: pi queues credential operations per
+    /// provider, so a second login for a provider whose first never finished
+    /// waits behind it and emits nothing. React StrictMode produced exactly
+    /// that pair, a millisecond apart. The second must be refused, not queued.
+    #[tokio::test]
+    async fn a_second_login_for_the_same_provider_is_refused() {
+        let _guard = test_lock();
+        reset_for_tests();
+        begin("first", "openai-codex").expect("first login");
+        let conflict = begin("second", "openai-codex").expect_err("second must be refused");
+        assert_eq!(conflict, "first", "the caller is told which login holds it");
+
+        // A different provider is unaffected — the queue pi serializes on is
+        // per-provider, and so is this.
+        begin("other", "anthropic").expect("a different provider is free");
+
+        // Once the first finishes the provider is free again.
+        record_end("first", false, Some("cancelled".into()), None);
+        begin("third", "openai-codex").expect("finished logins do not hold the provider");
+    }
+
+    /// A dialog that went away stops holding its provider. Without this a
+    /// closed settings window would lock a provider until the flow's own
+    /// timeout, and the user's retry would be refused for no visible reason.
+    #[tokio::test]
+    async fn an_unwatched_login_stops_blocking_the_provider() {
+        let _guard = test_lock();
+        reset_for_tests();
+        begin("stale", "xai").expect("first login");
+        {
+            let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
+            let login = map.get_mut("stale").expect("registered");
+            login.touched = Instant::now() - ACTIVE_WINDOW - Duration::from_secs(1);
+        }
+        begin("fresh", "xai").expect("an unpolled login must not hold the provider");
+    }
+
     /// `handle_host_event` is the fork in the event router: it must claim every
     /// `auth_*` line (they carry no `sessionId` and would otherwise be
     /// mis-attributed to whichever session is active) and nothing else.
     #[test]
     fn only_auth_lines_are_claimed() {
+        let _guard = test_lock();
         reset_for_tests();
         for t in [
             "auth_event",

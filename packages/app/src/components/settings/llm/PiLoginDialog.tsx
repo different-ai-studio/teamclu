@@ -75,11 +75,26 @@ export function PiLoginDialog({
   // Aborting this cancels the flow in the daemon too, so closing the dialog
   // never leaves pi parked on a question nobody will answer.
   const abortRef = React.useRef<AbortController | null>(null)
+  // Which login this dialog already has in flight. React StrictMode
+  // deliberately runs an effect, its cleanup, and the effect again on mount;
+  // without this the dialog started two logins for one provider a millisecond
+  // apart, and pi — which queues credential operations per provider — left the
+  // second waiting behind the first forever, emitting nothing at all. That was
+  // the "waiting for authorization" hang. The effect is therefore idempotent
+  // for a given target, and the teardown lives in `close()` rather than in the
+  // cleanup, so StrictMode's simulated unmount cannot cancel the real flow.
+  const startedRef = React.useRef<string | null>(null)
   const onFinishedRef = React.useRef(onFinished)
   onFinishedRef.current = onFinished
 
   React.useEffect(() => {
     if (!open) return
+    const target = `${providerId}|${authType}|${workspaceId ?? ''}`
+    if (startedRef.current === target) return
+    // A genuine change of target replaces the flow; a StrictMode re-run does
+    // not reach here at all.
+    abortRef.current?.abort()
+    startedRef.current = target
     setEvents([])
     setPending(null)
     setDraft('')
@@ -135,12 +150,13 @@ export function PiLoginDialog({
         setRunning(false)
         onFinishedRef.current(failure)
       })
-
-    return () => controller.abort()
+    // No cleanup teardown on purpose — see `startedRef`. Every route out of
+    // this dialog goes through `close()`, which aborts.
   }, [open, providerId, authType, workspaceId])
 
   const close = React.useCallback(() => {
     abortRef.current?.abort()
+    startedRef.current = null
     onClose()
   }, [onClose])
 

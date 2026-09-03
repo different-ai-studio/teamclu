@@ -31,7 +31,7 @@ use crate::runtime::pi_rpc::auth::{self, LoginSnapshot};
 use crate::runtime::supervisor::PiAuthError;
 
 use super::auth::{require_scope, Principal};
-use super::errors::HttpError;
+use super::errors::{ErrorCode, HttpError};
 use super::state::HttpState;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -218,7 +218,19 @@ pub async fn start_login(
         ));
     }
     let login_id = Uuid::new_v4().to_string();
-    forward(
+    // Reserve the provider before anything is sent. Two logins for one provider
+    // deadlock inside pi rather than racing, so the second is refused here
+    // instead of being left to hang (see `auth::begin`).
+    if let Err(existing) = auth::begin(&login_id, &body.provider_id) {
+        return Err(HttpError::new(
+            ErrorCode::Conflict,
+            format!(
+                "a login for {} is already in progress ({existing})",
+                body.provider_id
+            ),
+        ));
+    }
+    if let Err(e) = forward(
         &state,
         body.workspace_id.as_deref(),
         serde_json::json!({
@@ -228,7 +240,12 @@ pub async fn start_login(
             "authType": body.auth_type,
         }),
     )
-    .await?;
+    .await
+    {
+        // Free the provider again; nothing is running under this id.
+        auth::unregister(&login_id);
+        return Err(e);
+    }
     Ok(Json(StartLoginResponse { login_id }))
 }
 
