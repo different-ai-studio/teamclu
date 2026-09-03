@@ -1,10 +1,10 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # 定时任务归 daemon，桌面端只剩 UI
 
-`apps/desktop/src/commands/cron/`（6 个文件，3,531 行）整体搬到 amuxd。调度器、
+`apps/desktop/src/commands/cron/`（7 个文件，3,531 行）整体搬到 amuxd。调度器、
 任务存储、执行、投递都在 daemon 进程内；桌面端保留设置页 UI，通过 daemon 的
 HTTP API 增删改查任务。任务存储按 layout-v2 归 team：
 `~/.amuxd/teams/<id>/cron/`，不再是 `dirs::config_dir()/<brand>/cron-global`。
@@ -30,7 +30,7 @@ cron 的用户价值恰恰是「人不在的时候跑」，而人不在的时候
 （daemon 状态按 team 归属）对不上。
 
 还有第三个 cron 面：`teamclu-introspect` 的 `/cron-run`
-（`crates/teamclu-introspect/src/cron.rs:161`）让 agent 自己触发任务。三个面
+（`apps/desktop/crates/teamclu-introspect/src/cron.rs:161`）让 agent 自己触发任务。三个面
 并存的时候，「一个任务现在到底会不会跑」没有单一答案。
 
 ## 一条必须一起搬的约束

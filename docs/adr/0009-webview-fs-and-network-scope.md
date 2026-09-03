@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # webview 只拿它实际要用的目录，不拿整块磁盘

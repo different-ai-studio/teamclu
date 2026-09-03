@@ -325,9 +325,14 @@ delta 和最终内容；`docs/architecture/v2.md:848` 说"必须做"的物理分
    的 token、请求/响应结构体进两边共编的 `teamclu-types`；`/v1/setup/status` 替换
    `read_daemon_actor_id`（ARCH-4/5，PERF-10）。TS 侧 lint 把 `@tauri-apps/api/core`
    限制在 `lib/`，收拢 16 条双重封装命令（ARCH-8）。
-8. **要落成 ADR 的决定**：cron 归谁（ARCH-6）；agent 回复文本唯一对账点（ARCH-2）；产品真正
-   需要的 fs/asset 范围（SEC-2）；窗口局部 vs 设备共享状态（ARCH-11）；稳定 IPC 错误码形状
-   （STR-4）。然后对照代码修 CLAUDE.md / AGENTS.md（ARCH-7）。
+8. **~~要落成 ADR 的决定~~ 已全部落成并签字**（`accepted`）：cron 归 daemon（ARCH-6 →
+   [ADR-0010](../adr/0010-cron-belongs-to-the-daemon.md)）；agent 回复文本唯一对账点
+   （ARCH-2 → [0011](../adr/0011-one-reconciliation-point-for-agent-reply-text.md)，已实现）；
+   webview 的 fs/asset 范围（SEC-2 → [0009](../adr/0009-webview-fs-and-network-scope.md)）；
+   窗口局部 vs 设备共享状态（ARCH-11 → [0012](../adr/0012-window-local-state-is-the-default.md)，
+   规则已写进 AGENTS.md）；稳定 IPC 错误码形状（STR-4 →
+   [0013](../adr/0013-ipc-errors-carry-a-code.md)）。剩下的是照 ADR 施工，以及对照代码修
+   CLAUDE.md / AGENTS.md（ARCH-7）。
 9. **CI 守卫**：`cargo audit` + `pnpm audit`、`rust-toolchain.toml`、
    `cargo test --all-targets --no-run`、`vitest-setup.ts` 统一测试重置注册表（STR-3/5，SEC-13）。
 

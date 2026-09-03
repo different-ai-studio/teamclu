@@ -303,6 +303,33 @@ The user-facing rule is "适度区分 — 清晰但不抢眼". Concretely:
   panel, background, or selected? If you can't answer, you probably need a
   new token; raise it before adding ad-hoc colors.
 
+### Which state is shared between windows
+
+**Default: window-local.** Every workspace window and the local-agent panel gets
+its own store graph and its own `MqttLiveWiring`. A store's state is not
+promised to be consistent across windows, and does not need to be.
+
+**The one exception is auth.** `lib/auth/session-store.ts` syncs the session
+across windows over a `BroadcastChannel`, because "one window signed out while
+another still holds a token" is a security problem, not a cosmetic one.
+
+**Everything persisted today is a preference, and last-writer-wins is fine for
+it.** Five stores use the zustand `persist()` middleware —
+`agent-default-workspace-store`, `agent-model-pick-store`,
+`automation-default-model`, `client-model-mru`,
+`offline-send-preference-store` — and a few more hand-roll the same thing over
+`localStorage` (`header-preferences-store`, `git-settings`). The cost of another
+window overwriting any of them is that the user picks again.
+
+**So a new `localStorage.setItem` is a preference by default.** If a value
+cannot tolerate last-writer-wins, it does not belong in `localStorage` — raise
+it instead of reaching for a `BroadcastChannel`. Making cross-window
+consistency the default would decide, for every value, a question nobody asked.
+
+See [ADR-0012](docs/adr/0012-window-local-state-is-the-default.md). It also
+records which values are worth promoting to device-shared state (current team,
+agent default workspace) — one at a time, each argued on its own.
+
 ### `packages/app/src/lib` layout
 
 `lib/` is one directory per domain. Put a new module in the domain it belongs

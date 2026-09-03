@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # IPC 错误带一个稳定的 code，而不是靠子串匹配文案
@@ -15,7 +15,7 @@ pub struct CommandError {
 ```
 
 配 `impl Serialize` 和 `impl From<String>`（`code = "unknown"`），让现存的
-**430 个** `Result<_, String>` 可以**渐进**迁移而不是一次性重写；前端在 `invoke`
+**510 个** `Result<_, String>` 可以**渐进**迁移而不是一次性重写；前端在 `invoke`
 封装里统一解析。
 
 第一批换码的对象是那些今天已经在被子串匹配的错误——它们是这条决定要解决的实际
@@ -23,8 +23,9 @@ pub struct CommandError {
 
 ## 为什么
 
-`apps/desktop/src` 里 430 个 `Result<_, String>`、4 个 `thiserror` 枚举、
-**0 个错误码**。错误就是字符串，于是字符串就成了契约：
+`apps/desktop/src` 里 510 个 `Result<_, String>`
+（`grep -rE "Result<[^,]*, *String>" apps/desktop/src --include='*.rs'`，签字时重数；
+审计当时是 430，这个数只会涨）、4 个 `thiserror` 枚举、**0 个错误码**。错误就是字符串，于是字符串就成了契约：
 
 - `apps/desktop/src/commands/team_sync_proxy.rs:346` —— Rust 匹配 **daemon** 的
   文案 `contains("no OSS team secret")`，用来决定要不要重新投递团队密钥。
