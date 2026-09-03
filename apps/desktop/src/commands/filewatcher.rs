@@ -305,7 +305,14 @@ mod tests {
     fn app_owned_dot_directories_are_not_ignored() {
         // The point of not applying the workspace .gitignore: these are what
         // the team-config reloader and skill watcher listen for.
-        let b = batch(&[".teamclu/teamclu.json", ".teamclu/skills/x/SKILL.md"]);
+        // Built from the brand constants rather than written out: `.teamclu` is
+        // stamped at build time, so a literal here would test the wrong
+        // directory on a branded build — and the storage lint rejects
+        // hand-written ones anyway.
+        let dir = crate::commands::TEAMCLU_DIR;
+        let config = format!("{dir}/{}", crate::commands::CONFIG_FILE_NAME);
+        let skill = format!("{dir}/skills/x/SKILL.md");
+        let b = batch(&[config.as_str(), skill.as_str()]);
         assert_eq!(b.paths.len(), 2);
     }
 

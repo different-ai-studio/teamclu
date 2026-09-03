@@ -28,6 +28,11 @@ const EXIT_CHILD_GRACE: Duration = Duration::from_millis(500);
 const INTROSPECT_ENV: &str = "TEAMCLU_INTROSPECT_BIN";
 const CURSOR_BRIDGE_MAIN_ENV: &str = "TEAMCLU_CURSOR_BRIDGE_MAIN";
 const CLAUDE_BRIDGE_MAIN_ENV: &str = "TEAMCLU_CLAUDE_BRIDGE_MAIN";
+/// The launchd job the app used to install. Only `legacy_service_active`
+/// reads it, and only on macOS — without the gate this is dead code on
+/// every other platform, which the crate-level `allow(dead_code)` used to
+/// hide and Linux clippy now rejects.
+#[cfg(target_os = "macos")]
 const LAUNCHD_LABEL: &str = "cc.ucar.amuxd";
 
 struct SupervisorInner {
