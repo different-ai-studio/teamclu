@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # agent 回复文本只有一个对账点
@@ -14,7 +14,7 @@ CLAUDE.md 的流式规则写着「完成阶段禁止取最长」，而
   （`agent-reply-transcript.ts:174`）和 `deriveAgentReplyContent`；
   `stores/v2-stream-parts.ts` 的 finalize 路径走前者。
 - `lib/__tests__/agent-reply-single-reconciliation.test.ts` 扫 `src`，
-  出现第四个 importer 就让构建失败。
+  唯一合法 importer 就是上面那个模块，**出现第二个就让构建失败**。
 - CLAUDE.md 的流式段落写明这条例外的出处和理由。
 
 以上**已经实现**（#1227）。本 ADR 记的是它为什么是决定而不是权宜，以及下一步的
