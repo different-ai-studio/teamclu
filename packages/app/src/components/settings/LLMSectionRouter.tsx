@@ -9,18 +9,22 @@ import { AgentModelDefaults } from './llm/AgentModelDefaults'
 
 /**
  * LLM settings dispatcher. The local agent runtime determines both the logic
- * and the layout: opencode configures providers via opencode.json / opencode
- * serve (connect, OAuth, custom providers); pi owns its own credentials on the
- * host (`pi /login`) and only exposes a read-only model catalog. We branch on
- * `agents.local_agent` so each runtime gets its own pane.
+ * and the layout, so we branch on `agents.local_agent` and give each runtime
+ * its own pane.
  *
- * pi, cursor and claude-code all own their credentials outside opencode.json, so
- * their panes are read-only catalogs; only opencode gets the provider UI.
+ * opencode and pi both get a full provider UI, reached by completely different
+ * routes: opencode's providers live in opencode.json and are configured through
+ * opencode serve, while pi's live in its own `auth.json` / `models.json` and are
+ * only reachable through the pi SDK, which the daemon drives on our behalf
+ * (`/v1/pi/*`). Neither pane can serve the other runtime.
+ *
+ * cursor and claude-code drive vendor accounts we do not administer, so their
+ * panes stay read-only catalogs.
  *
  * The pinned team-gateway card (`TeamProviderCard`) lives in the opencode and pi
- * panes only. cursor and claude-code drive their own vendor accounts and offer
- * no hook for pointing a session at our gateway, so the team tiers are not
- * available there and the card is deliberately absent rather than shown broken.
+ * panes only. cursor and claude-code offer no hook for pointing a session at our
+ * gateway, so the team tiers are not available there and the card is
+ * deliberately absent rather than shown broken.
  */
 export function LLMSection() {
   const [agent, setAgent] = React.useState<DaemonLocalAgent | null>(null)

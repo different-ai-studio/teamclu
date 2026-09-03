@@ -134,6 +134,40 @@ LiteLLM 网关（`openai-completions` API）。已知坑（调研已证实）：
 （`onOpenAICompletionsCompat`），否则严格网关会拒绝请求。
 `get_available_models` → `AcpStartupMetadata.available_models`。
 
+### Provider 认证（`pi /login`）
+
+pi 的凭证在 `~/.pi/agent/auth.json`、自定义 provider 在同目录的
+`models.json`，两者都只能经 pi SDK 的 `ModelRuntime` 访问。设置页的
+provider 面板因此不是自己实现一套登录，而是**把 pi 的
+`AuthInteraction` 接口投影到线上**：
+
+```
+设置页 ──HTTP──> amuxd ──JSONL──> host.mjs ──> ModelRuntime.login()
+  /v1/pi/*        pi_auth.rs      auth_* 命令      （pi 自己的实现）
+```
+
+- **host.mjs** 新增 `auth_list` / `auth_login_start` / `auth_login_cancel` /
+  `auth_logout` / `auth_refresh` / `auth_models_{get,put,delete}`，并把
+  pi 的 `prompt(AuthPrompt)` 与 `notify(AuthEvent)` 发成
+  `auth_prompt` / `auth_event` 事件，答案经 `auth_prompt_response` 回灌。
+- **登录是「先 ack 再事件」**：浏览器往返远超 `PiClient` 的 30s 请求超时，
+  一问一答的形状会把 pi 还在跑的流程丢掉。`auth_login_start` 立刻 ack，
+  流程用 `loginId` 关联，结束时发 `auth_login_end`。
+- **`runtime/pi_rpc/auth.rs`** 是进程级 login 注册表，存着该流程所在子进程的
+  `PiClient`：应答提示词直接写那个子进程的 stdin，不必去抢 backend 锁
+  （抢了会和「只有回答提示词才能释放的登录」互相死锁）。
+- **`auth_*` 事件不带 `sessionId`**，必须在 `events.rs` 的 session 归属逻辑
+  *之前*截获，否则会被算到「当前活跃会话」头上，把登录提示投进聊天里。
+- **provider 列表、认证方式、提示词文案全部来自 pi**：这边没有任何 provider
+  分支，pi 以后加的 provider 与流程自动可用。ambient-only 的 api-key
+  provider（AWS profile、Vertex ADC）没有 `login`，host 直接拒绝而不是给一个
+  永远不结束的流程。
+- **`models.json` 是整篇读改写**：只替换目标 provider，其余 provider 和
+  UI 没有字段的键（`modelOverrides`、`compat`…）原样保留；写完调
+  `ModelRuntime.refresh()`，同一个子进程内即时生效，不重启、不打断会话。
+- **HTTP 状态区分**：子进程答复并拒绝（未知 provider、不支持的 authType）
+  是 422，取不到 host（不是 pi、二进制缺失、子进程死了）是 503。
+
 ## 4. `localAgent` 参数落点与数据流
 
 1. **build config**（`build.config.*.json`）：顶层新增

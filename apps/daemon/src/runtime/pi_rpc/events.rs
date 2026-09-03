@@ -90,6 +90,10 @@ pub(super) fn spawn_reader(
             }
         }
         client.fail_all_pending();
+        // Same reasoning one level up, for provider logins: the child that
+        // would have sent `auth_login_end` is gone, so a flow it was running
+        // would poll `running` forever.
+        super::auth::fail_on_host_exit(&client, "pi host exited during login");
         info!(worktree = %key.worktree, "pi stdout closed");
     });
 }
@@ -120,6 +124,12 @@ async fn handle_event(
     let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
     if event_type == "extension_ui_request" {
         handle_ui_request(shared, key, client, event).await;
+        return;
+    }
+    // Provider-auth lines are host-level and carry no `sessionId`. They must be
+    // claimed here, above `event_session`: its fallback would attribute them to
+    // "whichever session is active" and deliver a login prompt into a chat.
+    if super::auth::handle_host_event(event_type, event) {
         return;
     }
     // Host bookkeeping lines, not session events.

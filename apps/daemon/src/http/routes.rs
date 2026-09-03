@@ -20,6 +20,7 @@ use super::limit::{body_limit_layer, rate_limit_layer};
 use super::live_events;
 use super::live_ingest;
 use super::observ::request_id_layer;
+use super::pi_auth;
 use super::rpc;
 use super::sessions;
 use super::setup;
@@ -184,6 +185,37 @@ pub fn build(state: HttpState) -> Router {
         .route(
             "/v1/providers/:provider_id/oauth/callback",
             post(workspaces::post_device_provider_oauth_callback),
+        )
+        // pi provider auth — pi's `/login`, `/logout` and `models.json` custom
+        // providers. Device-level for the same reason as `/v1/providers` above
+        // (one `auth.json` per machine), but a wholly separate surface: those
+        // routes proxy opencode's serve API, and pi's credentials are only
+        // reachable through the pi SDK.
+        .route("/v1/pi/providers", get(pi_auth::list_providers))
+        .route("/v1/pi/providers/refresh", post(pi_auth::refresh_providers))
+        .route(
+            "/v1/pi/providers/:provider_id/auth",
+            delete(pi_auth::logout_provider),
+        )
+        // A login is polled, not awaited: pi asks questions mid-flow and a
+        // browser round trip outlives any request timeout.
+        .route("/v1/pi/logins", post(pi_auth::start_login))
+        .route("/v1/pi/logins/:login_id", get(pi_auth::poll_login))
+        .route(
+            "/v1/pi/logins/:login_id/respond",
+            post(pi_auth::respond_login),
+        )
+        .route(
+            "/v1/pi/logins/:login_id/cancel",
+            post(pi_auth::cancel_login),
+        )
+        .route(
+            "/v1/pi/custom-providers",
+            get(pi_auth::list_custom_providers),
+        )
+        .route(
+            "/v1/pi/custom-providers/:provider_id",
+            put(pi_auth::put_custom_provider).delete(pi_auth::delete_custom_provider),
         )
         // Workspace control-plane APIs (Phase B/C)
         .route(

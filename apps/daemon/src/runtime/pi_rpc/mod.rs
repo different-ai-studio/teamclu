@@ -38,6 +38,7 @@ use crate::runtime::manager::AgentLaunchConfig;
 use crate::runtime::opencode_http::translate::status_change;
 use crate::runtime::permission_policy::PermissionPolicy;
 
+pub mod auth;
 pub mod client;
 mod events;
 pub mod process;
@@ -1609,6 +1610,65 @@ impl AgentBackend for PiRpcBackend {
             .request(serde_json::json!({"type": "get_available_models"}))
             .await?;
         Ok(models_from_response(&resp))
+    }
+
+    /// Forward one `auth_*` command to a pi host.
+    ///
+    /// Host selection mirrors [`Self::model_catalog`]: reuse any live child —
+    /// auth is host-level, and a session's child answers it as well as a probe
+    /// would — and only spawn one when the device has none. Reusing matters
+    /// beyond cost here: `ModelRuntime.login` writes `auth.json` *and* updates
+    /// that runtime's in-memory snapshot, so logging in through the child that
+    /// is already serving sessions is what makes the new models appear in them
+    /// without a respawn.
+    ///
+    /// `auth_login_start` registers the flow before the command goes out, and
+    /// unregisters it if the command fails: the host can emit `auth_prompt`
+    /// before the ack comes back, and a prompt for an unknown login is dropped.
+    async fn pi_auth_request(
+        &mut self,
+        workspace_path: &Path,
+        request: serde_json::Value,
+    ) -> crate::error::Result<serde_json::Value> {
+        let worktree = canonical_dir(&workspace_path.to_string_lossy());
+        let proc = match self.shared.pool.any_live() {
+            Some(proc) => proc,
+            None => {
+                let key = PoolKey {
+                    domain: IsolationDomainKey::Workspace(format!(
+                        "pi-auth:{}",
+                        process::worktree_hash(&worktree)
+                    )),
+                    env_revision: ProcessEnvRevision::from_bindings(&HashMap::new()),
+                    worktree,
+                };
+                self.shared.pool.ensure(&self.shared, &key)?
+            }
+        };
+
+        let login_id = request
+            .get("type")
+            .and_then(|v| v.as_str())
+            .filter(|t| *t == "auth_login_start")
+            .and_then(|_| request.get("loginId").and_then(|v| v.as_str()))
+            .map(str::to_string);
+        if let (Some(login_id), Some(provider_id)) = (
+            login_id.as_deref(),
+            request.get("providerId").and_then(|v| v.as_str()),
+        ) {
+            auth::register(login_id, provider_id, proc.client.clone());
+        }
+
+        let result = proc.client.request(request).await;
+        if result.is_err() {
+            if let Some(login_id) = login_id.as_deref() {
+                auth::unregister(login_id);
+            }
+        }
+        Ok(result?
+            .get("data")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
     }
 
     async fn model_catalog_for_context(

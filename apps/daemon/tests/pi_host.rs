@@ -34,6 +34,9 @@ struct Host {
     stdin: ChildStdin,
     lines: Lines<BufReader<ChildStdout>>,
     next_id: u64,
+    /// The stub's `getAgentDir()` — where `models.json` is written, so the
+    /// auth tests can assert on the file without going near a real `~/.pi`.
+    agent_dir: PathBuf,
     _dirs: tempfile::TempDir,
 }
 
@@ -45,6 +48,7 @@ impl Host {
         let dirs = tempfile::tempdir().expect("tempdir");
         let cwd = dirs.path().join("worktree");
         let session_dir = dirs.path().join("sessions");
+        let agent_dir = dirs.path().join("agent");
         std::fs::create_dir_all(&cwd).unwrap();
         std::fs::create_dir_all(&session_dir).unwrap();
 
@@ -56,6 +60,7 @@ impl Host {
             .arg(&cwd)
             .arg("--session-dir")
             .arg(&session_dir)
+            .env("TEAMCLU_PI_STUB_AGENT_DIR", &agent_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -69,6 +74,7 @@ impl Host {
             stdin,
             lines,
             next_id: 1,
+            agent_dir,
             _dirs: dirs,
         };
         let ready = host.next().await;
@@ -126,6 +132,30 @@ impl Host {
             .await;
         assert_eq!(resp["success"], true, "command {id} failed: {resp}");
         (resp, skipped)
+    }
+
+    /// Read until `pred` matches, returning every line read including the
+    /// match.
+    ///
+    /// The auth flow needs this rather than [`Self::response`]: pi's login
+    /// emits its first `auth_event` / `auth_prompt` *before* the
+    /// `auth_login_start` ack, because the flow reaches its first question
+    /// while the command handler is still returning. A helper that waits for
+    /// one line and discards the rest therefore eats the very events under
+    /// test. Collecting lets a test assert on all of them regardless of order.
+    async fn read_until(
+        &mut self,
+        pred: impl Fn(&serde_json::Value) -> bool,
+    ) -> Vec<serde_json::Value> {
+        let mut seen = Vec::new();
+        loop {
+            let line = self.next().await;
+            let matched = pred(&line);
+            seen.push(line);
+            if matched {
+                return seen;
+            }
+        }
     }
 
     async fn new_session(&mut self) -> String {
@@ -446,4 +476,296 @@ async fn fork_session_branches_jsonl() {
         forked.contains("echo:hello!"),
         "fork should carry the parent turn: {forked}"
     );
+}
+
+// ─── Provider auth (`pi /login`) ─────────────────────────────────────────────
+//
+// The host's job in a login is to project pi's `AuthInteraction` — a
+// `prompt()` that returns a string and a `notify()` that reports progress —
+// onto the JSONL wire, and to answer it from the other side. These tests drive
+// that contract end to end against the stub, which implements `login` the way
+// a real provider does: publish a URL, then ask for the code.
+
+/// The whole login round trip: ack, provider events, the prompt, the answer,
+/// and a terminal `auth_login_end` — with the credential visible afterwards.
+///
+/// This is the sequence a browser OAuth login reduces to on the wire, so if it
+/// holds, `openai-codex` / `anthropic` / `openrouter` hold too: none of the
+/// per-provider detail lives here.
+#[tokio::test]
+async fn an_oauth_login_publishes_a_url_asks_for_the_code_and_finishes() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let mut host = Host::spawn().await;
+
+    let id = host
+        .send(serde_json::json!({
+            "type": "auth_login_start",
+            "loginId": "L1",
+            "providerId": "stub-oauth",
+            "authType": "oauth",
+        }))
+        .await;
+
+    // Both orders are legal and both occur: a provider whose login reaches its
+    // first question synchronously (this stub, and pi's real `openai-codex`)
+    // emits the prompt before the command handler returns its ack, while one
+    // that awaits the network first acks earlier. Read to the ack, then to the
+    // prompt if it has not already gone by.
+    let mut opening = host
+        .read_until(|l| l["type"] == "response" && l["id"] == id.as_str())
+        .await;
+    if !opening.iter().any(|l| l["type"] == "auth_prompt") {
+        opening.extend(host.read_until(|l| l["type"] == "auth_prompt").await);
+    }
+
+    // The ack must not wait for the login to finish: a browser round trip
+    // outlives the client's 30s request timeout, and a timed-out request would
+    // abandon a flow pi is still running.
+    let ack = opening
+        .iter()
+        .find(|l| l["type"] == "response" && l["id"] == id.as_str())
+        .expect("auth_login_start acked");
+    assert_eq!(ack["success"], true, "{ack}");
+
+    let event = opening
+        .iter()
+        .find(|l| l["type"] == "auth_event")
+        .expect("provider published an auth event");
+    assert_eq!(event["loginId"], "L1");
+    assert_eq!(event["event"]["type"], "auth_url");
+    assert_eq!(event["event"]["url"], "https://stub.example/authorize");
+
+    let prompt = opening
+        .iter()
+        .find(|l| l["type"] == "auth_prompt")
+        .expect("login asked for the code");
+    assert_eq!(prompt["prompt"]["type"], "manual_code");
+    // The AbortSignal on pi's AuthPrompt is not serializable and must be
+    // stripped rather than crashing the JSON encode.
+    assert!(prompt["prompt"].get("signal").is_none(), "{prompt}");
+    let prompt_id = prompt["promptId"].as_str().unwrap().to_string();
+
+    host.send_raw(serde_json::json!({
+        "type": "auth_prompt_response",
+        "loginId": "L1",
+        "promptId": prompt_id,
+        "value": "code-from-the-browser",
+    }))
+    .await;
+
+    let end = host
+        .read_until(|l| l["type"] == "auth_login_end")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(end["success"], true, "{end}");
+    assert_eq!(end["providerId"], "stub-oauth");
+
+    let list = host.send(serde_json::json!({"type": "auth_list"})).await;
+    let (resp, _) = host.response(&list).await;
+    let provider = resp["data"]["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "stub-oauth")
+        .expect("stub-oauth listed")
+        .clone();
+    assert_eq!(provider["configured"], true, "{provider}");
+    assert_eq!(provider["credentialType"], "oauth");
+}
+
+/// Cancelling must settle the flow rather than leaving it parked on a prompt
+/// nobody will answer — the host has to reject the pending prompt itself, since
+/// aborting the interaction signal does not settle a promise the host created.
+#[tokio::test]
+async fn cancelling_a_login_ends_it() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let mut host = Host::spawn().await;
+    host.send(serde_json::json!({
+        "type": "auth_login_start",
+        "loginId": "L2",
+        "providerId": "stub",
+        "authType": "api_key",
+    }))
+    .await;
+    host.read_until(|l| l["type"] == "auth_prompt").await;
+
+    host.send(serde_json::json!({"type": "auth_login_cancel", "loginId": "L2"}))
+        .await;
+
+    let end = host
+        .read_until(|l| l["type"] == "auth_login_end")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(end["success"], false, "{end}");
+    assert_eq!(end["error"], "Login cancelled");
+}
+
+/// Ambient-only providers (an AWS profile, Vertex ADC) have no `login` on their
+/// api-key auth. Handing one to `ModelRuntime.login` produces a flow that emits
+/// nothing and never ends, so the host refuses it up front and the caller gets
+/// a real error instead of a spinner.
+#[tokio::test]
+async fn a_provider_without_interactive_login_is_refused() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let mut host = Host::spawn().await;
+    let id = host
+        .send(serde_json::json!({
+            "type": "auth_login_start",
+            "loginId": "L3",
+            "providerId": "stub-ambient",
+            "authType": "api_key",
+        }))
+        .await;
+    let (resp, _) = host
+        .wait_for(|l| l["type"] == "response" && l["id"] == id.as_str())
+        .await;
+    assert_eq!(resp["success"], false, "{resp}");
+    assert!(
+        resp["error"].as_str().unwrap().contains("does not support"),
+        "{resp}"
+    );
+    // `auth_list` is what the UI uses to decide whether to offer a key field.
+    let list = host.send(serde_json::json!({"type": "auth_list"})).await;
+    let (list_resp, _) = host.response(&list).await;
+    let ambient = list_resp["data"]["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "stub-ambient")
+        .expect("listed");
+    assert_eq!(ambient["methods"][0]["canLogin"], false, "{ambient}");
+}
+
+/// `models.json` is edited by read-modify-write, not rewritten: the provider
+/// under edit is replaced and everything else in the document — other
+/// providers, keys the UI has no field for, top-level settings — survives.
+///
+/// This is the difference between editing one provider and silently discarding
+/// a hand-written config.
+#[tokio::test]
+async fn custom_provider_writes_preserve_the_rest_of_models_json() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let mut host = Host::spawn().await;
+    let models_json = host.agent_dir.join("models.json");
+    std::fs::create_dir_all(&host.agent_dir).unwrap();
+    std::fs::write(
+        &models_json,
+        serde_json::json!({
+            "providers": {
+                "hand-written": {"baseUrl": "http://kept", "modelOverrides": {"a": {"cost": 1}}}
+            },
+            "someTopLevelKey": 42,
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let put = host
+        .send(serde_json::json!({
+            "type": "auth_models_put",
+            "providerId": "ollama",
+            "provider": {
+                "baseUrl": "http://localhost:11434/v1",
+                "api": "openai-completions",
+                "apiKey": "ollama",
+                "models": [{"id": "llama3.1:8b"}],
+            },
+        }))
+        .await;
+    host.response(&put).await;
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&models_json).unwrap()).unwrap();
+    assert_eq!(doc["someTopLevelKey"], 42, "top-level key kept: {doc}");
+    assert_eq!(doc["providers"]["hand-written"]["baseUrl"], "http://kept");
+    assert_eq!(
+        doc["providers"]["hand-written"]["modelOverrides"]["a"]["cost"],
+        1,
+        "unmodelled provider keys kept: {doc}"
+    );
+    assert_eq!(doc["providers"]["ollama"]["apiKey"], "ollama");
+
+    // The read path is the same document, so the UI sees what is on disk.
+    let get = host.send(serde_json::json!({"type": "auth_models_get"})).await;
+    let (resp, _) = host.response(&get).await;
+    assert_eq!(resp["data"]["providers"]["ollama"]["api"], "openai-completions");
+    assert!(resp["data"]["path"].as_str().unwrap().ends_with("models.json"));
+
+    // Deleting removes only that provider.
+    let del = host
+        .send(serde_json::json!({"type": "auth_models_delete", "providerId": "ollama"}))
+        .await;
+    host.response(&del).await;
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&models_json).unwrap()).unwrap();
+    assert!(doc["providers"].get("ollama").is_none(), "{doc}");
+    assert_eq!(doc["providers"]["hand-written"]["baseUrl"], "http://kept");
+    assert_eq!(doc["someTopLevelKey"], 42);
+}
+
+/// `/logout` drops the stored credential, and the listing reflects it — the
+/// signal the settings pane uses to move a provider back to "available".
+#[tokio::test]
+async fn logout_clears_the_stored_credential() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let mut host = Host::spawn().await;
+    host.send(serde_json::json!({
+        "type": "auth_login_start",
+        "loginId": "L4",
+        "providerId": "stub",
+        "authType": "api_key",
+    }))
+    .await;
+    let prompt = host
+        .read_until(|l| l["type"] == "auth_prompt")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(prompt["prompt"]["type"], "secret", "{prompt}");
+    host.send_raw(serde_json::json!({
+        "type": "auth_prompt_response",
+        "loginId": "L4",
+        "promptId": prompt["promptId"],
+        "value": "sk-test",
+    }))
+    .await;
+    let end = host
+        .read_until(|l| l["type"] == "auth_login_end")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(end["success"], true, "{end}");
+
+    let out = host
+        .send(serde_json::json!({"type": "auth_logout", "providerId": "stub"}))
+        .await;
+    host.response(&out).await;
+
+    let list = host.send(serde_json::json!({"type": "auth_list"})).await;
+    let (resp, _) = host.response(&list).await;
+    let provider = resp["data"]["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "stub")
+        .expect("listed")
+        .clone();
+    assert_eq!(provider["configured"], false, "{provider}");
 }

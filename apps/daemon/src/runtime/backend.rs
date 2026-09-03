@@ -232,6 +232,31 @@ pub trait AgentBackend: Send {
         self.model_catalog(workspace_path).await
     }
 
+    /// pi provider auth — the settings pane's `/login`, `/logout`, catalog
+    /// refresh and custom-provider edits, forwarded to a pi host as one
+    /// `auth_*` command.
+    ///
+    /// Device-wide, not session-scoped: pi keeps one `auth.json` and one
+    /// `models.json` per device, so this needs *a* host but no session, the
+    /// same way `model_catalog` does. `workspace_path` only says which worktree
+    /// to bring a host up in when none is live.
+    ///
+    /// The default is an error, deliberately, and not a silent empty success:
+    /// no other backend has this surface — opencode configures providers
+    /// through `opencode.json` and its own serve API, cursor and claude-code
+    /// drive vendor accounts — so a caller reaching here has the wrong runtime
+    /// and needs to be told.
+    async fn pi_auth_request(
+        &mut self,
+        workspace_path: &Path,
+        request: serde_json::Value,
+    ) -> crate::error::Result<serde_json::Value> {
+        let _ = (workspace_path, request);
+        Err(crate::error::AmuxError::Agent(
+            "pi provider auth is only available when the local agent is pi".into(),
+        ))
+    }
+
     fn opencode_host_pool(
         &self,
     ) -> Option<std::sync::Arc<super::opencode_http::host_pool::OpenCodeHostPool>> {
