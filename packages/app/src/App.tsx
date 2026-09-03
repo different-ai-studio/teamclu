@@ -10,6 +10,7 @@ import { appDisplayName } from "@/lib/config/build-config";
 import { buildSessionDeeplink, parseSessionDeeplink } from "@/lib/session/session-deeplink";
 import { markStartup } from "@/lib/telemetry/startup-perf";
 import { BookOpen, ChevronLeft, X, PanelRightClose, Link2, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
+import { DiagnoseSessionButton } from "@/components/chat/DiagnoseSessionButton";
 import { useWorkspaceInit } from "@/hooks/use-workspace-init";
 import { useChannelGatewayInit } from "@/hooks/use-channel-gateway-init";
 import { useGitReposInit } from "@/hooks/use-git-repos-init";
@@ -633,6 +634,7 @@ function AppContent() {
                 <Link2 className="h-3.5 w-3.5" />
               </button>
             )}
+            {activeSession && <DiagnoseSessionButton sessionId={activeSession.id} />}
 
             {/* Panel tabs - right side of header */}
             <div className="ml-auto flex shrink-0 items-center gap-0.5">

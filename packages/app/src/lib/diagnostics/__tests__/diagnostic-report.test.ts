@@ -89,6 +89,17 @@ vi.mock('@/lib/agent/runtime-state-snapshot', () => ({
 
 vi.mock('@/lib/daemon/daemon-local-client', () => ({
   probeDaemonHttp: vi.fn(async () => ({ ok: true, baseUrl: 'http://127.0.0.1:8765' })),
+  getDaemonModelCatalog: vi.fn(async () => ({
+    automation_default_backend: 'opencode',
+    backends: [
+      {
+        backend: 'opencode',
+        label: 'OpenCode',
+        models: [{ ref: 'opencode/big-pickle', display_name: 'Big Pickle' }],
+      },
+    ],
+  })),
+  encodeWorkspaceId: (path: string) => path,
 }))
 
 vi.mock('@/stores/mqtt-reconnect', () => ({
@@ -177,11 +188,15 @@ describe('collectDiagnosticReport', () => {
     vi.stubGlobal('navigator', { onLine: true, platform: 'MacIntel' } as Navigator)
   })
 
-  it('builds a v1 report with passing checks when dependencies are healthy', async () => {
+  it('builds a v2 report with passing checks when dependencies are healthy', async () => {
     const { collectDiagnosticReport } = await import('@/lib/diagnostics/diagnostic-report')
     const report = await collectDiagnosticReport()
 
-    expect(report.schemaVersion).toBe(1)
+    expect(report.schemaVersion).toBe(2)
+    expect(Array.isArray(report.findings)).toBe(true)
+    expect(Array.isArray(report.causeCodes)).toBe(true)
+    expect(Array.isArray(report.traces)).toBe(true)
+    expect(report.findings.some((f) => f.code === 'model.catalog_ok')).toBe(true)
     expect(report.app.version).toBe('1.0.0-test')
     expect(report.summary.fail).toBe(0)
     expect(report.checks.some((c) => c.id === 'cloud_api' && c.status === 'ok')).toBe(true)
@@ -249,5 +264,17 @@ describe('collectDiagnosticReport', () => {
     const daemonHttp = report.checks.find((c) => c.id === 'daemon_http')
 
     expect(daemonHttp?.resetTrigger).toBe('daemon_http_token_invalid')
+  })
+
+  it('names the zip after the first failing cause code', async () => {
+    const { diagnosticZipFilename } = await import('@/lib/diagnostics/diagnostic-report')
+    const stamp = new Date(2026, 8, 3, 14, 14, 0)
+    expect(
+      diagnosticZipFilename(
+        { causeCodes: ['model.backend_probe_failed', 'send.mqtt_publish_failed'] },
+        stamp,
+      ),
+    ).toBe('teamclu-diag-20260903-1414-model-backend_probe_failed.zip')
+    expect(diagnosticZipFilename({ causeCodes: [] }, stamp)).toBe('teamclu-diag-20260903-1414.zip')
   })
 })

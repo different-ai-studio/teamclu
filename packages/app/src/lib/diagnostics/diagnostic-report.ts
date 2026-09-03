@@ -23,6 +23,10 @@ import { getStartupTimeline, type StartupStamp } from '@/lib/telemetry/startup-p
 import { getRuntimeStateSnapshot } from '@/lib/agent/runtime-state-snapshot'
 import { isTauri } from '@/lib/utils'
 import { fetchAppVersion } from '@/lib/config/version'
+import { collectDiagnosticContext } from '@/lib/diagnostics/collect-context'
+import { diagnose } from '@/lib/diagnostics/orchestrator'
+import { causeCodesFromFindings } from '@/lib/diagnostics/remediations'
+import type { DiagnosticCauseCode, DiagnosticFinding, TraceEvent } from '@/lib/diagnostics/types'
 import type { RequirementStatus } from '@/stores/setup'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useMqttReconnectStore } from '@/stores/mqtt-reconnect'
@@ -138,7 +142,7 @@ interface DaemonInfoBody {
 }
 
 export interface DiagnosticReport {
-  schemaVersion: 1
+  schemaVersion: 2
   generatedAt: string
   app: {
     version: string
@@ -148,6 +152,9 @@ export interface DiagnosticReport {
   }
   summary: { ok: number; warn: number; fail: number }
   checks: DiagnosticCheck[]
+  findings: DiagnosticFinding[]
+  causeCodes: DiagnosticCauseCode[]
+  traces: TraceEvent[]
   details: {
     mqtt: ReturnType<typeof getMqttDiagSnapshot>
     daemon: {
@@ -1105,8 +1112,39 @@ export async function collectDiagnosticReport(): Promise<DiagnosticReport> {
     livePathHint,
   })
 
+  const authToken = (
+    mqttSnapshot.localState as {
+      authSession?: {
+        accessToken?: { expired?: boolean | null; secondsUntilExpiry?: number | null } | null
+      } | null
+    }
+  )?.authSession?.accessToken
+  const ctx = await collectDiagnosticContext({
+    online,
+    daemonProbe,
+    daemonInfo,
+    daemonLiveConnected,
+    mqttDesktopConnected: mqttStoreConnected,
+    mqttDesktopLastError: useMqttReconnectStore.getState().lastError ?? null,
+    mqttSubscribedTopicCount: mqttBridge?.subscribedTopics?.length ?? 0,
+    mqttProbe,
+    mqttEventSummary,
+    cloudReachable,
+    bootstrapStatus: cloudEndpoints.bootstrap?.status ?? null,
+    auth: {
+      hasSession: Boolean(authToken),
+      tokenExpired: authToken?.expired === true,
+      secondsUntilExpiry:
+        typeof authToken?.secondsUntilExpiry === 'number' ? authToken.secondsUntilExpiry : null,
+    },
+    teamEnv,
+    runtimeState,
+  })
+  const findings = diagnose(ctx)
+  const causeCodes = causeCodesFromFindings(findings)
+
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: new Date().toISOString(),
     app: {
       version,
@@ -1116,6 +1154,9 @@ export async function collectDiagnosticReport(): Promise<DiagnosticReport> {
     },
     summary: summarize(checks),
     checks,
+    findings,
+    causeCodes,
+    traces: ctx.traces,
     details: {
       mqtt: mqttSnapshot,
       daemon: isTauri()
@@ -1137,6 +1178,16 @@ function formatDiagnosticReportJson(report: DiagnosticReport): string {
   return JSON.stringify(report, null, 2)
 }
 
+export function diagnosticZipFilename(
+  report: Pick<DiagnosticReport, 'causeCodes'>,
+  stamp: Date = new Date(),
+): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const cause = report.causeCodes?.[0]?.replace(/\./g, '-')
+  const base = `teamclu-diag-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}`
+  return cause ? `${base}-${cause}.zip` : `${base}.zip`
+}
+
 export async function copyDiagnosticReport(report: DiagnosticReport): Promise<void> {
   const text = formatDiagnosticReportJson(report)
   await navigator.clipboard.writeText(text)
@@ -1154,10 +1205,7 @@ export async function saveDiagnosticZip(report: DiagnosticReport): Promise<strin
   const { writeFile } = await import('@tauri-apps/plugin-fs')
   const { downloadDir } = await import('@tauri-apps/api/path')
 
-  const stamp = new Date()
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const filename = `teamclu-diag-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}.zip`
-
+  const filename = diagnosticZipFilename(report)
   const downloads = await downloadDir()
   const dest = await save({
     title: '导出诊断包',

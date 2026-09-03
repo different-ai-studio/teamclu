@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { SquarePen, Users, List, MoreHorizontal, Settings, Loader2 } from 'lucide-react'
+import { SquarePen, Users, List, MoreHorizontal, Settings, Loader2, LifeBuoy } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -17,6 +17,7 @@ import { hideExtensionSettingsButton } from '@/lib/config/build-config'
 import { capabilities } from '@/lib/config/platform'
 import { createQuickSession, describeQuickSessionFailure } from '@/lib/session/create-quick-session'
 import { useUIStore } from '@/stores/ui'
+import { useDiagnosticsStore } from '@/stores/diagnostics-store'
 import { useSessionSelectionStore } from '@/stores/session-selection-store'
 import { toast } from 'sonner'
 
@@ -135,6 +136,18 @@ export function NarrowChatHeader() {
                   <Settings className="mr-2 h-4 w-4" />
                   {t('navigation.settings', 'Settings')}
                 </DropdownMenuItem>
+                {activeSessionId ? (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setMoreOpen(false)
+                      useDiagnosticsStore.getState().requestSessionFocus(activeSessionId)
+                      window.setTimeout(() => useUIStore.getState().openSettings('diagnostics'), 0)
+                    }}
+                  >
+                    <LifeBuoy className="mr-2 h-4 w-4" />
+                    {t('chat.diagnoseSession', '诊断此会话')}
+                  </DropdownMenuItem>
+                ) : null}
               </DropdownMenuContent>
             </DropdownMenu>
           )

@@ -1,3 +1,5 @@
+import { adaptSessionFlowLog } from '@/lib/diagnostics/session-flow-adapter'
+
 type LogPayload = Record<string, unknown>;
 type LogLevel = "info" | "warn" | "error";
 
@@ -41,6 +43,11 @@ export function sessionFlowLog(
     ...payload,
   };
   console[level](`[session-flow] ${stage}`, record);
+  try {
+    adaptSessionFlowLog(stage, payload, level);
+  } catch {
+    // Trace must never break the send path.
+  }
 }
 
 export function sessionFlowError(
