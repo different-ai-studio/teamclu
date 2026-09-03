@@ -30,6 +30,12 @@ interface DependencyVersions {
   latest: string | null
   /** null = latest unknown (mirror unreachable); keep offering the update. */
   upToDate: boolean | null
+  /**
+   * At the pinned version and still unusable — pi's MCP SDK is installed beside
+   * the extension by amuxd, not by npm, so a pi installed by hand is current
+   * and broken at once. "Up to date" must not hide the button that repairs it.
+   */
+  needsRepair?: boolean
 }
 
 interface InstallResult {

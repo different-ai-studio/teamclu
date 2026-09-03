@@ -138,9 +138,26 @@ fn dependency_info(
     }
 }
 
+/// The Node row, answered by the resolver the runtimes themselves use.
+///
+/// Deliberately not the generic `node --version` probe: that runs whatever
+/// `node` PATH resolves to, and a developer machine routinely holds several
+/// Nodes (nvm, fnm and `n` all coexist happily). This row read "20.20.2" — an
+/// abandoned nvm still symlinked at `/usr/local/bin/node` — on a machine whose
+/// terminal, and whose pi install, ran v24.18.0. Two answers to one question is
+/// the shape of #1049; there is one answer now.
+fn check_node_dependency(spec: &DependencySpec) -> DependencyInfo {
+    let choice = teamclu_runtime_env::node::resolve_node(teamclu_runtime_env::node::PI_MIN_VERSION);
+    dependency_info(spec, choice.is_some(), choice.map(|c| c.version))
+}
+
 /// Check a single dependency by running `cmd --version` (or a variant).
 /// Returns a DependencyInfo with installed status and parsed version.
 fn check_single_dependency(spec: &DependencySpec) -> DependencyInfo {
+    if spec.name == "node" {
+        return check_node_dependency(spec);
+    }
+
     // Finding the file is not always enough to run it: an npm-installed shim
     // starts with `#!/usr/bin/env node`, which needs node itself on the PATH of
     // the child. Same augmentation amuxd spawns its tools with.
@@ -280,6 +297,15 @@ pub struct DependencyVersions {
     /// `None` when `latest` is unknown (mirror unreachable) — the UI must then
     /// keep offering the update rather than claiming either state.
     pub up_to_date: Option<bool>,
+    /// The runtime is at the pinned version and still cannot run: pi's MCP SDK
+    /// is installed beside the extension by amuxd, not by npm, so a pi the user
+    /// installed themselves is current and unusable at the same time.
+    ///
+    /// Without this the row rendered a green "Up to date" and hid its only
+    /// button — which is the button that installs the missing piece — while the
+    /// runtime picker said "pi is not installed on this machine".
+    #[serde(default)]
+    pub needs_repair: bool,
 }
 
 /// Ask the bundled amuxd what the newest opencode available is. Hits the
@@ -336,11 +362,22 @@ pub async fn pi_versions<R: Runtime>(app: AppHandle<R>) -> Result<DependencyVers
         (Some(have), Some(want)) => Some(teamclu_runtime_env::version::version_ge(have, want)),
         _ => None,
     };
+    // ...but `satisfied` is exactly the answer to "would picking pi work", and
+    // when the two disagree the row has to say so rather than paint a green
+    // check over a runtime that cannot start.
+    //
+    // Deliberately not narrowed to the MCP SDK, even though that is the only
+    // piece a reinstall adds: when Node is what fails, `amuxd install-pi`
+    // refuses by name ("the newest one here is 20.20.2 (/usr/local/bin/node)")
+    // and that line lands in this row's own progress area — a better answer
+    // than a green tick over a runtime the picker will not accept.
+    let needs_repair = up_to_date == Some(true) && !pi["satisfied"].as_bool().unwrap_or(false);
 
     Ok(DependencyVersions {
         installed,
         latest,
         up_to_date,
+        needs_repair,
     })
 }
 

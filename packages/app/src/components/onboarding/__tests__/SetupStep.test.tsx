@@ -220,6 +220,54 @@ describe('SetupStep', () => {
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '42')
   })
 
+  // Reported: the user's terminal ran node v24, the app measured an abandoned
+  // nvm 20 still symlinked into /usr/local/bin, and the card said "node
+  // missing" — sending them to install a Node they already had. Name the one we
+  // measured instead.
+  it('names the node it found when the node it found is too old', () => {
+    seed({
+      agentRuntimes: [
+        req('pi', {
+          title: 'Pi',
+          present: false,
+          version: null,
+          blocker: 'node_outdated',
+          blockerFound: '20.20.2 (/usr/local/bin/node)',
+          blockerRequired: '22.19.0',
+        }),
+      ],
+    })
+    render(<SetupStep role="developer" onDone={() => {}} />)
+
+    expect(screen.getByText(/20\.20\.2 \(\/usr\/local\/bin\/node\)/)).toBeInTheDocument()
+    expect(screen.getByText(/22\.19\.0/)).toBeInTheDocument()
+    // Installing pi runs npm, which runs on node: no Install button until the
+    // node question is answered.
+    expect(screen.queryByRole('button', { name: '安装' })).not.toBeInTheDocument()
+  })
+
+  // pi installed by hand from a terminal reports a version and still cannot
+  // start a session: the MCP bridge amuxd installs beside its extension is
+  // missing. "Installed" must not be the answer, and Continue must not pass.
+  it('will not accept a pi whose MCP bridge is missing', () => {
+    seed({
+      agentRuntimes: [
+        req('pi', {
+          title: 'Pi',
+          present: false,
+          version: '0.84.4',
+          blocker: 'mcp_sdk',
+          blockerRequired: '1.30.0',
+        }),
+      ],
+    })
+    render(<SetupStep role="developer" onDone={() => {}} />)
+
+    expect(screen.getByText('Pi 已安装，但它的 MCP 桥还没装好。点安装补齐。')).toBeInTheDocument()
+    // Unlike the node blockers, this one *is* what Install fixes.
+    expect(screen.getByRole('button', { name: '安装' })).toBeInTheDocument()
+  })
+
   // The guided path installs on its own, so its single row is where progress has
   // to land.
   it('shows install progress on the guided path', () => {

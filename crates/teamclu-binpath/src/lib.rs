@@ -136,6 +136,177 @@ pub fn find(name: &str, extra: &[PathBuf]) -> Option<PathBuf> {
     find_with(name, extra, &search_dirs())
 }
 
+/// Sort key for a version-named directory (`v24.18.0`, `20.20.2`).
+///
+/// Ordering only. Whether a version is *good enough* stays in
+/// `teamclu_runtime_env::version`, which is the one place that decision is
+/// made. A lexical sort is not usable here: it puts `v9` above `v20`.
+fn version_key(name: &str) -> (u64, u64, u64) {
+    let mut parts = name.trim().trim_start_matches('v').split('.');
+    let mut next = || {
+        parts
+            .next()
+            .and_then(|p| p.split(['-', '+']).next())
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(0)
+    };
+    (next(), next(), next())
+}
+
+/// `<root>/<version>/<suffix>` for every version directory under `root`,
+/// newest first. Empty when `root` does not exist, which is the usual case.
+fn versioned_bins(root: &Path, suffix: &str) -> Vec<PathBuf> {
+    let mut found: Vec<((u64, u64, u64), PathBuf)> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|entry| {
+            (
+                version_key(&entry.file_name().to_string_lossy()),
+                entry.path(),
+            )
+        })
+        .collect();
+    found.sort_by_key(|(version, _)| std::cmp::Reverse(*version));
+    found
+        .into_iter()
+        .map(|(_, dir)| {
+            // nvm-windows puts `node.exe` straight in the version directory,
+            // so an empty suffix means "the directory itself".
+            suffix
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .fold(dir, |path, part| path.join(part))
+        })
+        .collect()
+}
+
+/// `$KEY` as a directory, or `fallback` when it is unset.
+fn dir_from_env(key: &str, fallback: PathBuf) -> PathBuf {
+    std::env::var_os(key)
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(fallback)
+}
+
+/// Directories a Node **version manager** installs into, newest version first.
+///
+/// Kept apart from [`search_dirs`] because these differ from the flat tool
+/// directories in both respects that matter: they hold node and nothing else,
+/// and several of them hold many versions at once — so this list has to be
+/// built from what is on disk and ordered newest-first.
+///
+/// The symptom it exists for: a machine with node 24 under `~/.n/bin` and an
+/// abandoned nvm 20 still symlinked at `/usr/local/bin/node` answered
+/// "20.20.2" in the app and "v24.18.0" in the same user's terminal. Every
+/// version manager installs its PATH entry into `~/.zshrc`, and `~/.zshrc` is
+/// the one startup file a GUI-launched app never gets to read.
+pub fn node_manager_dirs() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let mut dirs = Vec::new();
+
+    // One-version-at-a-time managers: a single `bin` holding the version in use.
+    dirs.push(dir_from_env("N_PREFIX", home.join(".n")).join("bin"));
+    dirs.push(dir_from_env("VOLTA_HOME", home.join(".volta")).join("bin"));
+
+    // Many-versions-at-once managers, newest install first.
+    dirs.extend(versioned_bins(
+        &dir_from_env("NVM_DIR", home.join(".nvm"))
+            .join("versions")
+            .join("node"),
+        "bin",
+    ));
+    let fnm_default = if cfg!(target_os = "macos") {
+        home.join("Library").join("Application Support").join("fnm")
+    } else {
+        home.join(".local").join("share").join("fnm")
+    };
+    dirs.extend(versioned_bins(
+        &dir_from_env("FNM_DIR", fnm_default).join("node-versions"),
+        "installation/bin",
+    ));
+    dirs.extend(versioned_bins(
+        &dir_from_env("ASDF_DATA_DIR", home.join(".asdf"))
+            .join("installs")
+            .join("nodejs"),
+        "bin",
+    ));
+
+    // Windows is the worse half of this problem, not the lesser one: nothing
+    // repairs the PATH there at all (`fix_path_env` returns early), so a node
+    // installed by nvm-windows or fnm after the app started is invisible until
+    // the machine is rebooted.
+    if cfg!(windows) {
+        if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
+            dirs.extend(versioned_bins(
+                &dir_from_env("NVM_HOME", appdata.join("nvm")),
+                "",
+            ));
+            dirs.extend(versioned_bins(
+                &appdata.join("fnm").join("node-versions"),
+                "installation",
+            ));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            dirs.push(local.join("Volta").join("bin"));
+        }
+    }
+    dirs
+}
+
+/// First `<dir>/<name>` on the PATH a child process would get.
+///
+/// [`find`] deliberately ignores PATH — it is the fallback for when PATH is
+/// useless. This is the other half: a tool installed *beside* a version-managed
+/// node (`~/.n/bin/pi`) lives in a directory no fixed list can name, and is
+/// reachable only through the PATH we hand children. Callers that need an
+/// absolute path, rather than a name to spawn, need both lookups.
+pub fn find_in_path(name: &str, lead: Option<&Path>) -> Option<PathBuf> {
+    let path = augmented_path_led_by(lead);
+    let files = exe_candidates(name);
+    std::env::split_paths(&path)
+        .flat_map(|dir| files.iter().map(move |file| dir.join(file)))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+/// Every `node` this machine plausibly has, best-first: what this process's own
+/// PATH would run, then the well-known tool directories, then each version
+/// manager's newest install.
+///
+/// PATH stays first so a user who really did hand us their shell's PATH keeps
+/// deciding what runs. The rest exists because a GUI-launched app usually did
+/// not — see [`node_manager_dirs`].
+pub fn node_candidates() -> Vec<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let files = exe_candidates("node");
+    let mut seen: Vec<PathBuf> = Vec::new();
+    let mut candidates = Vec::new();
+    for dir in std::env::split_paths(&path)
+        .chain(search_dirs())
+        .chain(node_manager_dirs())
+    {
+        for file in &files {
+            let candidate = dir.join(file);
+            if !is_executable_file(&candidate) {
+                continue;
+            }
+            // Two entries are routinely the same binary — `/usr/local/bin/node`
+            // is a symlink into an nvm version — and every candidate costs a
+            // process spawn to ask its version.
+            let key = std::fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
 /// `PATH` for a child process, with the well-known directories appended.
 ///
 /// Finding a CLI by absolute path is not always enough to RUN it: npm installs
@@ -145,11 +316,28 @@ pub fn find(name: &str, extra: &[PathBuf]) -> Option<PathBuf> {
 /// not prepending — keeps whatever the user's real PATH says authoritative when
 /// we do have one.
 pub fn augmented_path() -> std::ffi::OsString {
+    augmented_path_led_by(None)
+}
+
+/// [`augmented_path`] with one directory forced to the front.
+///
+/// `lead` is for the node we picked ([`node_candidates`]): npm ships as a shim
+/// whose shebang is `#!/usr/bin/env node`, so whichever node is *first* on the
+/// child's PATH is the one npm runs under. Without this we would check one
+/// node's version and then install pi with a different one — the exact split
+/// that let a machine advertise node 24 and install pi against node 20.
+pub fn augmented_path_led_by(lead: Option<&Path>) -> std::ffi::OsString {
     let current = std::env::var_os("PATH").unwrap_or_default();
     let existing: Vec<PathBuf> = std::env::split_paths(&current).collect();
-    let mut all = existing.clone();
+    let mut all: Vec<PathBuf> = lead.map(Path::to_path_buf).into_iter().collect();
+    all.extend(
+        existing
+            .iter()
+            .filter(|d| Some(d.as_path()) != lead)
+            .cloned(),
+    );
     for dir in search_dirs() {
-        if !existing.contains(&dir) {
+        if !all.contains(&dir) {
             all.push(dir);
         }
     }
@@ -294,6 +482,72 @@ mod tests {
             Some(in_second),
             "an empty earlier directory must not stop the search"
         );
+    }
+
+    #[test]
+    fn version_directories_are_ordered_by_number_not_by_name() {
+        // The bug this pins: a lexical sort puts "v9" above "v20", so the
+        // newest install is the one we would skip.
+        let tmp = tempfile::tempdir().unwrap();
+        for v in ["v9.11.2", "v20.20.2", "v24.18.0"] {
+            std::fs::create_dir_all(tmp.path().join(v).join("bin")).unwrap();
+        }
+        let got = versioned_bins(tmp.path(), "bin");
+        assert_eq!(
+            got,
+            vec![
+                tmp.path().join("v24.18.0").join("bin"),
+                tmp.path().join("v20.20.2").join("bin"),
+                tmp.path().join("v9.11.2").join("bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_nested_install_suffix_is_walked() {
+        // fnm keeps the binary two levels down: <version>/installation/bin.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("v22.19.0")).unwrap();
+        assert_eq!(
+            versioned_bins(tmp.path(), "installation/bin"),
+            vec![tmp.path().join("v22.19.0").join("installation").join("bin")]
+        );
+    }
+
+    #[test]
+    fn a_missing_manager_root_contributes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(versioned_bins(&tmp.path().join("nope"), "bin").is_empty());
+    }
+
+    #[test]
+    fn the_chosen_node_leads_the_child_path() {
+        // npm's shim runs under `#!/usr/bin/env node`, so the node we validated
+        // has to be the first one the child can see — and must not also appear
+        // later, where a stale copy of the same directory would shadow nothing
+        // but still confuse anyone reading the PATH.
+        let lead = PathBuf::from("/opt/nodes/24/bin");
+        let path = augmented_path_led_by(Some(&lead));
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        assert_eq!(dirs.first(), Some(&lead));
+        assert_eq!(dirs.iter().filter(|d| **d == lead).count(), 1);
+        for dir in search_dirs() {
+            assert!(dirs.contains(&dir), "{} was dropped", dir.display());
+        }
+    }
+
+    #[test]
+    fn a_tool_beside_the_chosen_node_is_reachable_by_path() {
+        // `~/.n/bin/pi` is in no fixed list and on no PATH a GUI app inherits;
+        // it is reachable only through the PATH we build for children, which
+        // the chosen node's directory leads.
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        let pi = touch(&bin, "pi");
+        // Not in any well-known directory — that lookup cannot reach it, which
+        // is the whole reason this second one exists.
+        assert_eq!(find_with("pi", &[], &[]), None);
+        assert_eq!(find_in_path("pi", Some(&bin)), Some(pi));
     }
 
     #[test]

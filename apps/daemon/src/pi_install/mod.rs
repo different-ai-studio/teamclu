@@ -16,6 +16,11 @@ use sha2::{Digest, Sha256};
 
 use crate::opencode_install::{parse_semver, version_ge};
 use crate::process_util::CommandNoWindow;
+// Pi 0.84.x declares `node >=22.19.0`. The minimum lives in the shared crate so
+// the daemon, the desktop's Dependencies row and first-run setup all make one
+// decision — and it is a minimum over *every* node on the machine, not over
+// whatever `node` happens to resolve to: see `teamclu_runtime_env::node`.
+use teamclu_runtime_env::node::{NodeChoice, PI_MIN_VERSION as MIN_NODE_VERSION};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,7 +93,13 @@ pub struct PiStatus {
     /// can explain the real prerequisite before attempting `npm install`.
     pub node_present: bool,
     pub node_version: Option<String>,
+    /// Which node that version came from. Reported because the usual failure is
+    /// not an absent Node but the *wrong* one: a machine can hold three, and
+    /// naming the file is the difference between "node missing" and an answer
+    /// the user can act on.
+    pub node_path: Option<String>,
     pub node_satisfied: bool,
+    pub required_node_version: String,
     pub required_version: String,
     /// `@modelcontextprotocol/sdk` under the materialized extension directory.
     /// Reported separately from pi's own version because it is installed
@@ -102,34 +113,22 @@ pub struct PiStatus {
     pub satisfied: bool,
 }
 
-/// Pi 0.84.x declares `node >=22.19.0`. Keep the check in the daemon (rather
-/// than the React onboarding screen) so CLI, Settings and first-run setup all
-/// make the same decision.
-const MIN_NODE_VERSION: &str = "22.19.0";
-
-fn node_version() -> Option<String> {
-    let out = command_with_runtime_path("node")
-        .arg("--version")
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let line = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .next()?
-        .trim()
-        .to_string();
-    (!line.is_empty()).then_some(line)
+/// The node pi will be installed with and run under.
+///
+/// Resolved once per process: it costs a `--version` spawn per candidate, and
+/// `doctor` alone asks several times per settings screen. A node installed
+/// while amuxd is running is picked up on the next start — which every install
+/// path already triggers (`restart_amuxd_after_update`).
+pub(crate) fn node() -> Option<NodeChoice> {
+    static NODE: std::sync::OnceLock<Option<NodeChoice>> = std::sync::OnceLock::new();
+    NODE.get_or_init(|| teamclu_runtime_env::node::resolve_node(MIN_NODE_VERSION))
+        .clone()
 }
 
 pub fn doctor() -> PiStatus {
     let want = required_version();
-    let node_version = node_version();
-    let node_satisfied = node_version
-        .as_deref()
-        .map(|v| version_ge(v, MIN_NODE_VERSION))
-        .unwrap_or(false);
+    let node = node();
+    let node_satisfied = node.as_ref().map(|n| n.satisfies).unwrap_or(false);
     let detected = detect_pi();
     let (present, version, path) = match &detected {
         Some((p, v)) => (true, Some(v.clone()), Some(p.clone())),
@@ -153,9 +152,11 @@ pub fn doctor() -> PiStatus {
         present,
         version,
         path,
-        node_present: node_version.is_some(),
-        node_version,
+        node_present: node.is_some(),
+        node_version: node.as_ref().map(|n| n.version.clone()),
+        node_path: node.as_ref().map(|n| n.path.to_string_lossy().to_string()),
         node_satisfied,
+        required_node_version: MIN_NODE_VERSION.to_string(),
         required_version: want,
         mcp_sdk_present: sdk_version.is_some(),
         mcp_sdk_version: sdk_version,
@@ -239,7 +240,17 @@ pub(super) fn command_with_runtime_path(command: &str) -> std::process::Command 
     let mut process =
         std::process::Command::new(crate::runtime::well_known_bin::spawn_name(command));
     process.no_window();
-    process.env("PATH", crate::runtime::well_known_bin::augmented_path());
+    // Led by the node we settled on: npm is a shim with a `#!/usr/bin/env node`
+    // shebang, so the first node on this PATH is the one that installs and runs
+    // pi. Validating one node and then installing under another is how a
+    // machine ended up advertising node 24 while pi ran on node 20.
+    let node = node();
+    process.env(
+        "PATH",
+        crate::runtime::well_known_bin::augmented_path_led_by(
+            node.as_ref().and_then(|n| n.path.parent()),
+        ),
+    );
     process
 }
 
@@ -611,15 +622,15 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
 /// (falls back to `bun add -g` when npm is absent).
 fn ensure_pi(force: bool) -> anyhow::Result<()> {
     let want = required_version();
-    let node = node_version();
-    if !node
-        .as_deref()
-        .map(|v| version_ge(v, MIN_NODE_VERSION))
-        .unwrap_or(false)
-    {
-        let found = node.as_deref().unwrap_or("not found");
+    let node = node();
+    if !node.as_ref().map(|n| n.satisfies).unwrap_or(false) {
+        let found = node
+            .as_ref()
+            .map(NodeChoice::describe)
+            .unwrap_or_else(|| "no node on this machine".to_string());
         anyhow::bail!(
-            "Pi requires Node.js >= {MIN_NODE_VERSION}; found {found}. Install or upgrade Node.js first"
+            "Pi requires Node.js >= {MIN_NODE_VERSION}; the newest one here is {found}. \
+             Install or upgrade Node.js first"
         );
     }
 
@@ -648,7 +659,7 @@ fn ensure_pi(force: bool) -> anyhow::Result<()> {
         anyhow::bail!(
             "neither npm nor bun found on PATH (node {} is installed); \
              install Node.js or Bun first, or add npm's directory to PATH",
-            node.as_deref().unwrap_or("?")
+            node.as_ref().map(NodeChoice::describe).unwrap_or_default()
         );
     }
 
@@ -839,7 +850,9 @@ mod tests {
             path: Some("/x/pi".into()),
             node_present: true,
             node_version: Some("v22.19.0".into()),
+            node_path: Some("/x/node".into()),
             node_satisfied: true,
+            required_node_version: "22.19.0".into(),
             required_version: "0.81.1".into(),
             mcp_sdk_present: true,
             mcp_sdk_version: Some("1.30.0".into()),
@@ -850,6 +863,10 @@ mod tests {
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["requiredVersion"], serde_json::json!("0.81.1"));
         assert_eq!(v["nodeSatisfied"], serde_json::json!(true));
+        // The client names the node it found and the one it needs; both have to
+        // survive serialization or the UI falls back to "node missing".
+        assert_eq!(v["nodePath"], serde_json::json!("/x/node"));
+        assert_eq!(v["requiredNodeVersion"], serde_json::json!("22.19.0"));
         assert_eq!(v["mcpSdkVersion"], serde_json::json!("1.30.0"));
         assert_eq!(v["requiredMcpSdkVersion"], serde_json::json!("1.30.0"));
         assert_eq!(v["satisfied"], serde_json::json!(true));
