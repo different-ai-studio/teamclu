@@ -1,63 +1,26 @@
-import {
-  useEffect,
-  useState,
-  useRef,
-  MouseEvent as ReactMouseEvent,
-  type ComponentType,
-} from "react";
 import * as React from "react";
+import { useEffect, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import i18n from "@/lib/i18n";
-import { syncTrayMenuLabels } from "@/lib/sync-tray-menu";
 import { Toaster, toast } from "sonner";
 import { cn, isTauri, removeStartupSkeleton } from "@/lib/utils";
 import { capabilities } from "@/lib/platform";
 import { isSoloBuild } from "@/lib/solo-build";
 import { scheduleReleaseStuckModalLayers } from "@/lib/modal-layer-cleanup";
 import { appDisplayName } from "@/lib/build-config";
-import { buildSessionDeeplink } from "@/lib/session-deeplink";
+import { buildSessionDeeplink, parseSessionDeeplink } from "@/lib/session-deeplink";
 import { markStartup } from "@/lib/startup-perf";
-import {
-  BookOpen,
-  ChevronLeft,
-  X,
-  PanelRightClose,
-  Link2,
-  Loader2,
-  RotateCw,
-  MessageSquarePlus,
-  AppWindow,
-  Users,
-  TerminalSquare,
-  SlidersHorizontal,
-} from "lucide-react";
-import { FileContentViewer } from "@/components/FileEditor";
-import {
-  useWorkspaceInit,
-  useChannelGatewayInit,
-  useGitReposInit,
-  useCronInit,
-  useWorkspaceRuntimeRefreshPoll,
-  useOpenCodePreload,
-  useExternalLinkHandler,
-  useTauriBodyClass,
-  useTelemetryConsent,
-} from "@/hooks/useAppInit";
+import { BookOpen, ChevronLeft, X, PanelRightClose, Link2, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
+import { useWorkspaceInit, useChannelGatewayInit, useGitReposInit, useCronInit, useWorkspaceRuntimeRefreshPoll, useOpenCodePreload, useExternalLinkHandler, useTauriBodyClass, useTelemetryConsent } from "@/hooks/useAppInit";
 import { useMemberPresenceHeartbeat } from "@/hooks/useMemberPresenceHeartbeat";
 import { useExtensionSessionCleanup } from "@/hooks/useExtensionSessionCleanup";
-import {
-  useFileTabSync,
-  useResizablePanels,
-} from "@/hooks/useFileEditorState";
+import { useFileTabSync } from "@/hooks/useFileEditorState";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarSecondColumn } from "@/components/sidebar/SidebarSecondColumn";
 import { SIDEBAR_INTERACTIVE_CURSOR } from "@/components/sidebar/sidebar-interactive-cursor";
 import { NarrowChatHeader } from "@/components/responsive/NarrowChatHeader";
 import { useLayoutBreakpoint } from "@/hooks/use-layout-breakpoint";
-import { ChatPanel } from "@/components/chat/ChatPanel";
 import { SessionThreadsHeaderButton } from "@/components/chat/SessionThreadsHeaderButton";
 import { NewSessionDialog } from "@/components/chat/NewSessionDialog";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { MqttLiveWiring } from "@/components/MqttLiveWiring";
 import { TeamSkillAutoFollow } from "@/components/TeamSkillAutoFollow";
 import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
@@ -69,65 +32,47 @@ import { lazyNamed } from "@/lib/lazy-component";
 import { useEverTrue } from "@/hooks/use-ever-true";
 import { PaneLoading } from "@/components/ui/pane-loading";
 import { CloseToTrayHost } from "@/components/CloseToTrayDialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { TelemetryConsentDialog } from "@/components/telemetry/TelemetryConsentDialog";
 import { RuntimeRefreshWorkspaceBanner } from "@/components/workspace/RuntimeRefreshBanner";
 import { useSessionStore } from "@/stores/session";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
 import { useAuthStore } from "@/stores/auth-store";
-import { listenForDaemonLiveStatus } from "@/lib/mqtt-bridge";
-import { setDaemonLiveConnected } from "@/lib/live-dedup-stats";
 import { useOutboxStore } from "@/stores/outbox-store";
 import { startOutboxSender } from "@/services/outbox-sender";
 import { getBackend } from "@/lib/backend";
 import { getVersion } from "@tauri-apps/api/app";
-import { getDesktopDeviceId } from "./lib/backend/cloud-api/device-id";
+import { getDesktopDeviceId } from "@/lib/backend/cloud-api/device-id";
 import { resetClientChatState } from "@/lib/reset-client-chat-state";
 import { startEmbedPageContextListener, consumePendingLinkContext } from "@/lib/embed-page-context";
 import { startEmbedLinkOpenListener } from "@/lib/embed-link-session";
 import { useUIStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTabsStore, selectActiveTab, selectHasHiddenTabs } from "@/stores/tabs";
-import {
-  isTeamShareOwnedTarget,
-  teamShareSectionForTarget,
-} from "@/lib/tabs/teamshare-target";
+import { isTeamShareOwnedTarget } from "@/lib/tabs/teamshare-target";
 import { useTeamShareBrowserStore } from "@/stores/team-share-browser";
-import { useTerminalStore } from "@/stores/terminal-store";
 import { useHeaderPreferencesStore } from "@/stores/header-preferences-store";
-import { TabBar } from "@/components/tab-bar/TabBar";
-import { TabContentRenderer } from "@/components/tab-bar/TabContentRenderer";
-import { WebViewToolbar } from "@/components/tab-bar/WebViewToolbar";
-import { FindInPageBar } from "@/components/tab-bar/FindInPageBar";
-import { urlToLabel } from "@/lib/webview-utils";
-import { create } from "zustand";
 import { Button } from "@/components/ui/button";
 import { onOpenUrl, getCurrent } from "@tauri-apps/plugin-deep-link";
 import { parseInviteDeeplink } from "@/lib/invite-deeplink";
 import { requestInviteLinkConfirmation, whenDocumentFocused } from "@/lib/invite-link-confirmation";
-import { parseSessionDeeplink } from "@/lib/session-deeplink";
-import {
-  completePendingSessionDeeplink,
-  openSessionFromDeeplink,
-  readPendingSessionDeeplink,
-  stashPendingSessionDeeplink,
-} from "@/lib/open-session-deeplink";
+import { completePendingSessionDeeplink, openSessionFromDeeplink, readPendingSessionDeeplink, stashPendingSessionDeeplink } from "@/lib/open-session-deeplink";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useAppsStore } from "@/stores/apps-store";
 import { E2E_BUILD, isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
 import { TrafficLights } from "@/components/ui/traffic-lights";
+import { SidebarInset, SidebarProvider, useSidebar } from "@/components/ui/sidebar";
+import { HeaderPanelTab, TerminalToggleButton } from "@/app/chrome";
+import { MainContent } from "@/app/MainContent";
 import {
-  SidebarInset,
-  SidebarProvider,
-  useSidebar,
-} from "@/components/ui/sidebar";
+  useAppMenuOpenSettings,
+  useDaemonLiveStatus,
+  useTerminalShortcuts,
+  useTrayMenuLocaleSync,
+  useWebviewShortcuts,
+} from "@/app/shell-hooks";
+
 export { ensureSessionLiveSubscribed } from "@/lib/session-live-subscriptions";
 
 // ── Lazy boundaries ────────────────────────────────────────────────────────
@@ -148,520 +93,10 @@ const AppControlPanel = lazyNamed(
   () => import("@/components/apps/AppControlPanel"),
   "AppControlPanel",
 );
-const TeamShareDetailContent = lazyNamed(
-  () => import("@/components/teamshare/TeamShareTabContent"),
-  "TeamShareDetailContent",
-);
-const IdeasDetailColumn = lazyNamed(
-  () => import("@/components/panel/IdeaDetailPane"),
-  "IdeasDetailColumn",
-);
-const ActorsDetailColumn = lazyNamed(
-  () => import("@/components/main-content/ActorDetailPane"),
-  "ActorsDetailColumn",
-);
+
 // The right workspace panel statically pulls the actors view and the shortcuts
 // panel (the latter with name-based icon lookup); it opens on demand.
 const RightPanel = lazyNamed(() => import("@/components/panel/RightPanel"), "RightPanel");
-
-// ── Webview UI micro-store (find bar + zoom levels) ────────────────────────
-const useWebviewUIStore = create<{
-  showFind: boolean
-  zoomLevels: Record<string, number>
-  setShowFind: (v: boolean) => void
-  setZoomLevel: (label: string, level: number) => void
-}>((set, get) => ({
-  showFind: false,
-  zoomLevels: {},
-  setShowFind: (v) => set({ showFind: v }),
-  setZoomLevel: (label, level) =>
-    set({ zoomLevels: { ...get().zoomLevels, [label]: level } }),
-}))
-
-/** Sync native tray + app menu labels with the active UI locale. */
-function useTrayMenuLocaleSync() {
-  useEffect(() => {
-    void syncTrayMenuLabels();
-    const onLang = () => {
-      void syncTrayMenuLabels();
-    };
-    i18n.on("languageChanged", onLang);
-    return () => {
-      i18n.off("languageChanged", onLang);
-    };
-  }, []);
-}
-
-/** Native TeamClu → Settings… (⌘,) opens the in-app Settings dialog. */
-function useAppMenuOpenSettings() {
-  useEffect(() => {
-    if (!isTauri()) return;
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-    void import("@tauri-apps/api/event")
-      .then(({ listen }) => listen("open-app-settings", () => {
-        useUIStore.getState().openSettings();
-      }))
-      .then((fn) => {
-        if (cancelled) fn();
-        else unlisten = fn;
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-}
-
-/**
- * Global keyboard shortcuts (Cmd+F, Cmd+/-/0) and context menu listener
- * for webview tabs. Registered once, reads active tab from tabs store.
- */
-/** Track the local-daemon SSE fast-path status (observability only). */
-function useDaemonLiveStatus() {
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-    void listenForDaemonLiveStatus((connected) => {
-      setDaemonLiveConnected(connected);
-      console.info(`[daemon-live] fast-path ${connected ? "connected" : "down"}`);
-    }).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-}
-
-function useWebviewShortcuts() {
-  useEffect(() => {
-    const handler = async (e: KeyboardEvent) => {
-      const activeTab = useTabsStore.getState().getActiveTab()
-      if (!activeTab || activeTab.type !== "webview") return
-      if (!isTauri()) return
-
-      const mod = e.metaKey || e.ctrlKey
-      const webviewLabel = urlToLabel(activeTab.target)
-      const { setShowFind, setZoomLevel, zoomLevels } =
-        useWebviewUIStore.getState()
-
-      if (mod && e.key === "f") {
-        e.preventDefault()
-        setShowFind(true)
-        return
-      }
-
-      if (mod && (e.key === "=" || e.key === "+")) {
-        e.preventDefault()
-        const cur = zoomLevels[webviewLabel] ?? 1.0
-        const next = Math.min(Math.round((cur + 0.1) * 10) / 10, 2.0)
-        setZoomLevel(webviewLabel, next)
-        import("@tauri-apps/api/core").then(({ invoke }) => {
-          invoke("webview_set_zoom", { label: webviewLabel, level: next }).catch(
-            () => {}
-          )
-        })
-        return
-      }
-
-      if (mod && e.key === "-") {
-        e.preventDefault()
-        const cur = zoomLevels[webviewLabel] ?? 1.0
-        const next = Math.max(Math.round((cur - 0.1) * 10) / 10, 0.5)
-        setZoomLevel(webviewLabel, next)
-        import("@tauri-apps/api/core").then(({ invoke }) => {
-          invoke("webview_set_zoom", { label: webviewLabel, level: next }).catch(
-            () => {}
-          )
-        })
-        return
-      }
-
-      if (mod && e.key === "0") {
-        e.preventDefault()
-        setZoomLevel(webviewLabel, 1.0)
-        import("@tauri-apps/api/core").then(({ invoke }) => {
-          invoke("webview_set_zoom", {
-            label: webviewLabel,
-            level: 1.0,
-          }).catch(() => {})
-        })
-        return
-      }
-    }
-
-    window.addEventListener("keydown", handler)
-    return () => window.removeEventListener("keydown", handler)
-  }, [])
-}
-
-function useTerminalShortcuts() {
-  const togglePanel = useTerminalStore(s => s.togglePanel);
-  const openTerminal = useTerminalStore(s => s.openTerminal);
-  const closeTerminal = useTerminalStore(s => s.closeTerminal);
-  const workspacePath = useWorkspaceStore(s => s.workspacePath);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!workspacePath) return;
-      const mod = e.metaKey || e.ctrlKey;
-
-      // Ctrl + ` (backtick) — toggle terminal panel
-      if (e.ctrlKey && e.key === "`") {
-        e.preventDefault();
-        togglePanel(workspacePath);
-        return;
-      }
-
-      // Only act on Cmd+T / Cmd+W when focus is inside a terminal viewport.
-      const focused = document.activeElement;
-      const inTerminal = focused?.closest?.(".xterm") != null;
-      if (!inTerminal) return;
-
-      if (mod && e.key.toLowerCase() === "t") {
-        e.preventDefault();
-        void openTerminal(workspacePath, {
-          cwd: workspacePath,
-          allowedRoots: [workspacePath],
-        });
-        return;
-      }
-
-      if (mod && e.key.toLowerCase() === "w") {
-        e.preventDefault();
-        const state = useTerminalStore.getState();
-        const activeId = state.activeTabByWorkspace[workspacePath];
-        if (activeId) void closeTerminal(activeId);
-        return;
-      }
-    };
-
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [workspacePath, togglePanel, openTerminal, closeTerminal]);
-}
-
-// Main content component - shows chat with tab overlay
-// ChatPanel is always mounted to preserve state, hidden when a tab is active
-function MainContent() {
-  const activeTab = useTabsStore(selectActiveTab);
-  const mainContentLayout = useUIStore((s) => s.mainContentLayout);
-  const sidebarFilter = useUIStore((s) => s.sidebarFilter);
-  const teamShareDetail = useTeamShareBrowserStore((s) => s.detailTarget);
-  const directTeamShareSection =
-    sidebarFilter.kind === "teamShare" && sidebarFilter.section !== "knowledge"
-      ? sidebarFilter.section
-      : null;
-  const visibleTeamShareDetail =
-    directTeamShareSection && teamShareSectionForTarget(teamShareDetail) === directTeamShareSection
-      ? teamShareDetail
-      : null;
-  // Ideas mirror team-share: the section owns the main column, no tabs involved.
-  const directIdeasSection = sidebarFilter.kind === "ideas";
-  const directActorsSection = sidebarFilter.kind === "actors";
-  const mainColumnOwned = !!directTeamShareSection || directIdeasSection || directActorsSection;
-  const splitContainerRef = useRef<HTMLDivElement | null>(null);
-  const [splitContainerWidth, setSplitContainerWidth] = useState(0);
-  const mainSplitLeftMaxWidth =
-    splitContainerWidth > 0 ? Math.max(360, splitContainerWidth - 280) : undefined;
-  const { mainSplitLeftWidth, handleMainSplitResize } = useResizablePanels({
-    mainSplitLeftMaxWidth,
-  });
-  const selectedFile = useWorkspaceStore((s) => s.selectedFile);
-  const fileContent = useWorkspaceStore((s) => s.fileContent);
-  const isLoadingFile = useWorkspaceStore((s) => s.isLoadingFile);
-  const clearSelection = useWorkspaceStore((s) => s.clearSelection);
-  const selectFile = useWorkspaceStore((s) => s.selectFile);
-  const showFind = useWebviewUIStore((s) => s.showFind)
-  const zoomLevels = useWebviewUIStore((s) => s.zoomLevels)
-  const hasActiveTab = !!activeTab;
-
-  // Track previous active tab to detect tab switches (user clicking a different tab)
-  const prevActiveTabId = useRef<string | null>(activeTab?.id ?? null);
-
-  // Sync workspace store when user switches tabs (tab click → load file)
-  useEffect(() => {
-    const tabChanged = activeTab?.id !== prevActiveTabId.current;
-    const hadTab = prevActiveTabId.current !== null;
-    prevActiveTabId.current = activeTab?.id ?? null;
-    if (tabChanged && activeTab?.type === "file") {
-      selectFile(activeTab.target);
-    }
-    // When active file tab is closed (had a tab → now null), clear selectedFile
-    // to prevent stale file re-opening on mode switch
-    if (tabChanged && hadTab && !activeTab) {
-      clearSelection();
-    }
-  }, [activeTab?.id, activeTab?.type, activeTab?.target, selectFile, clearSelection]);
-
-  // Sync file selections to tab store (file opened from chat links, file tree, etc.)
-  useEffect(() => {
-    if (selectedFile) {
-      const filename = selectedFile.split("/").pop() || selectedFile;
-      useTabsStore.getState().openTab({
-        type: "file",
-        target: selectedFile,
-        label: filename,
-      });
-    }
-  }, [selectedFile]);
-
-  useEffect(() => {
-    if (mainContentLayout !== "split") return;
-    const container = splitContainerRef.current;
-    if (!container) return;
-
-    const updateWidth = () => {
-      setSplitContainerWidth(container.getBoundingClientRect().width);
-    };
-
-    updateWidth();
-
-    const observer = new ResizeObserver(() => {
-      updateWidth();
-    });
-    observer.observe(container);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [mainContentLayout]);
-
-  const fileArea = (
-    <div className="relative h-full flex flex-col">
-      {!mainColumnOwned && <TabBar />}
-      {!mainColumnOwned && hasActiveTab && activeTab.type === "webview" && (
-        <WebViewToolbar
-          url={activeTab.target}
-          label={urlToLabel(activeTab.target)}
-          zoomLevel={zoomLevels[urlToLabel(activeTab.target)]}
-        />
-      )}
-      {!mainColumnOwned && hasActiveTab && activeTab.type === "webview" && showFind && (
-        <FindInPageBar
-          label={urlToLabel(activeTab.target)}
-          onClose={() => useWebviewUIStore.getState().setShowFind(false)}
-        />
-      )}
-      <div className="relative flex-1">
-        {directTeamShareSection ? (
-          <div className="absolute inset-0 bg-background">
-            {visibleTeamShareDetail ? (
-              <React.Suspense fallback={<PaneLoading />}>
-                <TeamShareDetailContent target={visibleTeamShareDetail} />
-              </React.Suspense>
-            ) : null}
-          </div>
-        ) : directIdeasSection ? (
-          <div className="absolute inset-0 bg-background">
-            <React.Suspense fallback={<PaneLoading />}>
-              <IdeasDetailColumn />
-            </React.Suspense>
-          </div>
-        ) : directActorsSection ? (
-          <div className="absolute inset-0 bg-background">
-            <React.Suspense fallback={<PaneLoading />}>
-              <ActorsDetailColumn />
-            </React.Suspense>
-          </div>
-        ) : hasActiveTab ? (
-          <div className={cn(
-            "absolute inset-0",
-            activeTab.type === "webview" ? "bg-transparent pointer-events-none" : "bg-background"
-          )}>
-            {activeTab.type === "file" ? (
-              <FileContentViewer
-                selectedFile={selectedFile}
-                fileContent={fileContent}
-                isLoadingFile={isLoadingFile}
-                onClose={() => {
-                  clearSelection();
-                  useTabsStore.getState().closeTab(activeTab.id);
-                }}
-              />
-            ) : (
-              <TabContentRenderer />
-            )}
-          </div>
-        ) : (
-          mainContentLayout === "split" ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              Select a file or web tab
-            </div>
-          ) : null
-        )}
-      </div>
-    </div>
-  );
-
-  if (mainContentLayout === "split") {
-    return (
-      <div
-        ref={splitContainerRef}
-        className="flex h-full min-h-0 overflow-hidden bg-background"
-        data-testid="main-content-split"
-      >
-        <div
-          className="min-w-0 shrink-0 overflow-hidden border-r border-border bg-background"
-          style={{ width: mainSplitLeftWidth }}
-        >
-          {fileArea}
-        </div>
-        <ResizeHandle
-          onResize={handleMainSplitResize}
-          className="bg-border/60 hover:bg-primary/50"
-          testId="main-content-split-resize-handle"
-        />
-        <div className="relative min-w-0 flex-1 overflow-hidden bg-background">
-          <ErrorBoundary scope="Chat" inline>
-            <ChatPanel />
-          </ErrorBoundary>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative h-full flex flex-col">
-      {fileArea}
-      <div
-        className={`absolute inset-0 ${hasActiveTab || mainColumnOwned ? "invisible" : "visible"}`}
-      >
-        <ErrorBoundary scope="Chat" inline>
-          <ChatPanel />
-        </ErrorBoundary>
-      </div>
-    </div>
-  );
-}
-
-// Terminal toggle button in header
-function TerminalToggleButton({ workspacePath }: { workspacePath: string }) {
-  const { t } = useTranslation();
-  const terminalOpen = useTerminalStore(
-    s => Boolean(s.panelOpenByWorkspace[workspacePath]),
-  );
-  const togglePanel = useTerminalStore(s => s.togglePanel);
-  return (
-    <button
-      className={cn(
-        "ml-1 rounded p-1 transition-colors hover:bg-muted hover:text-foreground",
-        terminalOpen ? "bg-muted text-foreground" : "text-muted-foreground",
-      )}
-      onClick={() => togglePanel(workspacePath)}
-      title={t("terminal.toggle", "Toggle terminal (⌃`)")}
-    >
-      <TerminalSquare className="h-4 w-4" />
-    </button>
-  );
-}
-
-// Header panel tab button component
-function HeaderPanelTab({
-  icon: Icon,
-  label,
-  count,
-  isActive,
-  onClick,
-}: {
-  icon: ComponentType<{ className?: string }>;
-  label: string;
-  count?: number;
-  isActive: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className={`flex items-center gap-1.5 px-2 py-1 text-xs transition-colors rounded ${
-        isActive
-          ? "bg-muted text-foreground"
-          : "text-muted-foreground hover:text-foreground hover:bg-muted"
-      }`}
-      onClick={onClick}
-    >
-      <Icon className="h-4 w-4" />
-      {isActive && <span>{label}</span>}
-      {!!count && count > 0 && (
-        <span
-          className={`min-w-[1.25rem] h-5 px-1 rounded-full text-[10px] font-medium flex items-center justify-center ${
-            isActive ? "bg-primary/20 text-primary" : "bg-muted-foreground/20"
-          }`}
-        >
-          {count > 99 ? "99+" : count}
-        </span>
-      )}
-    </button>
-  );
-}
-
-// Resize handle component for resizable panels
-function ResizeHandle({
-  onResize,
-  direction = "horizontal",
-  className = "",
-  testId,
-}: {
-  onResize: (delta: number) => void;
-  direction?: "horizontal" | "vertical";
-  className?: string;
-  testId?: string;
-}) {
-  const [isDragging, setIsDragging] = useState(false);
-  const startPosRef = useRef(0);
-
-  const handleMouseDown = (e: ReactMouseEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-    startPosRef.current = direction === "horizontal" ? e.clientX : e.clientY;
-
-    const handleMouseMove = (moveEvent: globalThis.MouseEvent) => {
-      const currentPos =
-        direction === "horizontal" ? moveEvent.clientX : moveEvent.clientY;
-      const delta = currentPos - startPosRef.current;
-      startPosRef.current = currentPos;
-      onResize(delta);
-    };
-
-    const handleMouseUp = () => {
-      setIsDragging(false);
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
-    document.body.style.cursor =
-      direction === "horizontal" ? "col-resize" : "row-resize";
-    document.body.style.userSelect = "none";
-  };
-
-  return (
-    <div
-      className={`
-        ${direction === "horizontal" ? "w-1 cursor-col-resize" : "h-1 cursor-row-resize"}
-        ${isDragging ? "bg-primary" : "bg-transparent hover:bg-primary/50"}
-        transition-colors duration-150 flex-shrink-0 z-20
-        ${className}
-      `}
-      data-testid={testId}
-      onMouseDown={handleMouseDown}
-    >
-      {/* Larger hit area */}
-      <div
-        className={`
-          ${direction === "horizontal" ? "w-3 h-full -ml-1" : "h-3 w-full -mt-1"}
-        `}
-      />
-    </div>
-  );
-}
-
 
 // Inner component to access sidebar context
 function AppContent() {
