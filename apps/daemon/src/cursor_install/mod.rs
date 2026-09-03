@@ -2,7 +2,6 @@
 
 use serde::Serialize;
 
-use crate::process_util::CommandNoWindow;
 use crate::runtime::cursor_sdk::process::{default_bridge_command, default_bridge_main};
 use crate::runtime::sidecar::bridge_path::sdk_installed_for_main;
 
@@ -41,14 +40,12 @@ pub fn doctor() -> CursorStatus {
 
 fn which_node() -> Option<String> {
     // node is the one dependency of the cursor bridge we can look for
-    // ourselves; a Homebrew node is invisible to a GUI-launched daemon's PATH.
-    let out = std::process::Command::new("node")
-        .no_window()
-        .arg("--version")
-        .env("PATH", crate::runtime::well_known_bin::augmented_path())
-        .output()
-        .ok()?;
-    out.status.success().then(|| "node".to_string())
+    // ourselves; a Homebrew node is invisible to a GUI-launched daemon's PATH,
+    // and a version-managed one (nvm / fnm / n / volta) is invisible to *any*
+    // PATH we inherit, since those live in `~/.zshrc`. The shared resolver
+    // knows where to look; the bridge declares no minimum, so any node that
+    // answers counts.
+    teamclu_runtime_env::node::resolve_node("0.0.0").map(|n| n.path.to_string_lossy().to_string())
 }
 
 fn personal_store_has_cursor_api_key() -> bool {

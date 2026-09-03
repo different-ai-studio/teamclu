@@ -127,7 +127,7 @@ interface DiagnosticBundleParts {
   }
 }
 
-interface DaemonInfoBody {
+export interface DaemonInfoBody {
   version?: string
   uptime_seconds?: number
   actor_id?: string

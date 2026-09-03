@@ -20,13 +20,23 @@ pub struct RequirementStatus {
     pub version: Option<String>,
     /// What is missing, when we can say something better than "not installed".
     ///
-    /// Only cursor sets it today: its doctor `satisfied` is an AND of four
-    /// unrelated conditions, one of which is an API key. `present` deliberately
-    /// leaves the key out (see [`runtime_installed`]), so this is set even on a
-    /// runtime that *is* installed — "here, but not usable yet, and this is
-    /// why". `None` means the plain "not installed" reading is correct.
+    /// Set by cursor and pi, whose doctor `satisfied` is an AND of several
+    /// unrelated conditions — an API key, a Node version, an npm package
+    /// installed beside the extension. `present` deliberately leaves cursor's
+    /// key out (see [`runtime_installed`]), so this is set even on a runtime
+    /// that *is* installed — "here, but not usable yet, and this is why".
+    /// `None` means the plain "not installed" reading is correct.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocker: Option<String>,
+    /// What the blocker actually found, when naming it is the difference
+    /// between an answer and a wild goose chase: `20.20.2 (/usr/local/bin/node)`
+    /// for a node that exists but is too old. The reported case spent a support
+    /// round trip on "node missing" shown next to a row reading 20.20.2.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocker_found: Option<String>,
+    /// What the blocker needs — pi's minimum Node, the pinned MCP SDK.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocker_required: Option<String>,
 }
 
 /// Rust target triple for the current host (matches the sidecar naming convention).
@@ -211,6 +221,12 @@ pub async fn setup_list_requirements<R: Runtime>(
         .and_then(|r| r["version"].as_str())
         .map(|s| s.to_string());
     let runtime_title = format!("{runtime_name} runtime");
+    let runtime_blocker = (runtime_id == "pi")
+        .then(|| runtime.and_then(pi_blocker))
+        .flatten();
+    let (runtime_blocker_found, runtime_blocker_required) = runtime
+        .map(|r| pi_blocker_detail(runtime_blocker.as_deref(), r))
+        .unwrap_or((None, None));
 
     Ok(vec![
         RequirementStatus {
@@ -220,6 +236,8 @@ pub async fn setup_list_requirements<R: Runtime>(
             // Desktop-managed: the bundled sidecar is the binary we run — no
             // copy into ~/.amuxd/bin is required.
             blocker: None,
+            blocker_found: None,
+            blocker_required: None,
             present: locate_bundled_amuxd().is_some(),
             version: amuxd_version.or_else(|| {
                 locate_bundled_amuxd().and_then(|p| {
@@ -243,9 +261,9 @@ pub async fn setup_list_requirements<R: Runtime>(
             optional: false,
             present: runtime_satisfied,
             version: runtime_version,
-            blocker: (runtime_id == "pi")
-                .then(|| runtime.and_then(pi_blocker))
-                .flatten(),
+            blocker: runtime_blocker,
+            blocker_found: runtime_blocker_found,
+            blocker_required: runtime_blocker_required,
         },
     ])
 }
@@ -301,12 +319,60 @@ fn cursor_blocker(node: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// Pi's global npm shim still runs with the host Node binary. Do not let the
-/// setup wizard launch its install command until Node meets Pi's declared
-/// minimum; otherwise both the guided and self-select paths fail only after a
-/// slow npm request.
+/// Which of pi's three preconditions to name in the UI.
+///
+/// `pi.satisfied` is `pi_version && node && mcp_sdk`, and only the first of
+/// those is "the user installed pi" — so a bare "pi is not installed" was a
+/// false statement on a machine that had pi, and pointed at the one thing that
+/// was already done. Node comes first: installing the SDK changes nothing while
+/// npm cannot run.
+///
+/// Node is split in two because the fixes are different. `node` means there is
+/// no Node here at all; `node_outdated` means there is one and it is too old,
+/// which on a machine with several Nodes is the answer that saves the user from
+/// hunting for a version they already have.
 fn pi_blocker(node: &serde_json::Value) -> Option<String> {
-    (!node["nodeSatisfied"].as_bool().unwrap_or(false)).then(|| "node".to_string())
+    let flag = |k: &str| node[k].as_bool().unwrap_or(false);
+    if !flag("nodeSatisfied") {
+        return Some(if flag("nodePresent") {
+            "node_outdated".to_string()
+        } else {
+            "node".to_string()
+        });
+    }
+    // The MCP SDK is installed beside the pi extension, by us, not by the user
+    // — so a pi installed from a terminal (or an install whose SDK step failed)
+    // leaves pi present, current, and still unable to start a session.
+    if !flag("mcpSdkSatisfied") {
+        return Some("mcp_sdk".to_string());
+    }
+    None
+}
+
+/// The "found" / "required" pair that goes with [`pi_blocker`]'s answer.
+fn pi_blocker_detail(
+    blocker: Option<&str>,
+    node: &serde_json::Value,
+) -> (Option<String>, Option<String>) {
+    let text = |k: &str| {
+        node[k]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    match blocker {
+        Some("node_outdated") => {
+            let found = match (text("nodeVersion"), text("nodePath")) {
+                (Some(v), Some(path)) => Some(format!("{} ({path})", v.trim_start_matches('v'))),
+                (Some(v), None) => Some(v),
+                _ => None,
+            };
+            (found, text("requiredNodeVersion"))
+        }
+        Some("node") => (None, text("requiredNodeVersion")),
+        Some("mcp_sdk") => (text("mcpSdkVersion"), text("requiredMcpSdkVersion")),
+        _ => (None, None),
+    }
 }
 
 /// Install status of every agent runtime the user can pick from (#881).
@@ -330,6 +396,15 @@ pub async fn setup_list_agent_runtimes<R: Runtime>(
     let doctor = read_doctor(&app, None).await;
     let status = |id: &str, key: &str, title: &str| {
         let node = doctor.as_ref().map(|d| &d[key]);
+        let blocker = match id {
+            "cursor" => node.and_then(cursor_blocker),
+            "pi" => node.and_then(pi_blocker),
+            _ => None,
+        };
+        let (found, required) = match (id, node) {
+            ("pi", Some(node)) => pi_blocker_detail(blocker.as_deref(), node),
+            _ => (None, None),
+        };
         RequirementStatus {
             id: id.to_owned(),
             title: title.to_owned(),
@@ -343,11 +418,11 @@ pub async fn setup_list_agent_runtimes<R: Runtime>(
             // Reported whether or not the runtime is present: a cursor install
             // with no API key is here and pickable, and the UI still has to be
             // able to say what it is waiting on.
-            blocker: match id {
-                "cursor" => node.and_then(cursor_blocker),
-                "pi" => node.and_then(pi_blocker),
-                _ => None,
-            },
+            blocker,
+            // Only pi carries a found/required pair today: cursor's blockers
+            // are all "this is absent", which the label already says.
+            blocker_found: found,
+            blocker_required: required,
         }
     };
     Ok(RUNTIMES
@@ -613,6 +688,72 @@ mod tests {
     #[test]
     fn target_triple_has_dash() {
         assert!(target_triple().contains('-'));
+    }
+
+    fn pi_doctor(node_present: bool, node_ok: bool, sdk_ok: bool) -> serde_json::Value {
+        serde_json::json!({
+            "present": true,
+            "version": "0.84.4",
+            "requiredVersion": "0.84.2",
+            "nodePresent": node_present,
+            "nodeVersion": node_present.then_some("v20.20.2"),
+            "nodePath": node_present.then_some("/usr/local/bin/node"),
+            "nodeSatisfied": node_ok,
+            "requiredNodeVersion": "22.19.0",
+            "mcpSdkSatisfied": sdk_ok,
+            "mcpSdkVersion": serde_json::Value::Null,
+            "requiredMcpSdkVersion": "1.30.0",
+            "satisfied": node_ok && sdk_ok,
+        })
+    }
+
+    #[test]
+    fn a_node_that_is_present_but_too_old_is_not_reported_as_missing() {
+        // The reported machine: three Nodes installed, the one we resolve is an
+        // abandoned nvm 20 — and the UI said "node missing" beside a
+        // Dependencies row reading 20.20.2.
+        let doctor = pi_doctor(true, false, true);
+        assert_eq!(pi_blocker(&doctor).as_deref(), Some("node_outdated"));
+        let (found, required) = pi_blocker_detail(Some("node_outdated"), &doctor);
+        assert_eq!(found.as_deref(), Some("20.20.2 (/usr/local/bin/node)"));
+        assert_eq!(required.as_deref(), Some("22.19.0"));
+    }
+
+    #[test]
+    fn no_node_at_all_still_reads_as_missing() {
+        let doctor = pi_doctor(false, false, true);
+        assert_eq!(pi_blocker(&doctor).as_deref(), Some("node"));
+        let (found, required) = pi_blocker_detail(Some("node"), &doctor);
+        assert_eq!(found, None, "nothing was found — do not invent a version");
+        assert_eq!(required.as_deref(), Some("22.19.0"));
+    }
+
+    #[test]
+    fn a_pi_whose_mcp_sdk_is_missing_says_so_instead_of_not_installed() {
+        // pi installed by hand in a terminal never gets the SDK, which amuxd
+        // installs beside the extension. Dependencies called it "Up to date";
+        // the runtime picker called it "not installed on this machine". Both
+        // were reading a different half of the same doctor report.
+        let doctor = pi_doctor(true, true, false);
+        assert_eq!(pi_blocker(&doctor).as_deref(), Some("mcp_sdk"));
+        let (found, required) = pi_blocker_detail(Some("mcp_sdk"), &doctor);
+        assert_eq!(found, None);
+        assert_eq!(required.as_deref(), Some("1.30.0"));
+    }
+
+    #[test]
+    fn node_is_named_before_the_sdk() {
+        // Installing the SDK runs npm, which runs on node: naming the SDK first
+        // would send the user at a step that cannot succeed yet.
+        assert_eq!(
+            pi_blocker(&pi_doctor(true, false, false)).as_deref(),
+            Some("node_outdated")
+        );
+    }
+
+    #[test]
+    fn a_ready_pi_has_no_blocker() {
+        assert_eq!(pi_blocker(&pi_doctor(true, true, true)), None);
     }
 
     #[test]

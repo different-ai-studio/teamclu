@@ -28,32 +28,55 @@ mod terminal;
 pub mod test_home;
 mod webview_recovery;
 
-/// Get the mtime of the user's shell profile file as a u64 (seconds since epoch).
-/// Returns 0 if the file doesn't exist or can't be read.
-fn get_shell_profile_mtime(shell: &str, home: &str) -> u64 {
-    let profile = if shell.ends_with("zsh") {
-        format!("{}/.zshrc", home)
+/// Every startup file of `shell` that can change PATH.
+///
+/// All of them, not just the interactive one: nvm and fnm write to `.zshrc`,
+/// Homebrew's installer writes to `.zprofile`, and a cache keyed on one of them
+/// happily serves a stale PATH after the user edits the other.
+fn shell_profile_files(shell: &str, home: &str) -> Vec<String> {
+    let names: &[&str] = if shell.ends_with("zsh") {
+        &[".zshrc", ".zprofile", ".zshenv", ".zlogin"]
     } else if shell.ends_with("bash") {
-        format!("{}/.bashrc", home)
+        &[".bashrc", ".bash_profile", ".bash_login", ".profile"]
     } else {
-        return 0;
+        return Vec::new();
     };
-    std::fs::metadata(&profile)
-        .and_then(|m| m.modified())
-        .and_then(|t| {
-            t.duration_since(std::time::UNIX_EPOCH)
-                .map_err(std::io::Error::other)
+    names.iter().map(|n| format!("{}/{}", home, n)).collect()
+}
+
+/// Newest mtime across the shell's startup files, as seconds since epoch.
+/// Returns 0 when none of them exists or can be read.
+fn get_shell_profile_mtime(shell: &str, home: &str) -> u64 {
+    shell_profile_files(shell, home)
+        .iter()
+        .filter_map(|profile| {
+            std::fs::metadata(profile)
+                .and_then(|m| m.modified())
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs())
         })
-        .map(|d| d.as_secs())
+        .max()
         .unwrap_or(0)
 }
 
-/// Read cached PATH if cache exists and profile mtime matches.
+/// Bumped whenever the probe itself changes, so every existing cache misses
+/// once. Without it the fix that made the probe read `~/.zshrc` would not have
+/// reached anyone who already had a cache file: the key is the profile's mtime,
+/// and fixing our own code does not touch the user's profile.
+const PATH_CACHE_VERSION: u32 = 2;
+
+/// Read cached PATH if the cache was written by this probe and the profile
+/// mtime still matches.
 fn read_path_cache(cache_path: &std::path::Path, current_mtime: u64) -> Option<String> {
     let content = std::fs::read_to_string(cache_path).ok()?;
     let mut lines = content.lines();
-    let cached_mtime: u64 = lines.next()?.parse().ok()?;
-    if cached_mtime != current_mtime || current_mtime == 0 {
+    let (version, cached_mtime) = lines.next()?.split_once(':')?;
+    if version.parse::<u32>().ok()? != PATH_CACHE_VERSION {
+        return None;
+    }
+    if cached_mtime.parse::<u64>().ok()? != current_mtime || current_mtime == 0 {
         return None;
     }
     let path = lines.next()?;
@@ -68,7 +91,7 @@ fn write_path_cache(cache_path: &std::path::Path, mtime: u64, path: &str) {
     if let Some(parent) = cache_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let content = format!("{}\n{}", mtime, path);
+    let content = format!("{}:{}\n{}", PATH_CACHE_VERSION, mtime, path);
     let _ = std::fs::write(cache_path, content);
 }
 
@@ -77,19 +100,55 @@ fn write_path_cache(cache_path: &std::path::Path, mtime: u64, path: &str) {
 /// stuck profile and we fall back rather than block startup.
 const SHELL_PATH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Run `<shell> -l -c 'echo $PATH'` with a hard wall-clock timeout.
+/// Marks our line in the probe's output. An interactive shell prints whatever
+/// the user's prompt framework prints (powerlevel10k's instant prompt, version
+/// managers announcing themselves, MOTDs), so the answer has to be findable
+/// rather than "whatever came out".
+const PATH_PROBE_SENTINEL: &str = "__TEAMCLU_PATH__";
+
+/// Extract the probe's answer from a shell's noisy output.
+fn parse_probed_path(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix(PATH_PROBE_SENTINEL))
+        .map(str::to_string)
+        .filter(|path| !path.is_empty())
+}
+
+/// Run `<shell> [-i] -l -c 'echo <sentinel>$PATH'` with a hard wall-clock
+/// timeout.
+///
+/// `interactive` is the whole point of this probe. zsh reads `~/.zshrc` only
+/// for *interactive* shells, and `~/.zshrc` is where every Node version manager
+/// installs itself — nvm, fnm, n, volta, asdf all put their PATH entry there.
+/// A plain `-l -c` therefore returns a PATH the user's terminal never uses, and
+/// the app then measures whichever stale `node` is left in `/usr/local/bin`.
 ///
 /// Runs on the background thread `start_path_probe` spawns; the timeout here is
 /// the *child's* budget, not the main thread's wait. On timeout the child is
 /// killed and an error is returned, so nothing lingers when a shell profile
 /// hangs on a dead network mount.
-fn spawn_shell_path_probe(shell: &str) -> std::io::Result<std::process::Output> {
+fn spawn_shell_path_probe(shell: &str, interactive: bool) -> std::io::Result<std::process::Output> {
     use crate::process_util::CommandNoWindow;
     use std::process::Stdio;
 
+    let script = format!("echo {PATH_PROBE_SENTINEL}$PATH");
+    let mut args: Vec<&str> = Vec::new();
+    if interactive {
+        args.push("-i");
+    }
+    args.extend(["-l", "-c", script.as_str()]);
     let mut child = std::process::Command::new(shell)
         .no_window()
-        .args(["-l", "-c", "echo $PATH"])
+        .args(&args)
+        // A GUI app inherits no TERM, and an interactive zsh without one warns
+        // about a missing terminal definition on the way through. A real
+        // terminfo name, deliberately not `dumb`: the widespread tramp guard
+        // (`[[ $TERM == dumb ]] && return`) sits at the *top* of a `.zshrc`, so
+        // asking for the plain version of a profile would skip the very lines
+        // this probe was made interactive to read.
+        .env("TERM", "xterm-256color")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
@@ -243,20 +302,20 @@ fn start_path_probe() -> Option<PendingPathProbe> {
     std::thread::Builder::new()
         .name("path-probe".into())
         .spawn(move || {
-            let probed = match spawn_shell_path_probe(&shell) {
-                Ok(o) if o.status.success() => {
-                    let full_path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if full_path.is_empty() {
-                        None
-                    } else {
-                        // Write the cache even if the main thread has already
-                        // given up: the point of the cache is the next launch.
-                        write_path_cache(&cache_path, profile_mtime, &full_path);
-                        Some(full_path)
-                    }
+            // Interactive first — that is the only mode which reads `~/.zshrc`,
+            // where every Node version manager installs itself — then plain
+            // login for a profile that misbehaves without a terminal.
+            let probed = [true, false].into_iter().find_map(|interactive| {
+                let out = spawn_shell_path_probe(&shell, interactive).ok()?;
+                if !out.status.success() {
+                    return None;
                 }
-                _ => None,
-            };
+                let full_path = parse_probed_path(&String::from_utf8_lossy(&out.stdout))?;
+                // Write the cache even if the main thread has already given
+                // up: the point of the cache is the next launch.
+                write_path_cache(&cache_path, profile_mtime, &full_path);
+                Some(full_path)
+            });
             // The receiver is gone if startup timed out — that is fine.
             let _ = tx.send(probed);
         })
@@ -971,4 +1030,60 @@ pub fn run() {
                 _ => {}
             }
         });
+}
+
+// Kept at the end of the file: clippy's `items_after_test_module` fires on a
+// `#[cfg(test)] mod` with anything after it, and CI lints `--all-targets`.
+#[cfg(test)]
+mod path_env_tests {
+    use super::*;
+
+    #[test]
+    fn the_answer_is_found_among_a_noisy_profile_s_output() {
+        // An interactive shell prints whatever the user's prompt framework
+        // prints. Taking "the output" as the PATH would set PATH to a banner.
+        let stdout = format!(
+            "p10k instant prompt\nnvm: using v24.18.0\n{PATH_PROBE_SENTINEL}/a/bin:/b/bin\n"
+        );
+        assert_eq!(parse_probed_path(&stdout).as_deref(), Some("/a/bin:/b/bin"));
+    }
+
+    #[test]
+    fn output_without_our_marker_is_not_a_path() {
+        assert_eq!(parse_probed_path("some warning\n"), None);
+        assert_eq!(parse_probed_path(&format!("{PATH_PROBE_SENTINEL}\n")), None);
+    }
+
+    #[test]
+    fn zsh_profiles_cover_the_interactive_file_version_managers_write_to() {
+        let files = shell_profile_files("/bin/zsh", "/home/u");
+        assert!(files.contains(&"/home/u/.zshrc".to_string()), "{files:?}");
+        assert!(
+            files.contains(&"/home/u/.zprofile".to_string()),
+            "{files:?}"
+        );
+        assert!(shell_profile_files("/usr/bin/fish", "/home/u").is_empty());
+    }
+
+    #[test]
+    fn a_cache_from_the_previous_probe_is_not_reused() {
+        // The whole point of the version: the profile's mtime is unchanged when
+        // *our* probe is what got fixed, so without it every existing install
+        // would keep serving the PATH the old probe captured.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cached-path.txt");
+        std::fs::write(&cache, "1770000000\n/old/bin").unwrap();
+        assert_eq!(read_path_cache(&cache, 1770000000), None);
+
+        write_path_cache(&cache, 1770000000, "/new/bin");
+        assert_eq!(
+            read_path_cache(&cache, 1770000000).as_deref(),
+            Some("/new/bin")
+        );
+        assert_eq!(
+            read_path_cache(&cache, 1770000001),
+            None,
+            "mtime still keys it"
+        );
+    }
 }

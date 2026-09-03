@@ -2,7 +2,6 @@ import type {
   DiagnosticCauseCode,
   DiagnosticContext,
   DiagnosticFinding,
-  FindingConfidence,
   FindingStatus,
   TraceEvent,
 } from './types'

@@ -521,6 +521,7 @@
     "settings": "Settings"
   },
   "chat": {
+    "diagnoseSession": "Diagnose this session",
     "sendStatus": {
       "sending": "Sending…",
       "delivered": "Delivered",
@@ -949,7 +950,9 @@
       "install": "Install",
       "upgrade": "Upgrade",
       "needsApiKey": "Needs an API key — add it in Settings → LLM later.",
-      "needsNode": "Install Node.js 22.19 or later to use Pi.",
+      "needsNode": "Install Node.js {{required}} or later to use Pi.",
+      "needsNewerNode": "Node {{found}} is too old for Pi, which needs {{required}} or later. Switch to a newer Node, then restart the app.",
+      "needsMcpSdk": "Pi is here; its MCP bridge is not. Install to finish it.",
       "recheck": "I installed Node.js — check again",
       "rechecking": "Checking…",
       "installed": "installed",
@@ -1469,6 +1472,12 @@
       "desktopOnlyDetail": "One-click diagnostics requires the TeamClu Desktop client. Install it and try again.",
       "openFromError": "Open Diagnostics",
       "openFromSidebar": "Run diagnostics",
+      "sessionFocus": "Looking at session {{id}}",
+      "mqttReconnected": "MQTT reconnect requested",
+      "mqttReconnectFailed": "Reconnect failed: {{message}}",
+      "confirmReloginTitle": "Sign in again?",
+      "confirmReloginDescription": "Signs out of this account and returns to the login page, so the session and MQTT credentials are reissued.",
+      "confirmReloginAction": "Sign out",
       "liveConsole": {
         "title": "Live Debug Console",
         "description": "View console output, runtime state, and disk logs without Web Inspector.",
@@ -1733,8 +1742,12 @@
       "runtimeNotInstalled": "not installed",
       "runtimeNeedsApiKey": "API key missing",
       "runtimeNeedsNode": "node missing",
+      "runtimeNodeOutdated": "node too old",
+      "runtimeMcpSdkMissing": "MCP bridge missing",
       "runtimeBridgeMissing": "bridge not ready",
       "runtimeBlockedHint": "{{agent}} is not usable yet: {{reason}}. Until then, agents in this team cannot start.",
+      "runtimeBlockerFound": "Found {{found}}; {{required}} or later is required.",
+      "runtimeBlockerNeeds": "{{required}} or later is required.",
       "runtimeScope": "Runtime scope",
       "runtimeCurrentTeam": "the current team",
       "runtimePerTeamHint": "The runtime is configured per team — this setting applies to {{team}} only.",
@@ -2886,7 +2899,10 @@
       "updateDone": "Updated",
       "updateFailed": "Update failed",
       "installFailed": "Install failed",
-      "upToDate": "Up to date"
+      "upToDate": "Up to date",
+      "repair": "Repair",
+      "repairTitle": "Reinstall to restore the pieces this runtime is missing",
+      "needsRepairHint": "Installed and current, but not usable yet — part of the runtime is missing. Repair reinstalls it."
     },
     "permissions": {
       "allow": "Allow",

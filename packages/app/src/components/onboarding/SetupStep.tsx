@@ -10,6 +10,7 @@ import {
   type InstallProgress,
   type InstallRoute,
   type RequirementStatus,
+  type RuntimeBlocker,
 } from '@/stores/setup'
 import { useOnboardingStore, type OnboardingRole } from '@/stores/onboarding'
 import { useElapsedSeconds } from '@/hooks/use-elapsed-seconds'
@@ -87,9 +88,68 @@ export function resolveGuidedRuntime(build: DaemonLocalAgent): DaemonLocalAgent 
 
 const GUIDED_RUNTIME = resolveGuidedRuntime(localAgent)
 
-/** A runtime is usable if installed, even when a pinned upgrade is pending. */
+/**
+ * Blockers that stop a runtime from running at all — not "later, in Settings".
+ *
+ * Cursor's missing API key is deliberately not one: it is entered in Settings,
+ * which exists only after onboarding, so gating on it hid the card entirely.
+ * pi's three are the opposite — no npm step and no key can start a runtime
+ * whose Node is too old or whose MCP bridge was never installed.
+ */
+const HARD_BLOCKERS = new Set<RuntimeBlocker>(['node', 'node_outdated', 'mcp_sdk'])
+
+/**
+ * A runtime is usable if installed, even when a pinned upgrade is pending —
+ * unless something that is not the install itself stops it from running.
+ * A pi installed by hand reports a version and cannot start a session, and
+ * letting Continue through on that produced a finished setup with a dead agent.
+ */
 function usable(r: RequirementStatus | undefined): boolean {
-  return !!r && (r.present || r.version != null)
+  if (!r) return false
+  if (r.present) return true
+  return r.version != null && !(r.blocker != null && HARD_BLOCKERS.has(r.blocker))
+}
+
+/**
+ * Blockers no amount of installing pi can clear, because the install runs on
+ * node. The Install button is hidden for these and the recheck offered instead.
+ */
+function nodeBlocks(blocker: RuntimeBlocker | null | undefined): boolean {
+  return blocker === 'node' || blocker === 'node_outdated'
+}
+
+/**
+ * One line saying what a runtime is still waiting on, naming the version we
+ * found where there is one. "Needs Node 22.19 or later" is not enough on a
+ * machine holding three Nodes; "Node 20.20.2 (/usr/local/bin/node) is too old"
+ * is what tells the user which of them we mean.
+ */
+function blockerNote(
+  req: RequirementStatus,
+  t: (key: string, fallback: string, opts?: Record<string, unknown>) => string,
+): string | null {
+  // Only reached when the doctor report predates `requiredNodeVersion` — the
+  // sidecar ships with the app, so in practice never. Still not an empty
+  // string: "install Node.js  or later" is worse than a slightly stale number.
+  const required = req.blockerRequired ?? '22.19'
+  switch (req.blocker) {
+    case 'api_key':
+      return t('onboarding.setup.needsApiKey', 'Needs an API key — add it in Settings → LLM later.')
+    case 'node':
+      return t('onboarding.setup.needsNode', 'Install Node.js {{required}} or later to use Pi.', {
+        required,
+      })
+    case 'node_outdated':
+      return t(
+        'onboarding.setup.needsNewerNode',
+        'Node {{found}} is too old for Pi, which needs {{required}} or later. Switch to a newer Node, then restart the app.',
+        { found: req.blockerFound ?? '', required },
+      )
+    case 'mcp_sdk':
+      return t('onboarding.setup.needsMcpSdk', 'Pi is here; its MCP bridge is not. Install to finish it.')
+    default:
+      return null
+  }
 }
 
 function RuntimeCard({
@@ -110,6 +170,7 @@ function RuntimeCard({
 }) {
   const { t } = useTranslation()
   const Icon = RUNTIME_ICON[runtime.id] ?? Terminal
+  const note = blockerNote(runtime, t)
   const installed = usable(runtime)
   const selectable = installed && !busy
   // `present` means "no action needed"; an installed-but-outdated runtime comes
@@ -163,17 +224,8 @@ function RuntimeCard({
           concern, and Settings only exists after onboarding. Say what is still
           missing rather than hiding the card, which is what gating on the key
           amounted to. */}
-      {runtime.blocker === 'api_key' && (
-        <span className="text-[11px] leading-4 text-faint">
-          {t('onboarding.setup.needsApiKey', 'Needs an API key — add it in Settings → LLM later.')}
-        </span>
-      )}
-      {runtime.blocker === 'node' && (
-        <span className="text-[11px] leading-4 text-faint">
-          {t('onboarding.setup.needsNode', 'Needs Node.js 22.19 or later before Pi can be installed.')}
-        </span>
-      )}
-      {fetchable && runtime.blocker !== 'node' && (
+      {note && <span className="text-[11px] leading-4 text-faint">{note}</span>}
+      {fetchable && !nodeBlocks(runtime.blocker) && (
         <button
           type="button"
           disabled={busy}
@@ -277,9 +329,8 @@ function DependencyRow({
           <span className="text-[13px] text-foreground">{req.title}</span>
         </span>
         <span className="font-mono text-[11px] text-faint">
-          {req.blocker === 'node'
-            ? t('onboarding.setup.needsNode', 'Needs Node.js 22.19 or later before Pi can be installed.')
-            : req.version ??
+          {blockerNote(req, t) ??
+            req.version ??
             (ok
               ? t('onboarding.setup.ready', 'ready')
               : installing
@@ -375,7 +426,7 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
   // app can fetch.
   const guidedRuntime = agentRuntimes.find((r) => r.id === GUIDED_RUNTIME)
   const guidedRuntimeMissing = role === 'guided' && !!guidedRuntime && !usable(guidedRuntime)
-  const guidedRuntimeNeedsNode = guidedRuntime?.blocker === 'node'
+  const guidedRuntimeNeedsNode = nodeBlocks(guidedRuntime?.blocker)
   const guidedInstallTriggered = React.useRef(false)
   React.useEffect(() => {
     if (!guidedRuntimeMissing || guidedRuntimeNeedsNode || guidedInstallTriggered.current) return
@@ -384,7 +435,7 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
   }, [guidedRuntimeMissing, guidedRuntimeNeedsNode, install])
 
   const selectedRuntime = agentRuntimes.find((r) => r.id === selected)
-  const nodeBlocked = selectedRuntime?.blocker === 'node'
+  const nodeBlocked = nodeBlocks(selectedRuntime?.blocker)
   const runtimeReady = usable(selectedRuntime)
   const canContinue = loaded && !installing && !amuxdMissing && runtimeReady
   /**
@@ -400,7 +451,7 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
     !!installing ||
     amuxdMissing ||
     (guidedRuntimeMissing && !guidedRuntimeNeedsNode) ||
-    (!runtimeReady && visibleRuntimes.length > 0 && selectedRuntime?.blocker !== 'node')
+    (!runtimeReady && visibleRuntimes.length > 0 && !nodeBlocks(selectedRuntime?.blocker))
 
   // Elapsed time for whatever `busy` is covering. Kept in state rather than read
   // during render so the clock starts at the moment work does, and stops dead

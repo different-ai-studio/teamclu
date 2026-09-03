@@ -143,7 +143,8 @@ pub(crate) struct PiProcessPool {
     envs: parking_lot::Mutex<HashMap<PoolKey, SpawnEnv>>,
     /// `[agents.pi].binary` override from daemon config, when configured.
     binary_override: parking_lot::Mutex<Option<String>>,
-    context_service: parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
+    context_service:
+        parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
 }
 
 impl PiProcessPool {
@@ -467,7 +468,8 @@ impl PiProcessPool {
         );
         let generation_id = format!("pi-{}", uuid::Uuid::new_v4());
         if let Some(service) = self.context_service.read().as_ref() {
-            let ctx_env = service.env_for_generation(crate::proto::amux::AgentType::Pi, &generation_id);
+            let ctx_env =
+                service.env_for_generation(crate::proto::amux::AgentType::Pi, &generation_id);
             for (k, v) in ctx_env {
                 cmd.env(k, v);
             }
@@ -619,9 +621,14 @@ pub(crate) fn resolve_host_launch(binary: &str) -> Option<HostLaunch> {
     let package_root = resolve_pi_package_root(Path::new(binary))?;
     // The npm shim's own shebang is `#!/usr/bin/env node`, so a working pi
     // install implies node exists — but a GUI-launched daemon can't rely on
-    // PATH, hence the well-known-dir search first.
-    let node =
-        crate::runtime::well_known_bin::find("node", &[]).unwrap_or_else(|| PathBuf::from("node"));
+    // PATH, and "the first node we can find" is not good enough either: the
+    // first one is routinely an abandoned version-manager symlink too old to
+    // run pi. Take the same node `doctor` reported, so what we check and what
+    // we launch are one decision.
+    let node = crate::pi_install::node()
+        .map(|n| n.path)
+        .or_else(|| crate::runtime::well_known_bin::find("node", &[]))
+        .unwrap_or_else(|| PathBuf::from("node"));
     Some(HostLaunch { node, package_root })
 }
 
@@ -629,12 +636,25 @@ pub(crate) fn resolve_host_launch(binary: &str) -> Option<HostLaunch> {
 /// the ancestor holding `package.json` for `@earendil-works/pi-coding-agent`
 /// with a `dist/index.js` to import.
 fn resolve_pi_package_root(binary: &Path) -> Option<PathBuf> {
-    // A bare name ("pi") has no location to walk from; try PATH-style lookup
-    // through the well-known dirs to make it absolute first.
+    // A bare name ("pi") has no location to walk from; make it absolute first.
+    // Both lookups, because either can be the only one that works: the
+    // well-known dirs cover a GUI-launched daemon with no usable PATH, and the
+    // child PATH covers a pi installed beside a version-managed node
+    // (`~/.n/bin/pi`), which is a directory no fixed list can name. Missing the
+    // second one dropped those installs to the single-session `--mode rpc`
+    // fallback without ever saying so.
+    let name = binary.to_string_lossy();
     let start = if binary.is_absolute() {
         binary.to_path_buf()
     } else {
-        crate::runtime::well_known_bin::find(&binary.to_string_lossy(), &[])?
+        crate::runtime::well_known_bin::find(&name, &[]).or_else(|| {
+            crate::runtime::well_known_bin::find_in_path(
+                &name,
+                crate::pi_install::node()
+                    .as_ref()
+                    .and_then(|n| n.path.parent()),
+            )
+        })?
     };
     let resolved = std::fs::canonicalize(&start).ok()?;
     for dir in resolved.ancestors().skip(1) {

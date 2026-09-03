@@ -9639,6 +9639,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "teamclu-binpath",
  "tempfile",
  "thiserror 2.0.18",
  "toml 0.8.2",

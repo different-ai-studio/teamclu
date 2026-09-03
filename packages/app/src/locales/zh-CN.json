@@ -521,6 +521,7 @@
     "settings": "设置"
   },
   "chat": {
+    "diagnoseSession": "诊断此会话",
     "sendStatus": {
       "sending": "发送中…",
       "delivered": "已送达",
@@ -949,7 +950,9 @@
       "install": "安装",
       "upgrade": "升级",
       "needsApiKey": "缺 API Key——进去后在「设置 → LLM」里填。",
-      "needsNode": "使用 Pi 前请先安装 Node.js 22.19 或更高版本。",
+      "needsNode": "使用 Pi 前请先安装 Node.js {{required}} 或更高版本。",
+      "needsNewerNode": "找到的 Node 是 {{found}}，Pi 需要 {{required}} 或更高版本。请切换到更新的 Node 后重启应用。",
+      "needsMcpSdk": "Pi 已安装，但它的 MCP 桥还没装好。点安装补齐。",
       "recheck": "我已安装 Node.js，重新检测",
       "rechecking": "检测中…",
       "installed": "已安装",
@@ -1469,6 +1472,12 @@
       "desktopOnlyDetail": "一键诊断需要在 Desktop 客户端中使用。请下载并安装 TeamClu Desktop 后重试。",
       "openFromError": "打开诊断",
       "openFromSidebar": "运行诊断",
+      "sessionFocus": "正在查看会话 {{id}}",
+      "mqttReconnected": "已请求重连 MQTT",
+      "mqttReconnectFailed": "重连失败：{{message}}",
+      "confirmReloginTitle": "重新登录？",
+      "confirmReloginDescription": "将退出当前账号并返回登录页，以便刷新会话与 MQTT 凭据。",
+      "confirmReloginAction": "确认退出",
       "liveConsole": {
         "title": "实时调试台",
         "description": "查看 Console 输出、运行状态与磁盘日志，无需 Web Inspector。",
@@ -1733,8 +1742,12 @@
       "runtimeNotInstalled": "未安装",
       "runtimeNeedsApiKey": "缺 API Key",
       "runtimeNeedsNode": "缺 node",
+      "runtimeNodeOutdated": "node 版本太低",
+      "runtimeMcpSdkMissing": "缺 MCP 桥",
       "runtimeBridgeMissing": "桥接未就绪",
       "runtimeBlockedHint": "{{agent}} 还不能用：{{reason}}。在此之前，这个团队的 agent 无法启动。",
+      "runtimeBlockerFound": "找到的是 {{found}}，需要 {{required}} 或更高版本。",
+      "runtimeBlockerNeeds": "需要 {{required}} 或更高版本。",
       "runtimeScope": "运行时作用范围",
       "runtimeCurrentTeam": "当前团队",
       "runtimePerTeamHint": "运行时按团队独立配置——此设置仅对「{{team}}」生效。",
@@ -2886,7 +2899,10 @@
       "updateDone": "已更新",
       "updateFailed": "更新失败",
       "installFailed": "安装失败",
-      "upToDate": "已是最新"
+      "upToDate": "已是最新",
+      "repair": "修复",
+      "repairTitle": "重新安装，补齐这个运行时缺失的部分",
+      "needsRepairHint": "已安装且是最新版本，但还不能用 —— 运行时有一部分缺失。点「修复」重新安装。"
     },
     "permissions": {
       "allow": "允许",

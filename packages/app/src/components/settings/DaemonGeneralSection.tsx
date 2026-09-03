@@ -163,9 +163,9 @@ export function DaemonGeneralSection() {
   /**
    * The short badge for an unusable runtime. "Not installed" is only the truth
    * when nothing more specific came back: cursor is ready when node + our
-   * bridge + the SDK + an API key all line up, and reporting a missing key as
-   * "not installed" sent people off to install a CLI that would not have
-   * helped.
+   * bridge + the SDK + an API key all line up, and pi when node + its own
+   * version + the MCP bridge do — reporting any of those as "not installed"
+   * sent people off to install a CLI that was already there.
    */
   const runtimeBlockerLabel = React.useCallback(
     (id: DaemonLocalAgent): string => {
@@ -174,11 +174,37 @@ export function DaemonGeneralSection() {
           return t('settings.daemonGeneral.runtimeNeedsApiKey', '缺 API Key')
         case 'node':
           return t('settings.daemonGeneral.runtimeNeedsNode', '缺 node')
+        case 'node_outdated':
+          return t('settings.daemonGeneral.runtimeNodeOutdated', 'node 版本太低')
+        case 'mcp_sdk':
+          return t('settings.daemonGeneral.runtimeMcpSdkMissing', '缺 MCP 桥')
         case 'bridge':
           return t('settings.daemonGeneral.runtimeBridgeMissing', '桥接未就绪')
         default:
           return t('settings.daemonGeneral.runtimeNotInstalled', '未安装')
       }
+    },
+    [agentRuntimes, t],
+  )
+
+  /**
+   * The versions behind the badge: which node we found and which one is needed.
+   * The badge alone ("node 版本太低") is still a hunt on a machine with three
+   * Nodes installed — this names the file we measured.
+   */
+  const runtimeBlockerDetail = React.useCallback(
+    (id: DaemonLocalAgent): string | null => {
+      const row = agentRuntimes.find((r) => r.id === id)
+      if (!row?.blockerRequired) return null
+      return row.blockerFound
+        ? t(
+            'settings.daemonGeneral.runtimeBlockerFound',
+            '找到的是 {{found}}，需要 {{required}} 或更高版本。',
+            { found: row.blockerFound, required: row.blockerRequired },
+          )
+        : t('settings.daemonGeneral.runtimeBlockerNeeds', '需要 {{required}} 或更高版本。', {
+            required: row.blockerRequired,
+          })
     },
     [agentRuntimes, t],
   )
@@ -687,11 +713,16 @@ export function DaemonGeneralSection() {
                       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                       <span>
                         {selectedRuntimeBlocker
-                          ? t(
-                              'settings.daemonGeneral.runtimeBlockedHint',
-                              '{{agent}} 还不能用：{{reason}}。在此之前，这个团队的 agent 无法启动。',
-                              { agent: localAgent, reason: runtimeBlockerLabel(localAgent as DaemonLocalAgent) },
-                            )
+                          ? [
+                              t(
+                                'settings.daemonGeneral.runtimeBlockedHint',
+                                '{{agent}} 还不能用：{{reason}}。在此之前，这个团队的 agent 无法启动。',
+                                { agent: localAgent, reason: runtimeBlockerLabel(localAgent as DaemonLocalAgent) },
+                              ),
+                              runtimeBlockerDetail(localAgent as DaemonLocalAgent),
+                            ]
+                              .filter(Boolean)
+                              .join(' ')
                           : t(
                               'settings.daemonGeneral.runtimeMissingHint',
                               '{{agent}} is not installed on this machine, so agents in this team cannot start. Pick a runtime that is installed, or install {{agent}} first.',

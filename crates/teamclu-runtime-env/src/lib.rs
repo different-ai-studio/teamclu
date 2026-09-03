@@ -5,6 +5,7 @@ pub mod env_activation;
 pub mod env_catalog;
 pub mod mcp_resolve;
 pub mod merge;
+pub mod node;
 pub mod opencode_config;
 pub mod opencode_db;
 pub mod personal_secrets;
