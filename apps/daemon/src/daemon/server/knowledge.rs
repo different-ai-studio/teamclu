@@ -32,14 +32,11 @@ use crate::config::{
     layout,
 };
 
-use super::DaemonServer;
-
 const MAX_SEARCH_RESULTS: usize = 50;
 const SALVAGE_DIR: &str = "00-salvage";
 /// How far `salvage` will walk the `-2`, `-3`, … suffixes before giving up.
 /// Only a runaway caller reaches this; a human salvaging by hand never will.
 const MAX_SALVAGE_SUFFIX: usize = 50;
-const FRESH_KINDS: &[&str] = &["runbook"];
 const STALE_DAYS_RUNBOOK: i64 = 90;
 const STALE_DAYS_UPDATED: i64 = 90;
 
@@ -172,47 +169,50 @@ fn str_field<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
-impl DaemonServer {
-    pub(crate) async fn handle_knowledge(
-        &self,
-        payload: Value,
-        reply_tx: tokio::sync::oneshot::Sender<String>,
-    ) {
-        let reply = self.handle_knowledge_inner(payload).await;
-        let _ = reply_tx.send(reply);
-    }
+/// Run one knowledge command and answer on `reply_tx`.
+///
+/// A free function on a blocking pool, not a method awaited inline. It never
+/// touched `DaemonServer` — taking `&self` was the only thing keeping it on the
+/// socket select loop — and `search` now reads every page in the vault with
+/// blocking IO, so it is the last thing that should hold that loop. Its
+/// neighbour `CursorPermission` spawns for exactly this reason, with a comment
+/// saying it must never run inline there.
+pub(crate) fn spawn_knowledge(payload: Value, reply_tx: tokio::sync::oneshot::Sender<String>) {
+    tokio::task::spawn_blocking(move || {
+        let _ = reply_tx.send(handle_knowledge_inner(payload));
+    });
+}
 
-    async fn handle_knowledge_inner(&self, payload: Value) -> String {
-        let action = str_field(&payload, "action").unwrap_or("");
-        let team_id = match active_team_id() {
-            Ok(id) => id,
-            Err(e) => return e,
-        };
-        let root = vault_root(&team_id);
-        // Read once per command rather than per file. Cheap (one small JSON)
-        // and only for the actions that write — `search` and `health` have
-        // nothing to say about whether a page reaches the team.
-        let blocked = match action {
-            "create" | "write" | "salvage" => LocalSyncState::peek_forbidden(&team_id),
-            _ => ForbiddenPaths::default(),
-        };
-        match action {
-            "scaffold" => knowledge_scaffold(&root, &payload),
-            "create" => knowledge_create(&root, &payload, &blocked),
-            "write" => knowledge_write(&root, &payload, &blocked),
-            "salvage" => knowledge_salvage(&root, &payload, &blocked),
-            "search" => search::search(&root, &stale_index_root(&team_id), &payload),
-            "manifest_get" => manifest_get(&root),
-            "manifest_set" => manifest_set(&root, &payload),
-            "health" => health(&root),
-            other => err(
-                "unknown_action",
-                format!(
-                    "unknown knowledge action '{other}'; expected \
-                     scaffold|create|write|salvage|search|manifest_get|manifest_set|health"
-                ),
+fn handle_knowledge_inner(payload: Value) -> String {
+    let action = str_field(&payload, "action").unwrap_or("");
+    let team_id = match active_team_id() {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let root = vault_root(&team_id);
+    // Read once per command rather than per file. Cheap (one small JSON) and
+    // only for the actions that write — `search` and `health` have nothing to
+    // say about whether a page reaches the team.
+    let blocked = match action {
+        "create" | "write" | "salvage" => LocalSyncState::peek_forbidden(&team_id),
+        _ => ForbiddenPaths::default(),
+    };
+    match action {
+        "scaffold" => knowledge_scaffold(&root, &payload),
+        "create" => knowledge_create(&root, &payload, &blocked),
+        "write" => knowledge_write(&root, &payload, &blocked),
+        "salvage" => knowledge_salvage(&root, &payload, &blocked),
+        "search" => search::search(&root, &stale_index_root(&team_id), &payload),
+        "manifest_get" => manifest_get(&root),
+        "manifest_set" => manifest_set(&root, &payload),
+        "health" => health(&root),
+        other => err(
+            "unknown_action",
+            format!(
+                "unknown knowledge action '{other}'; expected \
+                 scaffold|create|write|salvage|search|manifest_get|manifest_set|health"
             ),
-        }
+        ),
     }
 }
 
@@ -234,17 +234,42 @@ fn knowledge_scaffold(root: &Path, payload: &Value) -> String {
 
 /// Build the page body for `create` / `salvage`. `template:` is optional;
 /// `content:` overrides the template body when given.
+/// The bytes a new page starts life with.
+///
+/// `kind` used to be accepted here as a second spelling of `template`, and the
+/// MCP manifest never mentioned it — a parameter an agent could only find by
+/// reading this file. The manifest is the contract; `template` is what it
+/// documents, so that is now the only spelling.
 fn page_body(
-    kind: &Option<Value>,
     template: Option<&str>,
     title: &str,
     content: Option<&str>,
     today: &str,
 ) -> Result<String, String> {
-    let k = template.or(kind.as_ref().and_then(Value::as_str)).unwrap_or("page");
+    let k = template.unwrap_or("page");
     // A caller-supplied body always wins — the template is only the default.
     if let Some(body) = content {
-        return Ok(format!("# {title}\n\n{body}\n"));
+        // Stamped, unless the caller brought their own frontmatter. Without a
+        // `type` and an `updated`, `health()` reads no date off the page and it
+        // never counts toward the freshness figures — and pages written through
+        // these tools are exactly the ones whose freshness is worth watching.
+        //
+        // Content that already opens with `---` is written verbatim: frontmatter
+        // is only frontmatter at the very start of the file, so prepending a
+        // `# {title}` heading would turn the block into body text and lose the
+        // very fields the caller set. Bring your own frontmatter and you own the
+        // whole page, heading included.
+        if body.trim_start().starts_with("---") {
+            let body = body.trim_start();
+            return Ok(if body.ends_with('\n') {
+                body.to_string()
+            } else {
+                format!("{body}\n")
+            });
+        }
+        return Ok(format!(
+            "---\ntype: {k}\nupdated: {today}\n---\n\n# {title}\n\n{body}\n"
+        ));
     }
     let raw = match k {
         "adr" => include_str!("../../../assets/knowledge-templates/adr-template.md"),
@@ -282,9 +307,8 @@ fn create_or_write(
     let title = str_field(payload, "title").unwrap_or("Untitled");
     let content = str_field(payload, "content");
     let template = str_field(payload, "template");
-    let kind = payload.get("kind").cloned();
     let today = today_iso();
-    let body = match page_body(&kind, template, title, content, &today) {
+    let body = match page_body(template, title, content, &today) {
         Ok(b) => b,
         Err(e) => return err("invalid_kind", e),
     };
@@ -293,6 +317,10 @@ fn create_or_write(
             return err("write_failed", format!("creating parent dirs failed: {e}"));
         }
     }
+    // Before the write: afterwards the file exists by definition, so this
+    // reported `overwritten: true` for every `write`, including one that
+    // created the page.
+    let existed = target.exists();
     match std::fs::write(&target, body) {
         Ok(()) => {
             let rel = target
@@ -301,10 +329,7 @@ fn create_or_write(
                 .unwrap_or_else(|_| target.to_string_lossy().into_owned());
             let mut body = serde_json::Map::new();
             body.insert("path".into(), Value::String(rel.clone()));
-            body.insert(
-                "overwritten".into(),
-                Value::Bool(overwrite && target.exists()),
-            );
+            body.insert("overwritten".into(), Value::Bool(overwrite && existed));
             ok(with_team_sync(body, team_sync_fields(blocked, &rel)))
         }
         Err(e) => err("write_failed", format!("write failed: {e}")),
@@ -522,6 +547,44 @@ fn yaml_scalar(value: &str) -> String {
     out
 }
 
+/// The ` # …` a line ends with, whitespace included, or `""`.
+///
+/// The rewrite replaces the whole line, and the manifest template ships its
+/// documentation *on* those lines — `visibility: private  # private | org —
+/// 默认仅团队可见`. Setting a value used to delete the sentence explaining what
+/// the value may be, in a file whose whole point is that a human edits it in
+/// Obsidian.
+///
+/// A `#` inside the old value is not a comment, so quotes are tracked rather
+/// than searched past.
+fn trailing_comment(value_part: &str) -> String {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    // Where the run of whitespace before the current character started, so the
+    // gap separating the comment comes back with it.
+    let mut gap_start = 0usize;
+    let mut prev_was_space = true;
+    for (at, c) in value_part.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if in_double => escaped = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            // YAML wants whitespace before an inline comment; `a#b` is a value.
+            '#' if !in_single && !in_double && prev_was_space => {
+                return value_part[gap_start..].to_string();
+            }
+            _ => {}
+        }
+        if !c.is_whitespace() {
+            gap_start = at + c.len_utf8();
+        }
+        prev_was_space = c.is_whitespace();
+    }
+    String::new()
+}
+
 /// Minimal line-based YAML scalar rewriter. Handles scalar values only —
 /// `version: 1`, `visibility: private`. List/map blocks pass through
 /// unchanged; users edit those by hand in Obsidian anyway.
@@ -533,10 +596,14 @@ fn replace_lenient_yaml_scalar(raw: &str, key: &str, value: &str) -> Option<Stri
     let mut next = Vec::with_capacity(raw.lines().count());
     let mut found = false;
     for line in raw.lines() {
-        if let Some((k, _)) = line.split_once(':') {
+        if let Some((k, rest)) = line.split_once(':') {
             if !found && k.trim() == key && !line.trim_start().starts_with('#') {
                 let indent = &line[..line.len() - line.trim_start().len()];
-                next.push(format!("{indent}{key}: {}", yaml_scalar(value)));
+                next.push(format!(
+                    "{indent}{key}: {}{}",
+                    yaml_scalar(value),
+                    trailing_comment(rest)
+                ));
                 found = true;
                 continue;
             }
@@ -561,29 +628,30 @@ fn health(root: &Path) -> String {
     for (rel, abs) in &files {
         total += 1;
         let Ok(raw) = std::fs::read_to_string(abs) else { continue };
-        let (kind, owner, verified, updated) = parse_frontmatter(&raw);
-        let _ = owner;
-        let rel_str = rel.to_string_lossy();
-        let window = if FRESH_KINDS.contains(&kind.as_str()) {
+        let (kind, _owner, verified, updated) = parse_frontmatter(&raw);
+        // Asked once. `FRESH_KINDS.contains(&kind)` and `kind == "runbook"`
+        // were two spellings of the same question, three lines apart, free to
+        // drift into disagreeing.
+        let is_runbook = kind == "runbook";
+        let window = if is_runbook {
             STALE_DAYS_RUNBOOK
         } else {
             STALE_DAYS_UPDATED
         };
-        let date = if kind == "runbook" {
+        let date = if is_runbook {
             verified.as_deref().or(updated.as_deref())
         } else {
             updated.as_deref()
         };
         if let Some(d) = date {
             if days_between(d, &today).map(|n| n > window).unwrap_or(false) {
-                if kind == "runbook" {
+                if is_runbook {
                     stale_runbook += 1;
                 } else {
                     stale_updated += 1;
                 }
             }
         }
-        let _ = rel_str;
     }
     let coverage = json!({
         "hasHome": root.join("00-home.md").exists(),
@@ -982,6 +1050,92 @@ mod tests {
         let v: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(v["ok"], true);
         assert_eq!(v["result"]["teamSync"], "not-syncing", "{v}");
+    }
+
+    /// `overwritten` used to be computed after the write, when the file exists
+    /// by definition — so `write` reported it for pages it had just created.
+    #[test]
+    fn overwritten_distinguishes_a_create_from_a_replace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let page = json!({ "path": "20-domains/pricing.md", "title": "Pricing", "content": "x" });
+
+        let first: Value =
+            serde_json::from_str(&knowledge_write(root, &page, &ForbiddenPaths::default()))
+                .unwrap();
+        assert_eq!(first["result"]["overwritten"], false, "{first}");
+
+        let second: Value =
+            serde_json::from_str(&knowledge_write(root, &page, &ForbiddenPaths::default()))
+                .unwrap();
+        assert_eq!(second["result"]["overwritten"], true, "{second}");
+    }
+
+    /// Pages written through these tools carried no frontmatter, so `health()`
+    /// found no date on them and they never counted toward freshness.
+    #[test]
+    fn a_written_page_is_visible_to_health() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        knowledge_write(
+            root,
+            &json!({ "path": "20-domains/x.md", "title": "X", "content": "body" }),
+            &ForbiddenPaths::default(),
+        );
+        let raw = std::fs::read_to_string(root.join("20-domains/x.md")).unwrap();
+        let (kind, _owner, _verified, updated) = parse_frontmatter(&raw);
+        assert_eq!(kind, "page", "{raw}");
+        assert_eq!(updated.as_deref(), Some(today_iso().as_str()), "{raw}");
+
+        // A caller who brought their own frontmatter keeps it, and it stays at
+        // the top of the file where frontmatter is frontmatter.
+        knowledge_write(
+            root,
+            &json!({
+                "path": "20-domains/y.md",
+                "title": "Y",
+                "content": "---\ntype: runbook\nlast-verified: 2026-01-01\n---\n\nbody",
+            }),
+            &ForbiddenPaths::default(),
+        );
+        let raw = std::fs::read_to_string(root.join("20-domains/y.md")).unwrap();
+        assert!(raw.starts_with("---"), "frontmatter must lead the file: {raw}");
+        assert_eq!(raw.matches("---").count(), 2, "no second frontmatter: {raw}");
+        let (kind, _, verified, _) = parse_frontmatter(&raw);
+        assert_eq!(kind, "runbook");
+        assert_eq!(verified.as_deref(), Some("2026-01-01"));
+    }
+
+    /// The manifest template documents each value in a comment on its own line.
+    /// Rewriting the line used to take the sentence with it.
+    #[test]
+    fn setting_a_value_keeps_the_line_that_explains_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join(MANIFEST),
+            "version: 1\nvisibility: private  # private | org — 默认仅团队可见\n",
+        )
+        .unwrap();
+
+        let reply = manifest_set(root, &json!({ "visibility": "org", "confirm": true }));
+        assert!(reply.contains("\"ok\":true"), "{reply}");
+        let raw = std::fs::read_to_string(root.join(MANIFEST)).unwrap();
+        assert!(raw.contains("visibility: org"), "{raw}");
+        assert!(
+            raw.contains("# private | org — 默认仅团队可见"),
+            "the explanation must survive: {raw}"
+        );
+    }
+
+    #[test]
+    fn a_hash_inside_a_value_is_not_a_comment() {
+        // ` #` starts a comment; `a#b` does not, and neither does one in quotes.
+        assert_eq!(trailing_comment(" private  # why"), "  # why");
+        assert_eq!(trailing_comment(" tag#1"), "");
+        assert_eq!(trailing_comment(" \"a # b\""), "");
+        assert_eq!(trailing_comment(" \"a # b\"  # real"), "  # real");
+        assert_eq!(trailing_comment(" plain"), "");
     }
 
     #[test]

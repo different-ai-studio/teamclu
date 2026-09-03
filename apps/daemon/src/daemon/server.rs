@@ -2048,7 +2048,7 @@ impl DaemonServer {
                                 self.handle_app_git_credential(payload, reply_tx).await;
                             }
                             Some(SockCommand::Knowledge { payload, reply_tx }) => {
-                                self.handle_knowledge(payload, reply_tx).await;
+                                knowledge::spawn_knowledge(payload, reply_tx);
                             }
                             Some(SockCommand::CursorPermission { payload, reply_tx }) => {
                                 tokio::spawn(async move {
@@ -2507,7 +2507,7 @@ impl DaemonServer {
                                 self.handle_app_git_credential(payload, reply_tx).await;
                             }
                             Some(SockCommand::Knowledge { payload, reply_tx }) => {
-                                self.handle_knowledge(payload, reply_tx).await;
+                                knowledge::spawn_knowledge(payload, reply_tx);
                             }
                             Some(SockCommand::CursorPermission { payload, reply_tx }) => {
                                 tokio::spawn(async move {
