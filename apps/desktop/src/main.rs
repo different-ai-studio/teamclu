@@ -61,8 +61,10 @@ mod tests {
             ..Default::default()
         });
         event.server_name = Some("matts-macbook.local".into());
-        let mut request = sentry::protocol::Request::default();
-        request.cookies = Some("session=abc".into());
+        let mut request = sentry::protocol::Request {
+            cookies: Some("session=abc".into()),
+            ..Default::default()
+        };
         request
             .headers
             .insert("Authorization".into(), "Bearer x".into());

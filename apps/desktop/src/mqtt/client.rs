@@ -295,166 +295,6 @@ pub async fn probe_broker(cfg: ClientConfig, timeout: Duration) -> MqttProbeResu
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wss_bootstrap_url_uses_port_443_not_js_fallback_1883() {
-        let broker = MqttClient::resolve_broker(&ClientConfig {
-            broker_url: Some("wss://mqtt.example.com/mqtt".into()),
-            broker_host: "mqtt.example.com".into(),
-            broker_port: 1883,
-            client_id: "teamclu-test".into(),
-            username: "actor".into(),
-            password: "token".into(),
-            team_id: "team-1".into(),
-            use_tls: true,
-        });
-        assert_eq!(broker.connection_address(), "wss://mqtt.example.com/mqtt");
-        assert_eq!(broker.port, 443);
-    }
-
-    #[test]
-    fn recovery_subscribe_precedes_a_full_deferred_queue() {
-        let mut event_loop_pending = (0..64)
-            .map(|index| {
-                Request::Publish(rumqttc::Publish::new(
-                    format!("rpc/{index}"),
-                    QoS::AtLeastOnce,
-                    vec![index as u8],
-                ))
-            })
-            .collect::<VecDeque<_>>();
-        let mut recovery = SubscriptionRecovery::default();
-
-        assert_eq!(
-            recovery.prepare(
-                &mut event_loop_pending,
-                vec!["rpc/response".to_string(), "session/live".to_string()],
-                false,
-            ),
-            2
-        );
-        assert_eq!(event_loop_pending.len(), 1);
-        assert!(matches!(
-            event_loop_pending.front(),
-            Some(Request::Subscribe(subscribe)) if subscribe.filters.len() == 2
-        ));
-        assert_eq!(recovery.deferred.len(), 64);
-    }
-
-    #[test]
-    fn successful_suback_restores_deferred_requests_in_order() {
-        let first = Request::Publish(rumqttc::Publish::new(
-            "rpc/first",
-            QoS::AtLeastOnce,
-            vec![1],
-        ));
-        let second = Request::Publish(rumqttc::Publish::new(
-            "rpc/second",
-            QoS::AtLeastOnce,
-            vec![2],
-        ));
-        let mut event_loop_pending = VecDeque::from([first.clone(), second.clone()]);
-        let mut recovery = SubscriptionRecovery::default();
-        recovery.prepare(
-            &mut event_loop_pending,
-            vec!["rpc/response".to_string()],
-            true,
-        );
-        event_loop_pending.clear();
-        recovery.observe_outgoing(&Outgoing::Subscribe(7), &event_loop_pending);
-
-        assert_eq!(
-            recovery.finish(
-                &mut event_loop_pending,
-                &SubAck::new(7, vec![SubscribeReasonCode::Success(QoS::AtLeastOnce)],),
-            ),
-            RecoveryResult::Restored {
-                subscription_count: 1,
-                session_present: true,
-                deferred_count: 2,
-            }
-        );
-        assert_eq!(event_loop_pending, VecDeque::from([first, second]));
-    }
-
-    #[test]
-    fn failed_or_unrelated_suback_never_releases_deferred_publish() {
-        let mut event_loop_pending = VecDeque::from([Request::Publish(rumqttc::Publish::new(
-            "rpc/request",
-            QoS::AtLeastOnce,
-            vec![1],
-        ))]);
-        let mut recovery = SubscriptionRecovery::default();
-        recovery.prepare(
-            &mut event_loop_pending,
-            vec!["rpc/response".to_string()],
-            false,
-        );
-        event_loop_pending.clear();
-        recovery.observe_outgoing(&Outgoing::Subscribe(11), &event_loop_pending);
-
-        assert_eq!(
-            recovery.finish(
-                &mut event_loop_pending,
-                &SubAck::new(12, vec![SubscribeReasonCode::Success(QoS::AtLeastOnce)],),
-            ),
-            RecoveryResult::NotRecoveryAck
-        );
-        assert_eq!(recovery.deferred.len(), 1);
-        assert_eq!(
-            recovery.finish(
-                &mut event_loop_pending,
-                &SubAck::new(11, vec![SubscribeReasonCode::Failure]),
-            ),
-            RecoveryResult::Failed(
-                "broker rejected one or more restored subscriptions".to_string()
-            )
-        );
-        assert!(event_loop_pending.is_empty());
-        assert_eq!(recovery.deferred.len(), 1);
-
-        recovery.prepare(
-            &mut event_loop_pending,
-            vec!["rpc/response".to_string()],
-            false,
-        );
-        event_loop_pending.clear();
-        recovery.observe_outgoing(&Outgoing::Subscribe(13), &event_loop_pending);
-        assert!(matches!(
-            recovery.finish(
-                &mut event_loop_pending,
-                &SubAck::new(13, vec![SubscribeReasonCode::Success(QoS::AtLeastOnce)],),
-            ),
-            RecoveryResult::Restored {
-                deferred_count: 1,
-                ..
-            }
-        ));
-        assert_eq!(event_loop_pending.len(), 1);
-    }
-
-    #[test]
-    fn stale_outgoing_subscribe_does_not_capture_recovery_packet_id() {
-        let mut event_loop_pending = VecDeque::new();
-        let mut recovery = SubscriptionRecovery::default();
-        recovery.prepare(
-            &mut event_loop_pending,
-            vec!["rpc/response".to_string()],
-            false,
-        );
-
-        recovery.observe_outgoing(&Outgoing::Subscribe(4), &event_loop_pending);
-        assert_eq!(recovery.pending.as_ref().unwrap().packet_id, None);
-
-        event_loop_pending.pop_front();
-        recovery.observe_outgoing(&Outgoing::Subscribe(5), &event_loop_pending);
-        assert_eq!(recovery.pending.as_ref().unwrap().packet_id, Some(5));
-    }
-}
-
 pub async fn run_event_loop(bus: Arc<super::MqttBusInner>, app: tauri::AppHandle, generation: u64) {
     use rumqttc::{ConnectReturnCode, Event, Packet};
     use tauri::Emitter;
@@ -642,5 +482,165 @@ pub async fn run_event_loop(bus: Arc<super::MqttBusInner>, app: tauri::AppHandle
                 backoff_secs = (backoff_secs * 2).min(60);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wss_bootstrap_url_uses_port_443_not_js_fallback_1883() {
+        let broker = MqttClient::resolve_broker(&ClientConfig {
+            broker_url: Some("wss://mqtt.example.com/mqtt".into()),
+            broker_host: "mqtt.example.com".into(),
+            broker_port: 1883,
+            client_id: "teamclu-test".into(),
+            username: "actor".into(),
+            password: "token".into(),
+            team_id: "team-1".into(),
+            use_tls: true,
+        });
+        assert_eq!(broker.connection_address(), "wss://mqtt.example.com/mqtt");
+        assert_eq!(broker.port, 443);
+    }
+
+    #[test]
+    fn recovery_subscribe_precedes_a_full_deferred_queue() {
+        let mut event_loop_pending = (0..64)
+            .map(|index| {
+                Request::Publish(rumqttc::Publish::new(
+                    format!("rpc/{index}"),
+                    QoS::AtLeastOnce,
+                    vec![index as u8],
+                ))
+            })
+            .collect::<VecDeque<_>>();
+        let mut recovery = SubscriptionRecovery::default();
+
+        assert_eq!(
+            recovery.prepare(
+                &mut event_loop_pending,
+                vec!["rpc/response".to_string(), "session/live".to_string()],
+                false,
+            ),
+            2
+        );
+        assert_eq!(event_loop_pending.len(), 1);
+        assert!(matches!(
+            event_loop_pending.front(),
+            Some(Request::Subscribe(subscribe)) if subscribe.filters.len() == 2
+        ));
+        assert_eq!(recovery.deferred.len(), 64);
+    }
+
+    #[test]
+    fn successful_suback_restores_deferred_requests_in_order() {
+        let first = Request::Publish(rumqttc::Publish::new(
+            "rpc/first",
+            QoS::AtLeastOnce,
+            vec![1],
+        ));
+        let second = Request::Publish(rumqttc::Publish::new(
+            "rpc/second",
+            QoS::AtLeastOnce,
+            vec![2],
+        ));
+        let mut event_loop_pending = VecDeque::from([first.clone(), second.clone()]);
+        let mut recovery = SubscriptionRecovery::default();
+        recovery.prepare(
+            &mut event_loop_pending,
+            vec!["rpc/response".to_string()],
+            true,
+        );
+        event_loop_pending.clear();
+        recovery.observe_outgoing(&Outgoing::Subscribe(7), &event_loop_pending);
+
+        assert_eq!(
+            recovery.finish(
+                &mut event_loop_pending,
+                &SubAck::new(7, vec![SubscribeReasonCode::Success(QoS::AtLeastOnce)],),
+            ),
+            RecoveryResult::Restored {
+                subscription_count: 1,
+                session_present: true,
+                deferred_count: 2,
+            }
+        );
+        assert_eq!(event_loop_pending, VecDeque::from([first, second]));
+    }
+
+    #[test]
+    fn failed_or_unrelated_suback_never_releases_deferred_publish() {
+        let mut event_loop_pending = VecDeque::from([Request::Publish(rumqttc::Publish::new(
+            "rpc/request",
+            QoS::AtLeastOnce,
+            vec![1],
+        ))]);
+        let mut recovery = SubscriptionRecovery::default();
+        recovery.prepare(
+            &mut event_loop_pending,
+            vec!["rpc/response".to_string()],
+            false,
+        );
+        event_loop_pending.clear();
+        recovery.observe_outgoing(&Outgoing::Subscribe(11), &event_loop_pending);
+
+        assert_eq!(
+            recovery.finish(
+                &mut event_loop_pending,
+                &SubAck::new(12, vec![SubscribeReasonCode::Success(QoS::AtLeastOnce)],),
+            ),
+            RecoveryResult::NotRecoveryAck
+        );
+        assert_eq!(recovery.deferred.len(), 1);
+        assert_eq!(
+            recovery.finish(
+                &mut event_loop_pending,
+                &SubAck::new(11, vec![SubscribeReasonCode::Failure]),
+            ),
+            RecoveryResult::Failed(
+                "broker rejected one or more restored subscriptions".to_string()
+            )
+        );
+        assert!(event_loop_pending.is_empty());
+        assert_eq!(recovery.deferred.len(), 1);
+
+        recovery.prepare(
+            &mut event_loop_pending,
+            vec!["rpc/response".to_string()],
+            false,
+        );
+        event_loop_pending.clear();
+        recovery.observe_outgoing(&Outgoing::Subscribe(13), &event_loop_pending);
+        assert!(matches!(
+            recovery.finish(
+                &mut event_loop_pending,
+                &SubAck::new(13, vec![SubscribeReasonCode::Success(QoS::AtLeastOnce)],),
+            ),
+            RecoveryResult::Restored {
+                deferred_count: 1,
+                ..
+            }
+        ));
+        assert_eq!(event_loop_pending.len(), 1);
+    }
+
+    #[test]
+    fn stale_outgoing_subscribe_does_not_capture_recovery_packet_id() {
+        let mut event_loop_pending = VecDeque::new();
+        let mut recovery = SubscriptionRecovery::default();
+        recovery.prepare(
+            &mut event_loop_pending,
+            vec!["rpc/response".to_string()],
+            false,
+        );
+
+        recovery.observe_outgoing(&Outgoing::Subscribe(4), &event_loop_pending);
+        assert_eq!(recovery.pending.as_ref().unwrap().packet_id, None);
+
+        event_loop_pending.pop_front();
+        recovery.observe_outgoing(&Outgoing::Subscribe(5), &event_loop_pending);
+        assert_eq!(recovery.pending.as_ref().unwrap().packet_id, Some(5));
     }
 }

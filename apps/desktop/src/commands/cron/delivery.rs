@@ -401,42 +401,6 @@ fn seatalk_cron_target_to_dispatch(target: &str) -> Result<String, String> {
     Ok(format!("user:{target}"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{seatalk_cron_target_to_dispatch, wecom_cron_target_to_dispatch};
-
-    #[test]
-    fn maps_single_and_group_targets() {
-        assert_eq!(
-            wecom_cron_target_to_dispatch("single:alice").unwrap(),
-            "user:alice"
-        );
-        assert_eq!(
-            wecom_cron_target_to_dispatch("group:chat-1").unwrap(),
-            "chat:chat-1"
-        );
-        assert_eq!(wecom_cron_target_to_dispatch("bob").unwrap(), "user:bob");
-    }
-
-    #[test]
-    fn maps_seatalk_single_and_group_targets() {
-        assert_eq!(
-            seatalk_cron_target_to_dispatch("single:E001").unwrap(),
-            "user:E001"
-        );
-        assert_eq!(
-            seatalk_cron_target_to_dispatch("group:g-abc").unwrap(),
-            "chat:g-abc"
-        );
-        assert_eq!(
-            seatalk_cron_target_to_dispatch("E002").unwrap(),
-            "user:E002"
-        );
-        assert!(seatalk_cron_target_to_dispatch("group:").is_err());
-        assert!(seatalk_cron_target_to_dispatch("").is_err());
-    }
-}
-
 /// Split a message into chunks, respecting UTF-8 character boundaries.
 /// `max_len` is measured in bytes.
 fn split_message(text: &str, max_len: usize) -> Vec<String> {
@@ -477,4 +441,40 @@ fn split_message(text: &str, max_len: usize) -> Vec<String> {
     }
 
     chunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{seatalk_cron_target_to_dispatch, wecom_cron_target_to_dispatch};
+
+    #[test]
+    fn maps_single_and_group_targets() {
+        assert_eq!(
+            wecom_cron_target_to_dispatch("single:alice").unwrap(),
+            "user:alice"
+        );
+        assert_eq!(
+            wecom_cron_target_to_dispatch("group:chat-1").unwrap(),
+            "chat:chat-1"
+        );
+        assert_eq!(wecom_cron_target_to_dispatch("bob").unwrap(), "user:bob");
+    }
+
+    #[test]
+    fn maps_seatalk_single_and_group_targets() {
+        assert_eq!(
+            seatalk_cron_target_to_dispatch("single:E001").unwrap(),
+            "user:E001"
+        );
+        assert_eq!(
+            seatalk_cron_target_to_dispatch("group:g-abc").unwrap(),
+            "chat:g-abc"
+        );
+        assert_eq!(
+            seatalk_cron_target_to_dispatch("E002").unwrap(),
+            "user:E002"
+        );
+        assert!(seatalk_cron_target_to_dispatch("group:").is_err());
+        assert!(seatalk_cron_target_to_dispatch("").is_err());
+    }
 }

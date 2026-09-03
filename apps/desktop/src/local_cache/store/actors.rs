@@ -182,7 +182,10 @@ mod tests {
     async fn upsert_and_load_actor() {
         let (store, _dir) = new_store().await;
         let a = actor("a1", "team1", "2024-01-01T00:00:00Z");
-        store.actor_upsert_batch(&[a.clone()]).await.unwrap();
+        store
+            .actor_upsert_batch(std::slice::from_ref(&a))
+            .await
+            .unwrap();
         let loaded = store.actor_load_team("team1", false).await.unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].id, "a1");

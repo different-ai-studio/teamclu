@@ -1129,9 +1129,8 @@ mod tests {
         assert!(err.contains("refuse to spawn"), "{err}");
         // Gate used by ensure_started_locked: `wait_for_amuxd_stopped(...).await?`
         // happens before spawn. An Err here is the "do not spawn" proof.
-        assert!(matches!(
-            wait_for_amuxd_stopped(Duration::from_millis(0)).await,
-            Err(_)
-        ));
+        assert!(wait_for_amuxd_stopped(Duration::from_millis(0))
+            .await
+            .is_err());
     }
 }
