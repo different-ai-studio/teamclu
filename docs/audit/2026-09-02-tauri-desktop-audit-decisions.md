@@ -173,8 +173,12 @@ STR-9（`println!`/`eprintln!` 全部换成 `log::`，只剩 `lib.rs` 里日志�
 那几处用 `log::` 会直接丢掉）；
 STR-10（introspect API 从手搓 TCP + 手写 HTTP 解析换成 axum；网关中间件用 `layer` 而不是
 `route_layer`，所以 fallback 也在门后，没带 bearer 的调用方无法用 404 与 401 的差别探路）；
-STR-11（点名的三处）；STR-12（会进 toast 的两处）；STR-13（vendor 的 `src/packages/ai`
-补来源说明）；STR-14（品牌显示名单一来源 `APP_DISPLAY_NAME`）。
+STR-11（先做点名的三处，随后整体分目录：205 个模块进 20 个域目录，根目录只剩 7 个
+无域原语；测试跟着各自的模块走，`lib/__tests__/` 只留 21 个跨域的；目录表写进
+AGENTS.md。`extension/link-hover` 与 `link-session` 也被 apps/extension 编译、那边没有
+`@/` 别名，加了守卫测试。**这一条会和任何在飞的 `packages/app/src` 改动冲突，
+接的时候 rebase 而不是 merge**）；STR-12（会进 toast 的两处）；STR-13（vendor 的
+`src/packages/ai` 补来源说明）；STR-14（品牌显示名单一来源 `APP_DISPLAY_NAME`）。
 **STR-2 / STR-3 / STR-6 未动**，STR-4 等 D5。
 
 ---
@@ -201,9 +205,6 @@ STR-11（点名的三处）；STR-12（会进 toast 的两处）；STR-13（vend
 - **ARCH-5 残余**：`gateway/mod.rs` 手工遍历 team.toml、`team.rs` 在 `~/.amuxd` 下 `create_dir_all`，
   daemon 侧缺少「不带凭证的渠道配置读取」和「物化并返回团队默认 worktree」两个端点；
   `read_daemon_actor_id` 的 backend.toml 解析降级为冷启动回退，彻底删除要 `window.rs` 的同步命令改 async。
-- **STR-11 的整体分目录**：`lib/` 顶层 222 个文件按域搬进子目录是 600+ 个 import 点的重写，
-  与并行改 main 的同事必然大面积冲突且 git 历史断链。本分支只做了点名的三处（命名撞车、
-  `hooks/` 命名风格、`useAppInit.ts` 的多 hook 导出）；整体重排要和 ARCH-9 一起设计。
 - **STR-12 余下的硬编码中文**：会进 toast 的两处（`apps-store.ts`、`team-share-browser.ts`）已走
   `i18n.t`。其余分布在 `lib/diagnostic-report.ts`（诊断包正文）、`lib/dynamic-ui/catalog.ts`
   （喂给 LLM 的 schema 描述）和一批设置页组件里——前两类不是 UI 文案，最后一类是逐个组件的
