@@ -242,7 +242,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   clearDaemonGeneralPrompt: () => set({ daemonGeneralPrompt: null }),
 
   closeSettings: () => {
-    useDiagnosticsStore.getState().clearReport()
+    const diagnostics = useDiagnosticsStore.getState()
+    diagnostics.clearReport()
+    diagnostics.clearFocus()
     set({
       currentView: 'chat',
       settingsInitialSection: null,

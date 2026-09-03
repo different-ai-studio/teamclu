@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { clearTraceBuffer, listTraces } from "../diagnostics/trace-buffer";
 import {
   sessionFlowError,
   sessionFlowLog,
@@ -8,6 +9,7 @@ import {
 describe("session-flow-log", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    clearTraceBuffer();
   });
 
   it("writes structured stage logs with a stable prefix", () => {
@@ -53,5 +55,15 @@ describe("session-flow-log", () => {
         }),
       }),
     );
+  });
+
+  it("records a trace when the payload has a messageId", () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    sessionFlowLog("outbox_sender.mqtt_publish.ok", {
+      sessionId: "session-1",
+      messageId: "message-1",
+    });
+    expect(listTraces({ traceId: "message-1" })).toHaveLength(1);
+    expect(listTraces({ traceId: "message-1" })[0]?.stage).toBe("mqtt.publish");
   });
 });

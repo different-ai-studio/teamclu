@@ -11,10 +11,13 @@ const diagnosticsState = vi.hoisted(() => ({
 }))
 
 const sampleReport: DiagnosticReport = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   generatedAt: '2026-01-01T00:00:00.000Z',
   app: { version: '1.0.0', buildFlavor: 'default', platform: 'MacIntel', tauri: true },
   summary: { ok: 0, warn: 0, fail: 1 },
+  findings: [],
+  causeCodes: [],
+  traces: [],
   checks: [
     {
       id: 'daemon_http',
@@ -51,8 +54,9 @@ vi.mock('@/lib/utils', async (importOriginal) => {
 })
 
 vi.mock('@/stores/ui', () => ({
-  useUIStore: (selector: (state: { openSettings: () => void }) => unknown) =>
-    selector({ openSettings: vi.fn() }),
+  useUIStore: (
+    selector: (state: { openSettings: () => void; closeSettings: () => void }) => unknown,
+  ) => selector({ openSettings: vi.fn(), closeSettings: vi.fn() }),
 }))
 
 vi.mock('@/stores/diagnostics-store', () => ({
@@ -146,7 +150,7 @@ describe('DiagnosticsSection daemon reset remediation', () => {
     render(<DiagnosticsSection />)
 
     expect(screen.getByText('建议重置本地 daemon')).toBeTruthy()
-    expect(screen.getByText('daemon 令牌无效，需重启应用')).toBeTruthy()
+    expect(screen.getByText(/daemon 令牌无效，需重启应用/)).toBeTruthy()
   })
 
   it('runs forceReset and opens onboarding wizard after confirmation', async () => {
