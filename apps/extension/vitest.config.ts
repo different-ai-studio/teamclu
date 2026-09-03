@@ -8,8 +8,8 @@ const appLib = resolve(here, '../../packages/app/src/lib')
 export default defineConfig({
   resolve: {
     alias: {
-      '@teamclu/extension-link-hover': resolve(appLib, 'extension-link-hover/index.ts'),
-      '@teamclu/extension-link-session': resolve(appLib, 'extension-link-session/index.ts'),
+      '@teamclu/extension-link-hover': resolve(appLib, 'extension/link-hover/index.ts'),
+      '@teamclu/extension-link-session': resolve(appLib, 'extension/link-session/index.ts'),
     },
   },
   define: {
