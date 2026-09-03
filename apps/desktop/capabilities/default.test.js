@@ -98,3 +98,38 @@ test("style-src keeps unsafe-inline effective", () => {
     "Tauri must be told not to inject a style nonce, or 'unsafe-inline' above is silently ignored",
   );
 });
+
+// SEC-2 / ADR-0009. The asset protocol was enabled with a whole-disk scope
+// (`$HOME/**` + `/**`), which let anything rendered in the app origin fetch any
+// file on the machine through `asset:`. Nothing used it: there is not one
+// `convertFileSrc` call or `asset:` URL in the client. Binary reads go through
+// the `read_workspace_binary_file` command instead, which validates the path in
+// Rust and returns base64.
+//
+// Unlike the fs scope, `assetProtocol.scope` is compile-time static — it cannot
+// be extended at runtime — so re-enabling it for one feature means granting a
+// fixed set of roots to every surface in the origin. Keep it off; route new
+// binary reads through a command.
+test("the asset protocol stays disabled", () => {
+  const assetProtocol = tauriConf.app?.security?.assetProtocol ?? {};
+  assert.equal(
+    assetProtocol.enable,
+    false,
+    "assetProtocol.enable must stay false — see ADR-0009",
+  );
+  assert.deepEqual(
+    assetProtocol.scope ?? [],
+    [],
+    "assetProtocol.scope must stay empty while the protocol is disabled",
+  );
+});
+
+test("no CSP directive still admits asset:", () => {
+  for (const key of ["csp", "devCsp"]) {
+    const csp = tauriConf.app?.security?.[key] ?? "";
+    assert.ok(
+      !csp.includes("asset:") && !csp.includes("asset.localhost"),
+      `${key} must not mention asset: or asset.localhost — the protocol is disabled`,
+    );
+  }
+});
