@@ -521,6 +521,7 @@
     "settings": "Settings"
   },
   "chat": {
+    "diagnoseSession": "Diagnose this session",
     "sendStatus": {
       "sending": "Sending…",
       "delivered": "Delivered",
@@ -1471,6 +1472,12 @@
       "desktopOnlyDetail": "One-click diagnostics requires the TeamClu Desktop client. Install it and try again.",
       "openFromError": "Open Diagnostics",
       "openFromSidebar": "Run diagnostics",
+      "sessionFocus": "Looking at session {{id}}",
+      "mqttReconnected": "MQTT reconnect requested",
+      "mqttReconnectFailed": "Reconnect failed: {{message}}",
+      "confirmReloginTitle": "Sign in again?",
+      "confirmReloginDescription": "Signs out of this account and returns to the login page, so the session and MQTT credentials are reissued.",
+      "confirmReloginAction": "Sign out",
       "liveConsole": {
         "title": "Live Debug Console",
         "description": "View console output, runtime state, and disk logs without Web Inspector.",

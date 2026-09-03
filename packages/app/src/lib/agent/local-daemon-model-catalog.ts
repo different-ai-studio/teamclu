@@ -69,7 +69,7 @@ function catalogBackendId(backendType: string | null | undefined): string | null
  * and simply had no provider configured. `empty` is a *terminal* answer and
  * callers are expected to surface it as "needs configuring", not "wait".
  */
-type LocalDaemonCatalogOutcome =
+export type LocalDaemonCatalogOutcome =
   | { status: 'models'; backend: string; models: ModelInfo[] }
   /** The daemon answered and serves no models for this backend. First install. */
   | { status: 'empty'; backend: string }

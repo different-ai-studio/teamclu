@@ -521,6 +521,7 @@
     "settings": "设置"
   },
   "chat": {
+    "diagnoseSession": "诊断此会话",
     "sendStatus": {
       "sending": "发送中…",
       "delivered": "已送达",
@@ -1471,6 +1472,12 @@
       "desktopOnlyDetail": "一键诊断需要在 Desktop 客户端中使用。请下载并安装 TeamClu Desktop 后重试。",
       "openFromError": "打开诊断",
       "openFromSidebar": "运行诊断",
+      "sessionFocus": "正在查看会话 {{id}}",
+      "mqttReconnected": "已请求重连 MQTT",
+      "mqttReconnectFailed": "重连失败：{{message}}",
+      "confirmReloginTitle": "重新登录？",
+      "confirmReloginDescription": "将退出当前账号并返回登录页，以便刷新会话与 MQTT 凭据。",
+      "confirmReloginAction": "确认退出",
       "liveConsole": {
         "title": "实时调试台",
         "description": "查看 Console 输出、运行状态与磁盘日志，无需 Web Inspector。",

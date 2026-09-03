@@ -1,6 +1,5 @@
 import type {
   DiagnosticFinding,
-  DiagnosticSymptom,
   FindingConfidence,
   FindingStatus,
   TraceEvent,
