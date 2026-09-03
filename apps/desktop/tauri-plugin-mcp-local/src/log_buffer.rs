@@ -81,6 +81,19 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Cap a log line on a UTF-8 character boundary. Byte-index slicing panics
+/// when `MAX_MESSAGE_LEN` lands inside a multibyte char (typical for CJK).
+fn truncate_message(message: String) -> String {
+    if message.len() <= MAX_MESSAGE_LEN {
+        return message;
+    }
+    let mut end = MAX_MESSAGE_LEN;
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…[truncated]", &message[..end])
+}
+
 /// Detect the plugin's own instrumentation: Rust logs from this crate's
 /// modules (all prefixed "[TAURI_MCP]") and the JS bridge's console output
 /// (prefixed "TAURI-PLUGIN-MCP").
@@ -186,13 +199,7 @@ impl LogBuffer {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        let message = if message.len() > MAX_MESSAGE_LEN {
-            let mut truncated = message[..MAX_MESSAGE_LEN].to_string();
-            truncated.push_str("…[truncated]");
-            truncated
-        } else {
-            message
-        };
+        let message = truncate_message(message);
 
         let mut guard = self.lock();
 
@@ -772,5 +779,22 @@ mod tests {
         let r = buf.query(&LogQuery::default());
         assert!(r.entries[0].message.ends_with("…[truncated]"));
         assert!(r.entries[0].message.len() <= MAX_MESSAGE_LEN + 20);
+    }
+
+    #[test]
+    fn long_multibyte_messages_truncated_on_char_boundary() {
+        let buf = LogBuffer::new(2);
+        // 8191 ASCII bytes then a 3-byte CJK char, so byte 8192 sits inside 好.
+        let mut big = "x".repeat(MAX_MESSAGE_LEN - 1);
+        big.push_str("好");
+        big.push_str(&"y".repeat(100));
+        buf.push("info", LogSource::Js, None, big);
+        let r = buf.query(&LogQuery::default());
+        let stored = &r.entries[0].message;
+        assert!(stored.ends_with("…[truncated]"));
+        let prefix = stored.strip_suffix("…[truncated]").expect("suffix");
+        assert!(prefix.is_char_boundary(prefix.len()));
+        assert!(prefix.len() <= MAX_MESSAGE_LEN);
+        assert!(!prefix.contains('好'));
     }
 }
