@@ -1,5 +1,8 @@
+# Local, filled-in env files (real secrets). Only the *.example templates are tracked.
 .env
-.env.server
+.env.*
+!.env.example
+!.env.local.example
 # podman-compose bind-mount shim (see bootstrap/link-volumes.sh)
 volumes
 caddy_data/
