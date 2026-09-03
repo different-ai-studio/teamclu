@@ -63,7 +63,7 @@
     },
     {
       "name": "knowledge_search",
-      "description": "Full-text search across the vault (SQLite FTS5, CJK-aware). Returns path, title and a highlighted snippet per hit. 对知识库全文检索（支持中文），返回路径、标题和高亮摘要。",
+      "description": "Search the vault. Matches every term as a substring of a page's title or body — Chinese and English alike, so two-character words like 渠道 work — and returns path, title and a snippet with the match wrapped in <b>. Pages whose title matches come first. 检索知识库：每个词都要在标题或正文中出现（中英文一致，两字词如「渠道」可用），返回路径、标题和带 <b> 高亮的摘要；标题命中的排在前面。",
       "inputSchema": {
         "type": "object",
         "required": ["query"],
@@ -81,7 +81,7 @@
     },
     {
       "name": "knowledge_manifest_set",
-      "description": "Update publish settings. Changing visibility to 'org' REQUIRES confirm=true — publishing exposes the vault org-wide and is a considered action. 修改发布设置；把 visibility 改为 org 必须带 confirm=true。",
+      "description": "Update publish settings. Changing visibility to 'org' REQUIRES confirm=true — publishing exposes the vault org-wide and is a considered action. 修改发布设置；把 visibility 改为 org 必须带 confirm=true。 A key the manifest does not already contain is refused (errorCode unknown_key) and nothing is written — scaffold creates the full set. 清单里没有的键会被拒绝（unknown_key）且不写入任何内容；完整的键由 scaffold 生成。",
       "inputSchema": {
         "type": "object",
         "properties": {

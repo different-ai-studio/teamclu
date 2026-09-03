@@ -3356,6 +3356,8 @@
     "agentRuntime": {
       "notStartedTitle": "Agent runtime not started",
       "notStartedDesc": "Agent {{shortId}}'s daemon did not respond to runtimeStart (it may be offline or not joined to the team).",
+      "hostCapacityTitle": "This machine's agent runtime capacity is full",
+      "hostCapacityDesc": "All OpenCode hosts are currently in use, so this session cannot start yet. Wait for another session to finish or stop one, then retry.",
       "binaryMissingDesc": "This team's agent runtime is {{agent}}, but it is not installed on this machine. Pick a runtime that is installed for this team under Settings → Agent, or install {{agent}} first. The runtime is configured per team.",
       "rpcNotReadyTitle": "MQTT/RPC not ready",
       "rpcNotReadyDesc": "Unable to send runtimeStart to the daemon. Please check the MQTT connection and team sign-in status.",

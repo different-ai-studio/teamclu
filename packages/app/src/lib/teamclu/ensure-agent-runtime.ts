@@ -105,6 +105,8 @@ function failureDescription(failure: RuntimeStartFailure): string {
       return trimmed || i18n.t("daemon.agentRuntime.notStartedDesc", { shortId });
     case "runtime_rpc_failed":
       return trimmed || i18n.t("daemon.agentRuntime.notStartedDesc", { shortId });
+    case "host_capacity_timeout":
+      return i18n.t("daemon.agentRuntime.hostCapacityDesc");
     default:
       return trimmed || i18n.t("daemon.agentRuntime.notStartedDesc", { shortId });
   }
@@ -137,7 +139,11 @@ export function notifyRuntimeStartFailures(
   if (toastable.length === 0) return;
   void import("sonner").then(({ toast }) => {
     for (const failure of toastable) {
-      toast.error(i18n.t("daemon.agentRuntime.notStartedTitle"), {
+      const titleKey =
+        failure.code === "host_capacity_timeout"
+          ? "daemon.agentRuntime.hostCapacityTitle"
+          : "daemon.agentRuntime.notStartedTitle";
+      toast.error(i18n.t(titleKey), {
         id: `runtime-start-failed-${failure.agentActorId}`,
         description: failureDescription(failure),
         duration: 8000,

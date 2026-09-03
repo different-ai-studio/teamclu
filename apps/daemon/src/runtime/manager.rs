@@ -207,6 +207,7 @@ mod opencode_snapshot;
 mod lookup;
 // Workspace-scoped runtime queries (active handles / stop-all for a workspace).
 mod workspace_query;
+pub use workspace_query::WorkspaceOccupancy;
 // Idle-runtime eviction (idle sweeper + drain buffer).
 mod eviction;
 // ACP event draining (poll_events / poll_events_for).
@@ -3433,6 +3434,59 @@ mod tests {
             mgr.get_handle("rt-mid-turn").is_some(),
             "handle must remain in map"
         );
+    }
+
+    #[tokio::test]
+    async fn evict_one_idle_attachment_for_capacity_stops_oldest_idle() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("sess-idle");
+        mgr.get_handle_mut("sess-idle").unwrap().last_active_at = 200;
+        mgr.add_test_runtime("sess-busy");
+        mgr.get_handle_mut("sess-busy").unwrap().last_active_at = 50;
+        let turn_lock = mgr.get_handle("sess-busy").unwrap().turn_lock.clone();
+        let _guard = turn_lock.lock().await;
+
+        let evicted = mgr.evict_one_idle_attachment_for_capacity("sess-new").await;
+
+        assert_eq!(evicted.as_deref(), Some("sess-idle"));
+        assert!(mgr.get_handle("sess-idle").is_none());
+        assert!(
+            mgr.get_handle("sess-busy").is_some(),
+            "a mid-turn runtime must not be evicted even if it is older"
+        );
+    }
+
+    #[tokio::test]
+    async fn evict_one_idle_attachment_for_capacity_skips_busy_runtimes() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("sess-turn");
+        mgr.add_test_runtime("sess-rx");
+        let turn_lock = mgr.get_handle("sess-turn").unwrap().turn_lock.clone();
+        let _guard = turn_lock.lock().await;
+        let _rx = mgr.get_handle_mut("sess-rx").unwrap().event_rx.take();
+
+        let evicted = mgr.evict_one_idle_attachment_for_capacity("sess-new").await;
+
+        assert_eq!(evicted, None);
+        assert!(mgr.get_handle("sess-turn").is_some());
+        assert!(mgr.get_handle("sess-rx").is_some());
+    }
+
+    #[tokio::test]
+    async fn evict_one_idle_attachment_for_capacity_skips_excluded_session() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("sess-target");
+        mgr.get_handle_mut("sess-target").unwrap().last_active_at = 1;
+        mgr.add_test_runtime("sess-other");
+        mgr.get_handle_mut("sess-other").unwrap().last_active_at = 9;
+
+        let evicted = mgr
+            .evict_one_idle_attachment_for_capacity("sess-target")
+            .await;
+
+        assert_eq!(evicted.as_deref(), Some("sess-other"));
+        assert!(
+            mgr.get_handle("sess-target").is_some(),
+            "the session we are trying to start must not be evicted"
+        );
+        assert!(mgr.get_handle("sess-other").is_none());
     }
 
     #[tokio::test]

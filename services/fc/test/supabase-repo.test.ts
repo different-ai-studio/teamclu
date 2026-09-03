@@ -102,12 +102,6 @@ test("listSessions maps current actor session rpc rows", async () => {
     participantCount: 0,
     createdAt: "2026-05-26T01:00:00Z",
     updatedAt: "2026-05-27T01:00:00Z",
-    createdByActorId: null,
-    cronJobId: null,
-    participantCount: 0,
-    primaryAgentId: null,
-    source: "user",
-    summary: null,
   }]);
 });
 
@@ -1073,14 +1067,6 @@ function createSelectableQuery(table, calls, data, error) {
     },
     or(expr) {
       calls.push({ table, op: "or", expr });
-      return query;
-    },
-    // listSessionsForTeamSince filters thread forks with
-    // `.is("parent_session_id", null)`. Without this the whole sync-reader test
-    // threw "is is not a function" — the SELECT builder only had `is` on its
-    // UPDATE twin.
-    is(column, value) {
-      calls.push({ table, op: "is", column, value });
       return query;
     },
     gt(column, value) {

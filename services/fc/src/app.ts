@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { parseCorsOrigins, resolveCorsAllowOrigin } from "./lib/cors-origin.js";
 import { registerAllRoutes } from "./lib/routes/index.js";
 import { createHonoRouterAdapter } from "./lib/hono-adapter.js";
 import { isRateLimited, resolveClientIp } from "./lib/rate-limit.js";
@@ -76,20 +77,11 @@ export function createApp(deps: AppDeps): Hono {
     app.options("*", (c) => c.body(null, 204));
   } else {
     app.use("*", cors({
-      origin: (origin) => {
-        const extra = process.env.CORS_ORIGINS?.split(",").map((o) => o.trim()).filter(Boolean) ?? [];
-        // Allow tauri schemes (production: https://tauri.localhost, dev: tauri://localhost),
-        // localhost variants, and any explicitly listed origin.
-        if (
-          !origin ||
-          origin.startsWith("tauri://") ||
-          origin.startsWith("https://tauri.localhost") ||
-          origin.startsWith("http://localhost") ||
-          origin.startsWith("http://127.0.0.1") ||
-          extra.includes(origin)
-        ) return origin ?? "*";
-        return origin;
-      },
+      // Policy lives in lib/cors-origin.ts (Tauri, localhost dev servers,
+      // chrome-extension, plus CORS_ORIGINS). Returning null makes hono omit
+      // Access-Control-Allow-Origin, which is how a browser origin is refused.
+      // CORS_ORIGINS is read per request so tests and hot reconfiguration work.
+      origin: (origin) => resolveCorsAllowOrigin(origin, parseCorsOrigins(process.env.CORS_ORIGINS)),
       allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowHeaders: ["Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key", "X-Webhook-Secret"],
       maxAge: 86400,

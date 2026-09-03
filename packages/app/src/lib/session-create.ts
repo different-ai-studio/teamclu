@@ -383,6 +383,7 @@ export type RuntimeStartFailureCode =
   | 'runtime_rejected'
   | 'backend_session_not_resumable'
   | 'runtime_rpc_failed'
+  | 'host_capacity_timeout'
   | 'unknown'
 
 export type RuntimeStartFailure = {
@@ -398,7 +399,14 @@ function classifyRuntimeRejection(errorCode: string | undefined): RuntimeStartFa
   return 'runtime_rejected'
 }
 
-function classifyRuntimeRpcError(_error: unknown): RuntimeStartFailureCode {
+/** Exported for tests; production call site is `startAgentRuntimesAsync`. */
+export function classifyRuntimeRpcError(error: unknown): RuntimeStartFailureCode {
+  const message = error instanceof Error ? error.message : String(error)
+
+  if (/host_capacity_timeout/i.test(message)) {
+    return 'host_capacity_timeout'
+  }
+
   return 'runtime_rpc_failed'
 }
 

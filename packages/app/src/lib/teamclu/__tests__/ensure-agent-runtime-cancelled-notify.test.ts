@@ -124,4 +124,32 @@ describe("notifyRuntimeStartFailures", () => {
     const [, options] = mocks.toastError.mock.calls[0] as [string, { id: string }];
     expect(options.id).toBe("runtime-start-failed-agent-2");
   });
+
+  it("shows host capacity full instead of agent-not-started", async () => {
+    const i18n = (await import("@/lib/i18n")).default;
+    const { classifyRuntimeRpcError } = await import("@/lib/session-create");
+    const { notifyRuntimeStartFailures } = await import("../ensure-agent-runtime");
+
+    const reason =
+      "start_runtime failed: agent error: host_capacity_timeout: 2 active, 0 draining, 0 queued";
+    expect(classifyRuntimeRpcError(new Error(reason))).toBe("host_capacity_timeout");
+
+    notifyRuntimeStartFailures([
+      {
+        agentActorId: "agent-1",
+        code: "host_capacity_timeout",
+        reason,
+      },
+    ]);
+    await flush();
+
+    expect(mocks.toastError).toHaveBeenCalledTimes(1);
+    const [title, options] = mocks.toastError.mock.calls[0] as [
+      string,
+      { description: string },
+    ];
+    expect(title).toBe(i18n.t("daemon.agentRuntime.hostCapacityTitle"));
+    expect(title).not.toBe(i18n.t("daemon.agentRuntime.notStartedTitle"));
+    expect(options.description).toBe(i18n.t("daemon.agentRuntime.hostCapacityDesc"));
+  });
 });

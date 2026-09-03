@@ -144,7 +144,7 @@ fn main() -> anyhow::Result<()> {
             // one does, so the purge has to happen before anything loads it or
             // it would delete a config that had just been bootstrapped.
             let _daemon_lock = cli::process::acquire_daemon_lock()?;
-            cli::process::prepare_daemon_start();
+            cli::process::prepare_daemon_start()?;
             config::layout::purge_v1_layout();
             config::layout::ensure();
             // App checkouts moved out of `state/` and into `teams/<id>/apps`.

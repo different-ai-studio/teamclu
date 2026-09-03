@@ -964,8 +964,29 @@ mod tests {
         assert_eq!(body.app_type, "");
     }
 
+    /// Pin the home these tests resolve paths against.
+    ///
+    /// They compare a path `resolve_workdir` built with one they build
+    /// themselves, and both go through `apps_data_root()`, which reads
+    /// process-global `HOME` / `AMUXD_HOME`. Another test moving those between
+    /// the two calls makes the comparison fail against a home that is simply
+    /// different — the observed failure was
+    ///
+    ///   left:  /tmp/.tmpCH4SOY/.amuxd/teams/_unclaimed/apps/app-2
+    ///   right: /tmp/.tmpsvAeR3/teams/_unclaimed/apps/app-2
+    ///
+    /// two tempdirs, one resolved through `HOME` and one through `AMUXD_HOME`.
+    /// The guard both pins a home and holds `TEST_HOME_LOCK`, so no other
+    /// mover runs in between.
+    fn pinned_home() -> (tempfile::TempDir, crate::test_brand_env::BrandEnvGuard) {
+        let home = tempfile::tempdir().unwrap();
+        let guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        (home, guard)
+    }
+
     #[test]
     fn resolve_workdir_uses_explicit_path_when_present() {
+        let (_home, _guard) = pinned_home();
         let p = resolve_workdir("/tmp/explicit", "app-1", "").unwrap();
         assert_eq!(p, PathBuf::from("/tmp/explicit"));
         // Whitespace-only workdir is treated as omitted → default path used.
@@ -975,6 +996,7 @@ mod tests {
 
     #[test]
     fn resolve_workdir_defaults_to_apps_root_appid() {
+        let (_home, _guard) = pinned_home();
         let p = resolve_workdir("", "app-xyz", "").unwrap();
         assert_eq!(p, apps_data_root().join("app-xyz"));
         assert!(p.ends_with("apps/app-xyz"));

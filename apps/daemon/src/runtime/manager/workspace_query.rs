@@ -12,6 +12,21 @@ use crate::runtime::handle::RuntimeHandle;
 
 use super::RuntimeManager;
 
+/// Whether a workspace currently has a live runtime, and whether that runtime
+/// is mid-turn. Used by the skills-refresh auto-applier to decide whether a
+/// pending change can dispose the cached OpenCode instance now, or must wait.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceOccupancy {
+    /// A runtime in this workspace is currently executing a turn.
+    Active,
+    /// At least one live runtime, none of them mid-turn.
+    WarmIdle,
+    /// No live runtime for this workspace.
+    Cold,
+    /// Occupancy could not be confirmed; keep pending rather than guessing.
+    Unknown,
+}
+
 impl RuntimeManager {
     fn workspace_runtime_matches(
         handle: &RuntimeHandle,
@@ -51,6 +66,24 @@ impl RuntimeManager {
             Self::workspace_runtime_matches(handle, workspace_path, workspace_id)
                 && (matches!(handle.status, amux::AgentStatus::Active) || handle.event_rx.is_none())
         })
+    }
+
+    pub fn workspace_occupancy(
+        &self,
+        workspace_path: &str,
+        workspace_id: &str,
+    ) -> WorkspaceOccupancy {
+        if self.workspace_has_active_turn(workspace_path, workspace_id) {
+            WorkspaceOccupancy::Active
+        } else if self
+            .active_handles_for_workspace(workspace_path, workspace_id)
+            .next()
+            .is_some()
+        {
+            WorkspaceOccupancy::WarmIdle
+        } else {
+            WorkspaceOccupancy::Cold
+        }
     }
 
     /// Resolution snapshot from any live runtime in this workspace.
@@ -174,5 +207,30 @@ mod tests {
         assert!(ids.iter().any(|id| id == "active-target"));
         assert!(ids.iter().any(|id| id == "checked-out-target"));
         assert!(ids.iter().any(|id| id == "idle-other"));
+    }
+
+    #[test]
+    fn occupancy_distinguishes_active_warm_idle_and_cold() {
+        let mut manager = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
+        manager.add_test_workspace_runtime(
+            "busy",
+            "/tmp/active",
+            "ws-active",
+            amux::AgentStatus::Active,
+        );
+        manager.add_test_workspace_runtime("idle", "/tmp/idle", "ws-idle", amux::AgentStatus::Idle);
+
+        assert_eq!(
+            manager.workspace_occupancy("/tmp/active", "ws-active"),
+            WorkspaceOccupancy::Active
+        );
+        assert_eq!(
+            manager.workspace_occupancy("/tmp/idle", "ws-idle"),
+            WorkspaceOccupancy::WarmIdle
+        );
+        assert_eq!(
+            manager.workspace_occupancy("/tmp/missing", "ws-missing"),
+            WorkspaceOccupancy::Cold
+        );
     }
 }
