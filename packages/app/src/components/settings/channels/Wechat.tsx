@@ -34,6 +34,7 @@ import { GatewayStatusCard } from './GatewayStatusCard'
 import { useChannelConfig } from '@/hooks/useChannelConfig'
 import { QRCodeSVG } from 'qrcode.react'
 import { invoke } from '@tauri-apps/api/core'
+import { useShallow } from 'zustand/react/shallow'
 
 // WeChat Setup Wizard Steps
 const WECHAT_WIZARD_STEPS = [
@@ -412,7 +413,9 @@ export function WeChatChannel() {
     refreshWechatStatus,
     setWechatHasChanges,
     toggleWechatEnabled,
-  } = useChannelsStore()
+  } = useChannelsStore(
+    useShallow((s) => ({ wechat: s.wechat, wechatIsLoading: s.wechatIsLoading, wechatGatewayStatus: s.wechatGatewayStatus, wechatHasChanges: s.wechatHasChanges, loadWechatConfig: s.loadWechatConfig, saveWechatConfig: s.saveWechatConfig, startWechatGateway: s.startWechatGateway, stopWechatGateway: s.stopWechatGateway, refreshWechatStatus: s.refreshWechatStatus, setWechatHasChanges: s.setWechatHasChanges, toggleWechatEnabled: s.toggleWechatEnabled })),
+  )
 
   const [expanded, setExpanded] = React.useState(false)
   const [wizardOpen, setWizardOpen] = React.useState(false)

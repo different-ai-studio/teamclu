@@ -29,7 +29,13 @@ export function MessageStatusDot({ messageId }: { messageId: string }) {
   const entry = useOutboxStore((s) => s.byId[messageId]);
   const retry = useOutboxStore((s) => s.retry);
   const cloudPersisted = useOutboxStore((s) => Boolean(s.cloudPersistedIds[messageId]));
-  const sessionId = entry?.sessionId;
+  // PERF-14: `revisionBySession` ticks once per streaming frame, so subscribing
+  // to it from every visible bubble re-rendered the whole list at frame rate —
+  // 80 dots recomputing a status only one of them could change. The revision
+  // only feeds `agentTurnVisible`, which is gated on `inTransit`, so a
+  // delivered or failed bubble asks for a constant and stops re-rendering.
+  const inTransit = entry?.state === "pending" || entry?.state === "inFlight";
+  const sessionId = inTransit ? entry?.sessionId : undefined;
   const streamRevision = useV2StreamingStore((s) =>
     sessionId ? (s.revisionBySession[sessionId] ?? 0) : 0,
   );
@@ -38,7 +44,6 @@ export function MessageStatusDot({ messageId }: { messageId: string }) {
   if (!entry) return null;
 
   const deliveredTitle = t("chat.sendStatus.delivered", "Delivered");
-  const inTransit = entry.state === "pending" || entry.state === "inFlight";
   const { byKey: streamsByKey, archived: streamsArchived } =
     useV2StreamingStore.getState();
   void streamRevision;

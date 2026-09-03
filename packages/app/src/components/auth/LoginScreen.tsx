@@ -13,10 +13,13 @@ import { capabilities } from "@/lib/platform";
 import { GoogleIcon, WechatIcon } from "./oauth-icons";
 import { WebSsoOverlay } from "./WebSsoOverlay";
 import type { OAuthProvider } from "@/lib/auth";
+import { useShallow } from "zustand/react/shallow";
 
 export function OAuthButtons() {
   const { t } = useTranslation();
-  const { signInWithOAuth, cancelOAuth, signInWithWebSso, cancelWebSso, loading, oauthPending, webSsoPending } = useAuthStore();
+  const { signInWithOAuth, cancelOAuth, signInWithWebSso, cancelWebSso, loading, oauthPending, webSsoPending } = useAuthStore(
+    useShallow((s) => ({ signInWithOAuth: s.signInWithOAuth, cancelOAuth: s.cancelOAuth, signInWithWebSso: s.signInWithWebSso, cancelWebSso: s.cancelWebSso, loading: s.loading, oauthPending: s.oauthPending, webSsoPending: s.webSsoPending })),
+  );
   // Read through useFeatures, not the build config: the Cloud API delivers
   // these at startup and they can land after first paint.
   const auth = useFeatures().auth;
@@ -141,7 +144,9 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
     phoneMultiUsers,
     loading,
     errorMessage,
-  } = useAuthStore();
+  } = useAuthStore(
+    useShallow((s) => ({ sendOtp: s.sendOtp, verifyOtp: s.verifyOtp, resetOtp: s.resetOtp, signInWithPassword: s.signInWithPassword, sendPhoneOtp: s.sendPhoneOtp, verifyPhoneOtp: s.verifyPhoneOtp, selectPhoneUser: s.selectPhoneUser, otpEmail: s.otpEmail, otpPhone: s.otpPhone, phoneMultiUsers: s.phoneMultiUsers, loading: s.loading, errorMessage: s.errorMessage })),
+  );
   const [phone, setPhone] = useState("+86");
   const [password, setPassword] = useState("");
   const [method, setMethod] = useState<"email" | "phone" | "password">("email");

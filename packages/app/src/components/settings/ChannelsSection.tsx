@@ -12,6 +12,7 @@ import { WeComChannel } from './channels/Wecom'
 import { WeChatChannel } from './channels/Wechat'
 import { SeaTalkChannel } from './channels/Seatalk'
 import { useFeatures } from '@/lib/remote-features'
+import { useShallow } from 'zustand/react/shallow'
 
 // Main Channels Section Component
 export function ChannelsSection() {
@@ -19,7 +20,9 @@ export function ChannelsSection() {
   // Resolved per render, not once at module scope: these flags now arrive
   // from the Cloud API and can change mid-session.
   const channelsConfig = useFeatures().channels
-  const { discord, isLoading, error, loadConfig, clearError } = useChannelsStore()
+  const { discord, isLoading, error, loadConfig, clearError } = useChannelsStore(
+    useShallow((s) => ({ discord: s.discord, isLoading: s.isLoading, error: s.error, loadConfig: s.loadConfig, clearError: s.clearError })),
+  )
 
   // Load config on mount to sync UI state
   React.useEffect(() => {

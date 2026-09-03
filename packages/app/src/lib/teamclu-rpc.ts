@@ -24,6 +24,7 @@ import { recordMqttDiag } from '@/lib/mqtt-diagnostics'
 import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
 import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
 import { isTauri } from '@/lib/utils'
+import { base64ToBytes, bytesToBase64 } from '@/lib/base64'
 import { createSharedModuleLeaseManager, type SharedModuleLease } from '@/lib/shared-module-lease'
 
 // ---------------------------------------------------------------------------
@@ -263,19 +264,6 @@ function shouldTryLocalRpc(targetActorId: string): boolean {
 
 function noteLocalRpcFailure(): void {
   localRpcFailedUntil = Date.now() + LOCAL_RPC_FAILURE_COOLDOWN_MS
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  bytes.forEach((b) => (binary += String.fromCharCode(b)))
-  return btoa(binary)
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-  return bytes
 }
 
 async function sendViaLocalHttp(req: RpcRequest): Promise<RpcResponse> {

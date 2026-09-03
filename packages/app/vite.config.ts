@@ -98,6 +98,52 @@ if (brandTheme) {
   brandThemeStyle = `<style id="brand-theme">${block}</style>`
 }
 
+// SEC-12 — a CSP for the non-Tauri build.
+//
+// `VITE_APP_PLATFORM=web` has exactly one consumer today: the MV3 side panel
+// (`apps/extension/build.mjs` runs `build:web` and copies `dist/` to
+// `dist/sidepanel/`). Nothing serves this bundle from a hosted origin — no
+// workflow builds it, no compose service publishes it — so the audit's "is it
+// even deployed" is answered: as an extension page, not a website.
+//
+// It still ships the auth session (access + refresh token) in `localStorage`,
+// and it shipped with no policy of its own. The extension origin is isolated
+// and MV3 applies its own default, but a bundle that can be served from
+// anywhere should not depend on where it happens to be served from. So the
+// non-Tauri build carries a policy in the document.
+//
+// Tauri builds get nothing here: Tauri injects its own CSP (with per-script
+// nonces) from `tauri.conf.json`, and a second policy would intersect with it
+// and silently break the app.
+function webCspMeta(isDevServer: boolean): string {
+  // Dev is Vite's own HMR client: inline bootstrap scripts and `eval`.
+  const scriptSrc = isDevServer
+    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'"
+    : "script-src 'self' 'wasm-unsafe-eval'"
+  // `connect-src` stays broad on purpose: the Cloud API and MQTT hosts are
+  // per-brand and injected at build time by `apps/extension/build.mjs`, so an
+  // enumerated list here would lock branded packages out of their own backend.
+  // The directive that matters for token theft is `script-src`.
+  const connectSrc = isDevServer
+    ? "connect-src 'self' https: wss: ws: http://127.0.0.1:* http://localhost:*"
+    : "connect-src 'self' https: wss:"
+  const policy = [
+    "default-src 'self'",
+    scriptSrc,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data:",
+    "media-src 'self' data: blob:",
+    connectSrc,
+    "worker-src 'self' blob:",
+    "frame-src 'self' data: blob: https:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; ')
+  return `<meta http-equiv="Content-Security-Policy" content="${policy}" />`
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
   base: process.env.VITE_APP_PLATFORM === 'web' ? './' : '/',
@@ -107,7 +153,7 @@ export default defineConfig({
     // Inject build-config values into index.html (skeleton theme script)
     {
       name: 'inject-app-short-name',
-      transformIndexHtml(html) {
+      transformIndexHtml(html, ctx) {
         const palette = ((buildConfig as any).app?.palette as string) || 'default'
         // The <title> was hardcoded to "TeamClu", so every branded build —
         // desktop window title and extension side panel alike — announced the
@@ -119,6 +165,10 @@ export default defineConfig({
           .replace(/__APP_NAME__/g, displayName)
           .replace(/__PALETTE__/g, palette)
           .replace(/<!--__BRAND_THEME__-->/g, brandThemeStyle)
+          .replace(
+            /<!--__WEB_CSP__-->/g,
+            process.env.VITE_APP_PLATFORM === 'web' ? webCspMeta(Boolean(ctx.server)) : '',
+          )
       },
     },
     // Bundle analysis: run with ANALYZE=true pnpm build

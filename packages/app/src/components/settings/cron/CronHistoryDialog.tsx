@@ -38,6 +38,7 @@ import {
   type CronJob,
   type CronRunRecord,
 } from '@/stores/cron'
+import { useShallow } from 'zustand/react/shallow'
 
 export { ensureCronSessionVisible } from '@/lib/cron-session-messages'
 
@@ -168,7 +169,9 @@ export function CronHistoryDialog({
   job: CronJob | null
 }) {
   const { t } = useTranslation()
-  const { runs, runsLoading, loadRuns } = useCronStore()
+  const { runs, runsLoading, loadRuns } = useCronStore(
+    useShallow((s) => ({ runs: s.runs, runsLoading: s.runsLoading, loadRuns: s.loadRuns })),
+  )
   const [viewError, setViewError] = React.useState<string | null>(null)
 
   const handleViewSession = React.useCallback(async (sessionId: string, run: CronRunRecord) => {

@@ -17,6 +17,7 @@ import { cn, isTauri, copyToClipboard } from '@/lib/utils'
 import { appDisplayName } from '@/lib/build-config'
 import { useDepsStore } from '@/stores/deps'
 import type { DependencyInfo } from '@/stores/deps'
+import { useShallow } from 'zustand/react/shallow'
 
 
 function getPlatformCommand(commands: DependencyInfo['install_commands']): string {
@@ -90,7 +91,9 @@ function SectionHeader({
 
 function InstallButton({ dep }: { dep: DependencyInfo }) {
   const { t } = useTranslation()
-  const { installDependencies, installing, currentInstalling, installResults, checkDependencies, resetInstallState } = useDepsStore()
+  const { installDependencies, installing, currentInstalling, installResults, checkDependencies, resetInstallState } = useDepsStore(
+    useShallow((s) => ({ installDependencies: s.installDependencies, installing: s.installing, currentInstalling: s.currentInstalling, installResults: s.installResults, checkDependencies: s.checkDependencies, resetInstallState: s.resetInstallState })),
+  )
   const isInstallingThis = currentInstalling === dep.name
   const result = installResults[dep.name]
   const isDone = result?.success
@@ -146,7 +149,9 @@ function UpdateButton({ dep }: { dep: DependencyInfo }) {
   const {
     updateDependency, installing, currentInstalling, installResults,
     checkDependencies, resetInstallState, versions, checkVersions,
-  } = useDepsStore()
+  } = useDepsStore(
+    useShallow((s) => ({ updateDependency: s.updateDependency, installing: s.installing, currentInstalling: s.currentInstalling, installResults: s.installResults, checkDependencies: s.checkDependencies, resetInstallState: s.resetInstallState, versions: s.versions, checkVersions: s.checkVersions })),
+  )
   const isUpdatingThis = currentInstalling === dep.name
   const result = installResults[dep.name]
   const isFailed = result?.error !== undefined && !result?.success
@@ -206,7 +211,9 @@ function UpdateButton({ dep }: { dep: DependencyInfo }) {
  */
 function DepProgress({ dep }: { dep: DependencyInfo }) {
   const { t } = useTranslation()
-  const { currentInstalling, installResults, installOutput, lastOperation } = useDepsStore()
+  const { currentInstalling, installResults, installOutput, lastOperation } = useDepsStore(
+    useShallow((s) => ({ currentInstalling: s.currentInstalling, installResults: s.installResults, installOutput: s.installOutput, lastOperation: s.lastOperation })),
+  )
   const isActive = currentInstalling === dep.name
   const result = installResults[dep.name]
   const lines = installOutput[dep.name] ?? []
@@ -266,7 +273,9 @@ function DepProgress({ dep }: { dep: DependencyInfo }) {
 
 export function DependenciesSection() {
   const { t } = useTranslation()
-  const { dependencies: deps, loading: isLoading, checkDependencies, checkVersions } = useDepsStore()
+  const { dependencies: deps, loading: isLoading, checkDependencies, checkVersions } = useDepsStore(
+    useShallow((s) => ({ dependencies: s.dependencies, loading: s.loading, checkDependencies: s.checkDependencies, checkVersions: s.checkVersions })),
+  )
   const [isChecking, setIsChecking] = React.useState(false)
 
   // Trigger initial check if not yet done

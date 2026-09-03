@@ -10,19 +10,15 @@
  * from its own catalog — the order here must match the `primaryKey` the server
  * reported, which is why this takes that array rather than guessing.
  */
+import { textToBase64Url } from './base64'
+
 export function appDataRowKey(
   primaryKey: readonly string[],
   row: Record<string, unknown>,
 ): string {
   const values = primaryKey.map((column) => row[column]);
-  return base64Url(JSON.stringify(values));
-}
-
-function base64Url(text: string): string {
-  // btoa is byte-oriented; a non-ASCII key value (a Chinese title as a primary
-  // key is unusual but legal) would otherwise throw InvalidCharacterError.
-  const bytes = new TextEncoder().encode(text);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  // `textToBase64Url` UTF-8 encodes first: btoa is byte-oriented, and a
+  // non-ASCII key value (a Chinese title as a primary key is unusual but
+  // legal) would otherwise throw InvalidCharacterError.
+  return textToBase64Url(JSON.stringify(values));
 }

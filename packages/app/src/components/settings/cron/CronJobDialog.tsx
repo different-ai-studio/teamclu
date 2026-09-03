@@ -72,6 +72,7 @@ import {
   DELIVERY_CHANNEL_REGISTRY,
   getRegistryEntry,
 } from '@/lib/cron-utils'
+import { useShallow } from 'zustand/react/shallow'
 
 /** One conversation the bot can be addressed in, as amuxd reports it. */
 type WeComChat = {
@@ -189,7 +190,9 @@ export function CronJobDialog({
   editJob?: CronJob
 }) {
   const { t } = useTranslation()
-  const { addJob, updateJob, runJob, activeScope, selectedWorkspacePath } = useCronStore()
+  const { addJob, updateJob, runJob, activeScope, selectedWorkspacePath } = useCronStore(
+    useShallow((s) => ({ addJob: s.addJob, updateJob: s.updateJob, runJob: s.runJob, activeScope: s.activeScope, selectedWorkspacePath: s.selectedWorkspacePath })),
+  )
   const channelsStore = useChannelsStore()
   const daemonHttpReady = useWorkspaceStore((s) => s.daemonHttpReady)
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)

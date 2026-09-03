@@ -64,11 +64,11 @@ describe("mqtt-bridge", () => {
     expect(invokeMock).toHaveBeenCalledWith("mqtt_unsubscribe", { topic: "amux/t1/session/s1/live" });
   });
 
-  it("mqttPublish converts Uint8Array to array", async () => {
+  it("mqttPublish base64-encodes the payload", async () => {
     invokeMock.mockResolvedValueOnce(undefined);
     await mqttPublish("topic", new Uint8Array([1, 2, 3]));
     expect(invokeMock).toHaveBeenCalledWith("mqtt_publish", {
-      topic: "topic", bytes: [1, 2, 3], retain: false,
+      topic: "topic", payloadB64: "AQID", retain: false,
     });
   });
 

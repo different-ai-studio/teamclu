@@ -20,6 +20,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useOnboardingStore } from "@/stores/onboarding";
 import { clearSetupSatisfied } from "@/stores/setup";
 import { LoginScreen } from "./LoginScreen";
+import { useShallow } from "zustand/react/shallow";
 
 type Step = "choose" | "login" | "invite" | "server";
 
@@ -165,7 +166,9 @@ function ChooseStep({
   onServer: () => void;
 }) {
   const { t } = useTranslation();
-  const { loading, errorMessage } = useAuthStore();
+  const { loading, errorMessage } = useAuthStore(
+    useShallow((s) => ({ loading: s.loading, errorMessage: s.errorMessage })),
+  );
   // The footer already prints the effective URL in coral, but it is 10px type
   // at the bottom of the window — easy to miss, and it says nothing about which
   // of these three entries put the app there. Mark the entry itself too.
@@ -295,7 +298,9 @@ function ChooseStep({
 
 function InviteStep({ onBack, onNeedLogin }: { onBack: () => void; onNeedLogin: () => void }) {
   const { t } = useTranslation();
-  const { setPendingInviteToken, errorMessage } = useAuthStore();
+  const { setPendingInviteToken, errorMessage } = useAuthStore(
+    useShallow((s) => ({ setPendingInviteToken: s.setPendingInviteToken, errorMessage: s.errorMessage })),
+  );
   const [raw, setRaw] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
 

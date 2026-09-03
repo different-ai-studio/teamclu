@@ -23,6 +23,7 @@ import { useWorkspaceStore } from '@/stores/workspace'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { toast } from 'sonner'
 import { listen } from '@tauri-apps/api/event'
+import { useShallow } from 'zustand/react/shallow'
 
 // ─── Unified type for the combined list ─────────────────────────────────
 
@@ -344,7 +345,9 @@ function EnvVarRow({ entry, canDelete, injectionStatus, onEdit, onDelete }: EnvV
   const [revealedValue, setRevealedValue] = React.useState<string | null>(null)
   const [loading, setLoading] = React.useState(false)
   const [copied, setCopied] = React.useState(false)
-  const { getEnvVarValue } = useEnvVarsStore()
+  const { getEnvVarValue } = useEnvVarsStore(
+    useShallow((s) => ({ getEnvVarValue: s.getEnvVarValue })),
+  )
 
   const isSystem = entry.scope === 'personal' && entry.category === 'system'
   const isSystemShared = entry.category === 'system-shared'
@@ -679,7 +682,9 @@ function TeamEnvDiagnosticsCard({
 
 export const EnvVarsSection = React.memo(function EnvVarsSection() {
   const { t } = useTranslation()
-  const { envVars, teamSecrets, isLoading: envLoading, loadEnvCatalog, setCatalogEntry, deleteCatalogEntry } = useEnvVarsStore()
+  const { envVars, teamSecrets, isLoading: envLoading, loadEnvCatalog, setCatalogEntry, deleteCatalogEntry } = useEnvVarsStore(
+    useShallow((s) => ({ envVars: s.envVars, teamSecrets: s.teamSecrets, isLoading: s.isLoading, loadEnvCatalog: s.loadEnvCatalog, setCatalogEntry: s.setCatalogEntry, deleteCatalogEntry: s.deleteCatalogEntry })),
+  )
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
   const teamName = useCurrentTeamStore((s) => s.team?.name ?? null)

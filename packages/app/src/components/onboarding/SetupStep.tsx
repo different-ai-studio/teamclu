@@ -14,6 +14,7 @@ import {
 import { useOnboardingStore, type OnboardingRole } from '@/stores/onboarding'
 import { useElapsedSeconds } from '@/hooks/use-elapsed-seconds'
 import type { DaemonLocalAgent } from '@/lib/daemon-local-client'
+import { useShallow } from 'zustand/react/shallow'
 
 /**
  * How long the work on this screen may run before it starts saying how long it
@@ -319,7 +320,9 @@ export function SetupStep({ role, onDone }: { role: OnboardingRole; onDone: () =
     listRequirements,
     listAgentRuntimes,
     install,
-  } = useSetupStore()
+  } = useSetupStore(
+    useShallow((s) => ({ requirements: s.requirements, agentRuntimes: s.agentRuntimes, installing: s.installing, errors: s.errors, loaded: s.loaded, probeError: s.probeError, runtimeScanFailed: s.runtimeScanFailed, progress: s.progress, installRoute: s.installRoute, listRequirements: s.listRequirements, listAgentRuntimes: s.listAgentRuntimes, install: s.install })),
+  )
   const setRuntime = useOnboardingStore((s) => s.setRuntime)
   const [selected, setSelected] = React.useState<DaemonLocalAgent>(DEFAULT_RUNTIME)
   const [rechecking, setRechecking] = React.useState(false)

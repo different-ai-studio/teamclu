@@ -26,6 +26,7 @@ import { extensionTeamOnboarding } from "@/lib/build-config";
 import { NoTeamScreen } from "./NoTeamScreen";
 import { useInviteLinkConfirmation } from "@/lib/invite-link-confirmation";
 import type { MembershipTeam } from "@/lib/backend";
+import { useShallow } from "zustand/react/shallow";
 
 /** A one-option "choice" is noise: single-locale builds skip the language step
  *  entirely rather than showing a screen with nothing to decide. */
@@ -74,7 +75,9 @@ function pickAutoRestoreTarget(
 }
 
 export function AuthGate({ children }: AuthGateProps) {
-  const { session, loading, authFlow, hydrate, signOut } = useAuthStore();
+  const { session, loading, authFlow, hydrate, signOut } = useAuthStore(
+    useShallow((s) => ({ session: s.session, loading: s.loading, authFlow: s.authFlow, hydrate: s.hydrate, signOut: s.signOut })),
+  );
   const [bootstrap, setBootstrap] = useState<BootstrapState>("idle");
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [bootstrapNonce, setBootstrapNonce] = useState(0);

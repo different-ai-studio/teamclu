@@ -45,6 +45,7 @@ import {
   listDaemonWorkspaces,
   type DaemonWorkspace,
 } from '@/lib/daemon-workspaces'
+import { useShallow } from 'zustand/react/shallow'
 
 // WeCom Setup Wizard
 const WECOM_WIZARD_STEPS = [
@@ -111,7 +112,9 @@ function WeComSetupWizard({
   const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
   const errorCountRef = React.useRef(0)
 
-  const { startWecomQrAuth, pollWecomQrAuth } = useChannelsStore()
+  const { startWecomQrAuth, pollWecomQrAuth } = useChannelsStore(
+    useShallow((s) => ({ startWecomQrAuth: s.startWecomQrAuth, pollWecomQrAuth: s.pollWecomQrAuth })),
+  )
 
   const cleanupPolling = () => {
     if (pollRef.current) {
@@ -562,7 +565,9 @@ export function WeComChannel() {
     refreshWecomStatus,
     setWecomHasChanges,
     toggleWecomEnabled,
-  } = useChannelsStore()
+  } = useChannelsStore(
+    useShallow((s) => ({ wecom: s.wecom, wecomIsLoading: s.wecomIsLoading, wecomGatewayStatus: s.wecomGatewayStatus, wecomHasChanges: s.wecomHasChanges, loadWecomConfig: s.loadWecomConfig, saveWecomConfig: s.saveWecomConfig, startWecomGateway: s.startWecomGateway, stopWecomGateway: s.stopWecomGateway, refreshWecomStatus: s.refreshWecomStatus, setWecomHasChanges: s.setWecomHasChanges, toggleWecomEnabled: s.toggleWecomEnabled })),
+  )
   const botStatuses = useChannelsStore(s => s.wecomBotStatuses)
   const loadWecomBotStatuses = useChannelsStore(s => s.loadWecomBotStatuses)
   const team = useCurrentTeamStore(s => s.team)

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { base64ToBytes, bytesToBase64 } from "./base64";
 
 export interface IncomingEnvelope {
   topic: string;
@@ -9,13 +10,6 @@ export interface IncomingEnvelope {
 interface RawBatchedEnvelope {
   topic: string;
   b64: string;
-}
-
-function b64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
 }
 
 export async function mqttConnect(args: {
@@ -49,9 +43,11 @@ export async function mqttUnsubscribe(topic: string): Promise<void> {
 }
 
 export async function mqttPublish(topic: string, bytes: Uint8Array, retain = false): Promise<void> {
+  // PERF-16: base64, not `Array.from(bytes)` — a `Vec<u8>` argument is a JSON
+  // array of decimal numbers on the wire, three to four times the payload.
   await invoke("mqtt_publish", {
     topic,
-    bytes: Array.from(bytes),
+    payloadB64: bytesToBase64(bytes),
     retain,
   });
 }
@@ -81,7 +77,7 @@ export async function listenForEnvelopes(
   return listen<RawBatchedEnvelope[]>("mqtt:envelopes", (msg) => {
     for (const raw of msg.payload) {
       try {
-        handler({ topic: raw.topic, bytes: b64ToBytes(raw.b64) });
+        handler({ topic: raw.topic, bytes: base64ToBytes(raw.b64) });
       } catch (e) {
         console.warn("[mqtt-bridge] skipping bad envelope b64:", raw.topic, e);
       }

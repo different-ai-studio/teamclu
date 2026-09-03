@@ -32,6 +32,7 @@ import { getSkillDirectories, loadAllSkills } from "@/lib/skills/loader";
 import { DEFAULT_WORKSPACE_PATH } from "@/lib/build-config";
 import { WORKSPACE_STORAGE_KEY } from "@/stores/workspace";
 import { markStartup } from "@/lib/startup-perf";
+import { useShallow } from "zustand/react/shallow";
 
 export const SKILLS_CHANGED_EVENT = "skills-files-changed";
 
@@ -378,7 +379,9 @@ export function useChannelGatewayInit() {
     loadConfig: loadChannelsConfig,
     stopAllAndReset,
     keepAliveCheck,
-  } = useChannelsStore();
+  } = useChannelsStore(
+    useShallow((s) => ({ autoStartEnabledGateways: s.autoStartEnabledGateways, loadConfig: s.loadConfig, stopAllAndReset: s.stopAllAndReset, keepAliveCheck: s.keepAliveCheck })),
+  );
   const hasAutoStarted = useRef(false);
   const prevWorkspaceRef = useRef<string | null>(null);
 

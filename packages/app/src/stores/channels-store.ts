@@ -109,7 +109,7 @@ function seatalkStatus(list: AmuxdChannelStatus[]): SeaTalkGatewayStatusResponse
   return { status: 'disconnected' }
 }
 
-export const useChannelsStore = create<ChannelsState>((set) => ({
+export const useChannelsStore = create<ChannelsState>((set, get) => ({
   // Discord initial state
   discord: null,
   isLoading: false,
@@ -334,7 +334,7 @@ export const useChannelsStore = create<ChannelsState>((set) => ({
   keepAliveCheck: async () => {
     try {
       const list = await listChannels()
-      set({
+      const next = {
         gatewayStatus: discordStatus(list),
         feishuGatewayStatus: feishuStatus(list),
         emailGatewayStatus: emailStatus(list),
@@ -342,7 +342,18 @@ export const useChannelsStore = create<ChannelsState>((set) => ({
         wecomGatewayStatus: wecomStatus(list),
         wechatGatewayStatus: wechatStatus(list),
         error: null,
-      })
+      }
+      // PERF-12: every `*Status` helper builds a fresh object, so setting them
+      // unconditionally handed six new references to the store on every tick —
+      // and `useChannelsStore()` subscribers (App among them, through
+      // `useChannelGatewayInit`) re-rendered every 30 seconds whether or not a
+      // gateway had actually changed. Nothing here is deep or large; a value
+      // comparison decides it.
+      const current = get()
+      const changed = (Object.keys(next) as Array<keyof typeof next>).some(
+        (key) => JSON.stringify(current[key]) !== JSON.stringify(next[key]),
+      )
+      if (changed) set(next)
     } catch {
       // Ignore — keep-alive failures shouldn't surface UI errors on every tick.
     }

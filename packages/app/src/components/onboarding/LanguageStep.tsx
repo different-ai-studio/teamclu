@@ -29,7 +29,7 @@ export function LanguageStep({ onDone }: { onDone: () => void }) {
   const current = getCurrentLanguage()
 
   const choose = (lang: string) => {
-    changeLanguage(lang)
+    void changeLanguage(lang)
     onDone()
   }
 

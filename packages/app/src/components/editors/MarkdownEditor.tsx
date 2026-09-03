@@ -35,7 +35,7 @@ import {
 } from '@codemirror/language';
 import { markdown } from '@codemirror/lang-markdown';
 import { oneDark } from '@codemirror/theme-one-dark';
-import { diffChars } from 'diff';
+import { diffAgentEdit } from './agent-edit-diff';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
@@ -212,27 +212,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, EditorProps>(
           const oldText = view.state.doc.toString();
           if (oldText === newMarkdown) return;
 
-          const changes = diffChars(oldText, newMarkdown);
-          const ranges: HighlightRange[] = [];
-          let newOffset = 0;
-          let addedChars = 0;
-          let removedChars = 0;
+          // PERF-17: diff the changed span only, and dispatch that span rather
+          // than the whole document — a full replacement rebuilds every line
+          // and throws the cursor to the top for a one-word agent edit.
+          const edit = diffAgentEdit(oldText, newMarkdown);
+          const ranges: HighlightRange[] = edit.ranges;
 
-          for (const change of changes) {
-            if (change.removed) {
-              removedChars += change.value.length;
-              continue;
-            }
-            if (change.added) {
-              ranges.push({ from: newOffset, to: newOffset + change.value.length });
-              addedChars += change.value.length;
-              newOffset += change.value.length;
-            } else {
-              newOffset += change.value.length;
-            }
-          }
-
-          const changedChars = Math.max(addedChars, removedChars);
+          const changedChars = Math.max(edit.addedChars, edit.removedChars);
           const totalChars = Math.max(oldText.length, newMarkdown.length, 1);
           const changePercent = (changedChars / totalChars) * 100;
           const shouldHighlight = changePercent <= LARGE_CHANGE_THRESHOLD && ranges.length > 0;
@@ -240,7 +226,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, EditorProps>(
 
           isExternalUpdate.current = true;
           view.dispatch({
-            changes: { from: 0, to: oldText.length, insert: newMarkdown },
+            changes: { from: edit.from, to: edit.to, insert: edit.insert },
             effects: shouldHighlight ? [addAgentHighlights.of({ ranges, batchId })] : [],
             annotations: Transaction.addToHistory.of(false),
           });

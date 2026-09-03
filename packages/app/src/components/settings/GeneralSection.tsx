@@ -39,6 +39,7 @@ import { useHeaderPreferencesStore } from '@/stores/header-preferences-store'
 import { appStoragePrefix, buildConfig } from '@/lib/build-config'
 import { NOTIFICATION_LEVEL_KEY } from '@/lib/notification-service'
 import { LANGUAGE_OPTIONS, getPreferredLanguage, normalizeSupportedLanguage, persistLanguage } from '@/lib/locale'
+import { changeLanguage } from '@/lib/i18n'
 import { getEffectiveServerConfig, type ServerConfig } from '@/lib/server-config'
 import { fetchAndApplyBootstrap } from '@/lib/bootstrap'
 import { useAuthStore } from '@/stores/auth-store'
@@ -203,7 +204,11 @@ export const GeneralSection = React.memo(function GeneralSection() {
   const handleLanguageChange = React.useCallback((value: string) => {
     const normalizedValue = normalizeSupportedLanguage(value)
     setLanguage(normalizedValue)
-    i18next.changeLanguage(normalizedValue)
+    // Through `@/lib/i18n`, not `i18next` directly: catalogues are fetched on
+    // demand (PERF-15), and only this wrapper loads the target one before
+    // switching. Calling i18next straight through swaps to a locale with no
+    // strings and paints raw keys.
+    void changeLanguage(normalizedValue)
     persistLanguage(normalizedValue)
     void invoke('set_config_locale', { locale: normalizedValue }).catch(() => {
       // Settings should still update locally if the native config is unavailable.

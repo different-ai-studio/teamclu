@@ -1,4 +1,5 @@
 import type { PageContext } from '@/lib/embed-page-context'
+import { textToBase64Url } from './base64'
 
 const PAGE_LINK_TOKEN_PREFIX = '@{page:b64:'
 const MAX_PAGE_CHIP_LABEL = 80
@@ -13,10 +14,7 @@ export function sanitizePageChipLabel(label: string): string {
 }
 
 export function base64urlEncode(value: string): string {
-  const bytes = new TextEncoder().encode(value)
-  let binary = ''
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+  return textToBase64Url(value)
 }
 
 export function base64urlDecode(value: string): string {

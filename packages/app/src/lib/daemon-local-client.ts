@@ -13,6 +13,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { normalizeDaemonEnvActivationDiagnostics } from '@/lib/env-diagnostics'
 import { useAuthStore } from '@/stores/auth-store'
 import { isTauri } from '@/lib/utils'
+import { textToBase64Url } from './base64'
 
 // ─── Workspace ID encoding ────────────────────────────────────────────────────
 
@@ -24,10 +25,7 @@ import { isTauri } from '@/lib/utils'
  * same alphabet (A-Z a-z 0-9 - _) with no padding.
  */
 export function encodeWorkspaceId(workspacePath: string): string {
-  const bytes = new TextEncoder().encode(workspacePath)
-  let binary = ''
-  bytes.forEach((b) => (binary += String.fromCharCode(b)))
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+  return textToBase64Url(workspacePath)
 }
 
 // ─── Connection cache ─────────────────────────────────────────────────────────
