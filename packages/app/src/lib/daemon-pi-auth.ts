@@ -227,6 +227,24 @@ const POLL_INTERVAL_MS = 400
  */
 const MAX_POLL_FAILURES = 5
 
+/**
+ * How long a flow may run without producing *anything* — no event, no prompt —
+ * before it is called lost.
+ *
+ * Only the opening of a login is bounded. Once pi has said something, the user
+ * may sit in a browser for as long as they like and nothing here interferes.
+ * What this catches is the flow that starts and then goes silent: pi has been
+ * seen never reaching its first prompt on a busy child, and the flow then
+ * emitted nothing at all — leaving "waiting for authorization" on screen with
+ * no browser, no error and no end. A silent hang is the one failure a user
+ * cannot act on, so it is turned into a message they can.
+ *
+ * Generous on purpose: by the time polling starts the daemon has already
+ * brought the child up (that is what `startPiLogin` waited for), so the first
+ * event normally lands well inside a second.
+ */
+const OPENING_SILENCE_TIMEOUT_MS = 30_000
+
 export interface PiLoginCallbacks {
   onEvent(event: PiAuthEvent): void
   /**
@@ -238,6 +256,13 @@ export interface PiLoginCallbacks {
    */
   onPrompt(prompt: PiAuthPrompt, signal: AbortSignal): Promise<string | null>
 }
+
+/**
+ * `PiLoginOutcome.error` for a login that never said anything. Exported so the
+ * dialog can recognise it and explain the one thing that actually helps —
+ * retrying, which lands on a freshly started child.
+ */
+export const PI_LOGIN_SILENT_ERROR = 'pi-login-no-response'
 
 export interface PiLoginOutcome {
   status: PiLoginStatus
@@ -264,6 +289,8 @@ export async function runPiLogin(
   /** Prompt ids already handed to the UI, so a re-poll does not re-ask. */
   let answering: string | null = null
   let promptAbort: AbortController | null = null
+  /** Cleared by the first sign of life; see OPENING_SILENCE_TIMEOUT_MS. */
+  let openedAt: number | null = Date.now()
 
   const cancelRemote = () => {
     void cancelPiLogin(loginId).catch(() => {})
@@ -292,6 +319,20 @@ export async function runPiLogin(
 
       cursor = snapshot.cursor
       for (const event of snapshot.events) callbacks.onEvent(event)
+
+      // Any sign of life retires the opening deadline for good.
+      if (openedAt !== null && (snapshot.events.length > 0 || snapshot.prompt)) {
+        openedAt = null
+      } else if (openedAt !== null && Date.now() - openedAt > OPENING_SILENCE_TIMEOUT_MS) {
+        // Leave nothing running on the daemon side: pi is still inside a login
+        // that will never be answered now.
+        cancelRemote()
+        return {
+          status: 'failed',
+          error: PI_LOGIN_SILENT_ERROR,
+          refreshError: null,
+        }
+      }
 
       // pi withdrew the prompt we are showing (its callback server won the
       // race). Tell the UI to take it down; the flow carries on.

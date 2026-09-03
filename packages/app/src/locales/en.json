@@ -1731,6 +1731,7 @@
       "openInBrowser": "Open in browser",
       "deviceCodeHint": "Enter this pairing code at the address below:",
       "waiting": "Waiting for authorization\u2026",
+      "noResponse": "pi did not respond to this sign-in. Try again \u2014 a retry runs on a fresh pi process.",
       "loginSucceeded": "Signed in to {{provider}}.",
       "refreshWarning": "The model list could not be refreshed ({{error}}); cached models will be used.",
       "customProviders": "Custom providers",

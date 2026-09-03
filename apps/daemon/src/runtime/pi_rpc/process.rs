@@ -238,6 +238,20 @@ impl PiProcessPool {
             .map(Arc::clone)
     }
 
+    /// Every live child.
+    ///
+    /// Used to fan a credential change out to the children already serving
+    /// sessions: each holds its own `ModelRuntime`, so a provider signed in
+    /// through one of them is invisible to the rest until they reload.
+    pub(crate) fn all_live(&self) -> Vec<Arc<PiProcess>> {
+        self.procs
+            .lock()
+            .values()
+            .filter(|p| p.is_alive())
+            .map(Arc::clone)
+            .collect()
+    }
+
     /// Kill and drop all children. Returns the number that were alive.
     pub(crate) fn kill_all(&self) -> usize {
         // Spawn envs deliberately survive: a session prompting after an

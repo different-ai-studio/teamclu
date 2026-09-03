@@ -1612,15 +1612,31 @@ impl AgentBackend for PiRpcBackend {
         Ok(models_from_response(&resp))
     }
 
-    /// Forward one `auth_*` command to a pi host.
+    /// Forward one `auth_*` command to the dedicated auth child.
     ///
-    /// Host selection mirrors [`Self::model_catalog`]: reuse any live child —
-    /// auth is host-level, and a session's child answers it as well as a probe
-    /// would — and only spawn one when the device has none. Reusing matters
-    /// beyond cost here: `ModelRuntime.login` writes `auth.json` *and* updates
-    /// that runtime's in-memory snapshot, so logging in through the child that
-    /// is already serving sessions is what makes the new models appear in them
-    /// without a respawn.
+    /// **Never a session's child.** This used to reuse `any_live()`, on the
+    /// reasoning that auth is host-level and logging in through the child
+    /// already serving sessions is what makes the newly unlocked models appear
+    /// in them without a respawn. That reasoning cost the feature: on a
+    /// long-lived session child, `ModelRuntime.login` was observed never
+    /// reaching its first prompt, so the flow emitted nothing at all and the
+    /// UI waited forever. A dedicated child reproduced none of it — repeatedly,
+    /// across every provider — and killing the session children fixed a daemon
+    /// that had been failing every login.
+    ///
+    /// The exact stall inside pi is still unknown. The fix does not depend on
+    /// knowing it: auth is *device*-global state (one `auth.json`, one
+    /// `models.json`), so it has no business sharing a process with a session's
+    /// turn, its MCP bridges and its extension. Pinning it to its own child
+    /// makes the failure structurally impossible rather than merely unlikely.
+    /// What that gives up — a login being immediately visible to running
+    /// sessions — is bought back by [`events`] fanning `auth_refresh` out to
+    /// every live child once a login succeeds.
+    ///
+    /// The key is per-worktree so the child still starts in a directory the
+    /// caller chose; auth itself reads neither. `ensure` rather than
+    /// `ensure_for_catalog`: this key is synthetic and no session can be on it,
+    /// so there is nothing to protect from being killed and respawned.
     ///
     /// `auth_login_start` registers the flow before the command goes out, and
     /// unregisters it if the command fails: the host can emit `auth_prompt`
@@ -1631,20 +1647,15 @@ impl AgentBackend for PiRpcBackend {
         request: serde_json::Value,
     ) -> crate::error::Result<serde_json::Value> {
         let worktree = canonical_dir(&workspace_path.to_string_lossy());
-        let proc = match self.shared.pool.any_live() {
-            Some(proc) => proc,
-            None => {
-                let key = PoolKey {
-                    domain: IsolationDomainKey::Workspace(format!(
-                        "pi-auth:{}",
-                        process::worktree_hash(&worktree)
-                    )),
-                    env_revision: ProcessEnvRevision::from_bindings(&HashMap::new()),
-                    worktree,
-                };
-                self.shared.pool.ensure(&self.shared, &key)?
-            }
+        let key = PoolKey {
+            domain: IsolationDomainKey::Workspace(format!(
+                "pi-auth:{}",
+                process::worktree_hash(&worktree)
+            )),
+            env_revision: ProcessEnvRevision::from_bindings(&HashMap::new()),
+            worktree,
         };
+        let proc = self.shared.pool.ensure(&self.shared, &key)?;
 
         let login_id = request
             .get("type")

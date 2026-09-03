@@ -20,6 +20,7 @@ import { Input } from '@/components/ui/input'
 import { copyToClipboard, openExternalUrl } from '@/lib/utils'
 import {
   runPiLogin,
+  PI_LOGIN_SILENT_ERROR,
   type PiAuthEvent,
   type PiAuthPrompt,
   type PiAuthType,
@@ -298,7 +299,16 @@ export function PiLoginDialog({
           {outcome?.status === 'failed' && outcome.error && (
             <div className="flex items-start gap-2 rounded-lg border border-border bg-panel p-3 text-[12.5px]">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
-              <span className="text-foreground">{outcome.error}</span>
+              <span className="text-foreground">
+                {/* The silent-stall case has no message of pi's to show, and
+                    the raw sentinel would mean nothing to a reader. */}
+                {outcome.error === PI_LOGIN_SILENT_ERROR
+                  ? t(
+                      'settings.piLlm.noResponse',
+                      'pi 没有响应这次登录请求。请重试——重试会用一个新的 pi 进程。',
+                    )
+                  : outcome.error}
+              </span>
             </div>
           )}
         </div>

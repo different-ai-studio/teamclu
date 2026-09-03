@@ -12,7 +12,7 @@ vi.mock('@/lib/daemon-local-client', () => ({
   daemonRequest: (path: string, init?: RequestInit) => daemonRequest(path, init),
 }))
 
-const { runPiLogin } = await import('@/lib/daemon-pi-auth')
+const { runPiLogin, PI_LOGIN_SILENT_ERROR } = await import('@/lib/daemon-pi-auth')
 
 type Snapshot = {
   provider_id: string
@@ -205,6 +205,59 @@ describe('runPiLogin', () => {
     controller.abort()
     await promise
     expect(calls('/cancel').length).toBeGreaterThan(0)
+  })
+
+  /**
+   * The failure this whole timeout exists for: pi accepts the login, then says
+   * nothing at all. Before, that left "waiting for authorization" on screen
+   * forever with no browser, no error and no end — the one failure a user
+   * cannot act on. It must terminate, and it must cancel the daemon-side flow
+   * on the way out so pi is not left waiting on an answer nobody will give.
+   */
+  it('gives up on a flow that never produces an event, and cancels it', async () => {
+    vi.useFakeTimers()
+    try {
+      scriptPolls([snapshot()])
+      const promise = runPiLogin('ant-ling', 'api_key', {
+        onEvent: () => {},
+        onPrompt: async () => null,
+      })
+      // Past the opening deadline; the loop needs its polls to run, so time is
+      // advanced in slices rather than one jump.
+      for (let i = 0; i < 200; i += 1) await vi.advanceTimersByTimeAsync(500)
+      const outcome = await promise
+      expect(outcome.status).toBe('failed')
+      expect(outcome.error).toBe(PI_LOGIN_SILENT_ERROR)
+      expect(calls('/cancel').length).toBeGreaterThan(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  /** A flow that says something keeps its patience: the deadline is only for
+   * the opening, or a user reading a browser page would be cut off. */
+  it('does not time out once pi has spoken', async () => {
+    vi.useFakeTimers()
+    try {
+      scriptPolls([
+        snapshot({ events: [{ type: 'progress', message: 'working' }], cursor: 1 }),
+        snapshot({ cursor: 1 }),
+      ])
+      let settled = false
+      const promise = runPiLogin('anthropic', 'oauth', {
+        onEvent: () => {},
+        onPrompt: async () => null,
+      }).then((r) => {
+        settled = true
+        return r
+      })
+      for (let i = 0; i < 200; i += 1) await vi.advanceTimersByTimeAsync(500)
+      expect(settled).toBe(false)
+      expect(calls('/cancel').length).toBe(0)
+      void promise
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   /**

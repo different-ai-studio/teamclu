@@ -130,6 +130,11 @@ async fn handle_event(
     // claimed here, above `event_session`: its fallback would attribute them to
     // "whichever session is active" and deliver a login prompt into a chat.
     if super::auth::handle_host_event(event_type, event) {
+        if event_type == "auth_login_end"
+            && event.get("success").and_then(|v| v.as_bool()) == Some(true)
+        {
+            broadcast_auth_refresh(shared, client, event);
+        }
         return;
     }
     // Host bookkeeping lines, not session events.
@@ -328,6 +333,47 @@ async fn try_backfill(
             .await;
     }
     Ok(())
+}
+
+/// Tell every *other* live child to reload the provider a login just unlocked.
+///
+/// Logins run on their own child (see `pi_auth_request`), and each child holds
+/// its own `ModelRuntime`. Without this, a provider signed in from the settings
+/// pane stays invisible to the sessions already running until their child is
+/// respawned — which is exactly the property reusing a session's child used to
+/// buy, and the reason it is safe to stop doing that.
+///
+/// Detached rather than awaited: this reader task is the only thing draining
+/// that child's stdout, and `auth_refresh` waits on a network catalog fetch.
+/// Awaiting it here would stall every event from the child that just answered.
+/// Best-effort by design — a child that fails to refresh still picks the
+/// credential up from `auth.json` the next time it starts.
+fn broadcast_auth_refresh(shared: &Arc<Shared>, origin: &PiClient, event: &serde_json::Value) {
+    let provider_id = event
+        .get("providerId")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let targets: Vec<_> = shared
+        .pool
+        .all_live()
+        .into_iter()
+        // The child that ran the login already refreshed itself as part of it.
+        .filter(|p| !p.client.same_process(origin))
+        .collect();
+    if targets.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut cmd = serde_json::json!({"type": "auth_refresh"});
+        if let Some(provider_id) = provider_id {
+            cmd["providerId"] = serde_json::json!(provider_id);
+        }
+        for proc in targets {
+            if let Err(e) = proc.client.request(cmd.clone()).await {
+                debug!(error = %e, "pi auth_refresh fan-out failed for one child");
+            }
+        }
+    });
 }
 
 /// Dialog methods block pi until an `extension_ui_response` arrives; a

@@ -1731,6 +1731,7 @@
       "openInBrowser": "在浏览器中打开",
       "deviceCodeHint": "在下面的网址输入这个配对码：",
       "waiting": "等待授权完成\u2026",
+      "noResponse": "pi 没有响应这次登录请求。请重试——重试会用一个新的 pi 进程。",
       "loginSucceeded": "{{provider}} 登录成功。",
       "refreshWarning": "模型列表刷新失败（{{error}}），将使用缓存的模型。",
       "customProviders": "自定义 Provider",
