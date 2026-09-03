@@ -3,7 +3,7 @@ import { AlertCircle, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { formatRuntimeRefreshChangeKinds, runtimeRefreshNeedsBanner } from '@/lib/workspace-runtime-refresh-labels'
+import { formatRuntimeRefreshChangeKinds, runtimeRefreshNeedsBanner } from '@/lib/agent/workspace-runtime-refresh-labels'
 import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 
 export function RuntimeRefreshWorkspaceBanner() {

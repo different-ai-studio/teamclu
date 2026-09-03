@@ -5,10 +5,10 @@ import { ArrowLeft, FolderSearch, Loader2, Save } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { encodeWorkspaceId, notifyDaemonSkillsChanged, putDaemonSkill } from '@/lib/daemon-local-client'
+import { encodeWorkspaceId, notifyDaemonSkillsChanged, putDaemonSkill } from '@/lib/daemon/daemon-local-client'
 import { revealInFinder } from '@/components/workspace/file-tree-operations'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
-import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
+import { useEffectiveWorkspacePath } from '@/lib/workspace/effective-workspace'
 import { useIsDark } from './use-is-dark'
 
 const CodeEditor = lazy(() => import('@/components/editors/CodeEditor'))

@@ -5,7 +5,7 @@ import {
   retiredSlugs,
   type DesiredSkill,
   type OnDiskSkill,
-} from '../auto-follow'
+} from '@/lib/skills/auto-follow'
 
 const TEAM = 'team-a'
 

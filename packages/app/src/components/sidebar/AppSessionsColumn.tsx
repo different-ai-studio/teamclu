@@ -15,8 +15,8 @@ import { useUIStore } from '@/stores/ui'
 import { useAppsStore } from '@/stores/apps-store'
 import { useSessionSelectionStore } from '@/stores/session-selection-store'
 import { getBackend } from '@/lib/backend'
-import { createAppSessionShell, openAppSession } from '@/lib/app-session'
-import { formatRelativeTime } from '@/lib/date-format'
+import { createAppSessionShell, openAppSession } from '@/lib/apps/app-session'
+import { formatRelativeTime } from '@/lib/ui/date-format'
 import type { AppRow, AppSessionRow } from '@/lib/backend/types'
 
 function SessionRow({

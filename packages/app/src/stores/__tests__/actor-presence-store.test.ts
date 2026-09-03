@@ -17,7 +17,7 @@ const mockListen = vi.fn().mockImplementation(async (handler: (env: { topic: str
   return () => { envelopeHandler = null }
 })
 
-vi.mock('@/lib/mqtt-bridge', () => ({
+vi.mock('@/lib/mqtt/mqtt-bridge', () => ({
   mqttSubscribe: mockSubscribe,
   listenForEnvelopes: mockListen,
   mqttPublish: vi.fn(),

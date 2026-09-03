@@ -53,7 +53,7 @@ flowchart TB
 
 ## 3. 设备可达性 — 单一 merge 规则
 
-**源文件：** `packages/app/src/lib/agent-device-reachability.ts`
+**源文件：** `packages/app/src/lib/agent/agent-device-reachability.ts`
 
 ### 3.1 输入
 
@@ -96,7 +96,7 @@ flowchart TB
 
 ### 3.4 本机 actor 身份
 
-**源文件：** `packages/app/src/lib/local-daemon-identity.ts`
+**源文件：** `packages/app/src/lib/daemon/local-daemon-identity.ts`
 
 - `noteLocalDaemonActorId(id)` — 从 `/v1/info` 或 sidebar 写入，持久化到 `localStorage`（`{appShortName}-local-daemon-actor-id`）
 - `getKnownLocalDaemonActorId()` — sync merge 判断「是否本机 agent」
@@ -291,8 +291,8 @@ pnpm exec vitest run --config vitest.config.e2e.ts \
 
 | 职责 | 路径 |
 |------|------|
-| Merge 规则 + sync/async resolve | `packages/app/src/lib/agent-device-reachability.ts` |
-| 本机 actor id | `packages/app/src/lib/local-daemon-identity.ts` |
+| Merge 规则 + sync/async resolve | `packages/app/src/lib/agent/agent-device-reachability.ts` |
+| 本机 actor id | `packages/app/src/lib/daemon/local-daemon-identity.ts` |
 | MQTT presence store | `packages/app/src/stores/actor-presence-store.ts` |
 | Runtime retain store | `packages/app/src/stores/runtime-state-store.ts` |
 | Ensure 入口 | `packages/app/src/lib/teamclu/ensure-agent-runtime.ts` |
@@ -300,9 +300,9 @@ pnpm exec vitest run --config vitest.config.e2e.ts \
 | Focus / retry hooks | `packages/app/src/hooks/use-ensure-engaged-runtimes-on-session-focus.ts` |
 | MQTT 重连 ensure | `packages/app/src/hooks/use-reensure-runtimes-on-mqtt-reconnect.ts` |
 | Outbox send ensure | `packages/app/src/services/outbox-sender.ts` |
-| Actor 在线（目录） | `packages/app/src/lib/actor-online.ts` |
+| Actor 在线（目录） | `packages/app/src/lib/actor/actor-online.ts` |
 | Daemon HTTP / sidebar status | `packages/app/src/hooks/use-local-daemon-http-status.ts` |
-| runtimeStart RPC | `packages/app/src/lib/session-create.ts` |
+| runtimeStart RPC | `packages/app/src/lib/session/session-create.ts` |
 
 ---
 

@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { TEAM_REPO_DIR } from "@/lib/build-config"
+import { TEAM_REPO_DIR } from "@/lib/config/build-config"
 import {
   buildSkillInvocationName,
   loadAllSkills,
   getSourceDirHint,
   readConfigSkillPaths,
-} from "../loader"
-import { collectTeamSkillPaths, TEAM_SHARE_LINK_DIR } from "@/lib/team-skill-paths"
+} from "@/lib/skills/loader"
+import { collectTeamSkillPaths, TEAM_SHARE_LINK_DIR } from "@/lib/team/team-skill-paths"
 
 const mockExists = vi.fn()
 const mockReadDir = vi.fn()

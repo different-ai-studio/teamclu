@@ -81,7 +81,7 @@ fn classify_entry(entry_path: &Path) -> Result<&'static str, String> {
             if std::fs::read_dir(entry_path).is_ok() {
                 Ok("directory")
             } else {
-                eprintln!(
+                log::error!(
                     "[workspace_files] symlink '{}' did not resolve: {follow_err}",
                     entry_path.display()
                 );
@@ -174,16 +174,26 @@ pub async fn read_workspace_text_file(
     .map_err(|e| format!("read task failed: {}", e))?
 }
 
+/// Returns the file base64-encoded, not as `Vec<u8>`.
+///
+/// PERF-16: a `Vec<u8>` crosses the IPC boundary as a JSON array of decimal
+/// numbers — `[137,80,78,71,…]`, three to four bytes of wire and one JS number
+/// per byte of file — and every caller's next move was to base64 it anyway for
+/// a `data:` URL. Encoding here makes the payload ~1.33× the file instead of
+/// ~4×, and hands the webview a string it can use directly.
 #[tauri::command]
 pub async fn read_workspace_binary_file(
     workspace_path: String,
     path: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<String, String> {
+    use base64::Engine as _;
+
     let target = resolve_workspace_view_path(&workspace_path, &path)?;
-    tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
         guard_file_size(&target)?;
-        std::fs::read(&target)
-            .map_err(|e| format!("Failed to read binary file '{}': {}", target.display(), e))
+        let bytes = std::fs::read(&target)
+            .map_err(|e| format!("Failed to read binary file '{}': {}", target.display(), e))?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
     })
     .await
     .map_err(|e| format!("read task failed: {}", e))?

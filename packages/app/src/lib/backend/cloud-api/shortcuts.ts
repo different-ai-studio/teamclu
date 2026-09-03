@@ -1,5 +1,5 @@
-import type { ShortcutCreateArgs, ShortcutRow, ShortcutsBackend } from "../types";
-import type { CloudApiClient } from "./http";
+import type { ShortcutCreateArgs, ShortcutRow, ShortcutsBackend } from "@/lib/backend/types";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 export function createShortcutsModule(client: CloudApiClient): ShortcutsBackend {
   return {

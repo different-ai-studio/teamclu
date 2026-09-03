@@ -79,7 +79,7 @@ vi.mock('@/stores/team-members', () => ({
     }),
 }))
 
-vi.mock('@/lib/team-permissions', () => ({
+vi.mock('@/lib/team/team-permissions', () => ({
   useTeamPermissions: () => ({
     role: null,
     isOwner: false,

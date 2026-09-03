@@ -158,8 +158,13 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --check --manifest-path apps/desktop/Cargo.toml
 
+      # `--all-targets`, not just the default lib+bin. Without it clippy never
+      # looked at test code, and seven lints had accumulated there unseen —
+      # `mod tests` sitting in the middle of three files, a `matches!(_, Err(_))`,
+      # a `Default::default()` then field-assign. Test code is code; the same
+      # `-D warnings` applies to it.
       - name: Run Clippy
-        run: cargo clippy --manifest-path apps/desktop/Cargo.toml -- -D warnings
+        run: cargo clippy --manifest-path apps/desktop/Cargo.toml --all-targets -- -D warnings
 
       # `--lib` below compiles and runs only the unit tests. The crate also has
       # integration tests under apps/desktop/tests/ that nothing in CI ever

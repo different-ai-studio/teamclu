@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { NavRail } from '../NavRail'
 import { useUIStore } from '@/stores/ui'
-import { useSessionStore } from '@/stores/session'
+import { useSessionStore } from '@/stores/session-store'
 import { useSessionListStore } from '@/stores/session-list-store'
 import { useCronStore } from '@/stores/cron'
 
@@ -31,7 +31,7 @@ vi.mock('@/hooks/use-quick-chat-readiness', () => ({
     target: { agentId: 'a1', displayName: 'Bot', source: 'local' },
   }),
 }))
-vi.mock('@/lib/remote-features', () => ({
+vi.mock('@/lib/config/remote-features', () => ({
   useFeatures: () => ({ apps: true }),
 }))
 vi.mock('@/components/sidebar/AppsNavSection', () => ({

@@ -5,7 +5,7 @@ import {
   cn,
   isTauri,
 } from "@/lib/utils";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -13,12 +13,12 @@ import { useProviderStore } from "@/stores/provider";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { useTeamModeStore } from "@/stores/team-mode";
 import { useCurrentTeamStore } from "@/stores/current-team";
-import { TEAMCLU_DIR, CONFIG_FILE_NAME, TEAM_REPO_DIR } from "@/lib/build-config";
-import { adaptTeamcluMessages } from "@/lib/v2-message-adapter";
-import { clearDeferredProcessCache } from "@/lib/lazy-process-parts";
-import { logInterruptMsgDiag } from "@/lib/interrupt-msg-diag";
-import { logExtMsgDiag } from "@/lib/extension-msg-diag";
-import { isChromeExtension } from "@/lib/platform";
+import { TEAMCLU_DIR, CONFIG_FILE_NAME, TEAM_REPO_DIR } from "@/lib/config/build-config";
+import { adaptTeamcluMessages } from "@/lib/messages/v2-message-adapter";
+import { clearDeferredProcessCache } from "@/lib/stream/lazy-process-parts";
+import { logInterruptMsgDiag } from "@/lib/diagnostics/interrupt-msg-diag";
+import { logExtMsgDiag } from "@/lib/diagnostics/extension-msg-diag";
+import { isChromeExtension } from "@/lib/config/platform";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
 import {
@@ -28,12 +28,12 @@ import {
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useUIStore } from "@/stores/ui";
 import { getBackend } from "@/lib/backend";
-import { resolveSessionActivityOwner } from "@/lib/session-list-activity";
-import { selectSessionParentLinks } from "@/lib/session-parent-links";
-import { isAgentActorType } from "@/lib/actor-type";
+import { resolveSessionActivityOwner } from "@/lib/session/session-list-activity";
+import { selectSessionParentLinks } from "@/lib/session/session-parent-links";
+import { isAgentActorType } from "@/lib/actor/actor-type";
 import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
-import { createQuickSession, describeQuickSessionFailure, type QuickSessionFailureReason } from "@/lib/create-quick-session";
-import { isSoloAgentSession } from "@/lib/session-empty-thread-starters";
+import { createQuickSession, describeQuickSessionFailure, type QuickSessionFailureReason } from "@/lib/session/create-quick-session";
+import { isSoloAgentSession } from "@/lib/session/session-empty-thread-starters";
 import { ChatInputArea } from "./ChatInputArea";
 import { SessionNoticeList } from "./SessionNoticeList";
 import { useEngagedAgentRuntimeMap } from "@/hooks/use-engaged-agent-runtime-map";
@@ -50,10 +50,10 @@ import { MessageList, type MessageListHandle } from "./MessageList";
 import { useChatSend } from "./use-chat-send";
 import { renderChatEmptyState } from "./chat-empty-state";
 import { SessionErrorAlert } from "./SessionErrorAlert";
-import { isPersistentSessionTurnError } from "@/lib/agent-turn-error";
+import { isPersistentSessionTurnError } from "@/lib/agent/agent-turn-error";
 import { hasVisiblePendingPermissions } from "./PermissionCard";
 import { collectAcpStreamingPermissions } from "@/lib/teamclu/acp-permission-entries";
-import { useSessionPermissionMode } from "@/lib/session-permission-mode";
+import { useSessionPermissionMode } from "@/lib/session/session-permission-mode";
 import { interruptAgentActor } from "@/lib/teamclu/interrupt-agent";
 import { toast } from "sonner";
 import { AcpStreamDebugPanel } from "./AcpStreamDebugPanel";
@@ -68,12 +68,12 @@ import {
   selectPersistedPlanForSession,
   type StreamingPlanEntry,
 } from "@/stores/v2-streaming-store";
-import { resolveSessionEstablishedModel } from "@/lib/session-established-model";
+import { resolveSessionEstablishedModel } from "@/lib/session/session-established-model";
 import {
   resolveAgentCatalogModels,
   localRecentModelFallback,
-} from '@/lib/agent-model-fallback'
-import { useLocalDaemonActorId } from "@/lib/daemon-agent-admin";
+} from '@/lib/agent/agent-model-fallback'
+import { useLocalDaemonActorId } from "@/lib/daemon/daemon-agent-admin";
 import { clientMruModels } from "@/stores/client-model-mru";
 import { ensureParticipantModels } from "@/stores/participant-model-store";
 import { useLocalDaemonCatalogStore } from "@/stores/local-daemon-catalog-store";
@@ -81,7 +81,7 @@ import {
   selectAgentModel,
   resolveRuntimeStateEntryForAgent,
   backendTypeFromRuntimeEntry,
-} from "@/lib/runtime-state-resolve";
+} from "@/lib/agent/runtime-state-resolve";
 // xterm + its webgl/search addons are ~560KB of the startup chunk and are only
 // needed once the terminal drawer is actually opened, so pay for them then.
 const TerminalPanel = React.lazy(async () => ({
@@ -907,7 +907,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
         const teamId = useCurrentTeamStore.getState().team?.id;
         let preserve = false;
         if (activeId && teamId) {
-          const { sessionBelongsToWorkspace } = await import("@/lib/session-by-workspace");
+          const { sessionBelongsToWorkspace } = await import("@/lib/session/session-by-workspace");
           preserve = await sessionBelongsToWorkspace(teamId, activeId, workspacePath);
         }
         if (cancelled) return;

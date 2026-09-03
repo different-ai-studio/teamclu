@@ -50,20 +50,14 @@ pub use inspect::*;
 pub use install::*;
 pub use types::*;
 
-/// Cloud API / SGW-facing client — mirrors `oss_sync::fc_client::FcClient`.
+/// Cloud API / SGW-facing blocking client.
 ///
-/// The clawhub registry client is fine for public mirrors; team skill upload /
-/// download hits SGW-fronted Cloud API hosts where HTTP/2 idle reuse and older
-/// TLS negotiation fail as a bare "error sending request for url". Force
-/// HTTP/1.1 + rustls the same way FcClient does.
+/// STR-8: this used to be a hand-rolled near-copy of
+/// `oss_sync::fc_client::FcClient`'s builder, re-created on every call. Both
+/// now come from `crate::http_clients`, which is where the HTTP/1.1 + rustls
+/// reason lives and which builds each client once.
 pub(super) fn build_cloud_api_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .http1_only()
-        .use_rustls_tls()
-        .timeout(std::time::Duration::from_secs(30))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("Failed to build Cloud API HTTP client: {}", e))
+    crate::http_clients::cloud_api_blocking()
 }
 
 /// reqwest's Display omits the source chain, so toast users only see

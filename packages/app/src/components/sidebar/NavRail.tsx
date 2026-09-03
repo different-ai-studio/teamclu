@@ -15,7 +15,7 @@ function refreshSessionListThrottled(): void {
   void useSessionListStore.getState().loadFirstPage(50, 'regular').catch(() => {})
 }
 import { useCronStore } from '@/stores/cron'
-import { createQuickSession, describeQuickSessionFailure } from '@/lib/create-quick-session'
+import { createQuickSession, describeQuickSessionFailure } from '@/lib/session/create-quick-session'
 import { useQuickChatReadiness } from '@/hooks/use-quick-chat-readiness'
 import { ContactsNavEntry } from '@/components/sidebar/ContactsNavEntry'
 import {
@@ -25,8 +25,8 @@ import {
 import { NewChatSplitButton } from '@/components/sidebar/NewChatSplitButton'
 import { AppsNavSection } from '@/components/sidebar/AppsNavSection'
 import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
-import { useFeatures } from '@/lib/remote-features'
-import { isScheduledSession } from '@/lib/session-origin'
+import { useFeatures } from '@/lib/config/remote-features'
+import { isScheduledSession } from '@/lib/session/session-origin'
 import { cn } from '@/lib/utils'
 
 interface TopEntryProps {

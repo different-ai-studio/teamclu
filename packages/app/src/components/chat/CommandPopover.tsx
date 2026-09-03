@@ -10,14 +10,14 @@ export type Command = {
   source?: string;
   _type?: 'role' | 'skill' | 'command';
 }
-import { SKILLS_CHANGED_EVENT } from '@/hooks/useAppInit'
+import { SKILLS_CHANGED_EVENT } from '@/lib/skills/changed-event';
 import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 import { shouldReloadPickerFromDaemonRefresh } from '@/components/chat/command-popover-skills-refresh'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { attachmentsForSession, useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { isTauri } from '@/lib/utils'
-import { encodeWorkspaceId, getDaemonPermissions } from '@/lib/daemon-local-client'
-import { resolveSkillPermission, type SkillPermissionMap } from '@/lib/teamclu-config'
+import { encodeWorkspaceId, getDaemonPermissions } from '@/lib/daemon/daemon-local-client'
+import { resolveSkillPermission, type SkillPermissionMap } from '@/lib/daemon/teamclu-config'
 import { loadAllRoles, loadRolesSkillsWorkspaceState } from '@/lib/roles/loader'
 
 interface CommandPopoverProps {

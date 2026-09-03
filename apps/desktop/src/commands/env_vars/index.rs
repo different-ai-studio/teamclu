@@ -146,7 +146,7 @@ pub(crate) fn write_env_index(workspace_path: &str, entries: &[EnvVarEntry]) -> 
         if json.get("envVars").is_some() {
             set_env_vars_in_json(&mut json, &[]);
             if let Err(err) = write_teamclu_json(workspace_path, &json) {
-                eprintln!("[EnvVars] could not retire workspace envVars index: {err}");
+                log::error!("[EnvVars] could not retire workspace envVars index: {err}");
             }
         }
     }

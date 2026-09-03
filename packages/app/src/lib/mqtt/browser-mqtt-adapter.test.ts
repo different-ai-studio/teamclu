@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createBrowserMqttAdapter } from './browser-mqtt-adapter'
+import { createBrowserMqttAdapter } from '@/lib/mqtt/browser-mqtt-adapter'
 
 function makeFakeClient() {
   const handlers: Record<string, ((...a: unknown[]) => void)[]> = {}

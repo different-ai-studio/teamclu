@@ -15,6 +15,14 @@ export function splitStableBlocks(text: string): {
   if (segments.length === 1) return { stable: [], tail: text };
   const stable: string[] = [];
   let current = "";
+  // Running fence count for the block being accumulated. PERF-13: this used to
+  // re-run the fence regex over the whole of `current` on every segment, so a
+  // long fenced block was rescanned once per blank line inside it — quadratic
+  // in the block, on every streaming frame. Joining with "\n\n" introduces no
+  // line start that was not already the start of a segment, so summing each
+  // segment's own matches gives exactly the same count for one pass over the
+  // text.
+  let openFences = 0;
   for (let i = 0; i < segments.length - 1; i++) {
     current = current ? `${current}\n\n${segments[i]}` : segments[i];
     // A block is only "closed" when its fence markers are balanced — an odd
@@ -24,10 +32,11 @@ export function splitStableBlocks(text: string): {
     // \n\n is inside an open code fence, so don't split there. Fences indented
     // >3 spaces (deep list nesting) may briefly mis-split mid-stream; self-heals
     // on finalize (the finalized message bypasses the splitter).
-    const fences = current.match(/^ {0,3}(```|~~~)/gm)?.length ?? 0;
-    if (fences % 2 === 0) {
+    openFences += segments[i].match(/^ {0,3}(```|~~~)/gm)?.length ?? 0;
+    if (openFences % 2 === 0) {
       stable.push(current);
       current = "";
+      openFences = 0;
     }
   }
   const lastSegment = segments[segments.length - 1];

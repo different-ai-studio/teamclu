@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useOssSyncStore } from '@/stores/oss-sync'
-import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
+import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
 import { isTauri } from '@/lib/utils'
 
 /**

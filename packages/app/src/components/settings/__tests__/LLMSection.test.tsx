@@ -74,7 +74,7 @@ vi.mock('@/stores/local-daemon-catalog-store', () => ({
   useLocalDaemonCatalogStore: vi.fn((sel: (s: any) => any) => sel(mocks.catalogState)),
   ensureLocalDaemonCatalog: mocks.ensureLocalDaemonCatalog,
 }))
-vi.mock('@/lib/team-permissions', () => ({
+vi.mock('@/lib/team/team-permissions', () => ({
   useTeamPermissions: () => ({ role: 'owner', isOwner: true, canManageTeam: true, canEditFiles: true }),
 }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))

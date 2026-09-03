@@ -40,7 +40,7 @@ vi.mock('@/lib/backend', () => ({
 vi.mock('@/stores/current-team', () => ({
   useCurrentTeamStore: { getState: () => ({ team: h.currentTeam, currentMember: { id: 'member-1' } }) },
 }))
-vi.mock('@/lib/daemon-workspaces', () => ({
+vi.mock('@/lib/daemon/daemon-workspaces', () => ({
   createDaemonWorkspace: vi.fn(async (input: { path: string; name: string }) => ({
     id: 'ws-1',
     teamId: 'team-1',
@@ -78,13 +78,13 @@ vi.mock('@/stores/member-preferences-store', () => ({
     }),
   },
 }))
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   invalidateDaemonConnection: vi.fn(),
   probeDaemonHttp: vi.fn(async () => ({ ok: h.probeOk, reason: 'not_running' })),
   fetchDaemonCloudAuthStatus: vi.fn(async () => 'ok'),
   fetchDaemonDeviceId: vi.fn(async () => h.deviceId),
 }))
-vi.mock('@/lib/daemon-agent-admin', () => ({
+vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
   getLocalDaemonActorId: vi.fn(async () => 'actor-1'),
 }))
 vi.mock('@tauri-apps/api/core', () => ({

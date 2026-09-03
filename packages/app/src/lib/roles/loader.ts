@@ -8,13 +8,13 @@ import type {
   RoleRecord,
   RoleSkillLink,
   RolesSkillsWorkspaceState,
-} from "./types"
+} from "@/lib/roles/types"
 import { loadAllSkills } from "@/lib/skills/loader"
 import type { SkillSource } from "@/lib/skills/types"
 import { isTauri } from "@/lib/utils"
-import { encodeWorkspaceId, getDaemonRolesSkillsState, putDaemonRole, deleteDaemonRole } from "@/lib/daemon-local-client"
+import { encodeWorkspaceId, getDaemonRolesSkillsState, putDaemonRole, deleteDaemonRole } from "@/lib/daemon/daemon-local-client"
 
-import { TEAMCLU_DIR } from "@/lib/build-config"
+import { TEAMCLU_DIR } from "@/lib/config/build-config"
 
 const ROLE_ROOT = `${TEAMCLU_DIR}/roles`
 const ROLE_SKILL_DIR = `${TEAMCLU_DIR}/roles/skills`

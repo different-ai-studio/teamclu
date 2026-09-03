@@ -1,9 +1,9 @@
 import { create } from "zustand";
 import { UNSUPPORTED_BINARY_EXTENSIONS } from "@/components/viewers/UnsupportedFileViewer";
 import { isTauri } from '@/lib/utils'
-import { ensureGitignoreEntries } from '@/lib/gitignore-manager'
+import { ensureGitignoreEntries } from '@/lib/workspace/gitignore-manager'
 import { seedDefaultWorkspaceInstructions } from '@/lib/workspace-seed/seed-default-instructions'
-import { appDisplayName, appStoragePrefix, TEAM_REPO_DIR } from '@/lib/build-config'
+import { appDisplayName, appStoragePrefix, TEAM_REPO_DIR } from '@/lib/config/build-config'
 import { useTeamModeStore } from './team-mode'
 
 // Start watching a directory for file changes
@@ -208,13 +208,13 @@ async function readWorkspaceTextFile(
   return invoke<string>("read_workspace_text_file", { workspacePath, path });
 }
 
-async function readWorkspaceBinaryFile(
+/** Base64, straight through from Rust — see PERF-16 in `lib/base64.ts`. */
+async function readWorkspaceBinaryFileBase64(
   workspacePath: string,
   path: string,
-): Promise<Uint8Array> {
+): Promise<string> {
   const { invoke } = await import("@tauri-apps/api/core");
-  const bytes = await invoke<number[]>("read_workspace_binary_file", { workspacePath, path });
-  return new Uint8Array(bytes);
+  return invoke<string>("read_workspace_binary_file", { workspacePath, path });
 }
 
 async function readWorkspaceDirectory(
@@ -1079,15 +1079,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         if (!readRoot) {
           throw new Error("No workspace path set");
         }
-        const bytes = await readWorkspaceBinaryFile(readRoot, path);
-
-        // Convert to base64
-        let binary = "";
-        const len = bytes.length;
-        for (let i = 0; i < len; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        const base64 = btoa(binary);
+        const base64 = await readWorkspaceBinaryFileBase64(readRoot, path);
 
         // Determine MIME type
         const mimeTypes: Record<string, string> = {

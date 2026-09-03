@@ -8,12 +8,12 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (_k: string, fallback?: string) => fallback ?? _k }),
 }))
 
-vi.mock('@/lib/date-format', () => ({
+vi.mock('@/lib/ui/date-format', () => ({
   formatRelativeTime: () => 'just now',
   formatDate: () => '2026-06-05',
 }))
 
-vi.mock('@/lib/session-detail', () => ({
+vi.mock('@/lib/session/session-detail', () => ({
   fetchSessionDetailSnapshot: (...args: unknown[]) => fetchSessionDetailSnapshot(...args),
 }))
 

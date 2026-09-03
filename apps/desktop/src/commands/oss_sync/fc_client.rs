@@ -13,27 +13,11 @@
 //! team-provisioning / sync-mode / generic JSON surface that team-share
 //! onboarding and LiteLLM provisioning still call.
 
-use std::time::Duration;
-
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::error::SyncError;
-
-/// Per-request timeout for all FC calls. Without this, `reqwest::Client::new()`
-/// has **no** request timeout: a Cloud API host that accepts the connection but
-/// never responds (e.g. a misconfigured/diverged `cloudApiUrl`, a black-holed
-/// LB, or a stalled TLS peer) makes `get_json`/`post` hang forever. That in turn
-/// leaves callers — e.g. the Settings → Team Shared pane's `team_share_get_status`
-/// — stuck on "Loading team share status…" indefinitely, because the awaiting
-/// promise neither resolves nor rejects. A bounded timeout turns that stall into
-/// a surfaced error the UI can catch and retry from.
-const FC_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Cap on establishing the TCP/TLS connection, so an unreachable host fails fast
-/// instead of waiting out the full request timeout.
-const FC_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Result of POST /v1/teams.
 ///
@@ -61,21 +45,13 @@ pub struct FcClient {
 
 impl FcClient {
     pub fn new(base_url: String, jwt: String) -> Self {
-        // Force HTTP/1.1 and rustls — mirrors the daemon Cloud API client.
-        // reqwest 0.12+ is required: 0.11 fails TLS to some SGW-fronted hosts
-        // with "error trying to connect: bad protocol version". HTTP/1.1 also
-        // avoids FC idle HTTP/2 stream reuse bugs after ~60 s. `build()` only
-        // fails on a fatal TLS/runtime misconfig; fall back to the un-timed
-        // default rather than panic.
-        let client = Client::builder()
-            .http1_only()
-            .use_rustls_tls()
-            .timeout(FC_REQUEST_TIMEOUT)
-            .connect_timeout(FC_CONNECT_TIMEOUT)
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        // STR-8: one shared Cloud API client, built once. The HTTP/1.1 + rustls
+        // + timeout policy — and why each part of it exists — lives in
+        // `crate::http_clients`. `FcClient` is created per call site, so
+        // building a client here meant a fresh connection pool (and a fresh TLS
+        // handshake) for every team-share status poll.
         Self {
-            client,
+            client: crate::http_clients::cloud_api(),
             base_url,
             jwt,
         }

@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent/agent-device-reachability'
 import { ensureAgentRuntimesForSession } from '@/lib/teamclu/ensure-agent-runtime'
 import type { EngagedAgentUiEntry } from '@/hooks/use-engaged-agent-ui-states'
 import {

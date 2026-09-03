@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { useHeaderPreferencesStore } from "@/stores/header-preferences-store";
-import { loadFromStorage, saveToStorage } from "@/lib/storage";
-import { appStoragePrefix } from "@/lib/build-config";
+import { loadFromStorage, saveToStorage } from "@/lib/config/storage";
+import { appStoragePrefix } from "@/lib/config/build-config";
 
 /**
  * Header icon visibility preferences — persisted to localStorage under the

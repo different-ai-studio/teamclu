@@ -26,7 +26,7 @@ import {
   resolveSessionWorkspaceHintForRuntimeStart,
   ensureCloudWorkspaceIdForAgentRuntime,
   runtimeStartWorkspaceArgs,
-} from '../resolve-runtime-start-workspace'
+} from '@/lib/teamclu/resolve-runtime-start-workspace'
 import { useAgentDefaultWorkspaceStore } from '@/stores/agent-default-workspace-store'
 
 describe('resolveAgentRuntimeWorkspaceId', () => {

@@ -1,4 +1,4 @@
-import type { ToolCall } from "@/stores/session";
+import type { ToolCall } from "@/stores/session-types";
 import { useTranslation } from "react-i18next";
 import { Sparkles } from "lucide-react";
 import { ToolCallStatusGlyph } from "./ToolCallStatusGlyph";

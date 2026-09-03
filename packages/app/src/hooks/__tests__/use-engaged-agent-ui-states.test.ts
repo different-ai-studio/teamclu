@@ -45,15 +45,15 @@ vi.mock('@/stores/actor-presence-store', () => ({
     selector({ byActorId: mocks.presenceByActor }),
 }))
 
-vi.mock('@/lib/agent-reachability-probe', () => ({
+vi.mock('@/lib/agent/agent-reachability-probe', () => ({
   probeAgentReachability: vi.fn(async () => mocks.probeResult),
 }))
 
-vi.mock('@/lib/daemon-agent-admin', () => ({
+vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
   getLocalDaemonActorId: vi.fn(async () => mocks.localDaemonActorId),
 }))
 
-vi.mock('@/lib/local-daemon-identity', () => ({
+vi.mock('@/lib/daemon/local-daemon-identity', () => ({
   getKnownLocalDaemonActorId: () => mocks.localDaemonActorId,
   isSupersededLocalAgent: () => false,
   wasEverLocalDaemonIdentity: () => false,

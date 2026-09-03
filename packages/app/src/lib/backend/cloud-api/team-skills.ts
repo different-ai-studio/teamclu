@@ -1,4 +1,4 @@
-import type { CloudApiClient } from "./http";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 /**
  * Team skills registry client.

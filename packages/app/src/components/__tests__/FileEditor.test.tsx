@@ -33,7 +33,7 @@ vi.mock('@/stores/workspace', () => ({
     }),
 }))
 
-vi.mock('@/stores/session', () => ({
+vi.mock('@/stores/session-store', () => ({
   useSessionStore: (sel: (s: Record<string, unknown>) => unknown) =>
     sel({ sessionDiff: [] }),
 }))

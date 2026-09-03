@@ -4,9 +4,9 @@ import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { probeCloudApi } from "@/lib/bootstrap";
-import { parseInviteTokenInput } from "@/lib/invite-deeplink";
-import { confirmInviteLinkToken } from "@/lib/invite-link-confirmation";
+import { probeCloudApi } from "@/lib/config/bootstrap";
+import { parseInviteTokenInput } from "@/lib/team/invite-deeplink";
+import { confirmInviteLinkToken } from "@/lib/team/invite-link-confirmation";
 import {
   displayHost,
   getCloudApiUrlOverride,
@@ -14,12 +14,13 @@ import {
   getEffectiveServerConfigSync,
   normalizeCloudApiUrl,
   setCloudApiUrlOverride,
-} from "@/lib/server-config";
-import { useAppVersion } from "@/lib/version";
+} from "@/lib/config/server-config";
+import { useAppVersion } from "@/lib/config/version";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOnboardingStore } from "@/stores/onboarding";
 import { clearSetupSatisfied } from "@/stores/setup";
 import { LoginScreen } from "./LoginScreen";
+import { useShallow } from "zustand/react/shallow";
 
 type Step = "choose" | "login" | "invite" | "server";
 
@@ -165,7 +166,9 @@ function ChooseStep({
   onServer: () => void;
 }) {
   const { t } = useTranslation();
-  const { loading, errorMessage } = useAuthStore();
+  const { loading, errorMessage } = useAuthStore(
+    useShallow((s) => ({ loading: s.loading, errorMessage: s.errorMessage })),
+  );
   // The footer already prints the effective URL in coral, but it is 10px type
   // at the bottom of the window — easy to miss, and it says nothing about which
   // of these three entries put the app there. Mark the entry itself too.
@@ -295,7 +298,9 @@ function ChooseStep({
 
 function InviteStep({ onBack, onNeedLogin }: { onBack: () => void; onNeedLogin: () => void }) {
   const { t } = useTranslation();
-  const { setPendingInviteToken, errorMessage } = useAuthStore();
+  const { setPendingInviteToken, errorMessage } = useAuthStore(
+    useShallow((s) => ({ setPendingInviteToken: s.setPendingInviteToken, errorMessage: s.errorMessage })),
+  );
   const [raw, setRaw] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
 

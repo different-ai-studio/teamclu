@@ -1,4 +1,4 @@
-import { appShortName } from '@/lib/build-config'
+import { appShortName } from '@/lib/config/build-config'
 import { create } from 'zustand'
 import type {
   TelemetryConsent,
@@ -7,7 +7,7 @@ import type {
 } from '@/lib/telemetry/types'
 import { ScoringEngine } from '@/lib/telemetry/scoring-engine'
 import { buildSessionReport } from '@/lib/telemetry/report-builder'
-import { useSessionStore } from '@/stores/session'
+import { useSessionStore } from '@/stores/session-store'
 import { insertFeedback } from '@/lib/telemetry/supabase-feedback'
 import { insertSessionReport } from '@/lib/telemetry/supabase-session-report'
 import { getBackend } from '@/lib/backend'

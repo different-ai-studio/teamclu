@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { appDisplayName } from "@/lib/build-config";
-import { notificationService } from "@/lib/notification-service";
-import { shouldAutoAllowSessionPermissions } from "@/lib/session-permission-mode";
+import { appDisplayName } from "@/lib/config/build-config";
+import { notificationService } from "@/lib/ui/notification-service";
+import { shouldAutoAllowSessionPermissions } from "@/lib/session/session-permission-mode";
 import { replyAcpPermission } from "@/lib/teamclu/reply-acp-permission";
 import { wasPermissionRecentlyResolved } from "@/lib/teamclu/handle-session-event-permission-resolved";
 import type { StreamingPermissionRequest } from "@/stores/v2-streaming-store";

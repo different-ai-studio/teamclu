@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { isTauri } from '@/lib/utils'
-import { appStoragePrefix } from '@/lib/build-config'
+import { appStoragePrefix } from '@/lib/config/build-config'
 
 export interface DependencyInfo {
   name: string
@@ -147,7 +147,7 @@ export const useDepsStore = create<DepsState>((set, get) => ({
       // `getDaemonLocalAgent` already falls back to opencode when the daemon
       // cannot be reached, which is the conservative default the backend uses
       // for `undefined` too.
-      const { getDaemonLocalAgent } = await import('@/lib/daemon-local-client')
+      const { getDaemonLocalAgent } = await import('@/lib/daemon/daemon-local-client')
       const localAgent = await getDaemonLocalAgent().catch(() => undefined)
       const result = await invoke<DependencyInfo[]>('check_dependencies', { localAgent })
       set({ dependencies: result, checked: true, loading: false })

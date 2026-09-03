@@ -79,7 +79,7 @@ vi.mock('../SkillsDiagnosticsDialog', () => ({
   SkillsDiagnosticsDialog: ({ open }: { open: boolean }) =>
     open ? <div data-testid="skills-diagnostics-dialog">Diagnostics open</div> : null,
 }))
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   encodeWorkspaceId: (path: string) => path,
   getDaemonPermissions: mockGetDaemonPermissions,
   putDaemonPermissions: mockPutDaemonPermissions,

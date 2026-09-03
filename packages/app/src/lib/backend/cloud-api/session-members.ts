@@ -1,5 +1,5 @@
-import type { ActorDirectoryEntry, SessionMemberCandidate, SessionMembersBackend } from "../types";
-import type { CloudApiClient } from "./http";
+import type { ActorDirectoryEntry, SessionMemberCandidate, SessionMembersBackend } from "@/lib/backend/types";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 type CloudSessionParticipant = {
   sessionId: string;

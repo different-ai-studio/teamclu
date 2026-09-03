@@ -16,7 +16,7 @@ import { ToggleSwitch } from '@/components/settings/shared'
 import { useTeamShareBrowserStore, type TeamMcpItem } from '@/stores/team-share-browser'
 import { findLiteralSecretKeys, type TeamMcpServerWrite } from '@/lib/backend/cloud-api/team-mcp'
 import { CloudApiError } from '@/lib/backend/cloud-api/http'
-import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent/agent-device-reachability'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {

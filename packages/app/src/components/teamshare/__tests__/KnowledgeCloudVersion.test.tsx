@@ -36,7 +36,7 @@ vi.mock('@/stores/team-conflicts', () => ({
   useTeamConflictsStore: (sel: (s: Record<string, unknown>) => unknown) =>
     sel({ knowledgeDir: '/kb', load: loadConflicts }),
 }))
-vi.mock('@/lib/team-skill-paths', () => ({
+vi.mock('@/lib/team/team-skill-paths', () => ({
   teamSyncKeyForPath: (abs: string) => (abs.startsWith('/kb/') ? `knowledge/${abs.slice(4)}` : null),
 }))
 

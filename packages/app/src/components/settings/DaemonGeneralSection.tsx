@@ -20,7 +20,7 @@ import {
   type AgentVisibility,
   type CurrentDaemonAgent,
   type TeamMemberOption,
-} from '@/lib/daemon-agent-admin'
+} from '@/lib/daemon/daemon-agent-admin'
 import {
   encodeWorkspaceId,
   getCursorAgentSettings,
@@ -28,8 +28,8 @@ import {
   reloadDaemonRuntime,
   setDaemonLocalAgent,
   type DaemonLocalAgent,
-} from '@/lib/daemon-local-client'
-import { describeEnvReloadOutcome } from '@/lib/env-runtime-reload'
+} from '@/lib/daemon/daemon-local-client'
+import { describeEnvReloadOutcome } from '@/lib/agent/env-runtime-reload'
 import { useUIStore } from '@/stores/ui'
 import { useSetupStore } from '@/stores/setup'
 import { ensureLocalDaemonCatalog } from '@/stores/local-daemon-catalog-store'

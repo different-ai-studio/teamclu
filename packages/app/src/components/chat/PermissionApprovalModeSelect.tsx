@@ -12,8 +12,8 @@ import {
   setSessionPermissionMode,
   useSessionPermissionMode,
   type SessionPermissionMode,
-} from "@/lib/session-permission-mode";
-import { isSoloBuild } from "@/lib/solo-build";
+} from "@/lib/session/session-permission-mode";
+import { isSoloBuild } from "@/lib/config/solo-build";
 import { PromptInputButton } from "@/packages/ai/prompt-input-ui";
 
 type PermissionApprovalModeSelectProps = {

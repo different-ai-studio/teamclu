@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 // CLAUDE.md: "Never use longest content strategy on completion." The one
 // sanctioned exception is reconcileEquivalentAgentReplyText in
-// lib/agent-reply-transcript.ts, which picks the longer of two texts that are
+// lib/agent/agent-reply-transcript.ts, which picks the longer of two texts that are
 // equivalent after normalization (QoS0 can drop post-tool deltas; the daemon
 // final carries the tail). Everything else must go through that helper, so
 // pickCanonicalAgentReplyText may be imported from exactly one production
@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const SRC_DIR = path.resolve(path.dirname(__filename), "..", "..");
-const ALLOWED_IMPORTER = path.join(SRC_DIR, "lib", "agent-reply-transcript.ts");
+const ALLOWED_IMPORTER = path.join(SRC_DIR, "lib", "agent", "agent-reply-transcript.ts");
 
 const IMPORT_RE = /\bimport\b[^;]*\bpickCanonicalAgentReplyText\b[^;]*\bfrom\s+['"][^'"]*agent-reply-text['"]/s;
 
@@ -34,18 +34,18 @@ describe("guardrail: agent reply text has one reconciliation point", () => {
   it("detects the import shape it guards against", () => {
     expect(
       IMPORT_RE.test(
-        'import { agentReplyTextsEquivalent, pickCanonicalAgentReplyText } from "@/lib/agent-reply-text";',
+        'import { agentReplyTextsEquivalent, pickCanonicalAgentReplyText } from "@/lib/agent/agent-reply-text";',
       ),
     ).toBe(true);
     expect(
-      IMPORT_RE.test('import {\n  pickCanonicalAgentReplyText,\n} from "@/lib/agent-reply-text";'),
+      IMPORT_RE.test('import {\n  pickCanonicalAgentReplyText,\n} from "@/lib/agent/agent-reply-text";'),
     ).toBe(true);
     expect(
-      IMPORT_RE.test('import { agentReplyTextsEquivalent } from "@/lib/agent-reply-text";'),
+      IMPORT_RE.test('import { agentReplyTextsEquivalent } from "@/lib/agent/agent-reply-text";'),
     ).toBe(false);
   });
 
-  it("only lib/agent-reply-transcript.ts imports pickCanonicalAgentReplyText", () => {
+  it("only lib/agent/agent-reply-transcript.ts imports pickCanonicalAgentReplyText", () => {
     const offenders = walk(SRC_DIR)
       .filter((file) => path.resolve(file) !== ALLOWED_IMPORTER)
       .filter((file) => IMPORT_RE.test(fs.readFileSync(file, "utf8")))

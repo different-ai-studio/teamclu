@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { OFFICIAL_BRAND_SHORT_NAME, isOfficialBrand } from "@/lib/build-config";
+import { OFFICIAL_BRAND_SHORT_NAME, isOfficialBrand } from "@/lib/config/build-config";
 
 /**
  * The brand table has exactly one definition, in Rust

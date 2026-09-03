@@ -1,5 +1,5 @@
-import { resolvePendingPermissionActivityOwner } from "@/lib/session-list-activity";
-import type { SessionPermissionMode } from "@/lib/session-permission-mode";
+import { resolvePendingPermissionActivityOwner } from "@/lib/session/session-list-activity";
+import type { SessionPermissionMode } from "@/lib/session/session-permission-mode";
 import type {
   PendingPermissionEntry,
   Session,

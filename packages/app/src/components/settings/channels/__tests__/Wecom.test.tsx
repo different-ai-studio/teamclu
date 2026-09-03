@@ -41,7 +41,7 @@ const { storeState } = vi.hoisted(() => ({
   },
 }))
 
-vi.mock('@/stores/channels', () => ({
+vi.mock('@/stores/channels-store', () => ({
   // support both useChannelsStore() and useChannelsStore(selector)
   useChannelsStore: vi.fn((selector?: (s: typeof storeState) => unknown) =>
     typeof selector === 'function' ? selector(storeState) : storeState,
@@ -55,7 +55,7 @@ vi.mock('@/stores/current-team', () => ({
   ),
 }))
 
-vi.mock('@/lib/daemon-workspaces', () => ({
+vi.mock('@/lib/daemon/daemon-workspaces', () => ({
   getCurrentDaemonWorkspaceAgent: vi.fn(async () => null),
   listDaemonWorkspaces: vi.fn(async () => []),
 }))
@@ -63,7 +63,7 @@ vi.mock('@/lib/daemon-workspaces', () => ({
 // NOTE: GatewayStatusCard / shared are intentionally NOT mocked. The card is
 // collapsed by default; the tests click the header to expand it and assert on
 // the real per-bot form rendered as children.
-vi.mock('@/hooks/useChannelConfig', () => ({
+vi.mock('@/hooks/use-channel-config', () => ({
   useChannelConfig: () => ({
     localConfig: {
       enabled: true,
@@ -82,7 +82,7 @@ vi.mock('@/hooks/useChannelConfig', () => ({
 }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@/lib/utils', () => ({ cn: (...args: string[]) => args.join(' '), openExternalUrl: vi.fn() }))
-vi.mock('@/lib/build-config', () => ({
+vi.mock('@/lib/config/build-config', () => ({
   buildConfig: { app: { name: 'TeamClu' } },
   appDisplayName: 'TeamClu',
 }))

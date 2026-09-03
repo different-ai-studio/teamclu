@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/select'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
-import { useTeamPermissions } from '@/lib/team-permissions'
+import { useTeamPermissions } from '@/lib/team/team-permissions'
 import { useActorDirectory } from '@/stores/actor-directory-store'
 import { SettingCard } from './shared'
 

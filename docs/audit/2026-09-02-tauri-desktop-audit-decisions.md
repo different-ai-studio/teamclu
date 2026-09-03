@@ -133,6 +133,56 @@ Rust 文案（`local-cache-error-report.ts:37`、`ensure-agent-runtime.ts:86`）
 
 ---
 
+## 本分支已关闭的条目
+
+`2026-09-02-tauri-desktop-audit.md` 是那天的只读记录，不改；这里记这条分支实际关掉了哪些，
+免得下次有人对着报告重查。带「部分」的是有意留了残余，残余写在下一节。
+
+**安全**：SEC-1（13144 加 bearer + Origin/Host 门）、SEC-3、SEC-4、SEC-5、SEC-6、SEC-7、
+SEC-8、SEC-10、SEC-11、SEC-13；
+SEC-9（HTML 预览注入自己的 CSP，只封 connect-src / form-action / base-uri / object-src；
+`img` 型信标是刻意留下的残余，收紧它会让所有带远程图片的预览失效）；
+SEC-12（先核实：`VITE_APP_PLATFORM=web` 只有 MV3 侧边栏一个消费方，没有任何托管部署——
+审计里那句「是否部署未核实」的答案是「不是网站」；非 Tauri 构建现在自带 CSP meta）。
+**SEC-2 未动**（等 D1）。
+
+**性能**：PERF-1、PERF-2、PERF-3、PERF-4、PERF-5、PERF-6、PERF-7、PERF-8、PERF-9、PERF-10、
+PERF-11；
+PERF-12（28 处整 store 订阅换 `useShallow`；`keepAliveCheck` 不再无条件 `set()`）；
+PERF-13（流式尾巴不再做整文规范化与图片扫描；`splitStableBlocks` 的围栏计数从二次改成线性）；
+PERF-14；PERF-15；
+PERF-16（一份 `lib/base64.ts`；`read_workspace_binary_file` 与 `mqtt_publish` 两个 IPC 边界
+改走 base64 而不是 JSON 数字数组）；
+PERF-17（`diffAgentEdit` 先剪掉公共前后缀再 diff，dispatch 也只改动那一段，光标不再被扔到开头）；
+PERF-18（登录 shell 探测挪到后台线程、与建窗口并行，在 `setup` 顶部收；预算刻意没缩——
+缩了会让 profile 稍慢的用户整场跑在兜底 PATH 上，看起来就是「opencode 没装」）；
+PERF-19（`shiki/core` 细粒度打包 + 按需装语法：924 → 559 个 chunk，24 MB → 15 MB）；
+PERF-20（thin LTO；libsql 去默认 feature，`Cargo.lock` −360 行，tonic / tonic-web /
+tower-http / hyper 0.14 / hyper-rustls 一起消失。两个 crate 都得写 `default-features = false`，
+resolver 2 会把 feature 并起来）。
+
+**架构**：ARCH-2（按 D3-a 收口）、ARCH-4、ARCH-7、ARCH-10；ARCH-1 与 ARCH-5 部分。
+**ARCH-3 / ARCH-6 / ARCH-8 / ARCH-9 / ARCH-11 未动**（分别等 daemon 侧、D2、D4）。
+
+**结构**：STR-1、STR-7；
+STR-5（`introspect_api.rs` 与 `team_sync_proxy.rs` 补上第一批测试，CI 加了
+`--all-targets --no-run`）；
+STR-8（一份 `http_clients.rs`：两个 Cloud API client 合流，客户端只建一次而不是每次调用一个
+连接池）；
+STR-9（`println!`/`eprintln!` 全部换成 `log::`，只剩 `lib.rs` 里日志插件装好之前的 6 处——
+那几处用 `log::` 会直接丢掉）；
+STR-10（introspect API 从手搓 TCP + 手写 HTTP 解析换成 axum；网关中间件用 `layer` 而不是
+`route_layer`，所以 fallback 也在门后，没带 bearer 的调用方无法用 404 与 401 的差别探路）；
+STR-11（先做点名的三处，随后整体分目录：205 个模块进 20 个域目录，根目录只剩 7 个
+无域原语；测试跟着各自的模块走，`lib/__tests__/` 只留 21 个跨域的；目录表写进
+AGENTS.md。`extension/link-hover` 与 `link-session` 也被 apps/extension 编译、那边没有
+`@/` 别名，加了守卫测试。**这一条会和任何在飞的 `packages/app/src` 改动冲突，
+接的时候 rebase 而不是 merge**）；STR-12（会进 toast 的两处）；STR-13（vendor 的
+`src/packages/ai` 补来源说明）；STR-14（品牌显示名单一来源 `APP_DISPLAY_NAME`）。
+**STR-2 / STR-3 / STR-6 未动**，STR-4 等 D5。
+
+---
+
 ## 本分支刻意没碰的 P1
 
 这些不是「等决定」，而是体量超出一个分支、或与上面某个决定强耦合：
@@ -149,12 +199,13 @@ Rust 文案（`local-cache-error-report.ts:37`、`ensure-agent-runtime.ts:86`）
 - **STR-3 import 时副作用**：一个统一重置注册表本身就要 import 35 个带副作用的模块，
   方向应是逐个消除副作用而不是集中重置。
 - **ARCH-3 的中期部分**（daemon 把完整工具输出持久化进 parts）：是 daemon 侧改动。
-- **PERF-15 第二套语言包懒加载**：要让 bootstrap 先等活跃语言包再首屏渲染，否则 zh-CN 用户会闪一下英文。
-- **STR-7 的 libsql 瘦身**：`crates/teamclu-gateway` 以默认 feature 依赖 libsql，resolver 2 会把桌面端
-  统一到默认 feature，桌面 Cargo.toml 单方面改是空操作；要先改 teamclu-gateway。
 - **ARCH-1 残余**：compat store 里仍被读的 `sessions`（列表行镜像）、`pendingPermissions` 与
   `messageQueue`（旧发送路径死后已无生产者，只剩旧审批/队列 UI 在渲染）、`sessionStatuses` 与
   `pendingQuestionIdsBySession`（无生产者）——都已换成真实类型，退役要连同旧审批 UI 一起。
 - **ARCH-5 残余**：`gateway/mod.rs` 手工遍历 team.toml、`team.rs` 在 `~/.amuxd` 下 `create_dir_all`，
   daemon 侧缺少「不带凭证的渠道配置读取」和「物化并返回团队默认 worktree」两个端点；
   `read_daemon_actor_id` 的 backend.toml 解析降级为冷启动回退，彻底删除要 `window.rs` 的同步命令改 async。
+- **STR-12 余下的硬编码中文**：会进 toast 的两处（`apps-store.ts`、`team-share-browser.ts`）已走
+  `i18n.t`。其余分布在 `lib/diagnostic-report.ts`（诊断包正文）、`lib/dynamic-ui/catalog.ts`
+  （喂给 LLM 的 schema 描述）和一批设置页组件里——前两类不是 UI 文案，最后一类是逐个组件的
+  搬运工作，不适合和这一批混在一起。

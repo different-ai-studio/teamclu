@@ -2,8 +2,8 @@ import { create } from 'zustand'
 import { isTauri } from '@/lib/utils'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useOssSyncStore } from '@/stores/oss-sync'
-import { globalTeamSyncShareRoot } from '@/lib/team-skill-paths'
-import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
+import { globalTeamSyncShareRoot } from '@/lib/team/team-skill-paths'
+import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
 
 /**
  * One conflict waiting for a human decision.

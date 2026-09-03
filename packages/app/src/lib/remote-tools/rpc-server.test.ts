@@ -8,7 +8,7 @@ const { mockSubscribe, mockPublish, mockListen, mockEnsureParticipants, mockList
   mockListParticipants: vi.fn(async () => []),
 }))
 
-vi.mock('@/lib/mqtt-bridge', () => ({
+vi.mock('@/lib/mqtt/mqtt-bridge', () => ({
   mqttSubscribe: mockSubscribe,
   mqttPublish: mockPublish,
   listenForEnvelopes: mockListen,
@@ -70,9 +70,9 @@ import {
   RpcRequestSchema,
 } from '@/lib/proto/teamclu_pb'
 
-import { clearExecutorsForTests, registerExecutor } from './registry'
-import { acquireRemoteToolsRpcServer } from './rpc-server'
-import { TOOL_GET_PAGE_DOM } from './types'
+import { clearExecutorsForTests, registerExecutor } from '@/lib/remote-tools/registry'
+import { acquireRemoteToolsRpcServer } from '@/lib/remote-tools/rpc-server'
+import { TOOL_GET_PAGE_DOM } from '@/lib/remote-tools/types'
 
 const testLeases: Array<{ release(): void }> = []
 

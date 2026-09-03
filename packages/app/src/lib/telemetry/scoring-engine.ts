@@ -1,6 +1,6 @@
-import type { Scorer } from './scorer'
-import type { ScoreResult, SessionReport } from './types'
-import { UserFeedbackScorer, TaskCompletionScorer, ToolEfficiencyScorer } from './scorer'
+import type { Scorer } from '@/lib/telemetry/scorer'
+import type { ScoreResult, SessionReport } from '@/lib/telemetry/types'
+import { UserFeedbackScorer, TaskCompletionScorer, ToolEfficiencyScorer } from '@/lib/telemetry/scorer'
 
 export class ScoringEngine {
   private scorers: Scorer[]

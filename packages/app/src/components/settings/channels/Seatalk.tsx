@@ -4,14 +4,12 @@ import { Key, Shield, Loader2, ExternalLink, Bot, Sparkles } from 'lucide-react'
 import { openExternalUrl } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import {
-  useChannelsStore,
-  type SeaTalkConfig,
-  defaultSeaTalkConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type SeaTalkConfig, defaultSeaTalkConfig } from '@/stores/channels-types'
 import { GatewayStatusCard } from './GatewayStatusCard'
 import { TestCredentialsButton } from './TestCredentialsButton'
-import { useChannelConfig } from '@/hooks/useChannelConfig'
+import { useChannelConfig } from '@/hooks/use-channel-config'
+import { useShallow } from 'zustand/react/shallow'
 
 function SeaTalkIcon({ className }: { className?: string }) {
   return (
@@ -38,7 +36,9 @@ export function SeaTalkChannel() {
     clearSeaTalkTestResult,
     setSeaTalkHasChanges,
     toggleSeaTalkEnabled,
-  } = useChannelsStore()
+  } = useChannelsStore(
+    useShallow((s) => ({ seatalk: s.seatalk, seatalkIsLoading: s.seatalkIsLoading, seatalkGatewayStatus: s.seatalkGatewayStatus, seatalkHasChanges: s.seatalkHasChanges, seatalkIsTesting: s.seatalkIsTesting, seatalkTestResult: s.seatalkTestResult, saveSeaTalkConfig: s.saveSeaTalkConfig, startSeaTalkGateway: s.startSeaTalkGateway, stopSeaTalkGateway: s.stopSeaTalkGateway, refreshSeaTalkStatus: s.refreshSeaTalkStatus, testSeaTalkCredentials: s.testSeaTalkCredentials, clearSeaTalkTestResult: s.clearSeaTalkTestResult, setSeaTalkHasChanges: s.setSeaTalkHasChanges, toggleSeaTalkEnabled: s.toggleSeaTalkEnabled })),
+  )
 
   const [expanded, setExpanded] = React.useState(false)
 

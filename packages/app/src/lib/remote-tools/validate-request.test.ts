@@ -11,7 +11,7 @@ import {
   authorizeRemoteToolRequest,
   isAgentRequesterForRemoteToolRequest,
   isAllowedRemoteToolRequest,
-} from './validate-request'
+} from '@/lib/remote-tools/validate-request'
 
 const mockGetActorDirectoryEntry = vi.fn()
 const mockListParticipants = vi.fn()

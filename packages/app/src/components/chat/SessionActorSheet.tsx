@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { runtimeHintsForAgents } from '@/lib/runtime-state-resolve'
+import { runtimeHintsForAgents } from '@/lib/agent/runtime-state-resolve'
 import { attachmentsForSession } from '@/stores/runtime-state-store'
 import { useTranslation } from 'react-i18next'
 import { AtSign, Loader2, Search, Users, User as UserIcon, Sparkles, X } from 'lucide-react'
@@ -14,11 +14,11 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { getBackend } from '@/lib/backend'
-import { loadActorsForTeam, loadActorsByIds, loadSessionParticipants } from '@/lib/local-cache'
+import { loadActorsForTeam, loadActorsByIds, loadSessionParticipants } from '@/lib/cache/local-cache'
 import {
   getSessionCreatedByActorId,
   resolveSessionCreatedByActorId,
-} from '@/lib/session-created-by-cache'
+} from '@/lib/session/session-created-by-cache'
 import { syncActorsForTeam } from '@/lib/sync/actor-sync'
 import { syncParticipantsForSession } from '@/lib/sync/session-participant-sync'
 import { cn } from '@/lib/utils'
@@ -26,13 +26,13 @@ import { useRuntimeStateStore } from '@/stores/runtime-state-store'
 import {
   presenceOnlineFlag,
   resolveAgentDevicePresenceSync,
-} from '@/lib/agent-device-reachability'
+} from '@/lib/agent/agent-device-reachability'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 import { RuntimeLifecycle, AgentStatus, type RuntimeInfo } from '@/lib/proto/amux_pb'
-import { resolveAmuxAgentType } from '@/lib/amux-agent-type'
+import { resolveAmuxAgentType } from '@/lib/agent/amux-agent-type'
 import { useSessionParticipantStore } from '@/stores/session-participant-store'
-import { isAgentActorType } from '@/lib/actor-type'
-import { actorAvatarColor } from '@/lib/actor-color'
+import { isAgentActorType } from '@/lib/actor/actor-type'
+import { actorAvatarColor } from '@/lib/actor/actor-color'
 import {
   loadAgentWorkspaceLookups,
   resolveAgentRuntimeWorkspaceId,
@@ -741,7 +741,7 @@ export function SessionActorPanel({ sessionId, teamId }: SessionActorPanelProps)
       // 3. Call runtimeStart RPC. Daemon may reject if it already has a
       //    runtime for this (session, agent) — treat that as success since
       //    the existing runtime will service the next prompt anyway.
-      const { runtimeStart } = await import('@/lib/teamclu-rpc')
+      const { runtimeStart } = await import('@/lib/daemon/teamclu-rpc')
       try {
         const result = await runtimeStart({
           targetActorId: candidate.id,

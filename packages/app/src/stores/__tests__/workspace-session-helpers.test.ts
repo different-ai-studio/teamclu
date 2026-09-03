@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useWorkspaceStore } from "../workspace";
 import type { FileNode } from "../workspace";
-import { workspacePathsMatch } from "../session";
+import { workspacePathsMatch } from "../session-utils";
 
 describe("flattenVisibleFileTree (REG-05, W-14)", () => {
   beforeEach(() => {

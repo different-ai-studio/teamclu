@@ -4,7 +4,7 @@ import {
   defaultLabelForLink,
   parsePageNavLinksArgs,
   parsePageNavLinksFromToolCall,
-} from './link-utils'
+} from '@/lib/remote-tools/link-utils'
 
 describe('parsePageNavLinksArgs', () => {
   it('parses links with default labels', () => {

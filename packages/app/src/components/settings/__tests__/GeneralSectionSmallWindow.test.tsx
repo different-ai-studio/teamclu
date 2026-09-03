@@ -23,11 +23,18 @@ vi.mock('i18next', () => ({
     language: 'en',
     on: vi.fn(),
     off: vi.fn(),
-    changeLanguage: mockChangeLanguage,
+    changeLanguage: vi.fn(),
   },
 }))
 
-vi.mock('@/lib/build-config', () => ({
+// GeneralSection switches the language through `@/lib/i18n`, not i18next
+// directly, because the catalogues are fetched on demand (PERF-15) and only
+// that wrapper loads the target one first.
+vi.mock('@/lib/i18n', () => ({
+  changeLanguage: mockChangeLanguage,
+}))
+
+vi.mock('@/lib/config/build-config', () => ({
   appShortName: 'teamclu',
   appStoragePrefix: 'teamclu',
   TEAMCLU_DIR: '.teamclu',

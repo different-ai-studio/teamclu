@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createAuthClient } from "./auth-client";
-import { __resetSessionStoreForTests, adoptRefreshToken, getSession, setSession } from "./session-store";
+import { createAuthClient } from "@/lib/auth/auth-client";
+import { __resetSessionStoreForTests, adoptRefreshToken, getSession, setSession } from "@/lib/auth/session-store";
 
 beforeEach(() => __resetSessionStoreForTests());
 

@@ -11,9 +11,9 @@
  * is erased at compile time. The store re-exports the two names that were part
  * of its public surface, so existing import sites are unchanged.
  */
-import { stripPriorTranscriptTextPrefix } from "@/lib/agent-reply-transcript";
-import { agentReplyBodiesCollapsible, agentReplyTextsEquivalent } from "@/lib/agent-reply-text";
-import { reconcileEquivalentAgentReplyText } from "@/lib/agent-reply-transcript";
+import { stripPriorTranscriptTextPrefix } from "@/lib/agent/agent-reply-transcript";
+import { agentReplyBodiesCollapsible, agentReplyTextsEquivalent } from "@/lib/agent/agent-reply-text";
+import { reconcileEquivalentAgentReplyText } from "@/lib/agent/agent-reply-transcript";
 import type { MessagePart, ToolCall } from "@/stores/session-types";
 import type { ToolCallContentBlock } from "@/components/chat/tool-calls/tool-call-content";
 // Type-only: erased at runtime, so this is not an import cycle.

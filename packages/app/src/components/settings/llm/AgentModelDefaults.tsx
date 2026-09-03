@@ -5,13 +5,13 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { ModelPickerCommand } from '@/components/model/ModelPickerCommand'
 import { SectionHeader, SettingCard } from '../shared'
 import { cn } from '@/lib/utils'
-import { loadGatewayModel, saveGatewayModel } from '@/lib/amuxd-channels'
+import { loadGatewayModel, saveGatewayModel } from '@/lib/daemon/amuxd-channels'
 import {
   loadDeviceModelOptions,
   type DeviceModelOption,
   type DeviceModelsReason,
-} from '@/lib/device-default-models'
-import { getDaemonLocalAgent } from '@/lib/daemon-local-client'
+} from '@/lib/agent/device-default-models'
+import { getDaemonLocalAgent } from '@/lib/daemon/daemon-local-client'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useCronStore } from '@/stores/cron'
 import { clientMruModels } from '@/stores/client-model-mru'

@@ -20,7 +20,7 @@ vi.mock('@/lib/auth/session-store', () => ({
  * Hoisted mocks for the browser ensureWired path.
  *
  * `vi.doMock` + `vi.resetModules()` + dynamic `import()` is flaky on CI: the
- * real `@/lib/mqtt-browser-bridge` sometimes wins the race, `stateHandler`
+ * real `@/lib/mqtt/mqtt-browser-bridge` sometimes wins the race, `stateHandler`
  * stays null, and `waitFor(bridge subscribed)` times out. Hoisted `vi.mock`
  * is applied before any import, so the dynamic import in `ensureWired` always
  * hits the stub.
@@ -44,7 +44,7 @@ vi.mock('@/lib/utils', async (importOriginal) => {
   }
 })
 
-vi.mock('@/lib/mqtt-browser-bridge', () => ({
+vi.mock('@/lib/mqtt/mqtt-browser-bridge', () => ({
   subscribeBrowserMqttState: (
     h: (s: 'connecting' | 'connected' | 'disconnected') => void,
   ) => {

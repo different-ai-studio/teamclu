@@ -4,19 +4,19 @@ import { useAuthStore } from "./auth-store";
 import { useCurrentTeamStore } from "./current-team";
 import { isTauri } from "@/lib/utils";
 import { loadPinnedSessionIds, savePinnedSessionIds } from "./session-pins";
-import { syncSessionWorkspaces } from "@/lib/session-workspace-sync";
-import { markStartup } from "@/lib/startup-perf";
+import { syncSessionWorkspaces } from "@/lib/session/session-workspace-sync";
+import { markStartup } from "@/lib/telemetry/startup-perf";
 import {
   loadSessionsForTeam,
   loadSessionIdsForActor,
   softDeleteSession,
   upsertSessionsBatch,
   type SessionRow,
-} from "@/lib/local-cache";
-import { removeLinkSessionEntriesForSession } from "@/lib/extension-link-session";
+} from "@/lib/cache/local-cache";
+import { removeLinkSessionEntriesForSession } from "@/lib/extension/link-session";
 import { reportLocalCacheFailure } from "@/lib/telemetry/local-cache-error-report";
 import type { SessionListCursor, SessionListPage } from "@/lib/backend/types";
-import { sortSessionListRows } from "@/lib/session-list-sort";
+import { sortSessionListRows } from "@/lib/session/session-list-sort";
 
 const ARCHIVED_SESSION_IDS_KEY = "teamclu.sessionList.archivedIds";
 

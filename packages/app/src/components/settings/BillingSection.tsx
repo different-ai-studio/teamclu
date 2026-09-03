@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { AlertTriangle, CreditCard, ExternalLink, Loader2, Receipt, Wallet } from 'lucide-react'
 import { getBackend } from '@/lib/backend'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { useTeamPermissions } from '@/lib/team-permissions'
+import { useTeamPermissions } from '@/lib/team/team-permissions'
 import { cn, openExternalUrl } from '@/lib/utils'
 import type {
   CreditLedgerEntry,

@@ -7,6 +7,7 @@ import { Download, X, Copy, Check, Maximize2 } from "lucide-react"
 
 import i18n from "@/lib/i18n"
 import { cn, isTauri } from "@/lib/utils"
+import { bytesToDataUrl } from "@/lib/base64"
 import {
   Dialog,
   DialogContent,
@@ -425,12 +426,7 @@ export function LocalImage({ src, alt, className, onError: onErrorCallback, onLo
         const data = await readFile(src)
         if (cancelled) return
         
-        // Convert Uint8Array to base64
-        const base64 = btoa(
-          Array.from(data).map(byte => String.fromCharCode(byte)).join('')
-        )
-        const mimeType = getMimeType(src)
-        setDataUrl(`data:${mimeType};base64,${base64}`)
+        setDataUrl(bytesToDataUrl(data, getMimeType(src)))
         setLoading(false)
         onLoadCallback?.()
       } catch (err) {
@@ -508,6 +504,9 @@ export function LocalImage({ src, alt, className, onError: onErrorCallback, onLo
     </>
   )
 }
+
+/** Stable identity so the streaming-tail short-circuit does not churn deps. */
+const EMPTY_INLINE_IMAGES: string[] = []
 
 // Extract inline image references from text (e.g., "filename.png" mentioned in text)
 function extractInlineImageReferences(text: string): string[] {
@@ -717,19 +716,14 @@ function CodeBlock({ language, children }: { language: string; children: string 
       return () => { cancelled = true }
     }
     import('@/components/diff/shiki-renderer').then(
-      async ({
-        getHighlighter,
-        mapLanguage,
-        NOTION_DARK_THEME_NAME,
-        NOTION_LIGHT_THEME_NAME,
-      }) => {
+      async ({ highlightToHtml, NOTION_DARK_THEME_NAME, NOTION_LIGHT_THEME_NAME }) => {
         if (cancelled) return
         try {
-          const highlighter = await getHighlighter()
           const theme = isDark ? NOTION_DARK_THEME_NAME : NOTION_LIGHT_THEME_NAME
-          const lang = mapLanguage(language)
-          const html = highlighter.codeToHtml(code, { lang, theme })
-          if (!cancelled) setHighlightedHtml(html)
+          // null = a language this app carries no grammar for; the plain <pre>
+          // fallback below stays.
+          const html = await highlightToHtml(code, language, theme)
+          if (!cancelled && html) setHighlightedHtml(html)
         } catch {
           // Fallback: no highlighting
         }
@@ -993,6 +987,14 @@ export function MessageResponse({
 }: React.ComponentProps<"div">) {
   const { from, basePath } = useMessageContext()
   const isUserMessage = from === "user"
+  // PERF-13: inside the growing tail the content changes every frame, so a
+  // memo keyed on it is no memo at all. The two cosmetic passes below are
+  // skipped while that is true and run once the block closes into a
+  // `StableBlock` (or when the message finalises) — which is the only point at
+  // which their answers are meaningful anyway: a half-arrived ASCII diagram
+  // has no closing border to fence, and a half-arrived image path resolves to
+  // nothing.
+  const isStreamingTail = React.useContext(StreamingTailContext)
 
   // Parse content to detect/clean images and attachments
   // PERF: memoized to avoid re-running regex every render during streaming
@@ -1003,18 +1005,21 @@ export function MessageResponse({
   )
   const hasMediaParts = parsedParts.some(p => p.type === 'image' || p.type === 'attachment')
   const inlineImages = React.useMemo(() => {
+    if (isStreamingTail) return EMPTY_INLINE_IMAGES
     const allText = parsedParts.filter(p => p.type === 'text').map(p => p.content).join(' ')
     return extractInlineImageReferences(allText)
-  }, [parsedParts])
+  }, [parsedParts, isStreamingTail])
 
   // PERF: the line-by-line normalization scan is O(content) — memoize so it
   // runs once per content change, not on every re-render during streaming.
   const normalizedTextByIndex = React.useMemo(
     () =>
-      parsedParts.map(p =>
-        p.type === 'text' ? normalizeAssistantMarkdownForDisplay(p.content) : null,
-      ),
-    [parsedParts],
+      isStreamingTail
+        ? parsedParts.map(() => null)
+        : parsedParts.map(p =>
+            p.type === 'text' ? normalizeAssistantMarkdownForDisplay(p.content) : null,
+          ),
+    [parsedParts, isStreamingTail],
   )
 
   // PERF: Merge base components with basePath-dependent `img` handler.
@@ -1163,11 +1168,7 @@ function InlineImageCard({ imageName, basePath }: { imageName: string; basePath:
                   return
                 }
                 const data = await readFile(imageSrc)
-                const base64 = btoa(
-                  Array.from(data).map(byte => String.fromCharCode(byte)).join('')
-                )
-                const mimeType = getMimeType(imageSrc)
-                setImageDataUrl(`data:${mimeType};base64,${base64}`)
+                setImageDataUrl(bytesToDataUrl(data, getMimeType(imageSrc)))
               } catch { /* ignore */ }
             }
             void loadForDownload()

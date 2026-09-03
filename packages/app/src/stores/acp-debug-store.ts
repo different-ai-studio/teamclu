@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { appendAcpDebugLineToFile } from "@/lib/acp-debug-file-log";
-import { appStoragePrefix } from "@/lib/build-config";
+import { appendAcpDebugLineToFile } from "@/lib/diagnostics/acp-debug-file-log";
+import { appStoragePrefix } from "@/lib/config/build-config";
 import type { AcpEvent } from "@/lib/proto/amux_pb";
 
 const ACP_DEBUG_ENABLED_KEY = `${appStoragePrefix}-acp-stream-debug`;

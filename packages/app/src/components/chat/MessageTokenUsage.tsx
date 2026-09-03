@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { formatTokenCount, formatCost } from '@/lib/format-tokens'
+import { formatTokenCount, formatCost } from '@/lib/ui/format-tokens'
 import { cn } from '@/lib/utils'
 
 interface MessageTokenUsageProps {

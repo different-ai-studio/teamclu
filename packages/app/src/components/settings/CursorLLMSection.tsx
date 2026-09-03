@@ -7,7 +7,7 @@ import {
   getCursorAgentSettings,
   restartLocalDaemon,
   saveCursorAgentSettings,
-} from '@/lib/daemon-local-client'
+} from '@/lib/daemon/daemon-local-client'
 import { cn, isTauri } from '@/lib/utils'
 import { SectionHeader, SettingCard } from './shared'
 

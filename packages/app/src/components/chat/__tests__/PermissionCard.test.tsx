@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { useSessionStore } from '@/stores/session';
+import { useSessionStore } from '@/stores/session-store';
 import { useSessionSelectionStore } from '@/stores/session-selection-store';
 import { useV2StreamingStore } from '@/stores/v2-streaming-store';
 import {
   resetSessionPermissionModesForTests,
   setSessionPermissionMode,
-} from '@/lib/session-permission-mode';
+} from '@/lib/session/session-permission-mode';
 import { PendingPermissionInline } from '../PendingPermissionInline';
 
 vi.mock('react-i18next', () => ({
@@ -18,7 +18,7 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-vi.mock('@/hooks/useActorDisplayName', () => ({
+vi.mock('@/hooks/use-actor-display-name', () => ({
   useActorDisplayName: (actorId: string) => `Agent-${actorId}`,
 }));
 

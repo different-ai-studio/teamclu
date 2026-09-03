@@ -59,7 +59,7 @@ import {
   openSessionFromDeeplink,
   readPendingSessionDeeplink,
   stashPendingSessionDeeplink,
-} from '@/lib/open-session-deeplink'
+} from '@/lib/session/open-session-deeplink'
 
 describe('openSessionFromDeeplink', () => {
   beforeEach(() => {

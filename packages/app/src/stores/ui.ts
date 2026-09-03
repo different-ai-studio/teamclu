@@ -3,9 +3,9 @@ import { useDiagnosticsStore } from '@/stores/diagnostics-store'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useTabsStore } from '@/stores/tabs'
 import { useTeamShareBrowserStore, type TeamShareSection } from '@/stores/team-share-browser'
-import { resolveEmbedMode } from '@/lib/embed-mode'
-import { scheduleReleaseStuckModalLayers } from '@/lib/modal-layer-cleanup'
-import type { PageContext } from '@/lib/embed-page-context'
+import { resolveEmbedMode } from '@/lib/embed/embed-mode'
+import { scheduleReleaseStuckModalLayers } from '@/lib/ui/modal-layer-cleanup'
+import type { PageContext } from '@/lib/embed/embed-page-context'
 
 type View = 'chat' | 'settings'
 
@@ -273,7 +273,7 @@ export const useUIStore = create<UIState>((set, get) => ({
       useCronStore.getState().setShowCronSessions(false)
     })
     import('@/stores/session-selection-store').then(({ useSessionSelectionStore }) => {
-      import('@/stores/session').then(({ useSessionStore }) => {
+      import('@/stores/session-store').then(({ useSessionStore }) => {
         useSessionSelectionStore.getState().clearActiveSession()
 
         // Clear session state to show "Start a New Chat" UI
@@ -298,7 +298,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     const { useWorkspaceStore } = await import('@/stores/workspace')
     const { useTabsStore } = await import('@/stores/tabs')
     const { useCurrentTeamStore } = await import('@/stores/current-team')
-    const { switchToSessionWorkspaceIfNeeded } = await import('@/lib/session-by-workspace')
+    const { switchToSessionWorkspaceIfNeeded } = await import('@/lib/session/session-by-workspace')
     
     const teamId = useCurrentTeamStore.getState().team?.id
 
@@ -375,7 +375,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     // dynamic-import to avoid a top-level cycle with session/workspace stores.
     void (async () => {
       const { useSessionSelectionStore } = await import('@/stores/session-selection-store')
-      const { useSessionStore } = await import('@/stores/session')
+      const { useSessionStore } = await import('@/stores/session-store')
       const { useWorkspaceStore } = await import('@/stores/workspace')
       useWorkspaceStore.getState().clearSelection()
       useWorkspaceStore.getState().closePanel()

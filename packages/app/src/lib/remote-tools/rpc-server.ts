@@ -6,12 +6,12 @@ import {
   type RpcRequest,
   type RpcResponse,
 } from '@/lib/proto/teamclu_pb'
-import { listenForEnvelopes, mqttPublish, mqttSubscribe, type IncomingEnvelope } from '@/lib/mqtt-bridge'
+import { listenForEnvelopes, mqttPublish, mqttSubscribe, type IncomingEnvelope } from '@/lib/mqtt/mqtt-bridge'
 import { createSharedModuleLeaseManager, type SharedModuleLease } from '@/lib/shared-module-lease'
 
-import { getExecutor } from './registry'
-import { REMOTE_TOOL_ERROR } from './types'
-import { authorizeRemoteToolRequest } from './validate-request'
+import { getExecutor } from '@/lib/remote-tools/registry'
+import { REMOTE_TOOL_ERROR } from '@/lib/remote-tools/types'
+import { authorizeRemoteToolRequest } from '@/lib/remote-tools/validate-request'
 
 type RpcServerState = {
   teamId: string

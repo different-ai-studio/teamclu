@@ -32,11 +32,11 @@ vi.mock('@/stores/runtime-state-store', async (importOriginal) => {
   }
 })
 
-vi.mock('@/lib/teamclu-rpc', () => ({
+vi.mock('@/lib/daemon/teamclu-rpc', () => ({
   setModel: vi.fn(),
 }))
 
-vi.mock('@/lib/solo-build', () => ({
+vi.mock('@/lib/config/solo-build', () => ({
   isSoloBuild: () => mocks.isSoloBuild(),
 }))
 

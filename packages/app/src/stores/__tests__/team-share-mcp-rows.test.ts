@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TeamMcpServer } from '@/lib/backend/types'
-import type { DaemonMcpServerConfig, DaemonMcpServerProbeResult } from '@/lib/daemon-local-client'
+import type { DaemonMcpServerConfig, DaemonMcpServerProbeResult } from '@/lib/daemon/daemon-local-client'
 import { applyMcpProbes, mergeTeamMcpCatalogAndDaemon, planMcpItems } from '../team-share-browser'
 
 const catalogEntry = (installed: boolean): TeamMcpServer => ({

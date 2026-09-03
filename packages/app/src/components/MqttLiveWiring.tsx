@@ -14,66 +14,66 @@
  */
 import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
-import { markStartup } from "@/lib/startup-perf";
-import { classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, localizeAgentTurnErrorMessage } from "@/lib/agent-turn-error";
-import { useSessionStore } from "@/stores/session";
+import { markStartup } from "@/lib/telemetry/startup-perf";
+import { classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, localizeAgentTurnErrorMessage } from "@/lib/agent/agent-turn-error";
+import { useSessionStore } from "@/stores/session-store";
 import type { Question, QuestionOption } from "@/stores/session-types";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
 import { useAuthStore } from "@/stores/auth-store";
-import { listenForEnvelopes } from "@/lib/mqtt-bridge";
-import { connectMqttWithFreshAuth } from "@/lib/mqtt-connect-with-fresh-auth";
-import { mqttConnectionKey } from "@/lib/mqtt-connection-key";
-import { describeJwt, recordMqttDiag } from "@/lib/mqtt-diagnostics";
+import { listenForEnvelopes } from "@/lib/mqtt/mqtt-bridge";
+import { connectMqttWithFreshAuth } from "@/lib/mqtt/mqtt-connect-with-fresh-auth";
+import { mqttConnectionKey } from "@/lib/mqtt/mqtt-connection-key";
+import { describeJwt, recordMqttDiag } from "@/lib/mqtt/mqtt-diagnostics";
 import { useMqttReconnectStore } from "@/stores/mqtt-reconnect";
-import { getEffectiveServerConfig } from "@/lib/server-config";
-import { acquireTeamcluRpcBroker, acquireTeamcluRpcIdentity } from "@/lib/teamclu-rpc";
+import { getEffectiveServerConfig } from "@/lib/config/server-config";
+import { acquireTeamcluRpcBroker, acquireTeamcluRpcIdentity } from "@/lib/daemon/teamclu-rpc";
 import { acquireRemoteToolsRpcServer, registerPlatformExecutors } from "@/lib/remote-tools";
-import { acquireMqttModuleLeaseGroup, type MqttModuleLeaseGroup } from "@/lib/mqtt-module-wiring";
-import { decodeLiveEvent, sessionIdFromLiveEvent, streamActorIdFromLiveEvent } from "@/lib/teamclu-events";
+import { acquireMqttModuleLeaseGroup, type MqttModuleLeaseGroup } from "@/lib/mqtt/mqtt-module-wiring";
+import { decodeLiveEvent, sessionIdFromLiveEvent, streamActorIdFromLiveEvent } from "@/lib/daemon/teamclu-events";
 import { handleAcpPermissionRequest } from "@/lib/teamclu/handle-acp-permission-request";
 import { handleSessionEventPermissionResolved } from "@/lib/teamclu/handle-session-event-permission-resolved";
 import { tryBindChildFromPermission } from "@/lib/teamclu/subagent-acp-binding";
 import { routeSubagentAcpEvent } from "@/lib/teamclu/subagent-acp-route";
 import { resolveOrphanSubagentParentToolId, shouldBufferUnboundChildAcpEvent, shouldRouteOrphanSubagentEvent } from "@/lib/teamclu/subagent-acp-routing";
-import { scheduleMarkActiveSessionRead } from "@/lib/active-session-read";
+import { scheduleMarkActiveSessionRead } from "@/lib/session/active-session-read";
 import {
   ensureInboxSubscribed,
   handleInboxEnvelope,
   resetInboxSubscriptionState,
   scheduleSessionListRefresh,
-} from "@/lib/inbox-handler";
-import { bumpSessionListLastMessage, messageKindUpdatesSessionPreview } from "@/lib/session-list-preview";
-import { executeAgentTurnFlush } from "@/lib/agent-turn-flush";
-import { unixTimestampSecondsToIso } from "@/lib/message-timestamp";
-import { resolveInterruptedPlaceholdersToDrop } from "@/lib/interrupted-stream-placeholder";
-import { removePendingAgentReplyTo, resolvePendingAgentReplyTo } from "@/lib/pending-agent-reply-to";
-import { bufferStreamDelta, flushStreamDeltasFor, flushAllStreamDeltas } from "@/lib/stream-delta-buffer";
-import { recordLatencyProbe } from "@/lib/latency-probe";
-import { bumpLiveDuplicateDropped } from "@/lib/live-dedup-stats";
-import { cloneStreamEntrySnapshot, patchPersistedToolResult, patchPersistedToolUse, resolveStreamEntryForPersist, syncStreamingToolOutputsFromLocalCache } from "@/lib/streaming-persist";
-import { getFlushedTurn } from "@/lib/flushed-turn-registry";
-import { logInterruptMsgDiag, summarizeFlushDecision, summarizePendingReplies, summarizeStreamEntry } from "@/lib/interrupt-msg-diag";
-import { logExtMsgDiag, summarizeProtoForExtDiag, summarizeProtosForExtDiag } from "@/lib/extension-msg-diag";
-import { logStreamToolDiag } from "@/lib/stream-tool-diag";
+} from "@/lib/messages/inbox-handler";
+import { bumpSessionListLastMessage, messageKindUpdatesSessionPreview } from "@/lib/session/session-list-preview";
+import { executeAgentTurnFlush } from "@/lib/agent/agent-turn-flush";
+import { unixTimestampSecondsToIso } from "@/lib/messages/message-timestamp";
+import { resolveInterruptedPlaceholdersToDrop } from "@/lib/messages/interrupted-stream-placeholder";
+import { removePendingAgentReplyTo, resolvePendingAgentReplyTo } from "@/lib/messages/pending-agent-reply-to";
+import { bufferStreamDelta, flushStreamDeltasFor, flushAllStreamDeltas } from "@/lib/stream/stream-delta-buffer";
+import { recordLatencyProbe } from "@/lib/diagnostics/latency-probe";
+import { bumpLiveDuplicateDropped } from "@/lib/diagnostics/live-dedup-stats";
+import { cloneStreamEntrySnapshot, patchPersistedToolResult, patchPersistedToolUse, resolveStreamEntryForPersist, syncStreamingToolOutputsFromLocalCache } from "@/lib/stream/streaming-persist";
+import { getFlushedTurn } from "@/lib/stream/flushed-turn-registry";
+import { logInterruptMsgDiag, summarizeFlushDecision, summarizePendingReplies, summarizeStreamEntry } from "@/lib/diagnostics/interrupt-msg-diag";
+import { logExtMsgDiag, summarizeProtoForExtDiag, summarizeProtosForExtDiag } from "@/lib/diagnostics/extension-msg-diag";
+import { logStreamToolDiag } from "@/lib/diagnostics/stream-tool-diag";
 import { useAcpDebugStore } from "@/stores/acp-debug-store";
 import { isStreamInterruptible, useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { acquireRuntimeStateStore, useRuntimeStateStore } from "@/stores/runtime-state-store";
-import { findStaleLiveStreams, STALE_STREAM_SWEEP_MS } from "@/lib/stale-stream-recovery";
+import { findStaleLiveStreams, STALE_STREAM_SWEEP_MS } from "@/lib/stream/stale-stream-recovery";
 import { acquireActorPresenceStore } from "@/stores/actor-presence-store";
 import { MessageKind, type Message as TeamcluMessage } from "@/lib/proto/teamclu_pb";
-import { agentStreamKey, isTerminalAgentStatus, isToolOnlyTurnAnchor, isTurnOpeningStatusChange, mergePendingAgentReplies, normalizeToolResultEvent, normalizeToolUseEvent, registerDiscardPendingStreamReply, rememberLiveEventId, shouldPatchFlushedToolEvent, streamEntryHasVisibleContent } from "@/lib/live-agent-stream";
-import { mapAcpPlanEntries, syncPlanFromTodoTool, syncPlanFromTodoToolResult } from "@/lib/sync-plan-from-todowrite";
+import { agentStreamKey, isTerminalAgentStatus, isToolOnlyTurnAnchor, isTurnOpeningStatusChange, mergePendingAgentReplies, normalizeToolResultEvent, normalizeToolUseEvent, registerDiscardPendingStreamReply, rememberLiveEventId, shouldPatchFlushedToolEvent, streamEntryHasVisibleContent } from "@/lib/stream/live-agent-stream";
+import { mapAcpPlanEntries, syncPlanFromTodoTool, syncPlanFromTodoToolResult } from "@/lib/stream/sync-plan-from-todowrite";
 import { reportSkillUsage } from "@/lib/telemetry/skill-usage";
-import { upsertMessagesBatch, softDeleteMessage, type MessageRow } from "@/lib/local-cache";
+import { upsertMessagesBatch, softDeleteMessage, type MessageRow } from "@/lib/cache/local-cache";
 import { syncActorsForTeam } from "@/lib/sync/actor-sync";
 import { syncIdeasForTeam } from "@/lib/sync/idea-sync";
 import { syncSessionsForTeam } from "@/lib/sync/session-sync";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useSessionLiveInterestStore } from "@/stores/session-live-interest-store";
-import { resolveCurrentMemberActorId } from "@/lib/current-actor";
+import { resolveCurrentMemberActorId } from "@/lib/actor/current-actor";
 import { isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
 import {
   collectSessionsNeedingLiveInterest,
@@ -88,7 +88,7 @@ import {
   stopInboxIdleSweep,
   syncSessionLiveInterest,
   touchLiveEventActivity,
-} from "@/lib/session-live-subscriptions";
+} from "@/lib/session/session-live-subscriptions";
 
 interface MqttLiveWiringProps {
   /** Signed-in user id, or null while auth is still resolving. */

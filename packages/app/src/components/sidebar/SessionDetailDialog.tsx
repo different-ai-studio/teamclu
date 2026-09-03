@@ -18,15 +18,15 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { actorAvatarColor } from '@/lib/actor-color'
-import { getAcpDebugLogDirectory, revealAcpDebugLog } from '@/lib/acp-debug-file-log'
-import { formatDate, formatRelativeTime } from '@/lib/date-format'
+import { actorAvatarColor } from '@/lib/actor/actor-color'
+import { getAcpDebugLogDirectory, revealAcpDebugLog } from '@/lib/diagnostics/acp-debug-file-log'
+import { formatDate, formatRelativeTime } from '@/lib/ui/date-format'
 import {
   fetchSessionDetailSnapshot,
   type SessionDetailSnapshot,
   type SessionRuntimeDetail,
-} from '@/lib/session-detail'
-import type { SessionListActivity } from '@/lib/session-list-activity'
+} from '@/lib/session/session-detail'
+import type { SessionListActivity } from '@/lib/session/session-list-activity'
 import { cn, isTauri } from '@/lib/utils'
 import {
   isAcpDebugPanelVisible,

@@ -21,12 +21,12 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   readTextFile: vi.fn(async () => 'hello-old'),
   writeTextFile: mockWrite,
 }))
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   encodeWorkspaceId: (p: string) => `ws:${p}`,
   putDaemonSkill: mockPut,
   notifyDaemonSkillsChanged: mockNotify,
 }))
-vi.mock('@/lib/effective-workspace', () => ({
+vi.mock('@/lib/workspace/effective-workspace', () => ({
   useEffectiveWorkspacePath: () => '/Users/me/project',
 }))
 vi.mock('@/components/workspace/file-tree-operations', () => ({

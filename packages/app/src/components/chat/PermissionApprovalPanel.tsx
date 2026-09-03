@@ -2,7 +2,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { composerGlassChildClass } from "./composer-glass";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import type { PendingPermissionEntry } from "@/stores/session-types";
 import {
   getPermissionCardPresentation,

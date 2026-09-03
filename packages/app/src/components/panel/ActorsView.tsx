@@ -17,14 +17,14 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { getBackend } from '@/lib/backend'
-import { formatActorRemoveError } from '@/lib/actor-remove-error'
+import { formatActorRemoveError } from '@/lib/actor/actor-remove-error'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
 import { useSidebar } from '@/components/ui/sidebar'
-import { actorAvatarColor } from '@/lib/actor-color'
-import { formatRelativeTimeShort } from '@/lib/date-format'
-import { externalSourceLabel } from '@/lib/external-actor-source'
+import { actorAvatarColor } from '@/lib/actor/actor-color'
+import { formatRelativeTimeShort } from '@/lib/ui/date-format'
+import { externalSourceLabel } from '@/lib/actor/external-actor-source'
 import { useActorDetailStore } from '@/stores/actor-detail-store'
 import { cn } from '@/lib/utils'
 import {

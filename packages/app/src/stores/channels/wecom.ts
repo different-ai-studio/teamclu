@@ -13,7 +13,7 @@ import {
   saveChannelConfig,
   reloadChannels,
   AmuxdUnreachableError,
-} from '@/lib/amuxd-channels'
+} from '@/lib/daemon/amuxd-channels'
 import { invoke } from '@tauri-apps/api/core'
 
 type ChannelsSet = (fn: ((state: ChannelsState) => Partial<ChannelsState>) | Partial<ChannelsState>) => void

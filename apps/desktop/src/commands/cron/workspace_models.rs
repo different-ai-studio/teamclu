@@ -47,7 +47,7 @@ pub fn resolve_cron_model_override(
         Some((provider, model))
     } else {
         if let Some(path) = workspace_path.filter(|p| !p.is_empty()) {
-            println!(
+            log::info!(
                 "[Cron] Model '{pref}' is not in daemon providers for {path}; using workspace default"
             );
         }

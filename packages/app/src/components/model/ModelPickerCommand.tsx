@@ -12,7 +12,7 @@ import {
 import {
   groupAgentModelOptions,
   type AgentModelOption,
-} from '@/lib/agent-available-models'
+} from '@/lib/agent/agent-available-models'
 import { cn } from '@/lib/utils'
 
 interface ModelPickerCommandProps {

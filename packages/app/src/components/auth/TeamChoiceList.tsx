@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertCircle, Check, ChevronRight, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { formatDate } from "@/lib/date-format";
+import { formatDate } from "@/lib/ui/date-format";
 import type { MembershipTeam } from "@/lib/backend";
 import { getBackend } from "@/lib/backend";
 import { useCurrentTeamStore } from "@/stores/current-team";

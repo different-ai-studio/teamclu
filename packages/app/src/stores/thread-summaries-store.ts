@@ -1,10 +1,10 @@
 import { create } from "zustand";
 import { getBackend } from "@/lib/backend";
-import { rememberThreadForkMetadata } from "@/lib/thread-fork-metadata";
+import { rememberThreadForkMetadata } from "@/lib/session/thread-fork-metadata";
 import {
   sortThreadSummaries,
   type ThreadSummary,
-} from "@/lib/thread-summary";
+} from "@/lib/session/thread-summary";
 
 type ParentEntry = {
   summaries: ThreadSummary[];

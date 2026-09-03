@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Check, Copy, Loader2, ScrollText } from "lucide-react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { cn, copyToClipboard } from "@/lib/utils";
-import type { Message as StoreMessage } from "@/stores/session";
+import type { Message as StoreMessage } from "@/stores/session-types";
 import {
   Message,
   MessageContent,
@@ -26,8 +26,8 @@ import { MessageTokenUsage } from "./MessageTokenUsage";
 import { MessageTokenSummary } from "./MessageTokenSummary";
 import { MessageFeedback } from "./MessageFeedback";
 import { MessageStarRating } from "./MessageStarRating";
-import { splitAssistantProcessAndFinalParts } from "@/lib/agent-reply-transcript";
-import { hydrateDeferredProcessParts } from "@/lib/lazy-process-parts";
+import { splitAssistantProcessAndFinalParts } from "@/lib/agent/agent-reply-transcript";
+import { hydrateDeferredProcessParts } from "@/lib/stream/lazy-process-parts";
 import type { MessagePart } from "@/stores/session-types";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import {
@@ -36,7 +36,7 @@ import {
 } from "./AgentReplyQuote";
 import { ThreadBadge } from "./ThreadBadge";
 import { MessageActionIconButton } from "./MessageActionIconButton";
-import { useActorDisplayName } from "@/hooks/useActorDisplayName";
+import { useActorDisplayName } from "@/hooks/use-actor-display-name";
 import { useCurrentTeamStore } from "@/stores/current-team";
 
 const DynamicUIMessage = lazyNamed(

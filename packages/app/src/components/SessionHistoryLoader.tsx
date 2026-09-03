@@ -11,9 +11,9 @@
  * re-rendering the app shell.
  */
 import { useEffect, useRef } from "react";
-import { isChromeExtension } from "@/lib/platform";
+import { isChromeExtension } from "@/lib/config/platform";
 import { isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
-import { loadSessionMessageHistory } from "@/lib/load-session-message-history";
+import { loadSessionMessageHistory } from "@/lib/messages/load-session-message-history";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
@@ -29,7 +29,7 @@ export function SessionHistoryLoader() {
 
   useEffect(() => {
     if (!isChromeExtension()) return;
-    void import("@/lib/extension-message-cache").then(({ pruneExtensionMessageCache }) =>
+    void import("@/lib/extension/message-cache").then(({ pruneExtensionMessageCache }) =>
       pruneExtensionMessageCache(),
     );
   }, []);

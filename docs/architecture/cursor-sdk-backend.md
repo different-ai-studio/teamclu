@@ -226,7 +226,7 @@ default_model = "composer-2.5"
 
 ### 7.2 Build config（桌面 onboarding 种子）
 
-[`packages/app/src/lib/build-config.ts`](../../packages/app/src/lib/build-config.ts)
+[`packages/app/src/lib/config/build-config.ts`](../../packages/app/src/lib/config/build-config.ts)
 扩展：
 
 ```ts

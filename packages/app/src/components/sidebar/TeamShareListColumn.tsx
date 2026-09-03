@@ -43,7 +43,7 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { useFileChangeListener } from '@/hooks/useFileChangeListener'
+import { useFileChangeListener } from '@/hooks/use-file-change-listener'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend/provider'
 import {
@@ -60,7 +60,7 @@ import { useEnvVarsStore } from '@/stores/env-vars'
 import { FileBrowser } from '@/components/workspace/FileBrowser'
 import { TeamDirInitPanel } from '@/components/teamshare/TeamDirInitPanel'
 import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
-import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
+import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
 import {
   useTeamShareBrowserStore,
   SkillMutationRefreshError,
@@ -71,18 +71,18 @@ import {
 import { detailSelectionForSection } from '@/lib/tabs/teamshare-target'
 import type { ConnectedAgentRow } from '@/lib/backend/types'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
-import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
-import { encodeWorkspaceId, notifyDaemonSkillsChanged } from '@/lib/daemon-local-client'
+import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
+import { encodeWorkspaceId, notifyDaemonSkillsChanged } from '@/lib/daemon/daemon-local-client'
 import { SkillScanPaths } from './SkillScanPaths'
 import { KnowledgeSyncFooter } from '@/components/teamshare/KnowledgeSyncFooter'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
 import { ObsidianIcon } from '@/components/workspace/ObsidianIcon'
 import { useObsidianStatus } from '@/hooks/use-obsidian'
-import { openVaultInObsidian } from '@/lib/obsidian'
+import { openVaultInObsidian } from '@/lib/knowledge/obsidian'
 import {
   KNOWLEDGE_DEFAULT_EXTENSION,
   withDefaultExtension,
-} from '@/lib/knowledge-file-names'
+} from '@/lib/knowledge/knowledge-file-names'
 import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
 import { toastSkillMutationRefreshFailed } from '@/components/teamshare/skillMutationRefreshToast'
 
@@ -1112,7 +1112,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             <div className="px-6 py-10 text-center text-[13px] text-muted-foreground">
               {subjectActorId
                 ? t('teamShare.agentSkillsEmpty', '当前 Agent 没有已安装的 Skills')
-                : t('teamShare.selectAgentFirst', '请先选择 Agent')}
+                : t('teamShare.selectAgentFirst', 'Select an Agent first')}
             </div>
           ) : (
             skillGroups.map((group) => (

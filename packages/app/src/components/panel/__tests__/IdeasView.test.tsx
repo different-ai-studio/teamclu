@@ -49,7 +49,7 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string, fallback: string) => fallback }),
 }))
 
-vi.mock('@/lib/date-format', () => ({
+vi.mock('@/lib/ui/date-format', () => ({
   formatRelativeTime: () => 'just now',
 }))
 

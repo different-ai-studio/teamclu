@@ -20,7 +20,7 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
-vi.mock("@/lib/session-permission-mode", () => ({
+vi.mock("@/lib/session/session-permission-mode", () => ({
   useSessionPermissionMode: () => mocks.getMode(),
   setSessionPermissionMode: mocks.setSessionPermissionMode,
 }));
@@ -29,7 +29,7 @@ vi.mock("@/lib/teamclu/flush-session-pending-permissions", () => ({
   flushSessionPendingPermissions: mocks.flushSessionPendingPermissions,
 }));
 
-vi.mock("@/lib/solo-build", () => ({
+vi.mock("@/lib/config/solo-build", () => ({
   isSoloBuild: () => mocks.isSoloBuild(),
 }));
 

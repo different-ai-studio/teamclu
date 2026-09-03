@@ -1,7 +1,7 @@
 import { create as createZustand } from 'zustand'
 import { fromBinary } from '@bufbuild/protobuf'
 import { ActorPresenceSchema } from '@/lib/proto/amux_pb'
-import { mqttSubscribe, listenForEnvelopes, type IncomingEnvelope } from '@/lib/mqtt-bridge'
+import { mqttSubscribe, listenForEnvelopes, type IncomingEnvelope } from '@/lib/mqtt/mqtt-bridge'
 import { createSharedModuleLeaseManager, type SharedModuleLease } from '@/lib/shared-module-lease'
 
 // Per-actor presence. Fed by retained `amux/{team}/{actor}/state` publishes —

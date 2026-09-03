@@ -4,7 +4,7 @@ import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useThreadPanelStore } from "@/stores/thread-panel-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
-import { adaptTeamcluMessages } from "@/lib/v2-message-adapter";
+import { adaptTeamcluMessages } from "@/lib/messages/v2-message-adapter";
 import { ThreadAnchorPreview } from "./ThreadAnchorPreview";
 import { SessionChatColumn } from "./SessionChatColumn";
 import { getBackend } from "@/lib/backend";
@@ -14,11 +14,11 @@ import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useCurrentTeamStore } from "@/stores/current-team";
-import { threadDraftSessionId } from "@/lib/thread-fork";
+import { threadDraftSessionId } from "@/lib/session/thread-fork";
 import {
   rememberThreadForkMetadata,
   preloadThreadForkMetadata,
-} from "@/lib/thread-fork-metadata";
+} from "@/lib/session/thread-fork-metadata";
 import type { Message as ProtoMessage } from "@/lib/proto/teamclu_pb";
 
 const EMPTY_PROTO_MESSAGES: ProtoMessage[] = [];

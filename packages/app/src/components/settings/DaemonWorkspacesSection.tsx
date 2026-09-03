@@ -12,7 +12,7 @@ import {
   updateDaemonWorkspace,
   type DaemonAgent,
   type DaemonWorkspace,
-} from '@/lib/daemon-workspaces'
+} from '@/lib/daemon/daemon-workspaces'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { SectionHeader, SettingCard } from './shared'

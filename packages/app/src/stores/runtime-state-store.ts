@@ -7,8 +7,8 @@ import {
   type ModelInfo,
   type RuntimeInfo,
 } from '@/lib/proto/amux_pb'
-import { mqttSubscribe, listenForEnvelopes, type IncomingEnvelope } from '@/lib/mqtt-bridge'
-import { sessionFlowLog } from '@/lib/session-flow-log'
+import { mqttSubscribe, listenForEnvelopes, type IncomingEnvelope } from '@/lib/mqtt/mqtt-bridge'
+import { sessionFlowLog } from '@/lib/session/session-flow-log'
 import { createSharedModuleLeaseManager, type SharedModuleLease } from '@/lib/shared-module-lease'
 
 /**

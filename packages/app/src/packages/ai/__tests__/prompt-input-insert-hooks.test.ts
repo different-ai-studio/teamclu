@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { encodeMemberMentionToken } from '@/lib/member-mention-token'
+import { encodeMemberMentionToken } from '@/lib/actor/member-mention-token'
 import { createInsertHashFile, createInsertHashSessionAttachment, createInsertAgentMention, createInsertMention } from '../prompt-input-insert-hooks'
-import { encodeSessionAttachmentToken } from '@/lib/session-attachment-token'
+import { encodeSessionAttachmentToken } from '@/lib/attachments/session-attachment-token'
 
 function makeContext(initialText: string, hashAt: number) {
   let text = initialText

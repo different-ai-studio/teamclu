@@ -13,7 +13,7 @@ import {
 import {
   registerDeployConfirmHandler,
   type DeployConfirmPrompt,
-} from "@/lib/app-deploy-confirm";
+} from "@/lib/apps/app-deploy-confirm";
 
 type PendingPrompt = DeployConfirmPrompt & {
   resolve: (accepted: boolean) => void;

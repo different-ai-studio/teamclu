@@ -11,8 +11,8 @@ import type {
   AppMemberAccessRow,
   AppPermissionLevel,
   DeployAppResult,
-} from "../types";
-import { CloudApiError, type CloudApiClient } from "./http";
+} from "@/lib/backend/types";
+import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 type Page<T> = { items: T[] };
 

@@ -22,7 +22,7 @@ vi.mock("@/lib/backend", () => ({
   getBackend: mocks.getBackend,
 }));
 
-vi.mock("@/lib/local-cache", () => ({
+vi.mock("@/lib/cache/local-cache", () => ({
   getWatermark: mocks.getWatermark,
   setWatermark: mocks.setWatermark,
   upsertSessionsBatch: mocks.upsertSessionsBatch,
@@ -33,8 +33,8 @@ vi.mock("@/lib/utils", () => ({
   isTauri: mocks.isTauri,
 }));
 
-import { syncMessagesForSession } from "./message-sync";
-import { syncSessionsForTeam } from "./session-sync";
+import { syncMessagesForSession } from "@/lib/sync/message-sync";
+import { syncSessionsForTeam } from "@/lib/sync/session-sync";
 import type { MessageSyncRow, SessionSyncRow } from "@/lib/backend/types";
 
 describe("session and message cache sync", () => {

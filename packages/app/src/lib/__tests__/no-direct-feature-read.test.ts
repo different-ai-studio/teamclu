@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Guardrail: feature flags must be read through lib/remote-features, never
+// Guardrail: feature flags must be read through lib/config/remote-features, never
 // straight off `buildConfig.features`.
 //
 // The build config is now only the DEFAULT — the Cloud API overrides it at
@@ -21,13 +21,13 @@ const DIRECT_READ_RE = /\bbuildConfig\s*(\?\.|\.)\s*features\b/;
 // config module itself declares them.
 const ALLOWED = new Set(
   [
-    path.join(SRC_DIR, "lib", "remote-features.ts"),
+    path.join(SRC_DIR, "lib", "config", "remote-features.ts"),
     path.join(SRC_DIR, "lib", "build-config.ts"),
   ].map((p) => path.resolve(p)),
 );
 
 // Tests are exempt: the rule is about shipped behaviour, and a test that pins
-// the baked defaults (mocking @/lib/build-config to force a flag on, as the
+// the baked defaults (mocking @/lib/config/build-config to force a flag on, as the
 // OAuthButtons suite does) is doing exactly the right thing.
 const IS_TEST = /(^|[\\/])__tests__[\\/]|\.test\.tsx?$/;
 

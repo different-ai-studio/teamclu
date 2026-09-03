@@ -1,10 +1,10 @@
 import { readDir, readTextFile, exists } from '@tauri-apps/plugin-fs'
-import { collectTeamSkillPaths } from '@/lib/team-skill-paths'
+import { collectTeamSkillPaths } from '@/lib/team/team-skill-paths'
 import { frontmatterString } from '@/lib/skills/frontmatter'
 import { homeDir } from '@tauri-apps/api/path'
-import type { SkillWithSource, SkillSource } from './types'
-import { INHERENT_SKILL_NAMES, shouldIncludeDesktopControlSkill } from './types'
-import { appDisplayName } from '@/lib/build-config'
+import type { SkillWithSource, SkillSource } from '@/lib/skills/types'
+import { INHERENT_SKILL_NAMES, shouldIncludeDesktopControlSkill } from '@/lib/skills/types'
+import { appDisplayName } from '@/lib/config/build-config'
 import i18n from '@/lib/i18n'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ async function loadSkillsFromDir(
 
 // ─── Multi-Source Loader ────────────────────────────────────────────────────
 
-export { collectTeamSkillPaths, readConfigSkillPaths } from '@/lib/team-skill-paths'
+export { collectTeamSkillPaths, readConfigSkillPaths } from '@/lib/team/team-skill-paths'
 
 /**
  * Every skill directory scanned for the current workspace/user context, in the

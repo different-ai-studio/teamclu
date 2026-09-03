@@ -13,10 +13,10 @@
 // id needs an entry there or the provider round-trip fails with a redirect
 // mismatch — see deploy/self-host/.env.example.
 
-import type { AuthClient } from "./auth-client";
-import type { OAuthProvider } from "./desktop-oauth";
-import { generatePkce } from "./oauth-pkce";
-import { AuthError, type Session } from "./types";
+import type { AuthClient } from "@/lib/auth/auth-client";
+import type { OAuthProvider } from "@/lib/auth/desktop-oauth";
+import { generatePkce } from "@/lib/auth/oauth-pkce";
+import { AuthError, type Session } from "@/lib/auth/types";
 
 /**
  * Structural shape of the slice of `chrome.identity` we use. Declared here

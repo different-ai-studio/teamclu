@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("./oauth-pkce", () => ({
+vi.mock("@/lib/auth/oauth-pkce", () => ({
   generatePkce: vi.fn().mockResolvedValue({ verifier: "VER", challenge: "CHA" }),
 }));
 
-import { cancelExtensionOAuth, runExtensionOAuth } from "./extension-oauth";
+import { cancelExtensionOAuth, runExtensionOAuth } from "@/lib/auth/extension-oauth";
 
 const REDIRECT = "https://abcdefghijklmnop.chromiumapp.org/";
 

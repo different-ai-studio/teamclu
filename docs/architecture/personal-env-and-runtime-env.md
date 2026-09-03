@@ -208,7 +208,7 @@ Agent 工具侧的 `load_agent_env_listings` 使用同一套 personal 合并逻�
 | Daemon spawn 组装 | `apps/daemon/src/runtime/env_assembly.rs` |
 | Host pool / generation | `apps/daemon/src/runtime/opencode_http/host_pool.rs` |
 | 激活诊断 | `apps/daemon/src/runtime/supervisor.rs`（`env_activation_diagnostics`） |
-| 前端状态 rollup | `packages/app/src/lib/env-diagnostics.ts` |
+| 前端状态 rollup | `packages/app/src/lib/diagnostics/env-diagnostics.ts` |
 | 设置页 UI | `packages/app/src/components/settings/EnvVarsSection.tsx` |
 
 ---

@@ -271,6 +271,18 @@ importers:
       '@sentry/react':
         specifier: ^10.69.0
         version: 10.70.0(react@19.2.8)
+      '@shikijs/core':
+        specifier: 4.4.3
+        version: 4.4.3
+      '@shikijs/engine-oniguruma':
+        specifier: 4.4.3
+        version: 4.4.3
+      '@shikijs/langs':
+        specifier: 4.4.3
+        version: 4.4.3
+      '@shikijs/themes':
+        specifier: 4.4.3
+        version: 4.4.3
       '@tanstack/react-virtual':
         specifier: ^3.14.9
         version: 3.14.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)

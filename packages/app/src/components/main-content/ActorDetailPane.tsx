@@ -2,8 +2,8 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronRight, MessageSquare, Users } from 'lucide-react'
 import { getBackend } from '@/lib/backend'
-import { formatRelativeTime } from '@/lib/date-format'
-import { loadSessionIdsForActor } from '@/lib/session-by-actor'
+import { formatRelativeTime } from '@/lib/ui/date-format'
+import { loadSessionIdsForActor } from '@/lib/session/session-by-actor'
 import { ActorDetailContent } from '@/components/sidebar/ActorDetailContent'
 import {
   useActorDirectory,

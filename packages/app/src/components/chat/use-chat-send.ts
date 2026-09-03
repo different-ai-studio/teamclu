@@ -15,19 +15,19 @@
 import type { DraftActor } from "@/stores/ui";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useOutboxStore } from "@/stores/outbox-store";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { useCurrentTeamStore } from "@/stores/current-team";
-import { notePendingAgentReplyTo } from "@/lib/pending-agent-reply-to";
+import { notePendingAgentReplyTo } from "@/lib/messages/pending-agent-reply-to";
 import { useAuthStore } from "@/stores/auth-store";
-import { bumpSessionListLastMessage } from "@/lib/session-list-preview";
+import { bumpSessionListLastMessage } from "@/lib/session/session-list-preview";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
 import { useAgentModelPickStore } from "@/stores/agent-model-pick-store";
 import { useUIStore } from "@/stores/ui";
-import { expandPageLinkTokensInText } from "@/lib/expand-page-link-tokens";
+import { expandPageLinkTokensInText } from "@/lib/embed/expand-page-link-tokens";
 import { create as createMessage } from "@bufbuild/protobuf";
 import {
   MessageSchema,
@@ -38,43 +38,43 @@ import {
   resolveAgentRuntimeIdsForSend,
   resolveSendTeamId,
   trySyncMentionActorIds,
-} from "@/lib/send-path-resolve";
-import { resolveCurrentMemberActorId } from "@/lib/current-actor";
+} from "@/lib/messages/send-path-resolve";
+import { resolveCurrentMemberActorId } from "@/lib/actor/current-actor";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import type { PromptInputMessage } from "@/packages/ai/prompt-input";
 import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
-import { promoteCreatedSessionToUi } from "@/lib/promote-created-session";
+import { promoteCreatedSessionToUi } from "@/lib/session/promote-created-session";
 import { useEngagedAgentUiStates } from "@/hooks/use-engaged-agent-ui-states";
 import { quickChatWelcomeAgent } from "@/hooks/use-quick-chat-readiness";
-import { buildPostSendSessionNotice } from "@/lib/session-agent-notice-text";
+import { buildPostSendSessionNotice } from "@/lib/session/session-agent-notice-text";
 import { useSessionNoticeStore } from "@/stores/session-notice-store";
-import { toMentionDeliverySnapshot } from "@/lib/session-agent-ui-state";
+import { toMentionDeliverySnapshot } from "@/lib/session/session-agent-ui-state";
 import { type MessageListHandle } from "./MessageList";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
-import { uploadAttachment } from "@/lib/attachment-upload";
+import { uploadAttachment } from "@/lib/attachments/attachment-upload";
 import {
   collectSessionAttachmentUrlsFromText,
   expandSessionAttachmentTokensInText,
   textHasSessionAttachmentTokens,
-} from "@/lib/session-attachment-token";
-import { resolveSessionEstablishedModel } from "@/lib/session-established-model";
-import { ensureSessionLiveSubscribed } from "@/lib/session-live-subscriptions";
-import { resolveSessionMentionActorIds } from "@/lib/resolve-session-mention-ids";
-import { stripPickerPersonMentionsFromText } from "@/lib/strip-person-mentions";
+} from "@/lib/attachments/session-attachment-token";
+import { resolveSessionEstablishedModel } from "@/lib/session/session-established-model";
+import { ensureSessionLiveSubscribed } from "@/lib/session/session-live-subscriptions";
+import { resolveSessionMentionActorIds } from "@/lib/actor/resolve-session-mention-ids";
+import { stripPickerPersonMentionsFromText } from "@/lib/actor/strip-person-mentions";
 import {
   expandMemberMentionTokensInText,
   parseMemberMentionsFromText,
   textHasMemberMentionTokens,
-} from "@/lib/member-mention-token";
-import { buildEnhancedChip, buildStructuredMentionLines } from "@/lib/outgoing-mention-content";
-import { resolveAgentSessionModel } from '@/lib/resolve-agent-session-model'
-import { resolveAgentBackendType } from '@/lib/agent-backend-type'
-import { getKnownLocalDaemonActorId } from "@/lib/local-daemon-identity";
+} from "@/lib/actor/member-mention-token";
+import { buildEnhancedChip, buildStructuredMentionLines } from "@/lib/actor/outgoing-mention-content";
+import { resolveAgentSessionModel } from '@/lib/agent/resolve-agent-session-model'
+import { resolveAgentBackendType } from '@/lib/agent/agent-backend-type'
+import { getKnownLocalDaemonActorId } from "@/lib/daemon/local-daemon-identity";
 import {
   sessionFlowError,
   sessionFlowLog,
   summarizeText,
-} from "@/lib/session-flow-log";
+} from "@/lib/session/session-flow-log";
 function parseSlashToken(body: string): { type: "role" | "skill" | "command"; name: string } {
   if (body.startsWith("role:")) return { type: "role", name: body.slice("role:".length) };
   if (body.startsWith("skill:")) return { type: "skill", name: body.slice("skill:".length) };
@@ -734,7 +734,7 @@ export function useChatSend({
       : (firstMessage.text ?? '').trim() || 'New chat';
 
     try {
-      const { createSessionShell } = await import('@/lib/session-create');
+      const { createSessionShell } = await import('@/lib/session/session-create');
       const memberIds = picks.members.map((m) => m.id);
       const agentIds = picks.agents.map((a) => a.id);
       const allAdditional = Array.from(new Set([...memberIds, ...agentIds]));
@@ -755,7 +755,7 @@ export function useChatSend({
         ideaId: draftIdeaId,
       });
       if (soloActor) {
-        const { markSessionNeedsAutoTitle } = await import("@/lib/session-auto-title");
+        const { markSessionNeedsAutoTitle } = await import("@/lib/session/session-auto-title");
         markSessionNeedsAutoTitle(sessionId);
       }
       sessionFlowLog("session_create.shell.ok", {

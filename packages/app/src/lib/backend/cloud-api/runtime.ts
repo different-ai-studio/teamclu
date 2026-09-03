@@ -1,5 +1,5 @@
-import type { AgentDefaultRow, RuntimeBackend } from "../types";
-import type { CloudApiClient } from "./http";
+import type { AgentDefaultRow, RuntimeBackend } from "@/lib/backend/types";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 type CloudAgentDefault = {
   id: string;

@@ -1,10 +1,10 @@
 import * as React from "react";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import {
   selectSessionParentLinks,
-} from "@/lib/session-parent-links";
-import { buildSessionListActivityMap } from "@/lib/session-list-activity";
+} from "@/lib/session/session-parent-links";
+import { buildSessionListActivityMap } from "@/lib/session/session-list-activity";
 import type { PendingPermissionEntry } from "@/stores/session-types";
 import {
   collectAcpStreamingPermissionsForList,

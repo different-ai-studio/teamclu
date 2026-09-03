@@ -13,7 +13,11 @@ import '@testing-library/jest-dom'
 // copy in one test and raw keys in another. Importing it here makes that
 // deterministic. VITE_LOCALE=zh-CN (vite.config test.env) pins it to the
 // production-default Chinese locale.
-import '@/lib/i18n'
+// PERF-15: the catalogue is a dynamic import now, so awaiting the bootstrap
+// promise is what keeps a component's rendered copy deterministic. Without it
+// the strings arrive a microtask after the first render and tests see keys.
+import { i18nReady } from '@/lib/i18n'
+await i18nReady
 
 // --- CSS.escape (used by FileTree querySelector selectors) -----------------
 // In some Vitest worker contexts `globalThis.CSS` is undefined.

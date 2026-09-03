@@ -412,7 +412,7 @@ fn add_document_start_script<R: Runtime>(webview: &tauri::Webview<R>, script: &s
             objc2::ffi::objc_release(user_script as *mut _);
         }
     }) {
-        eprintln!("[Webview] Failed to refresh document-start identity script: {e}");
+        log::error!("[Webview] Failed to refresh document-start identity script: {e}");
     }
 }
 
@@ -461,7 +461,7 @@ pub fn init_shared_config(manager: &mut WebviewManager) {
         objc2::ffi::objc_retain(raw as *mut _);
         manager.shared_config = Some(SharedConfig(raw));
     }
-    eprintln!(
+    log::info!(
         "[Webview] Shared WKWebViewConfiguration initialized on main thread (defaultDataStore + shared pool, devtools enabled by default)"
     );
 }
@@ -496,7 +496,7 @@ pub async fn webview_create(
         .contains_key(&label);
     if exists {
         if let Some(webview) = app.get_webview(&label) {
-            eprintln!(
+            log::info!(
                 "[Webview] Reusing existing '{}', showing and repositioning",
                 label
             );
@@ -523,7 +523,7 @@ pub async fn webview_create(
     // AppKit main thread (issue #617).
     ensure_http_host_resolvable_async(&parsed_url).await?;
 
-    eprintln!(
+    log::info!(
         "[Webview] Creating '{}' in parent '{}' url={} pos=({},{}) size={}x{}",
         label,
         window.label(),
@@ -587,7 +587,7 @@ pub async fn webview_create(
             let config: Retained<WKWebViewConfiguration> = Retained::retain(config_ptr)
                 .expect("Shared WKWebViewConfiguration should be valid");
             webview_builder = webview_builder.with_webview_configuration(config);
-            eprintln!("[Webview] Using shared WKWebViewConfiguration");
+            log::info!("[Webview] Using shared WKWebViewConfiguration");
         }
     }
 
@@ -603,9 +603,10 @@ pub async fn webview_create(
         let popup_app = app.clone();
         webview_builder = webview_builder.on_new_window(move |url, _features| {
             if matches!(url.scheme(), "http" | "https") {
-                eprintln!(
+                log::info!(
                     "[Webview] Redirecting popup request for '{}' to {}",
-                    popup_label, url
+                    popup_label,
+                    url
                 );
                 if let Some(webview) = popup_app.get_webview(&popup_label) {
                     let _ = webview.navigate(url.clone());
@@ -721,7 +722,7 @@ pub async fn webview_create(
         .map_err(|e| e.to_string())?
         .insert(label.clone(), ());
 
-    eprintln!("[Webview] Created successfully: {}", label);
+    log::info!("[Webview] Created successfully: {}", label);
     Ok(())
 }
 
@@ -747,7 +748,7 @@ pub async fn webview_close(
     state: tauri::State<'_, WebviewManager>,
     label: String,
 ) -> Result<(), String> {
-    eprintln!("[Webview] Closing: {}", label);
+    log::info!("[Webview] Closing: {}", label);
     webview_close_inner(&app, &state, &label);
     Ok(())
 }
@@ -756,7 +757,7 @@ pub async fn webview_close(
 #[tauri::command]
 pub async fn webview_hide(app: tauri::AppHandle, label: String) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&label) {
-        eprintln!("[Webview] Hiding: {}", label);
+        log::info!("[Webview] Hiding: {}", label);
         let _ = webview.hide();
     }
     Ok(())
@@ -773,7 +774,7 @@ pub async fn webview_show(
     height: f64,
 ) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&label) {
-        eprintln!("[Webview] Showing: {}", label);
+        log::info!("[Webview] Showing: {}", label);
         let _ = webview.set_position(tauri::LogicalPosition::new(x, y));
         let _ = webview.set_size(tauri::LogicalSize::new(width, height));
         let _ = webview.show();
@@ -839,7 +840,7 @@ pub async fn webview_navigate(
             .map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
         // Same guard as webview_create — navigate to a bad host can freeze too.
         ensure_http_host_resolvable_async(&parsed).await?;
-        eprintln!("[Webview] Navigating '{}' to {}", label, url);
+        log::info!("[Webview] Navigating '{}' to {}", label, url);
         webview
             .navigate(parsed)
             .map_err(|e| format!("Failed to navigate: {}", e))?;

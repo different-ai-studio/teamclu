@@ -4,7 +4,7 @@ import {
   FilePenLine,
   Loader2,
 } from "lucide-react";
-import { ToolCall } from "@/stores/session";
+import { ToolCall } from "@/stores/session-types";
 import { useWorkspaceStore } from "@/stores/workspace";
 import {
   extractFilePath,
@@ -15,7 +15,7 @@ import { ToolCallDiffBody } from "./ToolCallDiffBody";
 import {
   resolveWorkspaceRelativePath,
   useToolCallFileOnDisk,
-} from "@/hooks/useToolCallFileOnDisk";
+} from "@/hooks/use-tool-call-file-on-disk";
 import { ToolCallStatusGlyph } from "./ToolCallStatusGlyph";
 import { ToolCallDisclosure } from "./ToolCallDisclosure";
 

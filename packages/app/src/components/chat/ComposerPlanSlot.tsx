@@ -1,8 +1,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Clock3, ListTodo, Trash2 } from "lucide-react";
-import type { Todo } from "@/stores/session-types";
-import type { QueuedMessage } from "@/stores/session";
+import { type Todo, type QueuedMessage } from "@/stores/session-types";
 import { cn } from "@/lib/utils";
 import {
   composerGlassSurfaceClass,

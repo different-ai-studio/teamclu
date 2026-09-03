@@ -14,7 +14,7 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -24,16 +24,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  useChannelsStore,
-  type WeChatConfig,
-  defaultWeChatConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type WeChatConfig, defaultWeChatConfig } from '@/stores/channels-types'
 import { WeChatIcon } from './shared'
 import { GatewayStatusCard } from './GatewayStatusCard'
-import { useChannelConfig } from '@/hooks/useChannelConfig'
+import { useChannelConfig } from '@/hooks/use-channel-config'
 import { QRCodeSVG } from 'qrcode.react'
 import { invoke } from '@tauri-apps/api/core'
+import { useShallow } from 'zustand/react/shallow'
 
 // WeChat Setup Wizard Steps
 const WECHAT_WIZARD_STEPS = [
@@ -412,7 +410,9 @@ export function WeChatChannel() {
     refreshWechatStatus,
     setWechatHasChanges,
     toggleWechatEnabled,
-  } = useChannelsStore()
+  } = useChannelsStore(
+    useShallow((s) => ({ wechat: s.wechat, wechatIsLoading: s.wechatIsLoading, wechatGatewayStatus: s.wechatGatewayStatus, wechatHasChanges: s.wechatHasChanges, loadWechatConfig: s.loadWechatConfig, saveWechatConfig: s.saveWechatConfig, startWechatGateway: s.startWechatGateway, stopWechatGateway: s.stopWechatGateway, refreshWechatStatus: s.refreshWechatStatus, setWechatHasChanges: s.setWechatHasChanges, toggleWechatEnabled: s.toggleWechatEnabled })),
+  )
 
   const [expanded, setExpanded] = React.useState(false)
   const [wizardOpen, setWizardOpen] = React.useState(false)

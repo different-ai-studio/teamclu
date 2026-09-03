@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { resolveQuickChatTarget, type QuickChatTarget } from '@/lib/resolve-quick-chat-target'
+import { resolveQuickChatTarget, type QuickChatTarget } from '@/lib/session/resolve-quick-chat-target'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { useMqttReconnectStore } from '@/stores/mqtt-reconnect'

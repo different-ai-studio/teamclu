@@ -12,7 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { openKnowledgeConflict } from '@/lib/tabs/knowledge-tabs'
-import { formatRelativeTime, formatDateTime } from '@/lib/date-format'
+import { formatRelativeTime, formatDateTime } from '@/lib/ui/date-format'
 
 /** How long a sync has to run before the bar is worth showing. */
 const SHOW_AFTER_MS = 300

@@ -30,9 +30,9 @@ import {
 } from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
 import { getBackend } from '@/lib/backend'
-import { listTeamMembersForAccess, type TeamMemberOption } from '@/lib/daemon-agent-admin'
-import { appStatusMeta, canReseed } from '@/lib/app-list-helpers'
-import { daemonAppWorkdir, moveDaemonAppWorkdir } from '@/lib/daemon-local-client'
+import { listTeamMembersForAccess, type TeamMemberOption } from '@/lib/daemon/daemon-agent-admin'
+import { appStatusMeta, canReseed } from '@/lib/apps/app-list-helpers'
+import { daemonAppWorkdir, moveDaemonAppWorkdir } from '@/lib/daemon/daemon-local-client'
 import { isTauri } from '@/lib/utils'
 import { useAppsStore } from '@/stores/apps-store'
 import { AppDataSection } from './AppDataSection'
@@ -338,7 +338,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
         // running the agent against a path that no longer exists — until some
         // later session-open happens to re-bind it.
         if (result.workdir) {
-          const { bindAppWorkdir } = await import('@/lib/app-session')
+          const { bindAppWorkdir } = await import('@/lib/apps/app-session')
           await bindAppWorkdir(app, result.workdir)
         }
         setMoveOpen(false)

@@ -67,7 +67,7 @@ vi.mock('@/stores/member-preferences-store', () => ({
 vi.mock('@/stores/current-team', () => ({
   useCurrentTeamStore: { getState: () => ({ team: h.currentTeam, currentMember: { id: 'member-1' } }) },
 }))
-vi.mock('@/lib/daemon-workspaces', () => ({
+vi.mock('@/lib/daemon/daemon-workspaces', () => ({
   createDaemonWorkspace: vi.fn(async (input: { path: string; name: string }) => ({
     id: 'ws-cloud-1',
     teamId: 't1',
@@ -98,7 +98,7 @@ vi.mock('@/stores/workspace', () => ({
     getState: () => ({ workspacePath: '/home/u/projects/app' }),
   },
 }))
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   invalidateDaemonConnection: vi.fn(),
   probeDaemonHttp: vi.fn(async () =>
     h.probeQueue.length > 1
@@ -116,7 +116,7 @@ vi.mock('@/lib/daemon-local-client', () => ({
     return { requiresRestart: true }
   }),
 }))
-vi.mock('@/lib/daemon-agent-admin', () => ({
+vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
   getLocalDaemonActorId: vi.fn(async () => h.localActorId),
 }))
 vi.mock('@tauri-apps/api/core', () => ({
@@ -376,7 +376,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
   })
 
   it('rebinds when the same team is entered under a different linked user', async () => {
-    const { writeDaemonOnboardingIdentity } = await import('@/lib/daemon-onboarding-identity')
+    const { writeDaemonOnboardingIdentity } = await import('@/lib/daemon/daemon-onboarding-identity')
     writeDaemonOnboardingIdentity({ teamId: 't1', userId: 'previous-user' })
     h.currentTeam = { id: 't1' }
     h.daemonTeam = 't1'
@@ -395,7 +395,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
   })
 
   it('a linked-account switch onto a machine with no agent of its own asks for a name', async () => {
-    const { writeDaemonOnboardingIdentity } = await import('@/lib/daemon-onboarding-identity')
+    const { writeDaemonOnboardingIdentity } = await import('@/lib/daemon/daemon-onboarding-identity')
     writeDaemonOnboardingIdentity({ teamId: 't1', userId: 'previous-user' })
     h.currentTeam = { id: 't1' }
     h.daemonTeam = 't1'
@@ -411,7 +411,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
   })
 
   it('does not rebind a matching team under the same user', async () => {
-    const { writeDaemonOnboardingIdentity } = await import('@/lib/daemon-onboarding-identity')
+    const { writeDaemonOnboardingIdentity } = await import('@/lib/daemon/daemon-onboarding-identity')
     writeDaemonOnboardingIdentity({ teamId: 't1', userId: 'user-1' })
     h.currentTeam = { id: 't1' }
     h.daemonTeam = 't1'
@@ -426,8 +426,8 @@ describe('daemon-onboarding refresh() orchestration', () => {
   })
 
   it('ready registers the active workspace when it is a real project dir', async () => {
-    const { fetchDaemonCloudAuthStatus } = await import('@/lib/daemon-local-client')
-    const { createDaemonWorkspace, setAgentDefaultWorkspace } = await import('@/lib/daemon-workspaces')
+    const { fetchDaemonCloudAuthStatus } = await import('@/lib/daemon/daemon-local-client')
+    const { createDaemonWorkspace, setAgentDefaultWorkspace } = await import('@/lib/daemon/daemon-workspaces')
     vi.mocked(fetchDaemonCloudAuthStatus).mockResolvedValue('ok')
     h.currentTeam = { id: 't1' }
     h.daemonTeam = 't1'
@@ -449,8 +449,8 @@ describe('daemon-onboarding refresh() orchestration', () => {
   })
 
   it('skips local daemon mirror while cloud auth is expired but still registers cloud workspace', async () => {
-    const { fetchDaemonCloudAuthStatus } = await import('@/lib/daemon-local-client')
-    const { createDaemonWorkspace } = await import('@/lib/daemon-workspaces')
+    const { fetchDaemonCloudAuthStatus } = await import('@/lib/daemon/daemon-local-client')
+    const { createDaemonWorkspace } = await import('@/lib/daemon/daemon-workspaces')
     vi.mocked(fetchDaemonCloudAuthStatus).mockResolvedValue('expired')
     h.currentTeam = { id: 't1' }
     h.daemonTeam = 't1'
@@ -465,7 +465,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
   })
 
   it('does not register a workspace while the bind is still failing', async () => {
-    const { fetchDaemonCloudAuthStatus } = await import('@/lib/daemon-local-client')
+    const { fetchDaemonCloudAuthStatus } = await import('@/lib/daemon/daemon-local-client')
     vi.mocked(fetchDaemonCloudAuthStatus).mockResolvedValue('ok')
     h.currentTeam = { id: 't1' }
     h.daemonTeam = 't2'

@@ -45,7 +45,7 @@ pub(crate) fn read_legacy_disk_blob(
 ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
     if let Some(disk_blob) = read_env_blob_from_disk() {
         if !disk_blob.is_empty() {
-            println!(
+            log::info!(
                 "[EnvVars] Restored {} entries from legacy disk fallback",
                 disk_blob.len()
             );
@@ -105,9 +105,10 @@ where
     let migration_pending = match workspace_legacy_migration_pending(workspace_path) {
         Ok(pending) => pending,
         Err(err) => {
-            eprintln!(
+            log::error!(
                 "[EnvVars] Legacy workspace top-up marker check failed for '{}': {}",
-                workspace_path, err
+                workspace_path,
+                err
             );
             retry_needed = true;
             false
@@ -133,9 +134,10 @@ where
                 top_up_succeeded = true;
             }
             Err(err) => {
-                eprintln!(
+                log::error!(
                     "[EnvVars] Legacy workspace top-up skipped for '{}': {}",
-                    workspace_path, err
+                    workspace_path,
+                    err
                 );
                 retry_needed = true;
             }
@@ -197,9 +199,10 @@ fn workspace_can_persist_legacy_migration_marker(workspace_path: &str) -> bool {
 
 fn mark_workspace_legacy_migration_complete_best_effort(workspace_path: &str) {
     if let Err(err) = mark_workspace_legacy_migration_complete(workspace_path) {
-        eprintln!(
+        log::error!(
             "[EnvVars] Failed to persist legacy workspace migration marker for '{}': {}",
-            workspace_path, err
+            workspace_path,
+            err
         );
     }
 }
@@ -244,7 +247,7 @@ pub(crate) fn derive_personal_env_index_from_blob(workspace_path: &str) -> Resul
 
     if added > 0 {
         write_env_index(workspace_path, &entries)?;
-        println!(
+        log::info!(
             "[EnvVars] Derived {} personal env index entr{} from the blob",
             added,
             if added == 1 { "y" } else { "ies" }

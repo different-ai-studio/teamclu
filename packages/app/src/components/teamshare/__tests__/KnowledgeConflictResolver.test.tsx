@@ -51,7 +51,7 @@ vi.mock('@/stores/tabs', () => {
   return { useTabsStore: store }
 })
 
-vi.mock('@/lib/team-skill-paths', () => ({
+vi.mock('@/lib/team/team-skill-paths', () => ({
   teamSyncKeyForPath: (abs: string) =>
     abs.startsWith('/home/u/.amuxd/teams/t/shared/knowledge')
       ? `knowledge/${abs.slice('/home/u/.amuxd/teams/t/shared/knowledge'.length + 1)}`

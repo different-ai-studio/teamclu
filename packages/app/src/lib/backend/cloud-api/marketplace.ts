@@ -1,5 +1,5 @@
-import type { CloudApiClient } from "./http";
-import type { TeamSkill, TeamSkillCategory } from "./team-skills";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
+import type { TeamSkill, TeamSkillCategory } from "@/lib/backend/cloud-api/team-skills";
 
 /**
  * First-party skills marketplace client.

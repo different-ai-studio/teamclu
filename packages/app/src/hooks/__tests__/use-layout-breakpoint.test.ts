@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   isSoloBuild: vi.fn(() => false),
 }));
 
-vi.mock("@/lib/solo-build", () => ({
+vi.mock("@/lib/config/solo-build", () => ({
   isSoloBuild: () => mocks.isSoloBuild(),
 }));
 

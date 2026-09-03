@@ -20,11 +20,11 @@ import {
   getConsoleEntries,
   subscribeConsoleCapture,
   type ConsoleLevel,
-} from '@/lib/console-capture'
+} from '@/lib/diagnostics/console-capture'
 import {
   getRuntimeStateSnapshot,
   type RuntimeStateSnapshot,
-} from '@/lib/runtime-state-snapshot'
+} from '@/lib/agent/runtime-state-snapshot'
 
 type LiveTab = 'console' | 'state' | 'disk'
 

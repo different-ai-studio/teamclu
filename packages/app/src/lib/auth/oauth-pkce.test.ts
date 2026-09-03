@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generatePkce } from "./oauth-pkce";
+import { generatePkce } from "@/lib/auth/oauth-pkce";
 
 // RFC 7636 worked example: this verifier must produce this exact S256 challenge.
 const RFC_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";

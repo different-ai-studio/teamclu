@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import { useUIStore } from '@/stores/ui'
 import { SessionListColumn } from './SessionListColumn'
-import { useFeatures } from '@/lib/remote-features'
+import { useFeatures } from '@/lib/config/remote-features'
 import { lazyNamed } from '@/lib/lazy-component'
 import { PaneLoading } from '@/components/ui/pane-loading'
 

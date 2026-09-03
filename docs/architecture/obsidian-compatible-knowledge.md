@@ -48,8 +48,8 @@
 ### 2.2 已经具备的 Obsidian 特性
 
 - wiki link `[[target#heading|alias]]` 的解析、点击跳转、点不存在的目标就新建
-  （`packages/app/src/lib/wiki-link-utils.ts`、`wiki-link-resolver.ts`）。
-- 链接解析用「文件名 + 最短路径优先」（`packages/app/src/lib/wiki-link-index.ts`
+  （`packages/app/src/lib/knowledge/wiki-link-utils.ts`、`wiki-link-resolver.ts`）。
+- 链接解析用「文件名 + 最短路径优先」（`packages/app/src/lib/knowledge/wiki-link-index.ts`
   的 `buildFileMap`），这正是 Obsidian 的默认
   *shortest path when possible*。两边解析同一份 `[[...]]` 结果一致。
 - 文件树上 knowledge 目录已经画了 Obsidian 图标
@@ -434,7 +434,7 @@ deferred 并报红到 UI，代价大于收益。
 
 - ~~新建文件默认名改为 `untitled.md`。~~ **已完成**（`3d6e8fd3`）：占位名是
   `untitled.md`；knowledge 树下新建时若用户没写扩展名则补 `.md`
-  （`packages/app/src/lib/knowledge-file-names.ts` `withDefaultExtension`，点开头的
+  （`packages/app/src/lib/knowledge/knowledge-file-names.ts` `withDefaultExtension`，点开头的
   文件与已有扩展名的不碰）；若写了别的扩展名，尊重用户（附件、图片是合法内容）。
   规则只挂在 knowledge 的两处入口，skills 树刻意不用。
 - **未做，且不进 ADR-0008**（单开 issue）：重命名时补 `.md`；已存在的无后缀文件不

@@ -324,7 +324,7 @@ pub(crate) fn extract_zip_to_dir(
             .unwrap_or_else(|_| target_dir.to_path_buf());
         if let Ok(canonical_out) = out_path.canonicalize() {
             if !canonical_out.starts_with(&canonical_target) {
-                eprintln!(
+                log::warn!(
                     "[ClawHub] Skipping zip entry with path traversal: {}",
                     raw_name
                 );

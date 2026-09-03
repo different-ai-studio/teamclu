@@ -4,7 +4,7 @@ import { HelpCircle, Check, ChevronRight, Send } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useSessionStore } from '@/stores/session'
+import { useSessionStore } from '@/stores/session-store'
 import type { Question } from '@/stores/session-types'
 import { ToolCallDisclosure } from './tool-calls/ToolCallDisclosure'
 

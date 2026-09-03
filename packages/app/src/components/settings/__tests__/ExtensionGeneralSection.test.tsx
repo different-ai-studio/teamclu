@@ -18,7 +18,7 @@ vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn() },
 }))
 
-vi.mock('@/lib/extension-link-session', () => ({
+vi.mock('@/lib/extension/link-session', () => ({
   clearLinkSessionMapForTeam,
 }))
 
@@ -27,7 +27,7 @@ vi.mock('@/stores/current-team', () => ({
     selector({ team: { id: 'team-1' } }),
 }))
 
-vi.mock('@/lib/extension-link-hover', () => ({
+vi.mock('@/lib/extension/link-hover', () => ({
   readLinkHoverConfig: vi.fn(async () => ({
     domains: [...storage.value.domains],
     urlPatterns: [...storage.value.urlPatterns],

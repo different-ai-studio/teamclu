@@ -25,7 +25,7 @@ import {
   type SkillDiagnosticCheck,
   type SkillDiagnosticStatus,
   type SkillsDiagnosticsReport,
-} from '@/lib/skill-diagnostics'
+} from '@/lib/diagnostics/skill-diagnostics'
 
 function statusIcon(status: SkillDiagnosticStatus) {
   switch (status) {

@@ -1,13 +1,13 @@
-import { mqttPublish } from "@/lib/mqtt-bridge";
+import { mqttPublish } from "@/lib/mqtt/mqtt-bridge";
 import {
   resolvePermissionCommandTarget,
   runtimeTargetsForSession,
-} from "@/lib/runtime-state-resolve";
-import { sessionFlowError, sessionFlowLog } from "@/lib/session-flow-log";
+} from "@/lib/agent/runtime-state-resolve";
+import { sessionFlowError, sessionFlowLog } from "@/lib/session/session-flow-log";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { createRuntimeCommandSender } from "@/lib/teamclu/runtime-command";
-import { runtimeCommand } from "@/lib/teamclu-rpc";
+import { runtimeCommand } from "@/lib/daemon/teamclu-rpc";
 
 
 /**
