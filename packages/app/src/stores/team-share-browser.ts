@@ -360,6 +360,12 @@ interface TeamShareBrowserState {
    * panel open, and after any local mutation.
    */
   reconcileSkills: () => Promise<void>
+  /**
+   * Re-read installed packs against their baselines without install/remove.
+   * The skills list calls this on open/refresh so dirty badges appear without
+   * waiting for the next auto-follow tick.
+   */
+  refreshSkillLocalState: () => Promise<void>
   /** Publish an older version's content as the new latest (undo a bad publish). */
   revertSkillVersion: (slug: string, version: number, expectedLatestVersion: number) => Promise<void>
   /** Move the edited pack aside and re-install clean. Returns the undo handle. */
@@ -1054,6 +1060,39 @@ async function inspectSkill(
 
 async function listInstalledPacks(): Promise<OnDiskSkill[]> {
   return invoke<OnDiskSkill[]>('team_skill_list_installed')
+}
+
+function knownSkillSlugs(listed: OnDiskSkill[], desired: TeamSkill[]): Set<string> {
+  return new Set<string>([
+    ...listed.map((p) => p.slug),
+    ...desired.filter((s) => s.installed).map((s) => s.slug),
+  ])
+}
+
+async function collectSkillLocalStates(
+  known: Set<string>,
+  desired: TeamSkill[],
+  teamId: string,
+): Promise<{ states: Record<string, SkillLocalState>; blocked: Set<string> }> {
+  const states: Record<string, SkillLocalState> = {}
+  const blocked = new Set<string>()
+  for (const slug of known) {
+    const row = desired.find((s) => s.slug === slug)
+    const state = await inspectSkill(
+      slug,
+      row?.installedVersion ?? null,
+      teamId,
+      row?.latestVersion ?? null,
+    ).catch(() => null)
+    if (!state) continue
+    states[slug] = state
+    // A local edit needs a decision; another registry's pack is not ours to
+    // touch at all. Both mean "auto-follow stops here".
+    if (state.state === 'dirty' || state.state === 'stale_dirty' || state.state === 'foreign') {
+      blocked.add(slug)
+    }
+  }
+  return { states, blocked }
 }
 
 /** Render a catalog row in the daemon's config shape so one detail view serves both. */
@@ -1786,30 +1825,10 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       memberDesired.filter((s) => s.installed).map((s) => s.slug),
     )
 
-    const states: Record<string, SkillLocalState> = {}
     const errors: Record<string, string> = {}
     const archived: Record<string, string> = { ...get().skillArchived }
-    const blocked = new Set<string>()
-    const known = new Set<string>([
-      ...listed.map((p) => p.slug),
-      ...desired.filter((s) => s.installed).map((s) => s.slug),
-    ])
-    for (const slug of known) {
-      const row = desired.find((s) => s.slug === slug)
-      const state = await inspectSkill(
-        slug,
-        row?.installedVersion ?? null,
-        teamId,
-        row?.latestVersion ?? null,
-      ).catch(() => null)
-      if (!state) continue
-      states[slug] = state
-      // A local edit needs a decision; another registry's pack is not ours to
-      // touch at all. Both mean "auto-follow stops here".
-      if (state.state === 'dirty' || state.state === 'stale_dirty' || state.state === 'foreign') {
-        blocked.add(slug)
-      }
-    }
+    const known = knownSkillSlugs(listed, desired)
+    const { states, blocked } = await collectSkillLocalStates(known, desired, teamId)
 
     // Re-read the disk after inspection rather than reusing the listing above.
     // Inspecting a pack that predates manifests *adopts* it — writes the origin
@@ -1925,6 +1944,29 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     if (diskChanged) {
       await get().loadSection('skills', { force: true }).catch(() => {})
     }
+  },
+
+  refreshSkillLocalState: async () => {
+    const teamId = currentTeamId()
+    if (!teamId || !isTauri()) return
+    const backend = getBackend()
+    const localAgentId = getKnownLocalDaemonActorId()
+    let desired: TeamSkill[]
+    let listed: OnDiskSkill[]
+    try {
+      ;[desired, listed] = await Promise.all([
+        localAgentId
+          ? backend.teamSkills.listTeamSkills(teamId, { actorId: localAgentId })
+          : backend.teamSkills.listTeamSkills(teamId),
+        listInstalledPacks(),
+      ])
+    } catch (e) {
+      if (isCloudAuthError(e)) throw e
+      return
+    }
+    const known = knownSkillSlugs(listed, desired)
+    const { states } = await collectSkillLocalStates(known, desired, teamId)
+    set({ skillLocalState: states })
   },
 
   discardLocalSkill: async (slug) => {
@@ -2101,6 +2143,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
           get().subjectActorId ?? undefined,
         )
         set({ skills: { items, loading: false, loaded: true, error: registryError } })
+        await get().refreshSkillLocalState().catch(() => {})
       } else if (section === 'knowledge') {
         // The daemon's own directory, by absolute path:
         // `~/.amuxd[-brand]/teams/<id>/shared/knowledge`. That is the tree the
