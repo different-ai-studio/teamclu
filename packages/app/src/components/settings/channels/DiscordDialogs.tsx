@@ -18,7 +18,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { cn, openExternalUrl, copyToClipboard as copyToClipboardUtil } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -29,10 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  type GuildConfig,
-  type ChannelRule,
-} from '@/stores/channels'
+import { type GuildConfig, type ChannelRule } from '@/stores/channels-types'
 import { ToggleSwitch } from './shared'
 
 // Setup Wizard Component - steps built with t() inside component

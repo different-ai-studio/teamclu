@@ -2,7 +2,7 @@ import * as React from "react"
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-import { modalSurfaceProps } from "@/lib/modal-surface-props"
+import { modalSurfaceProps } from "@/lib/ui/modal-surface-props"
 import { Button } from "@/components/ui/button"
 
 function AlertDialog({

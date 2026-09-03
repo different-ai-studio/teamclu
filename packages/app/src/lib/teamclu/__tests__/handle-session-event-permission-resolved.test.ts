@@ -18,7 +18,7 @@ vi.mock("@/stores/v2-streaming-store", () => ({
   },
 }));
 
-vi.mock("@/stores/session", () => ({
+vi.mock("@/stores/session-store", () => ({
   useSessionStore: {
     setState: mocks.setState,
   },
@@ -28,7 +28,7 @@ import {
   handleSessionEventPermissionResolved,
   resetPermissionResolvedTtlForTests,
   wasPermissionRecentlyResolved,
-} from "../handle-session-event-permission-resolved";
+} from "@/lib/teamclu/handle-session-event-permission-resolved";
 
 describe("handleSessionEventPermissionResolved", () => {
   beforeEach(() => {

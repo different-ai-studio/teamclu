@@ -11,7 +11,7 @@ import {
   saveChannelConfig,
   reloadChannels,
   AmuxdUnreachableError,
-} from '@/lib/amuxd-channels'
+} from '@/lib/daemon/amuxd-channels'
 
 type ChannelsSet = (fn: ((state: ChannelsState) => Partial<ChannelsState>) | Partial<ChannelsState>) => void
 

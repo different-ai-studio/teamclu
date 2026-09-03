@@ -2,7 +2,7 @@ import type { AcpEvent } from "@/lib/proto/amux_pb";
 import {
   normalizeToolResultEvent,
   normalizeToolUseEvent,
-} from "@/lib/live-agent-stream";
+} from "@/lib/stream/live-agent-stream";
 import type { AgentStreamEntry } from "@/stores/v2-streaming-store";
 import { isTaskToolCall } from "@/lib/teamclu/subagent-acp-binding";
 

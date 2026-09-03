@@ -24,15 +24,15 @@ const mocks = vi.hoisted(() => ({
   markSessionViewed: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@/lib/mqtt-bridge', () => ({
+vi.mock('@/lib/mqtt/mqtt-bridge', () => ({
   mqttPublish: mocks.mqttPublish,
 }))
 
-vi.mock('@/lib/session-auto-title', () => ({
+vi.mock('@/lib/session/session-auto-title', () => ({
   maybeAutoTitleSessionFromFirstMessage: mocks.maybeAutoTitleSessionFromFirstMessage,
 }))
 
-vi.mock('@/lib/session-list-preview', () => ({
+vi.mock('@/lib/session/session-list-preview', () => ({
   bumpSessionListLastMessage: mocks.bumpSessionListLastMessage,
 }))
 
@@ -48,16 +48,16 @@ vi.mock('@/lib/utils', () => ({
   isTauri: () => mocks.isTauri(),
 }))
 
-vi.mock('@/lib/daemon-agent-admin', () => ({
+vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
   getLocalDaemonActorId: () => mocks.getLocalDaemonActorId(),
 }))
 
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   ingestSessionLiveLocally: (...args: unknown[]) => mocks.ingestSessionLiveLocally(...args),
   getDaemonLocalAgent: () => mocks.getDaemonLocalAgent(),
 }))
 
-vi.mock('@/lib/teamclu-rpc', () => ({
+vi.mock('@/lib/daemon/teamclu-rpc', () => ({
   runtimeStart: (...args: unknown[]) => mocks.runtimeStart(...args),
 }))
 
@@ -106,7 +106,7 @@ vi.mock('@/stores/workspace', () => ({
   },
 }))
 
-vi.mock('@/lib/local-cache', () => ({
+vi.mock('@/lib/cache/local-cache', () => ({
   upsertOutbox: mocks.upsertOutbox,
   deleteOutbox: mocks.deleteOutbox,
   listAllOutbox: mocks.listAllOutbox,
@@ -560,7 +560,7 @@ describe('outbox sender', () => {
     mocks.runtimeStart.mockResolvedValue({})
 
     const { rememberThreadForkMetadata, clearThreadForkMetadataForTests } =
-      await import('@/lib/thread-fork-metadata')
+      await import('@/lib/session/thread-fork-metadata')
     clearThreadForkMetadataForTests()
     rememberThreadForkMetadata('thread-session-1', 'parent-session-1', 'anchor-msg-1')
 

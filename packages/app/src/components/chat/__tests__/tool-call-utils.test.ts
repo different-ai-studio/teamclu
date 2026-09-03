@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getCommandText,
   getToolCallOutputText,
-} from "@/lib/terminal-interaction";
+} from "@/lib/ui/terminal-interaction";
 
 describe("tool-call-utils", () => {
   it("extracts command text from common argument keys", () => {

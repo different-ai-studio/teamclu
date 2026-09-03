@@ -1,5 +1,5 @@
-import type { AttachmentRef, AttachmentsBackend, AttachmentUploadInput } from "../types";
-import type { CloudApiClient } from "./http";
+import type { AttachmentRef, AttachmentsBackend, AttachmentUploadInput } from "@/lib/backend/types";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 export function createAttachmentsModule(client: CloudApiClient): AttachmentsBackend {
   return {

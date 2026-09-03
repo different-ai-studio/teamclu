@@ -2,7 +2,7 @@
 
 - **Date**: 2026-09-03
 - **Status**: IMPLEMENTED — Phase 1 + 2 数据层 + Phase 3 症状 UI + Phase 4 修复动作
-- **Scope**: `packages/app/src/lib/diagnostics/`（新）、`packages/app/src/lib/diagnostic-report.ts`、`packages/app/src/lib/session-flow-log.ts`、发送链路若干写入点、设置页诊断 UI
+- **Scope**: `packages/app/src/lib/diagnostics/`（含 `diagnostic-report.ts` 与 orchestrator）、`packages/app/src/lib/session/session-flow-log.ts`、发送链路若干写入点、设置页诊断 UI
 - **Non-scope**: 失败气泡入口、daemon 新增诊断 endpoint、Expo / iOS 客户端
 - **Related**: `packages/app/src/lib/local-daemon-model-catalog.ts`、`packages/app/src/lib/mqtt-diagnostics.ts`、`packages/app/src/services/outbox-sender.ts`
 

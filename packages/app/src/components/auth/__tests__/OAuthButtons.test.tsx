@@ -7,7 +7,7 @@ vi.mock("@/lib/utils", async (orig) => ({ ...(await orig<object>()), isTauri: is
 // Auth methods come from the Cloud API now, so turn them on where the
 // component reads them instead of faking a build config that no longer
 // carries flags.
-vi.mock("@/lib/remote-features", async (importOriginal) => {
+vi.mock("@/lib/config/remote-features", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const features = {
     updater: true,

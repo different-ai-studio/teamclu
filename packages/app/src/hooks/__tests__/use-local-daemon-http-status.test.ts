@@ -18,11 +18,11 @@ vi.mock('@/stores/daemon-mqtt-status', () => ({
   useDaemonMqttConnected: () => true,
 }))
 
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   probeDaemonHttp: mocks.probeDaemonHttp,
 }))
 
-vi.mock('@/lib/agent-device-reachability', () => ({
+vi.mock('@/lib/agent/agent-device-reachability', () => ({
   noteLocalDaemonSignals: vi.fn(),
 }))
 

@@ -13,8 +13,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { getFeatures } from "@/lib/remote-features"
+import { getFeatures } from "@/lib/config/remote-features"
 import { useUpdaterStore } from "@/stores/updater"
+import { useShallow } from "zustand/react/shallow"
 
 /**
  * Windows applies the update on restart, not before it.
@@ -111,7 +112,9 @@ const releaseNotesMarkdownComponents = {
 
 export function UpdateDialogContainer() {
   const { t } = useTranslation()
-  const { update, checkForUpdates, retryUpdate, restart } = useUpdaterStore()
+  const { update, checkForUpdates, retryUpdate, restart } = useUpdaterStore(
+    useShallow((s) => ({ update: s.update, checkForUpdates: s.checkForUpdates, retryUpdate: s.retryUpdate, restart: s.restart })),
+  )
   const [dismissed, setDismissed] = useState(false)
   const [restarting, setRestarting] = useState(false)
 

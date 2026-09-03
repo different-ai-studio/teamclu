@@ -25,7 +25,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { SettingCard, SectionHeader } from './shared'
-import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
+import { useEffectiveWorkspacePath } from '@/lib/workspace/effective-workspace'
 import {
   encodeWorkspaceId,
   getDaemonToolPermissions,
@@ -34,7 +34,7 @@ import {
   putDaemonAllowlist,
   type DaemonAllowlistRule,
   type DaemonPermissionMap,
-} from '@/lib/daemon-local-client'
+} from '@/lib/daemon/daemon-local-client'
 
 type PermissionAction = 'allow' | 'ask' | 'deny'
 

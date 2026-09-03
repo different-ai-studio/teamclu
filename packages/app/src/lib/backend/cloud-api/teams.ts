@@ -1,5 +1,5 @@
-import type { TeamSummary, TeamsBackend, TeamInviteInput, TeamInviteResult } from "../types";
-import type { CloudApiClient } from "./http";
+import type { TeamSummary, TeamsBackend, TeamInviteInput, TeamInviteResult } from "@/lib/backend/types";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 type CloudTeam = {
   id: string;

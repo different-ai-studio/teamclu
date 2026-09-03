@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { appStoragePrefix } from '@/lib/build-config'
-import type { DaemonLocalAgent } from '@/lib/daemon-local-client'
+import { appStoragePrefix } from '@/lib/config/build-config'
+import type { DaemonLocalAgent } from '@/lib/daemon/daemon-local-client'
 
 /**
  * How much of the setup the user wants to drive themselves (#881).

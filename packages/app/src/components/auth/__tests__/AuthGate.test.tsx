@@ -92,11 +92,11 @@ vi.mock("@/lib/utils", () => ({
   removeStartupSkeleton: () => removeStartupSkeletonMock(),
 }));
 
-vi.mock("@/lib/platform", () => ({
+vi.mock("@/lib/config/platform", () => ({
   isChromeExtension: () => extensionPolicyMock.isExtension,
 }));
 
-vi.mock("@/lib/build-config", () => ({
+vi.mock("@/lib/config/build-config", () => ({
   extensionTeamOnboarding: extensionPolicyMock,
 }));
 
@@ -162,7 +162,7 @@ import { AuthGate } from "../AuthGate";
 import {
   resetInviteLinkConfirmationForTests,
   useInviteLinkConfirmation,
-} from "@/lib/invite-link-confirmation";
+} from "@/lib/team/invite-link-confirmation";
 
 beforeEach(() => {
   resetInviteLinkConfirmationForTests();

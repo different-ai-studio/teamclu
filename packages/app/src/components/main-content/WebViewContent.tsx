@@ -2,10 +2,10 @@ import { useEffect, useRef, useState, useCallback } from "react"
 import { useTranslation } from "react-i18next"
 import { Loader2, ExternalLink } from "lucide-react"
 import { isTauri } from "@/lib/utils"
-import { normalizeUrl, urlToLabel } from "@/lib/webview-utils"
+import { normalizeUrl, urlToLabel } from "@/lib/ui/webview-utils"
 import { useTabsStore } from "@/stores/tabs"
 import { useCurrentTeamStore } from "@/stores/current-team"
-import { adminSsoInjectionFor } from "@/lib/admin-sso-inject"
+import { adminSsoInjectionFor } from "@/lib/extension/admin-sso-inject"
 
 interface WebViewContentProps {
   url: string

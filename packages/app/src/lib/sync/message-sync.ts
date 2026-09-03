@@ -11,7 +11,7 @@
 
 import { getBackend } from "@/lib/backend";
 import type { BackendKind, MessageSyncRow } from "@/lib/backend/types";
-import * as cache from "@/lib/local-cache";
+import * as cache from "@/lib/cache/local-cache";
 import { isTauri } from "@/lib/utils";
 
 // Supabase column on public.messages is `metadata` (jsonb), not `metadata_json`.

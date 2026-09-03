@@ -43,14 +43,14 @@ vi.mock('@/lib/backend', () => ({
   }),
 }))
 
-vi.mock('@/lib/daemon-agent-admin', () => ({
+vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
   listTeamMembersForAccess: vi.fn(async () => [
     { id: 'member-1', displayName: 'Alice', role: 'member' },
     { id: 'member-2', displayName: 'Bob', role: 'member' },
   ]),
 }))
 
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   daemonAppWorkdir: (...args: unknown[]) => daemonMocks.daemonAppWorkdir(...args),
   moveDaemonAppWorkdir: (...args: unknown[]) => daemonMocks.moveDaemonAppWorkdir(...args),
 }))

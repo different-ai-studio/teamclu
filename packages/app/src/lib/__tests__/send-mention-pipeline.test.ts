@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   encodeMemberMentionToken,
   expandMemberMentionTokensInText,
-} from "../member-mention-token";
+} from "@/lib/actor/member-mention-token";
 import {
   buildStructuredMentionLines,
   hasStructuredMentionLines,
-} from "../outgoing-mention-content";
-import { stripPickerPersonMentionsFromText } from "../strip-person-mentions";
+} from "@/lib/actor/outgoing-mention-content";
+import { stripPickerPersonMentionsFromText } from "@/lib/actor/strip-person-mentions";
 
 function buildOutgoingBody(
   text: string,

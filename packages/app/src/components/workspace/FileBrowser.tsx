@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { cn } from '@/lib/utils'
-import { useFileChangeBatchListener } from '@/hooks/useFileChangeBatchListener'
+import { useFileChangeBatchListener } from '@/hooks/use-file-change-batch-listener'
 import { useWorkspaceStore, type FileNode } from '@/stores/workspace'
 import { useOssSyncStore } from '@/stores/oss-sync'
 import { ScrollBar } from '@/components/ui/scroll-area'

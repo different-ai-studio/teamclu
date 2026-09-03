@@ -122,7 +122,7 @@ have to special-case another source. Origin is enough for the team contract.
 
 ## 5. P1.2 — Settings permission writes fail closed
 
-`putDaemonPermissions` (`packages/app/src/lib/daemon-local-client.ts`) returns
+`putDaemonPermissions` (`packages/app/src/lib/daemon/daemon-local-client.ts`) returns
 `null` on `ok: false` (daemon down, status 0, HTTP error) and does **not** throw.
 
 `SkillDetail.tsx` already fails closed:

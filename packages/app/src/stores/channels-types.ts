@@ -1,5 +1,5 @@
 // Channel type definitions and default configs — extracted from channels.ts
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 
 // Gateway status types
 export type GatewayStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

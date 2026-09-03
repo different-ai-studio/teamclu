@@ -123,6 +123,8 @@ impl MqttBusInner {
     }
 }
 
+pub type MqttBus = Arc<MqttBusInner>;
+
 #[cfg(test)]
 mod tests {
     use super::{MqttBusInner, MqttClient};
@@ -184,5 +186,3 @@ mod tests {
             .unwrap();
     }
 }
-
-pub type MqttBus = Arc<MqttBusInner>;

@@ -24,7 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent/agent-device-reachability'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 
 const CACHE_KEY = 'teamclu.marketplace.catalog.v1'
@@ -369,7 +369,7 @@ export function MarketplacePane({ slug }: { slug?: string }) {
                         })()}
                       >
                         {!subjectActorId
-                          ? t('teamShare.selectAgentFirst', '先选择 Agent')
+                          ? t('teamShare.selectAgentFirst', 'Select an Agent first')
                           : agentOffline
                             ? t('common.offline', '离线')
                             : t('teamShare.installToAgent', '安装到 Agent')}

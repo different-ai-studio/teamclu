@@ -1,5 +1,5 @@
-import type { DaemonWorkspaceBackendRow, WorkspacesBackend } from "../types";
-import type { CloudApiClient } from "./http";
+import type { DaemonWorkspaceBackendRow, WorkspacesBackend } from "@/lib/backend/types";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 type CloudWorkspace = {
   id: string;

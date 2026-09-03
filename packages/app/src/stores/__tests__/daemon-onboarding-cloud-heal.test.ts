@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/utils', () => ({ isTauri: () => h.isTauriVal }))
-vi.mock('@/lib/startup-perf', () => ({ markStartup: vi.fn() }))
+vi.mock('@/lib/telemetry/startup-perf', () => ({ markStartup: vi.fn() }))
 vi.mock('@/stores/current-team', () => ({
   useCurrentTeamStore: { getState: () => ({ team: h.currentTeam }) },
 }))
@@ -31,13 +31,13 @@ vi.mock('@/stores/member-preferences-store', () => ({
 vi.mock('@/stores/workspace', () => ({
   useWorkspaceStore: { getState: () => ({ workspacePath: '/home/u/.amuxd/teams/t1' }) },
 }))
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   invalidateDaemonConnection: vi.fn(),
   probeDaemonHttp: vi.fn(async () => ({ ok: true, baseUrl: 'http://127.0.0.1:1' })),
   fetchDaemonCloudAuthStatus: vi.fn(async () => h.cloudAuthStatus),
   fetchDaemonDeviceId: vi.fn(async () => h.deviceId),
 }))
-vi.mock('@/lib/daemon-agent-admin', () => ({
+vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
   getLocalDaemonActorId: vi.fn(async () => h.localActorId),
 }))
 vi.mock('@/lib/backend', () => ({

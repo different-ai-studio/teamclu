@@ -9,9 +9,9 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { getBackend } from '@/lib/backend'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useIdeaDetailStore } from '@/stores/idea-detail'
-import { formatRelativeTime } from '@/lib/date-format'
+import { formatRelativeTime } from '@/lib/ui/date-format'
 import { cn, isTauri } from '@/lib/utils'
-import * as localCache from '@/lib/local-cache'
+import * as localCache from '@/lib/cache/local-cache'
 import { syncIdeasForTeam } from '@/lib/sync/idea-sync'
 
 export type IdeaRow = {

@@ -30,7 +30,7 @@ const {
   defaultCloudApiUrl: { value: "https://teamclu-api.ucar.cc" as string | undefined },
 }));
 
-vi.mock("@/lib/bootstrap", () => ({ probeCloudApi }));
+vi.mock("@/lib/config/bootstrap", () => ({ probeCloudApi }));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -45,8 +45,8 @@ vi.mock("@/stores/auth-store", () => ({
 
 // Only the resolved values are faked; displayHost / normalizeCloudApiUrl stay
 // real so the screen formats and validates addresses the way production does.
-vi.mock("@/lib/server-config", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/server-config")>()),
+vi.mock("@/lib/config/server-config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/config/server-config")>()),
   saveServerConfig,
   // Mirrors production: `resolve()` returns the override when there is one, so
   // a test that sets an override and a different effective URL is describing a
@@ -64,11 +64,11 @@ vi.mock("@/lib/backend", () => ({
   getBackendKind: () => "cloud_api",
 }));
 
-vi.mock("@/lib/version", () => ({
+vi.mock("@/lib/config/version", () => ({
   useAppVersion: () => "0.1.0",
 }));
 
-vi.mock("@/lib/build-config", () => ({
+vi.mock("@/lib/config/build-config", () => ({
   buildConfig: { app: { name: "TeamClu" } },
   appScheme: 'teamclu',
   deeplinkSchemes: ['teamclu', 'teamclaw', 'amux'],

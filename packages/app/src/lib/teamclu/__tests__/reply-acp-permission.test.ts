@@ -14,7 +14,7 @@ vi.mock("@/lib/backend", () => ({
   }),
 }));
 
-vi.mock("@/lib/mqtt-bridge", () => ({
+vi.mock("@/lib/mqtt/mqtt-bridge", () => ({
   mqttPublish: mocks.mqttPublish,
 }));
 
@@ -22,8 +22,8 @@ vi.mock("@/lib/mqtt-bridge", () => ({
 // publishing to the per-spawn `runtime/{runtimeId}/commands` topic. Stubbing
 // the RPC keeps this test on its actual subject — which attachment gets
 // addressed — instead of the transport underneath it.
-vi.mock("@/lib/teamclu-rpc", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/teamclu-rpc")>()),
+vi.mock("@/lib/daemon/teamclu-rpc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/daemon/teamclu-rpc")>()),
   runtimeCommand: (...args: unknown[]) => mocks.runtimeCommand(...args),
 }));
 
@@ -94,7 +94,7 @@ describe("replyAcpPermission", () => {
       status: 0,
     });
 
-    const { replyPermissionById } = await import("../reply-acp-permission");
+    const { replyPermissionById } = await import("@/lib/teamclu/reply-acp-permission");
     await replyPermissionById("perm-uuid-1", "allow");
 
     expect(mocks.runtimeCommand).toHaveBeenCalledTimes(1);

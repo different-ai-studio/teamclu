@@ -7,11 +7,11 @@ const { invoke, shellOpen } = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/plugin-shell", () => ({ open: shellOpen }));
-vi.mock("./oauth-pkce", () => ({
+vi.mock("@/lib/auth/oauth-pkce", () => ({
   generatePkce: vi.fn().mockResolvedValue({ verifier: "VER", challenge: "CHA" }),
 }));
 
-import { runDesktopOAuth } from "./desktop-oauth";
+import { runDesktopOAuth } from "@/lib/auth/desktop-oauth";
 
 function fakeClient() {
   return {

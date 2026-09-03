@@ -5,8 +5,8 @@ import type {
   IdeaRow,
   IdeaSortOrderUpdateInput,
   IdeasBackend,
-} from "../types";
-import type { CloudApiClient } from "./http";
+} from "@/lib/backend/types";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 type CloudIdea = {
   id: string;

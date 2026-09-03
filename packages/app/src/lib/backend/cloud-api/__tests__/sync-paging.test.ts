@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { CloudApiClient } from "../http";
-import { fetchAllSyncPages } from "../sync-paging";
-import { createSyncModule } from "../sync";
-import { createSessionsModule } from "../sessions";
-import { createMessagesModule } from "../messages";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
+import { fetchAllSyncPages } from "@/lib/backend/cloud-api/sync-paging";
+import { createSyncModule } from "@/lib/backend/cloud-api/sync";
+import { createSessionsModule } from "@/lib/backend/cloud-api/sessions";
+import { createMessagesModule } from "@/lib/backend/cloud-api/messages";
 
 /**
  * A client that serves a scripted list of pages in order and records the paths

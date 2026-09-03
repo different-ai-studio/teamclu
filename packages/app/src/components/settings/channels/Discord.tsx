@@ -29,14 +29,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  useChannelsStore,
-  type DiscordConfig,
-  type GuildConfig,
-  type DmConfig,
-  type ChannelRule,
-  defaultDiscordConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type DiscordConfig, type GuildConfig, type DmConfig, type ChannelRule, defaultDiscordConfig } from '@/stores/channels-types'
 import { DiscordIcon, SettingCard, ToggleSwitch, StatusBadge } from './shared'
 import {
   SetupWizard,
@@ -46,6 +40,7 @@ import {
   DeleteChannelDialog,
   X,
 } from './DiscordDialogs'
+import { useShallow } from 'zustand/react/shallow'
 
 export function DiscordChannel() {
   const { t } = useTranslation()
@@ -64,7 +59,9 @@ export function DiscordChannel() {
     clearTestResult,
     setHasChanges,
     toggleDiscordEnabled,
-  } = useChannelsStore()
+  } = useChannelsStore(
+    useShallow((s) => ({ discord: s.discord, isLoading: s.isLoading, gatewayStatus: s.gatewayStatus, hasChanges: s.hasChanges, isTesting: s.isTesting, testResult: s.testResult, saveDiscordConfig: s.saveDiscordConfig, startGateway: s.startGateway, stopGateway: s.stopGateway, refreshStatus: s.refreshStatus, testToken: s.testToken, clearTestResult: s.clearTestResult, setHasChanges: s.setHasChanges, toggleDiscordEnabled: s.toggleDiscordEnabled })),
+  )
 
   const [localConfig, setLocalConfig] = React.useState<DiscordConfig>(defaultDiscordConfig)
   const [guildDialogOpen, setGuildDialogOpen] = React.useState(false)

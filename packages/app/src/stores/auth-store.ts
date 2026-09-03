@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { cancelDesktopOAuth, cancelExtensionOAuth, type OAuthProvider } from "@/lib/auth";
-import { isChromeExtension } from "@/lib/platform";
+import { isChromeExtension } from "@/lib/config/platform";
 import type { PhoneUser } from "@/lib/auth/auth-client";
 import { cancelWebSso as libCancelWebSso, runWebSso } from "@/lib/auth/web-sso";
 import {
@@ -11,14 +11,14 @@ import {
 import type { AuthClaimResult, AuthSession, PendingInvite } from "@/lib/backend";
 import { accessTokenMatchesBackend } from "@/lib/auth/auth-client";
 import { CloudApiError } from "@/lib/backend/cloud-api/http";
-import { clearBootstrapAppliedFields, fetchAndApplyBootstrap } from "@/lib/bootstrap";
+import { clearBootstrapAppliedFields, fetchAndApplyBootstrap } from "@/lib/config/bootstrap";
 import {
   clearIntrospectAuthBridge,
   syncIntrospectAuthBridge,
-} from "@/lib/introspect-auth-bridge";
-import { clearSessionFeatures } from "@/lib/remote-features";
-import { getEffectiveServerConfig } from "@/lib/server-config";
-import { markStartup } from "@/lib/startup-perf";
+} from "@/lib/daemon/introspect-auth-bridge";
+import { clearSessionFeatures } from "@/lib/config/remote-features";
+import { getEffectiveServerConfig } from "@/lib/config/server-config";
+import { markStartup } from "@/lib/telemetry/startup-perf";
 
 export type { AuthClaimResult } from "@/lib/backend";
 
@@ -522,7 +522,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       console.warn("[auth] clearSessionFeatures on signOut failed:", error);
     }
     try {
-      const { resetClientChatState } = await import("@/lib/reset-client-chat-state");
+      const { resetClientChatState } = await import("@/lib/session/reset-client-chat-state");
       resetClientChatState();
     } catch (error) {
       console.warn("[auth] resetClientChatState on signOut failed:", error);

@@ -11,7 +11,7 @@ vi.mock('@/stores/auth-store', () => ({
   useAuthStore: { getState: () => ({ session: { user: { id: 'user-xyz' } } }) },
 }))
 
-vi.mock('@/lib/current-actor', () => ({
+vi.mock('@/lib/actor/current-actor', () => ({
   resolveCurrentMemberActorId: (...args: unknown[]) => resolveCurrentMemberActorIdMock(...args),
 }))
 
@@ -35,7 +35,7 @@ describe('reportSkillUsage', () => {
   })
 
   it('reports with the resolved actor, team, skill and a count of 1', async () => {
-    const { reportSkillUsage } = await import('../skill-usage')
+    const { reportSkillUsage } = await import('@/lib/telemetry/skill-usage')
 
     await reportSkillUsage('sentry-fix')
 
@@ -51,14 +51,14 @@ describe('reportSkillUsage', () => {
   // It runs inside the live-event handler; a telemetry failure must not surface.
   it('swallows a cloud failure', async () => {
     insertSkillUsageMock.mockRejectedValue(new Error('network error'))
-    const { reportSkillUsage } = await import('../skill-usage')
+    const { reportSkillUsage } = await import('@/lib/telemetry/skill-usage')
 
     await expect(reportSkillUsage('sentry-fix')).resolves.toBeUndefined()
   })
 
   it('skips when the actor cannot be resolved', async () => {
     resolveCurrentMemberActorIdMock.mockResolvedValue(null)
-    const { reportSkillUsage } = await import('../skill-usage')
+    const { reportSkillUsage } = await import('@/lib/telemetry/skill-usage')
 
     await reportSkillUsage('sentry-fix')
 
@@ -66,7 +66,7 @@ describe('reportSkillUsage', () => {
   })
 
   it('skips an empty skill name', async () => {
-    const { reportSkillUsage } = await import('../skill-usage')
+    const { reportSkillUsage } = await import('@/lib/telemetry/skill-usage')
 
     await reportSkillUsage('')
 

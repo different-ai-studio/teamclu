@@ -15,7 +15,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   }),
 }))
 
-import { ingestSessionLiveLocally, invalidateDaemonConnection } from '../daemon-local-client'
+import { ingestSessionLiveLocally, invalidateDaemonConnection } from '@/lib/daemon/daemon-local-client'
 
 beforeEach(() => {
   h.lastIngest = null

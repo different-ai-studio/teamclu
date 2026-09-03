@@ -4,7 +4,7 @@ import {
   ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE,
   PUBLIC_DEPLOY_CONFIRM_MESSAGE,
   publicDeployConfirm,
-} from "@/lib/app-deploy-confirm";
+} from "@/lib/apps/app-deploy-confirm";
 import {
   seedDaemonApp,
   buildDaemonApp,
@@ -15,8 +15,9 @@ import {
   getDaemonEnvActivationDiagnostics,
   type BuildAppResult,
   type SeedAppResult,
-} from "@/lib/daemon-local-client";
+} from "@/lib/daemon/daemon-local-client";
 import { isTauri } from "@/lib/utils";
+import i18n from "@/lib/i18n";
 import type { AppRow, AppAuthMode } from "@/lib/backend/types";
 
 interface AppsState {
@@ -139,38 +140,75 @@ async function reportDeployError(set: SetState, appId: string, reason: string): 
   }
 }
 
-/** Map daemon / cloud errors to short Chinese copy for deploy toasts. */
+/**
+ * Map daemon / cloud errors to short copy for deploy toasts.
+ *
+ * STR-12: this used to return Chinese string literals, so an English-locale
+ * user got a deploy failure explained in Chinese — and the strings were
+ * invisible to the locale parity test, which is the guard that would otherwise
+ * have caught it.
+ */
 export function mapDeployErrorReason(raw: string): string {
   const lower = raw.toLowerCase();
   if (raw.includes("uncommitted or unpushed")) {
-    return "工作区有未提交或未推送的改动，请先 commit 并 push 后再部署。";
+    return i18n.t(
+      "apps.deployErrorReason.uncommitted",
+      "The workspace has uncommitted or unpushed changes. Commit and push, then deploy.",
+    );
   }
   if (lower.includes("pnpm install timed out")) {
-    return "依赖安装超时（10 分钟），请检查网络或 lockfile 后重试。";
+    return i18n.t(
+      "apps.deployErrorReason.installTimeout",
+      "Dependency install timed out after 10 minutes. Check the network or the lockfile, then retry.",
+    );
   }
   if (lower.includes("pnpm build timed out")) {
-    return "构建超时（10 分钟），请检查构建脚本后重试。";
+    return i18n.t(
+      "apps.deployErrorReason.buildTimeout",
+      "Build timed out after 10 minutes. Check the build script, then retry.",
+    );
   }
   if (lower.includes("artifact exceeds") || lower.includes("50 mib")) {
-    return "构建产物超过 50 MiB 上限，请精简输出后重试。";
+    return i18n.t(
+      "apps.deployErrorReason.artifactTooLarge",
+      "Build output is over the 50 MiB limit. Trim it, then retry.",
+    );
   }
   if (lower.includes("presigned") || lower.includes("upload url expired")) {
-    return "上传链接已过期，请重新发起部署。";
+    return i18n.t(
+      "apps.deployErrorReason.uploadUrlExpired",
+      "The upload link expired. Start the deploy again.",
+    );
   }
   if (lower.includes("unsupported_auth_mode") || lower.includes("third-party login")) {
-    return "第三方登录尚未支持部署，请切换到平台登录或无登录模式。";
+    return i18n.t(
+      "apps.deployErrorReason.unsupportedAuthMode",
+      "Third-party login cannot be deployed yet. Switch to platform login or no login.",
+    );
   }
   if (lower.includes("vanity_required") || lower.includes("apps public domain")) {
-    return "平台登录需要配置应用公开域名（APPS_PUBLIC_DOMAIN）。";
+    return i18n.t(
+      "apps.deployErrorReason.vanityRequired",
+      "Platform login needs a public domain for apps (APPS_PUBLIC_DOMAIN).",
+    );
   }
   if (lower.includes("git commit not found on remote")) {
-    return "Gitea 上找不到该 commit，请确认已 push 后再部署。";
+    return i18n.t(
+      "apps.deployErrorReason.commitNotOnRemote",
+      "That commit is not on Gitea. Push it, then deploy.",
+    );
   }
   if (lower.includes("lockfile out of sync")) {
-    return "pnpm-lock.yaml 与 package.json 不一致，请提交 lockfile 后重试。";
+    return i18n.t(
+      "apps.deployErrorReason.lockfileOutOfSync",
+      "pnpm-lock.yaml does not match package.json. Commit the lockfile, then retry.",
+    );
   }
   if (lower.includes("build output missing")) {
-    return "构建未产出 .output/ 目录，请检查构建脚本。";
+    return i18n.t(
+      "apps.deployErrorReason.buildOutputMissing",
+      "The build produced no .output/ directory. Check the build script.",
+    );
   }
   // Last, and on whole phrases only. Matching the bare substring "amuxd" put
   // this first and swallowed every real build failure whose message quotes the
@@ -181,7 +219,10 @@ export function mapDeployErrorReason(raw: string): string {
     lower.includes("cannot reach amuxd") ||
     lower.includes("amuxd is not running")
   ) {
-    return "本机 amuxd 未连接，无法构建。请确认守护进程在运行后重试。";
+    return i18n.t(
+      "apps.deployErrorReason.daemonNotConnected",
+      "The local amuxd is not connected, so nothing can build. Make sure the daemon is running, then retry.",
+    );
   }
   return raw;
 }
@@ -269,7 +310,7 @@ async function runSeed(set: SetState, app: AppRow): Promise<void> {
     if (result.workdir) {
       // Dynamic: app-session pulls in the session-creation chain, which reads
       // this store.
-      const { bindAppWorkdir } = await import("@/lib/app-session");
+      const { bindAppWorkdir } = await import("@/lib/apps/app-session");
       await bindAppWorkdir(app, result.workdir);
     }
     await patchStatus(set, app.id, "ready");
@@ -383,7 +424,7 @@ export async function ensureAppCheckout(
   }
 
   if (result.outcome === "seeded" && result.workdir) {
-    const { bindAppWorkdir } = await import("@/lib/app-session");
+    const { bindAppWorkdir } = await import("@/lib/apps/app-session");
     await bindAppWorkdir(app, result.workdir);
   } else if (result.outcome === "failed") {
     await toastError("仓库克隆失败", result.error ?? undefined);
@@ -581,7 +622,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     } catch (e) {
       const reason = mapCloudDeployError(e);
       await reportDeployError(set, appId, reason);
-      await toastError("部署失败", reason);
+      await toastError(i18n.t("apps.deployFailed", "Deploy failed"), reason);
     } finally {
       set((s) => ({ deployingIds: s.deployingIds.filter((id) => id !== appId) }));
       // Leave `done` visible briefly; footer clears the bar after linger.
@@ -595,14 +636,20 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       const updated = await getBackend().apps.renameApp(appId, trimmed);
       if (updated) mergeRow(set, updated);
     } catch (e) {
-      await toastError("重命名失败", e instanceof Error ? e.message : String(e));
+      await toastError(
+        i18n.t("apps.renameFailed", "Rename failed"),
+        e instanceof Error ? e.message : String(e),
+      );
     }
   },
   updateAuthMode: async (appId, authMode) => {
     try {
       const updated = await getBackend().apps.updateAppAuthMode(appId, authMode);
       if (!updated) {
-        await toastError("更新登录方式失败", "应用不存在或无权修改");
+        await toastError(
+          i18n.t("apps.authModeUpdateFailed", "Could not change the sign-in method"),
+          i18n.t("apps.authModeUpdateDenied", "App not found, or you cannot change it"),
+        );
         return;
       }
       // `authModePendingRedeploy` is derived server-side from fc_status and the
@@ -611,14 +658,20 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // device, and for a second admin, which a local id list never did.
       mergeRow(set, updated);
     } catch (e) {
-      await toastError("更新登录方式失败", e instanceof Error ? e.message : String(e));
+      await toastError(
+        i18n.t("apps.authModeUpdateFailed", "Could not change the sign-in method"),
+        e instanceof Error ? e.message : String(e),
+      );
     }
   },
   deleteApp: async (appId) => {
     try {
       const ok = await getBackend().apps.deleteApp(appId);
       if (!ok) {
-        await toastError("删除失败", "应用不存在或无权删除");
+        await toastError(
+          i18n.t("apps.deleteFailed", "Delete failed"),
+          i18n.t("apps.deleteDenied", "App not found, or you cannot delete it"),
+        );
         return false;
       }
       set((s) => ({
@@ -627,10 +680,13 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         deployingIds: s.deployingIds.filter((id) => id !== appId),
       }));
       const { toast } = await import("sonner");
-      toast.success("应用已删除");
+      toast.success(i18n.t("apps.deleted", "App deleted"));
       return true;
     } catch (e) {
-      await toastError("删除失败", e instanceof Error ? e.message : String(e));
+      await toastError(
+        i18n.t("apps.deleteFailed", "Delete failed"),
+        e instanceof Error ? e.message : String(e),
+      );
       return false;
     }
   },

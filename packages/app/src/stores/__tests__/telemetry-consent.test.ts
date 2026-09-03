@@ -10,7 +10,7 @@ vi.mock('@/lib/utils', () => ({
   isTauri: () => true,
 }))
 
-vi.mock('@/lib/build-config', () => ({
+vi.mock('@/lib/config/build-config', () => ({
   appShortName: 'teamclu',
   appStoragePrefix: 'teamclu',
 }))
@@ -23,7 +23,7 @@ vi.mock('@/lib/telemetry/report-builder', () => ({
   buildSessionReport: vi.fn(),
 }))
 
-vi.mock('@/stores/session', () => ({
+vi.mock('@/stores/session-store', () => ({
   useSessionStore: { getState: vi.fn(() => ({ sessions: [] })) },
 }))
 

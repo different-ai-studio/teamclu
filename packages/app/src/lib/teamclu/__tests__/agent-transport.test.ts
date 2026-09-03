@@ -3,14 +3,14 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 const probeDaemonHttp = vi.hoisted(() => vi.fn())
 const getKnownLocalDaemonActorId = vi.hoisted(() => vi.fn())
 
-vi.mock('@/lib/daemon-local-client', () => ({ probeDaemonHttp }))
-vi.mock('@/lib/local-daemon-identity', () => ({ getKnownLocalDaemonActorId }))
+vi.mock('@/lib/daemon/daemon-local-client', () => ({ probeDaemonHttp }))
+vi.mock('@/lib/daemon/local-daemon-identity', () => ({ getKnownLocalDaemonActorId }))
 
 import {
   isFullyLocal,
   planAgentTransports,
   resolveAgentTransport,
-} from '../agent-transport'
+} from '@/lib/teamclu/agent-transport'
 
 const LOCAL = 'local-daemon-actor'
 const REMOTE = 'remote-agent'

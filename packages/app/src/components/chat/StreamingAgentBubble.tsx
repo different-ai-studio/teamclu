@@ -4,11 +4,11 @@ import { useTranslation } from "react-i18next";
 import {
   streamTranscriptHasText,
   streamTranscriptRevision,
-} from "@/lib/live-agent-stream";
+} from "@/lib/stream/live-agent-stream";
 import type { AgentStreamEntry } from "@/stores/v2-streaming-store";
 import { Message, MessageContent, MessageResponse } from "@/packages/ai/message";
-import { useStreamAwaitingNextEvent } from "@/hooks/useStreamAwaitingNextEvent";
-import { useStreamRevealText } from "@/hooks/useStreamRevealText";
+import { useStreamAwaitingNextEvent } from "@/hooks/use-stream-awaiting-next-event";
+import { useStreamRevealText } from "@/hooks/use-stream-reveal-text";
 import { ToolCallCard } from "./ToolCallCard";
 import { ActorLabel } from "./ActorLabel";
 import { ThinkingBlock } from "./ThinkingBlock";

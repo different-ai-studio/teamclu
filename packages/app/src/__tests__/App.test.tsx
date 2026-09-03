@@ -89,7 +89,7 @@ vi.mock('@/lib/utils', () => ({
   isTauri: () => false,
   removeStartupSkeleton: () => {},
 }))
-vi.mock('@/lib/platform', () => ({
+vi.mock('@/lib/config/platform', () => ({
   isChromeExtension: () => false,
   getAppPlatform: () => 'web',
   capabilities: {
@@ -98,7 +98,7 @@ vi.mock('@/lib/platform', () => ({
     pageCapture: false,
   },
 }))
-vi.mock('@/lib/build-config', () => ({
+vi.mock('@/lib/config/build-config', () => ({
   appShortName: 'teamclu',
   appStoragePrefix: 'teamclu',
   appScheme: 'teamclu',
@@ -110,19 +110,24 @@ vi.mock('@/lib/build-config', () => ({
   },
 }))
 vi.mock('@/components/FileEditor', () => ({ FileContentViewer: () => <div data-testid="file-content-viewer" /> }))
-vi.mock('@/hooks/useAppInit', () => ({
+// STR-11: one module per hook now (was `@/hooks/useAppInit`).
+vi.mock('@/hooks/use-workspace-init', () => ({
   useWorkspaceInit: () => ({ initialWorkspaceResolved: true }),
-  useOpenCodePreload: vi.fn(),
-  useChannelGatewayInit: vi.fn(),
-  useGitReposInit: vi.fn(),
-  useCronInit: vi.fn(),
+}))
+vi.mock('@/hooks/use-opencode-preload', () => ({ useOpenCodePreload: vi.fn() }))
+vi.mock('@/hooks/use-channel-gateway-init', () => ({ useChannelGatewayInit: vi.fn() }))
+vi.mock('@/hooks/use-git-repos-init', () => ({ useGitReposInit: vi.fn() }))
+vi.mock('@/hooks/use-cron-init', () => ({ useCronInit: vi.fn() }))
+vi.mock('@/hooks/use-workspace-runtime-refresh-poll', () => ({
   useWorkspaceRuntimeRefreshPoll: vi.fn(),
-  useExternalLinkHandler: vi.fn(),
-  useTauriBodyClass: vi.fn(),
+}))
+vi.mock('@/hooks/use-external-link-handler', () => ({ useExternalLinkHandler: vi.fn() }))
+vi.mock('@/hooks/use-tauri-body-class', () => ({ useTauriBodyClass: vi.fn() }))
+vi.mock('@/hooks/use-telemetry-consent', () => ({
   useTelemetryConsent: () => ({ showConsentDialog: false, setShowConsentDialog: vi.fn() }),
 }))
 vi.mock('@/hooks/useMCPFileWatcher', () => ({ useMCPFileWatcher: vi.fn() }))
-vi.mock('@/hooks/useFileEditorState', () => ({
+vi.mock('@/hooks/use-file-editor-state', () => ({
   usePanelAutoOpen: vi.fn(),
   useLayoutModePanelSync: vi.fn(),
   useFileTabSync: vi.fn(),
@@ -155,7 +160,7 @@ vi.mock('@/components/panel/RightPanel', () => ({
 vi.mock('@/components/settings', () => ({ Settings: () => <div>settings</div> }))
 vi.mock('@/components/settings/FeedbackDialog', () => ({ FeedbackDialog: () => null }))
 vi.mock('@/components/telemetry/TelemetryConsentDialog', () => ({ TelemetryConsentDialog: () => null }))
-vi.mock('@/stores/session', () => ({
+vi.mock('@/stores/session-store', () => ({
   useSessionStore: vi.fn((sel: (s: any) => any) => {
     const state = {
       getActiveSession: () => null, todos: [], sessionDiff: [],
@@ -222,7 +227,7 @@ vi.mock('@/components/tab-bar/TabBar', () => ({ TabBar: () => <div data-testid="
 vi.mock('@/components/tab-bar/TabContentRenderer', () => ({ TabContentRenderer: () => <div data-testid="tab-content-renderer" /> }))
 vi.mock('@/components/tab-bar/WebViewToolbar', () => ({ WebViewToolbar: () => null }))
 vi.mock('@/components/tab-bar/FindInPageBar', () => ({ FindInPageBar: () => null }))
-vi.mock('@/lib/webview-utils', () => ({ urlToLabel: (u: string) => u }))
+vi.mock('@/lib/ui/webview-utils', () => ({ urlToLabel: (u: string) => u }))
 vi.mock('@/stores/team-mode', () => ({
   useTeamModeStore: vi.fn((sel: (s: any) => any) => sel(teamModeState)),
 }))

@@ -1,7 +1,7 @@
-import type { LocalDaemonCatalogOutcome } from '@/lib/local-daemon-model-catalog'
-import type { MqttProbeResult } from '@/lib/mqtt-probe'
-import type { MqttEventSummary } from '@/lib/network-diagnostic-probes'
-import type { RuntimeStateSnapshot } from '@/lib/runtime-state-snapshot'
+import type { LocalDaemonCatalogOutcome } from '@/lib/agent/local-daemon-model-catalog'
+import type { MqttProbeResult } from '@/lib/mqtt/mqtt-probe'
+import type { MqttEventSummary } from '@/lib/diagnostics/network-diagnostic-probes'
+import type { RuntimeStateSnapshot } from '@/lib/agent/runtime-state-snapshot'
 import type { OutboxEntry } from '@/stores/outbox-store'
 import type { SettingsSection } from '@/stores/ui'
 

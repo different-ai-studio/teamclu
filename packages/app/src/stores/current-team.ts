@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { getBackend } from "@/lib/backend";
 import { useAuthStore } from "./auth-store";
-import { trackEvent } from "@/lib/analytics";
+import { trackEvent } from "@/lib/telemetry/analytics";
 
 export async function setLocalCacheTeamGate(teamId: string | null): Promise<void> {
   try {

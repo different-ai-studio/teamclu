@@ -12,14 +12,14 @@ const mocks = vi.hoisted(() => ({
   recordRuntimeEnsureAttempt: vi.fn(),
 }))
 
-vi.mock('@/lib/session-create', () => ({
+vi.mock('@/lib/session/session-create', () => ({
   startAgentRuntimesAsync: (...a: unknown[]) => mocks.startAgentRuntimesAsync(...a),
 }))
-vi.mock('@/lib/teamclu-rpc', () => ({
+vi.mock('@/lib/daemon/teamclu-rpc', () => ({
   setModel: vi.fn(),
   waitForTeamcluRpcReady: (...a: unknown[]) => mocks.waitForTeamcluRpcReady(...a),
 }))
-vi.mock('@/lib/agent-device-reachability', () => ({
+vi.mock('@/lib/agent/agent-device-reachability', () => ({
   resolveAgentDevicePresence: (...a: unknown[]) => mocks.resolveAgentDevicePresence(...a),
 }))
 vi.mock('@/lib/backend', () => ({
@@ -30,7 +30,7 @@ vi.mock('@/lib/backend', () => ({
     },
   }),
 }))
-vi.mock('@/lib/session-live-subscriptions', () => ({
+vi.mock('@/lib/session/session-live-subscriptions', () => ({
   ensureSessionLiveSubscribed: vi.fn(async () => {}),
 }))
 vi.mock('@/lib/teamclu/resolve-runtime-start-workspace', () => ({
@@ -59,7 +59,7 @@ vi.mock('@/stores/workspace', () => ({
 vi.mock('@/stores/runtime-state-store', () => ({
   useRuntimeStateStore: { getState: () => ({ byRuntimeId: {} }) },
 }))
-vi.mock('@/lib/runtime-state-resolve', () => ({
+vi.mock('@/lib/agent/runtime-state-resolve', () => ({
   // Non-empty so the post-start "wait for the retain" loop exits immediately;
   // otherwise every test that reaches runtimeStart burns its full 12s budget.
   resolveRuntimeStateEntryForAgent: () => ({
@@ -94,7 +94,7 @@ describe('ensureAgentRuntimesForSession — participant failures', () => {
   it('drops an agent whose participant row could not be created', async () => {
     mocks.addParticipant.mockRejectedValue(new Error('rls denied'))
 
-    const { ensureAgentRuntimesForSession } = await import('../ensure-agent-runtime')
+    const { ensureAgentRuntimesForSession } = await import('@/lib/teamclu/ensure-agent-runtime')
     await ensureAgentRuntimesForSession({
       sessionId: 'sess-1',
       teamId: 'team-1',
@@ -121,7 +121,7 @@ describe('ensureAgentRuntimesForSession — participant failures', () => {
       if (actorId === 'agent-bad') throw new Error('rls denied')
     })
 
-    const { ensureAgentRuntimesForSession } = await import('../ensure-agent-runtime')
+    const { ensureAgentRuntimesForSession } = await import('@/lib/teamclu/ensure-agent-runtime')
     await ensureAgentRuntimesForSession({
       sessionId: 'sess-1',
       teamId: 'team-1',
@@ -137,7 +137,7 @@ describe('ensureAgentRuntimesForSession — participant failures', () => {
   })
 
   it('starts every agent when all participant rows are in place', async () => {
-    const { ensureAgentRuntimesForSession } = await import('../ensure-agent-runtime')
+    const { ensureAgentRuntimesForSession } = await import('@/lib/teamclu/ensure-agent-runtime')
     await ensureAgentRuntimesForSession({
       sessionId: 'sess-1',
       teamId: 'team-1',

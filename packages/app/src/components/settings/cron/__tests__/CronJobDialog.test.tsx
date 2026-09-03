@@ -11,7 +11,7 @@ vi.mock('@/stores/cron', () => ({
     runJob: vi.fn(),
   })),
 }))
-vi.mock('@/stores/channels', () => ({
+vi.mock('@/stores/channels-store', () => ({
   useChannelsStore: vi.fn(() => ({
     discord: null,
     feishu: null,

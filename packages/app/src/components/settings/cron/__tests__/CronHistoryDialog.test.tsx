@@ -69,7 +69,7 @@ vi.mock('@/stores/session-list-store', () => ({
   },
 }))
 
-vi.mock('@/lib/cron-session-messages', () => ({
+vi.mock('@/lib/cron/cron-session-messages', () => ({
   hydrateCronSessionMessages: vi.fn().mockResolvedValue(1),
   ensureCronSessionVisible: async (sessionId: string) => {
     const teamId = await mocks.getSessionTeamId(sessionId)

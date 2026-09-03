@@ -1,5 +1,5 @@
 import { findV2PendingPermission } from "@/lib/teamclu/reply-acp-permission";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 
 /** How long a resolved requestId suppresses a late PermissionRequest. */

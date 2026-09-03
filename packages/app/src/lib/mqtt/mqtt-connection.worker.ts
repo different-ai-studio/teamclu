@@ -5,8 +5,8 @@
 // Worker timers are not throttled, so the keepalive loop keeps the WS alive
 // regardless of page visibility. The page talks to this worker through the
 // small RPC protocol below (see worker-mqtt-adapter.ts for the client side).
-import { createBrowserMqttAdapter } from './browser-mqtt-adapter'
-import type { BrowserMqttConnectOptions } from './browser-mqtt-adapter'
+import { createBrowserMqttAdapter } from '@/lib/mqtt/browser-mqtt-adapter'
+import type { BrowserMqttConnectOptions } from '@/lib/mqtt/browser-mqtt-adapter'
 
 export type MqttWorkerRequest =
   | { id: number; op: 'connect'; url: string; options?: BrowserMqttConnectOptions }

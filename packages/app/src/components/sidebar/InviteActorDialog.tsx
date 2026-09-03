@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { UpgradeToOrgDialog } from '@/components/auth/UpgradeToOrgDialog'
 import { getBackend } from '@/lib/backend'
-import { buildInviteDeeplink } from '@/lib/invite-deeplink'
+import { buildInviteDeeplink } from '@/lib/team/invite-deeplink'
 import { cn } from '@/lib/utils'
 import { useCurrentTeamStore } from '@/stores/current-team'
 

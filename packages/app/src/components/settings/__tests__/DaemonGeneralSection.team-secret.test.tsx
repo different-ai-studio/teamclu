@@ -71,7 +71,7 @@ vi.mock('@/stores/setup', () => ({
     }),
 }))
 
-vi.mock('@/lib/daemon-agent-admin', () => ({
+vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
   getLocalDaemonAgent: vi.fn(async () => null),
   getDaemonVersion: vi.fn(async () => '1.0.0'),
   listAgentAccess: vi.fn(async () => []),
@@ -81,7 +81,7 @@ vi.mock('@/lib/daemon-agent-admin', () => ({
   upsertAgentAccess: vi.fn(async () => {}),
 }))
 
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   getCursorAgentSettings: vi.fn(async () => ({ apiKeyConfigured: false })),
   getDaemonLocalAgent: vi.fn(async () => 'opencode'),
   setDaemonLocalAgent: vi.fn(async () => {}),

@@ -6,8 +6,8 @@ vi.mock("@/lib/backend", () => ({
   getBackend: () => ({ telemetry: { insertFeedback: insertFeedbackSpy, insertSessionReport: insertSessionReportSpy } }),
 }));
 
-import { insertFeedback } from "../supabase-feedback";
-import { insertSessionReport } from "../supabase-session-report";
+import { insertFeedback } from "@/lib/telemetry/supabase-feedback";
+import { insertSessionReport } from "@/lib/telemetry/supabase-session-report";
 
 describe("telemetry wrappers post camelCase to the Cloud API", () => {
   it("insertFeedback forwards camelCase keys", async () => {

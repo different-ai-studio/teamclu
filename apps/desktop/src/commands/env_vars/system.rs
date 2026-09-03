@@ -85,12 +85,12 @@ pub(crate) fn ensure_system_env_vars(workspace_path: &str, actor_id: &str) -> Re
                     if let Some(new_value) = (def.default_fn)(&ctx) {
                         if existing_value != new_value {
                             if !existing_value.is_empty() {
-                                println!(
+                                log::info!(
                                     "[EnvVars] Updating system var {} (value changed)",
                                     def.key
                                 );
                             } else {
-                                println!(
+                                log::info!(
                                     "[EnvVars] Generated default value for system var: {}",
                                     def.key
                                 );
@@ -105,7 +105,7 @@ pub(crate) fn ensure_system_env_vars(workspace_path: &str, actor_id: &str) -> Re
                     // An existing empty string is treated as "user left it blank intentionally".
                     if !key_present_in_blob {
                         if let Some(default) = (def.default_fn)(&ctx) {
-                            println!("[EnvVars] Seeding system var {} with default", def.key);
+                            log::info!("[EnvVars] Seeding system var {} with default", def.key);
                             blob.insert(def.key.to_string(), serde_json::Value::String(default));
                             blob_changed = true;
                         }

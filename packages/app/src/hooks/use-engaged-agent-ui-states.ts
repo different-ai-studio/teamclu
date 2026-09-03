@@ -1,12 +1,12 @@
 import * as React from 'react'
 import type { AttachedAgent } from '@/packages/ai/prompt-input-insert-hooks'
-import { resolveAgentAvailableModels } from '@/lib/agent-available-models'
-import { resolveAgentCatalogModels } from '@/lib/agent-model-fallback'
+import { resolveAgentAvailableModels } from '@/lib/agent/agent-available-models'
+import { resolveAgentCatalogModels } from '@/lib/agent/agent-model-fallback'
 import {
   probeAgentReachability,
-} from '@/lib/agent-reachability-probe'
-import { mergeAgentDevicePresence } from '@/lib/agent-device-reachability'
-import { resolveRuntimeStateEntryForAgent } from '@/lib/runtime-state-resolve'
+} from '@/lib/agent/agent-reachability-probe'
+import { mergeAgentDevicePresence } from '@/lib/agent/agent-device-reachability'
+import { resolveRuntimeStateEntryForAgent } from '@/lib/agent/runtime-state-resolve'
 import {
   SESSION_AGENT_CONNECTING_TIMEOUT_MS,
   resolveSessionAgentSyncHint,
@@ -15,13 +15,13 @@ import {
   type SessionAgentContext,
   type SessionAgentSyncHint,
   type SessionAgentUiState,
-} from '@/lib/session-agent-ui-state'
+} from '@/lib/session/session-agent-ui-state'
 import {
   getKnownLocalDaemonActorId,
   isSupersededLocalAgent,
   noteLocalDaemonActorId,
-} from '@/lib/local-daemon-identity'
-import { resolveEngagedAgentStaleBinding } from '@/lib/session-agent-stale-binding'
+} from '@/lib/daemon/local-daemon-identity'
+import { resolveEngagedAgentStaleBinding } from '@/lib/session/session-agent-stale-binding'
 import { RuntimeLifecycle } from '@/lib/proto/amux_pb'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 import {
@@ -37,14 +37,14 @@ import {
 } from '@/stores/local-daemon-catalog-store'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { getLocalDaemonActorId } from '@/lib/daemon-agent-admin'
+import { getLocalDaemonActorId } from '@/lib/daemon/daemon-agent-admin'
 import {
   AGENT_REACHABILITY_PROBE_RETRY_MS,
   AGENT_REACHABILITY_INDETERMINATE_RETRY_MS,
   AGENT_REACHABILITY_REACHABLE_TTL_MS,
   LOCAL_AGENT_READY_PROBE_INTERVAL_MS,
   LOCAL_CATALOG_POLL_INTERVAL_MS,
-} from '@/lib/session-agent-probe'
+} from '@/lib/session/session-agent-probe'
 import { useDaemonMqttConnected } from '@/stores/daemon-mqtt-status'
 
 export type EngagedAgentUiEntry = {

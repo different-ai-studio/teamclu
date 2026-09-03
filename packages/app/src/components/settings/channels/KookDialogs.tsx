@@ -15,7 +15,7 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { cn, openExternalUrl } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -26,10 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  type KookGuildConfig,
-  type KookChannelRule,
-} from '@/stores/channels'
+import { type KookGuildConfig, type KookChannelRule } from '@/stores/channels-types'
 import { KookIcon, ToggleSwitch } from './shared'
 
 // KOOK Setup Wizard

@@ -1,22 +1,25 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAuthStore } from "@/stores/auth-store";
-import { appDisplayName } from "@/lib/build-config";
-import { useFeatures } from "@/lib/remote-features";
+import { appDisplayName } from "@/lib/config/build-config";
+import { useFeatures } from "@/lib/config/remote-features";
 import { hasBackendConfig } from "@/lib/backend";
-import { displayHost, getEffectiveServerConfigSync } from "@/lib/server-config";
-import { useAppVersion } from "@/lib/version";
+import { displayHost, getEffectiveServerConfigSync } from "@/lib/config/server-config";
+import { useAppVersion } from "@/lib/config/version";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { isTauri } from "@/lib/utils";
-import { capabilities } from "@/lib/platform";
+import { capabilities } from "@/lib/config/platform";
 import { GoogleIcon, WechatIcon } from "./oauth-icons";
 import { WebSsoOverlay } from "./WebSsoOverlay";
 import type { OAuthProvider } from "@/lib/auth";
+import { useShallow } from "zustand/react/shallow";
 
 export function OAuthButtons() {
   const { t } = useTranslation();
-  const { signInWithOAuth, cancelOAuth, signInWithWebSso, cancelWebSso, loading, oauthPending, webSsoPending } = useAuthStore();
+  const { signInWithOAuth, cancelOAuth, signInWithWebSso, cancelWebSso, loading, oauthPending, webSsoPending } = useAuthStore(
+    useShallow((s) => ({ signInWithOAuth: s.signInWithOAuth, cancelOAuth: s.cancelOAuth, signInWithWebSso: s.signInWithWebSso, cancelWebSso: s.cancelWebSso, loading: s.loading, oauthPending: s.oauthPending, webSsoPending: s.webSsoPending })),
+  );
   // Read through useFeatures, not the build config: the Cloud API delivers
   // these at startup and they can land after first paint.
   const auth = useFeatures().auth;
@@ -141,7 +144,9 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
     phoneMultiUsers,
     loading,
     errorMessage,
-  } = useAuthStore();
+  } = useAuthStore(
+    useShallow((s) => ({ sendOtp: s.sendOtp, verifyOtp: s.verifyOtp, resetOtp: s.resetOtp, signInWithPassword: s.signInWithPassword, sendPhoneOtp: s.sendPhoneOtp, verifyPhoneOtp: s.verifyPhoneOtp, selectPhoneUser: s.selectPhoneUser, otpEmail: s.otpEmail, otpPhone: s.otpPhone, phoneMultiUsers: s.phoneMultiUsers, loading: s.loading, errorMessage: s.errorMessage })),
+  );
   const [phone, setPhone] = useState("+86");
   const [password, setPassword] = useState("");
   const [method, setMethod] = useState<"email" | "phone" | "password">("email");

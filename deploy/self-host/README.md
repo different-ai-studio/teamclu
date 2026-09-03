@@ -171,7 +171,7 @@ cd ../../services/fc && sh ../../deploy/self-host/smoke/run-e2e.sh
 
 ### 4. 本地客户端联调（Desktop / Web）
 
-客户端 **不能** 在设置里改 Cloud API 地址——`cloudApiUrl` 只在 **构建/开发时** 通过环境变量注入（见 `packages/app/src/lib/server-config.ts`）。MQTT 地址则在登录后由 `GET /v1/config/bootstrap` 下发，并缓存在 `localStorage`（键 `teamclu.serverConfig`）。
+客户端 **不能** 在设置里改 Cloud API 地址——`cloudApiUrl` 只在 **构建/开发时** 通过环境变量注入（见 `packages/app/src/lib/config/server-config.ts`）。MQTT 地址则在登录后由 `GET /v1/config/bootstrap` 下发，并缓存在 `localStorage`（键 `teamclu.serverConfig`）。
 
 #### A. 后端 `.env`
 

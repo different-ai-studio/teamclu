@@ -20,7 +20,7 @@ const state = vi.hoisted(() => ({
 vi.mock('@/stores/current-team', () => ({
   useCurrentTeamStore: (sel: (s: unknown) => unknown) => sel({ team: { id: 'team-1' } }),
 }))
-vi.mock('@/lib/team-permissions', () => ({
+vi.mock('@/lib/team/team-permissions', () => ({
   useTeamPermissions: () => ({ role: 'owner', isOwner: state.isOwner, canManageTeam: true, canEditFiles: true }),
 }))
 vi.mock('@/lib/utils', async (orig) => ({

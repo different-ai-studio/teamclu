@@ -4,7 +4,7 @@ import { render, screen } from '@testing-library/react'
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string, d?: string) => d ?? k, i18n: { language: 'en', changeLanguage: vi.fn() } }),
 }))
-vi.mock('@/stores/channels', () => ({
+vi.mock('@/stores/channels-store', () => ({
   useChannelsStore: vi.fn(() => ({
     feishu: { appId: '', appSecret: '', enabled: false, chats: {} },
     feishuIsLoading: false,
@@ -35,7 +35,7 @@ vi.mock('./GatewayStatusCard', () => ({
 vi.mock('./TestCredentialsButton', () => ({
   TestCredentialsButton: () => <button>Test</button>,
 }))
-vi.mock('@/hooks/useChannelConfig', () => ({
+vi.mock('@/hooks/use-channel-config', () => ({
   useChannelConfig: () => ({
     localConfig: { appId: '', appSecret: '', enabled: false, chats: {} },
     updateLocalConfig: vi.fn(),
@@ -58,7 +58,7 @@ describe('FeishuChannel', () => {
   })
 
   it('returns null when feishu config is null', async () => {
-    const mod = await import('@/stores/channels') as any
+    const mod = await import('@/stores/channels-store') as any
     mod.useChannelsStore.mockReturnValueOnce({
       feishu: null,
       feishuIsLoading: false,

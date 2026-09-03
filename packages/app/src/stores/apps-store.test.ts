@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { publicDeployConfirm } from "@/lib/app-deploy-confirm";
+import { publicDeployConfirm } from "@/lib/apps/app-deploy-confirm";
 
 const mocks = vi.hoisted(() => ({
   listApps: vi.fn(),
@@ -45,7 +45,7 @@ vi.mock("@/lib/backend", () => ({
   }),
 }));
 
-vi.mock("@/lib/daemon-local-client", () => ({
+vi.mock("@/lib/daemon/daemon-local-client", () => ({
   encodeWorkspaceId: mocks.encodeWorkspaceId,
   seedDaemonApp: mocks.seedDaemonApp,
   cloneDaemonApp: mocks.cloneDaemonApp,
@@ -66,9 +66,9 @@ vi.mock("@/lib/utils", () => ({
 
 vi.mock("sonner", () => ({ toast: { error: mocks.toastError, success: vi.fn() } }));
 
-vi.mock("@/lib/app-session", () => ({ bindAppWorkdir: mocks.bindAppWorkdir }));
+vi.mock("@/lib/apps/app-session", () => ({ bindAppWorkdir: mocks.bindAppWorkdir }));
 
-vi.mock("@/lib/app-deploy-confirm", () => ({
+vi.mock("@/lib/apps/app-deploy-confirm", () => ({
   publicDeployConfirm: { run: vi.fn(async () => true) },
   PUBLIC_DEPLOY_CONFIRM_MESSAGE:
     "此应用未启用登录保护，任何拿到链接的人都能访问。\n\n确定继续部署吗？",

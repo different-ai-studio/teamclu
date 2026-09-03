@@ -5,7 +5,8 @@ import { ChevronDown, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
-import { useSessionStore, type Message } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
+import { type Message } from "@/stores/session-types";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { Button } from "@/components/ui/button";
@@ -17,9 +18,9 @@ import {
   flashChatMessage,
   scrollChatMessageIntoView,
   type ChatScrollToMessageDetail,
-} from "@/lib/chat-scroll-to-message";
+} from "@/lib/ui/chat-scroll-to-message";
 import { DEFAULT_INPUT_AREA_HEIGHT, SAFE_BOTTOM_SPACING } from "./layout-constants";
-import { canStartThreadFromNewestIndex } from "@/lib/thread-fork";
+import { canStartThreadFromNewestIndex } from "@/lib/session/thread-fork";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

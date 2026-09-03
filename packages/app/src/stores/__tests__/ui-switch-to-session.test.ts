@@ -6,7 +6,7 @@ import { useSessionSelectionStore } from '../session-selection-store'
 // session's workspace over daemon IPC + Cloud API. None of that is what these
 // tests are about, so stub the collaborators and assert only the sidebar
 // behaviour.
-vi.mock('@/lib/session-by-workspace', () => ({
+vi.mock('@/lib/session/session-by-workspace', () => ({
   switchToSessionWorkspaceIfNeeded: vi.fn(async () => {}),
 }))
 

@@ -40,11 +40,11 @@ fn remove_config_files(paths: &[PathBuf]) {
             continue;
         }
         match std::fs::remove_file(path) {
-            Ok(()) => eprintln!(
+            Ok(()) => log::info!(
                 "[ServerConfig] Removed deprecated server config {}",
                 path.display()
             ),
-            Err(e) => eprintln!(
+            Err(e) => log::error!(
                 "[ServerConfig] Failed to remove deprecated server config {}: {e}",
                 path.display()
             ),

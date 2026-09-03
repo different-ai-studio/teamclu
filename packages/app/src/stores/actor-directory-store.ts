@@ -5,9 +5,9 @@ import {
   loadActorsForTeam,
   upsertActorsBatch,
   type ActorRow as CachedActorRow,
-} from '@/lib/local-cache'
+} from '@/lib/cache/local-cache'
 import { isTauri } from '@/lib/utils'
-import { isActorOnline, resolveActorOnlineStatus } from '@/lib/actor-online'
+import { isActorOnline, resolveActorOnlineStatus } from '@/lib/actor/actor-online'
 import { useCurrentTeamStore } from '@/stores/current-team'
 
 export { isActorOnline, resolveActorOnlineStatus }

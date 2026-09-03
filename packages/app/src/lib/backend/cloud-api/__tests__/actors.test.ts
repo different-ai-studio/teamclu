@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createActorsModule } from "../actors";
-import type { CloudApiClient } from "../http";
+import { createActorsModule } from "@/lib/backend/cloud-api/actors";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 interface MockClient extends CloudApiClient {
   lastPutBody: unknown;

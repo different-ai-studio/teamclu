@@ -52,3 +52,37 @@ describe("STREAM_TAIL_PLAIN_TEXT_THRESHOLD", () => {
     expect(STREAM_TAIL_PLAIN_TEXT_THRESHOLD).toBe(4000);
   });
 });
+
+describe("splitStableBlocks fence counting", () => {
+  it("keeps a fenced block with blank lines inside it whole", () => {
+    const text = [
+      "intro",
+      "",
+      "```js",
+      "const a = 1",
+      "",
+      "const b = 2",
+      "```",
+      "",
+      "after",
+    ].join("\n");
+    const { stable, tail } = splitStableBlocks(text);
+    // The fence must not be split at the blank line inside it.
+    expect(stable).toEqual(["intro", "```js\nconst a = 1\n\nconst b = 2\n```"]);
+    expect(tail).toBe("after");
+  });
+
+  it("treats an unclosed fence as still growing", () => {
+    const text = "intro\n\n```js\nconst a = 1\n\nconst b = 2";
+    const { stable, tail } = splitStableBlocks(text);
+    expect(stable).toEqual(["intro"]);
+    expect(tail).toBe("```js\nconst a = 1\n\nconst b = 2");
+  });
+
+  it("counts tilde fences and honours ≤3 spaces of indent", () => {
+    const text = "a\n\n   ~~~\nbody\n\nmore\n   ~~~\n\nz";
+    const { stable, tail } = splitStableBlocks(text);
+    expect(stable).toEqual(["a", "   ~~~\nbody\n\nmore\n   ~~~"]);
+    expect(tail).toBe("z");
+  });
+});

@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createAuthClient } from "../auth-client";
+import { createAuthClient } from "@/lib/auth/auth-client";
 import {
   __resetSessionStoreForTests,
   getSession,
   refreshSession,
   setSession,
-} from "../session-store";
-import type { Session } from "../types";
+} from "@/lib/auth/session-store";
+import type { Session } from "@/lib/auth/types";
 
 const BASE = "https://fc.test";
 

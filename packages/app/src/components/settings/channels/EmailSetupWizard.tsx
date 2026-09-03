@@ -13,7 +13,7 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { cn, openExternalUrl } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -24,9 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  type EmailConfig,
-} from '@/stores/channels'
+import { type EmailConfig } from '@/stores/channels-types'
 import { GmailIcon } from './shared'
 
 // Email Setup Wizard Steps

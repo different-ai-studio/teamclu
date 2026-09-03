@@ -1,13 +1,13 @@
-import { discardPendingStreamReply } from "@/lib/live-agent-stream";
-import { mqttPublish } from "@/lib/mqtt-bridge";
+import { discardPendingStreamReply } from "@/lib/stream/live-agent-stream";
+import { mqttPublish } from "@/lib/mqtt/mqtt-bridge";
 import {
   resolvePermissionCommandTarget,
   runtimeTargetsForSession,
-} from "@/lib/runtime-state-resolve";
-import { sessionFlowError, sessionFlowLog } from "@/lib/session-flow-log";
-import { logStreamToolDiag } from "@/lib/stream-tool-diag";
+} from "@/lib/agent/runtime-state-resolve";
+import { sessionFlowError, sessionFlowLog } from "@/lib/session/session-flow-log";
+import { logStreamToolDiag } from "@/lib/diagnostics/stream-tool-diag";
 import { createRuntimeCommandSender } from "@/lib/teamclu/runtime-command";
-import { runtimeCommand } from "@/lib/teamclu-rpc";
+import { runtimeCommand } from "@/lib/daemon/teamclu-rpc";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";

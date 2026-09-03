@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { DiagnosticReport } from '@/lib/diagnostic-report'
+import type { DiagnosticReport } from '@/lib/diagnostics/diagnostic-report'
 import type { DiagnosticFinding } from '@/lib/diagnostics/types'
 import { DiagnosticsSection } from '../DiagnosticsSection'
 
@@ -138,8 +138,8 @@ vi.mock('@/stores/diagnostics-store', () => ({
     }),
 }))
 
-vi.mock('@/lib/diagnostic-report', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/diagnostic-report')>()
+vi.mock('@/lib/diagnostics/diagnostic-report', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/diagnostics/diagnostic-report')>()
   return {
     ...actual,
     collectDiagnosticReport: vi.fn(),

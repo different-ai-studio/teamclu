@@ -15,7 +15,7 @@ vi.mock('@/stores/version-history', () => ({
 // The helper is a leaf inside a component file; the rest of that file drags in
 // the whole tree UI, which this has nothing to do with.
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (_k: string, d?: string) => d }) }))
-vi.mock('@/lib/team-permissions', () => ({ useTeamPermissions: () => ({}) }))
+vi.mock('@/lib/team/team-permissions', () => ({ useTeamPermissions: () => ({}) }))
 
 import { openVersionHistory } from '../FileTreeNode'
 

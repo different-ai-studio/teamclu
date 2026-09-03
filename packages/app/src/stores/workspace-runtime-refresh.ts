@@ -5,7 +5,7 @@ import {
   getDaemonRuntime,
   type DaemonRuntimeRefresh,
   type DaemonRuntimeRefreshStatus,
-} from '@/lib/daemon-local-client'
+} from '@/lib/daemon/daemon-local-client'
 
 const POLL_CLEAN_MS = 12_000
 const POLL_ACTIVE_MS = 4_000

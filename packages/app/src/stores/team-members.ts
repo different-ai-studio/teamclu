@@ -19,7 +19,7 @@ export const useTeamMembersStore = create<DeviceIdentityState>((set, get) => ({
   loadCurrentNodeId: async () => {
     if (get().currentNodeId) return
     try {
-      const { getLocalDaemonActorId } = await import('@/lib/daemon-agent-admin')
+      const { getLocalDaemonActorId } = await import('@/lib/daemon/daemon-agent-admin')
       const actorId = await getLocalDaemonActorId()
       if (actorId) set({ currentNodeId: actorId })
     } catch {

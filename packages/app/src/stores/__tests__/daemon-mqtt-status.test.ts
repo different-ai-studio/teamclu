@@ -5,12 +5,12 @@ const probeListeners = vi.hoisted(() => new Set<() => void>())
 
 const noteLocalDaemonSignals = vi.hoisted(() => vi.fn())
 
-vi.mock('@/lib/daemon-agent-admin', () => ({ getDaemonMqttConnected }))
-vi.mock('@/lib/agent-device-reachability', () => ({ noteLocalDaemonSignals }))
-vi.mock('@/lib/local-daemon-identity', () => ({
+vi.mock('@/lib/daemon/daemon-agent-admin', () => ({ getDaemonMqttConnected }))
+vi.mock('@/lib/agent/agent-device-reachability', () => ({ noteLocalDaemonSignals }))
+vi.mock('@/lib/daemon/local-daemon-identity', () => ({
   getKnownLocalDaemonActorId: () => 'actor-1',
 }))
-vi.mock('@/lib/daemon-probe-signal', () => ({
+vi.mock('@/lib/daemon/daemon-probe-signal', () => ({
   onDaemonProbeRequested: (fn: () => void) => {
     probeListeners.add(fn)
     return () => probeListeners.delete(fn)

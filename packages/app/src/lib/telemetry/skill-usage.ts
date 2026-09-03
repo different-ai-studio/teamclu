@@ -19,7 +19,7 @@ export async function reportSkillUsage(skillName: string): Promise<void> {
     const { useAuthStore } = await import('@/stores/auth-store')
     const userId = useAuthStore.getState().session?.user?.id
     if (!userId) return
-    const { resolveCurrentMemberActorId } = await import('@/lib/current-actor')
+    const { resolveCurrentMemberActorId } = await import('@/lib/actor/current-actor')
     const actorId = await resolveCurrentMemberActorId(teamId, userId)
     if (!actorId) return
     const { getBackend } = await import('@/lib/backend')

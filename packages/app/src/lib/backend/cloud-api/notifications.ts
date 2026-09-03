@@ -1,5 +1,5 @@
-import type { NotificationPrefs, NotificationsBackend } from "../types";
-import type { CloudApiClient } from "./http";
+import type { NotificationPrefs, NotificationsBackend } from "@/lib/backend/types";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 export function createNotificationsModule(client: CloudApiClient): NotificationsBackend {
   return {

@@ -52,6 +52,8 @@
     "marketPublic": "Public",
     "installToAgent": "Install to Agent",
     "selectAgentFirst": "Select an Agent first",
+    "personalSourceBuiltin": "Built-in",
+    "remotePersonalMcpReadOnly": "Personal MCP servers on a remote agent are read-only for now",
     "mcp": "MCP",
     "env": "Secret Vault",
     "knowledge": "Knowledge",
@@ -1389,6 +1391,25 @@
         "prompt": "prompt",
         "admin": "admin"
       }
+    },
+    "renameFailed": "Rename failed",
+    "authModeUpdateFailed": "Could not change the sign-in method",
+    "authModeUpdateDenied": "App not found, or you cannot change it",
+    "deleteFailed": "Delete failed",
+    "deleteDenied": "App not found, or you cannot delete it",
+    "deleted": "App deleted",
+    "deployErrorReason": {
+      "uncommitted": "The workspace has uncommitted or unpushed changes. Commit and push, then deploy.",
+      "installTimeout": "Dependency install timed out after 10 minutes. Check the network or the lockfile, then retry.",
+      "buildTimeout": "Build timed out after 10 minutes. Check the build script, then retry.",
+      "artifactTooLarge": "Build output is over the 50 MiB limit. Trim it, then retry.",
+      "uploadUrlExpired": "The upload link expired. Start the deploy again.",
+      "unsupportedAuthMode": "Third-party login cannot be deployed yet. Switch to platform login or no login.",
+      "vanityRequired": "Platform login needs a public domain for apps (APPS_PUBLIC_DOMAIN).",
+      "commitNotOnRemote": "That commit is not on Gitea. Push it, then deploy.",
+      "lockfileOutOfSync": "pnpm-lock.yaml does not match package.json. Commit the lockfile, then retry.",
+      "buildOutputMissing": "The build produced no .output/ directory. Check the build script.",
+      "daemonNotConnected": "The local amuxd is not connected, so nothing can build. Make sure the daemon is running, then retry."
     }
   },
   "knowledgeAcl": {

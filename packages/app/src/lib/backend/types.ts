@@ -1,8 +1,8 @@
-import type { TeamSkillsBackend } from "./cloud-api/team-skills";
-import type { MarketplaceBackend } from "./cloud-api/marketplace";
-import type { TeamMcpBackend } from "./cloud-api/team-mcp";
-import type { KnowledgeAclBackend } from "./cloud-api/knowledge-acl";
-import type { TeamEnvSecretsBackend } from "./cloud-api/team-env-secrets";
+import type { TeamSkillsBackend } from "@/lib/backend/cloud-api/team-skills";
+import type { MarketplaceBackend } from "@/lib/backend/cloud-api/marketplace";
+import type { TeamMcpBackend } from "@/lib/backend/cloud-api/team-mcp";
+import type { KnowledgeAclBackend } from "@/lib/backend/cloud-api/knowledge-acl";
+import type { TeamEnvSecretsBackend } from "@/lib/backend/cloud-api/team-env-secrets";
 import type { OAuthProvider } from "@/lib/auth";
 
 export type BackendKind = "cloud_api";

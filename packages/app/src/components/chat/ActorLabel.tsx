@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { useActorDisplayName, useAgentModelByActor } from "@/hooks/useActorDisplayName";
+import { useActorDisplayName, useAgentModelByActor } from "@/hooks/use-actor-display-name";
 
 /** Subtle "actor name [· model]" label rendered above each message bubble.
  * Right-aligned for user messages, left-aligned for assistant. Skipped

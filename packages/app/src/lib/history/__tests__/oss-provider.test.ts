@@ -13,7 +13,7 @@ vi.mock('@/stores/version-history', () => ({
   useVersionHistoryStore: { getState: () => ({ fetchVersionContent }) },
 }))
 
-import { OssHistoryProvider } from '../oss-provider'
+import { OssHistoryProvider } from '@/lib/history/oss-provider'
 
 describe('OssHistoryProvider', () => {
   beforeEach(() => {

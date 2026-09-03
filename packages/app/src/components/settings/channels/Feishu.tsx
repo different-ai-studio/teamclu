@@ -20,7 +20,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { cn, openExternalUrl } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -31,16 +31,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  useChannelsStore,
-  type FeishuConfig,
-  type FeishuChatConfig,
-  defaultFeishuConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type FeishuConfig, type FeishuChatConfig, defaultFeishuConfig } from '@/stores/channels-types'
 import { FeishuIcon, ToggleSwitch } from './shared'
 import { GatewayStatusCard } from './GatewayStatusCard'
 import { TestCredentialsButton } from './TestCredentialsButton'
-import { useChannelConfig } from '@/hooks/useChannelConfig'
+import { useChannelConfig } from '@/hooks/use-channel-config'
+import { useShallow } from 'zustand/react/shallow'
 
 // Feishu Setup Wizard
 const FEISHU_WIZARD_STEPS = [
@@ -512,7 +509,9 @@ export function FeishuChannel() {
     clearFeishuTestResult,
     setFeishuHasChanges,
     toggleFeishuEnabled,
-  } = useChannelsStore()
+  } = useChannelsStore(
+    useShallow((s) => ({ feishu: s.feishu, feishuIsLoading: s.feishuIsLoading, feishuGatewayStatus: s.feishuGatewayStatus, feishuHasChanges: s.feishuHasChanges, feishuIsTesting: s.feishuIsTesting, feishuTestResult: s.feishuTestResult, saveFeishuConfig: s.saveFeishuConfig, startFeishuGateway: s.startFeishuGateway, stopFeishuGateway: s.stopFeishuGateway, refreshFeishuStatus: s.refreshFeishuStatus, testFeishuCredentials: s.testFeishuCredentials, clearFeishuTestResult: s.clearFeishuTestResult, setFeishuHasChanges: s.setFeishuHasChanges, toggleFeishuEnabled: s.toggleFeishuEnabled })),
+  )
 
   const [feishuExpanded, setFeishuExpanded] = React.useState(false)
   const [feishuWizardOpen, setFeishuWizardOpen] = React.useState(false)

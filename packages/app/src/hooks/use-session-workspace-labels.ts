@@ -1,5 +1,5 @@
 import * as React from "react";
-import { loadSessionWorkspaceLabelsForTeam } from "@/lib/session-by-workspace";
+import { loadSessionWorkspaceLabelsForTeam } from "@/lib/session/session-by-workspace";
 
 /** Local libsql session→workspace labels for list sublines. */
 export function useSessionWorkspaceLabels(teamId: string | null | undefined) {

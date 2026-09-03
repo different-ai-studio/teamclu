@@ -4,7 +4,7 @@ import {
   getObsidianStatus,
   OBSIDIAN_ABSENT,
   type ObsidianStatus,
-} from '@/lib/obsidian'
+} from '@/lib/knowledge/obsidian'
 
 /**
  * Obsidian's availability for `vaultPath`, refreshed when the window regains

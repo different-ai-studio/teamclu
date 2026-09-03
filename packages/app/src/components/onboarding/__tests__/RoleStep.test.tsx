@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 
-vi.mock('@/lib/version', () => ({ useAppVersion: () => '0.0.0-test' }))
+vi.mock('@/lib/config/version', () => ({ useAppVersion: () => '0.0.0-test' }))
 
 import { RoleStep } from '../RoleStep'
 import { useOnboardingStore } from '@/stores/onboarding'

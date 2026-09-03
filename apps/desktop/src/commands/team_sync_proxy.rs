@@ -57,6 +57,20 @@ async fn daemon_request_unit<B: Serialize>(
     Ok(daemon::call_unit_discovered(spec, body).await?)
 }
 
+/// `?teamId=<id>` — the query every team-scoped GET here carries.
+fn team_id_query(team_id: &str) -> String {
+    format!("?teamId={}", urlencode(team_id))
+}
+
+/// `?teamId=<id>&path=<path>[&cursor=<cursor>]` for `GET /v1/team/versions`.
+fn team_versions_query(team_id: &str, path: &str, cursor: Option<&str>) -> String {
+    let mut query = format!("?teamId={}&path={}", urlencode(team_id), urlencode(path));
+    if let Some(c) = cursor {
+        query.push_str(&format!("&cursor={}", urlencode(c)));
+    }
+    query
+}
+
 fn urlencode(value: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(value.len());
@@ -122,7 +136,7 @@ pub async fn daemon_team_cloud_reconcile(team_id: &str) -> Result<(), String> {
 
 /// `GET /v1/team/sync/status?teamId=<id>` — current sync status.
 pub async fn daemon_team_sync_status(team_id: &str) -> Result<serde_json::Value, String> {
-    let query = format!("?teamId={}", urlencode(team_id));
+    let query = team_id_query(team_id);
     daemon_request(
         reqwest::Method::GET,
         "/v1/team/sync/status",
@@ -139,7 +153,7 @@ pub async fn daemon_team_sync_status(team_id: &str) -> Result<serde_json::Value,
 /// masked fingerprint); this desktop surface further reduces that to a boolean
 /// for the Environment Variables settings panel.
 pub async fn daemon_team_env_available(team_id: &str) -> Result<bool, String> {
-    let query = format!("?teamId={}", urlencode(team_id));
+    let query = team_id_query(team_id);
     let status: wire::TeamSecretsStatusResponse = daemon_request(
         reqwest::Method::GET,
         "/v1/team/secrets",
@@ -206,7 +220,7 @@ pub async fn daemon_team_unlink(workspace_path: &str) -> Result<(), String> {
 
 /// `GET /v1/team/conflicts?teamId=<id>`.
 pub async fn daemon_team_conflicts(team_id: &str) -> Result<serde_json::Value, String> {
-    let query = format!("?teamId={}", urlencode(team_id));
+    let query = team_id_query(team_id);
     daemon_request(
         reqwest::Method::GET,
         "/v1/team/conflicts",
@@ -253,10 +267,7 @@ pub async fn daemon_team_versions(
     path: &str,
     cursor: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    let mut query = format!("?teamId={}&path={}", urlencode(team_id), urlencode(path));
-    if let Some(c) = cursor {
-        query.push_str(&format!("&cursor={}", urlencode(c)));
-    }
+    let query = team_versions_query(team_id, path, cursor);
     daemon_request(
         reqwest::Method::GET,
         "/v1/team/versions",
@@ -409,8 +420,16 @@ pub async fn oss_sync_now(
     {
         status = daemon_team_sync(workspace_path, true, allow_bulk_add).await?;
     }
+    Ok(map_sync_result(&status))
+}
+
+/// Reshape the daemon's sync response into what the frontend reads.
+///
+/// Extracted so it can be tested: two of the fields here are load-bearing in a
+/// way that is invisible from the call site.
+fn map_sync_result(status: &serde_json::Value) -> serde_json::Value {
     let pick = |k: &str| status.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
-    Ok(serde_json::json!({
+    serde_json::json!({
         "pulled": pick("pulled"),
         "pushed": pick("pushed"),
         "conflicts": pick("conflicts"),
@@ -422,7 +441,7 @@ pub async fn oss_sync_now(
         // believe it went up.
         "oversize": status.get("oversize").cloned().unwrap_or(serde_json::Value::Array(vec![])),
         "blockedNewFiles": status.get("blockedNewFiles").cloned().unwrap_or(serde_json::Value::Null),
-    }))
+    })
 }
 
 /// `oss_sync_status(workspacePath?, teamId)` — current sync status from the daemon.
@@ -593,4 +612,171 @@ pub async fn team_restore_file_version(
     r#ref: String,
 ) -> Result<(), String> {
     daemon_team_restore_version(&team_id, &path, &r#ref).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // STR-5: this file was 751 lines with no tests at all. Everything that does
+    // not need a running daemon is covered here — the query strings the daemon
+    // parses, the request bodies it deserialises, the response reshaping the
+    // frontend reads, and the error-string match that drives the secret
+    // self-heal.
+
+    #[test]
+    fn urlencode_escapes_everything_outside_the_unreserved_set() {
+        assert_eq!(urlencode("plain-id_1.2~3"), "plain-id_1.2~3");
+        assert_eq!(urlencode("a b"), "a%20b");
+        assert_eq!(urlencode("docs/notes.md"), "docs%2Fnotes.md");
+        assert_eq!(urlencode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(urlencode("?#"), "%3F%23");
+        assert_eq!(urlencode("%"), "%25");
+        // Non-ASCII is percent-encoded per UTF-8 byte, uppercase hex.
+        assert_eq!(urlencode("笔记"), "%E7%AC%94%E8%AE%B0");
+        assert_eq!(urlencode(""), "");
+    }
+
+    #[test]
+    fn team_id_query_is_escaped() {
+        assert_eq!(team_id_query("t1"), "?teamId=t1");
+        // A team id is server-generated, but it reaches this function from the
+        // renderer — escaping is what stops it terminating the query.
+        assert_eq!(team_id_query("t1&admin=1"), "?teamId=t1%26admin%3D1");
+    }
+
+    #[test]
+    fn team_versions_query_escapes_the_path_and_omits_an_absent_cursor() {
+        assert_eq!(
+            team_versions_query("t1", "knowledge/a b.md", None),
+            "?teamId=t1&path=knowledge%2Fa%20b.md"
+        );
+        assert_eq!(
+            team_versions_query("t1", "a.md", Some("c/1")),
+            "?teamId=t1&path=a.md&cursor=c%2F1"
+        );
+    }
+
+    // ── Wire bodies. These structs are what the daemon deserialises; a renamed
+    //    field is a silent 400 at runtime and compiles fine on both sides.
+
+    #[test]
+    fn team_sync_request_body_shape() {
+        let body = wire::TeamSyncRequest {
+            workspace_path: Some("/w".into()),
+            force_sync: true,
+            allow_bulk_add: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&body).unwrap(),
+            serde_json::json!({
+                "workspacePath": "/w",
+                "forceSync": true,
+                "allowBulkAdd": false,
+            })
+        );
+    }
+
+    #[test]
+    fn team_secrets_request_omits_an_absent_secret() {
+        let with = wire::TeamSecretsRequest {
+            team_id: "t1".into(),
+            oss_team_secret: Some("s3cret".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&with).unwrap(),
+            serde_json::json!({ "teamId": "t1", "ossTeamSecret": "s3cret" })
+        );
+        let without = wire::TeamSecretsRequest {
+            team_id: "t1".into(),
+            oss_team_secret: None,
+        };
+        // Not `"ossTeamSecret": null` — that is how you *clear* a secret.
+        assert_eq!(
+            serde_json::to_value(&without).unwrap(),
+            serde_json::json!({ "teamId": "t1" })
+        );
+    }
+
+    #[test]
+    fn resolve_conflict_request_drops_a_blank_sidecar() {
+        for blank in [Some(""), Some("   "), None] {
+            let body = wire::ResolveConflictRequest {
+                team_id: "t1".into(),
+                path: "a.md".into(),
+                sidecar: blank
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+                choice: "keepLocal".into(),
+            };
+            let json = serde_json::to_value(&body).unwrap();
+            assert!(
+                json.get("sidecar").is_none(),
+                "blank sidecar must be omitted so the daemon picks the newest, got {json}"
+            );
+        }
+    }
+
+    // ── Response reshaping.
+
+    #[test]
+    fn map_sync_result_defaults_missing_counters_to_zero() {
+        let mapped = map_sync_result(&serde_json::json!({}));
+        assert_eq!(mapped["pulled"], 0);
+        assert_eq!(mapped["pushed"], 0);
+        assert_eq!(mapped["conflicts"], 0);
+        assert_eq!(mapped["failed"], 0);
+        assert_eq!(mapped["oversize"], serde_json::json!([]));
+        assert_eq!(mapped["blockedNewFiles"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn map_sync_result_carries_failed_through() {
+        // The regression this field exists for: a run where every file failed
+        // used to reach the app as a clean run, because the frontend defaults a
+        // missing `failed` to 0.
+        let mapped = map_sync_result(&serde_json::json!({
+            "pulled": 0, "pushed": 0, "conflicts": 0, "failed": 12
+        }));
+        assert_eq!(mapped["failed"], 12);
+    }
+
+    #[test]
+    fn map_sync_result_passes_the_skip_guards_verbatim() {
+        let mapped = map_sync_result(&serde_json::json!({
+            "oversize": ["big.bin", "huge.zip"],
+            "blockedNewFiles": { "count": 40, "sample": ["a", "b"] },
+        }));
+        assert_eq!(
+            mapped["oversize"],
+            serde_json::json!(["big.bin", "huge.zip"])
+        );
+        assert_eq!(
+            mapped["blockedNewFiles"],
+            serde_json::json!({ "count": 40, "sample": ["a", "b"] })
+        );
+    }
+
+    #[test]
+    fn map_sync_result_ignores_non_numeric_counters() {
+        let mapped = map_sync_result(&serde_json::json!({ "pulled": "3", "pushed": null }));
+        assert_eq!(mapped["pulled"], 0);
+        assert_eq!(mapped["pushed"], 0);
+    }
+
+    // ── The cross-process error match.
+
+    #[test]
+    fn missing_team_secret_is_matched_on_the_daemon_phrase() {
+        assert!(is_missing_team_secret_error(
+            "no OSS team secret for team t1"
+        ));
+        assert!(is_missing_team_secret_error(
+            "sync failed: no OSS team secret stored"
+        ));
+        assert!(!is_missing_team_secret_error("no team secret"));
+        assert!(!is_missing_team_secret_error("upload failed: 403"));
+        assert!(!is_missing_team_secret_error(""));
+    }
 }

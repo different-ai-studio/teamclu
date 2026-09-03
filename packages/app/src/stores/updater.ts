@@ -1,5 +1,5 @@
 import { create } from "zustand"
-import { getFeatures } from "@/lib/remote-features"
+import { getFeatures } from "@/lib/config/remote-features"
 import { isTauri } from "@/lib/utils"
 
 function isUpdaterEnabled(): boolean {

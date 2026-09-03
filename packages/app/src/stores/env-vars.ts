@@ -4,7 +4,7 @@ import { withAsync } from '@/lib/store-utils'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getFreshAccessToken } from '@/lib/auth/session-store'
-import { getEffectiveServerConfigSync } from '@/lib/server-config'
+import { getEffectiveServerConfigSync } from '@/lib/config/server-config'
 
 /** Environment variable entry (key + description, no secret value). */
 interface EnvVarEntry {

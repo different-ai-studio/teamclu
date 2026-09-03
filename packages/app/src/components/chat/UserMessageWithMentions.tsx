@@ -2,15 +2,15 @@ import * as React from "react";
 import { FileText, Folder, User, UserRound, Paperclip, ChevronDown, ChevronUp, Zap, Command as CommandIcon, Link2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { useActorDisplayName } from "@/hooks/useActorDisplayName";
+import { useActorDisplayName } from "@/hooks/use-actor-display-name";
 import { ClickableImage, LocalImage, resolveImagePath } from "@/packages/ai/message";
 import { getTrailingPathLabel } from "@/packages/ai/chip-labels";
-import { hasStructuredMentionLines } from "@/lib/outgoing-mention-content";
-import { parseSentPageChip } from "@/lib/expand-page-link-tokens";
-import { pageLinkChipLabel, parsePageLinkBody } from "@/lib/page-link-token";
-import type { PageContext } from "@/lib/embed-page-context";
-import { openOrDownloadRemoteAttachment } from "@/lib/download-remote-attachment";
-import { getCachedAttachmentPath, normalizeAttachmentUrlKey } from "@/lib/attachment-download-index";
+import { hasStructuredMentionLines } from "@/lib/actor/outgoing-mention-content";
+import { parseSentPageChip } from "@/lib/embed/expand-page-link-tokens";
+import { pageLinkChipLabel, parsePageLinkBody } from "@/lib/embed/page-link-token";
+import type { PageContext } from "@/lib/embed/embed-page-context";
+import { openOrDownloadRemoteAttachment } from "@/lib/attachments/download-remote-attachment";
+import { getCachedAttachmentPath, normalizeAttachmentUrlKey } from "@/lib/attachments/attachment-download-index";
 import { isTauri } from "@/lib/utils";
 
 /** Max pixel height before the message is collapsed */

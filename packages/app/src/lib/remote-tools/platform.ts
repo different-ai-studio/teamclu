@@ -1,8 +1,8 @@
-import { capabilities } from '@/lib/platform'
+import { capabilities } from '@/lib/config/platform'
 
-import { registerExecutor } from './registry'
-import { TOOL_GET_PAGE_DOM } from './types'
-import { createBrowserGetPageDomExecutor } from './executors/browser-get-page-dom'
+import { registerExecutor } from '@/lib/remote-tools/registry'
+import { TOOL_GET_PAGE_DOM } from '@/lib/remote-tools/types'
+import { createBrowserGetPageDomExecutor } from '@/lib/remote-tools/executors/browser-get-page-dom'
 
 let registered = false
 

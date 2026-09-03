@@ -45,7 +45,7 @@ vi.mock('@/stores/member-preferences-store', () => ({
     }),
 }))
 
-vi.mock('@/lib/resolve-quick-chat-target', () => ({
+vi.mock('@/lib/session/resolve-quick-chat-target', () => ({
   resolveQuickChatTarget: vi.fn(async () => {
     if (mocks.resolveThrows) throw new Error('resolve failed')
     return mocks.resolvedTarget
@@ -109,7 +109,7 @@ describe('useQuickChatReadiness', () => {
   })
 
   it('re-resolves after MQTT reconnects from disconnected', async () => {
-    const { resolveQuickChatTarget } = await import('@/lib/resolve-quick-chat-target')
+    const { resolveQuickChatTarget } = await import('@/lib/session/resolve-quick-chat-target')
     mocks.mqttConnected = false
 
     const { result, rerender } = renderHook(() => useQuickChatReadiness())
@@ -135,7 +135,7 @@ describe('useQuickChatReadiness', () => {
   })
 
   it('re-resolves when MQTT becomes connected from unknown', async () => {
-    const { resolveQuickChatTarget } = await import('@/lib/resolve-quick-chat-target')
+    const { resolveQuickChatTarget } = await import('@/lib/session/resolve-quick-chat-target')
     mocks.mqttConnected = null
 
     const { result, rerender } = renderHook(() => useQuickChatReadiness())
@@ -158,7 +158,7 @@ describe('useQuickChatReadiness', () => {
   })
 
   it('re-resolves on window online after resolver returned null', async () => {
-    const { resolveQuickChatTarget } = await import('@/lib/resolve-quick-chat-target')
+    const { resolveQuickChatTarget } = await import('@/lib/session/resolve-quick-chat-target')
     mocks.mqttConnected = true
 
     const { result } = renderHook(() => useQuickChatReadiness())
@@ -180,7 +180,7 @@ describe('useQuickChatReadiness', () => {
   })
 
   it('re-resolves when the tab becomes visible again', async () => {
-    const { resolveQuickChatTarget } = await import('@/lib/resolve-quick-chat-target')
+    const { resolveQuickChatTarget } = await import('@/lib/session/resolve-quick-chat-target')
     mocks.mqttConnected = true
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
@@ -205,7 +205,7 @@ describe('useQuickChatReadiness', () => {
   })
 
   it('re-resolves when MQTT reconnect nonce bumps', async () => {
-    const { resolveQuickChatTarget } = await import('@/lib/resolve-quick-chat-target')
+    const { resolveQuickChatTarget } = await import('@/lib/session/resolve-quick-chat-target')
     mocks.mqttConnected = true
 
     const { result, rerender } = renderHook(() => useQuickChatReadiness())
@@ -228,7 +228,7 @@ describe('useQuickChatReadiness', () => {
 
   it('re-resolves on periodic retry while stuck in no_agent', async () => {
     vi.useFakeTimers()
-    const { resolveQuickChatTarget } = await import('@/lib/resolve-quick-chat-target')
+    const { resolveQuickChatTarget } = await import('@/lib/session/resolve-quick-chat-target')
     mocks.mqttConnected = true
 
     const { result } = renderHook(() => useQuickChatReadiness())
@@ -250,7 +250,7 @@ describe('useQuickChatReadiness', () => {
   })
 
   it('does not re-resolve when already ready on MQTT reconnect', async () => {
-    const { resolveQuickChatTarget } = await import('@/lib/resolve-quick-chat-target')
+    const { resolveQuickChatTarget } = await import('@/lib/session/resolve-quick-chat-target')
     mocks.resolvedTarget = readyTarget
     mocks.mqttConnected = false
 
@@ -271,7 +271,7 @@ describe('useQuickChatReadiness', () => {
   })
 
   it('keeps ready UI while silently re-resolving after prefs change', async () => {
-    const { resolveQuickChatTarget } = await import('@/lib/resolve-quick-chat-target')
+    const { resolveQuickChatTarget } = await import('@/lib/session/resolve-quick-chat-target')
     mocks.resolvedTarget = readyTarget
 
     let resolveNext!: (value: typeof readyTarget) => void

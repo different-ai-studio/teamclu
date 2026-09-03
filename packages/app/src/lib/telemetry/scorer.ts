@@ -1,4 +1,4 @@
-import type { ScoreResult, SessionReport, ToolCallSummary } from './types'
+import type { ScoreResult, SessionReport, ToolCallSummary } from '@/lib/telemetry/types'
 
 // ─── Scorer Interface ────────────────────────────────────────────────────
 

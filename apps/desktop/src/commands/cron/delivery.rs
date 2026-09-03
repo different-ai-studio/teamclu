@@ -94,18 +94,18 @@ impl DeliveryManager {
         // Determine the Discord channel ID to send to
         let channel_id = if target.starts_with("dm:") {
             let user_id = target.strip_prefix("dm:").unwrap_or(target);
-            println!("[Cron Delivery] Discord DM to user: {}", user_id);
+            log::info!("[Cron Delivery] Discord DM to user: {}", user_id);
             gateway::discord::create_dm_channel(token, user_id).await?
         } else if target.starts_with("channel:") {
             let ch_id = target
                 .strip_prefix("channel:")
                 .unwrap_or(target)
                 .to_string();
-            println!("[Cron Delivery] Discord channel: {}", ch_id);
+            log::info!("[Cron Delivery] Discord channel: {}", ch_id);
             ch_id
         } else {
             // No prefix: assume user ID, try creating DM
-            println!(
+            log::info!(
                 "[Cron Delivery] Discord target '{}' without prefix, trying as DM",
                 target
             );
@@ -123,7 +123,7 @@ impl DeliveryManager {
             gateway::discord::send_channel_message(token, &channel_id, &chunk).await?;
         }
 
-        println!("[Cron Delivery] Discord message sent to {}", target);
+        log::info!("[Cron Delivery] Discord message sent to {}", target);
         Ok(())
     }
 
@@ -160,7 +160,7 @@ impl DeliveryManager {
             gateway::feishu::send_chat_message(app_id, app_secret, target, &chunk).await?;
         }
 
-        println!("[Cron Delivery] Feishu message sent to {}", target);
+        log::info!("[Cron Delivery] Feishu message sent to {}", target);
         Ok(())
     }
 
@@ -220,17 +220,17 @@ impl DeliveryManager {
 
         let (target_id, is_dm) = if target.starts_with("dm:") {
             let user_id = target.strip_prefix("dm:").unwrap_or(target);
-            println!("[Cron Delivery] KOOK DM to user: {}", user_id);
+            log::info!("[Cron Delivery] KOOK DM to user: {}", user_id);
             (user_id.to_string(), true)
         } else if target.starts_with("channel:") {
             let ch_id = target
                 .strip_prefix("channel:")
                 .unwrap_or(target)
                 .to_string();
-            println!("[Cron Delivery] KOOK channel: {}", ch_id);
+            log::info!("[Cron Delivery] KOOK channel: {}", ch_id);
             (ch_id, false)
         } else {
-            println!(
+            log::info!(
                 "[Cron Delivery] KOOK target '{}' without prefix, trying as DM",
                 target
             );
@@ -243,7 +243,7 @@ impl DeliveryManager {
             gateway::kook::send_kook_message_http(token, &target_id, &chunk, is_dm).await?;
         }
 
-        println!("[Cron Delivery] KOOK message sent to {}", target);
+        log::info!("[Cron Delivery] KOOK message sent to {}", target);
         Ok(())
     }
 
@@ -297,7 +297,7 @@ impl DeliveryManager {
             amuxd_client::channel_send("wecom", &dispatch_target, &chunk).await?;
         }
 
-        println!(
+        log::info!(
             "[Cron Delivery] WeCom message sent via amuxd to {}",
             dispatch_target
         );
@@ -315,7 +315,7 @@ impl DeliveryManager {
             amuxd_client::channel_send("seatalk", &dispatch_target, &chunk).await?;
         }
 
-        println!(
+        log::info!(
             "[Cron Delivery] SeaTalk message sent via amuxd to {}",
             dispatch_target
         );
@@ -401,42 +401,6 @@ fn seatalk_cron_target_to_dispatch(target: &str) -> Result<String, String> {
     Ok(format!("user:{target}"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{seatalk_cron_target_to_dispatch, wecom_cron_target_to_dispatch};
-
-    #[test]
-    fn maps_single_and_group_targets() {
-        assert_eq!(
-            wecom_cron_target_to_dispatch("single:alice").unwrap(),
-            "user:alice"
-        );
-        assert_eq!(
-            wecom_cron_target_to_dispatch("group:chat-1").unwrap(),
-            "chat:chat-1"
-        );
-        assert_eq!(wecom_cron_target_to_dispatch("bob").unwrap(), "user:bob");
-    }
-
-    #[test]
-    fn maps_seatalk_single_and_group_targets() {
-        assert_eq!(
-            seatalk_cron_target_to_dispatch("single:E001").unwrap(),
-            "user:E001"
-        );
-        assert_eq!(
-            seatalk_cron_target_to_dispatch("group:g-abc").unwrap(),
-            "chat:g-abc"
-        );
-        assert_eq!(
-            seatalk_cron_target_to_dispatch("E002").unwrap(),
-            "user:E002"
-        );
-        assert!(seatalk_cron_target_to_dispatch("group:").is_err());
-        assert!(seatalk_cron_target_to_dispatch("").is_err());
-    }
-}
-
 /// Split a message into chunks, respecting UTF-8 character boundaries.
 /// `max_len` is measured in bytes.
 fn split_message(text: &str, max_len: usize) -> Vec<String> {
@@ -477,4 +441,40 @@ fn split_message(text: &str, max_len: usize) -> Vec<String> {
     }
 
     chunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{seatalk_cron_target_to_dispatch, wecom_cron_target_to_dispatch};
+
+    #[test]
+    fn maps_single_and_group_targets() {
+        assert_eq!(
+            wecom_cron_target_to_dispatch("single:alice").unwrap(),
+            "user:alice"
+        );
+        assert_eq!(
+            wecom_cron_target_to_dispatch("group:chat-1").unwrap(),
+            "chat:chat-1"
+        );
+        assert_eq!(wecom_cron_target_to_dispatch("bob").unwrap(), "user:bob");
+    }
+
+    #[test]
+    fn maps_seatalk_single_and_group_targets() {
+        assert_eq!(
+            seatalk_cron_target_to_dispatch("single:E001").unwrap(),
+            "user:E001"
+        );
+        assert_eq!(
+            seatalk_cron_target_to_dispatch("group:g-abc").unwrap(),
+            "chat:g-abc"
+        );
+        assert_eq!(
+            seatalk_cron_target_to_dispatch("E002").unwrap(),
+            "user:E002"
+        );
+        assert!(seatalk_cron_target_to_dispatch("group:").is_err());
+        assert!(seatalk_cron_target_to_dispatch("").is_err());
+    }
 }

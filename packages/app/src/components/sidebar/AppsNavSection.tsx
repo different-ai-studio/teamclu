@@ -18,8 +18,8 @@ const AppLibraryDialog = lazyNamed(
   () => import('@/components/apps/AppLibraryDialog'),
   'AppLibraryDialog',
 )
-import { resolveAppType } from '@/lib/app-types'
-import { appStatusMeta, showsPublicBadge } from '@/lib/app-list-helpers'
+import { resolveAppType } from '@/lib/apps/app-types'
+import { appStatusMeta, showsPublicBadge } from '@/lib/apps/app-list-helpers'
 import type { AppRow } from '@/lib/backend/types'
 
 const APPS_EXPANDED_STORAGE_KEY = 'teamclu.nav.appsExpanded'

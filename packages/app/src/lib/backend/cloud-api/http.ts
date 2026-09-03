@@ -1,5 +1,5 @@
 import { getFreshAccessToken, refreshSession } from "@/lib/auth/session-store";
-import type { AuthBackend } from "../types";
+import type { AuthBackend } from "@/lib/backend/types";
 
 export class CloudApiError extends Error {
   status: number;

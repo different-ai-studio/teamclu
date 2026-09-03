@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { DiagnosticReport } from '@/lib/diagnostic-report'
+import type { DiagnosticReport } from '@/lib/diagnostics/diagnostic-report'
 import type { SymptomTab } from '@/lib/diagnostics/view'
 
 interface DiagnosticsState {

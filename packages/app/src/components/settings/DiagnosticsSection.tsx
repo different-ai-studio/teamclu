@@ -38,7 +38,7 @@ import {
   GITHUB_ISSUES_URL,
   type DiagnosticCheck,
   type DiagnosticStatus,
-} from '@/lib/diagnostic-report'
+} from '@/lib/diagnostics/diagnostic-report'
 import { LiveDebugConsole } from './LiveDebugConsole'
 import { DaemonResetRemediationCard } from './DaemonResetRemediationCard'
 import { AuthSyncBanner, DiagnosticSymptomPanel } from './DiagnosticSymptomPanel'

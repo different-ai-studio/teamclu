@@ -79,7 +79,7 @@ pub fn open_local_agent_panel_window(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let brand = crate::branding::brand_name(app.config().product_name.as_deref());
+    let brand = crate::branding::brand_name();
     let title = format!("{brand} · Settings");
 
     #[allow(unused_mut)]
@@ -151,7 +151,7 @@ pub async fn register_window_workspace(
     // to run inline on the main thread (PERF-3).
     tokio::task::spawn_blocking(move || {
         if let Err(e) = super::env_vars::ensure_system_env_vars(&workspace_path, &actor_id) {
-            eprintln!(
+            log::error!(
                 "[EnvVars] Warning: failed to ensure system env vars on workspace bind: {}",
                 e
             );
@@ -159,7 +159,7 @@ pub async fn register_window_workspace(
         // Personal values are machine-global; backfill this workspace's envVars
         // cache so settings/diagnostics stay aligned after switching projects.
         if let Err(e) = super::env_vars::derive_personal_env_index_from_blob(&workspace_path) {
-            eprintln!(
+            log::error!(
                 "[EnvVars] Warning: failed to derive personal env index on workspace bind: {}",
                 e
             );

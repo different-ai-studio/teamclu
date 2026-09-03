@@ -28,13 +28,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  useChannelsStore,
-  type KookConfig,
-  type KookGuildConfig,
-  type KookChannelRule,
-  defaultKookConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type KookConfig, type KookGuildConfig, type KookChannelRule, defaultKookConfig } from '@/stores/channels-types'
 import { KookIcon, SettingCard, ToggleSwitch, StatusBadge } from './shared'
 import {
   KookSetupWizard,
@@ -43,6 +38,7 @@ import {
   KookDeleteGuildDialog,
   KookDeleteChannelDialog,
 } from './KookDialogs'
+import { useShallow } from 'zustand/react/shallow'
 
 export function KookChannel() {
   const { t } = useTranslation()
@@ -59,7 +55,9 @@ export function KookChannel() {
     testKookToken,
     clearKookTestResult,
     setKookHasChanges,
-  } = useChannelsStore()
+  } = useChannelsStore(
+    useShallow((s) => ({ kook: s.kook, kookIsLoading: s.kookIsLoading, kookGatewayStatus: s.kookGatewayStatus, kookHasChanges: s.kookHasChanges, kookIsTesting: s.kookIsTesting, kookTestResult: s.kookTestResult, saveKookConfig: s.saveKookConfig, startKookGateway: s.startKookGateway, stopKookGateway: s.stopKookGateway, testKookToken: s.testKookToken, clearKookTestResult: s.clearKookTestResult, setKookHasChanges: s.setKookHasChanges })),
+  )
 
   const [kookExpanded, setKookExpanded] = React.useState(false)
   const [kookWizardOpen, setKookWizardOpen] = React.useState(false)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createWorkspacesModule } from "../workspaces";
-import type { CloudApiClient } from "../http";
+import { createWorkspacesModule } from "@/lib/backend/cloud-api/workspaces";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 function mockClient(responses: Record<string, unknown>): CloudApiClient {
   return {

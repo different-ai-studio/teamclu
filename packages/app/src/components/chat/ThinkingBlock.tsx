@@ -6,7 +6,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { useStreamRevealText } from "@/hooks/useStreamRevealText";
+import { useStreamRevealText } from "@/hooks/use-stream-reveal-text";
 
 interface ThinkingBlockProps {
   content: string;

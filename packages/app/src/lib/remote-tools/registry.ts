@@ -1,4 +1,4 @@
-import type { RemoteToolExecutor, RemoteToolName } from './types'
+import type { RemoteToolExecutor, RemoteToolName } from '@/lib/remote-tools/types'
 
 const executors = new Map<RemoteToolName, RemoteToolExecutor>()
 

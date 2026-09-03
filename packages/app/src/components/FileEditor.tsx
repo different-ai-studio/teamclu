@@ -23,16 +23,17 @@ import {
   History,
 } from "lucide-react";
 import { cn, isTauri } from "@/lib/utils";
+import { withHtmlPreviewCsp } from "@/lib/ui/html-preview-csp";
 import {
   globalTeamKnowledgeShareDir,
   teamSyncKeyForPath,
-} from "@/lib/team-skill-paths";
+} from "@/lib/team/team-skill-paths";
 import { getEditorType } from "@/components/editors/utils";
 import { UNSUPPORTED_BINARY_EXTENSIONS } from "@/components/viewers/UnsupportedFileViewer";
 import { supportsPreview } from "@/components/editors/utils";
 import { useAutoSave } from "@/components/editors/useAutoSave";
 import { ConflictBanner } from "@/components/editors/ConflictBanner";
-import { sendAgentPromptInActiveSession } from "@/lib/session-send-agent";
+import { sendAgentPromptInActiveSession } from "@/lib/session/session-send-agent";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { OssHistoryProvider } from '@/lib/history/oss-provider'
@@ -480,6 +481,14 @@ export function FileEditor({
 
   // Check if this file supports preview
   const previewType = supportsPreview(filename);
+
+  // SEC-9: the previewed document carries its own CSP so it cannot use the
+  // embedder's `connect-src` to send itself somewhere. Memoised because the
+  // editor re-renders on every keystroke and this rewrites the whole file.
+  const previewSrcDoc = useMemo(
+    () => (showPreview && previewType === "html" ? withHtmlPreviewCsp(currentContent) : ""),
+    [showPreview, previewType, currentContent],
+  );
 
   // Changes are measured against git HEAD; the per-session diff feed that used
   // to be consulted here never had a producer.
@@ -973,9 +982,16 @@ export function FileEditor({
                         (withGlobalTauri) — i.e. every IPC command and the
                         whole-disk fs grants. Without it the frame gets an opaque
                         origin and reaching `parent` throws SecurityError, while
-                        the preview still renders. */}
+                        the preview still renders.
+
+                        The sandbox does not cover the network, though: a srcdoc
+                        frame inherits the *embedder's* CSP, and ours allows
+                        `connect-src … https:`. `withHtmlPreviewCsp` adds a
+                        second policy inside the document that denies
+                        connect-src/form-action, so a previewed page cannot POST
+                        itself somewhere (SEC-9). */}
                     <iframe
-                      srcDoc={currentContent}
+                      srcDoc={previewSrcDoc}
                       className="w-full h-full border-0"
                       sandbox="allow-scripts"
                       title={t("app.htmlPreview", "HTML Preview")}

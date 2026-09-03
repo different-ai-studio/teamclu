@@ -1,4 +1,4 @@
-import { appStoragePrefix } from '@/lib/build-config'
+import { appStoragePrefix } from '@/lib/config/build-config'
 
 const LANGUAGE_STORAGE_KEY = `${appStoragePrefix}-language`
 export const SUPPORTED_LANGUAGES = ['en', 'zh-CN'] as const

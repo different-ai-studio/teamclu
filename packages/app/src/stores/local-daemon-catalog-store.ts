@@ -1,6 +1,6 @@
 import { create as createZustand } from 'zustand'
 import type { ModelInfo } from '@/lib/proto/amux_pb'
-import { fetchLocalDaemonCatalog } from '@/lib/local-daemon-model-catalog'
+import { fetchLocalDaemonCatalog } from '@/lib/agent/local-daemon-model-catalog'
 
 /**
  * This device's model catalog, read over loopback HTTP — the **local agent

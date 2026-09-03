@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   collectDaemonResetRemediation,
   type DiagnosticCheck,
-} from '@/lib/diagnostic-report'
+} from '@/lib/diagnostics/diagnostic-report'
 
 describe('collectDaemonResetRemediation', () => {
   it('suggests reset when daemon HTTP token is invalid', () => {

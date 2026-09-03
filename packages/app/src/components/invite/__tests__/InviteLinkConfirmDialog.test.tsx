@@ -29,7 +29,7 @@ import {
   requestInviteLinkConfirmation,
   resetInviteLinkConfirmationForTests,
   useInviteLinkConfirmation,
-} from "@/lib/invite-link-confirmation";
+} from "@/lib/team/invite-link-confirmation";
 
 beforeEach(() => {
   resetInviteLinkConfirmationForTests();

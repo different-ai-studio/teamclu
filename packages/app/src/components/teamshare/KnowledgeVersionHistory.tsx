@@ -4,7 +4,7 @@ import { History } from 'lucide-react'
 import { useVersionHistoryStore } from '@/stores/version-history'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { globalTeamKnowledgeShareDir, teamSyncKeyForPath } from '@/lib/team-skill-paths'
+import { globalTeamKnowledgeShareDir, teamSyncKeyForPath } from '@/lib/team/team-skill-paths'
 import { VersionList } from '@/components/version/VersionList'
 import { VersionPreview } from '@/components/version/VersionPreview'
 

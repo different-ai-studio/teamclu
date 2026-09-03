@@ -12,7 +12,7 @@ import {
   AlertDialogCancel,
 } from '@/components/ui/alert-dialog'
 import { useTelemetryStore } from '@/stores/telemetry'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 
 interface TelemetryConsentDialogProps {
   open: boolean

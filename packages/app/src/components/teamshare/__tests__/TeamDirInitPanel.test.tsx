@@ -13,7 +13,7 @@ vi.mock('@/lib/utils', () => ({
 }))
 
 const linkDaemonTeamWorkspace = vi.fn()
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   linkDaemonTeamWorkspace: (...args: unknown[]) => linkDaemonTeamWorkspace(...args),
   TEAM_LINK_LEGACY_DAEMON: 'team_link_legacy_daemon',
 }))

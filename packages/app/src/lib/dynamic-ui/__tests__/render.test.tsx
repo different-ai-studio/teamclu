@@ -9,7 +9,7 @@ vi.mock("react-i18next", () => ({
   }),
 }))
 
-import { DynamicUIMessage } from "../DynamicUI"
+import { DynamicUIMessage } from "@/lib/dynamic-ui/DynamicUI"
 
 // A representative spec exercising container (Card), layout (Stack),
 // a data-bound Input (useStateBinding) and a Button — the full render path

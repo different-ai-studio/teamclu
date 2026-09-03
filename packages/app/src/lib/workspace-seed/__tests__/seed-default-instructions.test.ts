@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { TEAMCLU_DIR } from '@/lib/build-config'
+import { TEAMCLU_DIR } from '@/lib/config/build-config'
 import {
   isNearlyEmptyWorkspace,
   renderWorkspaceInstructionTemplate,
   seedDefaultWorkspaceInstructions,
-} from '../seed-default-instructions'
+} from '@/lib/workspace-seed/seed-default-instructions'
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
   exists: vi.fn(),

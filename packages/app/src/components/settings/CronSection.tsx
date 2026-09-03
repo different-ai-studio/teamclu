@@ -30,13 +30,14 @@ import {
   type CronScope,
 } from '@/stores/cron'
 import { ToggleSwitch } from './shared'
-import { getDeliveryTargetDisplay } from '@/lib/cron-utils'
+import { getDeliveryTargetDisplay } from '@/lib/cron/cron-utils'
 import { CronJobDialog } from './cron/CronJobDialog'
 import { CronHistoryDialog } from './cron/CronHistoryDialog'
 import {
   listLocalDaemonWorkspaces,
   type LocalDaemonWorkspace,
-} from '@/lib/cron-workspace-models'
+} from '@/lib/cron/cron-workspace-models'
+import { useShallow } from 'zustand/react/shallow'
 
 // ==================== Job Card ====================
 
@@ -202,7 +203,9 @@ export function CronSection() {
     runJob,
     clearError,
     runningJobIds,
-  } = useCronStore()
+  } = useCronStore(
+    useShallow((s) => ({ jobs: s.jobs, isLoading: s.isLoading, error: s.error, activeScope: s.activeScope, selectedWorkspacePath: s.selectedWorkspacePath, setScope: s.setScope, setSelectedWorkspacePath: s.setSelectedWorkspacePath, loadJobs: s.loadJobs, removeJob: s.removeJob, toggleEnabled: s.toggleEnabled, runJob: s.runJob, clearError: s.clearError, runningJobIds: s.runningJobIds })),
+  )
 
   const [formOpen, setFormOpen] = React.useState(false)
   const [editJob, setEditJob] = React.useState<CronJob | undefined>(undefined)

@@ -19,7 +19,7 @@ import {
   Globe,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -30,13 +30,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  useChannelsStore,
-  type EmailConfig,
-  defaultEmailConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type EmailConfig, defaultEmailConfig } from '@/stores/channels-types'
 import { GmailIcon, SettingCard, ToggleSwitch, StatusBadge } from './shared'
 import { EmailSetupWizard } from './EmailSetupWizard'
+import { useShallow } from 'zustand/react/shallow'
 
 export function EmailChannel() {
   const { t } = useTranslation()
@@ -56,7 +54,9 @@ export function EmailChannel() {
     gmailAuthorize,
     setEmailHasChanges,
     toggleEmailEnabled,
-  } = useChannelsStore()
+  } = useChannelsStore(
+    useShallow((s) => ({ email: s.email, emailIsLoading: s.emailIsLoading, emailGatewayStatus: s.emailGatewayStatus, emailHasChanges: s.emailHasChanges, emailIsTesting: s.emailIsTesting, emailTestResult: s.emailTestResult, gmailAuthUrl: s.gmailAuthUrl, saveEmailConfig: s.saveEmailConfig, startEmailGateway: s.startEmailGateway, stopEmailGateway: s.stopEmailGateway, refreshEmailStatus: s.refreshEmailStatus, testEmailConnection: s.testEmailConnection, gmailAuthorize: s.gmailAuthorize, setEmailHasChanges: s.setEmailHasChanges, toggleEmailEnabled: s.toggleEmailEnabled })),
+  )
 
   const [emailLocalConfig, setEmailLocalConfig] = React.useState<EmailConfig>(defaultEmailConfig)
   const [emailExpanded, setEmailExpanded] = React.useState(false)

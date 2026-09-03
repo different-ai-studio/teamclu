@@ -5,6 +5,7 @@ import { useCurrentTeamStore } from '@/stores/current-team'
 import { VersionedFileList } from '@/components/version/VersionedFileList'
 import { VersionList } from '@/components/version/VersionList'
 import { VersionPreview } from '@/components/version/VersionPreview'
+import { useShallow } from 'zustand/react/shallow'
 
 export function VersionHistoryTab() {
   const { t } = useTranslation()
@@ -22,7 +23,9 @@ export function VersionHistoryTab() {
     restoreFileVersion,
     selectFile,
     selectVersion,
-  } = useVersionHistoryStore()
+  } = useVersionHistoryStore(
+    useShallow((s) => ({ versionedFiles: s.versionedFiles, fileVersions: s.fileVersions, selectedFile: s.selectedFile, selectedRef: s.selectedRef, loading: s.loading, loadVersionedFiles: s.loadVersionedFiles, loadFileVersions: s.loadFileVersions, fetchVersionContent: s.fetchVersionContent, restoreFileVersion: s.restoreFileVersion, selectFile: s.selectFile, selectVersion: s.selectVersion })),
+  )
 
   const [restoring, setRestoring] = useState(false)
   const [versionContent, setVersionContent] = useState<string | null>(null)
