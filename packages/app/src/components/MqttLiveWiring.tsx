@@ -13,11 +13,11 @@
  * entire tree on traffic that changes nothing visible.
  */
 import { useTranslation } from "react-i18next";
+import { handleAcpEvent } from "@/components/mqtt-live-wiring/handle-acp-event";
+import { handleLiveMessage } from "@/components/mqtt-live-wiring/handle-live-message";
+import type { LiveWiringContext } from "@/components/mqtt-live-wiring/context";
 import { useEffect, useRef, useState } from "react";
 import { markStartup } from "@/lib/telemetry/startup-perf";
-import { classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, localizeAgentTurnErrorMessage } from "@/lib/agent/agent-turn-error";
-import { useSessionStore } from "@/stores/session-store";
-import type { Question, QuestionOption } from "@/stores/session-types";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
@@ -32,12 +32,8 @@ import { getEffectiveServerConfig } from "@/lib/config/server-config";
 import { acquireTeamcluRpcBroker, acquireTeamcluRpcIdentity } from "@/lib/daemon/teamclu-rpc";
 import { acquireRemoteToolsRpcServer, registerPlatformExecutors } from "@/lib/remote-tools";
 import { acquireMqttModuleLeaseGroup, type MqttModuleLeaseGroup } from "@/lib/mqtt/mqtt-module-wiring";
-import { decodeLiveEvent, sessionIdFromLiveEvent, streamActorIdFromLiveEvent } from "@/lib/daemon/teamclu-events";
-import { handleAcpPermissionRequest } from "@/lib/teamclu/handle-acp-permission-request";
+import { decodeLiveEvent, sessionIdFromLiveEvent} from "@/lib/daemon/teamclu-events";
 import { handleSessionEventPermissionResolved } from "@/lib/teamclu/handle-session-event-permission-resolved";
-import { tryBindChildFromPermission } from "@/lib/teamclu/subagent-acp-binding";
-import { routeSubagentAcpEvent } from "@/lib/teamclu/subagent-acp-route";
-import { resolveOrphanSubagentParentToolId, shouldBufferUnboundChildAcpEvent, shouldRouteOrphanSubagentEvent } from "@/lib/teamclu/subagent-acp-routing";
 import { scheduleMarkActiveSessionRead } from "@/lib/session/active-session-read";
 import {
   ensureInboxSubscribed,
@@ -49,25 +45,20 @@ import { bumpSessionListLastMessage, messageKindUpdatesSessionPreview } from "@/
 import { executeAgentTurnFlush } from "@/lib/agent/agent-turn-flush";
 import { unixTimestampSecondsToIso } from "@/lib/messages/message-timestamp";
 import { resolveInterruptedPlaceholdersToDrop } from "@/lib/messages/interrupted-stream-placeholder";
-import { removePendingAgentReplyTo, resolvePendingAgentReplyTo } from "@/lib/messages/pending-agent-reply-to";
-import { bufferStreamDelta, flushStreamDeltasFor, flushAllStreamDeltas } from "@/lib/stream/stream-delta-buffer";
-import { recordLatencyProbe } from "@/lib/diagnostics/latency-probe";
+import { resolvePendingAgentReplyTo } from "@/lib/messages/pending-agent-reply-to";
+import { flushStreamDeltasFor} from "@/lib/stream/stream-delta-buffer";
 import { bumpLiveDuplicateDropped } from "@/lib/diagnostics/live-dedup-stats";
-import { cloneStreamEntrySnapshot, patchPersistedToolResult, patchPersistedToolUse, resolveStreamEntryForPersist, syncStreamingToolOutputsFromLocalCache } from "@/lib/stream/streaming-persist";
-import { getFlushedTurn } from "@/lib/stream/flushed-turn-registry";
+import { cloneStreamEntrySnapshot, resolveStreamEntryForPersist} from "@/lib/stream/streaming-persist";
 import { logInterruptMsgDiag, summarizeFlushDecision, summarizePendingReplies, summarizeStreamEntry } from "@/lib/diagnostics/interrupt-msg-diag";
-import { logExtMsgDiag, summarizeProtoForExtDiag, summarizeProtosForExtDiag } from "@/lib/diagnostics/extension-msg-diag";
-import { logStreamToolDiag } from "@/lib/diagnostics/stream-tool-diag";
+import { logExtMsgDiag} from "@/lib/diagnostics/extension-msg-diag";
 import { useAcpDebugStore } from "@/stores/acp-debug-store";
 import { isStreamInterruptible, useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { acquireRuntimeStateStore, useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { findStaleLiveStreams, STALE_STREAM_SWEEP_MS } from "@/lib/stream/stale-stream-recovery";
 import { acquireActorPresenceStore } from "@/stores/actor-presence-store";
-import { MessageKind, type Message as TeamcluMessage } from "@/lib/proto/teamclu_pb";
-import { agentStreamKey, isTerminalAgentStatus, isToolOnlyTurnAnchor, isTurnOpeningStatusChange, mergePendingAgentReplies, normalizeToolResultEvent, normalizeToolUseEvent, registerDiscardPendingStreamReply, rememberLiveEventId, shouldPatchFlushedToolEvent, streamEntryHasVisibleContent } from "@/lib/stream/live-agent-stream";
-import { mapAcpPlanEntries, syncPlanFromTodoTool, syncPlanFromTodoToolResult } from "@/lib/stream/sync-plan-from-todowrite";
-import { reportSkillUsage } from "@/lib/telemetry/skill-usage";
-import { upsertMessagesBatch, softDeleteMessage, type MessageRow } from "@/lib/cache/local-cache";
+import { type Message as TeamcluMessage } from "@/lib/proto/teamclu_pb";
+import { agentStreamKey, mergePendingAgentReplies, registerDiscardPendingStreamReply, rememberLiveEventId} from "@/lib/stream/live-agent-stream";
+import { softDeleteMessage} from "@/lib/cache/local-cache";
 import { syncActorsForTeam } from "@/lib/sync/actor-sync";
 import { syncIdeasForTeam } from "@/lib/sync/idea-sync";
 import { syncSessionsForTeam } from "@/lib/sync/session-sync";
@@ -522,6 +513,21 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
 
   useEffect(() => {
     if (!mqttAuthKey || !userId || !mqttTeamId || !mqttAccessToken) return;
+
+    // What the extracted live-envelope handlers need. Built here rather than in
+    // the component body so it captures exactly what the old inline branches
+    // captured: the versions current when the effect ran, not a fresh object on
+    // every render (which would also drag the whole effect into its dep array).
+    const liveWiringCtx: LiveWiringContext = {
+      pendingStreamRepliesRef,
+      terminalFlushPendingRef,
+      followUpActiveRef,
+      clearTerminalFlushPending,
+      clearFollowUpActive,
+      flushTurnAgentReply,
+      scheduleTerminalDaemonReplyTimeout,
+      removeInterruptedStreamPlaceholderForRealReply,
+    };
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     let identityLease: ReturnType<typeof acquireTeamcluRpcIdentity> | null = null;
@@ -831,194 +837,7 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
 
           // Case 1: final message.created
           if (decoded.message) {
-            // This branch reads/finalizes ordered stream state below — drain
-            // any buffered text deltas so finalize/persist see all arrived text.
-            flushAllStreamDeltas();
-            const msg = decoded.message;
-            const senderActorId = msg.senderActorId;
-            const streamingStore = useV2StreamingStore.getState();
-            const streamKey = senderActorId ? agentStreamKey(sid, senderActorId) : "";
-            const streamEntry = streamKey
-              ? streamingStore.byKey[streamKey]
-              : undefined;
-            let parkedAgentReply = false;
-            if (
-              streamEntry &&
-              senderActorId &&
-              msg.kind === MessageKind.AGENT_REPLY
-            ) {
-              // Mid-turn daemon AgentReply slices stay parked until terminal
-              // statusChange (or a late message.created after terminal).
-              parkedAgentReply = true;
-              const pendingReplies =
-                pendingStreamRepliesRef.current[streamKey] ?? [];
-              const nextPendingReplies = pendingReplies.some(
-                (message) => message.messageId === msg.messageId,
-              )
-                ? pendingReplies
-                : [...pendingReplies, msg];
-              if (nextPendingReplies !== pendingReplies) {
-                pendingStreamRepliesRef.current[streamKey] = nextPendingReplies;
-              }
-              const resolvedStreamEntry = resolveStreamEntryForPersist(
-                sid,
-                senderActorId,
-                streamEntry,
-              );
-              const terminalPending = Boolean(
-                terminalFlushPendingRef.current[streamKey],
-              );
-              const toolOnlyAnchor = isToolOnlyTurnAnchor(
-                nextPendingReplies,
-                resolvedStreamEntry,
-              );
-              const shouldFlush =
-                terminalPending || toolOnlyAnchor;
-              logInterruptMsgDiag("mqtt.agentReply.parked", {
-                sessionId: sid,
-                actorId: senderActorId,
-                messageId: msg.messageId,
-                turnId: msg.turnId,
-                contentLength: (msg.content ?? "").trim().length,
-                terminalPending,
-                toolOnlyAnchor,
-                shouldFlush,
-                ...summarizeFlushDecision({
-                  pending: nextPendingReplies,
-                  liveStream: streamEntry,
-                  resolvedStream: resolvedStreamEntry,
-                }),
-              });
-              if (shouldFlush) {
-                const flushed = flushTurnAgentReply(
-                  sid,
-                  senderActorId,
-                  terminalPending
-                    ? "mqtt.message.created.terminalPending"
-                    : "mqtt.message.created.toolOnlyAnchor",
-                );
-                if (flushed && terminalPending) {
-                  clearTerminalFlushPending(streamKey);
-                }
-              }
-            } else if (streamEntry && senderActorId) {
-              streamingStore.finalize(
-                sid,
-                senderActorId,
-                decoded.message.content,
-              );
-              useSessionMessageStore.getState().appendMessage(sid, decoded.message);
-            } else {
-              // Late REAL agent_reply after the live stream was detached by an
-              // eager interrupt-flush: purge the synthetic anchor first so the
-              // real reply doesn't duplicate it (survives reload otherwise).
-              if (senderActorId && msg.kind === MessageKind.AGENT_REPLY) {
-                removeInterruptedStreamPlaceholderForRealReply(sid, senderActorId);
-                // Direct-append skips flushTurnAgentReply — still drop the
-                // stamped parent from the local FIFO so a later flush cannot
-                // reuse a stale user message id.
-                const stampedReplyTo = msg.replyToMessageId?.trim();
-                if (stampedReplyTo) {
-                  removePendingAgentReplyTo(sid, senderActorId, stampedReplyTo);
-                }
-                logExtMsgDiag("mqtt.agentReply.lateAppend.noPartsPersist", {
-                  sessionId: sid,
-                  actorId: senderActorId,
-                  note: "late AGENT_REPLY after stream detach — append without persistStreamingPartsForReply",
-                  ...summarizeProtoForExtDiag(msg),
-                });
-              }
-              useSessionMessageStore.getState().appendMessage(sid, decoded.message);
-              if (senderActorId && msg.kind === MessageKind.AGENT_REPLY) {
-                logExtMsgDiag("mqtt.agentReply.lateAppend.storeSnapshot", {
-                  sessionId: sid,
-                  ...summarizeProtosForExtDiag(
-                    useSessionMessageStore.getState().messages[sid] ?? [],
-                  ),
-                });
-              }
-            }
-
-            if (
-              msg.kind === MessageKind.TEXT ||
-              (msg.kind === MessageKind.AGENT_REPLY && !parkedAgentReply)
-            ) {
-              useV2StreamingStore.getState().clearStaleStreamErrors(
-                sid,
-                msg.kind === MessageKind.AGENT_REPLY ? senderActorId : undefined,
-              );
-            }
-
-            if (
-              !parkedAgentReply &&
-              messageKindUpdatesSessionPreview(decoded.message.kind)
-            ) {
-              const listStore = useSessionListStore.getState();
-              const sessionInList = listStore.rows.some((r) => r.id === sid);
-              if (sessionInList) {
-                const createdAtSec = decoded.message.createdAt;
-                bumpSessionListLastMessage(sid, decoded.message.content, {
-                  at: createdAtSec > 0n
-                    ? unixTimestampSecondsToIso(createdAtSec)
-                    : undefined,
-                });
-                scheduleMarkActiveSessionRead(sid, decoded.message.messageId);
-              } else {
-                // Invited to a new session: bump is a no-op until the row exists.
-                scheduleSessionListRefresh(() => listStore.loadFirstPage());
-              }
-            }
-
-            // Write ALL incoming messages into the unified `message` table
-            // (origin="mqtt-live"). This replaces the old agent_runtime_event
-            // writes for tool-call/result/thinking kinds.
-            // The insertAgentRuntimeEvent table stays alive for backwards compat
-            // but is no longer the primary read path.
-            // TODO(cleanup): remove insertAgentRuntimeEvent writes once all
-            //   clients have upgraded past this version and the old read path
-            //   in history loader above is cleaned up.
-            if (!parkedAgentReply) {
-              const m = decoded.message;
-              const kindStr =
-                m.kind === MessageKind.AGENT_TOOL_CALL
-                  ? "agent_tool_call"
-                  : m.kind === MessageKind.AGENT_TOOL_RESULT
-                    ? "agent_tool_result"
-                    : m.kind === MessageKind.AGENT_THINKING
-                      ? "agent_thinking"
-                      : m.kind === MessageKind.AGENT_REPLY
-                        ? "agent_reply"
-                        : m.kind === MessageKind.SYSTEM
-                          ? "system"
-                          : "text";
-              const teamId =
-                useSessionListStore.getState().rows.find(
-                  (r) => r.id === sid,
-                )?.team_id ?? "";
-              const now = new Date().toISOString();
-              const msgRow: MessageRow = {
-                id: m.messageId,
-                teamId,
-                sessionId: m.sessionId,
-                turnId: m.turnId || null,
-                senderActorId: m.senderActorId || null,
-                replyToMessageId: m.replyToMessageId?.trim() || null,
-                kind: kindStr,
-                content: m.content,
-                metadataJson: m.metadataJson || null,
-                model: m.model || null,
-                mentionsJson: null,
-                origin: "mqtt-live",
-                createdAt: unixTimestampSecondsToIso(m.createdAt),
-                updatedAt: now,
-                deletedAt: null,
-                syncedAt: now,
-                partsJson: (m as unknown as { partsJson?: string | null }).partsJson ?? null,
-              };
-              upsertMessagesBatch([msgRow]).catch((e) => {
-                console.warn("[cache] message upsert failed:", e);
-              });
-            }
+            handleLiveMessage(liveWiringCtx, decoded, sid);
             return;
           }
 
@@ -1040,494 +859,8 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
 
           // Case 2: streaming acp.event
           if (decoded.acpEvent) {
-            // Dev-only one-way latency probe (no-op unless the local daemon
-            // runs with AMUX_LATENCY_PROBE=1). See lib/latency-probe.ts.
-            recordLatencyProbe(decoded.amuxEnvelope?.sourcePeerId);
-            const actorId = streamActorIdFromLiveEvent(decoded);
-            if (!actorId) return;
-            const acpSid = decoded.amuxEnvelope?.acpSessionId?.trim() ?? "";
-            if (acpSid) {
-              const streamStore = useV2StreamingStore.getState();
-              const eventCase = decoded.acpEvent.event?.case;
-              const parentToolId = streamStore.childAcpSessionToToolId[acpSid];
-              if (eventCase === "permissionRequest") {
-                // Subagent permission must surface on the parent actor immediately.
-                // Do NOT buffer waiting for task→child bind: opencode often asks
-                // before task rawOutput carries sessionId, and a buffered ask
-                // never renders a card (agent hangs forever).
-                // Do NOT bind via params.toolCallId — that is the child tool
-                // (e.g. bash), not the parent task tool id.
-                const pr2 = decoded.acpEvent.event?.value as {
-                  requestId?: string;
-                  toolName?: string;
-                  description?: string;
-                  params?: Record<string, string>;
-                  options?: Array<{ optionId?: string; kind?: string; name?: string }>;
-                };
-                const childSid =
-                  pr2.params?.childSessionId?.trim() || acpSid;
-                const bindTo =
-                  parentToolId ??
-                  resolveOrphanSubagentParentToolId(sid, actorId, streamStore);
-                if (bindTo && childSid) {
-                  tryBindChildFromPermission(sid, actorId, childSid, bindTo);
-                }
-                void handleAcpPermissionRequest({
-                  sessionId: sid,
-                  agentActorId: actorId,
-                  request: {
-                    requestId: pr2.requestId ?? "",
-                    toolName: pr2.toolName ?? "",
-                    description: pr2.description ?? "",
-                    params: {
-                      ...(pr2.params ?? {}),
-                      childSessionId: childSid,
-                      ...(bindTo ? {} : { _subagent_unbound_task: "1" }),
-                    },
-                    requesterActorId:
-                      pr2.params?.requester_actor_id?.trim() || undefined,
-                    options: (pr2.options ?? []).map((o) => ({
-                      optionId: o.optionId ?? "",
-                      kind: o.kind ?? "",
-                      name: o.name ?? "",
-                    })),
-                  },
-                });
-                return;
-              } else {
-                if (parentToolId) {
-                  routeSubagentAcpEvent(sid, actorId, parentToolId, decoded.acpEvent);
-                  return;
-                }
-                if (shouldBufferUnboundChildAcpEvent(sid, actorId, acpSid, streamStore)) {
-                  streamStore.bufferPendingSubagentEvent(acpSid, decoded.acpEvent);
-                  return;
-                }
-              }
-            } else {
-              const streamStoreForOrphan = useV2StreamingStore.getState();
-              const orphanTaskToolId = resolveOrphanSubagentParentToolId(
-                sid,
-                actorId,
-                streamStoreForOrphan,
-              );
-              if (orphanTaskToolId) {
-                const orphanEventCase = decoded.acpEvent.event?.case;
-                if (orphanEventCase === "permissionRequest") {
-                  // Orphan subagent permission (no acpSid on envelope): route
-                  // to the single unbound calling task tool.
-                  const prO = decoded.acpEvent.event?.value as {
-                    requestId?: string;
-                    toolName?: string;
-                    description?: string;
-                    params?: Record<string, string>;
-                    options?: Array<{ optionId?: string; kind?: string; name?: string }>;
-                  };
-                  const childSid = prO.params?.childSessionId?.trim() ?? "";
-                  if (childSid) {
-                    tryBindChildFromPermission(
-                      sid,
-                      actorId,
-                      childSid,
-                      orphanTaskToolId,
-                    );
-                  }
-                  void handleAcpPermissionRequest({
-                    sessionId: sid,
-                    agentActorId: actorId,
-                    request: {
-                      requestId: prO.requestId ?? "",
-                      toolName: prO.toolName ?? "",
-                      description: prO.description ?? "",
-                      params: prO.params ?? {},
-                      requesterActorId:
-                        prO.params?.requester_actor_id?.trim() || undefined,
-                      options: (prO.options ?? []).map((o) => ({
-                        optionId: o.optionId ?? "",
-                        kind: o.kind ?? "",
-                        name: o.name ?? "",
-                      })),
-                    },
-                  });
-                  return;
-                }
-                if (shouldRouteOrphanSubagentEvent(decoded.acpEvent, orphanTaskToolId)) {
-                  routeSubagentAcpEvent(
-                    sid,
-                    actorId,
-                    orphanTaskToolId,
-                    decoded.acpEvent,
-                  );
-                  return;
-                }
-              }
-            }
-
-            const event = decoded.acpEvent.event;
-
-            // Non-text events read/mutate ordered stream state — drain any
-            // buffered text deltas for this stream first so parts ordering
-            // matches arrival order.
-            if (event?.case !== "output" && event?.case !== "thinking") {
-              flushStreamDeltasFor(sid, actorId);
-            }
-
-            // acp.event detail already logged in the live:* line above.
-            if (event?.case === "output") {
-              const text = (event.value as { text?: string })?.text ?? "";
-              const liveEntry =
-                useV2StreamingStore.getState().byKey[agentStreamKey(sid, actorId)];
-              if (
-                !(
-                  getFlushedTurn(sid, actorId) &&
-                  (!liveEntry || !isStreamInterruptible(liveEntry))
-                )
-              ) {
-                bufferStreamDelta("output", sid, actorId, text);
-              }
-            } else if (event?.case === "thinking") {
-              const text = (event.value as { text?: string })?.text ?? "";
-              const liveEntry =
-                useV2StreamingStore.getState().byKey[agentStreamKey(sid, actorId)];
-              if (
-                !(
-                  getFlushedTurn(sid, actorId) &&
-                  (!liveEntry || !isStreamInterruptible(liveEntry))
-                )
-              ) {
-                bufferStreamDelta("thinking", sid, actorId, text);
-              }
-            } else if (event?.case === "toolUse") {
-              const tu = normalizeToolUseEvent(event.value);
-              const liveEntry =
-                useV2StreamingStore.getState().byKey[agentStreamKey(sid, actorId)];
-              if (shouldPatchFlushedToolEvent(sid, actorId, tu.toolId, liveEntry)) {
-                logStreamToolDiag("mqtt.toolUse.skipAfterFlush", {
-                  sessionId: sid,
-                  actorId,
-                  toolId: tu.toolId,
-                });
-                void patchPersistedToolUse({
-                  sessionId: sid,
-                  actorId,
-                  toolId: tu.toolId,
-                  toolName: tu.toolName,
-                  description: tu.description,
-                  params: tu.params,
-                  toolKind: tu.toolKind,
-                  content: tu.content,
-                  locations: tu.locations,
-                  acpStatus: tu.acpStatus,
-                  rawInput: tu.rawInput,
-                });
-              } else {
-                useV2StreamingStore.getState().pushToolUse(sid, actorId, {
-                  toolId: tu.toolId,
-                  toolName: tu.toolName,
-                  description: tu.description,
-                  params: tu.params,
-                  toolKind: tu.toolKind,
-                  content: tu.content,
-                  locations: tu.locations,
-                  acpStatus: tu.acpStatus,
-                  rawInput: tu.rawInput,
-                  rawOutput: tu.rawOutput,
-                });
-                // Capture skill invocations for the cloud leaderboard's skill
-                // dimension. tu.toolName is "skill" for Skill tool calls;
-                // tu.params.name is the skill slug (e.g. "sentry-fix").
-                if (
-                  (tu.toolName === "skill" || tu.params?.description === "skill") &&
-                  tu.params?.name
-                ) {
-                  void reportSkillUsage(tu.params.name);
-                }
-                syncPlanFromTodoTool(sid, actorId, {
-                  toolName: tu.toolName,
-                  params: tu.params,
-                  description: tu.description,
-                });
-              }
-            } else if (event?.case === "toolResult") {
-              const tr = normalizeToolResultEvent(event.value);
-              const liveEntry =
-                useV2StreamingStore.getState().byKey[agentStreamKey(sid, actorId)];
-              logStreamToolDiag("mqtt.toolResult", {
-                sessionId: sid,
-                actorId,
-                eventId: decoded.envelope.eventId,
-                toolId: tr.toolId,
-                success: tr.success,
-              });
-              if (shouldPatchFlushedToolEvent(sid, actorId, tr.toolId, liveEntry)) {
-                void patchPersistedToolResult({
-                  sessionId: sid,
-                  actorId,
-                  toolId: tr.toolId,
-                  success: tr.success,
-                  summary: tr.summary,
-                  content: tr.content,
-                  rawOutput: tr.rawOutput,
-                });
-              } else {
-                useV2StreamingStore.getState().completeToolUse(sid, actorId, {
-                  toolId: tr.toolId,
-                  success: tr.success,
-                  summary: tr.summary,
-                  content: tr.content,
-                  rawOutput: tr.rawOutput,
-                });
-                void patchPersistedToolResult({
-                  sessionId: sid,
-                  actorId,
-                  toolId: tr.toolId,
-                  success: tr.success,
-                  summary: tr.summary,
-                  content: tr.content,
-                  rawOutput: tr.rawOutput,
-                });
-                void syncStreamingToolOutputsFromLocalCache(sid, actorId);
-                window.setTimeout(() => {
-                  void syncStreamingToolOutputsFromLocalCache(sid, actorId);
-                }, 500);
-              }
-              syncPlanFromTodoToolResult(sid, actorId, {
-                toolId: tr.toolId,
-                success: tr.success,
-                summary: tr.summary,
-              });
-            } else if (event?.case === "statusChange") {
-              const sc = event.value as { oldStatus?: number; newStatus?: number };
-              logStreamToolDiag("mqtt.statusChange", {
-                sessionId: sid,
-                actorId,
-                eventId: decoded.envelope.eventId,
-                oldStatus: sc.oldStatus,
-                newStatus: sc.newStatus,
-              });
-              if (isTurnOpeningStatusChange(sc.oldStatus, sc.newStatus)) {
-                const streamKey = agentStreamKey(sid, actorId);
-                followUpActiveRef.current[streamKey] = true;
-                const flushed = flushTurnAgentReply(
-                  sid,
-                  actorId,
-                  "mqtt.statusChange.active",
-                );
-                logInterruptMsgDiag("mqtt.statusChange.active", {
-                  sessionId: sid,
-                  actorId,
-                  oldStatus: sc.oldStatus,
-                  newStatus: sc.newStatus,
-                  flushedPreviousTurn: flushed,
-                  ...summarizePendingReplies(
-                    pendingStreamRepliesRef.current[agentStreamKey(sid, actorId)],
-                  ),
-                });
-                clearTerminalFlushPending(agentStreamKey(sid, actorId));
-                useV2StreamingStore.getState().beginPlanningPlaceholder(sid, actorId);
-              } else if (isTerminalAgentStatus(sc.newStatus)) {
-                const streamKey = agentStreamKey(sid, actorId);
-                clearFollowUpActive(streamKey);
-                terminalFlushPendingRef.current[streamKey] = true;
-                const flushed = flushTurnAgentReply(
-                  sid,
-                  actorId,
-                  "mqtt.statusChange.terminal",
-                );
-                logInterruptMsgDiag("mqtt.statusChange.terminal", {
-                  sessionId: sid,
-                  actorId,
-                  oldStatus: sc.oldStatus,
-                  newStatus: sc.newStatus,
-                  flushed,
-                  ...summarizePendingReplies(
-                    pendingStreamRepliesRef.current[streamKey],
-                  ),
-                  ...summarizeStreamEntry(
-                    useV2StreamingStore.getState().byKey[streamKey],
-                    "live",
-                  ),
-                });
-                if (flushed) {
-                  clearTerminalFlushPending(streamKey);
-                } else {
-                  const streamEntry =
-                    useV2StreamingStore.getState().byKey[streamKey];
-                  if (streamEntryHasVisibleContent(streamEntry)) {
-                    // Wait for daemon AGENT_REPLY (incl. interrupted). Do not
-                    // invent interrupt-* placeholders — those bypass cloud
-                    // persist and break catchup after restart.
-                    logInterruptMsgDiag(
-                      "mqtt.statusChange.terminal.awaitDaemonReply",
-                      {
-                        sessionId: sid,
-                        actorId,
-                        ...summarizeStreamEntry(streamEntry, "live"),
-                      },
-                    );
-                    scheduleTerminalDaemonReplyTimeout(sid, actorId);
-                  } else {
-                    useV2StreamingStore.getState().setError(
-                      sid,
-                      actorId,
-                      t(
-                        "daemon.agentRuntime.emptyReply",
-                        "Agent returned no output. The selected model may be unavailable or misconfigured.",
-                      ),
-                      "",
-                    );
-                  }
-                }
-              }
-            } else if (event?.case === "error") {
-              const er = event.value as { message?: string; details?: string };
-              // User interrupt (opencode MessageAbortedError) is not a fault.
-              // SSE turn order: tool cleanup → session.error → session.idle.
-              // Defer flush/detach until statusChange.terminal (idle) so late
-              // tool results land on the live stream instead of spawning a
-              // phantom active entry (Unknown tool / stuck running card).
-              // Stop UI comes from daemon interrupted AGENT_REPLY, not SessionErrorAlert.
-              if (isAgentTurnAbortError(er.message, er.details)) {
-                // Interrupted AGENT_REPLY (daemon metadata.turn_status) owns
-                // the user-facing stop UI — do not also raise SessionErrorAlert.
-                const streamKey = agentStreamKey(sid, actorId);
-                terminalFlushPendingRef.current[streamKey] = true;
-                logInterruptMsgDiag("mqtt.error.abort.deferToIdle", {
-                  sessionId: sid,
-                  actorId,
-                  ...summarizeStreamEntry(
-                    useV2StreamingStore.getState().byKey[streamKey],
-                    "live",
-                  ),
-                });
-              } else {
-                terminalFlushPendingRef.current[agentStreamKey(sid, actorId)] = true;
-                flushTurnAgentReply(sid, actorId, "mqtt.error");
-                // Localize known daemon-emitted errors (the daemon is
-                // locale-agnostic and emits English for iOS/logs). Keep the raw
-                // message for anything we don't recognize.
-                const localizedMessage = localizeAgentTurnErrorMessage(er.message, t);
-                useV2StreamingStore.getState().setError(
-                  sid,
-                  actorId,
-                  localizedMessage,
-                  er.details ?? "",
-                );
-                // The live dock unmounts as soon as a turn errors
-                // (isStreamInterruptible excludes errored entries), so the dock's
-                // ErrorCard is never seen. Surface every turn error as a durable
-                // SessionErrorAlert bubble in the thread instead.
-                {
-                  const detail = (er.details ?? "").trim();
-                  const errorName = classifyAgentTurnErrorName(er.message);
-                  useSessionStore.getState().setSessionErrorEvent({
-                    sessionId: sid,
-                    error: {
-                      name: errorName,
-                      data: {
-                        message: formatAgentTurnErrorDisplayMessage(localizedMessage, detail),
-                      },
-                    },
-                  });
-                }
-              }
-            } else if (event?.case === "raw") {
-              const raw = event.value as { method?: string; jsonPayload?: Uint8Array };
-              const method = raw.method ?? "";
-              if (
-                method === "question_asked" ||
-                method === "question_replied" ||
-                method === "question_rejected"
-              ) {
-                try {
-                  const payload = JSON.parse(
-                    new TextDecoder().decode(raw.jsonPayload ?? new Uint8Array()),
-                  ) as Record<string, unknown>;
-                  const store = useSessionStore.getState();
-                  if (method === "question_asked") {
-                    const tool = (payload.tool ?? {}) as { messageID?: string; callID?: string };
-                    const questions: Question[] = Array.isArray(payload.questions)
-                      ? (payload.questions as Array<Record<string, unknown>>).map((q, i) => ({
-                          id: String(i),
-                          header: typeof q.header === "string" ? q.header : "",
-                          question: typeof q.question === "string" ? q.question : "",
-                          options: Array.isArray(q.options) ? (q.options as QuestionOption[]) : [],
-                          multiple: !!q.multiple,
-                        }))
-                      : [];
-                    store.addPendingQuestion({
-                      questionId: String(payload.id ?? ""),
-                      toolCallId: tool.callID ?? "",
-                      messageId: tool.messageID ?? "",
-                      questions,
-                      sessionId: sid,
-                      agentActorId: actorId,
-                      source: "agent",
-                    });
-                  } else {
-                    store.resolveQuestion(String(payload.requestID ?? payload.id ?? ""));
-                  }
-                } catch (e) {
-                  console.warn("[question] raw event parse failed", e);
-                }
-              }
-            } else if (event?.case === "permissionRequest") {
-              const pr = event.value as {
-                requestId?: string;
-                toolName?: string;
-                description?: string;
-                params?: Record<string, string>;
-                options?: Array<{ optionId?: string; kind?: string; name?: string }>;
-              };
-              logStreamToolDiag("mqtt.permissionRequest", {
-                sessionId: sid,
-                actorId,
-                eventId: decoded.envelope.eventId,
-                requestId: pr.requestId,
-                toolName: pr.toolName,
-                description: pr.description,
-                isDoomLoop: pr.toolName === "doom_loop",
-              });
-              // params.toolCallId is the tool that asked (bash/…), not the parent
-              // task tool — only bind when we can resolve the parent task id.
-              const childSid = pr.params?.childSessionId?.trim() ?? "";
-              if (childSid) {
-                const orphanTask = resolveOrphanSubagentParentToolId(
-                  sid,
-                  actorId,
-                  useV2StreamingStore.getState(),
-                );
-                if (orphanTask) {
-                  tryBindChildFromPermission(sid, actorId, childSid, orphanTask);
-                }
-              }
-              void handleAcpPermissionRequest({
-                sessionId: sid,
-                agentActorId: actorId,
-                request: {
-                  requestId: pr.requestId ?? "",
-                  toolName: pr.toolName ?? "",
-                  description: pr.description ?? "",
-                  params: pr.params ?? {},
-                  requesterActorId:
-                    pr.params?.requester_actor_id?.trim() || undefined,
-                  options: (pr.options ?? []).map((o) => ({
-                    optionId: o.optionId ?? "",
-                    kind: o.kind ?? "",
-                    name: o.name ?? "",
-                  })),
-                },
-              });
-            } else if (event?.case === "planUpdate") {
-              const pu = event.value as { entries?: Array<{ content?: string; priority?: string; status?: string }> };
-              useV2StreamingStore.getState().setPlan(
-                sid,
-                actorId,
-                mapAcpPlanEntries(pu.entries ?? []),
-              );
-            }
-            // statusChange / availableCommands / raw: MVP no-op (RuntimeInfo retain
-            // already surfaces agent status; commands TBD; raw is catch-all).
+            handleAcpEvent(liveWiringCtx, decoded, sid, t);
+            return;
           }
         });
         recordMqttDiag("app-mqtt", "listen:after", { wiringId });
