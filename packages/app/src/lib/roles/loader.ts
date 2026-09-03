@@ -1,4 +1,5 @@
 import { homeDir } from "@tauri-apps/api/path"
+import { allowFsScopeDirs } from "@/lib/fs-scope"
 import { exists, mkdir, readDir, readFile, readTextFile, remove, rename, writeFile, writeTextFile } from "@tauri-apps/plugin-fs"
 import type {
   AttachableSkill,
@@ -182,7 +183,7 @@ async function readRoleConfigPaths(workspacePath: string): Promise<string[]> {
     const parsed = JSON.parse(content)
     const rawPaths: unknown[] = Array.isArray(parsed?.paths) ? parsed.paths : []
     const home = (await homeDir()).replace(/\/$/, "")
-    return rawPaths
+    const expanded = rawPaths
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .map((value) => {
         const trimmed = value.trim()
@@ -192,6 +193,12 @@ async function readRoleConfigPaths(workspacePath: string): Promise<string[]> {
         if (trimmed.startsWith("/")) return trimmed
         return `${workspacePath}/${trimmed.replace(/^\.\//, "")}`
       })
+    // These are user-configured roots that can sit anywhere — `~/…` or an
+    // absolute path — so they fall outside both the static capability grants
+    // and the workspace grant. The narrowed fs scope (SEC-2 / ADR-0009) would
+    // otherwise deny them on every launch after the first.
+    await allowFsScopeDirs(expanded)
+    return expanded
   } catch {
     return []
   }

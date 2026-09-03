@@ -33,7 +33,10 @@ serde_json = "1"
 teamclu-runtime-env = { path = "../../crates/teamclu-runtime-env" }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "protocol-asset", "unstable", "tray-icon"] }
+# `protocol-asset` is deliberately absent: the asset protocol is disabled in
+# tauri.conf.json (SEC-2 / ADR-0009). tauri-build cross-checks the two, so the
+# feature and the config have to be removed together.
+tauri = { version = "2", features = ["macos-private-api", "unstable", "tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"

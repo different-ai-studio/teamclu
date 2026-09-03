@@ -131,6 +131,15 @@ pub async fn register_window_workspace(
     // The binding itself is a map insert and happens before the first await, so
     // a command issued right after this one already resolves the workspace.
     bind_window_to_workspace(&registry, window.label(), &workspace_path);
+    // Second line of defence for the narrowed fs scope (SEC-2 / ADR-0009). The
+    // frontend already grants the workspace at the top of `setWorkspace`, which
+    // is what actually orders the grant before the first read; this covers any
+    // path that reaches a window binding without going through that store.
+    if let Err(e) =
+        crate::fs_scope::allow_directory(window.app_handle(), std::path::Path::new(&workspace_path))
+    {
+        log::warn!("[FsScope] {e}");
+    }
     // Identity == daemon actor_id (empty until the daemon is onboarded or
     // reachable; a generator that needs it then yields None and seeds nothing).
     // Steady state this is the cached answer of `GET /v1/setup/status`; on a

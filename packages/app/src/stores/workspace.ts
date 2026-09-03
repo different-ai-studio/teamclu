@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { UNSUPPORTED_BINARY_EXTENSIONS } from "@/components/viewers/UnsupportedFileViewer";
 import { isTauri } from '@/lib/utils'
+import { allowFsScopeDirs } from '@/lib/fs-scope'
 import { ensureGitignoreEntries } from '@/lib/workspace/gitignore-manager'
 import { seedDefaultWorkspaceInstructions } from '@/lib/workspace-seed/seed-default-instructions'
 import { appDisplayName, appStoragePrefix, TEAM_REPO_DIR } from '@/lib/config/build-config'
@@ -405,6 +406,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // Expand ~ to home directory
     const expandedPath = await expandPath(path);
     console.log("[Workspace] Setting workspace:", path, "->", expandedPath);
+    // The webview's fs scope no longer covers the whole disk (SEC-2 /
+    // ADR-0009), so ask Rust to widen it to this workspace before anything
+    // below reads or writes inside it. Awaited on purpose: the `mkdir` on the
+    // next line is the first thing that would be denied. `register_window_-
+    // workspace` also grants it, but that call is fire-and-forget and lands
+    // much later.
+    await allowFsScopeDirs([expandedPath]);
     await ensureWorkspaceDirectory(expandedPath);
 
     // If selecting the same workspace, just refresh the file tree — don't reset agent state
