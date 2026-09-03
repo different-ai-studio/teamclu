@@ -15,7 +15,7 @@ import type { SettingsSection } from '@/stores/ui'
 const lazySection = (load: () => Promise<Record<string, unknown>>, name: string) =>
   React.lazy(async () => ({ default: (await load())[name] as React.ComponentType }))
 
-export const SETTINGS_SECTION_COMPONENTS: Record<SettingsSection, React.ComponentType> = {
+const SETTINGS_SECTION_COMPONENTS: Record<SettingsSection, React.ComponentType> = {
   llm: lazySection(() => import('./LLMSectionRouter'), 'LLMSection'),
   knowledgeAcl: lazySection(() => import('./KnowledgeAclSection'), 'KnowledgeAclSection'),
   general: lazySection(() => import('./GeneralSection'), 'GeneralSection'),

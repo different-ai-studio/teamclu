@@ -21,7 +21,7 @@ import { isTauri } from '@/lib/utils'
 // what these two calls manage.
 // ---------------------------------------------------------------------------
 
-export interface TeamShareState {
+interface TeamShareState {
   /**
    * Save the team secret and deliver it to the daemon. Resolves to a warning
    * string when the save succeeded but the daemon did not take delivery — the

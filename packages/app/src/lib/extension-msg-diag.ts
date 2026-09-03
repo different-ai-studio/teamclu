@@ -104,7 +104,7 @@ export function logExtMsgDiag(
   console.info(`${LOG_PREFIX} ${stage}`, record);
 }
 
-export function dumpExtMsgDiag(): DiagRecord[] {
+function dumpExtMsgDiag(): DiagRecord[] {
   console.table(ring);
   return [...ring];
 }

@@ -311,14 +311,6 @@ describe('useTauriBodyClass', () => {
   })
 })
 
-describe('useLayoutModeShortcut', () => {
-  it('renders without error', async () => {
-    const { useLayoutModeShortcut } = await import('@/hooks/useAppInit')
-    const { result } = renderHook(() => useLayoutModeShortcut())
-    expect(result.current).toBeUndefined()
-  })
-})
-
 describe('useTelemetryConsent', () => {
   it('initializes telemetry on mount', async () => {
     const { useTelemetryConsent } = await import('@/hooks/useAppInit')

@@ -2,7 +2,7 @@ import { getBackend } from '@/lib/backend'
 import { getLocalDaemonAgent } from '@/lib/daemon-agent-admin'
 import { isTauri } from '@/lib/utils'
 
-export type QuickChatSource = 'local' | 'member_default' | 'team_default'
+type QuickChatSource = 'local' | 'member_default' | 'team_default'
 
 export type QuickChatTarget = {
   agentId: string

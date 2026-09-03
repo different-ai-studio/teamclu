@@ -22,10 +22,6 @@ export async function fetchAppVersion(): Promise<string> {
   return fetchAppVersionInternal()
 }
 
-export function getAppVersion(): string {
-  return cachedVersion || FALLBACK_VERSION
-}
-
 export function useAppVersion(): string {
   const [version, setVersion] = useState(cachedVersion || FALLBACK_VERSION)
 

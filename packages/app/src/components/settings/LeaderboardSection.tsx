@@ -23,7 +23,7 @@ function formatTokens(tokens: number | undefined | null): string {
 
 // ── Types ──────────────────────────────────────────────────────────
 
-export interface LeaderboardStats {
+interface LeaderboardStats {
   totalFeedbacks: number
   positiveCount: number
   negativeCount: number
@@ -33,7 +33,7 @@ export interface LeaderboardStats {
   skillUsage?: Record<string, number>
 }
 
-export interface MemberLeaderboardExport {
+interface MemberLeaderboardExport {
   memberId: string
   memberName: string
   exportedAt: string

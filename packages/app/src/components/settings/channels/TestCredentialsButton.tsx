@@ -12,7 +12,7 @@ import {
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 
-export interface TestResult {
+interface TestResult {
   success: boolean
   message: string
 }

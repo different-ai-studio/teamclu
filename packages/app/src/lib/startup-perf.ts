@@ -75,7 +75,7 @@ export function getStartupTimeline(): StartupStamp[] {
 }
 
 /** Pretty-print the timeline with per-phase deltas. Safe to call anytime. */
-export function logStartupTimeline(): void {
+function logStartupTimeline(): void {
   if (!dumpEnabled()) return;
   const ordered = getStartupTimeline();
   if (ordered.length === 0) return;

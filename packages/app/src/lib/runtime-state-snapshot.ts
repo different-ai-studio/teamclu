@@ -11,7 +11,6 @@ import { fetchAppVersion } from '@/lib/version'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useMqttReconnectStore } from '@/stores/mqtt-reconnect'
 import { useSessionStore } from '@/stores/session'
-import { useStreamingStore } from '@/stores/streaming'
 
 export interface RuntimeStateSnapshot {
   generatedAt: string
@@ -43,11 +42,6 @@ export interface RuntimeStateSnapshot {
     activeSessionId: string | null
     currentSessionId: string | null
   }
-  streaming: {
-    streamingMessageId: string | null
-    streamingContentLength: number
-    activeChildSessions: string[]
-  }
   team: {
     id: string | null
     name: string | null
@@ -63,13 +57,8 @@ export async function getRuntimeStateSnapshot(): Promise<RuntimeStateSnapshot> {
   const mqttDiag = getMqttDiagSnapshot()
   const session = getSession()
   const sessionStore = useSessionStore.getState()
-  const streaming = useStreamingStore.getState()
   const teamState = useCurrentTeamStore.getState()
   const daemon = isTauri() ? await probeDaemonHttp().catch(() => null) : null
-
-  const activeChildSessions = Object.entries(streaming.childSessionStreaming)
-    .filter(([, state]) => state.isStreaming)
-    .map(([sessionId]) => sessionId)
 
   return {
     generatedAt: new Date().toISOString(),
@@ -103,11 +92,6 @@ export async function getRuntimeStateSnapshot(): Promise<RuntimeStateSnapshot> {
     session: {
       activeSessionId: sessionStore.activeSessionId ?? null,
       currentSessionId: sessionStore.currentSessionId ?? null,
-    },
-    streaming: {
-      streamingMessageId: streaming.streamingMessageId,
-      streamingContentLength: streaming.streamingContent.length,
-      activeChildSessions,
     },
     team: {
       id: teamState.team?.id ?? null,

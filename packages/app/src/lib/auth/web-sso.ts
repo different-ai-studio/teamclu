@@ -11,7 +11,7 @@ import { getEffectiveServerConfigSync } from "@/lib/server-config";
 import { invoke } from "@tauri-apps/api/core";
 import { AuthError } from "@/lib/auth/types";
 
-export interface SsoConfig {
+interface SsoConfig {
   /** Full sign-in URL to load in the webview. */
   loginUrl: string;
   /** Admin host — passed to the native commands so read/clear only act here. */

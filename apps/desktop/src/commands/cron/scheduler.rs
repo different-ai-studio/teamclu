@@ -9,7 +9,6 @@ use tokio::sync::RwLock;
 use super::delivery::DeliveryManager;
 use super::storage::CronStorage;
 use super::types::*;
-use crate::process_util::CommandNoWindow;
 
 const CRON_RUN_HEARTBEAT_INTERVAL_SECS: u64 = 30;
 const STALE_RUN_ERROR: &str =
@@ -564,11 +563,9 @@ impl CronScheduler {
             }
             ScheduleKind::Every => {
                 // Interval: add every_ms to the last run (or now if first run)
-                if let Some(ms) = job.schedule.every_ms {
-                    Some(after + chrono::Duration::milliseconds(ms as i64))
-                } else {
-                    None
-                }
+                job.schedule
+                    .every_ms
+                    .map(|ms| after + chrono::Duration::milliseconds(ms as i64))
             }
             ScheduleKind::Cron => {
                 // Cron expression: find the next occurrence.

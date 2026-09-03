@@ -5,7 +5,6 @@ import { resetClientChatState } from "@/lib/reset-client-chat-state";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
-import { useStreamingStore } from "@/stores/streaming";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
@@ -37,11 +36,6 @@ describe("resetClientChatState", () => {
       messageRefreshForceFull: true,
     });
     useV2StreamingStore.getState().appendOutput("session-a", "actor-1", "streaming");
-    useStreamingStore.setState({
-      streamingMessageId: "stream-1",
-      streamingContent: "partial",
-      childSessionStreaming: { "child-1": { isStreaming: true, text: "x" } },
-    });
     useEngagedAgentStore.getState().setAgents("session-a", [
       { id: "agent-1", displayName: "Agent" },
     ]);
@@ -81,8 +75,6 @@ describe("resetClientChatState", () => {
     expect(useSessionStore.getState().pendingPermissions).toEqual([]);
     expect(Object.keys(useV2StreamingStore.getState().byKey)).toHaveLength(0);
     expect(useV2StreamingStore.getState().archived).toHaveLength(0);
-    expect(useStreamingStore.getState().streamingMessageId).toBeNull();
-    expect(useStreamingStore.getState().childSessionStreaming).toEqual({});
     expect(useEngagedAgentStore.getState().getAgents("session-a")).toEqual([]);
     expect(useSessionNoticeStore.getState().bySession).toEqual({});
     expect(useAgentModelPickStore.getState().bySessionAgent).toEqual({});

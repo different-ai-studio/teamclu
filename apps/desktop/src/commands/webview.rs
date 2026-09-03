@@ -219,6 +219,36 @@ fn build_teamclu_identity_script(device_no: &str, device_name: &str) -> String {
     )
 }
 
+/// `scheme://host[:port]`, the unit identity injection is scoped to.
+fn origin_key(url: &tauri::Url) -> String {
+    let host = url.host_str().unwrap_or("");
+    match url.port() {
+        Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
+        None => format!("{}://{}", url.scheme(), host),
+    }
+}
+
+/// The origin `window.teamclu` may be injected into for a tab opened at `url`,
+/// or `None` when the page must not learn who is looking at it.
+///
+/// Trusted: the Cloud API host baked at build time, the admin console the
+/// frontend vetted for SSO injection (`admin_console_vetted`), and loopback for
+/// development. Anything else — a partner site, a link from a chat message, an
+/// OAuth provider — gets nothing. Non-loopback origins must be https so the
+/// identity is never handed over a plaintext hop.
+fn identity_injection_origin(url: &tauri::Url, admin_console_vetted: bool) -> Option<String> {
+    let host = url.host_str()?;
+    let loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]");
+    let cloud_api_host = option_env!("CLOUD_API_URL")
+        .and_then(|raw| tauri::Url::parse(raw.trim()).ok())
+        .and_then(|u| u.host_str().map(str::to_string));
+    let trusted = admin_console_vetted || loopback || cloud_api_host.as_deref() == Some(host);
+    if !trusted || (url.scheme() != "https" && !loopback) {
+        return None;
+    }
+    Some(origin_key(url))
+}
+
 /// Reject http(s) URLs whose host cannot be resolved before handing them to
 /// WKWebView / WebView2. Loading an unresolvable `WebviewUrl::External` has
 /// been observed to freeze the AppKit main thread on macOS (window undraggable,
@@ -533,6 +563,13 @@ pub async fn webview_create(
         _ => None,
     };
 
+    // SEC-7: `window.teamclu` (device id, display name) goes only into origins
+    // we trust — the Cloud API host baked at build time, the admin console the
+    // frontend just vetted for SSO injection, or loopback in dev — and only
+    // while the page stays on the origin it was opened at. Before this, every
+    // page a tab navigated to, first- or third-party, received it on each load.
+    let identity_origin = identity_injection_origin(&parsed_url, auth_inject_script.is_some());
+
     #[allow(unused_mut)]
     let mut webview_builder =
         tauri::webview::WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed_url))
@@ -578,11 +615,12 @@ pub async fn webview_create(
         });
     }
 
-    // Inject as long as we have a device ID. Device name is a display-only
-    // string — empty is fine and must not block the JWT/storage shim.
+    // Inject as long as we have a device ID and the origin is trusted. Device
+    // name is a display-only string — empty is fine and must not block the shim.
     let identity = device_no
         .as_deref()
         .filter(|dno| !dno.is_empty())
+        .filter(|_| identity_origin.is_some())
         .map(|dno| (dno.to_string(), device_name.clone().unwrap_or_default()));
     let initial_identity_script = identity
         .as_ref()
@@ -593,6 +631,7 @@ pub async fn webview_create(
     {
         let progress_label = label.clone();
         let identity = identity.clone();
+        let identity_origin = identity_origin.clone();
         let auth_script = auth_inject_script.clone();
         let clear_script = clear_inject_script.clone();
         webview_builder = webview_builder.on_page_load(move |webview, payload| {
@@ -609,7 +648,10 @@ pub async fn webview_create(
                 }),
             );
 
-            if let Some((device_no, device_name)) = &identity {
+            // A navigation away from the trusted origin (redirect, link, SSO
+            // hop) must not carry the identity object with it.
+            let on_trusted_origin = webview.url().ok().map(|u| origin_key(&u)) == identity_origin;
+            if let (Some((device_no, device_name)), true) = (&identity, on_trusted_origin) {
                 let script = build_teamclu_identity_script(device_no, device_name);
                 match payload.event() {
                     tauri::webview::PageLoadEvent::Started => {
@@ -753,15 +795,6 @@ pub async fn webview_set_bounds(
     if let Some(webview) = app.get_webview(&label) {
         let _ = webview.set_position(tauri::LogicalPosition::new(x, y));
         let _ = webview.set_size(tauri::LogicalSize::new(width, height));
-    }
-    Ok(())
-}
-
-/// Bring a native webview to front.
-#[tauri::command]
-pub async fn webview_focus(app: tauri::AppHandle, label: String) -> Result<(), String> {
-    if let Some(webview) = app.get_webview(&label) {
-        let _ = webview.set_focus();
     }
     Ok(())
 }
@@ -1072,7 +1105,7 @@ pub async fn webview_set_zoom(
     level: f64,
 ) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&label) {
-        let _ = webview.eval(&format!("document.body.style.zoom = '{}'", level));
+        let _ = webview.eval(format!("document.body.style.zoom = '{}'", level));
     }
     Ok(())
 }
@@ -1165,5 +1198,55 @@ mod tests {
             err.contains("no-such-host-teamclu-617.invalid"),
             "error should name the host: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod identity_origin_tests {
+    use super::*;
+
+    fn url(s: &str) -> tauri::Url {
+        tauri::Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn admin_console_vetted_https_origin_is_trusted() {
+        assert_eq!(
+            identity_injection_origin(&url("https://admin.example.com/login?x=1"), true),
+            Some("https://admin.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn unvetted_third_party_gets_nothing() {
+        assert_eq!(
+            identity_injection_origin(&url("https://partner.example.org/"), false),
+            None
+        );
+    }
+
+    #[test]
+    fn vetted_but_plaintext_http_gets_nothing() {
+        assert_eq!(
+            identity_injection_origin(&url("http://admin.example.com/login"), true),
+            None
+        );
+    }
+
+    #[test]
+    fn loopback_is_trusted_even_over_http() {
+        assert_eq!(
+            identity_injection_origin(&url("http://localhost:5173/"), false),
+            Some("http://localhost:5173".to_string())
+        );
+    }
+
+    #[test]
+    fn origin_key_keeps_scheme_host_and_port_only() {
+        assert_eq!(
+            origin_key(&url("https://a.b:8443/p?q#f")),
+            "https://a.b:8443"
+        );
+        assert_eq!(origin_key(&url("https://a.b/p")), "https://a.b");
     }
 }

@@ -7,9 +7,9 @@ export type EmptyThreadParticipant = {
   isSelf: boolean
 }
 
-export type EmptyThreadRoutingKind = 'soloAgent' | 'singleAgent' | 'multiAgent'
+type EmptyThreadRoutingKind = 'soloAgent' | 'singleAgent' | 'multiAgent'
 
-export type SoloSessionParticipant =
+type SoloSessionParticipant =
   | { actor_type?: string | null }
   | (Pick<EmptyThreadParticipant, 'isAgent'> & { isExternal?: boolean })
 

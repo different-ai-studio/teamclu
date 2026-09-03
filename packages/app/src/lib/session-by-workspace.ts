@@ -6,12 +6,6 @@ import {
 } from "@/lib/session-viewer-workspace";
 import { workspacePathsMatch } from "@/stores/session-utils";
 
-export function workspaceLabelFromPath(path: string | null | undefined): string | null {
-  if (!path) return null;
-  const trimmed = path.replace(/\/+$/, "");
-  return trimmed.split("/").pop() || trimmed;
-}
-
 async function loadViewerSessionWorkspaceRows(
   teamId: string,
 ): Promise<SessionWorkspaceRow[]> {

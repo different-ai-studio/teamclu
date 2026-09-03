@@ -159,8 +159,13 @@ vi.mock("../TeamPicker", () => ({
 }));
 
 import { AuthGate } from "../AuthGate";
+import {
+  resetInviteLinkConfirmationForTests,
+  useInviteLinkConfirmation,
+} from "@/lib/invite-link-confirmation";
 
 beforeEach(() => {
+  resetInviteLinkConfirmationForTests();
   authState.session = { user: { id: "user-1" } };
   authState.loading = false;
   authState.authFlow = "idle";
@@ -501,11 +506,35 @@ describe("AuthGate", () => {
     ]);
   });
 
+  it("asks before claiming a stashed invite the user has not confirmed (SEC-3)", async () => {
+    isTauriMock.mockReturnValue(false);
+    authState.pendingInviteToken = "invite-token";
+    backendMock.teams.listAllMyTeams.mockResolvedValue([
+      { id: "team-1", name: "Existing", slug: "existing", isMember: true },
+    ]);
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    // The dialog is asked for, nothing is claimed, and the user's own team
+    // bootstraps behind it instead of the gate holding on the answer.
+    await waitFor(() =>
+      expect(useInviteLinkConfirmation.getState().requested).toBe("invite-token"),
+    );
+    await waitFor(() => expect(backendMock.teams.listAllMyTeams).toHaveBeenCalled());
+    expect(authState.claimPendingInvite).not.toHaveBeenCalled();
+  });
+
   it("waits for a pending invite claim before resolving the team gate", async () => {
     isTauriMock.mockReturnValue(false);
     extensionPolicyMock.isExtension = true;
     extensionPolicyMock.autoCreateTeam = false;
     authState.pendingInviteToken = "invite-token";
+    // Accepted in the confirmation dialog this run — the only case AuthGate claims.
+    useInviteLinkConfirmation.setState({ confirmedToken: "invite-token" });
 
     let resolveClaim: (result: { teamId: string }) => void = () => {};
     const claimPromise = new Promise<{ teamId: string }>((resolve) => {

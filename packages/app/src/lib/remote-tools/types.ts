@@ -17,11 +17,6 @@ export type GetPageDomResult = {
   truncated: boolean
 }
 
-export type ShowPageNavLinksArgs = {
-  links: string[]
-  labels?: string[]
-}
-
 export type RemoteToolExecutor = (args: Record<string, unknown>) => Promise<unknown>
 
 export const REMOTE_TOOL_ERROR = {

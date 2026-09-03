@@ -2,7 +2,7 @@ import { appStoragePrefix } from '@/lib/build-config'
 
 const STORAGE_KEY = `${appStoragePrefix}-daemon-onboarding-identity`
 
-export type DaemonOnboardingIdentity = {
+type DaemonOnboardingIdentity = {
   teamId: string
   userId: string
 }

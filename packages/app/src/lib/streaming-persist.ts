@@ -42,7 +42,7 @@ export function snapshotTranscriptParts(
  * Prevents reload from restoring a permanent "running" spinner when idle
  * arrives before the late toolResult (opencode abort order).
  */
-export function finalizeStreamEntryForPersist(
+function finalizeStreamEntryForPersist(
   entry: AgentStreamEntry,
 ): AgentStreamEntry {
   const cloned = cloneStreamEntrySnapshot(entry);

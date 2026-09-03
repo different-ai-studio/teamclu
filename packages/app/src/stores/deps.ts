@@ -25,14 +25,14 @@ export interface DependencyInfo {
  * manifest, pi's is the minimum `pi.lock.json` pins — but the question the UI
  * asks is the same either way: is there something to update to.
  */
-export interface DependencyVersions {
+interface DependencyVersions {
   installed: string | null
   latest: string | null
   /** null = latest unknown (mirror unreachable); keep offering the update. */
   upToDate: boolean | null
 }
 
-export interface InstallResult {
+interface InstallResult {
   success: boolean
   error?: string
 }

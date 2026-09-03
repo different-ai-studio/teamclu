@@ -32,7 +32,6 @@ import { UNSUPPORTED_BINARY_EXTENSIONS } from "@/components/viewers/UnsupportedF
 import { supportsPreview } from "@/components/editors/utils";
 import { useAutoSave } from "@/components/editors/useAutoSave";
 import { ConflictBanner } from "@/components/editors/ConflictBanner";
-import { useSessionStore } from "@/stores/session";
 import { sendAgentPromptInActiveSession } from "@/lib/session-send-agent";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useCurrentTeamStore } from '@/stores/current-team'
@@ -87,7 +86,7 @@ export function getFileType(
 }
 
 // Image Viewer component
-export function ImageViewer({
+function ImageViewer({
   content,
   filename,
   filePath,
@@ -223,21 +222,22 @@ export function FileContentViewer({
       try {
         const { listen } = await import("@tauri-apps/api/event");
 
-        unlisten = await listen<{ path: string; kind: string }>(
-          "file-change",
+        unlisten = await listen<{ paths: string[]; directories: string[] }>(
+          "file-change-batch",
           (event) => {
-            const changedPath = event.payload.path;
-
-            // Check if the changed file matches our selected file
             // Normalize paths for comparison
             const normalizedSelected = selectedFile.replace(/^\/+|\/+$/g, "");
-            const normalizedChanged = changedPath.replace(/^\/+|\/+$/g, "");
+            // One event per watcher window; reload if any path in it is our file.
+            const touched = event.payload.paths.some((changedPath) => {
+              const normalizedChanged = changedPath.replace(/^\/+|\/+$/g, "");
+              return (
+                normalizedSelected === normalizedChanged ||
+                normalizedSelected.endsWith("/" + normalizedChanged) ||
+                normalizedChanged.endsWith("/" + normalizedSelected)
+              );
+            });
 
-            if (
-              normalizedSelected === normalizedChanged ||
-              normalizedSelected.endsWith("/" + normalizedChanged) ||
-              normalizedChanged.endsWith("/" + normalizedSelected)
-            ) {
+            if (touched) {
               console.log(
                 "[FileContentViewer] Current file changed, reloading:",
                 selectedFile,
@@ -481,35 +481,13 @@ export function FileEditor({
   // Check if this file supports preview
   const previewType = supportsPreview(filename);
 
-  // Get session diff to check if this file has changes - precise selector
-  const sessionDiff = useSessionStore((s) => s.sessionDiff);
+  // Changes are measured against git HEAD; the per-session diff feed that used
+  // to be consulted here never had a producer.
+  const hasChanges = gitHeadContent !== null && gitHeadContent !== content;
 
-  // Find if this file has changes in the current session
-  const fileDiff = useMemo(() => {
-    // Normalize the file path for comparison
-    const normalizedPath = filePath.replace(/^\/+|\/+$/g, "");
-
-    return sessionDiff.find((diff) => {
-      const normalizedDiffPath = diff.file.replace(/^\/+|\/+$/g, "");
-      // Check various path matching scenarios
-      return (
-        normalizedPath === normalizedDiffPath ||
-        normalizedPath.endsWith("/" + normalizedDiffPath) ||
-        normalizedPath.endsWith(normalizedDiffPath) ||
-        normalizedDiffPath.endsWith("/" + normalizedPath) ||
-        normalizedDiffPath.endsWith(normalizedPath)
-      );
-    });
-  }, [filePath, sessionDiff]);
-
-  // Determine if file has any kind of changes (session diff OR git diff)
-  const hasSessionChanges = !!fileDiff;
-  const hasGitChanges = gitHeadContent !== null && gitHeadContent !== content;
-  const hasChanges = hasSessionChanges || hasGitChanges;
-
-  // Compute git-level +/- stats when no session diff is available
+  // Compute git-level +/- stats against HEAD
   const gitDiffStats = useMemo(() => {
-    if (hasSessionChanges || !gitHeadContent) return null;
+    if (!gitHeadContent) return null;
     const oldLines = gitHeadContent.split("\n");
     const newLines = content.split("\n");
     // Simple line count diff
@@ -531,14 +509,7 @@ export function FileEditor({
       }
     }
     return { additions, deletions };
-  }, [hasSessionChanges, gitHeadContent, content]);
-
-  // Auto-show diff view when session has changes
-  useEffect(() => {
-    if (hasSessionChanges) {
-      setShowDiff(true);
-    }
-  }, [hasSessionChanges]);
+  }, [gitHeadContent, content]);
 
   // Detect dark mode
   const [isDark, setIsDark] = useState(() =>
@@ -856,10 +827,10 @@ export function FileEditor({
           {hasChanges && (
             <span className="text-xs text-muted-foreground">
               <span className="text-green-600">
-                +{fileDiff?.additions ?? gitDiffStats?.additions ?? 0}
+                +{gitDiffStats?.additions ?? 0}
               </span>{" "}
               <span className="text-red-500">
-                -{fileDiff?.deletions ?? gitDiffStats?.deletions ?? 0}
+                -{gitDiffStats?.deletions ?? 0}
               </span>
             </span>
           )}
@@ -942,7 +913,7 @@ export function FileEditor({
               isDark={isDark}
             />
           </Suspense>
-        ) : showDiff && hasChanges && (fileDiff || gitHeadContent !== null) ? (
+        ) : showDiff && hasChanges && gitHeadContent !== null ? (
           // Diff view - custom diff renderer with Shiki
           <Suspense
             fallback={
@@ -952,7 +923,7 @@ export function FileEditor({
             }
           >
             <LazyDiffRenderer
-              before={fileDiff?.before ?? gitHeadContent ?? ""}
+              before={gitHeadContent ?? ""}
               after={currentContent}
               filePath={filePath}
               isDark={isDark}
@@ -1026,7 +997,7 @@ export function FileEditor({
                         filePath={filePath}
                         onChange={(value) => setCurrentContent(value)}
                         isDark={isDark}
-                        originalContent={gitHeadContent ?? fileDiff?.before ?? null}
+                        originalContent={gitHeadContent ?? null}
                         targetLine={targetLine}
                     />
                   </Suspense>

@@ -1,6 +1,6 @@
-export type CatalogModelOption = { id: string; name: string }
+type CatalogModelOption = { id: string; name: string }
 
-export type CatalogProviderGroup = {
+type CatalogProviderGroup = {
   providerId: string
   models: CatalogModelOption[]
 }

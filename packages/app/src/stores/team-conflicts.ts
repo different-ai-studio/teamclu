@@ -14,7 +14,7 @@ import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
  * (already holding the REMOTE text), and `sidecar` is where their own text went
  * (e.g. `knowledge/.conflicts/a/foo.conflict.<ts>.<hash>.md`).
  */
-export /** The two fixed roots a sync key may name. */
+/** The two fixed roots a sync key may name. */
 const SYNC_ROOTS = ['knowledge/', 'documents/'] as const
 
 export interface TeamConflict {

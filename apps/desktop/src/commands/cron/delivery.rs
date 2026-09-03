@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use super::amuxd_client;
 use super::types::DeliveryChannel;
 use crate::commands::gateway;

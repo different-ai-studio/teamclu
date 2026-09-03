@@ -25,7 +25,7 @@ import type { AppRow, AppSessionRow } from '@/lib/backend/types'
  * diverged silently: agent sessions opened one directory while `deploy` built
  * another, so a finished site kept deploying as the untouched seed template.
  */
-export async function appWorkdirPath(
+async function appWorkdirPath(
   appId: string,
   teamId?: string | null,
 ): Promise<string | null> {

@@ -510,13 +510,11 @@
     }
   },
   "navigation": {
-    "changes": "变更",
     "shortcuts": "快捷方式",
     "files": "文件",
     "hideTabs": "隐藏文件",
     "restoreTabs": "显示文件",
     "collapsePanel": "收起面板",
-    "toggleSidebar": "切换侧边栏",
     "collapseSidebar": "收起侧边栏",
     "settings": "设置"
   },
@@ -564,11 +562,6 @@
       "routingMultiAgent": "多位 Agent 在场——请 @名字 指定回复对象。",
       "participantCount": "{{count}} 位参与者 · 等待第一条消息"
     },
-    "backToActiveSession": "返回活跃会话",
-    "archivedSession": "归档会话",
-    "restoreSession": "恢复",
-    "archivedSessionLoadError": "无法加载归档会话",
-    "restoreArchivedHint": "恢复此会话后可继续聊天",
     "agent": "助手",
     "startNewChat": "开始新对话",
     "askAboutFile": "询问关于文件的问题",
@@ -754,12 +747,8 @@
     "inputPlaceholderContinue": "继续输入...",
     "refreshMessages": "刷新消息",
     "startingAgent": "正在启动助手...",
-    "taskRunning": "任务运行中...",
     "waitingForAgent": "会话已准备好。正在等待助手运行时完成启动。",
-    "waitingForConfirmationShort": "待确认",
     "newSessionBadge": "新",
-    "messageCountShort": "{{count}} 条消息",
-    "messageCountShort_plural": "{{count}} 条消息",
     "draftContinueBanner": "与 {{name}} 还有 {{count}} 个进行中",
     "draftContinueRecent": "最近会话",
     "draftWithAgentHint": "在下方输入消息，发送后创建与该 Agent 的会话",
@@ -1053,7 +1042,6 @@
     "teamLastSyncTooltip": "最后同步：{{time}}",
     "teamSyncing": "同步中…",
     "duplicateFailed": "创建副本失败",
-    "pathCopied": "路径已复制",
     "undo": "撤销：{{desc}}"
   },
   "sessions": {
@@ -1112,11 +1100,6 @@
     "searchSessions": "搜索会话",
     "searchDescription": "搜索并导航到会话",
     "searchPlaceholder": "搜索会话...",
-    "searchActive": "活跃",
-    "searchArchived": "已归档",
-    "searchAll": "全部",
-    "archivedAt": "归档于 {{date}}",
-    "loadingArchivedSessions": "正在加载归档会话...",
     "sessions": "会话",
     "active": "活动中",
     "selectWorkspaceFirst": "请先选择工作区",
@@ -3114,7 +3097,6 @@
     "expandAll": "全部展开",
     "explainChange": "解释变更",
     "generatePatch": "生成补丁",
-    "openFile": "打开文件",
     "pathCopied": "路径已复制",
     "reviewCode": "审查代码",
     "suggestRefactor": "建议重构"
@@ -3347,6 +3329,14 @@
     "accepted": "已加入团队",
     "acceptFailed": "加入团队失败：{{msg}}",
     "declineFailed": "拒绝失败：{{msg}}"
+  },
+  "inviteLink": {
+    "title": "通过这条邀请链接加入团队？",
+    "description": "接受后会加入链接所属的团队、切换当前组织，并把本机 agent 重新绑定到该团队。只有信任发送者时才继续。",
+    "tokenLabel": "邀请令牌",
+    "signInFirst": "会先登录，登录后立即认领邀请。",
+    "cancel": "暂不",
+    "accept": "加入团队"
   },
   "terminal": {
     "label": "终端",

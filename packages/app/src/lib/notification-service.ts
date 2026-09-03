@@ -12,11 +12,11 @@ import { useSessionSelectionStore } from "@/stores/session-selection-store";
 // --- Types ---
 
 /** OS banner types still exposed in settings; only action_required is sent today. */
-export type NotificationType = "action_required" | "task_completed" | "info";
+type NotificationType = "action_required" | "task_completed" | "info";
 
-export type NotificationSendResult = "sent" | "skipped";
+type NotificationSendResult = "sent" | "skipped";
 
-export type NotificationLevel = "all" | "important" | "mute";
+type NotificationLevel = "all" | "important" | "mute";
 
 export const NOTIFICATION_LEVEL_KEY = `${appStoragePrefix}-notification-level`;
 const DEFAULT_LEVEL: NotificationLevel = "important";

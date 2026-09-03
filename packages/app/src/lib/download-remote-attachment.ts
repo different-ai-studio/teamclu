@@ -9,7 +9,7 @@ import {
 import { revealInFinder } from "@/components/workspace/file-tree-operations";
 import { isTauri } from "@/lib/utils";
 
-export type AttachmentOpenResult = "revealed" | "downloaded" | "cancelled";
+type AttachmentOpenResult = "revealed" | "downloaded" | "cancelled";
 
 function extensionFromFilename(filename: string): string {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
@@ -102,10 +102,3 @@ export async function openOrDownloadRemoteAttachment(
   return "downloaded";
 }
 
-/** @deprecated Prefer openOrDownloadRemoteAttachment */
-export async function downloadRemoteAttachment(
-  url: string,
-  filename: string,
-): Promise<void> {
-  await openOrDownloadRemoteAttachment(url, filename);
-}

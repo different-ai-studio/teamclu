@@ -18,7 +18,7 @@ import {
 } from '@/stores/session-participant-store'
 import { useWorkspaceStore } from '@/stores/workspace'
 
-export type SessionEmptyThreadStateProps = {
+type SessionEmptyThreadStateProps = {
   sessionId: string
 }
 

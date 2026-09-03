@@ -27,7 +27,7 @@ const RANK: Record<SyncBadge, number> = {
   'remote-ahead': 1,
 }
 
-export interface BadgeInputs {
+interface BadgeInputs {
   /** Sync keys with a conflict sidecar on disk. */
   conflicts: Record<string, unknown>
   /** Sync key → local change (from the daemon's live tree scan). */

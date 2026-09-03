@@ -1,5 +1,5 @@
 /** Max size for non-image attachments uploaded to cloud storage. */
-export const MAX_NON_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_NON_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 export function exceedsNonImageLimit(file: File): boolean {
   return exceedsNonImageLimitBySize(file.name, file.size);

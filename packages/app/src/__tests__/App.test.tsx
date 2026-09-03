@@ -120,7 +120,6 @@ vi.mock('@/hooks/useAppInit', () => ({
   useExternalLinkHandler: vi.fn(),
   useTauriBodyClass: vi.fn(),
   useTelemetryConsent: () => ({ showConsentDialog: false, setShowConsentDialog: vi.fn() }),
-  useLayoutModeShortcut: vi.fn(),
 }))
 vi.mock('@/hooks/useMCPFileWatcher', () => ({ useMCPFileWatcher: vi.fn() }))
 vi.mock('@/hooks/useFileEditorState', () => ({
@@ -150,9 +149,8 @@ vi.mock('@/components/chat/ChatPanel', () => ({ ChatPanel: () => <div data-testi
 vi.mock('@/components/chat/NewSessionDialog', () => ({ NewSessionDialog: () => null }))
 vi.mock('@/components/ErrorBoundary', () => ({ ErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</> }))
 vi.mock('@/components/updater/UpdateDialog', () => ({ UpdateDialogContainer: () => null }))
-vi.mock('@/components/panel', () => ({
+vi.mock('@/components/panel/RightPanel', () => ({
   RightPanel: () => null,
-  ShortcutsPanel: () => null,
 }))
 vi.mock('@/components/settings', () => ({ Settings: () => <div>settings</div> }))
 vi.mock('@/components/settings/FeedbackDialog', () => ({ FeedbackDialog: () => null }))
@@ -303,7 +301,7 @@ describe('App', () => {
     expect(container).toBeTruthy()
   })
 
-  it('opens settings as a modal panel over the current workspace', () => {
+  it('opens settings as a modal panel over the current workspace', async () => {
     uiStoreState.currentView = 'settings'
     workspaceStoreState.workspacePath = '/workspace'
 
@@ -313,7 +311,8 @@ describe('App', () => {
     expect(screen.getByTestId('chat-panel')).toBeInTheDocument()
     expect(dialog).toBeInTheDocument()
     expect(dialog.className).toContain('w-[min(960px,calc(100vw-4rem))]')
-    expect(screen.getByText('settings')).toBeInTheDocument()
+    // The settings body is lazy-loaded into the already-open dialog.
+    expect(await screen.findByText('settings')).toBeInTheDocument()
   })
 
   // The `files` right-panel tab and its BookOpen header entry went with the RAG
@@ -367,7 +366,7 @@ describe('App', () => {
     expect(screen.queryByRole('button', { name: 'New Chat' })).toBeNull()
   })
 
-  it('renders team-share item details directly without the tab bar', () => {
+  it('renders team-share item details directly without the tab bar', async () => {
     workspaceStoreState.workspacePath = '/workspace'
     uiStoreState.sidebarFilter = { kind: 'teamShare', section: 'mcp' }
     teamShareBrowserState.detailTarget = { kind: 'mcp', name: 'memory' }
@@ -377,7 +376,8 @@ describe('App', () => {
 
     render(<App />)
 
-    expect(screen.getByTestId('team-share-detail')).toHaveTextContent('mcp')
+    // The team-share detail pane is lazy-loaded.
+    expect(await screen.findByTestId('team-share-detail')).toHaveTextContent('mcp')
     expect(screen.queryByTestId('tab-bar')).toBeNull()
     expect(screen.queryByTestId('tab-content-renderer')).toBeNull()
   })

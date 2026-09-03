@@ -48,7 +48,7 @@ function parseMentionDeliverySnapshot(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-export function adaptTeamcluMessageToSdk(m: TeamcluMessage): SdkMessage {
+function adaptTeamcluMessageToSdk(m: TeamcluMessage): SdkMessage {
   const mentionActorIds = parseDisplayMentionActorIds(m);
   const mentionDeliverySnapshot = parseMentionDeliverySnapshot(m);
   const replyTo = m.replyToMessageId?.trim() || undefined;
@@ -845,7 +845,7 @@ function groupByTurn(
   return out;
 }
 
-export type AdaptTeamcluMessagesOptions = BuildTurnSdkMessageOptions;
+type AdaptTeamcluMessagesOptions = BuildTurnSdkMessageOptions;
 
 export function adaptTeamcluMessages(
   msgs: TeamcluMessage[] | undefined,

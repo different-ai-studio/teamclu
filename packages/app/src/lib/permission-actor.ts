@@ -3,7 +3,7 @@ import type { PendingPermissionEntry } from "@/stores/session-types";
 const ACP_ACTOR_METADATA_KEY = "_acp_agent_actor_id";
 
 /** Actor that owns an ACP live-stream permission request, when known. */
-export function resolvePermissionActorId(
+function resolvePermissionActorId(
   entry: PendingPermissionEntry,
 ): string | null {
   const metadata = entry.permission.metadata as Record<string, string> | undefined;

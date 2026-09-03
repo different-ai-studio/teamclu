@@ -6,7 +6,7 @@
  */
 
 // Model configuration for custom provider
-export interface CustomModelConfig {
+interface CustomModelConfig {
   modelId: string
   modelName?: string
   limit?: {

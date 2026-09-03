@@ -75,7 +75,7 @@ type SetState = StoreApi<AppsState>["setState"];
 
 export type DeployPhase = "prepare" | "build" | "finalize" | "done";
 
-export interface DeployProgress {
+interface DeployProgress {
   phase: DeployPhase;
   startedAt: number;
 }
@@ -194,7 +194,7 @@ export function mapDeployErrorReason(raw: string): string {
  * `tc-app-<id>` repo, so `git-head` and `git-credential` both 404 on it and
  * its deploy has to build the local workdir instead.
  */
-export function isGiteaManaged(app: Pick<AppRow, "gitAuthKind">): boolean {
+function isGiteaManaged(app: Pick<AppRow, "gitAuthKind">): boolean {
   return app.gitAuthKind === "gitea_deploy_key";
 }
 

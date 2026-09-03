@@ -259,7 +259,7 @@ export function EnvCreateForm({
 }
 
 /** `team:FOO` / `personal:FOO` — see the list column for why the scope is in the id. */
-export function parseEnvSelection(id: string): { scope: 'team' | 'personal'; key: string } {
+function parseEnvSelection(id: string): { scope: 'team' | 'personal'; key: string } {
   if (id.startsWith('personal:')) return { scope: 'personal', key: id.slice('personal:'.length) }
   if (id.startsWith('team:')) return { scope: 'team', key: id.slice('team:'.length) }
   // Selections made before ids carried a scope were team-only.

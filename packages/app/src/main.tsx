@@ -15,7 +15,8 @@ import { fetchPublicConfig } from './lib/bootstrap'
 
 import { ensureBundledAmuxdCurrent } from './lib/daemon-version-upgrade'
 import { initJwtBridge } from './lib/jwt-bridge'
-import { installConsoleCapture } from './lib/console-capture'
+import { installConsoleCapture, redactSentryBreadcrumb } from './lib/console-capture'
+import { InviteLinkConfirmDialog } from './components/invite/InviteLinkConfirmDialog'
 import { markStartup } from './lib/startup-perf'
 import { removeStartupSkeleton } from './lib/utils'
 import { E2E_BUILD } from './lib/e2e/v2-control-active'
@@ -44,7 +45,11 @@ void initSentry({
   dsn: 'https://87ad99c36806946fe743be71ed87fffe@o60909.ingest.us.sentry.io/4511110370295808',
   release: `teamclu-web@${import.meta.env.PACKAGE_VERSION ?? '0.0.0'}`,
   environment: import.meta.env.DEV ? 'development' : 'production',
-  sendDefaultPii: true,
+  // SEC-4: no IP / user identity by default, and every breadcrumb (console
+  // arguments, fetch URLs) goes through the same redaction the Diagnostics
+  // viewer uses. The Rust process applies the same policy in main.rs.
+  sendDefaultPii: false,
+  beforeBreadcrumb: redactSentryBreadcrumb,
 })
 
 // Capture console output for Settings → Diagnostics live viewer (ring buffer in memory).
@@ -133,6 +138,12 @@ createRoot(document.getElementById('root')!).render(
       ) : (
         <>
           <SidePanelHostGateOverlay />
+          {/*
+            SEC-3: the invite-link confirmation lives outside AuthGate so a link
+            arriving on the login screen is asked about just like one arriving
+            inside the shell. Only a token accepted here is ever claimed.
+          */}
+          <InviteLinkConfirmDialog />
           {/*
             An E2E build mounts App without AuthGate. The harness never signs
             in — it drives the app over the MCP socket and seeds sessions,

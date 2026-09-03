@@ -29,7 +29,7 @@ const CACHE_TTL_MS = 5_000;
 const cache = new Map<string, { at: number; map: WikiFileMap }>();
 
 /** Drop a cached map (or all of them) after something writes into the tree. */
-export function invalidateWikiFileMap(rootDir?: string): void {
+function invalidateWikiFileMap(rootDir?: string): void {
   if (rootDir === undefined) {
     cache.clear();
     return;
@@ -56,7 +56,7 @@ async function readDirRecursive(rootPath: string): Promise<string[]> {
 }
 
 /** Map of page name → path relative to `rootDir`. */
-export async function buildWikiFileMap(rootDir: string): Promise<WikiFileMap> {
+async function buildWikiFileMap(rootDir: string): Promise<WikiFileMap> {
   const hit = cache.get(rootDir);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
     return hit.map;

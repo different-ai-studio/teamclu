@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type ChannelPlatform =
+type ChannelPlatform =
   | "discord"
   | "wecom"
   | "feishu"

@@ -244,7 +244,7 @@ interface State {
   archiveSessionQuiet: (sessionId: string) => Promise<boolean>;
 }
 
-export type SessionListKind = "regular" | "cron";
+type SessionListKind = "regular" | "cron";
 
 function isKind(row: SessionListEntry, kind: SessionListKind): boolean {
   return kind === "cron" ? row.source === "cron" : row.source !== "cron";

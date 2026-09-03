@@ -55,7 +55,7 @@ export function appStatusMeta(
  * machine at all. `local` exists on exactly one machine until someone gives it
  * a remote.
  */
-export type AppGitKind = 'hosted' | 'remote' | 'local'
+type AppGitKind = 'hosted' | 'remote' | 'local'
 
 export function appGitKind(
   app: Pick<AppRow, 'gitAuthKind' | 'gitRemoteUrl'>,

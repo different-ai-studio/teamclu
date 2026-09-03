@@ -13,7 +13,7 @@ export const EXTENSION_STALE_EMPTY_SESSION_DAYS = 3
 export const EXTENSION_SESSION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 /** Minimum gap between sweeps — avoids duplicate work when the panel remounts. */
-export const EXTENSION_SESSION_CLEANUP_MIN_GAP_MS = 60 * 60 * 1000
+const EXTENSION_SESSION_CLEANUP_MIN_GAP_MS = 60 * 60 * 1000
 
 const LAST_RUN_KEY_PREFIX = 'teamclu.extension.sessionCleanupLastRun'
 
@@ -44,7 +44,7 @@ export function sessionLastActivityAt(
   return Number.isNaN(parsed.getTime()) ? null : parsed
 }
 
-export function daysSince(date: Date, now: Date): number {
+function daysSince(date: Date, now: Date): number {
   return (now.getTime() - date.getTime()) / MS_PER_DAY
 }
 
@@ -125,7 +125,7 @@ function resolveNextCursor(
  * a cross-team sweep would retire sessions the user cannot even see from the
  * panel they are looking at.
  */
-export async function listAllCurrentActorSessions(
+async function listAllCurrentActorSessions(
   teamId: string,
   shouldAbort?: () => boolean,
 ): Promise<SessionListEntry[]> {
@@ -148,7 +148,7 @@ export async function listAllCurrentActorSessions(
   return rows
 }
 
-export type ExtensionSessionCleanupOptions = {
+type ExtensionSessionCleanupOptions = {
   now?: Date
   skipSessionIds?: ReadonlySet<string>
   force?: boolean

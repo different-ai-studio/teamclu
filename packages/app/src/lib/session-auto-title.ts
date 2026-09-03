@@ -1,7 +1,7 @@
 import { useSessionListStore } from "@/stores/session-list-store";
 
 /** Matches `createSessionShell` title truncation. */
-export const SESSION_AUTO_TITLE_MAX_LEN = 80;
+const SESSION_AUTO_TITLE_MAX_LEN = 80;
 
 const PLACEHOLDER_EXACT = new Set(["New chat", "New Chat"]);
 
@@ -38,7 +38,7 @@ export function resetSessionAutoTitlePendingForTests(): void {
  * Drop agent/human mention markup so the title comes from user-authored text
  * (e.g. skip `[Mentioned agents: SPRBOT]` → keep `深圳宝安有什么推荐的美食?`).
  */
-export function stripMentionsForSessionTitle(content: string): string {
+function stripMentionsForSessionTitle(content: string): string {
   return content
     .split(/\n+/)
     .map((line) => {

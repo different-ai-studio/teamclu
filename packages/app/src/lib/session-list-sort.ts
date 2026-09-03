@@ -1,4 +1,4 @@
-export type SessionListSortKey = {
+type SessionListSortKey = {
   id: string;
   last_message_at?: string | null;
   lastMessageAt?: Date | null;

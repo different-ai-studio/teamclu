@@ -11,14 +11,14 @@ function folderNameFromPath(path: string): string {
 }
 
 /** Dir entries that do not count as “project content” for the empty-workspace check. */
-export const WORKSPACE_SEED_IGNORED_NAMES = new Set([
+const WORKSPACE_SEED_IGNORED_NAMES = new Set([
   '.git',
   '.gitignore',
   '.DS_Store',
   TEAMCLU_DIR,
 ])
 
-export type WorkspaceInstructionVars = {
+type WorkspaceInstructionVars = {
   workspaceName: string
   teamName?: string | null
 }
@@ -52,7 +52,7 @@ export function isNearlyEmptyWorkspace(entryNames: string[]): boolean {
   return entryNames.every((name) => WORKSPACE_SEED_IGNORED_NAMES.has(name))
 }
 
-export type SeedDefaultWorkspaceInstructionsOptions = {
+type SeedDefaultWorkspaceInstructionsOptions = {
   teamName?: string | null
   workspaceName?: string
 }

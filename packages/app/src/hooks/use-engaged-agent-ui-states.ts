@@ -363,8 +363,12 @@ export function useEngagedAgentUiStates(
   const lastProbeAtByAgentRef = React.useRef<Record<string, number>>({})
   const engagedAgentsRef = React.useRef(engagedAgents)
   engagedAgentsRef.current = engagedAgents
-  const [, tick] = React.useReducer((x: number) => x + 1, 0)
-  const [, probeScheduleTick] = React.useReducer((x: number) => x + 1, 0)
+  // The only wall-clock input to the derived states is the connecting timeout
+  // (`connectingSince + SESSION_AGENT_CONNECTING_TIMEOUT_MS`). This counter
+  // advances exactly when the earliest pending deadline passes, so the host
+  // (ChatPanel / SessionChatColumn) re-renders when a pill can actually flip —
+  // not at 1 Hz for as long as the chat is open.
+  const [connectingClock, advanceConnectingClock] = React.useReducer((x: number) => x + 1, 0)
 
   React.useEffect(() => {
     setConnectingSinceByAgent({})
@@ -389,9 +393,20 @@ export function useEngagedAgentUiStates(
   }, [teamId])
 
   React.useEffect(() => {
-    const interval = setInterval(() => tick(), 1_000)
-    return () => clearInterval(interval)
-  }, [])
+    const now = Date.now()
+    let nextDeadline = Infinity
+    for (const agent of engagedAgents) {
+      const since = connectingSinceByAgent[agent.id]
+      if (since === undefined) continue
+      const deadline = since + SESSION_AGENT_CONNECTING_TIMEOUT_MS
+      if (deadline > now && deadline < nextDeadline) nextDeadline = deadline
+    }
+    if (nextDeadline === Infinity) return
+    // If the timer lands a hair early the state does not flip yet; the bump
+    // re-runs this effect, which re-arms for the remainder.
+    const timer = setTimeout(advanceConnectingClock, nextDeadline - now)
+    return () => clearTimeout(timer)
+  }, [engagedAgents, connectingSinceByAgent, connectingClock])
 
   // Keep this device's loopback catalog warm.
   //
@@ -414,14 +429,6 @@ export function useEngagedAgentUiStates(
     const interval = setInterval(run, LOCAL_CATALOG_POLL_INTERVAL_MS)
     return () => clearInterval(interval)
   }, [workspacePath])
-
-  React.useEffect(() => {
-    const interval = setInterval(
-      () => probeScheduleTick(),
-      AGENT_REACHABILITY_INDETERMINATE_RETRY_MS,
-    )
-    return () => clearInterval(interval)
-  }, [])
 
   const engagedSignature = React.useMemo(
     () =>
@@ -558,7 +565,12 @@ export function useEngagedAgentUiStates(
     contextKey,
   ])
 
-  React.useEffect(() => {
+  // One sweep decides, per engaged agent, whether a reachability probe is due
+  // now. It runs when its inputs change and on a fixed cadence for the
+  // time-based retries (TTL expiry, indeterminate retry). The cadence goes
+  // through a ref so a sweep that finds nothing due costs no render: the only
+  // state it touches is `reachabilityByAgent`, and only when a probe starts.
+  const sweepProbes = () => {
     const now = Date.now()
     const localDaemonActorId = getKnownLocalDaemonActorId()
 
@@ -624,6 +636,12 @@ export function useEngagedAgentUiStates(
         })
       })
     }
+  }
+  const sweepProbesRef = React.useRef(sweepProbes)
+  sweepProbesRef.current = sweepProbes
+
+  React.useEffect(() => {
+    sweepProbesRef.current()
   }, [
     engagedAgents,
     engagedSignature,
@@ -633,7 +651,6 @@ export function useEngagedAgentUiStates(
     agentToRuntimeId,
     connectingSinceByAgent,
     reachabilityByAgent,
-    probeScheduleTick,
     activeStreamingSignature,
     activeStreamingAgentIds,
     localCatalog,
@@ -641,6 +658,14 @@ export function useEngagedAgentUiStates(
     stableContext,
     contextKey,
   ])
+
+  React.useEffect(() => {
+    const interval = setInterval(
+      () => sweepProbesRef.current(),
+      AGENT_REACHABILITY_INDETERMINATE_RETRY_MS,
+    )
+    return () => clearInterval(interval)
+  }, [])
 
   return React.useMemo(() => {
     const now = Date.now()
@@ -686,7 +711,7 @@ export function useEngagedAgentUiStates(
     defaultCatalogByActorId,
     stableContext,
     contextKey,
-    tick,
+    connectingClock,
     daemonMqttConnected,
   ])
 }

@@ -1,6 +1,6 @@
 import { mqttSubscribe, mqttUnsubscribe } from "@/lib/mqtt-bridge";
 
-export const subscribedSessionTopics = new Set<string>();
+const subscribedSessionTopics = new Set<string>();
 
 const pendingSessionSubscriptions = new Map<string, Promise<void>>();
 let subscriptionEpoch = 0;
@@ -181,7 +181,7 @@ export function resetSessionLiveInterestForTests(): void {
 /** 1h without session/live activity → inbox-triggered SUB may be released. */
 export const SESSION_LIVE_IDLE_UNSUB_MS = 60 * 60 * 1000;
 /** Periodic sweep for expired inbox-triggered interest. */
-export const SESSION_LIVE_IDLE_SWEEP_MS = 5 * 60 * 1000;
+const SESSION_LIVE_IDLE_SWEEP_MS = 5 * 60 * 1000;
 
 const inboxOpenedAt = new Map<string, number>();
 const lastLiveEventAt = new Map<string, number>();

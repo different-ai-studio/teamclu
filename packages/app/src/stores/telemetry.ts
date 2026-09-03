@@ -92,7 +92,7 @@ const scoredSessions = new Set<string>()
  */
 async function ensureSessionMessagesLoaded(sessionId: string): Promise<void> {
   const sessionStore = useSessionStore.getState()
-  const messages = sessionStore.getSessionMessages(sessionId)
+  const messages = sessionStore.sessions.find((s) => s.id === sessionId)?.messages ?? []
   
   // If session has messages with token data, we're good
   if (messages && messages.length > 0) {
@@ -395,7 +395,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     idleTimers.set(sessionId, timer)
   },
 
-  generateAllSessionReports: async (workspacePath?: string) => {
+  generateAllSessionReports: async (_workspacePath?: string) => {
     if (!isTauri()) return
     const { consent, isGeneratingReports } = get()
     if (consent !== 'granted') {
@@ -412,11 +412,6 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
 
     try {
       const sessionStore = useSessionStore.getState()
-      
-      // Load all sessions and their messages (same as Token Usage page)
-      console.log('[telemetry] Loading all session messages...')
-      await sessionStore.loadAllSessionMessages(workspacePath)
-
       const sessions = sessionStore.sessions
       console.log(`[telemetry] Processing ${sessions.length} sessions`)
 

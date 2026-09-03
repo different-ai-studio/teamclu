@@ -19,7 +19,7 @@ import { appStoragePrefix } from '@/lib/build-config'
  * round-trip via `loadFromStorage`/`saveToStorage`, keyed with the shared
  * `appStoragePrefix`.
  */
-export interface HeaderPreferencesState {
+interface HeaderPreferencesState {
   /** Show the terminal toggle icon in the conversation header. Default false. */
   showTerminalToggle: boolean
   /** Show the "Changes" (file diff) panel entry in the conversation header. Default false. */

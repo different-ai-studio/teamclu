@@ -9,10 +9,10 @@ export type ProviderAuthMethod = {
   prompts?: unknown[]
 }
 
-export type ProviderAuthMethodsMap = Record<string, ProviderAuthMethod[]>
+type ProviderAuthMethodsMap = Record<string, ProviderAuthMethod[]>
 
 /** Built-in providers that expose browser OAuth (matches daemon Phase 1 catalog). */
-export const FALLBACK_OAUTH_AUTH_METHODS: ProviderAuthMethodsMap = {
+const FALLBACK_OAUTH_AUTH_METHODS: ProviderAuthMethodsMap = {
   openai: [{ type: 'oauth', label: 'Browser login' }],
   anthropic: [{ type: 'oauth', label: 'Browser login' }],
   google: [{ type: 'oauth', label: 'Browser login' }],

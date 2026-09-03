@@ -1,7 +1,7 @@
 /** Map of lowercased filename (no ext) → relative path */
 export type WikiFileMap = Map<string, string>
 
-export interface PageNameEntry {
+interface PageNameEntry {
   name: string   // display name (original case, no extension)
   dir: string    // relative directory under knowledge/ (e.g. "project/"), empty for root
 }

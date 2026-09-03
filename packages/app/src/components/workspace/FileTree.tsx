@@ -12,7 +12,13 @@ import { useTeamConflictsStore } from "@/stores/team-conflicts";
 import { withDefaultExtension } from "@/lib/knowledge-file-names";
 import { pruneKnowledgeNoise } from "@/lib/knowledge-tree-pruning";
 import { useTeamPermissions } from "@/lib/team-permissions";
-import { KnowledgeAclDialog } from "@/components/teamshare/KnowledgeAclDialog";
+import { lazyNamed } from "@/lib/lazy-component";
+
+// Team-share subtree; loads the first time a folder's ACL dialog is opened.
+const KnowledgeAclDialog = lazyNamed(
+  () => import("@/components/teamshare/KnowledgeAclDialog"),
+  "KnowledgeAclDialog",
+);
 import { getBackend } from "@/lib/backend";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { isIgnoredSyncKey } from "@/lib/knowledge-ignored";
@@ -1685,16 +1691,18 @@ export function FileTree({
         ordinary workspace tree never pays for it.
       */}
       {aclPrefix && (
-        <KnowledgeAclDialog
-          prefix={aclPrefix}
-          open={aclPrefix !== null}
-          onOpenChange={(open) => {
-            if (open) return;
-            setAclPrefix(null);
-            // The dialog may have added or dropped a rule.
-            void refreshRestricted();
-          }}
-        />
+        <React.Suspense fallback={null}>
+          <KnowledgeAclDialog
+            prefix={aclPrefix}
+            open={aclPrefix !== null}
+            onOpenChange={(open) => {
+              if (open) return;
+              setAclPrefix(null);
+              // The dialog may have added or dropped a rule.
+              void refreshRestricted();
+            }}
+          />
+        </React.Suspense>
       )}
 
       {/* Delete confirmation dialog */}

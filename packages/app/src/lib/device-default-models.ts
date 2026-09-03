@@ -48,7 +48,7 @@ export type DeviceModelsReason =
   | 'no-models'
   | 'failed'
 
-export interface DeviceModelsResult {
+interface DeviceModelsResult {
   options: DeviceModelOption[]
   reason: DeviceModelsReason
   /** The catalog's own default backend, when it names one. */

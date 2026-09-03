@@ -75,7 +75,7 @@ export async function selectShortcuts(opts: {
   }
 }
 
-export interface ShortcutCreateInput {
+interface ShortcutCreateInput {
   scope: ShortcutScope
   teamId?: string
   label: string
@@ -130,7 +130,7 @@ export async function rpcShortcutDelete(id: string): Promise<void> {
   }
 }
 
-export interface ShortcutMove {
+interface ShortcutMove {
   id: string
   parentId: string | null
   order: number

@@ -14,37 +14,91 @@
 // source `web-sso.ts` reads. This is the reverse direction of that flow — it
 // injects a session instead of harvesting one.
 //
-// Security: the resolved host IS the allowlist, and this function is the only
-// place it is enforced. We expose the TeamClu bearer token solely to the host
-// the Cloud API declares (WEBSSO_LOGIN_URL) — never to arbitrary third-party
-// webviews. A second, compile-time allowlist used to re-check this natively;
-// it was removed because it was a hand-maintained copy of the same host, and
-// the two silently drifting apart broke injection with no diagnostic.
+// Security (SEC-5): this hands the TeamClu bearer + refresh token to another
+// origin's JavaScript, so the gate is deliberately three-fold and this module
+// is the only place it is enforced:
+//
+//  1. Host: the Cloud-API-declared admin host (WEBSSO_LOGIN_URL), nothing else.
+//  2. Path: only the login URL's own path. Injecting on every path of the host
+//     meant one XSS or open redirect anywhere on the admin domain turned a
+//     chat link into account takeover; the login page is the one surface the
+//     SPA needs seeded.
+//  3. Entry: only a tab opened through `openAdminConsoleTab()` — a first-party
+//     UI action. A link inside content (agent markdown, a teammate's message,
+//     a file in the editor) that happens to point at the admin host is opened
+//     as a plain webview tab with no session.
 
 import { getSession } from "@/lib/auth/session-store"
 import { adminConsoleTarget } from "@/lib/auth/web-sso"
+import { normalizeUrl, urlToLabel } from "@/lib/webview-utils"
+import { useTabsStore } from "@/stores/tabs"
 
-export interface AdminSsoInjection {
+interface AdminSsoInjection {
   storageKey: string
   sessionJson: string
 }
 
+/** Login URLs opened through the explicit entry point in this app run. */
+const explicitAdminEntries = new Set<string>()
+
+/** Comparable form: normalized scheme, no fragment. `null` when unparsable. */
+function canonicalHref(url: string): string | null {
+  try {
+    const parsed = new URL(normalizeUrl(url))
+    parsed.hash = ""
+    return parsed.href
+  } catch {
+    return null
+  }
+}
+
+function samePath(a: string, b: string): boolean {
+  const strip = (p: string) => (p.length > 1 ? p.replace(/\/+$/, "") : p)
+  return strip(a) === strip(b)
+}
+
 /**
- * If `url` points at the Cloud-API-declared partner admin host and a TeamClu
- * session is present, return the storage key + serialized supabase-js session
- * to inject. Returns null otherwise (no injection).
+ * The explicit admin-console entry point. Opens the Cloud-API-declared login
+ * URL as an in-app webview tab and marks it eligible for session injection.
+ * Returns false when no admin console is configured for this deployment.
+ */
+export function openAdminConsoleTab(): boolean {
+  const target = adminConsoleTarget()
+  if (!target) return false
+  const href = canonicalHref(target.loginUrl)
+  if (!href) return false
+  explicitAdminEntries.add(href)
+  useTabsStore.getState().openTab({
+    type: "webview",
+    target: target.loginUrl,
+    label: urlToLabel(normalizeUrl(target.loginUrl)),
+  })
+  return true
+}
+
+/**
+ * If `url` is the admin console login page, was opened through
+ * `openAdminConsoleTab`, and a TeamClu session is present, return the storage
+ * key + serialized supabase-js session to inject. Returns null otherwise (no
+ * injection).
  */
 export function adminSsoInjectionFor(url: string): AdminSsoInjection | null {
   const target = adminConsoleTarget()
   if (!target) return null
 
-  let host: string
+  const href = canonicalHref(url)
+  if (!href || !explicitAdminEntries.has(href)) return null
+
+  let parsed: URL
+  let login: URL
   try {
-    host = new URL(url).host
+    parsed = new URL(href)
+    login = new URL(target.loginUrl)
   } catch {
     return null
   }
-  if (host !== target.host) return null
+  if (parsed.host !== target.host) return null
+  if (!samePath(parsed.pathname, login.pathname)) return null
 
   const session = getSession()
   if (!session?.access_token || !session.refresh_token) return null
@@ -60,4 +114,9 @@ export function adminSsoInjectionFor(url: string): AdminSsoInjection | null {
   }
 
   return { storageKey: target.storageKey, sessionJson: JSON.stringify(supabaseSession) }
+}
+
+/** Test-only reset hook. */
+export function resetAdminSsoEntriesForTests(): void {
+  explicitAdminEntries.clear()
 }

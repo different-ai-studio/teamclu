@@ -8,7 +8,7 @@
  * - Line number mapping (old/new)
  */
 
-export type LineType = 'added' | 'removed' | 'context';
+type LineType = 'added' | 'removed' | 'context';
 
 export interface DiffLine {
   type: LineType;

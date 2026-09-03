@@ -28,9 +28,9 @@ export type SessionAgentUiState =
  * Mirrors `LocalDaemonCatalogStatus`; `undefined` for remote agents, which have
  * no loopback path and must keep resolving purely from presence + retain.
  */
-export type LocalCatalogSnapshot = 'pending' | 'ready' | 'empty' | 'error' | 'unknown'
+type LocalCatalogSnapshot = 'pending' | 'ready' | 'empty' | 'error' | 'unknown'
 
-export type MentionDeliverySnapshot = 'ready' | 'offline' | 'stale'
+type MentionDeliverySnapshot = 'ready' | 'offline' | 'stale'
 
 export type SessionAgentContext =
   | { kind: 'draft' }
@@ -220,10 +220,10 @@ export function resolveSessionAgentUiState(input: {
 // Agent pill status dot
 // ────────────────────────────────────────────────────────────────────────────
 
-export type AgentPillDot = { color: string; pulse: boolean }
+type AgentPillDot = { color: string; pulse: boolean }
 
 /** Connected = green. Starting = yellow. Error = red. Stopped/unknown = gray. */
-export function dotClassesForRuntimeInfo(info: RuntimeInfo | undefined): AgentPillDot {
+function dotClassesForRuntimeInfo(info: RuntimeInfo | undefined): AgentPillDot {
   if (!info) return { color: 'bg-muted-foreground/40', pulse: false }
   switch (info.state) {
     case RuntimeLifecycle.FAILED:
@@ -242,7 +242,7 @@ export function dotClassesForRuntimeInfo(info: RuntimeInfo | undefined): AgentPi
   }
 }
 
-export function dotClassesForUiState(uiState: SessionAgentUiState): AgentPillDot {
+function dotClassesForUiState(uiState: SessionAgentUiState): AgentPillDot {
   switch (uiState) {
     case 'ready':
       return { color: 'bg-emerald-500', pulse: false }

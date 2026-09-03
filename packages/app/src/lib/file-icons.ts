@@ -20,9 +20,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-export type IconEntry = { icon: LucideIcon; color: string };
+type IconEntry = { icon: LucideIcon; color: string };
 
-export const SPECIAL_FILE_ICONS: Record<string, IconEntry> = {
+const SPECIAL_FILE_ICONS: Record<string, IconEntry> = {
   "package.json": { icon: FileJson, color: "text-green-500" },
   "package-lock.json": { icon: FileJson, color: "text-green-500" },
   "tsconfig.json": { icon: Settings, color: "text-blue-500" },
@@ -37,7 +37,7 @@ export const SPECIAL_FILE_ICONS: Record<string, IconEntry> = {
   "readme": { icon: FileText, color: "text-blue-400" },
 };
 
-export const EXT_ICONS: Record<string, IconEntry> = {
+const EXT_ICONS: Record<string, IconEntry> = {
   // TypeScript/JavaScript
   ts: { icon: FileCode, color: "text-blue-500" },
   tsx: { icon: FileCode, color: "text-blue-500" },
@@ -131,7 +131,7 @@ export const EXT_ICONS: Record<string, IconEntry> = {
   lock: { icon: Lock, color: "text-gray-400" },
 };
 
-export const DEFAULT_FILE_ICON: IconEntry = { icon: File, color: "text-muted-foreground" };
+const DEFAULT_FILE_ICON: IconEntry = { icon: File, color: "text-muted-foreground" };
 
 // Get file icon and color based on file extension — O(1) lookup
 export function getFileIcon(filename: string): IconEntry {

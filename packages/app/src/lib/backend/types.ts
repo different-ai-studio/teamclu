@@ -305,49 +305,10 @@ export interface MessagesBackend {
   listMessagesForSessionSince(sessionId: string, updatedAfter?: string | null): Promise<MessageSyncRow[]>;
 }
 
-export interface AgentRuntimeHintRow {
-  id: string;
-  agent_id: string;
-  workspace_id: string | null;
-  backend_type: string | null;
-  runtime_id: string | null;
-  session_id: string | null;
-  status: string | null;
-  current_model: string | null;
-  updated_at: string | null;
-}
-
 export interface AgentDefaultRow {
   id: string;
   agent_types: string[] | null;
   default_agent_type: string | null;
-}
-
-export interface SessionRuntimeModelRow {
-  runtime_id: string | null;
-  backend_type: string | null;
-  current_model: string | null;
-}
-
-export interface RuntimeTargetRow {
-  agent_id: string | null;
-  runtime_id: string | null;
-}
-
-export interface DaemonRuntimeBackendRow {
-  id: string;
-  runtime_id: string | null;
-  team_id: string;
-  agent_id: string;
-  session_id: string | null;
-  workspace_id: string | null;
-  backend_type: string;
-  backend_session_id: string | null;
-  status: string;
-  current_model: string | null;
-  last_seen_at: string | null;
-  created_at: string;
-  updated_at: string;
 }
 
 export interface RuntimeBackend {
@@ -487,7 +448,7 @@ export type TeamInviteInput =
 
 export type CreditUsageRange = "day" | "week" | "month" | "year";
 
-export interface CreditUsageSummary {
+interface CreditUsageSummary {
   credits: number;
   inputTokens: number;
   /**
@@ -500,12 +461,12 @@ export interface CreditUsageSummary {
   requests: number;
 }
 
-export interface CreditUsageByModel extends CreditUsageSummary {
+interface CreditUsageByModel extends CreditUsageSummary {
   /** The public tier (`default` / `pro` / `max`), never the upstream model. */
   publicModelId: string;
 }
 
-export interface CreditUsageByActor extends CreditUsageSummary {
+interface CreditUsageByActor extends CreditUsageSummary {
   /** null = the unattributed bucket; render a localized label, never a raw id. */
   actorId: string | null;
   displayName: string | null;
@@ -550,7 +511,7 @@ export interface CreditPackage {
   name: string;
 }
 
-export interface TeamQuotas {
+interface TeamQuotas {
   /** Team-level, not per-member: mixed periods make "used this period" incomparable. */
   period: "week" | "month";
   /** null = unlimited. */
@@ -634,7 +595,7 @@ export interface IdeaActivityRow {
   created_at: string;
 }
 
-export interface IdeaActorSummary {
+interface IdeaActorSummary {
   id: string;
   display_name: string | null;
   actor_type?: string | null;
@@ -882,14 +843,14 @@ export interface ShortcutCreateArgs {
   p_target?: string;
 }
 
-export interface ShortcutTeamRoleRow {
+interface ShortcutTeamRoleRow {
   id: string;
   team_id: string;
   code: string;
   name: string;
 }
 
-export interface ShortcutRoleBindingRow {
+interface ShortcutRoleBindingRow {
   resource_id: string;
   permission_roles: Array<{ role_id: string }>;
 }
@@ -934,7 +895,7 @@ export interface TeamWorkspaceConfigRow {
 }
 
 /** A single LLM model entry ({id, name}). */
-export interface TeamLlmModel {
+interface TeamLlmModel {
   id: string;
   name: string;
 }
@@ -1000,7 +961,7 @@ export interface WorkspacesBackend {
   }): Promise<DaemonWorkspaceBackendRow>;
 }
 
-export type AppRuntime = "node" | "container";
+type AppRuntime = "node" | "container";
 
 export type AppAuthMode = "none" | "platform" | "third";
 
@@ -1092,7 +1053,7 @@ export interface AppSessionRow {
 }
 
 /** One column of an app table, as `information_schema` describes it. */
-export interface AppDataColumn {
+interface AppDataColumn {
   name: string;
   /** Postgres `data_type` — drives how the cell is rendered (json, bytea, …). */
   dataType: string;
@@ -1135,7 +1096,7 @@ export type AppDataTablesResult =
   | { status: "not_deployed" }
   | { status: "unavailable"; reason: string };
 
-export type AppDataFilterOp = "eq" | "contains" | "isNull" | "notNull";
+type AppDataFilterOp = "eq" | "contains" | "isNull" | "notNull";
 
 export interface AppDataRowsQuery {
   after?: string | null;

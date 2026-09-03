@@ -82,7 +82,7 @@ function parseSlashToken(body: string): { type: "role" | "skill" | "command"; na
   return { type: "skill", name: body };
 }
 
-export interface ChatSendDeps {
+interface ChatSendDeps {
   t: ReturnType<typeof useTranslation>["t"];
   activeSessionId: string | null;
   displaySessionId: string | null;
@@ -212,7 +212,6 @@ export function useChatSend({
     const agentForSend = externalOnly ? null : pillCandidate;
     const agentIds = agentForSend ? [agentForSend.id] : [];
     const displayMentionActorIds = Array.from(new Set(agentIds.filter(Boolean)));
-    const _isPlanMode = !!(message as PromptInputMessage & { _planMode?: boolean })._planMode;
 
     // ── Resolve team / mentions / sender with local-agent latency in mind ──
     // Prefer sync store reads; parallelize any remaining awaits; skip a second

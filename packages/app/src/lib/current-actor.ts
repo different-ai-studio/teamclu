@@ -1,6 +1,6 @@
 import { getBackend } from "@/lib/backend";
 
-export interface CurrentActorHint {
+interface CurrentActorHint {
   currentTeamId?: string | null;
   currentMemberId?: string | null;
 }

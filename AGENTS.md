@@ -320,9 +320,9 @@ The user-facing rule is "适度区分 — 清晰但不抢眼". Concretely:
 
 ---
 
-## 7. Backend access boundary — Cloud API is the default backend
+## 7. Backend access boundary — Cloud API is the only client backend
 
-**`cloud_api` is the default and canonical backend. The `supabase` backend kind is deprecated and will be removed in a future release.**
+**`cloud_api` is the only backend kind for clients. The `supabase` and `pocketbase` backend kinds have been removed from `packages/app/`; direct `@supabase/supabase-js` usage in client code is forbidden and enforced by a guardrail test (`packages/app/src/lib/backend/__tests__/no-supabase-import.test.ts`).**
 
 The API contract is defined in `docs/openapi/teamclu-api.v1.yaml`. All business data operations must go through the TeamClu Cloud API (`/v1`) rather than direct Supabase client calls.
 
@@ -368,11 +368,10 @@ Also future work, listed here so the team has it:
   side `session_read_marker` table, (b) a writer hook on session-activate,
   (c) sync wiring, (d) UI render. The card already reserves the right-edge
   slot for it; see `renderSessionItem` in `SessionListColumn.tsx`.
-- **Pagination beyond 50 rows.** `useSessionListStore.load()` caps at 50
-  per fetch and has no loadMore. The old `useSessionStore.loadMoreSessions`
-  was removed from the column when it switched to the v2 store. Add an
-  offset/cursor pagination API on the list store, then re-introduce the
-  Load-More UI.
+- **Pagination beyond 50 rows — done.** `useSessionListStore` pages by
+  cursor (`loadFirstPage` / `loadMore`, 50 per page, `hasMore` / `nextCursor`
+  tracked per list kind) and `SessionListColumn` renders the Load-more button
+  (`sidebar.loadMoreSessions`). Listed here so nobody re-plans it.
 - **Realtime participant invalidation.** `participantsBySession` in
   `SessionListColumn` is loaded lazily and never invalidated. When the
   realtime envelope handler in `App.tsx` sees `session_participant`

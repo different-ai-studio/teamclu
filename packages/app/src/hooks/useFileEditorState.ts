@@ -4,29 +4,10 @@
  * Handles:
  *  - Resizable panel widths (right panel)
  *  - Syncing selectedFile <-> TabsStore
- *  - Auto-open right panel when todos/diffs first appear
  */
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useCallback } from "react";
 import { useWorkspaceStore } from "@/stores/workspace";
-import { useSessionStore } from "@/stores/session";
-import { useTabsStore, selectActiveTab } from "@/stores/tabs";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Right panel auto-open when todos / diffs first arrive
-// ─────────────────────────────────────────────────────────────────────────────
-
-export function usePanelAutoOpen() {
-  const sessionDiff = useSessionStore((s) => s.sessionDiff);
-  const openPanel = useWorkspaceStore((s) => s.openPanel);
-  const prevDiffCount = useRef(0);
-
-  useEffect(() => {
-    if (sessionDiff.length > 0 && prevDiffCount.current === 0) {
-      openPanel("diff");
-    }
-    prevDiffCount.current = sessionDiff.length;
-  }, [sessionDiff.length, openPanel]);
-}
+import { useTabsStore } from "@/stores/tabs";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Legacy no-op retained for callers/tests while file mode is removed.
@@ -59,20 +40,6 @@ export function useFileTabSync() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Sync tab switch -> workspace selectFile
 // ─────────────────────────────────────────────────────────────────────────────
-
-export function useTabToFileSync() {
-  const selectFile = useWorkspaceStore((s) => s.selectFile);
-  const activeTab = useTabsStore(selectActiveTab);
-  const prevActiveTabId = useRef<string | null>(activeTab?.id ?? null);
-
-  useEffect(() => {
-    const tabChanged = activeTab?.id !== prevActiveTabId.current;
-    prevActiveTabId.current = activeTab?.id ?? null;
-    if (tabChanged && activeTab?.type === "file") {
-      selectFile(activeTab.target);
-    }
-  }, [activeTab?.id, activeTab?.type, activeTab?.target, selectFile]);
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Resizable panel state

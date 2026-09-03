@@ -62,7 +62,7 @@ function DiffLineRow({ line, variant }: { line: DiffLine; variant: "viewer" | "s
   );
 }
 
-export interface ToolCallDiffBodyProps {
+interface ToolCallDiffBodyProps {
   lines: DiffLine[];
   /** How many diff rows to show before the tail fold (default 6). */
   previewLineCount?: number;

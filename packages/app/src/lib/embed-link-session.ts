@@ -1,14 +1,7 @@
 import { resolveCurrentMemberActorId } from '@/lib/current-actor'
 import { emitPageLinkInsert } from '@/lib/embed-composer-bus'
 import type { PageContext } from '@/lib/embed-page-context'
-import {
-  buildLinkSessionCompositeKey,
-  isPendingLinkOpenPayload,
-  linkSessionTitle,
-  lookupLinkSessionEntry,
-  PENDING_LINK_OPEN_KEY,
-  upsertLinkSessionEntry,
-} from '@/lib/extension-link-session'
+import { isPendingLinkOpenPayload, linkSessionTitle, lookupLinkSessionEntry, PENDING_LINK_OPEN_KEY, upsertLinkSessionEntry } from '@/lib/extension-link-session'
 import { resolveQuickChatTarget, type QuickChatTarget } from '@/lib/resolve-quick-chat-target'
 import { createSessionShell } from '@/lib/session-create'
 import { ensureSessionLiveSubscribed } from '@/lib/session-live-subscriptions'
@@ -40,7 +33,7 @@ function readChromeSession(): ChromeSessionStorage | undefined {
 const EMBED_READY_TIMEOUT_MS = 15_000
 const EMBED_READY_POLL_MS = 120
 
-export async function waitForEmbedReady(timeoutMs = EMBED_READY_TIMEOUT_MS): Promise<boolean> {
+async function waitForEmbedReady(timeoutMs = EMBED_READY_TIMEOUT_MS): Promise<boolean> {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
     const auth = useAuthStore.getState().session
@@ -101,7 +94,7 @@ async function createExtensionLinkSession(input: {
   return { sessionId }
 }
 
-export async function resolveLinkSession(input: {
+async function resolveLinkSession(input: {
   page: PageContext
   linkKey: string
 }): Promise<{ sessionId: string; created: boolean } | null> {
@@ -155,7 +148,7 @@ export async function resolveLinkSession(input: {
 
 let consumeInFlight: Promise<void> | null = null
 
-export async function consumePendingLinkOpen(): Promise<void> {
+async function consumePendingLinkOpen(): Promise<void> {
   if (consumeInFlight) return consumeInFlight
 
   consumeInFlight = (async () => {
@@ -219,6 +212,3 @@ export function startEmbedLinkOpenListener(): () => void {
   }
 }
 
-export function buildPendingLinkOpenKey(teamId: string, linkKey: string): string {
-  return buildLinkSessionCompositeKey(teamId, linkKey)
-}

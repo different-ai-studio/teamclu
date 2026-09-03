@@ -1,6 +1,6 @@
 import type { SkillSource } from "@/lib/skills/types"
 
-export type RoleAttachMode = "copy" | "migrate"
+type RoleAttachMode = "copy" | "migrate"
 
 export interface RoleSkillLink {
   name: string
@@ -52,7 +52,7 @@ export interface ManagedSkillRecord {
   isRoleSkill: boolean
 }
 
-export interface RolesSkillsMetrics {
+interface RolesSkillsMetrics {
   rolesCount: number
   skillsCount: number
   linkedSkillsCount: number

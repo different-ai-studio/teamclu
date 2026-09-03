@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Settings } from '@/components/settings/Settings'
-import { FeedbackDialog } from '@/components/settings/FeedbackDialog'
+import { lazyNamed } from '@/lib/lazy-component'
+import { useEverTrue } from '@/hooks/use-ever-true'
+import { PaneLoading } from '@/components/ui/pane-loading'
 import { TrafficLights } from '@/components/ui/traffic-lights'
 import { useUIStore } from '@/stores/ui'
 import { removeStartupSkeleton } from '@/lib/utils'
@@ -10,6 +11,15 @@ import { MessageSquarePlus } from 'lucide-react'
 import * as React from 'react'
 import i18n from '@/lib/i18n'
 import { syncTrayMenuLabels } from '@/lib/sync-tray-menu'
+
+// This window is Settings, so laziness buys it nothing on its own — but the
+// main window's entry imports this component too, and a static import here
+// would put the whole settings subtree back into the shared startup chunk.
+const Settings = lazyNamed(() => import('@/components/settings/Settings'), 'Settings')
+const FeedbackDialog = lazyNamed(
+  () => import('@/components/settings/FeedbackDialog'),
+  'FeedbackDialog',
+)
 
 /**
  * Tray "本地 Agent 设置" surface — same Settings shell as the main app
@@ -20,6 +30,7 @@ export function LocalAgentPanelApp() {
   const { t } = useTranslation()
   const openSettings = useUIStore((s) => s.openSettings)
   const [feedbackOpen, setFeedbackOpen] = React.useState(false)
+  const mountFeedbackDialog = useEverTrue(feedbackOpen)
 
   useEffect(() => {
     openSettings('daemonGeneral')
@@ -61,9 +72,15 @@ export function LocalAgentPanelApp() {
           {t('settings.feedback.title', 'Send Feedback')}
         </Button>
       </header>
-      <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+      {mountFeedbackDialog ? (
+        <React.Suspense fallback={null}>
+          <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+        </React.Suspense>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-hidden">
-        <Settings />
+        <React.Suspense fallback={<PaneLoading />}>
+          <Settings />
+        </React.Suspense>
       </div>
     </div>
   )

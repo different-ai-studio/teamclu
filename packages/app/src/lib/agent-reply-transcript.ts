@@ -5,7 +5,7 @@ import {
 import type { Message as TeamcluMessage } from "@/lib/proto/teamclu_pb";
 import type { MessagePart } from "@/stores/session-types";
 
-export type TranscriptPart = {
+type TranscriptPart = {
   type?: string;
   text?: string;
   content?: string;
@@ -75,7 +75,7 @@ function lastToolPartIndex(parts: MessagePart[]): number {
 }
 
 /** Text bodies that appear before the last tool-call boundary. */
-export function priorTextBodiesBeforeLastTool(parts: MessagePart[]): string[] {
+function priorTextBodiesBeforeLastTool(parts: MessagePart[]): string[] {
   const lastToolIndex = lastToolPartIndex(parts);
   if (lastToolIndex < 0) return [];
   const end = lastToolIndex;
@@ -160,6 +160,19 @@ export function stripPriorTranscriptTextPrefix(
   if (!strippedPrefix) return candidate;
 
   return text;
+}
+
+/**
+ * The one place where two equivalent-after-normalization reply texts are
+ * reconciled. When both bodies say the same thing, the longer one wins,
+ * because MQTT QoS0 can drop post-tool deltas and the daemon's final content
+ * carries that tail. CLAUDE.md's "never take the longest on completion" rule
+ * has exactly this exception and only here; do not import
+ * pickCanonicalAgentReplyText anywhere else (guarded by
+ * agent-reply-single-reconciliation.test.ts).
+ */
+export function reconcileEquivalentAgentReplyText(current: string, incoming: string): string {
+  return pickCanonicalAgentReplyText(current, incoming);
 }
 
 /** Derive message.content from the live transcript; pending is metadata + drift hint only. */

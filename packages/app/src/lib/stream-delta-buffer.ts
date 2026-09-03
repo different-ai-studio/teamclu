@@ -7,7 +7,7 @@ import { useV2StreamingStore } from "@/stores/v2-streaming-store";
  * READS ordered stream state (tool events, statusChange, finalize, persist)
  * must call flushStreamDeltasFor()/flushAllStreamDeltas() first.
  */
-export type StreamDeltaKind = "output" | "thinking";
+type StreamDeltaKind = "output" | "thinking";
 
 interface BufferedDelta {
   kind: StreamDeltaKind;

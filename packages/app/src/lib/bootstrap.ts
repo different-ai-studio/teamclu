@@ -151,7 +151,7 @@ export async function fetchPublicConfig(args?: { fetchImpl?: typeof fetch }): Pr
   await saveServerConfig({ ...saved, ...patch });
 }
 
-export type CloudApiProbe =
+type CloudApiProbe =
   | { ok: true }
   /** Nothing answered: DNS failure, connection refused, TLS error, timeout. */
   | { ok: false; reason: "unreachable" }
@@ -210,7 +210,7 @@ export async function probeCloudApi(
  * `mqtt` block. It is not an error at the HTTP layer, which is exactly why it
  * went unnoticed for a day in issue #634 — callers must not treat it as success.
  */
-export type BootstrapMqttOutcome =
+type BootstrapMqttOutcome =
   | "applied" // cloud delivered a broker
   | "cloud-empty" // cloud answered, but without an mqtt block
   | "unreachable" // network/HTTP failure

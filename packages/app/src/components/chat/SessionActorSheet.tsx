@@ -387,7 +387,7 @@ function CandidateActorRowView({
 // Visibility is controlled by the parent panel; this component just renders
 // the list + handlers + confirm dialog.
 
-export interface SessionActorPanelProps {
+interface SessionActorPanelProps {
   sessionId: string | null
   teamId: string | null
 }

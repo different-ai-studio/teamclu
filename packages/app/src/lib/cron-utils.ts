@@ -50,7 +50,7 @@ export function localDatetimeToIso(localStr: string): string {
 
 // ==================== Delivery Channel Registry ====================
 
-export interface DeliveryFieldDef {
+interface DeliveryFieldDef {
   key: string
   label: string
   placeholder: string
@@ -59,14 +59,14 @@ export interface DeliveryFieldDef {
   required?: boolean
 }
 
-export interface DeliveryModeDef {
+interface DeliveryModeDef {
   value: string
   label: string
 }
 
-export type ChannelsStoreState = ReturnType<typeof useChannelsStore.getState>
+type ChannelsStoreState = ReturnType<typeof useChannelsStore.getState>
 
-export interface DeliveryChannelRegistryEntry {
+interface DeliveryChannelRegistryEntry {
   id: DeliveryChannel
   name: string
   getEnabled: (store: ChannelsStoreState) => boolean
@@ -337,7 +337,7 @@ export interface JobFormState {
 }
 
 /** Cron runs unattended, so approvals default to off — see `CronPayload.permissionMode`. */
-export const DEFAULT_CRON_PERMISSION_MODE: CronPermissionMode = 'full_access'
+const DEFAULT_CRON_PERMISSION_MODE: CronPermissionMode = 'full_access'
 
 export const defaultFormState: JobFormState = {
   name: '',

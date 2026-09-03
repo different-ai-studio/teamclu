@@ -63,16 +63,6 @@ vi.mock('@/stores/session', () => ({
   },
 }))
 
-vi.mock('@/stores/streaming', () => ({
-  useStreamingStore: {
-    getState: vi.fn(() => ({
-      streamingMessageId: null,
-      streamingContent: '',
-      childSessionStreaming: {},
-    })),
-  },
-}))
-
 vi.mock('@/stores/current-team', () => ({
   useCurrentTeamStore: {
     getState: vi.fn(() => ({

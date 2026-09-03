@@ -16,7 +16,6 @@ pub mod gateway;
 pub mod introspect_api;
 pub mod introspect_auth;
 pub mod local_secret_store;
-pub mod mcp;
 pub mod mqtt_bus;
 pub mod oauth_loopback;
 pub mod obsidian;
@@ -33,19 +32,13 @@ pub mod team_secret_store;
 pub mod team_share;
 pub mod team_skills;
 pub mod team_sync_proxy;
-pub mod team_types;
-pub mod team_unified;
 pub mod terminal;
-pub mod trash;
 pub mod tray_menu;
 pub mod updater;
 pub mod webview;
 pub mod window;
 pub mod window_chrome;
 pub mod workspace_files;
-
-#[cfg(target_os = "windows")]
-use crate::process_util::CommandNoWindow;
 
 /// True when the OS is set to a Chinese locale.
 ///
@@ -227,7 +220,15 @@ pub fn get_device_hostname() -> String {
 
 /// Reveal a file or folder in the native file manager (Finder on macOS, Explorer on Windows).
 #[tauri::command]
-pub fn show_in_folder(path: String) -> Result<(), String> {
+pub async fn show_in_folder(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || show_in_folder_blocking(path))
+        .await
+        .map_err(|e| format!("show_in_folder task failed: {e}"))?
+}
+
+/// Blocking body of [`show_in_folder`], shared with the Rust callers that are
+/// already off the main thread (diagnostics, acp debug log).
+pub(crate) fn show_in_folder_blocking(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
@@ -262,7 +263,13 @@ pub fn show_in_folder(path: String) -> Result<(), String> {
 
 /// Open a file with the system default application.
 #[tauri::command]
-pub fn open_with_default_app(path: String) -> Result<(), String> {
+pub async fn open_with_default_app(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || open_with_default_app_blocking(path))
+        .await
+        .map_err(|e| format!("open_with_default_app task failed: {e}"))?
+}
+
+fn open_with_default_app_blocking(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
@@ -273,9 +280,13 @@ pub fn open_with_default_app(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
-            .no_window()
-            .args(["/C", "start", "", &path])
+        // Not `cmd /C start "" <path>`: cmd re-parses its command line, so a
+        // path containing `&`, `|` or `^` — a directory named `x & calc` —
+        // ran as a command (SEC-6). `explorer.exe <path>` resolves the file
+        // association itself and takes the path as one argv element, the
+        // same launcher `show_in_folder` already trusts.
+        std::process::Command::new("explorer")
+            .arg(&path)
             .spawn()
             .map_err(|e| format!("Failed to open file: {}", e))?;
     }
@@ -293,7 +304,13 @@ pub fn open_with_default_app(path: String) -> Result<(), String> {
 
 /// Open a terminal at the given directory path.
 #[tauri::command]
-pub fn open_in_terminal(path: String) -> Result<(), String> {
+pub async fn open_in_terminal(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || open_in_terminal_blocking(path))
+        .await
+        .map_err(|e| format!("open_in_terminal task failed: {e}"))?
+}
+
+fn open_in_terminal_blocking(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
@@ -304,11 +321,16 @@ pub fn open_in_terminal(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        // Hide the outer launcher's console; `start` spawns the user-visible
-        // terminal in its own new console as intended.
+        // The path never touches a command line (SEC-6): the shell is started
+        // with its working directory already set, in a fresh visible console
+        // (CREATE_NEW_CONSOLE), instead of `cmd /C start cmd /K cd /d <path>`
+        // where cmd's own parser would run whatever followed a `&` in the
+        // directory name.
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
         std::process::Command::new("cmd")
-            .no_window()
-            .args(["/C", "start", "cmd", "/K", &format!("cd /d {}", path)])
+            .current_dir(&path)
+            .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .map_err(|e| format!("Failed to open terminal: {}", e))?;
     }

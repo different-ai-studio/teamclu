@@ -63,18 +63,16 @@ describe('PromptInput', () => {
   })
 })
 
-describe('PromptInputHeader / Body / Footer', () => {
-  it('renders header, body, footer as divs', async () => {
-    const { PromptInput, PromptInputHeader, PromptInputBody, PromptInputFooter } =
+describe('PromptInputBody / Footer', () => {
+  it('renders body and footer as divs', async () => {
+    const { PromptInput, PromptInputBody, PromptInputFooter } =
       await import('@/packages/ai/prompt-input')
     render(
       React.createElement(PromptInput, null,
-        React.createElement(PromptInputHeader, null, 'header'),
         React.createElement(PromptInputBody, null, 'body'),
         React.createElement(PromptInputFooter, null, 'footer'),
       )
     )
-    expect(screen.getByText('header')).toBeDefined()
     expect(screen.getByText('body')).toBeDefined()
     expect(screen.getByText('footer')).toBeDefined()
   })

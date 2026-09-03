@@ -1,11 +1,9 @@
 import { useSessionStore } from './session'
-import { useStreamingStore } from './streaming'
 import { appShortName } from '@/lib/build-config'
 
 if (import.meta.env.DEV) {
   ;(window as any)[`__${appShortName.toUpperCase()}_STORES__`] = {
     session: useSessionStore,
-    streaming: useStreamingStore,
   }
 
   // Set up execute-js event listener for tauri-plugin-mcp socket automation.

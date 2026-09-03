@@ -29,7 +29,7 @@ export function wasPermissionRecentlyResolved(requestId: string): boolean {
   return true;
 }
 
-export function markPermissionResolved(requestId: string): void {
+function markPermissionResolved(requestId: string): void {
   const trimmed = requestId.trim();
   if (!trimmed) return;
   pruneResolved();

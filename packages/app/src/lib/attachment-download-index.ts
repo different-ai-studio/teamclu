@@ -2,7 +2,7 @@ import { isTauri } from "@/lib/utils";
 
 const STORAGE_KEY = "teamclu:attachment-download-index";
 
-export interface AttachmentDownloadEntry {
+interface AttachmentDownloadEntry {
   path: string;
   filename: string;
   savedAt: number;

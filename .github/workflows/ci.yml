@@ -111,7 +111,9 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libglib2.0-dev patchelf libasound2-dev protobuf-compiler libpipewire-0.3-dev libgbm-dev
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1" # must match rust-toolchain.toml (ci.yml rust-check enforces it)
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -134,11 +136,40 @@ jobs:
           touch apps/desktop/binaries/cursor-bridge/.keep
           touch apps/desktop/binaries/claude-bridge/.keep
 
+      # rust-toolchain.toml is the single source of truth for the compiler
+      # version: rustup reads it in every checkout and every job. The
+      # `toolchain:` inputs on the Setup Rust steps (here and in release*.yml)
+      # exist only so dtolnay/rust-toolchain installs its `targets:` into that
+      # toolchain rather than into whatever `stable` is this week, so they have
+      # to agree with the file. This is what keeps them agreeing.
+      - name: Toolchain pins agree with rust-toolchain.toml
+        run: |
+          want="$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)"
+          test -n "$want" || { echo "rust-toolchain.toml has no channel"; exit 1; }
+          drift="$(grep -hoE '^[[:space:]]*toolchain:[[:space:]]*"?[^" #]+' .github/workflows/*.yml \
+            | sed -E 's/.*toolchain:[[:space:]]*"?//' | grep -vx "$want" || true)"
+          if [ -n "$drift" ]; then
+            echo "workflow toolchain pins differ from rust-toolchain.toml ($want):"
+            echo "$drift"
+            exit 1
+          fi
+          rustc --version | grep -F "$want"
+
       - name: Check Rust formatting
         run: cargo fmt --check --manifest-path apps/desktop/Cargo.toml
 
       - name: Run Clippy
         run: cargo clippy --manifest-path apps/desktop/Cargo.toml -- -D warnings
+
+      # `--lib` below compiles and runs only the unit tests. The crate also has
+      # integration tests under apps/desktop/tests/ that nothing in CI ever
+      # compiled, so a signature change could break them silently until someone
+      # ran them locally. Compile every test target (no run: the team-share
+      # smoke test wants a CLOUD_API_URL this runner does not have); the `--lib`
+      # step then reuses the artifacts, so this costs the integration-test
+      # compile and nothing else.
+      - name: Compile all desktop test targets
+        run: cargo test -p teamclu --locked --all-targets --no-run
 
       # Never ran before, and it showed: the skills root moved to
       # `~/.agents/skills` and the assertion for the old path sat red for
@@ -264,7 +295,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1" # must match rust-toolchain.toml (ci.yml rust-check enforces it)
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -275,6 +308,15 @@ jobs:
         run: |
           curl -fsSL https://opencode.ai/install | bash
           echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      # `cargo test` below already compiles every test target before running
+      # any, so on a green run this adds no work. It exists to make the compile
+      # gate explicit and separable in the log: a test-target compile error (a
+      # module declared in one crate root but not the other, a `#[cfg(test)]`
+      # caller left behind after a signature change) fails here, named, instead
+      # of surfacing inside a long test run.
+      - name: Compile all amuxd test targets
+        run: cargo test -p amuxd --locked --all-targets --no-run
 
       - name: Run amuxd unit tests
         run: cargo test -p amuxd --locked
@@ -308,7 +350,9 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1" # must match rust-toolchain.toml (ci.yml rust-check enforces it)
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -337,7 +381,9 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1" # must match rust-toolchain.toml (ci.yml rust-check enforces it)
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2

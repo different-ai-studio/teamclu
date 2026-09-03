@@ -5,7 +5,7 @@ import {
 } from '@/lib/local-daemon-identity'
 import { isDriftedLocalGhostBinding } from '@/lib/session-agent-ui-state'
 
-export type EngagedAgentStaleBindingInput = {
+type EngagedAgentStaleBindingInput = {
   agentId: string
   localDaemonActorId: string | null
   presenceOnline: boolean | undefined

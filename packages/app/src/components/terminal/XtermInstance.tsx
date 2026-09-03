@@ -7,11 +7,11 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import {
-  onTerminalData,
+  attachTerminal,
   onTerminalExit,
   resizeTerminal,
-  subscribeTerminal,
   writeTerminal,
+  type TerminalAttachment,
 } from "@/lib/terminal/client";
 import { buildXtermFont, buildXtermTheme } from "@/lib/terminal/theme";
 import { useTerminalStore } from "@/stores/terminal-store";
@@ -53,7 +53,7 @@ export function XtermInstance({ tabId, active }: Props) {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    let unlistenData: (() => void) | null = null;
+    let attachment: TerminalAttachment | null = null;
     let unlistenExit: (() => void) | null = null;
     let onDataDisposer: { dispose: () => void } | null = null;
     let onResizeDisposer: { dispose: () => void } | null = null;
@@ -128,50 +128,35 @@ export function XtermInstance({ tabId, active }: Props) {
 
     (async () => {
       try {
-        const { ring_snapshot } = await subscribeTerminal(tabId);
-        if (cancelled) return;
-        const replayedSnapshotLength = ring_snapshot.length;
-        if (ring_snapshot.length > 0) {
-          term.write(new Uint8Array(ring_snapshot));
-        }
-
-        let bufferingLiveData = true;
-        let liveDataBuffer: Uint8Array[] = [];
-        unlistenData = await onTerminalData(tabId, chunk => {
-          if (bufferingLiveData) {
-            liveDataBuffer.push(chunk);
-            return;
-          }
-          term.write(chunk);
+        // One ordered stream: the first chunk is the scrollback snapshot
+        // (possibly empty), everything after it is live. The backend hands the
+        // snapshot over and registers the sink under one lock, so there is no
+        // gap for output to fall into and nothing to de-duplicate here.
+        let replayed = false;
+        const attached = await attachTerminal(tabId, chunk => {
+          if (cancelled) return;
+          if (chunk.length > 0) term.write(chunk);
+          if (replayed) return;
+          replayed = true;
+          // Force WebGL to paint the current viewport. In some WebView builds
+          // the first frame after attach is silently dropped — buffer has the
+          // prompt but nothing is drawn until a later keystroke/resize
+          // triggers refresh.
+          term.write("", () => {
+            if (cancelled) return;
+            term.refresh(0, term.rows - 1);
+          });
         });
+        if (cancelled) {
+          void attached.detach();
+          return;
+        }
+        attachment = attached;
+
         unlistenExit = await onTerminalExit(tabId, code => {
           markExited(tabId, code);
         });
         if (cancelled) return;
-
-        const latest = await subscribeTerminal(tabId);
-        if (cancelled) return;
-        const catchUpBytes = latest.ring_snapshot.slice(replayedSnapshotLength);
-        if (catchUpBytes.length > 0) {
-          term.write(new Uint8Array(catchUpBytes));
-        }
-
-        const buffered = concatChunks(liveDataBuffer);
-        const alreadyCovered = countCoveredPrefix(buffered, catchUpBytes);
-        const remainingLiveBytes = buffered.slice(alreadyCovered);
-        bufferingLiveData = false;
-        liveDataBuffer = [];
-        if (remainingLiveBytes.length > 0) {
-          term.write(remainingLiveBytes);
-        }
-
-        // Force WebGL to paint the current viewport. In some WebView builds the
-        // first frame after attach is silently dropped — buffer has the prompt
-        // but nothing is drawn until a later keystroke/resize triggers refresh.
-        term.write("", () => {
-          if (cancelled) return;
-          term.refresh(0, term.rows - 1);
-        });
 
         const dims = fit.proposeDimensions();
         if (dims) await resizeTerminal(tabId, dims.cols, dims.rows);
@@ -193,7 +178,7 @@ export function XtermInstance({ tabId, active }: Props) {
     return () => {
       cancelled = true;
       window.removeEventListener("resize", onWindowResize);
-      unlistenData?.();
+      void attachment?.detach();
       unlistenExit?.();
       onDataDisposer?.dispose();
       onResizeDisposer?.dispose();
@@ -245,31 +230,4 @@ export function XtermInstance({ tabId, active }: Props) {
       )}
     </div>
   );
-}
-
-function concatChunks(chunks: Uint8Array[]): Uint8Array {
-  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
-}
-
-function countCoveredPrefix(buffered: Uint8Array, catchUpBytes: number[]): number {
-  const max = Math.min(buffered.length, catchUpBytes.length);
-  for (let n = max; n > 0; n -= 1) {
-    let matches = true;
-    const catchUpStart = catchUpBytes.length - n;
-    for (let i = 0; i < n; i += 1) {
-      if (buffered[i] !== catchUpBytes[catchUpStart + i]) {
-        matches = false;
-        break;
-      }
-    }
-    if (matches) return n;
-  }
-  return 0;
 }

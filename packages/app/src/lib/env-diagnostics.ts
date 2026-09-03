@@ -6,7 +6,7 @@ import type {
 import type { TFunction } from 'i18next'
 
 /** Personal env storage diagnostics from the desktop Tauri command. */
-export interface PersonalEnvDiagnostics {
+interface PersonalEnvDiagnostics {
   storageDir: string
   secretsDir: string
   masterKeyExists: boolean
@@ -21,7 +21,7 @@ export interface PersonalEnvDiagnostics {
   hostShadowedKeys: string[]
 }
 
-export type EnvActivationOverallStatus = 'healthy' | 'degraded' | 'blocked'
+type EnvActivationOverallStatus = 'healthy' | 'degraded' | 'blocked'
 
 const CRITICAL_BLOCKER_CODES = new Set([
   'personal_blob_undecryptable',
@@ -110,16 +110,6 @@ export function formatEnvKeyActivationStatus(
   }
 }
 
-export function buildEnvKeyStatusMap(
-  activation: DaemonEnvActivationDiagnostics | null | undefined,
-): Map<string, string> {
-  const map = new Map<string, string>()
-  for (const entry of activation?.key_statuses ?? []) {
-    map.set(entry.key.toLowerCase(), entry.status)
-  }
-  return map
-}
-
 const EMPTY_REFRESH: DaemonRuntimeRefresh = {
   status: 'clean',
   change_kinds: [],
@@ -143,7 +133,7 @@ const EMPTY_HOST_POOL: DaemonDomainHostStats = {
   last_error: null,
 }
 
-export interface EnvActivationBlocker {
+interface EnvActivationBlocker {
   code: string
   detail?: string | null
 }

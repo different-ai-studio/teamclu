@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::process_util::CommandNoWindow;
 
@@ -368,29 +368,6 @@ pub struct SetupProgress {
 
 fn emit_progress<R: Runtime>(app: &AppHandle<R>, p: SetupProgress) {
     let _ = app.emit(SETUP_PROGRESS_EVENT, p);
-}
-
-/// Run a bundled `amuxd <args>` to completion; Err on non-zero exit.
-async fn run_amuxd_sidecar<R: Runtime>(app: &AppHandle<R>, args: &[&str]) -> Result<(), String> {
-    use tauri_plugin_shell::process::CommandEvent;
-    use tauri_plugin_shell::ShellExt;
-    let command = crate::commands::with_amuxd_brand_env(
-        app.shell()
-            .sidecar("amuxd")
-            .map_err(|e| format!("sidecar amuxd: {e}"))?
-            .args(args),
-    );
-    let (mut rx, _child) = command.spawn().map_err(|e| format!("spawn amuxd: {e}"))?;
-    let mut code: Option<i32> = None;
-    while let Some(event) = rx.recv().await {
-        if let CommandEvent::Terminated(p) = event {
-            code = Some(p.code.unwrap_or(-1));
-        }
-    }
-    if code != Some(0) {
-        return Err(format!("amuxd {} exited with {:?}", args.join(" "), code));
-    }
-    Ok(())
 }
 
 /// Ensure the desktop-managed amuxd sidecar is running. No longer copies into

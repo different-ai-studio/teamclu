@@ -194,7 +194,8 @@ export default defineConfig({
       'src/**/__tests__/**/*.test.tsx',
     ],
     env: {
-      // Stub Supabase env vars so supabase-client.ts doesn't throw during test module evaluation
+      // Stub Supabase env vars so modules that still read them do not throw during test
+      // module evaluation. lib/supabase-client.ts itself no longer exists.
       VITE_SUPABASE_URL: 'https://test.supabase.co',
       VITE_SUPABASE_ANON_KEY: 'test-anon-key',
       // Match the production default locale (buildConfig.defaults.locale). The

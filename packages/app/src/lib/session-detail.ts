@@ -48,7 +48,7 @@ export interface SessionDetailSnapshot {
   loadError: string | null;
 }
 
-export interface SessionDetailHints {
+interface SessionDetailHints {
   title?: string;
   mode?: string | null;
   ideaId?: string | null;

@@ -22,7 +22,7 @@ export interface ObsidianStatus {
  * startup only — a vault registered while it is running is invisible to it
  * until the next launch.
  */
-export type ObsidianOpenOutcome = 'opened' | 'registeredNeedsRestart'
+type ObsidianOpenOutcome = 'opened' | 'registeredNeedsRestart'
 
 /** Not installed, no vault — what every non-desktop caller gets. */
 export const OBSIDIAN_ABSENT: ObsidianStatus = { installed: false, vaultRegistered: false }

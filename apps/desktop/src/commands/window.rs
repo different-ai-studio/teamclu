@@ -61,94 +61,6 @@ pub fn current_workspace_for_window(
         .ok_or_else(|| "No workspace path set. Please select a workspace first.".to_string())
 }
 
-/// Open a new TeamClu window for an additional workspace.
-///
-/// Generates a unique window label, registers the label→workspace mapping,
-/// and opens the window with `?workspace=` query param.
-#[tauri::command]
-pub async fn create_workspace_window(
-    app: AppHandle,
-    registry: tauri::State<'_, WindowRegistry>,
-    workspace_path: String,
-) -> Result<String, String> {
-    if workspace_path.trim().is_empty() {
-        return Err("workspace_path is empty".to_string());
-    }
-
-    // Unique label so multiple secondary windows can coexist.
-    let label = format!("ws-{}", nanoid::nanoid!(10));
-
-    {
-        let mut windows = registry.windows.lock().map_err(|e| e.to_string())?;
-        windows.insert(label.clone(), workspace_path.clone());
-    }
-
-    let encoded_ws = urlencoding::encode(&workspace_path);
-    let url = format!("index.html?workspace={}", encoded_ws);
-
-    let brand = crate::branding::brand_name(app.config().product_name.as_deref());
-    let ws_name = std::path::Path::new(&workspace_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(brand.as_str());
-    let window_title = format!("{} — {}", brand, ws_name);
-
-    // Match the main window chrome: hidden title + overlay traffic lights on macOS,
-    // so the workspace name shown inside the app remains the only label.
-    #[allow(unused_mut)]
-    let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
-        .title(&window_title)
-        .inner_size(1200.0, 800.0)
-        .min_inner_size(800.0, 600.0)
-        .resizable(true)
-        .decorations(true);
-
-    #[cfg(target_os = "macos")]
-    {
-        builder = builder
-            .title_bar_style(TitleBarStyle::Overlay)
-            .hidden_title(true);
-    }
-
-    let win = builder.build().map_err(|e| {
-        // Rollback registration if window creation failed.
-        if let Ok(mut windows) = registry.windows.lock() {
-            windows.remove(&label);
-        }
-        format!("Failed to create window: {}", e)
-    })?;
-
-    // hidden_title(true) on macOS hides the title bar text but the OS still reads
-    // NSWindow.title for the dock right-click menu — set it explicitly post-build.
-    let _ = win.set_title(&window_title);
-
-    // Reposition the macOS traffic lights to match the main window's offset.
-    #[cfg(target_os = "macos")]
-    super::window_chrome::reposition_traffic_lights(&win);
-
-    // Cleanup on close: unregister this window's workspace mapping.
-    let app_handle = app.clone();
-    let label_for_handler = label.clone();
-    let workspace_for_handler = workspace_path.clone();
-    win.on_window_event(move |event| {
-        if matches!(event, tauri::WindowEvent::Destroyed) {
-            let app = app_handle.clone();
-            let label = label_for_handler.clone();
-            let ws = workspace_for_handler.clone();
-            tauri::async_runtime::spawn(async move {
-                println!("[Window] Destroyed: {} (workspace: {})", label, ws);
-                if let Some(registry) = app.try_state::<WindowRegistry>() {
-                    if let Ok(mut windows) = registry.windows.lock() {
-                        windows.remove(&label);
-                    }
-                }
-            });
-        }
-    });
-
-    Ok(label)
-}
-
 const LOCAL_AGENT_PANEL_LABEL: &str = "local-agent-panel";
 
 /// Open (or focus) a compact window that hosts only the LocalDaemon settings
@@ -208,7 +120,7 @@ pub fn open_local_agent_panel_window(app: AppHandle) -> Result<(), String> {
 /// must call this after `setWorkspace` so window-scoped IPC commands can resolve
 /// the active workspace (env catalog, MCP, etc.).
 #[tauri::command]
-pub fn register_window_workspace(
+pub async fn register_window_workspace(
     window: WebviewWindow,
     registry: tauri::State<'_, WindowRegistry>,
     workspace_path: String,
@@ -216,25 +128,45 @@ pub fn register_window_workspace(
     if workspace_path.trim().is_empty() {
         return Err("workspace_path is empty".to_string());
     }
+    // The binding itself is a map insert and happens before the first await, so
+    // a command issued right after this one already resolves the workspace.
     bind_window_to_workspace(&registry, window.label(), &workspace_path);
-    // Identity == daemon actor_id (empty until the daemon is onboarded; the
-    // tc_api_key generator then yields None and no key is seeded).
-    let actor_id = super::daemon_http::read_daemon_actor_id();
-    if let Err(e) = super::env_vars::ensure_system_env_vars(&workspace_path, &actor_id) {
-        eprintln!(
-            "[EnvVars] Warning: failed to ensure system env vars on workspace bind: {}",
-            e
-        );
-    }
-    // Personal values are machine-global; backfill this workspace's envVars
-    // cache so settings/diagnostics stay aligned after switching projects.
-    if let Err(e) = super::env_vars::derive_personal_env_index_from_blob(&workspace_path) {
-        eprintln!(
-            "[EnvVars] Warning: failed to derive personal env index on workspace bind: {}",
-            e
-        );
-    }
-    Ok(())
+    // Identity == daemon actor_id (empty until the daemon is onboarded or
+    // reachable; a generator that needs it then yields None and seeds nothing).
+    // Steady state this is the cached answer of `GET /v1/setup/status`; on a
+    // cold cache we ask the daemon once instead of reading its private
+    // backend.toml.
+    let actor_id = match crate::daemon_client::cached_actor_id() {
+        Some(id) => id,
+        None => match crate::daemon_client::discover() {
+            Ok(endpoint) => crate::daemon_client::refresh_actor_id(&endpoint)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        },
+    };
+    // Everything below touches disk (env index, personal secret blob) and used
+    // to run inline on the main thread (PERF-3).
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = super::env_vars::ensure_system_env_vars(&workspace_path, &actor_id) {
+            eprintln!(
+                "[EnvVars] Warning: failed to ensure system env vars on workspace bind: {}",
+                e
+            );
+        }
+        // Personal values are machine-global; backfill this workspace's envVars
+        // cache so settings/diagnostics stay aligned after switching projects.
+        if let Err(e) = super::env_vars::derive_personal_env_index_from_blob(&workspace_path) {
+            eprintln!(
+                "[EnvVars] Warning: failed to derive personal env index on workspace bind: {}",
+                e
+            );
+        }
+    })
+    .await
+    .map_err(|e| format!("register_window_workspace task failed: {e}"))
 }
 
 /// Update the title of the calling window (used by the frontend after workspace selection).

@@ -24,7 +24,7 @@ export function isLocalDaemonAgent(
 }
 
 /** Draft / pre-attachment: no session yet, or session exists but no attachment retain. */
-export function usesDraftCatalogContext(
+function usesDraftCatalogContext(
   agentId: string,
   sessionId: string | null | undefined,
   byRuntimeId: Record<string, RuntimeStateEntry>,

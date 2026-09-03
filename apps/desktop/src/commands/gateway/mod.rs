@@ -105,7 +105,13 @@ pub async fn list_channel_secret_keys() -> Result<Vec<String>, String> {
 /// daemon's save treats empty-string secrets as "unchanged"), so round-trips
 /// through this read are lossless.
 #[tauri::command]
-pub fn load_channel_config(platform: String) -> Result<Option<serde_json::Value>, String> {
+pub async fn load_channel_config(platform: String) -> Result<Option<serde_json::Value>, String> {
+    tokio::task::spawn_blocking(move || load_channel_config_blocking(platform))
+        .await
+        .map_err(|e| format!("load_channel_config task failed: {e}"))?
+}
+
+fn load_channel_config_blocking(platform: String) -> Result<Option<serde_json::Value>, String> {
     if !matches!(
         platform.as_str(),
         "discord" | "wecom" | "feishu" | "kook" | "wechat" | "email" | "seatalk"
@@ -155,7 +161,13 @@ pub async fn save_channel_config(platform: String, config_json: String) -> Resul
 /// with no credential in it, so there is nothing for the daemon to decrypt.
 /// `None` means unset, which is the pre-ADR-0007 unpinned behaviour.
 #[tauri::command]
-pub fn load_gateway_model() -> Result<Option<String>, String> {
+pub async fn load_gateway_model() -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(load_gateway_model_blocking)
+        .await
+        .map_err(|e| format!("load_gateway_model task failed: {e}"))?
+}
+
+fn load_gateway_model_blocking() -> Result<Option<String>, String> {
     let Some(path) = team_config_path() else {
         return Ok(None);
     };
@@ -219,14 +231,21 @@ use tauri::State;
 
 /// Load personal shortcuts from the workspace config file (teamclu.json).
 #[tauri::command]
-pub fn load_shortcuts(
+pub async fn load_shortcuts(
     window: tauri::WebviewWindow,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     workspace_path: Option<String>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    // Resolving the path is a registry lookup; the file read goes off-thread.
     let workspace_path =
         crate::commands::team::resolve_workspace_path(workspace_path, &window, &registry)?;
-    let config = teamclu_gateway::read_config(&workspace_path)?;
+    tokio::task::spawn_blocking(move || load_shortcuts_blocking(&workspace_path))
+        .await
+        .map_err(|e| format!("load_shortcuts task failed: {e}"))?
+}
+
+fn load_shortcuts_blocking(workspace_path: &str) -> Result<Vec<serde_json::Value>, String> {
+    let config = teamclu_gateway::read_config(workspace_path)?;
     let shortcuts = config
         .other
         .get("shortcuts")
@@ -237,7 +256,7 @@ pub fn load_shortcuts(
 
 /// Save personal shortcuts to the workspace config file (teamclu.json).
 #[tauri::command]
-pub fn save_shortcuts(
+pub async fn save_shortcuts(
     window: tauri::WebviewWindow,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     nodes: Vec<serde_json::Value>,
@@ -245,19 +264,29 @@ pub fn save_shortcuts(
 ) -> Result<(), String> {
     let workspace_path =
         crate::commands::team::resolve_workspace_path(workspace_path, &window, &registry)?;
-    teamclu_gateway::patch_config_value(&workspace_path, "shortcuts", serde_json::json!(nodes))
+    tokio::task::spawn_blocking(move || {
+        teamclu_gateway::patch_config_value(&workspace_path, "shortcuts", serde_json::json!(nodes))
+    })
+    .await
+    .map_err(|e| format!("save_shortcuts task failed: {e}"))?
 }
 
 /// Load the per-workspace system prompt from teamclu.json. Returns "" if unset.
 #[tauri::command]
-pub fn load_system_prompt(
+pub async fn load_system_prompt(
     window: tauri::WebviewWindow,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     workspace_path: Option<String>,
 ) -> Result<String, String> {
     let workspace_path =
         crate::commands::team::resolve_workspace_path(workspace_path, &window, &registry)?;
-    let config = teamclu_gateway::read_config(&workspace_path)?;
+    tokio::task::spawn_blocking(move || load_system_prompt_blocking(&workspace_path))
+        .await
+        .map_err(|e| format!("load_system_prompt task failed: {e}"))?
+}
+
+fn load_system_prompt_blocking(workspace_path: &str) -> Result<String, String> {
+    let config = teamclu_gateway::read_config(workspace_path)?;
     Ok(config
         .other
         .get("systemPrompt")
@@ -268,7 +297,7 @@ pub fn load_system_prompt(
 
 /// Save the per-workspace system prompt to teamclu.json.
 #[tauri::command]
-pub fn save_system_prompt(
+pub async fn save_system_prompt(
     window: tauri::WebviewWindow,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     prompt: String,
@@ -276,12 +305,14 @@ pub fn save_system_prompt(
 ) -> Result<(), String> {
     let workspace_path =
         crate::commands::team::resolve_workspace_path(workspace_path, &window, &registry)?;
-    teamclu_gateway::patch_config_value(
-        &workspace_path,
-        "systemPrompt",
-        serde_json::json!(prompt),
-    )?;
-    teamclu_runtime_env::sync_teamclu_claude_md(&workspace_path, &prompt)
+    tokio::task::spawn_blocking(move || save_system_prompt_blocking(&workspace_path, &prompt))
+        .await
+        .map_err(|e| format!("save_system_prompt task failed: {e}"))?
+}
+
+fn save_system_prompt_blocking(workspace_path: &str, prompt: &str) -> Result<(), String> {
+    teamclu_gateway::patch_config_value(workspace_path, "systemPrompt", serde_json::json!(prompt))?;
+    teamclu_runtime_env::sync_teamclu_claude_md(workspace_path, prompt)
 }
 
 /// Report the app's UI language to amuxd, which is what the gateways reply in.

@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { markStartup } from "@/lib/startup-perf";
 import { classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, localizeAgentTurnErrorMessage } from "@/lib/agent-turn-error";
 import { useSessionStore } from "@/stores/session";
+import type { Question, QuestionOption } from "@/stores/session-types";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
@@ -89,7 +90,7 @@ import {
   touchLiveEventActivity,
 } from "@/lib/session-live-subscriptions";
 
-export interface MqttLiveWiringProps {
+interface MqttLiveWiringProps {
   /** Signed-in user id, or null while auth is still resolving. */
   userId: string | null;
   /** Active team id — the MQTT ACL scope. Null until current-team lands. */
@@ -1442,18 +1443,15 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
                   const payload = JSON.parse(
                     new TextDecoder().decode(raw.jsonPayload ?? new Uint8Array()),
                   ) as Record<string, unknown>;
-                  const store = useSessionStore.getState() as unknown as {
-                    addPendingQuestion: (q: unknown) => void;
-                    resolveQuestion: (id: string) => void;
-                  };
+                  const store = useSessionStore.getState();
                   if (method === "question_asked") {
                     const tool = (payload.tool ?? {}) as { messageID?: string; callID?: string };
-                    const questions = Array.isArray(payload.questions)
+                    const questions: Question[] = Array.isArray(payload.questions)
                       ? (payload.questions as Array<Record<string, unknown>>).map((q, i) => ({
                           id: String(i),
-                          header: q.header ?? "",
-                          question: q.question ?? "",
-                          options: q.options ?? [],
+                          header: typeof q.header === "string" ? q.header : "",
+                          question: typeof q.question === "string" ? q.question : "",
+                          options: Array.isArray(q.options) ? (q.options as QuestionOption[]) : [],
                           multiple: !!q.multiple,
                         }))
                       : [];

@@ -197,7 +197,7 @@ export async function isDaemonHttpAvailable(): Promise<boolean> {
 // 'ok'      — daemon's cloud session refreshes normally.
 // 'expired' — refresh token terminally rejected (re-onboarding required).
 // 'unknown' — daemon unreachable, or an older daemon that doesn't report it.
-export type DaemonCloudAuthStatus = 'ok' | 'expired' | 'unknown'
+type DaemonCloudAuthStatus = 'ok' | 'expired' | 'unknown'
 
 /**
  * Read the local daemon's cloud-auth session health from `/v1/info` (an
@@ -311,7 +311,7 @@ async function daemonFetchData<T>(path: string, init?: RequestInit): Promise<T> 
   return result.data
 }
 
-export type DaemonMqttRecoveryReason =
+type DaemonMqttRecoveryReason =
   | 'startup'
   | 'visibility_resume'
   | 'long_visibility_resume'
@@ -320,7 +320,7 @@ export type DaemonMqttRecoveryReason =
   | 'watchdog'
   | 'credential_rejected'
 
-export interface DaemonMqttSnapshot {
+interface DaemonMqttSnapshot {
   connected: boolean
   phase: string
   worker_generation: number | null
@@ -494,7 +494,7 @@ interface DaemonMutateConfigResponse {
 }
 
 /** Read a single daemon.toml key via `/v1/config/:key`. Returns null when absent (404). */
-export async function getDaemonConfigEntry(key: string): Promise<DaemonConfigEntry | null> {
+async function getDaemonConfigEntry(key: string): Promise<DaemonConfigEntry | null> {
   const result = await daemonFetch<DaemonConfigEntry>(`/v1/config/${encodeURIComponent(key)}`)
   if (!result.ok) {
     if (result.status === 404) return null
@@ -504,7 +504,7 @@ export async function getDaemonConfigEntry(key: string): Promise<DaemonConfigEnt
 }
 
 /** Write a daemon.toml key. Secret values are write-only on read (see `getDaemonConfigEntry`). */
-export async function setDaemonConfigValue(
+async function setDaemonConfigValue(
   key: string,
   value: string | number | boolean,
 ): Promise<DaemonMutateConfigResponse> {
@@ -516,7 +516,7 @@ export async function setDaemonConfigValue(
   return result.data
 }
 
-export interface CursorAgentSettings {
+interface CursorAgentSettings {
   apiKeyConfigured: boolean
   defaultModel: string
 }
@@ -532,6 +532,7 @@ const CURSOR_API_KEY_ENV = 'CURSOR_API_KEY'
  */
 export async function getCursorAgentSettings(): Promise<CursorAgentSettings> {
   const [apiKeyValue, modelEntry] = await Promise.all([
+    // Presence only: `env_var_get` returns a mask when set, rejects when absent.
     invoke<string>('env_var_get', { key: CURSOR_API_KEY_ENV }).catch(() => ''),
     getDaemonConfigEntry('agents.cursor.default_model'),
   ])
@@ -585,7 +586,7 @@ export interface DaemonProviderInfo {
   models: string[]
 }
 
-export interface DaemonProviderAuthRequest {
+interface DaemonProviderAuthRequest {
   api_key: string
   base_url?: string
   display_name?: string
@@ -595,7 +596,7 @@ export interface DaemonProviderAuthRequest {
 /** Skill-name → 'allow' | 'deny' | 'ask' */
 export type DaemonPermissionMap = Record<string, 'allow' | 'deny' | 'ask'>
 
-export interface DaemonPermissionConfig {
+interface DaemonPermissionConfig {
   skills: DaemonPermissionMap
   tools: DaemonPermissionMap
 }
@@ -635,27 +636,18 @@ export async function getDeviceProviders(): Promise<DaemonProviderInfo[] | null>
 
 // ─── Provider auth catalog & OAuth (Phase 1 catalog, Phase 2 execution) ─────
 
-export type DaemonProviderAuthMethod = {
+type DaemonProviderAuthMethod = {
   type: 'oauth' | 'api'
   label: string
 }
 
-export type DaemonProviderAuthMethods = Record<string, DaemonProviderAuthMethod[]>
+type DaemonProviderAuthMethods = Record<string, DaemonProviderAuthMethod[]>
 
-export async function getDaemonProviderAuthMethods(
-  workspaceId: string,
-): Promise<DaemonProviderAuthMethods | null> {
-  const result = await daemonFetch<DaemonProviderAuthMethods>(
-    `/v1/workspaces/${workspaceId}/provider-auth-methods`,
-  )
-  return result.ok ? result.data : null
-}
-
-export type DaemonOAuthAuthorizeResult =
+type DaemonOAuthAuthorizeResult =
   | { ok: true; url: string; method: 'auto' | 'code'; instructions: string }
   | { ok: false; status: number; code?: string; message: string }
 
-export type DaemonOAuthCallbackResult =
+type DaemonOAuthCallbackResult =
   | { ok: true; outcome: DaemonApplyOutcome }
   | { ok: false; status: number; code?: string; message: string }
 
@@ -668,69 +660,6 @@ function problemDetailFromErrorBody(error: string): { code?: string; detail: str
     }
   } catch {
     return { detail: error }
-  }
-}
-
-export async function postDaemonProviderOAuthAuthorize(
-  workspaceId: string,
-  providerId: string,
-  methodIndex: number,
-  inputs?: Record<string, string>,
-): Promise<DaemonOAuthAuthorizeResult> {
-  const result = await daemonFetch<{
-    url: string
-    method: string
-    instructions: string
-  }>(
-    `/v1/workspaces/${workspaceId}/providers/${encodeURIComponent(providerId)}/oauth/authorize`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ method_index: methodIndex, inputs: inputs ?? {} }),
-    },
-  )
-  if (result.ok) {
-    const method =
-      result.data.method === 'auto' || result.data.method === 'code'
-        ? result.data.method
-        : 'code'
-    return {
-      ok: true,
-      url: result.data.url,
-      method,
-      instructions: result.data.instructions,
-    }
-  }
-  const problem = problemDetailFromErrorBody(result.error)
-  return {
-    ok: false,
-    status: result.status,
-    code: problem.code,
-    message: problem.detail,
-  }
-}
-
-export async function postDaemonProviderOAuthCallback(
-  workspaceId: string,
-  providerId: string,
-  methodIndex: number,
-  code?: string,
-): Promise<DaemonOAuthCallbackResult> {
-  const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
-    `/v1/workspaces/${workspaceId}/providers/${encodeURIComponent(providerId)}/oauth/callback`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ method_index: methodIndex, code: code ?? null }),
-    },
-  )
-  if (result.ok) {
-    return { ok: true, outcome: result.data.outcome }
-  }
-  const problem = problemDetailFromErrorBody(result.error)
-  return {
-    ok: false,
-    status: result.status,
-    code: problem.code,
-    message: problem.detail,
   }
 }
 
@@ -803,7 +732,7 @@ export async function postDaemonDeviceProviderOAuthCallback(
 }
 
 /** Mirrors Rust `workspaces::CatalogModel`. `ref` is `"<providerSegment>/<modelId>"`. */
-export interface DaemonCatalogModel {
+interface DaemonCatalogModel {
   ref: string
   model_id: string
   display_name: string
@@ -911,7 +840,7 @@ export async function deleteDaemonProviderAuth(
 /**
  * Fetch the full workspace permission config (skill + tool defaults).
  */
-export async function getDaemonPermissionConfig(
+async function getDaemonPermissionConfig(
   workspaceId: string,
 ): Promise<DaemonPermissionConfig | null> {
   const result = await daemonFetch<DaemonPermissionConfig>(
@@ -971,7 +900,7 @@ export async function putDaemonToolPermissions(
 // ─── Roles & skills ───────────────────────────────────────────────────────────
 
 /** Mirrors `RolesSkillsWorkspaceState` from lib/roles/types.ts (camelCase from daemon). */
-export interface DaemonRolesSkillsState {
+interface DaemonRolesSkillsState {
   roles: Array<{
     slug: string
     name: string
@@ -1023,16 +952,7 @@ export async function getDaemonSkills(
   return result.ok ? result.data : null
 }
 
-export async function getDaemonRoles(
-  workspaceId: string,
-): Promise<DaemonRolesSkillsState['roles'] | null> {
-  const result = await daemonFetch<DaemonRolesSkillsState['roles']>(
-    `/v1/workspaces/${workspaceId}/roles`,
-  )
-  return result.ok ? result.data : null
-}
-
-export interface DaemonUpsertSkillRequest {
+interface DaemonUpsertSkillRequest {
   content: string
   skillName?: string
   dirPath?: string
@@ -1072,7 +992,7 @@ export async function deleteDaemonSkill(
   return result.ok ? result.data.outcome : null
 }
 
-export interface DaemonUpsertRoleRequest {
+interface DaemonUpsertRoleRequest {
   rawMarkdown: string
   targetFilePath?: string
 }
@@ -1143,7 +1063,7 @@ export async function putDaemonAllowlist(
  * - `"unreachable"` — the daemon is down/unreachable (status 0 or thrown);
  *   the caller should leave the app row untouched so a reseed stays available.
  */
-export type SeedAppOutcome = "seeded" | "failed" | "unreachable";
+type SeedAppOutcome = "seeded" | "failed" | "unreachable";
 
 export interface SeedAppResult {
   outcome: SeedAppOutcome
@@ -1248,7 +1168,7 @@ export async function seedDaemonApp(
  * - `"failed"`      — daemon reachable but the build/upload failed (terminal).
  * - `"unreachable"` — daemon down/unreachable; the caller should not finalize.
  */
-export type BuildAppOutcome = "built" | "failed" | "unreachable";
+type BuildAppOutcome = "built" | "failed" | "unreachable";
 
 export interface BuildAppResult {
   outcome: BuildAppOutcome
@@ -1263,7 +1183,7 @@ export interface BuildAppResult {
  * none of them it builds the workdir as it sits, which is the only thing it can
  * do for an app imported from a remote this deployment has no credential for.
  */
-export interface BuildDaemonAppInput {
+interface BuildDaemonAppInput {
   gitCommitSha?: string | null
   gitRemoteUrl?: string | null
   deployKeyPem?: string | null
@@ -1285,7 +1205,7 @@ export interface BuildDaemonAppInput {
  * Returns null when the daemon is unreachable or too old to answer, so callers
  * degrade to "no local path" instead of guessing a wrong one.
  */
-export interface DaemonAppWorkdirInfo {
+interface DaemonAppWorkdirInfo {
   workdir: string
   deviceName: string
 }
@@ -1316,7 +1236,7 @@ export async function daemonLocalAppIds(teamId?: string | null): Promise<string[
   }
 }
 
-export interface InspectDirResult {
+interface InspectDirResult {
   isGitRepo: boolean
   /** `origin` on that checkout, when it has one. */
   gitRemoteUrl: string | null
@@ -1350,7 +1270,7 @@ export async function inspectDaemonDir(path: string): Promise<InspectDirResult |
   }
 }
 
-export interface BindAppWorkdirResult {
+interface BindAppWorkdirResult {
   workdir: string
   /** `origin` on the bound checkout, when it has one. */
   gitRemoteUrl: string | null
@@ -1406,7 +1326,7 @@ export async function daemonAppWorkdir(
   }
 }
 
-export type MoveAppWorkdirResult =
+type MoveAppWorkdirResult =
   | { outcome: 'moved'; workdir: string; error: null }
   | { outcome: 'unreachable'; workdir: null; error: null }
   | { outcome: 'failed'; workdir: null; error: string }
@@ -1500,21 +1420,6 @@ export async function getDaemonMcp(
   )
 }
 
-/**
- * Ask the daemon to prune leftover team MCP copies from this workspace's
- * `opencode.json`. Team servers are no longer materialised there — runtimes
- * read `~/.amuxd/teams/<id>/cloud/mcp.json` — but older builds may have left
- * byte-identical copies that would outrank the cloud cache.
- */
-export async function materializeDaemonTeamMcp(
-  workspaceId: string,
-): Promise<{ changed: boolean; added_count: number }> {
-  return daemonFetchData<{ changed: boolean; added_count: number }>(
-    `/v1/workspaces/${workspaceId}/mcp/materialize-team`,
-    { method: 'POST' },
-  )
-}
-
 export async function putDaemonMcp(
   workspaceId: string,
   servers: Record<string, DaemonMcpServerConfig>,
@@ -1545,19 +1450,19 @@ export async function getDaemonMcpTools(
   return data.servers
 }
 
-export interface DaemonTeamMcpInstallOutcome {
+interface DaemonTeamMcpInstallOutcome {
   teamId: string
   mcpChanged: boolean
 }
 
-export interface DaemonTeamCloudReconcileOutcome {
+interface DaemonTeamCloudReconcileOutcome {
   teamId: string
   mcpChanged: boolean
   envChanged: boolean
 }
 
 /** A documents file the manifest lists that this device has not downloaded. */
-export interface KnownDocument {
+interface KnownDocument {
   /** Sync key, e.g. `documents/hr/contract.pdf`. */
   path: string
   version: number
@@ -1653,7 +1558,7 @@ export interface DaemonRuntimeRefresh {
   last_error: string | null
 }
 
-export interface DaemonRuntimeStatus {
+interface DaemonRuntimeStatus {
   workspace_id: string
   ready: boolean
   backend: string
@@ -1695,18 +1600,18 @@ export async function notifyDaemonRuntimePendingChanges(
   return result.ok
 }
 
-export interface DaemonEnvActivationBlocker {
+interface DaemonEnvActivationBlocker {
   code: string
   detail?: string | null
 }
 
-export interface DaemonEnvKeyActivationStatus {
+interface DaemonEnvKeyActivationStatus {
   key: string
   scope: 'personal' | 'team' | 'system'
   status: string
 }
 
-export interface DaemonUnresolvedConfigPlaceholder {
+interface DaemonUnresolvedConfigPlaceholder {
   path: string
   placeholder: string
   key: string
@@ -1774,7 +1679,7 @@ export async function getDaemonEnvActivationDiagnostics(
 
 // ─── Team share ───────────────────────────────────────────────────────────────
 
-export interface DaemonTeamLinkResult {
+interface DaemonTeamLinkResult {
   team_id: string
   /** `symlink` | `junction` | `fallback` | `legacy_retained` */
   status: 'symlink' | 'junction' | 'fallback' | 'legacy_retained'

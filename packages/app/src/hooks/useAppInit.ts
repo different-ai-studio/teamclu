@@ -321,8 +321,8 @@ export function useWorkspaceInit() {
 
         if (cancelled) return;
 
-        unlisten = await listen<{ path: string; kind: string }>("file-change", (event) => {
-          if (!isSkillFileChange(event.payload.path)) return;
+        unlisten = await listen<{ paths: string[]; directories: string[] }>("file-change-batch", (event) => {
+          if (!event.payload.paths.some(isSkillFileChange)) return;
 
           changeVersion += 1;
           const versionAtSchedule = changeVersion;
@@ -567,6 +567,19 @@ export function useExternalLinkHandler() {
     const handler = (e: MouseEvent) => {
       const anchor = (e.target as HTMLElement).closest?.("a");
       if (!anchor) return;
+      // SEC-5: the one way a link gets an admin-console tab WITH the user's
+      // session injected. Only first-party JSX can set a data attribute —
+      // react-markdown drops raw HTML, so content (agent output, teammates'
+      // messages, files) can never carry it. Every other https link, wherever
+      // it came from, opens as a plain webview tab with no session.
+      if (anchor.hasAttribute("data-admin-console-entry")) {
+        e.preventDefault();
+        e.stopPropagation();
+        void import("@/lib/admin-sso-inject").then(({ openAdminConsoleTab }) => {
+          openAdminConsoleTab();
+        });
+        return;
+      }
       const href = anchor.getAttribute("href");
       if (href && /^https?:\/\//.test(href)) {
         e.preventDefault();
@@ -629,17 +642,3 @@ export function useTelemetryConsent() {
 // Layout mode keyboard shortcut + panel auto-open
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function useLayoutModeShortcut() {
-  const toggleLayoutMode = useUIStore((s) => s.toggleLayoutMode);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
-        e.preventDefault();
-        toggleLayoutMode();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [toggleLayoutMode]);
-}

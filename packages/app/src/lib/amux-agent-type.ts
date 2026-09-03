@@ -14,7 +14,7 @@ import { AgentType } from "@/lib/proto/amux_pb"
  * it here only produced labels and model groupings for a runtime that never
  * runs.
  */
-export type AmuxAgentType = "claude-code" | "opencode" | "pi" | "cursor"
+type AmuxAgentType = "claude-code" | "opencode" | "pi" | "cursor"
 
 export function amuxAgentTypeFromBackend(
   backendType: string | null | undefined,

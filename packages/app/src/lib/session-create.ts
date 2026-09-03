@@ -44,7 +44,7 @@ import {
 } from '@/lib/teamclu/resolve-runtime-start-workspace'
 import { resolveSessionWorkspacePath } from '@/lib/session-by-workspace'
 import { RUNTIME_START_RPC_TIMEOUT_MS } from '@/lib/teamclu/runtime-rpc-timeouts'
-export interface CreateSessionShellArgs {
+interface CreateSessionShellArgs {
   teamId: string
   creatorActorId: string
   title: string
@@ -56,7 +56,7 @@ export interface CreateSessionShellArgs {
   appId?: string
 }
 
-export interface CreateSessionShellResult {
+interface CreateSessionShellResult {
   sessionId: string
 }
 
@@ -173,7 +173,7 @@ export async function createSessionShell(
   return { sessionId }
 }
 
-export interface CreateSessionWithFirstMessageArgs {
+interface CreateSessionWithFirstMessageArgs {
   teamId: string
   creatorActorId: string
   /** Additional participant actor IDs (members + agents). Creator is added automatically. */
@@ -200,7 +200,7 @@ export interface CreateSessionWithFirstMessageArgs {
   mentionActorIds?: string[]
 }
 
-export interface CreateSessionWithFirstMessageResult {
+interface CreateSessionWithFirstMessageResult {
   sessionId: string
 }
 
@@ -331,7 +331,7 @@ export async function createSessionWithFirstMessage(
   return { sessionId }
 }
 
-export interface StartAgentRuntimesArgs {
+interface StartAgentRuntimesArgs {
   sessionId: string
   teamId: string
   agentActorIds: string[]
@@ -356,7 +356,7 @@ export interface StartAgentRuntimesArgs {
   skipModelApply?: boolean
 }
 
-export type StartAgentRuntimesResult = {
+type StartAgentRuntimesResult = {
   failures: RuntimeStartFailure[]
   /** agentActorId → spawn id accepted by the daemon for this batch. */
   runtimeIdsByAgent: Record<string, string>

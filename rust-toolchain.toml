@@ -1,0 +1,17 @@
+# One compiler version for every checkout and every CI job.
+#
+# Before this file existed, CI installed whatever `stable` was on the day and
+# local machines used whatever `rustup default` said, so a green CI run and a
+# green local build could be two different compilers. rustup reads this file
+# automatically (it beats `rustup default`, loses only to `rustup override`
+# and RUSTUP_TOOLCHAIN) and installs the channel on first use.
+#
+# Bumping: change `channel`, run `pnpm rust:check` and `pnpm daemon:test`
+# locally, and update the `toolchain:` inputs in .github/workflows/*.yml to
+# the same value — ci.yml's rust-check job fails if they disagree. Those
+# inputs exist only so dtolnay/rust-toolchain installs its cross-compile
+# `targets:` into this toolchain rather than into `stable`.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

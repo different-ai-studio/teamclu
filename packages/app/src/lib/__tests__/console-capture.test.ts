@@ -3,6 +3,7 @@ import {
   clearConsoleCapture,
   getConsoleEntries,
   installConsoleCapture,
+  redactSentryBreadcrumb,
   resetConsoleCaptureForTests,
 } from '@/lib/console-capture'
 
@@ -70,5 +71,43 @@ describe('console-capture', () => {
     console.log('one')
     clearConsoleCapture()
     expect(getConsoleEntries()).toHaveLength(0)
+  })
+})
+
+describe('redactSentryBreadcrumb (SEC-4)', () => {
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSJ9.c2lnbmF0dXJl'
+
+  it('redacts the message and every console argument, including nested ones', () => {
+    const out = redactSentryBreadcrumb({
+      category: 'console',
+      level: 'info',
+      message: `auth Bearer ${jwt}`,
+      data: {
+        logger: 'console',
+        arguments: ['token sk-abcdefghijklmnop', { headers: { authorization: `Bearer ${jwt}` } }, 42],
+      },
+    })
+    expect(out.message).toBe('auth Bearer [redacted]')
+    const args = out.data?.arguments as unknown[]
+    expect(args[0]).toBe('token [redacted-key]')
+    expect((args[1] as { headers: { authorization: string } }).headers.authorization).toBe('Bearer [redacted]')
+    expect(args[2]).toBe(42)
+  })
+
+  it('redacts string values in non-console breadcrumbs too (fetch URLs)', () => {
+    const out = redactSentryBreadcrumb({
+      category: 'fetch',
+      data: { url: `https://api.example.test/v1?access_token=${jwt}`, method: 'GET', status_code: 200 },
+    })
+    expect(out.data?.url).not.toContain(jwt)
+    expect(out.data?.url).toContain('[redacted-jwt]')
+    expect(out.data?.status_code).toBe(200)
+  })
+
+  it('does not mutate the breadcrumb it was given', () => {
+    const input = { category: 'console', message: `Bearer ${jwt}`, data: { arguments: [`Bearer ${jwt}`] } }
+    redactSentryBreadcrumb(input)
+    expect(input.message).toBe(`Bearer ${jwt}`)
+    expect(input.data.arguments[0]).toBe(`Bearer ${jwt}`)
   })
 })

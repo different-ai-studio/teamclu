@@ -19,9 +19,6 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::process_util::CommandNoWindow;
 
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
 const HEALTH_TICK: Duration = Duration::from_millis(200);
 /// Heal / restart can afford a longer wait.
@@ -31,6 +28,11 @@ const EXIT_CHILD_GRACE: Duration = Duration::from_millis(500);
 const INTROSPECT_ENV: &str = "TEAMCLU_INTROSPECT_BIN";
 const CURSOR_BRIDGE_MAIN_ENV: &str = "TEAMCLU_CURSOR_BRIDGE_MAIN";
 const CLAUDE_BRIDGE_MAIN_ENV: &str = "TEAMCLU_CLAUDE_BRIDGE_MAIN";
+/// The launchd job the app used to install. Only `legacy_service_active`
+/// reads it, and only on macOS — without the gate this is dead code on
+/// every other platform, which the crate-level `allow(dead_code)` used to
+/// hide and Linux clippy now rejects.
+#[cfg(target_os = "macos")]
 const LAUNCHD_LABEL: &str = "cc.ucar.amuxd";
 
 struct SupervisorInner {
@@ -961,19 +963,6 @@ pub async fn daemon_ensure_running<R: Runtime>(app: AppHandle<R>) -> Result<(), 
 #[tauri::command]
 pub async fn daemon_restart_managed<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     AmuxdSupervisor::restart(&app).await
-}
-
-#[tauri::command]
-pub async fn daemon_stop_managed<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    AmuxdSupervisor::shutdown(&app).await;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn daemon_supervisor_status<R: Runtime>(
-    app: AppHandle<R>,
-) -> Result<DaemonSupervisorStatus, String> {
-    Ok(AmuxdSupervisor::status(&app).await)
 }
 
 #[cfg(test)]

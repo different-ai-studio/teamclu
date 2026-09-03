@@ -1,4 +1,3 @@
-import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { AlertCircle } from 'lucide-react'
 import type { AttachedAgent } from '@/packages/ai/prompt-input-insert-hooks'

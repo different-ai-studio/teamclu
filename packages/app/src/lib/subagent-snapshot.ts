@@ -43,7 +43,7 @@ function partPayloadBytes(part: MessagePart): number {
 }
 
 /** Truncate oversized tool outputs before persisting subagentSnapshot. */
-export function truncateSubagentSnapshotParts(parts: MessagePart[]): MessagePart[] {
+function truncateSubagentSnapshotParts(parts: MessagePart[]): MessagePart[] {
   const truncated = parts.map((part) => {
     if (part.type !== "tool-call" || !part.toolCall) return part;
     const tc = part.toolCall;

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useSessionStore } from '@/stores/session';
 import { useSessionSelectionStore } from '@/stores/session-selection-store';
-import { useStreamingStore } from '@/stores/streaming';
 import { useV2StreamingStore } from '@/stores/v2-streaming-store';
 import {
   resetSessionPermissionModesForTests,
@@ -37,7 +36,6 @@ function seedActiveSession(sessionId: string | null) {
 function resetStores() {
   resetSessionPermissionModesForTests();
   seedActiveSession(null);
-  useStreamingStore.setState({ childSessionStreaming: {} });
   useV2StreamingStore.setState({ byKey: {} });
   useSessionStore.setState({
     activeSessionId: null,
@@ -87,16 +85,6 @@ describe('PendingPermissionInline', () => {
           childSessionId: 'child-sess-1',
         },
       ],
-    });
-    useStreamingStore.setState({
-      childSessionStreaming: {
-        'child-sess-1': {
-          sessionId: 'child-sess-1',
-          text: 'some output',
-          reasoning: '',
-          isStreaming: true,
-        },
-      },
     });
 
     render(<PendingPermissionInline />);
@@ -152,16 +140,6 @@ describe('PendingPermissionInline', () => {
           childSessionId: 'child-sess-1',
         },
       ],
-    });
-    useStreamingStore.setState({
-      childSessionStreaming: {
-        'child-sess-1': {
-          sessionId: 'child-sess-1',
-          text: 'some output',
-          reasoning: '',
-          isStreaming: true,
-        },
-      },
     });
 
     render(<PendingPermissionInline />);

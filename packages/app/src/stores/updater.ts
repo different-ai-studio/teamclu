@@ -6,7 +6,7 @@ function isUpdaterEnabled(): boolean {
   return getFeatures().updater && !import.meta.env.DEV
 }
 
-export type UpdateState =
+type UpdateState =
   | "idle"
   | "checking"
   | "available"
@@ -15,7 +15,7 @@ export type UpdateState =
   | "ready"
   | "error"
 
-export interface UpdateInfo {
+interface UpdateInfo {
   state: UpdateState
   version?: string
   notes?: string

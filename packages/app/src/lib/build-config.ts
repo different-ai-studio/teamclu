@@ -209,7 +209,7 @@ export function isOfficialBrand(shortName: string): boolean {
 }
 
 /** Home dir + localStorage prefix (`teamclu` for the official build). */
-export function resolveStorageDirName(shortName: string): string {
+function resolveStorageDirName(shortName: string): string {
   return isOfficialBrand(shortName) ? OFFICIAL_BRAND_SHORT_NAME : shortName
 }
 
@@ -228,7 +228,7 @@ export const appStoragePrefix: string = resolveStorageDirName(appShortName)
  *  any UI string — `app.name` is the bundle identity and may differ. */
 export const appDisplayName: string = buildConfig.app.displayName ?? buildConfig.app.name
 /** Deep-link scheme used when a build does not declare `app.scheme`. */
-export const DEFAULT_APP_SCHEME = 'teamclu'
+const DEFAULT_APP_SCHEME = 'teamclu'
 export const appScheme: string = buildConfig.app.scheme ?? DEFAULT_APP_SCHEME
 
 /**
@@ -285,7 +285,7 @@ export const extensionPack: ExtensionPackConfig = parseExtensionPackConfig(
 )
 
 /** Baked Chrome-extension settings (`extensions.settings`). */
-export const extensionSettings: ExtensionSettingsBake = extensionPack.settings
+const extensionSettings: ExtensionSettingsBake = extensionPack.settings
 
 /** Extension-only policy for assigning a team after sign-in. */
 export const extensionTeamOnboarding: ExtensionTeamOnboardingBake = extensionPack.teamOnboarding

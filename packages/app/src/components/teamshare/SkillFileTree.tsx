@@ -74,7 +74,7 @@ function fileIcon(name: string) {
 
 type Creating = { parentRel: string; kind: 'file' | 'folder' }
 
-export interface SkillFileTreeProps {
+interface SkillFileTreeProps {
   /** Absolute path of the skill package root. */
   packDir: string
   /** Currently open file, relative to `packDir`. */

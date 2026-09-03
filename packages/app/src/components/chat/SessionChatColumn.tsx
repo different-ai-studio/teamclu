@@ -13,7 +13,6 @@ import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useCurrentTeamStore } from "@/stores/current-team";
-import { useStreamingStore } from "@/stores/streaming";
 import {
   isStreamInterruptible,
   useV2StreamingStore,
@@ -63,7 +62,7 @@ import type { Message as ProtoMessage } from "@/lib/proto/teamclu_pb";
 const EMPTY_AGENTS: AttachedAgent[] = [];
 const EMPTY_PROTO_MESSAGES: ProtoMessage[] = [];
 
-export type SessionChatColumnProps = {
+type SessionChatColumnProps = {
   /** Persisted session for messages / MQTT (null before lazy thread create). */
   sessionId: string | null;
   /** Key for composer-scoped state (engaged agent, model pick). Always set. */
@@ -108,8 +107,6 @@ export function SessionChatColumn({
   const messageQueue = useSessionStore((s) => s.messageQueue);
   const removeFromQueue = useSessionStore.getState().removeFromQueue;
   const clearSessionError = useSessionStore.getState().clearSessionError;
-  const streamingMessageId = useStreamingStore((s) => s.streamingMessageId);
-  const todos = useSessionStore((s) => s.todos);
   const pendingPermissions = useSessionStore((s) => s.pendingPermissions);
   const sessionError = useSessionStore((s) => s.sessionError);
   const error = useSessionStore((s) => s.error);
@@ -155,7 +152,7 @@ export function SessionChatColumn({
 
   const showInlineTodo = React.useMemo(() => {
     if (!sessionId) return false;
-    if (todos.length === 0 && messageQueue.length === 0 && planTodos.length === 0) return false;
+    if (messageQueue.length === 0 && planTodos.length === 0) return false;
     return !hasVisiblePendingPermissions(
       sessionId,
       useSessionStore.getState().sessions,
@@ -169,14 +166,10 @@ export function SessionChatColumn({
     messageQueue.length,
     pendingPermissions,
     sessionPermissionMode,
-    todos,
     planTodos.length,
   ]);
 
-  const combinedTodos = React.useMemo(
-    () => (planTodos.length > 0 ? [...planTodos, ...todos] : todos),
-    [planTodos, todos],
-  );
+  const combinedTodos = planTodos;
   const hasComposerPlanData =
     Boolean(sessionId) && (combinedTodos.length > 0 || messageQueue.length > 0);
 
@@ -501,10 +494,7 @@ export function SessionChatColumn({
       ? Object.values(s.byKey).some((e) => e.sessionId === sessionId && e.active)
       : false,
   );
-  const isStreaming =
-    activeStreamingAgents.length > 0 ||
-    v2HasActiveStream ||
-    Boolean(streamingMessageId && sessionId && displayMessages.some((m) => m.id === streamingMessageId));
+  const isStreaming = activeStreamingAgents.length > 0 || v2HasActiveStream;
 
   const handleInterruptAgent = React.useCallback(
     (agentActorId: string) => {
@@ -593,11 +583,7 @@ export function SessionChatColumn({
           messages={displayMessages}
           activeSessionId={sessionId}
           isStreaming={isStreaming}
-          streamingMessageId={
-            sessionId && streamingMessageId && displayMessages.some((m) => m.id === streamingMessageId)
-              ? streamingMessageId
-              : null
-          }
+          streamingMessageId={null}
           compact={compact}
           externalComposer={inputLayout === "inline"}
           emptyState={suppressThreadBadge ? null : undefined}

@@ -1,7 +1,7 @@
 import type { MessageRow } from "@/lib/local-cache";
 
 /** chrome.storage.local key prefix for per-session message blobs. */
-export const SESSION_KEY_PREFIX = "teamclu.ext.msg.s.";
+const SESSION_KEY_PREFIX = "teamclu.ext.msg.s.";
 
 /** Index + eviction metadata for the extension message cache. */
 export const META_KEY = "teamclu.ext.msg.meta";
@@ -12,7 +12,7 @@ export const MAX_SESSIONS = 20;
 /** Soft byte budget for message blobs (leave headroom for other storage keys). */
 export const MAX_BYTES = 6 * 1024 * 1024;
 
-export type SessionMeta = {
+type SessionMeta = {
   lastAccessAt: number;
   bytes: number;
 };

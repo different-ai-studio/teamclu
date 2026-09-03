@@ -62,13 +62,6 @@ pub(crate) fn read_personal_secret_blob_from_paths(
     read_personal_secret_blob_with_reader(workspace_path, paths, read_legacy_disk_blob)
 }
 
-pub(crate) fn read_personal_secret_blob_for_startup_from_paths(
-    workspace_path: &str,
-    paths: &local_secret_store::SecretStorePaths,
-) -> Result<(serde_json::Map<String, serde_json::Value>, bool), String> {
-    read_personal_secret_blob_with_reader_for_startup(workspace_path, paths, read_legacy_disk_blob)
-}
-
 fn read_personal_secret_blob_with_reader<F>(
     workspace_path: &str,
     paths: &local_secret_store::SecretStorePaths,
@@ -206,6 +199,9 @@ fn mark_workspace_legacy_migration_complete_best_effort(workspace_path: &str) {
 
 /// Context available to system env var default generators.
 struct SystemEnvVarContext {
+    // Read by default generators; the registry is empty since the team-gateway
+    // cutover, so nothing reads it today. Kept as the extension point it documents.
+    #[allow(dead_code)]
     actor_id: String,
 }
 
@@ -215,6 +211,7 @@ pub(crate) enum DefaultPolicy {
     /// Re-derive on every startup; overwrite the stored value if it differs.
     /// Use when the default depends on system state that may change
     /// (e.g. `tc_api_key` is derived from `actor_id`).
+    #[allow(dead_code)] // no registry entry uses it since the team-gateway cutover
     RegenerateAlways,
     /// Write the default only when the key is missing from the blob.
     /// Empty user-set values are preserved (treated as "user has decided to leave blank").
@@ -403,16 +400,6 @@ fn set_env_vars_in_json(json: &mut serde_json::Value, entries: &[EnvVarEntry]) {
     }
 }
 
-/// Resolve the workspace_path for the calling window. In multi-window mode this
-/// looks up the window label in `WindowRegistry`; in single-window mode it
-/// falls back to single-instance inference.
-pub(crate) fn get_workspace_path(
-    window: &tauri::WebviewWindow,
-    registry: &State<'_, super::window::WindowRegistry>,
-) -> Result<String, String> {
-    super::window::current_workspace_for_window(window, registry)
-}
-
 fn resolve_workspace_path(
     workspace_path: Option<String>,
     window: &tauri::WebviewWindow,
@@ -457,7 +444,28 @@ pub(crate) async fn env_var_set_for_workspace(
     write_env_index(workspace_path, &entries)
 }
 
-/// Retrieve an environment variable value from the local encrypted store.
+/// What `env_var_get` hands the webview in place of a stored value.
+pub(crate) const ENV_VAR_MASKED: &str = "••••••••";
+
+/// Read one value from the local encrypted store, or `Err` when the key is
+/// absent. Shared by the masked and the explicit-reveal command.
+async fn read_env_value(workspace_path: String, key: &str) -> Result<String, String> {
+    let blob = tokio::task::spawn_blocking(move || read_env_blob(&workspace_path))
+        .await
+        .map_err(|e| e.to_string())??;
+    blob.get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("Key '{}' not found", key))
+}
+
+/// Tell the webview whether a value exists for `key`, without the value.
+///
+/// Returns [`ENV_VAR_MASKED`] when the key is set and `Err` when it is not, so
+/// callers that only test presence keep working. The plaintext used to come
+/// back from here (SEC-8); the origin that renders agent output is not the one
+/// that should hold decrypted credentials by default. Plaintext is a separate,
+/// explicit step: [`env_var_reveal`].
 #[tauri::command]
 pub async fn env_var_get(
     window: tauri::WebviewWindow,
@@ -466,17 +474,24 @@ pub async fn env_var_get(
     workspace_path: Option<String>,
 ) -> Result<String, String> {
     let workspace_path = resolve_workspace_path(workspace_path, &window, &registry)?;
-    let blob = tokio::task::spawn_blocking({
-        let wp = workspace_path.clone();
-        move || read_env_blob(&wp)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    read_env_value(workspace_path, &key).await?;
+    Ok(ENV_VAR_MASKED.to_string())
+}
 
-    blob.get(&key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("Key '{}' not found", key))
+/// Plaintext for one key, on an explicit user action (the reveal / copy button
+/// in settings). Separate from [`env_var_get`] so a caller that only needs
+/// presence never receives the secret, and logged so a reveal leaves a trace.
+#[tauri::command]
+pub async fn env_var_reveal(
+    window: tauri::WebviewWindow,
+    registry: State<'_, super::window::WindowRegistry>,
+    key: String,
+    workspace_path: Option<String>,
+) -> Result<String, String> {
+    let workspace_path = resolve_workspace_path(workspace_path, &window, &registry)?;
+    let value = read_env_value(workspace_path, &key).await?;
+    log::info!("[EnvVars] value revealed to the webview: {}", key);
+    Ok(value)
 }
 
 /// Internal: delete env var from blob + teamclu.json index for a given workspace.
@@ -711,78 +726,6 @@ pub struct PersonalEnvDiagnostics {
     pub host_shadowed_keys: Vec<String>,
 }
 
-fn gather_personal_env_diagnostics(workspace_path: &str) -> Result<PersonalEnvDiagnostics, String> {
-    let store = teamclu_runtime_env::diagnose_personal_env_store_for_brand(super::APP_SHORT_NAME);
-
-    let index_keys: Vec<String> = read_env_index(workspace_path)?
-        .into_iter()
-        .filter(|entry| entry.category.as_deref() != Some("system"))
-        .map(|entry| entry.key)
-        .collect();
-
-    let blob = read_env_blob(workspace_path)?;
-    let blob_keys: Vec<String> = blob
-        .iter()
-        .filter_map(|(key, value)| value.as_str().map(|_| key.clone()))
-        .collect();
-
-    let blob_key_set: std::collections::HashSet<String> =
-        blob_keys.iter().map(|k| k.to_ascii_lowercase()).collect();
-    let index_key_set: std::collections::HashSet<String> =
-        index_keys.iter().map(|k| k.to_ascii_lowercase()).collect();
-
-    let index_keys_missing_from_blob: Vec<String> = index_keys
-        .iter()
-        .filter(|key| !blob_key_set.contains(&key.to_ascii_lowercase()))
-        .take(8)
-        .cloned()
-        .collect();
-    let blob_keys_missing_from_index: Vec<String> = blob_keys
-        .iter()
-        .filter(|key| {
-            !index_key_set.contains(&key.to_ascii_lowercase())
-                && !teamclu_runtime_env::is_internal_personal_blob_key(key)
-        })
-        .take(8)
-        .cloned()
-        .collect();
-
-    let env_map: std::collections::HashMap<String, String> = blob
-        .into_iter()
-        .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
-        .collect();
-    let host_shadowed_keys = teamclu_runtime_env::host_shadowed_env_keys(&env_map);
-    let user_stored_var_count = teamclu_runtime_env::count_user_personal_env_keys(&env_map);
-
-    Ok(PersonalEnvDiagnostics {
-        storage_dir: store.storage_dir,
-        secrets_dir: store.secrets_dir,
-        master_key_exists: store.master_key_exists,
-        blob_exists: store.blob_exists,
-        blob_readable: store.blob_readable,
-        blob_error: store.blob_error,
-        stored_var_count: env_map.len(),
-        user_stored_var_count,
-        workspace_index_count: index_keys.len(),
-        index_keys_missing_from_blob,
-        blob_keys_missing_from_index,
-        host_shadowed_keys,
-    })
-}
-
-/// Gather personal env-var storage diagnostics for the settings UI.
-#[tauri::command]
-pub async fn personal_env_diagnostics(
-    window: tauri::WebviewWindow,
-    registry: State<'_, super::window::WindowRegistry>,
-    workspace_path: Option<String>,
-) -> Result<PersonalEnvDiagnostics, String> {
-    let workspace_path = resolve_workspace_path(workspace_path, &window, &registry)?;
-    tokio::task::spawn_blocking(move || gather_personal_env_diagnostics(&workspace_path))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
 fn parse_env_scope(scope: &str) -> Result<&'static str, String> {
     match scope {
         "personal" => Ok("personal"),
@@ -937,85 +880,6 @@ pub async fn env_catalog_delete(
     .await
 }
 
-/// Resolve `${KEY}` references in a string by replacing them with actual values.
-///
-/// Resolution order for each `${KEY}`:
-///   1. Shared secrets (team KMS, in-memory HashMap)
-///   2. Local encrypted personal secret blob
-///   3. System environment variables (`std::env::var`)
-#[tauri::command]
-pub async fn env_var_resolve(
-    window: tauri::WebviewWindow,
-    registry: State<'_, super::window::WindowRegistry>,
-    shared_secrets: State<'_, super::shared_secrets::SharedSecretsState>,
-    input: String,
-    workspace_path: Option<String>,
-) -> Result<String, String> {
-    let workspace_path = resolve_workspace_path(workspace_path, &window, &registry)?;
-    let re = regex::Regex::new(r"\$\{([^}]+)\}").map_err(|e| format!("Invalid regex: {}", e))?;
-
-    let mut result = input.clone();
-    let mut errors: Vec<String> = Vec::new();
-
-    let matches: Vec<(String, String)> = re
-        .captures_iter(&input)
-        .map(|cap| {
-            let full_match = cap[0].to_string();
-            let key = cap[1].to_string();
-            (full_match, key)
-        })
-        .collect();
-
-    // Read blob once upfront.
-    let blob = {
-        let wp = workspace_path.clone();
-        tokio::task::spawn_blocking(move || read_env_blob(&wp))
-            .await
-            .map_err(|e| e.to_string())?
-            .unwrap_or_else(|e| {
-                eprintln!("[EnvVars] env_var_resolve: failed to read personal secret blob, proceeding without local secrets: {}", e);
-                serde_json::Map::new()
-            })
-    };
-
-    for (full_match, key) in matches {
-        // 1. Check shared secrets (team KMS) — try original key, then lowercase
-        if let Some(value) =
-            super::shared_secrets::get_secret_value(&shared_secrets, &key).or_else(|| {
-                super::shared_secrets::get_secret_value(&shared_secrets, &key.to_lowercase())
-            })
-        {
-            result = result.replace(&full_match, &value);
-            continue;
-        }
-
-        // 2. Check local encrypted personal secret blob
-        if let Some(value) = blob.get(&key).and_then(|v| v.as_str()) {
-            result = result.replace(&full_match, value);
-            continue;
-        }
-
-        // 3. Check system environment variables
-        match std::env::var(&key) {
-            Ok(value) => {
-                result = result.replace(&full_match, &value);
-            }
-            Err(_) => {
-                errors.push(key);
-            }
-        }
-    }
-
-    if !errors.is_empty() {
-        return Err(format!(
-            "Unresolved environment variable references: {}",
-            errors.join(", ")
-        ));
-    }
-
-    Ok(result)
-}
-
 /// Ensure all system env vars exist in the local encrypted store and in the teamclu.json index.
 /// If a key is missing from the blob, its default value is generated and written.
 /// If a key already has a value (user customized), it is left unchanged.
@@ -1086,7 +950,7 @@ pub(crate) fn ensure_system_env_vars(workspace_path: &str, actor_id: &str) -> Re
                 DefaultPolicy::RegenerateAlways => blob
                     .get(def.key)
                     .and_then(|v| v.as_str())
-                    .map_or(false, |v| !v.is_empty()),
+                    .is_some_and(|v| !v.is_empty()),
                 DefaultPolicy::SetIfAbsent => true,
             }
         };

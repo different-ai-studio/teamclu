@@ -1,7 +1,7 @@
 import type { Message as TeamcluMessage } from "@/lib/proto/teamclu_pb";
 import { MessageKind } from "@/lib/proto/teamclu_pb";
 
-export type InterruptedPlaceholderRef = {
+type InterruptedPlaceholderRef = {
   streamId: string;
   messageId: string;
 };

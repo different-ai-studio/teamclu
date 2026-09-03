@@ -19,7 +19,6 @@ import { buildSessionDeeplink } from "@/lib/session-deeplink";
 import { markStartup } from "@/lib/startup-perf";
 import {
   BookOpen,
-  FolderGit,
   ChevronLeft,
   X,
   PanelRightClose,
@@ -47,7 +46,6 @@ import {
 import { useMemberPresenceHeartbeat } from "@/hooks/useMemberPresenceHeartbeat";
 import { useExtensionSessionCleanup } from "@/hooks/useExtensionSessionCleanup";
 import {
-  usePanelAutoOpen,
   useFileTabSync,
   useResizablePanels,
 } from "@/hooks/useFileEditorState";
@@ -65,13 +63,11 @@ import { TeamSkillAutoFollow } from "@/components/TeamSkillAutoFollow";
 import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
 import { ThreadHistoryLoader } from "@/components/ThreadHistoryLoader";
 import { UpdateDialogContainer } from "@/components/updater/UpdateDialog";
-import { RightPanel } from "@/components/panel";
-import { AppControlPanel } from "@/components/apps/AppControlPanel";
 import { AppDeployConfirmDialog } from "@/components/apps/AppDeployConfirmDialog";
 import { resolveControlPanelAppId } from "@/lib/app-control-panel";
-import { ExtensionSettings, Settings } from "@/components/settings";
-import { FeedbackDialog } from "@/components/settings/FeedbackDialog";
-import { AutomationPanelDialog } from "@/components/settings/AutomationPanelDialog";
+import { lazyNamed } from "@/lib/lazy-component";
+import { useEverTrue } from "@/hooks/use-ever-true";
+import { PaneLoading } from "@/components/ui/pane-loading";
 import { CloseToTrayHost } from "@/components/CloseToTrayDialog";
 import {
   Dialog,
@@ -103,10 +99,7 @@ import {
   isTeamShareOwnedTarget,
   teamShareSectionForTarget,
 } from "@/lib/tabs/teamshare-target";
-import { TeamShareDetailContent } from "@/components/teamshare/TeamShareTabContent";
 import { useTeamShareBrowserStore } from "@/stores/team-share-browser";
-import { IdeasDetailColumn } from "@/components/panel/IdeaDetailPane";
-import { ActorsDetailColumn } from "@/components/main-content/ActorDetailPane";
 import { useTerminalStore } from "@/stores/terminal-store";
 import { useHeaderPreferencesStore } from "@/stores/header-preferences-store";
 import { TabBar } from "@/components/tab-bar/TabBar";
@@ -117,7 +110,8 @@ import { urlToLabel } from "@/lib/webview-utils";
 import { create } from "zustand";
 import { Button } from "@/components/ui/button";
 import { onOpenUrl, getCurrent } from "@tauri-apps/plugin-deep-link";
-import { parseInviteDeeplink, claimInviteToken } from "@/lib/invite-deeplink";
+import { parseInviteDeeplink } from "@/lib/invite-deeplink";
+import { requestInviteLinkConfirmation, whenDocumentFocused } from "@/lib/invite-link-confirmation";
 import { parseSessionDeeplink } from "@/lib/session-deeplink";
 import {
   completePendingSessionDeeplink,
@@ -135,6 +129,40 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 export { ensureSessionLiveSubscribed } from "@/lib/session-live-subscriptions";
+
+// ── Lazy boundaries ────────────────────────────────────────────────────────
+// Settings, team share, apps and the ideas/actors detail panes are large
+// subtrees most sessions never open. Each loads on first render behind
+// Suspense so none of it sits in the startup chunk.
+const Settings = lazyNamed(() => import("@/components/settings"), "Settings");
+const ExtensionSettings = lazyNamed(() => import("@/components/settings"), "ExtensionSettings");
+const FeedbackDialog = lazyNamed(
+  () => import("@/components/settings/FeedbackDialog"),
+  "FeedbackDialog",
+);
+const AutomationPanelDialog = lazyNamed(
+  () => import("@/components/settings/AutomationPanelDialog"),
+  "AutomationPanelDialog",
+);
+const AppControlPanel = lazyNamed(
+  () => import("@/components/apps/AppControlPanel"),
+  "AppControlPanel",
+);
+const TeamShareDetailContent = lazyNamed(
+  () => import("@/components/teamshare/TeamShareTabContent"),
+  "TeamShareDetailContent",
+);
+const IdeasDetailColumn = lazyNamed(
+  () => import("@/components/panel/IdeaDetailPane"),
+  "IdeasDetailColumn",
+);
+const ActorsDetailColumn = lazyNamed(
+  () => import("@/components/main-content/ActorDetailPane"),
+  "ActorsDetailColumn",
+);
+// The right workspace panel statically pulls the actors view and the shortcuts
+// panel (the latter with name-based icon lookup); it opens on demand.
+const RightPanel = lazyNamed(() => import("@/components/panel/RightPanel"), "RightPanel");
 
 // ── Webview UI micro-store (find bar + zoom levels) ────────────────────────
 const useWebviewUIStore = create<{
@@ -423,16 +451,22 @@ function MainContent() {
         {directTeamShareSection ? (
           <div className="absolute inset-0 bg-background">
             {visibleTeamShareDetail ? (
-              <TeamShareDetailContent target={visibleTeamShareDetail} />
+              <React.Suspense fallback={<PaneLoading />}>
+                <TeamShareDetailContent target={visibleTeamShareDetail} />
+              </React.Suspense>
             ) : null}
           </div>
         ) : directIdeasSection ? (
           <div className="absolute inset-0 bg-background">
-            <IdeasDetailColumn />
+            <React.Suspense fallback={<PaneLoading />}>
+              <IdeasDetailColumn />
+            </React.Suspense>
           </div>
         ) : directActorsSection ? (
           <div className="absolute inset-0 bg-background">
-            <ActorsDetailColumn />
+            <React.Suspense fallback={<PaneLoading />}>
+              <ActorsDetailColumn />
+            </React.Suspense>
           </div>
         ) : hasActiveTab ? (
           <div className={cn(
@@ -638,7 +672,6 @@ function AppContent() {
   // / sessions change. Subscribing to the function ref alone never
   // re-renders since the ref is stable.
   const activeSession = useSessionStore((s) => s.getActiveSession());
-  const sessionDiff = useSessionStore((s) => s.sessionDiff);
   const reloadActiveSessionMessages = useSessionStore(
     (s) => s.reloadActiveSessionMessages,
   );
@@ -653,6 +686,17 @@ function AppContent() {
   const appControlPanelOpen = useUIStore((s) => s.appControlPanelOpen);
   const toggleAppControlPanel = useUIStore((s) => s.toggleAppControlPanel);
   const closeAppControlPanel = useUIStore((s) => s.closeAppControlPanel);
+  // Both dialogs mount on their first open and stay mounted after (see
+  // useEverTrue): their chunks load on demand, and the close animation and any
+  // draft state survive between opens exactly as with a permanent mount.
+  const automationPanelOpen = useUIStore((s) => s.automationPanelOpen);
+  const mountAutomationPanel = useEverTrue(automationPanelOpen);
+  const mountFeedbackDialog = useEverTrue(feedbackOpen);
+  const automationPanelDialog = mountAutomationPanel ? (
+    <React.Suspense fallback={null}>
+      <AutomationPanelDialog />
+    </React.Suspense>
+  ) : null;
   const selectedAppId = useAppsStore((s) => s.selectedAppId);
   const appIdBySessionId = useAppsStore((s) => s.appIdBySessionId);
   const appItems = useAppsStore((s) => s.items);
@@ -694,7 +738,6 @@ function AppContent() {
   // conditions below. Defaults hidden; users enable per-icon in Settings →
   // General → "会话头部图标". See stores/header-preferences-store.ts.
   const showTerminalToggle = useHeaderPreferencesStore((s) => s.showTerminalToggle);
-  const showChangesTab = useHeaderPreferencesStore((s) => s.showChangesTab);
   const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
   const hasActiveFileTab = !!useTabsStore(selectActiveTab);
   const hasHiddenTabs = useTabsStore(selectHasHiddenTabs);
@@ -777,7 +820,6 @@ function AppContent() {
   useCronInit();
   useWorkspaceRuntimeRefreshPoll();
   useExternalLinkHandler();
-  usePanelAutoOpen();
   useFileTabSync();
   useEffect(() => {
     const stopPageContext = startEmbedPageContextListener()
@@ -986,9 +1028,15 @@ function AppContent() {
             <X className="h-4 w-4" />
           </Button>
         </DialogHeader>
-        <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+        {mountFeedbackDialog ? (
+          <React.Suspense fallback={null}>
+            <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+          </React.Suspense>
+        ) : null}
         <div className="min-h-0 flex-1 overflow-hidden">
-          {embedMode ? <ExtensionSettings /> : <Settings />}
+          <React.Suspense fallback={<PaneLoading />}>
+            {embedMode ? <ExtensionSettings /> : <Settings />}
+          </React.Suspense>
         </div>
       </DialogContent>
     </Dialog>
@@ -1024,7 +1072,7 @@ function AppContent() {
           </div>
         </SidebarInset>
         {settingsModal}
-        <AutomationPanelDialog />
+        {automationPanelDialog}
       </>
     );
   }
@@ -1074,7 +1122,9 @@ function AppContent() {
                   <div className="min-w-0 flex-1" data-tauri-drag-region />
                 </div>
                 <div className="min-h-0 flex-1 overflow-hidden">
-                  <RightPanel diff={sessionDiff} />
+                  <React.Suspense fallback={<PaneLoading />}>
+                    <RightPanel />
+                  </React.Suspense>
                 </div>
               </>
             )}
@@ -1194,15 +1244,6 @@ function AppContent() {
                   left nav, where the same tree renders in column two with its
                   editor in column three. Kept out of the header so the two do
                   not diverge. */}
-              {capabilities.workspace && hasCurrentSession && showChangesTab && (
-                <HeaderPanelTab
-                  icon={FolderGit}
-                  label={t("navigation.changes", "Changes")}
-                  count={sessionDiff.length}
-                  isActive={isPanelOpen && activeTab === "diff"}
-                  onClick={() => isPanelOpen && activeTab === "diff" ? closePanel() : openPanel("diff")}
-                />
-              )}
               {controlPanelApp && (
                 <HeaderPanelTab
                   icon={SlidersHorizontal}
@@ -1247,16 +1288,20 @@ function AppContent() {
         >
           <div className="h-full w-72">
             {showRightWorkspacePanel && (
-              <RightPanel diff={sessionDiff} />
+              <React.Suspense fallback={<PaneLoading />}>
+                <RightPanel />
+              </React.Suspense>
             )}
             {showAppControlPanel && controlPanelApp && (
-              <AppControlPanel app={controlPanelApp} />
+              <React.Suspense fallback={<PaneLoading />}>
+                <AppControlPanel app={controlPanelApp} />
+              </React.Suspense>
             )}
           </div>
         </div>
       </SidebarInset>
       {settingsModal}
-      <AutomationPanelDialog />
+      {automationPanelDialog}
     </>
   );
 }
@@ -1304,43 +1349,24 @@ function App() {
   useEffect(() => {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
+    let cancelFocusWait: (() => void) | undefined;
 
-    async function handle(urls: string[]) {
+    // SEC-3: an OS-delivered link is not consent. Nothing is claimed here —
+    // the token goes to the confirmation dialog (InviteLinkConfirmDialog, mounted
+    // at the root), and only after the user accepts does AuthGate's
+    // pending-invite effect claim it, enter the team and re-onboard the daemon
+    // (auth-store `enterClaimedTeam`). Signed-out is the same path: accepting
+    // stashes the token and the claim runs right after sign-in.
+    //
+    // The ask waits for window focus. A link can arrive while the app is in
+    // the background (cold start, or opened from another app); a dialog the
+    // user did not see appear is one they cannot judge.
+    function handle(urls: string[]) {
       for (const raw of urls) {
         const token = parseInviteDeeplink(raw);
         if (!token) continue;
-        // Member invites require an account. If the user isn't signed in yet,
-        // stash the token and let sign-in + AuthGate's pending-invite effect
-        // claim it once they're authenticated.
-        const authState = useAuthStore.getState();
-        if (!authState.session) {
-          authState.setPendingInviteToken(token);
-          continue;
-        }
-        try {
-          const claim = await claimInviteToken(token);
-          // enterTeam, not reloadAndSwitchTo: the claim switched the org
-          // server-side but this client still holds the pre-claim JWT.
-          await useCurrentTeamStore.getState().enterTeam(claim.teamId);
-          // Re-onboard the local daemon to the freshly-claimed team. The
-          // daemon-onboarding store's refresh() detects the team mismatch and
-          // the DaemonOnboardingWizard handles re-onboard. Best-effort only.
-          if (isTauri()) {
-            try {
-              const { useDaemonOnboardingStore } = await import("@/stores/daemon-onboarding");
-              await useDaemonOnboardingStore.getState().refresh();
-            } catch (e) {
-              console.warn("[invite] daemon refresh after claim failed", e);
-            }
-          }
-          // TODO(Task 12): surface <JoinTeamFlow teamId={claim.teamId}
-          //   workspacePath={currentWorkspacePath} /> in an onboarding sheet
-          //   here so the joiner auto-pulls workspace config and enters the
-          //   team secret. Component lives at
-          //   packages/app/src/components/onboarding/JoinTeamFlow.tsx.
-        } catch (err) {
-          console.error('[invite] claim failed', err);
-        }
+        cancelFocusWait?.();
+        cancelFocusWait = whenDocumentFocused(() => requestInviteLinkConfirmation(token));
       }
     }
 
@@ -1355,7 +1381,10 @@ function App() {
       .then((u) => { unlisten = u; })
       .catch((err) => { console.warn("[invite] onOpenUrl failed", err); });
 
-    return () => { unlisten?.(); };
+    return () => {
+      unlisten?.();
+      cancelFocusWait?.();
+    };
   }, []);
 
   // ── Deeplink: teamclu://session/<uuid> ───────────────────────────────────

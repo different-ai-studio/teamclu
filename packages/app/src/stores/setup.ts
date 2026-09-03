@@ -46,7 +46,7 @@ function persistSetupSatisfied(ok: boolean): void {
  * Only cursor reports one — its readiness is an AND of four conditions and the
  * usual failure is a missing API key, not a missing install.
  */
-export type RuntimeBlocker = 'api_key' | 'node' | 'bridge'
+type RuntimeBlocker = 'api_key' | 'node' | 'bridge'
 
 export type RequirementStatus = {
   id: string
@@ -57,7 +57,7 @@ export type RequirementStatus = {
   blocker?: RuntimeBlocker | null
 }
 
-export type SetupProgress = {
+type SetupProgress = {
   id: string
   status: 'started' | 'running' | 'done' | 'failed'
   line: string | null

@@ -7,7 +7,7 @@
  * splits live dock vs message area — this registry bridges that handoff.
  */
 
-export type FlushedTurnRef = {
+type FlushedTurnRef = {
   messageId: string;
   streamId: string;
   turnId: string;

@@ -7,7 +7,7 @@ import { getFreshAccessToken } from '@/lib/auth/session-store'
 import { getEffectiveServerConfigSync } from '@/lib/server-config'
 
 /** Environment variable entry (key + description, no secret value). */
-export interface EnvVarEntry {
+interface EnvVarEntry {
   key: string
   description?: string
   /**
@@ -42,12 +42,12 @@ export interface TeamEnvListing {
 }
 
 /** Unified catalog returned by `env_catalog_list`. */
-export interface EnvCatalog {
+interface EnvCatalog {
   personal: EnvVarEntry[]
   team: TeamEnvListing[]
 }
 
-export type EnvScope = 'personal' | 'team'
+type EnvScope = 'personal' | 'team'
 
 interface EnvVarsState {
   envVars: EnvVarEntry[]
@@ -152,8 +152,10 @@ export const useEnvVarsStore = create<EnvVarsState>((set) => ({
     }, { rethrow: true })
   },
 
+  // Plaintext on an explicit user action only. `env_var_get` answers presence
+  // with a mask; the reveal/copy button is the one place the value is needed.
   getEnvVarValue: async (key: string) => {
-    return invoke<string>('env_var_get', {
+    return invoke<string>('env_var_reveal', {
       key,
       workspacePath: currentWorkspacePath(),
     })

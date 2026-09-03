@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@/lib/dynamic-ui/catalog', () => ({
-  catalogPrompt: 'mock catalog prompt',
+  getCatalogPrompt: () => 'mock catalog prompt',
 }))
 
 beforeEach(() => {
@@ -10,14 +10,14 @@ beforeEach(() => {
 
 describe('buildUIGenerationPrompt', () => {
   it('returns a string containing the user request', async () => {
-    const { buildUIGenerationPrompt } = await import('@/lib/dynamic-ui/generator')
+    const { buildUIGenerationPrompt } = await import('@/lib/dynamic-ui/prompt')
     const result = buildUIGenerationPrompt('create a login form')
     expect(result).toContain('create a login form')
     expect(typeof result).toBe('string')
   })
 
   it('includes catalog prompt in output', async () => {
-    const { buildUIGenerationPrompt } = await import('@/lib/dynamic-ui/generator')
+    const { buildUIGenerationPrompt } = await import('@/lib/dynamic-ui/prompt')
     const result = buildUIGenerationPrompt('test')
     expect(result).toContain('mock catalog prompt')
   })
@@ -53,43 +53,3 @@ describe('extractUITreeFromResponse', () => {
   })
 })
 
-describe('isUIGenerationRequest', () => {
-  it('returns true for UI-related prompts', async () => {
-    const { isUIGenerationRequest } = await import('@/lib/dynamic-ui/generator')
-    expect(isUIGenerationRequest('create a login form')).toBe(true)
-    expect(isUIGenerationRequest('generate UI')).toBe(true)
-    expect(isUIGenerationRequest('build a dashboard')).toBe(true)
-  })
-
-  it('returns false for non-UI prompts', async () => {
-    const { isUIGenerationRequest } = await import('@/lib/dynamic-ui/generator')
-    expect(isUIGenerationRequest('what is the weather')).toBe(false)
-    expect(isUIGenerationRequest('hello world')).toBe(false)
-  })
-})
-
-describe('generateUI', () => {
-  it('returns a login template for login-related prompt', async () => {
-    const { generateUI } = await import('@/lib/dynamic-ui/generator')
-    const result = await generateUI('create a login page')
-    expect(result.tree).not.toBeNull()
-    expect(result.title).toContain('login')
-  })
-
-  it('returns a generic UI for unmatched prompt', async () => {
-    const { generateUI } = await import('@/lib/dynamic-ui/generator')
-    const result = await generateUI('something completely custom')
-    expect(result.tree).not.toBeNull()
-  })
-})
-
-describe('getAvailableTemplates', () => {
-  it('returns an array of template names', async () => {
-    const { getAvailableTemplates } = await import('@/lib/dynamic-ui/generator')
-    const templates = getAvailableTemplates()
-    expect(Array.isArray(templates)).toBe(true)
-    expect(templates.length).toBeGreaterThan(0)
-    expect(templates).toContain('login')
-    expect(templates).toContain('dashboard')
-  })
-})

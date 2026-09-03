@@ -13,9 +13,7 @@ pub async fn handle(_api_port: u16, arguments: &Value) -> Result<Value, String> 
         action,
         "list" | "install" | "uninstall" | "get_draft" | "update_draft"
     ) {
-        return Err(
-            "action must be list, install, uninstall, get_draft, or update_draft".into(),
-        );
+        return Err("action must be list, install, uninstall, get_draft, or update_draft".into());
     }
     let slug = arguments
         .get("slug")

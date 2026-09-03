@@ -106,13 +106,13 @@ async function globalTeamSyncRoot(teamId: string): Promise<string> {
  * on disk. It is listed here only so a file opened from that panel can still be
  * recognised as team-synced content.
  */
-export const TEAM_KNOWLEDGE_LINK_DIR = 'team-knowledge'
+const TEAM_KNOWLEDGE_LINK_DIR = 'team-knowledge'
 
 /**
  * Workspace symlink surfacing the team's synced documents dir. Must match
  * `TEAM_DOCUMENTS_LINK_NAME` in `apps/daemon/src/config/workspace_link.rs`.
  */
-export const TEAM_DOCUMENTS_LINK_DIR = 'team-documents'
+const TEAM_DOCUMENTS_LINK_DIR = 'team-documents'
 
 /** The two fixed roots, paired with the workspace symlink that surfaces each. */
 const SYNC_ROOT_LINKS: ReadonlyArray<readonly [linkDir: string, prefix: string]> = [
@@ -147,36 +147,6 @@ export async function globalTeamKnowledgeShareDir(): Promise<string | null> {
   return root ? `${root}/knowledge` : null
 }
 
-function isUnder(root: string | null | undefined, path: string): boolean {
-  if (!root) return false
-  const normalized = trimTrailingPathSeparators(root)
-  return path === normalized || path.startsWith(`${normalized}/`)
-}
-
-/**
- * The synced-tree root that contains `absPath`, or null when it holds none.
- *
- * Two spellings reach the same bytes: the real directory under the amuxd home —
- * what the team column browses and what the sync engine owns — and the
- * daemon-managed workspace symlinks the file panel renders. Both have to be
- * recognised, or a document opened from one surface loses the history the same
- * document has when opened from the other.
- */
-export function teamSyncRootForPath(
-  absPath: string,
-  opts: { syncRoot?: string | null; workspacePath?: string | null } = {},
-): string | null {
-  const syncRoot = opts.syncRoot ?? lastKnownSyncRoot
-  if (isUnder(syncRoot, absPath)) return trimTrailingPathSeparators(syncRoot as string)
-  for (const [linkDir] of SYNC_ROOT_LINKS) {
-    const link = opts.workspacePath
-      ? `${trimTrailingPathSeparators(opts.workspacePath)}/${linkDir}`
-      : null
-    if (isUnder(link, absPath)) return link
-  }
-  return null
-}
-
 /**
  * The sync key for a path — `knowledge/notes/a.md`, `documents/hr/b.md` — or
  * null when the path is not synced content.
@@ -209,7 +179,7 @@ export function teamSyncKeyForPath(
  * The single root directory (`…/knowledge` or `…/documents`) that `absPath`
  * sits in, or null when it is not synced content.
  *
- * Distinct from {@link teamSyncRootForPath}, which returns their shared parent.
+ * This is the root itself, not the shared parent directory that holds both roots.
  * Anything that resolves a name *within* a body of content — a `[[wiki link]]`,
  * a relative attachment — wants this one: a knowledge note linking into
  * documents would be a link Obsidian cannot follow (its vault is knowledge
@@ -235,13 +205,6 @@ export function teamContentRootForPath(
 
 export async function resolveTeamSyncRoot(): Promise<string | null> {
   const globalDir = await globalTeamSyncShareRoot()
-  if (!globalDir) return null
-  return (await exists(globalDir)) ? globalDir : null
-}
-
-/** The knowledge root on disk, for Obsidian and the RAG index. */
-export async function resolveTeamKnowledgeDir(): Promise<string | null> {
-  const globalDir = await globalTeamKnowledgeShareDir()
   if (!globalDir) return null
   return (await exists(globalDir)) ? globalDir : null
 }

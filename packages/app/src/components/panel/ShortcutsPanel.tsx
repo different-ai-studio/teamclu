@@ -9,9 +9,9 @@ import {
   Folder,
   RefreshCw,
   Settings,
-  icons,
   type LucideIcon,
 } from "lucide-react"
+import { LucideIconByName } from "@/components/icons/LucideIconByName"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
@@ -28,11 +28,12 @@ import { useCurrentTeamStore } from "@/stores/current-team"
 import { useSidebar } from "@/components/ui/sidebar"
 
 // ── Icon resolver ────────────────────────────────────────────────────
-// Uses PascalCase Lucide icon names (e.g. "ShoppingCart", "Users", "BarChart3").
+// `node.icon` is a PascalCase Lucide icon name (e.g. "ShoppingCart", "Users",
+// "BarChart3"), resolved by `LucideIconByName` from a lazily loaded icon map.
 // Full list: https://lucide.dev/icons
-
-function resolveIcon(node: ShortcutNode): LucideIcon {
-  if (node.icon && node.icon in icons) return icons[node.icon as keyof typeof icons]
+//
+// Icon shown when the node names no Lucide icon (and while the icon set loads).
+function resolveFallbackIcon(node: ShortcutNode): LucideIcon {
   if (node.type === "folder") return Folder
   if (node.type === "native") return FileText
   return ExternalLink
@@ -53,7 +54,7 @@ function TreeNode({ node, level, onSelect, activeTarget, openTargets }: TreeNode
   const isActive = !!(node.target && node.target === activeTarget)
   const isOpen = !!(node.target && openTargets.has(node.target))
   const isFolder = node.type === "folder"
-  const Icon = resolveIcon(node)
+  const FallbackIcon = resolveFallbackIcon(node)
 
   const handleClick = () => {
     if (isFolder) {
@@ -74,7 +75,11 @@ function TreeNode({ node, level, onSelect, activeTarget, openTargets }: TreeNode
           )}
           style={{ paddingLeft: `${level * 12 + 8}px` }}
         >
-          <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <LucideIconByName
+            name={node.icon}
+            fallback={FallbackIcon}
+            className="h-4 w-4 shrink-0 text-muted-foreground"
+          />
           <span className="flex-1 truncate text-left font-medium">{node.label}</span>
           {isExpanded ? (
             <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground/60" />
@@ -114,7 +119,11 @@ function TreeNode({ node, level, onSelect, activeTarget, openTargets }: TreeNode
       )}
       style={{ paddingLeft: `${level * 12 + 8}px` }}
     >
-      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <LucideIconByName
+        name={node.icon}
+        fallback={FallbackIcon}
+        className="h-4 w-4 shrink-0 text-muted-foreground"
+      />
       <span className="flex-1 truncate text-left">{node.label}</span>
       {isOpen && !isActive && (
         <span className="w-1.5 h-1.5 rounded-full bg-primary/60 shrink-0" />

@@ -1,11 +1,14 @@
-import { getBackend } from '@/lib/backend'
-import { appScheme, deeplinkSchemes } from '@/lib/build-config'
+import { appScheme } from '@/lib/build-config'
 
-// Which schemes count as an invite link is a build-level decision — see
-// `resolveDeeplinkSchemes`. A build on the default scheme also takes the
-// pre-rebrand `teamclaw://` and the `amux://` the RPC emits; a build with its
-// own scheme (copilot361) takes only that one.
-const INVITE_SCHEMES = new Set(deeplinkSchemes.map((s) => `${s}:`))
+// SEC-3: the OS only ever hands this build links on its own scheme —
+// `tauri.conf.json` registers exactly `[app.scheme]` (branding rewrites it per
+// build) — so the deep-link parser takes that scheme and nothing else. The
+// pre-rebrand `teamclaw://` is gone entirely. `amux://` is what the
+// `create_team_invite` RPC still emits (see the OpenAPI description) and what a
+// raw API consumer might paste, so it stays accepted for typed/pasted input
+// only, where the scheme carries no security meaning.
+const DEEPLINK_SCHEMES: ReadonlySet<string> = new Set([`${appScheme}:`])
+const PASTED_LINK_SCHEMES: ReadonlySet<string> = new Set([`${appScheme}:`, 'amux:'])
 const INVITE_HOST = 'invite'
 
 /**
@@ -19,10 +22,10 @@ export function buildInviteDeeplink(token: string): string {
   return `${appScheme}://${INVITE_HOST}?token=${encodeURIComponent(token)}`
 }
 
-export function parseInviteDeeplink(raw: string): string | null {
+function parseInviteUrl(raw: string, schemes: ReadonlySet<string>): string | null {
   try {
     const url = new URL(raw)
-    if (!INVITE_SCHEMES.has(url.protocol)) return null
+    if (!schemes.has(url.protocol)) return null
     if (url.hostname !== INVITE_HOST && url.pathname !== `//${INVITE_HOST}`) return null
     const token = url.searchParams.get('token')
     return token && token.length > 0 ? token : null
@@ -31,23 +34,17 @@ export function parseInviteDeeplink(raw: string): string | null {
   }
 }
 
+/** Parse an OS-delivered deep link. Own scheme only. */
+export function parseInviteDeeplink(raw: string): string | null {
+  return parseInviteUrl(raw, DEEPLINK_SCHEMES)
+}
+
+/** Parse what the user typed or pasted: a bare token, or a link on an accepted scheme. */
 export function parseInviteTokenInput(raw: string): string | null {
   const trimmed = raw.trim()
   if (!trimmed) return null
-  const fromDeeplink = parseInviteDeeplink(trimmed)
-  if (fromDeeplink) return fromDeeplink
+  const fromLink = parseInviteUrl(trimmed, PASTED_LINK_SCHEMES)
+  if (fromLink) return fromLink
   if (trimmed.includes('://')) return null
   return trimmed
-}
-
-export interface ClaimResult {
-  actorId: string
-  teamId: string
-  actorType: string
-  displayName: string
-  refreshToken: string | null
-}
-
-export async function claimInviteToken(token: string): Promise<ClaimResult> {
-  return getBackend().auth.claimInvite(token)
 }

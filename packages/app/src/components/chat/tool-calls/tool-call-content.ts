@@ -6,7 +6,7 @@ import {
 import { parseSingleFileDiff, type DiffLine } from "@/components/diff/diff-ast";
 import { tryParseToolPatchForUI } from "@/components/diff/parse-tool-patch";
 
-export type ToolCallContentDiff = {
+type ToolCallContentDiff = {
   path: string;
   oldText?: string;
   newText: string;
@@ -17,7 +17,7 @@ export type ToolCallContentBlock =
   | { type: "diff"; diff: ToolCallContentDiff }
   | { type: "terminal"; terminalId: string };
 
-export type ToolCallDiffViewModel = {
+type ToolCallDiffViewModel = {
   lines: DiffLine[];
   additions: number;
   deletions: number;

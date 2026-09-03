@@ -1,10 +1,8 @@
 import type { PageContext } from '@/lib/embed-page-context'
 
 const PAGE_LINK_TOKEN_PREFIX = '@{page:b64:'
-export const MAX_PAGE_CHIP_LABEL = 80
-export const MAX_PAGE_CONTEXT_BODY = 4000
-
-export function truncatePageText(text: string, max: number): string {
+const MAX_PAGE_CHIP_LABEL = 80
+function truncatePageText(text: string, max: number): string {
   const trimmed = text.trim()
   if (trimmed.length <= max) return trimmed
   return `${trimmed.slice(0, Math.max(0, max - 3))}...`

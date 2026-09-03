@@ -32,7 +32,7 @@ export function expandPageLinkTokensInText(text: string): string {
   })
 }
 
-export function extractUrlFromPageInstruction(instruction: string): string | undefined {
+function extractUrlFromPageInstruction(instruction: string): string | undefined {
   for (const line of instruction.split('\n')) {
     const trimmed = line.trim()
     if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {

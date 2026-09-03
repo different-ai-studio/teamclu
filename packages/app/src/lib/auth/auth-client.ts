@@ -9,7 +9,7 @@ import {
   setSession,
 } from "./session-store";
 
-export interface AuthClientOptions {
+interface AuthClientOptions {
   baseUrl: string;
   fetchImpl?: typeof fetch;
 }

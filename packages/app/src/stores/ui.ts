@@ -20,13 +20,13 @@ function releaseStuckModalLayersAfterViewSwitch(): void {
   scheduleReleaseStuckModalLayers()
 }
 
-export type LayoutMode = 'task'
-export type MainContentLayout = 'stacked' | 'split'
+type LayoutMode = 'task'
+type MainContentLayout = 'stacked' | 'split'
 
 // Right panel tab in file mode
-export type FileModeRightTab = 'shortcuts' | 'changes' | 'files' | 'agent'
-export type DefaultPrimaryTab = 'session' | 'actors' | 'ideas' | 'shortcuts'
-export type DefaultMoreDestination = 'settings'
+type FileModeRightTab = 'shortcuts' | 'changes' | 'files' | 'agent'
+type DefaultPrimaryTab = 'session' | 'actors' | 'ideas' | 'shortcuts'
+type DefaultMoreDestination = 'settings'
 
 /** Preselected actor for the draft chat state: when the user taps an actor
  * row in the Actors tab, we record it here, switch nav back to Session, and
@@ -55,7 +55,7 @@ export type SettingsSection = 'llm' | 'general' | 'prompt' | 'channels' | 'autom
   | 'knowledgeAcl'
 
 /** Context passed when opening Agent settings from a blocked quick-new-chat action. */
-export type DaemonGeneralPrompt = 'quick_chat'
+type DaemonGeneralPrompt = 'quick_chat'
 
 interface UIState {
   /** True when the page was loaded with ?embed=chat — renders minimal layout. Read-only; no setter. */
@@ -273,23 +273,17 @@ export const useUIStore = create<UIState>((set, get) => ({
       useCronStore.getState().setShowCronSessions(false)
     })
     import('@/stores/session-selection-store').then(({ useSessionSelectionStore }) => {
-      import('@/stores/streaming').then(({ useStreamingStore }) => {
-        import('@/stores/session').then(({ useSessionStore }) => {
-            useStreamingStore.getState().clearStreaming()
-            useSessionSelectionStore.getState().clearActiveSession()
+      import('@/stores/session').then(({ useSessionStore }) => {
+        useSessionSelectionStore.getState().clearActiveSession()
 
-            // Clear session state to show "Start a New Chat" UI
-            // Actual session will be created when user sends first message
-            useSessionStore.setState({
-              isLoading: false,
-              messageQueue: [],
-              todos: [],
-              sessionDiff: [],
-              sessionError: null,
-              sessionStatus: null,
-              pendingQuestions: [],
-              pendingPermissions: [],
-            })
+        // Clear session state to show "Start a New Chat" UI
+        // Actual session will be created when user sends first message
+        useSessionStore.setState({
+          isLoading: false,
+          messageQueue: [],
+          sessionError: null,
+          pendingQuestions: [],
+          pendingPermissions: [],
         })
       })
     })
@@ -389,10 +383,7 @@ export const useUIStore = create<UIState>((set, get) => ({
       useSessionStore.setState({
         isLoading: false,
         messageQueue: [],
-        todos: [],
-        sessionDiff: [],
         sessionError: null,
-        sessionStatus: null,
         pendingQuestions: [],
         pendingPermissions: [],
       })
