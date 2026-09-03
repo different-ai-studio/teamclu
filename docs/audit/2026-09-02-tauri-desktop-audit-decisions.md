@@ -5,7 +5,17 @@
 可选项和建议写清楚，**只提建议，不替产品拍板**。每条末尾注明本分支（`fix/audit-2026-09-p0-p1`）
 在不预设方向的前提下已经做了什么、什么在等这个决定。
 
-定下来之后，每条各落一份 `docs/adr/00xx-*.md`（格式照 ADR-0007），本文即可删除。
+每条已各落一份 ADR，**状态是 `proposed`**——本文的建议被原样采纳写成了决定，但
+决定本身还没人签字。定稿时把对应 ADR 的 `status` 改成 `accepted`（或改掉选项），
+本文即可删除：
+
+| | ADR |
+|---|---|
+| D1 · SEC-2 | [0009 webview 只拿它实际要用的目录](../adr/0009-webview-fs-and-network-scope.md) |
+| D2 · ARCH-6 | [0010 定时任务归 daemon](../adr/0010-cron-belongs-to-the-daemon.md) |
+| D3 · ARCH-2 | [0011 agent 回复文本只有一个对账点](../adr/0011-one-reconciliation-point-for-agent-reply-text.md) |
+| D4 · ARCH-11 | [0012 除 auth 外一切状态窗口局部](../adr/0012-window-local-state-is-the-default.md) |
+| D5 · STR-4 | [0013 IPC 错误带一个 code](../adr/0013-ipc-errors-carry-a-code.md) |
 
 ---
 
