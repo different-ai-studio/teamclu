@@ -853,8 +853,9 @@ impl DaemonServer {
             refresh_auto_apply_task: None,
             mqtt_connected_flag: None,
             // Built without a token source: the HTTP layer owns the TokenStore
-            // and has not started yet. It is injected below, once that store
-            // exists — see the `set_tokens` call after the http spawn.
+            // and has not started yet. HTTP spawn binds tokens + the local
+            // proxy URL onto this same Arc after the listener binds, before
+            // it accepts requests.
             managed_llm: Arc::new(crate::runtime::managed_llm::ManagedLlmResolver::new(
                 backend,
             )),
@@ -1236,31 +1237,16 @@ impl DaemonServer {
                 self.refresh_watch_registry.clone(),
                 Some(self.runtime_context.clone()),
                 session_prompt,
+                Some(self.managed_llm.clone()),
             )
             .await
             {
                 Ok(h) => {
                     info!(addr = %h.local_addr, "http listener bound");
-                    // Hand the spawn-path resolver the SAME TokenStore the HTTP
-                    // layer authenticates against. Loading a second store from
-                    // the same file is not equivalent: the file holds only the
-                    // root token, while minted session tokens live in the
-                    // instance that minted them — so a token from any other
-                    // store is rejected as "invalid or expired".
-                    //
-                    // Without this the runtimes that read their credential from
-                    // `TEAMCLU_TEAM_PROVIDER` (pi, and anything after it) get a
-                    // token nothing accepts, and every team-model call 401s.
-                    self.managed_llm.set_tokens(
-                        crate::runtime::gateway_token::GatewayTokenSource::new(h.tokens.clone()),
-                    );
-                    // ...and where to reach that proxy. Runtimes are pointed
-                    // here, not at the cloud gateway: the token above is only
-                    // valid locally, and this hop is what refreshes the cloud
-                    // credential per request so a multi-day agent never meets
-                    // its expiry.
-                    self.managed_llm
-                        .set_local_http_base(format!("http://{}", h.local_addr));
+                    // Token source + local proxy URL are attached inside HTTP
+                    // spawn, on this same Arc, before the router accepts
+                    // requests. Calling `set_tokens` again here would replace
+                    // the GatewayTokenSource and mint a second apiKey.
                     if let Err(err) = self
                         .runtime_context
                         .validate_managed_setup(&self.config.agents.local_agent)

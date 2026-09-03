@@ -152,11 +152,10 @@ pub struct HttpState {
     /// session/live MQTT publish (identical bytes incl. event_id). `None` in
     /// focused tests — the route then returns 503.
     pub live_tee: Option<tokio::sync::broadcast::Sender<super::live_events::LiveTeeEvent>>,
-    /// Shared, TTL-cached resolver for the team's cloud managed LLM. Lets
-    /// `GET /v1/workspaces/:id/providers` re-materialize `provider.team` before
-    /// reading it back off disk, so an admin's model-list change reaches a
-    /// member on a plain refresh rather than only at the next runtime spawn.
-    /// `None` in focused tests — the reconcile is then skipped.
+    /// Shared, TTL-cached resolver for the team's cloud managed LLM. The daemon
+    /// and HTTP listener must hold the same `Arc` so provider reads and runtime
+    /// assemble write one `provider.team`. `None` in focused tests — the
+    /// reconcile is then skipped, unless spawn built a fallback from `backend`.
     pub managed_llm: Option<Arc<crate::runtime::managed_llm::ManagedLlmResolver>>,
     /// Mirrors team MCP / team env from the Cloud API onto the daemon-owned
     /// cache under `~/.amuxd/teams/<id>/cloud/`. Shared with the background
