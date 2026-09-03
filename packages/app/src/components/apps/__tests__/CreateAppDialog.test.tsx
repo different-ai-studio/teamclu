@@ -35,7 +35,7 @@ vi.mock('@/stores/apps-store', () => ({
   },
 }))
 
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   inspectDaemonDir: (...args: unknown[]) => inspectDirMock(...args),
   bindDaemonAppWorkdir: (...args: unknown[]) => bindWorkdirMock(...args),
 }))

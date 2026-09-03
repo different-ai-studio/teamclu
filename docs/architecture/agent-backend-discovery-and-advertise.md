@@ -343,7 +343,7 @@ Settings 显示 Backend types 为空
 | FC supabase 实现 | `services/fc/src/lib/supabase-repo.ts` → `ensureAgentTypes` |
 | FC postgres 实现 | `services/fc/src/lib/pg-repo/agents.ts` → `ensureAgentTypes` |
 | UI | `packages/app/src/components/settings/DaemonGeneralSection.tsx` |
-| UI 数据 | `packages/app/src/lib/daemon-agent-admin.ts` → `getLocalDaemonAgent` |
+| UI 数据 | `packages/app/src/lib/daemon/daemon-agent-admin.ts` → `getLocalDaemonAgent` |
 | DB view | migration `actor_directory` ← `agents.agent_types` |
 | RLS | `agents_self_update` / `agents_select_if_visible` / `amux.is_current_agent` |
 | personal agent RLS 修复 | `services/supabase/migrations/20260612010000_agents_select_self_for_self_update.sql` |

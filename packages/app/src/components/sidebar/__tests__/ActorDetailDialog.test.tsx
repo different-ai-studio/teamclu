@@ -17,7 +17,7 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
-vi.mock('@/lib/date-format', () => ({
+vi.mock('@/lib/ui/date-format', () => ({
   formatRelativeTime: () => 'just now',
   formatDate: () => 'Jan 1, 2026',
 }))

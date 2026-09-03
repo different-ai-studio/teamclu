@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { lazy, Suspense } from 'react'
-import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
+import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -35,9 +35,9 @@ import {
   putDaemonPermissions,
   reloadDaemonRuntime,
   deleteDaemonSkill,
-} from '@/lib/daemon-local-client'
+} from '@/lib/daemon/daemon-local-client'
 import { cn } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { ensureAgentsSkillsPaths } from '@/lib/skills/ensure-agents-paths'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -62,7 +62,7 @@ import type { SkillPermission, SkillPermissionMap } from '@/lib/opencode/config'
 import { resolveSkillPermission } from '@/lib/opencode/config'
 import type { SkillSource } from '@/lib/skills/types'
 import { INHERENT_SKILL_NAMES } from '@/lib/skills/types'
-import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
+import { useEffectiveWorkspacePath } from '@/lib/workspace/effective-workspace'
 import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 import { ClawHubMarketplace } from './ClawHubMarketplace'
 import { SkillsDiagnosticsDialog } from './SkillsDiagnosticsDialog'

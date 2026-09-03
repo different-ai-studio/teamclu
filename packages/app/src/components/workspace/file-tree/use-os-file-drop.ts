@@ -8,7 +8,7 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { isChatInputDropTarget, isPointOverElement } from "@/lib/chat-file-drop";
+import { isChatInputDropTarget, isPointOverElement } from "@/lib/ui/chat-file-drop";
 import { isTauri } from "@/lib/utils";
 import { useWorkspaceStore } from "@/stores/workspace";
 import type { FlatTreeNode } from "./flatten";

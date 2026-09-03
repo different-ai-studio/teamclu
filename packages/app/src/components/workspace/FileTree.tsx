@@ -8,9 +8,9 @@ import { copyToClipboard, isTauri } from '@/lib/utils';
 import { useWorkspaceStore, type FileNode } from "@/stores/workspace";
 import { useOssSyncStore } from "@/stores/oss-sync";
 import { useTeamConflictsStore } from "@/stores/team-conflicts";
-import { withDefaultExtension } from "@/lib/knowledge-file-names";
-import { pruneKnowledgeNoise } from "@/lib/knowledge-tree-pruning";
-import { useTeamPermissions } from "@/lib/team-permissions";
+import { withDefaultExtension } from "@/lib/knowledge/knowledge-file-names";
+import { pruneKnowledgeNoise } from "@/lib/knowledge/knowledge-tree-pruning";
+import { useTeamPermissions } from "@/lib/team/team-permissions";
 import { lazyNamed } from "@/lib/lazy-component";
 
 // Team-share subtree; loads the first time a folder's ACL dialog is opened.
@@ -20,10 +20,10 @@ const KnowledgeAclDialog = lazyNamed(
 );
 import { getBackend } from "@/lib/backend";
 import { useCurrentTeamStore } from "@/stores/current-team";
-import { isIgnoredSyncKey } from "@/lib/knowledge-ignored";
+import { isIgnoredSyncKey } from "@/lib/knowledge/knowledge-ignored";
 import { useTeamSyncStatusStore } from "@/stores/team-sync-status";
-import { buildBadgeMap, badgeForDirectory } from "@/lib/team-sync-badges";
-import { teamSyncKeyForPath } from "@/lib/team-skill-paths";
+import { buildBadgeMap, badgeForDirectory } from "@/lib/team/team-sync-badges";
+import { teamSyncKeyForPath } from "@/lib/team/team-skill-paths";
 import {
   hasSystemClipboardFiles,
   writeSystemClipboardFiles,
@@ -52,7 +52,7 @@ import {
   duplicateItem,
   readFileContent,
 } from "./file-tree-operations";
-import { TEAM_REPO_DIR, appShortName } from "@/lib/build-config";
+import { TEAM_REPO_DIR, appShortName } from "@/lib/config/build-config";
 import { filterTree, flattenTree, type FlatTreeNode } from "./file-tree/flatten";
 import { useFileTreeKeyboard } from "./file-tree/use-file-tree-keyboard";
 import { useOsFileDrop } from "./file-tree/use-os-file-drop";
@@ -547,7 +547,7 @@ export function FileTree({
       return;
     }
     try {
-      const { listKnownDocuments } = await import('@/lib/daemon-local-client');
+      const { listKnownDocuments } = await import('@/lib/daemon/daemon-local-client');
       const items = await listKnownDocuments(aclTeamId);
       setKnownDocs(new Map(items.map((i) => [i.path, i.size])));
     } catch {
@@ -595,7 +595,7 @@ export function FileTree({
       : [...knownDocs.keys()].filter((k) => k.startsWith(`${key}/`));
     if (targets.length === 0) return;
 
-    const { fetchDocuments } = await import('@/lib/daemon-local-client');
+    const { fetchDocuments } = await import('@/lib/daemon/daemon-local-client');
 
     // One file needs no progress reporting; the row's own state is enough.
     if (targets.length === 1) {
@@ -686,7 +686,7 @@ export function FileTree({
     const key = teamSyncKeyForPath(path, { syncRoot, workspacePath });
     if (!key) return;
     try {
-      const { releaseDocuments } = await import('@/lib/daemon-local-client');
+      const { releaseDocuments } = await import('@/lib/daemon/daemon-local-client');
       const released = await releaseDocuments(aclTeamId, [key]);
       if (released.length === 0) {
         // Refused — almost always because the file holds unpushed edits.

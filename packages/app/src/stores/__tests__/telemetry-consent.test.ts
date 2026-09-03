@@ -10,7 +10,7 @@ vi.mock('@/lib/utils', () => ({
   isTauri: () => true,
 }))
 
-vi.mock('@/lib/build-config', () => ({
+vi.mock('@/lib/config/build-config', () => ({
   appShortName: 'teamclu',
   appStoragePrefix: 'teamclu',
 }))

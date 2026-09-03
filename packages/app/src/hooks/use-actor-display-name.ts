@@ -1,7 +1,7 @@
 import * as React from "react";
 import { getBackend } from "@/lib/backend";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
-import { loadActorsByIds, upsertActorsBatch } from "@/lib/local-cache";
+import { loadActorsByIds, upsertActorsBatch } from "@/lib/cache/local-cache";
 import { isTauri } from "@/lib/utils";
 
 const actorDisplayNameCache = new Map<string, string>();

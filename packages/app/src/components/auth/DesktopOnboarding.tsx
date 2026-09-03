@@ -4,9 +4,9 @@ import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { probeCloudApi } from "@/lib/bootstrap";
-import { parseInviteTokenInput } from "@/lib/invite-deeplink";
-import { confirmInviteLinkToken } from "@/lib/invite-link-confirmation";
+import { probeCloudApi } from "@/lib/config/bootstrap";
+import { parseInviteTokenInput } from "@/lib/team/invite-deeplink";
+import { confirmInviteLinkToken } from "@/lib/team/invite-link-confirmation";
 import {
   displayHost,
   getCloudApiUrlOverride,
@@ -14,8 +14,8 @@ import {
   getEffectiveServerConfigSync,
   normalizeCloudApiUrl,
   setCloudApiUrlOverride,
-} from "@/lib/server-config";
-import { useAppVersion } from "@/lib/version";
+} from "@/lib/config/server-config";
+import { useAppVersion } from "@/lib/config/version";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOnboardingStore } from "@/stores/onboarding";
 import { clearSetupSatisfied } from "@/stores/setup";

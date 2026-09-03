@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   notificationSend: vi.fn(() => Promise.resolve("sent" as const)),
 }));
 
-vi.mock("@/lib/notification-service", () => ({
+vi.mock("@/lib/ui/notification-service", () => ({
   notificationService: { send: mocks.notificationSend },
 }));
 
@@ -30,7 +30,7 @@ vi.mock("@/stores/session-selection-store", () => ({
   },
 }));
 
-vi.mock("@/lib/session-permission-mode", () => ({
+vi.mock("@/lib/session/session-permission-mode", () => ({
   shouldAutoAllowSessionPermissions: mocks.shouldAutoAllow,
 }));
 
@@ -59,7 +59,7 @@ vi.mock("@/lib/teamclu/handle-session-event-permission-resolved", () => ({
 import {
   handleAcpPermissionRequest,
   resetAcpPermissionInFlightForTests,
-} from "../handle-acp-permission-request";
+} from "@/lib/teamclu/handle-acp-permission-request";
 
 const sampleRequest = {
   requestId: "perm-1",

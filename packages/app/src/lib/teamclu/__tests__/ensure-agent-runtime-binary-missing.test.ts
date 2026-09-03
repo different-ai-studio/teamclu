@@ -47,7 +47,7 @@ describe("binary-missing runtime failures", () => {
   });
 
   it("names the missing runtime from a wrapped opencode failure", async () => {
-    const { notifyRuntimeStartFailures } = await import("../ensure-agent-runtime");
+    const { notifyRuntimeStartFailures } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     notifyRuntimeStartFailures([
       {
@@ -69,7 +69,7 @@ describe("binary-missing runtime failures", () => {
   });
 
   it("names pi when pi is the missing runtime", async () => {
-    const { notifyRuntimeStartFailures } = await import("../ensure-agent-runtime");
+    const { notifyRuntimeStartFailures } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     notifyRuntimeStartFailures([
       {
@@ -86,7 +86,7 @@ describe("binary-missing runtime failures", () => {
   });
 
   it("leaves an unrelated spawn failure on the generic path", async () => {
-    const { notifyRuntimeStartFailures } = await import("../ensure-agent-runtime");
+    const { notifyRuntimeStartFailures } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     notifyRuntimeStartFailures([
       {

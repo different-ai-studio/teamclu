@@ -1,4 +1,4 @@
-import type { RuntimeStartFailure, RuntimeStartFailureCode } from '@/lib/session-create'
+import type { RuntimeStartFailure, RuntimeStartFailureCode } from '@/lib/session/session-create'
 import {
   captureTelemetry,
   shouldReportThrottled,

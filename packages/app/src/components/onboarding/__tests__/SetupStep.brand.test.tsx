@@ -4,8 +4,8 @@ import { render, screen } from '@testing-library/react'
 // A brand that ships pi. Every build used to open the picker on opencode, so a
 // pi brand shipped pi only to the users who noticed the second card — and its
 // guided path, which promises no choices at all, installed opencode.
-vi.mock('@/lib/build-config', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/build-config')>()),
+vi.mock('@/lib/config/build-config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/config/build-config')>()),
   localAgent: 'pi',
 }))
 

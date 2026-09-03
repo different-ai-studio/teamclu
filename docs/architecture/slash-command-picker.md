@@ -86,7 +86,7 @@ daemon 不可用时回退到前端 `loadRolesSkillsWorkspaceStateFromFs()`，内
 | 7 | `<workspace>/.teamclu/cache/agent/node_modules/*/skills/` | `plugin` |
 | 8+ | **Team 共享路径**（见下表） | `team` |
 
-**Team 共享 skill 目录**（`collectTeamSkillPaths`，`packages/app/src/lib/team-skill-paths.ts`）：
+**Team 共享 skill 目录**（`collectTeamSkillPaths`，`packages/app/src/lib/team/team-skill-paths.ts`）：
 
 | 配置来源 | 示例 |
 |----------|------|
@@ -234,7 +234,7 @@ loadAllRoles(workspacePath)
 | `/` 弹窗 UI + 归类 | `packages/app/src/components/chat/CommandPopover.tsx` |
 | 选中插入输入框 | `packages/app/src/components/chat/ChatInputArea.tsx` |
 | Workspace skill 扫描 | `packages/app/src/lib/git/skill-loader.ts` |
-| Team skill 路径聚合 | `packages/app/src/lib/team-skill-paths.ts` |
+| Team skill 路径聚合 | `packages/app/src/lib/team/team-skill-paths.ts` |
 | Roles + Skills 聚合 API | `packages/app/src/lib/roles/loader.ts` |
 | Daemon 扫描实现 | `apps/daemon/src/config/roles_skills.rs` |
 | Runtime 命令缓存 | `apps/daemon/src/runtime/manager.rs` |

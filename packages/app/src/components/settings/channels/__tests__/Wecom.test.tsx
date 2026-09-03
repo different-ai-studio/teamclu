@@ -55,7 +55,7 @@ vi.mock('@/stores/current-team', () => ({
   ),
 }))
 
-vi.mock('@/lib/daemon-workspaces', () => ({
+vi.mock('@/lib/daemon/daemon-workspaces', () => ({
   getCurrentDaemonWorkspaceAgent: vi.fn(async () => null),
   listDaemonWorkspaces: vi.fn(async () => []),
 }))
@@ -82,7 +82,7 @@ vi.mock('@/hooks/use-channel-config', () => ({
 }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@/lib/utils', () => ({ cn: (...args: string[]) => args.join(' '), openExternalUrl: vi.fn() }))
-vi.mock('@/lib/build-config', () => ({
+vi.mock('@/lib/config/build-config', () => ({
   buildConfig: { app: { name: 'TeamClu' } },
   appDisplayName: 'TeamClu',
 }))

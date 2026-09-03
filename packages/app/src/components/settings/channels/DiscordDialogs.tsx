@@ -18,7 +18,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { cn, openExternalUrl, copyToClipboard as copyToClipboardUtil } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {

@@ -3,8 +3,8 @@ import { useAuthStore, type AuthClaimResult } from "@/stores/auth-store";
 import { useCurrentTeamStore, readCachedCurrentTeam } from "@/stores/current-team";
 import { getBackend } from "@/lib/backend";
 import { isTauri, removeStartupSkeleton } from "@/lib/utils";
-import { devSkipDaemonOnboarding, devSkipSetup } from "@/lib/dev-onboarding-flags";
-import { resolveDefaultDisplayName } from "@/lib/default-display-name";
+import { devSkipDaemonOnboarding, devSkipSetup } from "@/lib/config/dev-onboarding-flags";
+import { resolveDefaultDisplayName } from "@/lib/actor/default-display-name";
 import { DesktopOnboarding } from "./DesktopOnboarding";
 import { LoginScreen } from "./LoginScreen";
 import { isLocaleLocked, availableLanguages } from "@/lib/i18n";
@@ -18,13 +18,13 @@ import { TeamBootstrapErrorScreen } from "@/components/auth/TeamBootstrapErrorSc
 import { useDaemonOnboardingStore } from "@/stores/daemon-onboarding";
 import { refreshSession } from "@/lib/auth";
 import { CloudApiError } from "@/lib/backend/cloud-api/http";
-import { humanizeFcError } from "@/lib/fc-error";
-import { markStartup } from "@/lib/startup-perf";
+import { humanizeFcError } from "@/lib/team/fc-error";
+import { markStartup } from "@/lib/telemetry/startup-perf";
 import { TeamPicker } from "./TeamPicker";
 import { PendingInvitesDialog } from "@/components/auth/PendingInvitesDialog";
-import { extensionTeamOnboarding } from "@/lib/build-config";
+import { extensionTeamOnboarding } from "@/lib/config/build-config";
 import { NoTeamScreen } from "./NoTeamScreen";
-import { useInviteLinkConfirmation } from "@/lib/invite-link-confirmation";
+import { useInviteLinkConfirmation } from "@/lib/team/invite-link-confirmation";
 import type { MembershipTeam } from "@/lib/backend";
 import { useShallow } from "zustand/react/shallow";
 

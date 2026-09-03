@@ -15,8 +15,8 @@ import {
   isAgentModelRowSelected,
   selectAgentModel,
   shortAgentModelId,
-} from "@/lib/runtime-state-resolve";
-import { resolveAgentAvailableModels } from "@/lib/agent-available-models";
+} from "@/lib/agent/runtime-state-resolve";
+import { resolveAgentAvailableModels } from "@/lib/agent/agent-available-models";
 
 /** Same as AgentSelectorDock CommandItem checkmark branch (post-fix). */
 function dropdownCheckedRows(
@@ -245,7 +245,7 @@ vi.mock("@/stores/runtime-state-store", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/teamclu-rpc", () => ({
+vi.mock("@/lib/daemon/teamclu-rpc", () => ({
   setModel: vi.fn(),
 }));
 

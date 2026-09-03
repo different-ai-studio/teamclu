@@ -169,7 +169,7 @@ Single source of truth principle — **never mix content sources**:
 
 **The one exception, and where it lives.** Completed content is reconciled in
 exactly one place: `deriveAgentReplyContent` in
-`packages/app/src/lib/agent-reply-transcript.ts`, and the finalize path in
+`packages/app/src/lib/agent/agent-reply-transcript.ts`, and the finalize path in
 `stores/v2-stream-parts.ts` goes through its `reconcileEquivalentAgentReplyText`.
 When the streamed text and the daemon's final content are the *same text after
 whitespace normalization*, that helper keeps the longer one, because MQTT QoS0

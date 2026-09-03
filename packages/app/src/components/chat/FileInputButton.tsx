@@ -1,9 +1,9 @@
 import * as React from "react";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { capabilities } from "@/lib/platform";
-import { readDesktopPathsAsFiles } from "@/lib/read-desktop-files";
-import { exceedsNonImageLimit } from "@/lib/attachment-constants";
+import { capabilities } from "@/lib/config/platform";
+import { readDesktopPathsAsFiles } from "@/lib/workspace/read-desktop-files";
+import { exceedsNonImageLimit } from "@/lib/attachments/attachment-constants";
 
 interface FileInputButtonProps {
   /** Selected or pasted files ready for cloud upload. */

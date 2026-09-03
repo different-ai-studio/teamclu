@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/stores/auth-store";
-import { useInviteLinkConfirmation } from "@/lib/invite-link-confirmation";
+import { useInviteLinkConfirmation } from "@/lib/team/invite-link-confirmation";
 import { truncatePermissionSnippet } from "@/lib/utils";
 
 /**

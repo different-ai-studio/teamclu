@@ -4,7 +4,7 @@ import * as React from "react";
 import { useEffect, useState, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { FileContentViewer } from "@/components/FileEditor";
-import { useResizablePanels } from "@/hooks/useFileEditorState";
+import { useResizablePanels } from "@/hooks/use-file-editor-state";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { lazyNamed } from "@/lib/lazy-component";
@@ -18,7 +18,7 @@ import { TabBar } from "@/components/tab-bar/TabBar";
 import { TabContentRenderer } from "@/components/tab-bar/TabContentRenderer";
 import { WebViewToolbar } from "@/components/tab-bar/WebViewToolbar";
 import { FindInPageBar } from "@/components/tab-bar/FindInPageBar";
-import { urlToLabel } from "@/lib/webview-utils";
+import { urlToLabel } from "@/lib/ui/webview-utils";
 import { ResizeHandle } from "@/app/chrome";
 import { useWebviewUIStore } from "@/app/webview-ui-store";
 

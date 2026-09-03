@@ -1,6 +1,6 @@
 import type { PendingPermissionEntry } from "@/stores/session-types";
 import type { StreamingPermissionRequest } from "@/stores/v2-streaming-store";
-import { shouldAutoAllowSessionPermissions } from "@/lib/session-permission-mode";
+import { shouldAutoAllowSessionPermissions } from "@/lib/session/session-permission-mode";
 import { canCurrentMemberActOnPermission } from "@/lib/teamclu/handle-acp-permission-request";
 import { useCurrentTeamStore } from "@/stores/current-team";
 

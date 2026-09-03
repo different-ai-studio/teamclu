@@ -17,18 +17,18 @@ import {
   postDaemonDeviceProviderOAuthCallback,
   reloadDaemonRuntime,
   type DaemonProviderInfo,
-} from '@/lib/daemon-local-client'
+} from '@/lib/daemon/daemon-local-client'
 import {
   fallbackProviderAuthMethods,
   mergeProviderAuthMethods,
-} from '@/lib/daemon-provider-auth'
+} from '@/lib/daemon/daemon-provider-auth'
 import {
   type CustomProviderConfig,
   customProviderIdFromName,
   providerApiKeyName,
 } from '@/lib/opencode/config'
-import { TEAM_SHARED_PROVIDER_ID } from '@/lib/team-provider'
-import { effectiveWorkspacePath } from '@/lib/effective-workspace'
+import { TEAM_SHARED_PROVIDER_ID } from '@/lib/agent/team-provider'
+import { effectiveWorkspacePath } from '@/lib/workspace/effective-workspace'
 
 const DEFAULT_CONNECTABLE_PROVIDERS: ProviderEntry[] = [
   { id: 'openai', name: 'OpenAI', configured: false },

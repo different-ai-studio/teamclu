@@ -1,4 +1,4 @@
-import type { DaemonRuntimeRefresh } from '@/lib/daemon-local-client'
+import type { DaemonRuntimeRefresh } from '@/lib/daemon/daemon-local-client'
 
 export function shouldReloadPickerFromDaemonRefresh(
   refresh: DaemonRuntimeRefresh | null | undefined,

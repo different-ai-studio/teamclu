@@ -3,15 +3,15 @@
 
 import { useEffect } from "react";
 import i18n from "@/lib/i18n";
-import { syncTrayMenuLabels } from "@/lib/sync-tray-menu";
+import { syncTrayMenuLabels } from "@/lib/ui/sync-tray-menu";
 import { isTauri } from "@/lib/utils";
-import { listenForDaemonLiveStatus } from "@/lib/mqtt-bridge";
-import { setDaemonLiveConnected } from "@/lib/live-dedup-stats";
+import { listenForDaemonLiveStatus } from "@/lib/mqtt/mqtt-bridge";
+import { setDaemonLiveConnected } from "@/lib/diagnostics/live-dedup-stats";
 import { useUIStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTabsStore } from "@/stores/tabs";
 import { useTerminalStore } from "@/stores/terminal-store";
-import { urlToLabel } from "@/lib/webview-utils";
+import { urlToLabel } from "@/lib/ui/webview-utils";
 import { useWebviewUIStore } from "@/app/webview-ui-store";
 
 export function useTrayMenuLocaleSync() {

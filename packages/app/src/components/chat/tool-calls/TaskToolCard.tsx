@@ -2,7 +2,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { entryFromPersistedSubagentSnapshot } from "@/lib/subagent-snapshot";
+import { entryFromPersistedSubagentSnapshot } from "@/lib/agent/subagent-snapshot";
 import { StreamingAgentBubble } from "@/components/chat/StreamingAgentBubble";
 import { ToolCall } from "@/stores/session-types";
 import { useSessionStore } from "@/stores/session-store";

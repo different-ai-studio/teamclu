@@ -6,7 +6,7 @@
 import { useEffect } from "react";
 import { isTauri } from "@/lib/utils";
 import { useTabsStore } from "@/stores/tabs";
-import { urlToLabel } from "@/lib/webview-utils";
+import { urlToLabel } from "@/lib/ui/webview-utils";
 
 export function useExternalLinkHandler() {
   useEffect(() => {
@@ -23,7 +23,7 @@ export function useExternalLinkHandler() {
       if (anchor.hasAttribute("data-admin-console-entry")) {
         e.preventDefault();
         e.stopPropagation();
-        void import("@/lib/admin-sso-inject").then(({ openAdminConsoleTab }) => {
+        void import("@/lib/extension/admin-sso-inject").then(({ openAdminConsoleTab }) => {
           openAdminConsoleTab();
         });
         return;

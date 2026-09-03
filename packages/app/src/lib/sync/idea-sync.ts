@@ -5,9 +5,9 @@
  * Watermark key: "ideas" namespaced by teamId.
  */
 
-import { syncTableForTeam } from "@/lib/cache-sync";
+import { syncTableForTeam } from "@/lib/cache/cache-sync";
 import { getBackend } from "@/lib/backend";
-import * as cache from "@/lib/local-cache";
+import * as cache from "@/lib/cache/local-cache";
 import { isTauri } from "@/lib/utils";
 import type { IdeaSyncRow } from "@/lib/backend/types";
 

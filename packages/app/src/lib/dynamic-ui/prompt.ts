@@ -1,4 +1,4 @@
-import { getCatalogPrompt } from "./catalog"
+import { getCatalogPrompt } from "@/lib/dynamic-ui/catalog"
 
 /**
  * Prompt construction for AI-driven UI generation.

@@ -5,10 +5,10 @@ import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/button'
 import { SettingCard, SectionHeader } from './shared'
 import { toast } from 'sonner'
-import { appStoragePrefix } from '@/lib/build-config'
+import { appStoragePrefix } from '@/lib/config/build-config'
 import { isTauri } from '@/lib/utils'
-import { encodeWorkspaceId, reloadDaemonRuntime } from '@/lib/daemon-local-client'
-import { useEffectiveWorkspacePath } from '@/lib/effective-workspace'
+import { encodeWorkspaceId, reloadDaemonRuntime } from '@/lib/daemon/daemon-local-client'
+import { useEffectiveWorkspacePath } from '@/lib/workspace/effective-workspace'
 
 // Legacy global storage key — kept only for one-time migration into
 // per-workspace teamclu.json.

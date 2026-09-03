@@ -7,10 +7,10 @@ import type {
   SessionParticipant,
   SessionSyncRow,
   SessionsBackend,
-} from "../types";
-import { rememberThreadForkFromSessionDetail } from "@/lib/thread-fork-metadata";
-import { CloudApiError, type CloudApiClient } from "./http";
-import { fetchAllSyncPages } from "./sync-paging";
+} from "@/lib/backend/types";
+import { rememberThreadForkFromSessionDetail } from "@/lib/session/thread-fork-metadata";
+import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
+import { fetchAllSyncPages } from "@/lib/backend/cloud-api/sync-paging";
 
 type CloudSession = {
   id: string;

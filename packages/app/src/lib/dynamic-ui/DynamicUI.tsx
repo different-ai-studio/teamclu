@@ -2,7 +2,7 @@ import * as React from "react"
 import { useTranslation } from "react-i18next"
 import type { Spec } from "@json-render/core"
 import { JSONUIProvider, Renderer } from "@json-render/react"
-import { componentRegistry, fallbackComponent } from "./registry"
+import { componentRegistry, fallbackComponent } from "@/lib/dynamic-ui/registry"
 
 interface DynamicUIProps {
   /** UI 树结构（0.19 的 Spec） */

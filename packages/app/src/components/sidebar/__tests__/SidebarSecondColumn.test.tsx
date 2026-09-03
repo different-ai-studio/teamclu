@@ -23,7 +23,7 @@ vi.mock('../AppSessionsColumn', () => ({
   AppSessionsColumn: () => <div data-testid="app-sessions-column" />,
 }))
 
-vi.mock('@/lib/remote-features', () => ({
+vi.mock('@/lib/config/remote-features', () => ({
   useFeatures: () => ({ apps: true }),
 }))
 

@@ -1,7 +1,7 @@
 import { Check } from 'lucide-react'
 
 import { changeLanguage, getCurrentLanguage, availableLanguages } from '@/lib/i18n'
-import { useAppVersion } from '@/lib/version'
+import { useAppVersion } from '@/lib/config/version'
 import { cn } from '@/lib/utils'
 
 /**

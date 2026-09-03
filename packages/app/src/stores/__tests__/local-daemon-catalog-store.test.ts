@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 const fetchLocalDaemonCatalog = vi.hoisted(() => vi.fn())
 
-vi.mock('@/lib/local-daemon-model-catalog', () => ({ fetchLocalDaemonCatalog }))
+vi.mock('@/lib/agent/local-daemon-model-catalog', () => ({ fetchLocalDaemonCatalog }))
 
 import {
   ensureLocalDaemonCatalog,

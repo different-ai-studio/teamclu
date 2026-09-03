@@ -259,7 +259,7 @@ Bottom row layout:
 
 Actors don't carry an avatar color in the data model, so the letter-fallback
 disc takes its color from `actorAvatarColor(actorId)` in
-`packages/app/src/lib/actor-color.ts`. Same actor → same color across the app.
+`packages/app/src/lib/actor/actor-color.ts`. Same actor → same color across the app.
 
 The palette is intentionally saturated-but-muted (coral, violet, green,
 amber, blue, plum, teal, olive, terracotta, slate). The disc renders the
@@ -302,6 +302,56 @@ The user-facing rule is "适度区分 — 清晰但不抢眼". Concretely:
 - When you add a new surface, ask: which token does this read as — paper,
   panel, background, or selected? If you can't answer, you probably need a
   new token; raise it before adding ad-hoc colors.
+
+### `packages/app/src/lib` layout
+
+`lib/` is one directory per domain. Put a new module in the domain it belongs
+to; only genuinely domain-free primitives live at `lib/` root, and there are
+seven of them (`utils`, `store-utils`, `base64`, `lazy-component`,
+`shared-module-lease`, `i18n`, `locale`). If a new file seems to have no
+domain, that is usually a sign it is doing two things.
+
+    actor/        who is speaking — identity, colours, presence, mentions
+    agent/        agent identity, model choice, runtime reachability and state
+    apps/         the Apps feature (deploy, data browser, app sessions)
+    attachments/  upload, download, image handling
+    auth/         sign-in, token storage, OAuth
+    backend/      the Cloud API client (see §7)
+    cache/        the local libsql mirror of Cloud API rows
+    clawhub/      skill registry types
+    config/       build config, server config, feature flags, platform, version
+    cron/         desktop-scheduled jobs
+    daemon/       every call into amuxd: discovery, RPC, workspaces, admin
+    diagnostics/  redaction, probes, the diagnostics bundle, debug logs
+    dynamic-ui/   agent-authored UI descriptions
+    e2e/          the tauri-mcp harness surface
+    embed/        the embedded/side-panel chat mode
+    extension/    the browser extension — incl. link-hover + link-session,
+                  which apps/extension compiles too (see the guard test there)
+    history/      version history providers
+    knowledge/    knowledge tree, wiki links, Obsidian compatibility
+    messages/     message rows, inbox, outbox display, send-path selection
+    mqtt/         broker bridges (Tauri / browser / worker) and diagnostics
+    opencode/     opencode config + templates
+    proto/        generated protobuf
+    remote-tools/ tools an agent can drive in the user's browser
+    roles/        role markdown + role skills
+    session/      sessions: create, list, resolve, fork, permissions, workspace
+    session-export/  transcript export
+    skills/       skill discovery, frontmatter, auto-follow
+    stream/       the streaming pipeline — deltas, persistence, recovery
+    sync/         Cloud API ⇄ local-cache row sync
+    tabs/         tab models
+    team/         teams, invites, permissions, skill paths
+    teamclu/      agent runtime protocol (ACP permissions, runtime commands)
+    telemetry/    Sentry, scoring, usage, startup timing
+    terminal/     PTY client
+    ui/           presentation helpers with no domain of their own
+    workspace/    workspace paths, gitignore, desktop file reads
+    workspace-seed/  first-run workspace instructions
+
+`lib/__tests__/` keeps the tests that span domains (or test a root module);
+everything else lives in its domain's own `__tests__/`.
 
 ### Supabase schema changes
 

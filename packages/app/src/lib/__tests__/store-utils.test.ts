@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { withAsync } from '../store-utils'
+import { withAsync } from '@/lib/store-utils'
 
 describe('withAsync', () => {
   it('sets loading true then false on success', async () => {

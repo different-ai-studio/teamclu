@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useSessionStore } from "@/stores/session-store";
-import { resetSessionPermissionModesForTests } from "@/lib/session-permission-mode";
+import { resetSessionPermissionModesForTests } from "@/lib/session/session-permission-mode";
 import { ComposerStack } from "../ComposerStack";
 
 vi.mock("react-i18next", () => ({

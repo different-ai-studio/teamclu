@@ -2,14 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // webSSO is a Cloud-API flag now, not a baked one — mock the resolver the
 // module actually reads rather than the build config.
-vi.mock("@/lib/remote-features", () => ({
+vi.mock("@/lib/config/remote-features", () => ({
   getFeatures: () => ({ auth: { webSSO: true } }),
 }));
 
 // ssoConfig now reads the FC-delivered Web SSO target out of server-config
 // (cached from /v1/config/bootstrap) — nothing is hardcoded.
 const serverCfgMock = vi.fn<[], { webSsoLoginUrl?: string; webSsoStorageKey?: string }>();
-vi.mock("@/lib/server-config", () => ({
+vi.mock("@/lib/config/server-config", () => ({
   getEffectiveServerConfigSync: () => serverCfgMock(),
 }));
 
@@ -17,7 +17,7 @@ const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 
 const fetchPublicConfigMock = vi.fn(async () => {});
-vi.mock("@/lib/bootstrap", () => ({ fetchPublicConfig: (...a: unknown[]) => fetchPublicConfigMock(...a) }));
+vi.mock("@/lib/config/bootstrap", () => ({ fetchPublicConfig: (...a: unknown[]) => fetchPublicConfigMock(...a) }));
 
 import { ssoConfig, runWebSso, cancelWebSso } from "@/lib/auth/web-sso";
 

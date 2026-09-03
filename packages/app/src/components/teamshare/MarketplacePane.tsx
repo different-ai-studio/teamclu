@@ -24,7 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent/agent-device-reachability'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 
 const CACHE_KEY = 'teamclu.marketplace.catalog.v1'

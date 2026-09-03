@@ -7,14 +7,14 @@
  */
 import { useEffect, useState } from "react";
 import i18n from "@/lib/i18n";
-import { capabilities } from "@/lib/platform";
+import { capabilities } from "@/lib/config/platform";
 import { isTauri } from "@/lib/utils";
 import { useWorkspaceStore, WORKSPACE_STORAGE_KEY } from "@/stores/workspace";
-import { probeDaemonHttp, invalidateDaemonConnection } from "@/lib/daemon-local-client";
+import { probeDaemonHttp, invalidateDaemonConnection } from "@/lib/daemon/daemon-local-client";
 import { useDaemonOnboardingStore } from "@/stores/daemon-onboarding";
 import { getSkillDirectories, loadAllSkills } from "@/lib/skills/loader";
-import { DEFAULT_WORKSPACE_PATH } from "@/lib/build-config";
-import { markStartup } from "@/lib/startup-perf";
+import { DEFAULT_WORKSPACE_PATH } from "@/lib/config/build-config";
+import { markStartup } from "@/lib/telemetry/startup-perf";
 import { SKILLS_CHANGED_EVENT } from "@/lib/skills/changed-event";
 
 /**

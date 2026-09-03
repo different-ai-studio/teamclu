@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { isSoloBuild } from '@/lib/solo-build'
+import { isSoloBuild } from '@/lib/config/solo-build'
 
 type LayoutBreakpoint = 'wide' | 'medium' | 'narrow'
 

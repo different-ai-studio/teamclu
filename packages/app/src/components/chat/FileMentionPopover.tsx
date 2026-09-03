@@ -4,13 +4,13 @@ import { File, Folder, ImageIcon, Loader2, Paperclip } from "lucide-react"
 import { useWorkspaceStore } from "@/stores/workspace"
 import { useTeamModeStore } from "@/stores/team-mode"
 import { useSessionMessageStore } from "@/stores/session-message-store"
-import { TEAMCLU_DIR } from "@/lib/build-config"
+import { TEAMCLU_DIR } from "@/lib/config/build-config"
 import { isTauri } from "@/lib/utils"
 import { cn } from "@/lib/utils"
 import {
   collectSessionAttachments,
   type SessionAttachmentRef,
-} from "@/lib/session-attachments"
+} from "@/lib/attachments/session-attachments"
 
 interface FileMentionPopoverProps {
   activeSessionId: string | null

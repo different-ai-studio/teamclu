@@ -1,6 +1,6 @@
 import mqttPkg from 'mqtt'
 import * as mqttNamespace from 'mqtt'
-import { recordMqttDiag } from '../mqtt-diagnostics'
+import { recordMqttDiag } from '@/lib/mqtt/mqtt-diagnostics'
 
 type MqttNamespace = { connect: (url: string, options?: unknown) => unknown }
 const mqtt: MqttNamespace =

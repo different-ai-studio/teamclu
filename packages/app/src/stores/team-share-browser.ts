@@ -5,7 +5,7 @@ import type { SkillSource } from '@/lib/skills/types'
 import { getSourceLabel } from '@/lib/skills/loader'
 import i18n from '@/lib/i18n'
 import { frontmatterString } from '@/lib/skills/frontmatter'
-import { resolveTeamSyncRoot } from '@/lib/team-skill-paths'
+import { resolveTeamSyncRoot } from '@/lib/team/team-skill-paths'
 import { invoke } from '@tauri-apps/api/core'
 import { getBackend } from '@/lib/backend/provider'
 import { isCloudAuthError } from '@/lib/backend/cloud-api/http'
@@ -19,7 +19,7 @@ import {
   type SkillLocalState,
 } from '@/lib/skills/auto-follow'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { effectiveWorkspacePath } from '@/lib/effective-workspace'
+import { effectiveWorkspacePath } from '@/lib/workspace/effective-workspace'
 import { isTauri } from '@/lib/utils'
 import { useTabsStore } from '@/stores/tabs'
 import {
@@ -88,12 +88,12 @@ import {
   notifyDaemonSkillsChanged,
   type DaemonMcpServerConfig,
   type DaemonMcpServerProbeResult,
-} from '@/lib/daemon-local-client'
+} from '@/lib/daemon/daemon-local-client'
 import { SKILLS_CHANGED_EVENT } from '@/lib/skills/changed-event';
 import { AgentCapabilityAction, AgentCapabilityKind } from '@/lib/proto/teamclu_pb'
-import { manageAgentCapability } from '@/lib/teamclu-rpc'
-import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
-import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
+import { manageAgentCapability } from '@/lib/daemon/teamclu-rpc'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent/agent-device-reachability'
+import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
 
 function requireAgentOnline(actorId: string): void {
   if (resolveAgentDevicePresenceSync(actorId) === 'offline') {
@@ -1508,7 +1508,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       throw new SkillSlugTakenError(input.slug)
     }
 
-    const { getEffectiveServerConfig } = await import('@/lib/server-config')
+    const { getEffectiveServerConfig } = await import('@/lib/config/server-config')
     const { cloudApiUrl } = await getEffectiveServerConfig()
     if (!cloudApiUrl) throw new Error('Cloud API URL is not configured')
     const accessToken = await getFreshAccessToken()
@@ -1613,7 +1613,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       throw new Error(`${slug} has no installed baseline version to publish from`)
     }
 
-    const { getEffectiveServerConfig } = await import('@/lib/server-config')
+    const { getEffectiveServerConfig } = await import('@/lib/config/server-config')
     const { cloudApiUrl } = await getEffectiveServerConfig()
     if (!cloudApiUrl) throw new Error('Cloud API URL is not configured')
     const accessToken = await getFreshAccessToken()

@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { MessageSquarePlus } from 'lucide-react'
 import * as React from 'react'
 import i18n from '@/lib/i18n'
-import { syncTrayMenuLabels } from '@/lib/sync-tray-menu'
+import { syncTrayMenuLabels } from '@/lib/ui/sync-tray-menu'
 
 // This window is Settings, so laziness buys it nothing on its own — but the
 // main window's entry imports this component too, and a static import here

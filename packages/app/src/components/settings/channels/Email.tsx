@@ -19,7 +19,7 @@ import {
   Globe,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {

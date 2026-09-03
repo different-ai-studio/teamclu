@@ -5,14 +5,14 @@ import { cn } from "@/lib/utils";
 import { useThreadListPanelStore } from "@/stores/thread-list-panel-store";
 import { useThreadPanelStore } from "@/stores/thread-panel-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
-import { adaptTeamcluMessages } from "@/lib/v2-message-adapter";
+import { adaptTeamcluMessages } from "@/lib/messages/v2-message-adapter";
 import { useSessionThreadSummaries } from "@/hooks/use-session-thread-summaries";
 import {
   formatThreadRelativeTime,
   threadTitleFromMessage,
   type ThreadSummary,
-} from "@/lib/thread-summary";
-import { rememberThreadForkMetadata } from "@/lib/thread-fork-metadata";
+} from "@/lib/session/thread-summary";
+import { rememberThreadForkMetadata } from "@/lib/session/thread-fork-metadata";
 import type { Message as ProtoMessage } from "@/lib/proto/teamclu_pb";
 
 const EMPTY_PROTO_MESSAGES: ProtoMessage[] = [];

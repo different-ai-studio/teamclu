@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import ts from 'typescript'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { appShortName } from '@/lib/build-config'
+import { appShortName } from '@/lib/config/build-config'
 import en from '../../locales/en.json'
 import zhCN from '../../locales/zh-CN.json'
 
@@ -207,7 +207,7 @@ describe('locale helpers', () => {
   it('follows a Chinese system when there is no saved language', async () => {
     setNavigatorLanguage('zh-CN')
 
-    const { getPreferredLanguage } = await import('../locale')
+    const { getPreferredLanguage } = await import('@/lib/locale')
 
     expect(getPreferredLanguage()).toBe('zh-CN')
   })
@@ -217,7 +217,7 @@ describe('locale helpers', () => {
   it.each(['ja', 'fr-FR', 'de'])('falls back to English on a %s system', async (lang) => {
     setNavigatorLanguage(lang)
 
-    const { getPreferredLanguage } = await import('../locale')
+    const { getPreferredLanguage } = await import('@/lib/locale')
 
     expect(getPreferredLanguage()).toBe('en')
   })
@@ -229,7 +229,7 @@ describe('locale helpers', () => {
     setNavigatorLanguage(system)
     store[`${appShortName}-language`] = saved
 
-    const { getPreferredLanguage } = await import('../locale')
+    const { getPreferredLanguage } = await import('@/lib/locale')
 
     expect(getPreferredLanguage()).toBe(saved)
   })
@@ -237,13 +237,13 @@ describe('locale helpers', () => {
   it('defaults to English for an unsupported saved or system language', async () => {
     setNavigatorLanguage('fr-FR')
 
-    const { getPreferredLanguage } = await import('../locale')
+    const { getPreferredLanguage } = await import('@/lib/locale')
 
     expect(getPreferredLanguage()).toBe('en')
   })
 
   it('only advertises languages that have frontend translation resources', async () => {
-    const { SUPPORTED_LANGUAGES } = await import('../locale')
+    const { SUPPORTED_LANGUAGES } = await import('@/lib/locale')
 
     expect(SUPPORTED_LANGUAGES).toEqual(['en', 'zh-CN'])
   })

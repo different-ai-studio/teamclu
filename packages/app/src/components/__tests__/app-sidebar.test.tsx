@@ -95,7 +95,7 @@ vi.mock('@/lib/utils', () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }))
 
-vi.mock('@/lib/date-format', () => ({
+vi.mock('@/lib/ui/date-format', () => ({
   formatSessionDate: (d: Date) => d.toISOString(),
   formatRelativeTime: (d: Date) => d.toISOString(),
 }))

@@ -1,9 +1,9 @@
 import * as React from "react"
 
-import { appShortName } from "@/lib/build-config"
-import { isPointOverElement } from "@/lib/chat-file-drop"
+import { appShortName } from "@/lib/config/build-config"
+import { isPointOverElement } from "@/lib/ui/chat-file-drop"
 import { cn, isTauri } from "@/lib/utils"
-import { encodeMemberMentionToken, parseMemberMentionsFromText } from "@/lib/member-mention-token"
+import { encodeMemberMentionToken, parseMemberMentionsFromText } from "@/lib/actor/member-mention-token"
 import { EditableWithFileChips } from "./editable-with-file-chips"
 
 // Types re-exported from dedicated module
@@ -246,7 +246,7 @@ export function PromptInput({
             if (!paths?.length) return
             if (!isPointOverElement(position, dropHitTarget())) return
 
-            const { readDesktopPathsAsFiles } = await import('@/lib/read-desktop-files')
+            const { readDesktopPathsAsFiles } = await import('@/lib/workspace/read-desktop-files')
             const { files, oversize, failed } = await readDesktopPathsAsFiles(paths)
             if (oversize.length > 0 || failed.length > 0) {
               const { toast } = await import('sonner')

@@ -3,9 +3,9 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
-import type { AuthClient } from "./auth-client";
-import { generatePkce } from "./oauth-pkce";
-import { AuthError, type Session } from "./types";
+import type { AuthClient } from "@/lib/auth/auth-client";
+import { generatePkce } from "@/lib/auth/oauth-pkce";
+import { AuthError, type Session } from "@/lib/auth/types";
 
 export type OAuthProvider = "google" | "wechat";
 

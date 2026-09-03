@@ -18,7 +18,7 @@ vi.mock("@/lib/backend", () => ({
   }),
 }));
 
-vi.mock("@/lib/local-cache", () => ({
+vi.mock("@/lib/cache/local-cache", () => ({
   loadSessionParticipants: mocks.loadSessionParticipants,
   upsertSessionParticipantsBatch: mocks.upsertSessionParticipantsBatch,
   softDeleteSessionParticipant: mocks.softDeleteSessionParticipant,

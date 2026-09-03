@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn, isTauri, copyToClipboard } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { useDepsStore } from '@/stores/deps'
 import type { DependencyInfo } from '@/stores/deps'
 import { useShallow } from 'zustand/react/shallow'

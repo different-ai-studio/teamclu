@@ -4,7 +4,7 @@ import {
   ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE,
   PUBLIC_DEPLOY_CONFIRM_MESSAGE,
   publicDeployConfirm,
-} from "@/lib/app-deploy-confirm";
+} from "@/lib/apps/app-deploy-confirm";
 import {
   seedDaemonApp,
   buildDaemonApp,
@@ -15,7 +15,7 @@ import {
   getDaemonEnvActivationDiagnostics,
   type BuildAppResult,
   type SeedAppResult,
-} from "@/lib/daemon-local-client";
+} from "@/lib/daemon/daemon-local-client";
 import { isTauri } from "@/lib/utils";
 import i18n from "@/lib/i18n";
 import type { AppRow, AppAuthMode } from "@/lib/backend/types";
@@ -310,7 +310,7 @@ async function runSeed(set: SetState, app: AppRow): Promise<void> {
     if (result.workdir) {
       // Dynamic: app-session pulls in the session-creation chain, which reads
       // this store.
-      const { bindAppWorkdir } = await import("@/lib/app-session");
+      const { bindAppWorkdir } = await import("@/lib/apps/app-session");
       await bindAppWorkdir(app, result.workdir);
     }
     await patchStatus(set, app.id, "ready");
@@ -424,7 +424,7 @@ export async function ensureAppCheckout(
   }
 
   if (result.outcome === "seeded" && result.workdir) {
-    const { bindAppWorkdir } = await import("@/lib/app-session");
+    const { bindAppWorkdir } = await import("@/lib/apps/app-session");
     await bindAppWorkdir(app, result.workdir);
   } else if (result.outcome === "failed") {
     await toastError("仓库克隆失败", result.error ?? undefined);

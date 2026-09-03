@@ -183,7 +183,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
       ...(useTauriPluginMcpStub && {
-        'tauri-plugin-mcp': path.resolve(__dirname, 'src/lib/tauri-plugin-mcp-stub.ts'),
+        'tauri-plugin-mcp': path.resolve(__dirname, 'src/lib/config/tauri-plugin-mcp-stub.ts'),
       }),
     },
   },

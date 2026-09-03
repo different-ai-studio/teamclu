@@ -3,8 +3,8 @@ import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { EditableWithFileChips } from '../editable-with-file-chips'
-import { encodeMemberMentionToken } from '@/lib/member-mention-token'
-import { encodeSessionAttachmentToken } from '@/lib/session-attachment-token'
+import { encodeMemberMentionToken } from '@/lib/actor/member-mention-token'
+import { encodeSessionAttachmentToken } from '@/lib/attachments/session-attachment-token'
 
 const originalExecCommand = document.execCommand
 
@@ -146,7 +146,7 @@ describe('EditableWithFileChips', () => {
       text: 'page body',
       selection: 'SeaBank-6901',
     }
-    const { encodePageLinkToken } = await import('@/lib/page-link-token')
+    const { encodePageLinkToken } = await import('@/lib/embed/page-link-token')
     const token = encodePageLinkToken(ctx)
     render(<TestHarness initialValue={`${token} `} />)
 

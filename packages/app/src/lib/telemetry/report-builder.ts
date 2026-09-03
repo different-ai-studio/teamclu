@@ -1,4 +1,4 @@
-import type { SessionReport, ToolCallSummary, FeedbackRating, StarRating } from './types'
+import type { SessionReport, ToolCallSummary, FeedbackRating, StarRating } from '@/lib/telemetry/types'
 import { useSessionStore } from '@/stores/session-store'
 import { type Message, type ToolCall } from '@/stores/session-types'
 /**

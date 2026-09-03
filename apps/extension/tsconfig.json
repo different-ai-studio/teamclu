@@ -9,11 +9,11 @@
     "types": ["chrome", "vitest/globals"],
     "skipLibCheck": true,
     "paths": {
-      "@teamclu/extension-link-hover": ["../../packages/app/src/lib/extension-link-hover/index.ts"],
-      "@teamclu/extension-link-hover/*": ["../../packages/app/src/lib/extension-link-hover/*"],
-      "@teamclu/extension-link-session": ["../../packages/app/src/lib/extension-link-session/index.ts"],
-      "@teamclu/extension-link-session/*": ["../../packages/app/src/lib/extension-link-session/*"],
-      "@teamclu/side-panel-host-allowlist": ["../../packages/app/src/lib/side-panel-host-allowlist.ts"]
+      "@teamclu/extension-link-hover": ["../../packages/app/src/lib/extension/link-hover/index.ts"],
+      "@teamclu/extension-link-hover/*": ["../../packages/app/src/lib/extension/link-hover/*"],
+      "@teamclu/extension-link-session": ["../../packages/app/src/lib/extension/link-session/index.ts"],
+      "@teamclu/extension-link-session/*": ["../../packages/app/src/lib/extension/link-session/*"],
+      "@teamclu/side-panel-host-allowlist": ["../../packages/app/src/lib/extension/side-panel-host-allowlist.ts"]
     }
   },
   "include": ["src", "build.mjs"]

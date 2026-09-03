@@ -1,9 +1,9 @@
 import { create } from "zustand";
 import { UNSUPPORTED_BINARY_EXTENSIONS } from "@/components/viewers/UnsupportedFileViewer";
 import { isTauri } from '@/lib/utils'
-import { ensureGitignoreEntries } from '@/lib/gitignore-manager'
+import { ensureGitignoreEntries } from '@/lib/workspace/gitignore-manager'
 import { seedDefaultWorkspaceInstructions } from '@/lib/workspace-seed/seed-default-instructions'
-import { appDisplayName, appStoragePrefix, TEAM_REPO_DIR } from '@/lib/build-config'
+import { appDisplayName, appStoragePrefix, TEAM_REPO_DIR } from '@/lib/config/build-config'
 import { useTeamModeStore } from './team-mode'
 
 // Start watching a directory for file changes

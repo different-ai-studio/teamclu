@@ -1,4 +1,4 @@
-import { appShortName } from '@/lib/build-config'
+import { appShortName } from '@/lib/config/build-config'
 import { create } from 'zustand'
 import type {
   TelemetryConsent,

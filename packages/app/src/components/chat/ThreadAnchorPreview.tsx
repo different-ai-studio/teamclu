@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useActorDisplayName } from "@/hooks/use-actor-display-name";
-import { actorAvatarColor } from "@/lib/actor-color";
+import { actorAvatarColor } from "@/lib/actor/actor-color";
 import type { Message as StoreMessage } from "@/stores/session-types";
 
 function anchorPreviewText(content: string): string {

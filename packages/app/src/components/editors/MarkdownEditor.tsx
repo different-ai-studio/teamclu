@@ -41,12 +41,12 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import type { EditorProps } from './types';
 import { detectClipboardImage, saveClipboardImage } from './image-paste-handler';
-import { parseWikiLinkText } from '@/lib/wiki-link-utils';
-import { resolveWikiLinkPath, createNoteFromLink } from '@/lib/wiki-link-resolver';
+import { parseWikiLinkText } from '@/lib/knowledge/wiki-link-utils';
+import { resolveWikiLinkPath, createNoteFromLink } from '@/lib/knowledge/wiki-link-resolver';
 import {
   globalTeamKnowledgeShareDir,
   teamContentRootForPath,
-} from '@/lib/team-skill-paths';
+} from '@/lib/team/team-skill-paths';
 import { useWorkspaceStore } from '@/stores/workspace';
 
 export interface MarkdownEditorHandle {

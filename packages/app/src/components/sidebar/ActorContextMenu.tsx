@@ -12,7 +12,7 @@ import type { ActorRow } from '@/stores/actor-directory-store'
 import { cn } from '@/lib/utils'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { canRemoveTeamActor, useTeamPermissions } from '@/lib/team-permissions'
+import { canRemoveTeamActor, useTeamPermissions } from '@/lib/team/team-permissions'
 
 interface Props {
   actor: ActorRow

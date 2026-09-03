@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   sessionHasAgentStreamActivitySince,
   sessionHasMentionedRuntimeActiveSince,
-} from "@/lib/outbox-ui-display";
+} from "@/lib/messages/outbox-ui-display";
 import { useOutboxStore } from "@/stores/outbox-store";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";

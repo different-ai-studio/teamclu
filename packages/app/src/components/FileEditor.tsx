@@ -23,17 +23,17 @@ import {
   History,
 } from "lucide-react";
 import { cn, isTauri } from "@/lib/utils";
-import { withHtmlPreviewCsp } from "@/lib/html-preview-csp";
+import { withHtmlPreviewCsp } from "@/lib/ui/html-preview-csp";
 import {
   globalTeamKnowledgeShareDir,
   teamSyncKeyForPath,
-} from "@/lib/team-skill-paths";
+} from "@/lib/team/team-skill-paths";
 import { getEditorType } from "@/components/editors/utils";
 import { UNSUPPORTED_BINARY_EXTENSIONS } from "@/components/viewers/UnsupportedFileViewer";
 import { supportsPreview } from "@/components/editors/utils";
 import { useAutoSave } from "@/components/editors/useAutoSave";
 import { ConflictBanner } from "@/components/editors/ConflictBanner";
-import { sendAgentPromptInActiveSession } from "@/lib/session-send-agent";
+import { sendAgentPromptInActiveSession } from "@/lib/session/session-send-agent";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { OssHistoryProvider } from '@/lib/history/oss-provider'

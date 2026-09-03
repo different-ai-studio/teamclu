@@ -1,5 +1,5 @@
-import type { TelemetryBackend, TelemetryFeedbackDeleteInput } from "../types";
-import type { CloudApiClient } from "./http";
+import type { TelemetryBackend, TelemetryFeedbackDeleteInput } from "@/lib/backend/types";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 export function createTelemetryModule(client: CloudApiClient): TelemetryBackend {
   return {

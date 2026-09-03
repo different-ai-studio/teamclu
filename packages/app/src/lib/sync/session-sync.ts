@@ -7,8 +7,8 @@
 
 import { getBackend } from "@/lib/backend";
 import type { SessionSyncRow } from "@/lib/backend/types";
-import * as cache from "@/lib/local-cache";
-import { seedSessionCreatedByFromRows } from "@/lib/session-created-by-cache";
+import * as cache from "@/lib/cache/local-cache";
+import { seedSessionCreatedByFromRows } from "@/lib/session/session-created-by-cache";
 import { isTauri } from "@/lib/utils";
 
 // Supabase `sessions` columns: id, team_id, created_by_actor_id, primary_agent_id,

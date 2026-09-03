@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { adaptTeamcluMessages } from "@/lib/v2-message-adapter";
+import { adaptTeamcluMessages } from "@/lib/messages/v2-message-adapter";
 import { MessageList, type MessageListHandle } from "./MessageList";
 import { ChatInputArea } from "./ChatInputArea";
 import { SessionErrorAlert } from "./SessionErrorAlert";
@@ -23,22 +23,22 @@ import { useEngagedAgentRuntimeMap } from "@/hooks/use-engaged-agent-runtime-map
 import { useEngagedAgentUiStates } from "@/hooks/use-engaged-agent-ui-states";
 import { useEnsureEngagedRuntimesOnSessionFocus } from "@/hooks/use-ensure-engaged-runtimes-on-session-focus";
 import { useReensureRuntimesOnMqttReconnect } from "@/hooks/use-reensure-runtimes-on-mqtt-reconnect";
-import { ensureSessionLiveSubscribed } from "@/lib/session-live-subscriptions";
+import { ensureSessionLiveSubscribed } from "@/lib/session/session-live-subscriptions";
 import { ensureParticipantModels } from "@/stores/participant-model-store";
-import { isSoloAgentSession } from "@/lib/session-empty-thread-starters";
-import { isAgentActorType } from "@/lib/actor-type";
+import { isSoloAgentSession } from "@/lib/session/session-empty-thread-starters";
+import { isAgentActorType } from "@/lib/actor/actor-type";
 import { getBackend } from "@/lib/backend";
-import { resolveSessionEstablishedModel } from "@/lib/session-established-model";
+import { resolveSessionEstablishedModel } from "@/lib/session/session-established-model";
 import {
   selectAgentModel,
   resolveRuntimeStateEntryForAgent,
   backendTypeFromRuntimeEntry,
-} from "@/lib/runtime-state-resolve";
+} from "@/lib/agent/runtime-state-resolve";
 import {
   resolveAgentCatalogModels,
   localRecentModelFallback,
-} from "@/lib/agent-model-fallback";
-import { useLocalDaemonActorId } from "@/lib/daemon-agent-admin";
+} from "@/lib/agent/agent-model-fallback";
+import { useLocalDaemonActorId } from "@/lib/daemon/daemon-agent-admin";
 import { useLocalDaemonCatalogStore } from "@/stores/local-daemon-catalog-store";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { useAgentModelPickStore } from "@/stores/agent-model-pick-store";
@@ -51,7 +51,7 @@ import {
 import { useSessionNoticeStore } from "@/stores/session-notice-store";
 import { hasVisiblePendingPermissions } from "./PermissionCard";
 import { collectAcpStreamingPermissions } from "@/lib/teamclu/acp-permission-entries";
-import { useSessionPermissionMode } from "@/lib/session-permission-mode";
+import { useSessionPermissionMode } from "@/lib/session/session-permission-mode";
 import { interruptAgentActor } from "@/lib/teamclu/interrupt-agent";
 import { toast } from "sonner";
 import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";

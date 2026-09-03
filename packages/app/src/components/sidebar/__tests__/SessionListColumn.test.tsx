@@ -7,7 +7,7 @@ import { useSessionListStore } from '@/stores/session-list-store'
 import { useSessionStore } from '@/stores/session-store'
 import { useCronStore } from '@/stores/cron'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { appShortName } from '@/lib/build-config'
+import { appShortName } from '@/lib/config/build-config'
 
 vi.mock('@/components/sidebar/session-search-dialog', () => ({
   SessionSearchDialog: () => null,
@@ -46,7 +46,7 @@ vi.mock('@/hooks/use-session-workspace-labels', () => ({
 }))
 
 const createQuickSession = vi.fn()
-vi.mock('@/lib/create-quick-session', () => ({
+vi.mock('@/lib/session/create-quick-session', () => ({
   createQuickSession: (...args: unknown[]) => createQuickSession(...args),
   describeQuickSessionFailure: () => ({ title: 'fail', description: 'desc' }),
 }))

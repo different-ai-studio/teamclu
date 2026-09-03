@@ -4,7 +4,7 @@ import { renderHook, waitFor } from '@testing-library/react'
 // a local run bakes in build.config.dev.json and gets `~/TeamClu Dev`. These
 // tests are about "falls back to the default workspace", not about which brand
 // is being built, so they assert the constant rather than a literal.
-import { DEFAULT_WORKSPACE_PATH } from '@/lib/build-config'
+import { DEFAULT_WORKSPACE_PATH } from '@/lib/config/build-config'
 
 // --- Hoist mocks ---
 const {
@@ -45,7 +45,7 @@ vi.mock('@/lib/utils', () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }))
 
-vi.mock('@/lib/platform', () => ({
+vi.mock('@/lib/config/platform', () => ({
   capabilities: {
     get workspace() {
       return mockWorkspaceCapable.value
@@ -115,7 +115,7 @@ vi.mock('@/stores/daemon-onboarding', () => ({
     selector({ status: 'ready' }),
 }))
 
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   probeDaemonHttp: vi.fn(async () => ({ ok: true, baseUrl: 'http://127.0.0.1:1' })),
   invalidateDaemonConnection: vi.fn(),
 }))

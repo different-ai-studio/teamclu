@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { loadFromStorage, saveToStorage } from '@/lib/storage'
-import { appStoragePrefix } from '@/lib/build-config'
+import { loadFromStorage, saveToStorage } from '@/lib/config/storage'
+import { appStoragePrefix } from '@/lib/config/build-config'
 
 /**
  * Per-user preferences for the conversation header's right-side action icons.

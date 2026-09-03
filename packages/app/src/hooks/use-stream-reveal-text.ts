@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef } from "react";
-import { adaptiveCharsPerFrame } from "@/lib/adaptive-chars-per-frame";
+import { adaptiveCharsPerFrame } from "@/lib/stream/adaptive-chars-per-frame";
 
 /**
  * Gradually reveals `targetText` while `active` (v2 live bubble / thinking).

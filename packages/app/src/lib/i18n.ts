@@ -1,6 +1,6 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
-import { getPreferredLanguage, isSupportedLanguage, normalizeSupportedLanguage, persistLanguage } from './locale';
+import { getPreferredLanguage, isSupportedLanguage, normalizeSupportedLanguage, persistLanguage } from '@/lib/locale';
 
 // Build-time locale selection via VITE_LOCALE env var:
 //   undefined or 'all' → both languages (default)

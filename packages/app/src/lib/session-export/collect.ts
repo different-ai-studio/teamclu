@@ -4,8 +4,8 @@ import {
   MessageKind,
   type Message as TeamcluMessage,
 } from "@/lib/proto/teamclu_pb";
-import type { MessageRow } from "@/lib/local-cache";
-import { normalizeUnixTimestampSeconds } from "@/lib/message-timestamp";
+import type { MessageRow } from "@/lib/cache/local-cache";
+import { normalizeUnixTimestampSeconds } from "@/lib/messages/message-timestamp";
 
 const kindMap: Record<string, MessageKind> = {
   text: MessageKind.TEXT,

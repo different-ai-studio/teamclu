@@ -18,9 +18,9 @@ import {
   flashChatMessage,
   scrollChatMessageIntoView,
   type ChatScrollToMessageDetail,
-} from "@/lib/chat-scroll-to-message";
+} from "@/lib/ui/chat-scroll-to-message";
 import { DEFAULT_INPUT_AREA_HEIGHT, SAFE_BOTTOM_SPACING } from "./layout-constants";
-import { canStartThreadFromNewestIndex } from "@/lib/thread-fork";
+import { canStartThreadFromNewestIndex } from "@/lib/session/thread-fork";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

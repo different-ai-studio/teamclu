@@ -3,7 +3,7 @@
  */
 import { useEffect } from "react";
 import { isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
-import { loadSessionMessageHistory } from "@/lib/load-session-message-history";
+import { loadSessionMessageHistory } from "@/lib/messages/load-session-message-history";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useThreadPanelStore } from "@/stores/thread-panel-store";

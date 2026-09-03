@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { getFeatures } from "@/lib/remote-features"
+import { getFeatures } from "@/lib/config/remote-features"
 import { useUpdaterStore } from "@/stores/updater"
 import { useShallow } from "zustand/react/shallow"
 

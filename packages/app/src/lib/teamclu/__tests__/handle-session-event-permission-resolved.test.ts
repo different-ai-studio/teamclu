@@ -28,7 +28,7 @@ import {
   handleSessionEventPermissionResolved,
   resetPermissionResolvedTtlForTests,
   wasPermissionRecentlyResolved,
-} from "../handle-session-event-permission-resolved";
+} from "@/lib/teamclu/handle-session-event-permission-resolved";
 
 describe("handleSessionEventPermissionResolved", () => {
   beforeEach(() => {

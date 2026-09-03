@@ -3,12 +3,12 @@ import { useEffect, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Toaster, toast } from "sonner";
 import { cn, isTauri, removeStartupSkeleton } from "@/lib/utils";
-import { capabilities } from "@/lib/platform";
-import { isSoloBuild } from "@/lib/solo-build";
-import { scheduleReleaseStuckModalLayers } from "@/lib/modal-layer-cleanup";
-import { appDisplayName } from "@/lib/build-config";
-import { buildSessionDeeplink, parseSessionDeeplink } from "@/lib/session-deeplink";
-import { markStartup } from "@/lib/startup-perf";
+import { capabilities } from "@/lib/config/platform";
+import { isSoloBuild } from "@/lib/config/solo-build";
+import { scheduleReleaseStuckModalLayers } from "@/lib/ui/modal-layer-cleanup";
+import { appDisplayName } from "@/lib/config/build-config";
+import { buildSessionDeeplink, parseSessionDeeplink } from "@/lib/session/session-deeplink";
+import { markStartup } from "@/lib/telemetry/startup-perf";
 import { BookOpen, ChevronLeft, X, PanelRightClose, Link2, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
 import { useWorkspaceInit } from "@/hooks/use-workspace-init";
 import { useChannelGatewayInit } from "@/hooks/use-channel-gateway-init";
@@ -35,7 +35,7 @@ import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
 import { ThreadHistoryLoader } from "@/components/ThreadHistoryLoader";
 import { UpdateDialogContainer } from "@/components/updater/UpdateDialog";
 import { AppDeployConfirmDialog } from "@/components/apps/AppDeployConfirmDialog";
-import { resolveControlPanelAppId } from "@/lib/app-control-panel";
+import { resolveControlPanelAppId } from "@/lib/apps/app-control-panel";
 import { lazyNamed } from "@/lib/lazy-component";
 import { useEverTrue } from "@/hooks/use-ever-true";
 import { PaneLoading } from "@/components/ui/pane-loading";
@@ -52,9 +52,9 @@ import { startOutboxSender } from "@/services/outbox-sender";
 import { getBackend } from "@/lib/backend";
 import { getVersion } from "@tauri-apps/api/app";
 import { getDesktopDeviceId } from "@/lib/backend/cloud-api/device-id";
-import { resetClientChatState } from "@/lib/reset-client-chat-state";
-import { startEmbedPageContextListener, consumePendingLinkContext } from "@/lib/embed-page-context";
-import { startEmbedLinkOpenListener } from "@/lib/embed-link-session";
+import { resetClientChatState } from "@/lib/session/reset-client-chat-state";
+import { startEmbedPageContextListener, consumePendingLinkContext } from "@/lib/embed/embed-page-context";
+import { startEmbedLinkOpenListener } from "@/lib/embed/embed-link-session";
 import { useUIStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTabsStore, selectActiveTab, selectHasHiddenTabs } from "@/stores/tabs";
@@ -63,9 +63,9 @@ import { useTeamShareBrowserStore } from "@/stores/team-share-browser";
 import { useHeaderPreferencesStore } from "@/stores/header-preferences-store";
 import { Button } from "@/components/ui/button";
 import { onOpenUrl, getCurrent } from "@tauri-apps/plugin-deep-link";
-import { parseInviteDeeplink } from "@/lib/invite-deeplink";
-import { requestInviteLinkConfirmation, whenDocumentFocused } from "@/lib/invite-link-confirmation";
-import { completePendingSessionDeeplink, openSessionFromDeeplink, readPendingSessionDeeplink, stashPendingSessionDeeplink } from "@/lib/open-session-deeplink";
+import { parseInviteDeeplink } from "@/lib/team/invite-deeplink";
+import { requestInviteLinkConfirmation, whenDocumentFocused } from "@/lib/team/invite-link-confirmation";
+import { completePendingSessionDeeplink, openSessionFromDeeplink, readPendingSessionDeeplink, stashPendingSessionDeeplink } from "@/lib/session/open-session-deeplink";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useAppsStore } from "@/stores/apps-store";
 import { E2E_BUILD, isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
@@ -81,7 +81,7 @@ import {
   useWebviewShortcuts,
 } from "@/app/shell-hooks";
 
-export { ensureSessionLiveSubscribed } from "@/lib/session-live-subscriptions";
+export { ensureSessionLiveSubscribed } from "@/lib/session/session-live-subscriptions";
 
 // ── Lazy boundaries ────────────────────────────────────────────────────────
 // Settings, team share, apps and the ideas/actors detail panes are large

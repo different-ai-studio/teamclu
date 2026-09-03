@@ -1,8 +1,8 @@
 import { join } from '@tauri-apps/api/path'
 import { exists, readDir, writeTextFile } from '@tauri-apps/plugin-fs'
-import { TEAMCLU_DIR } from '@/lib/build-config'
-import agentsTemplate from './AGENTS.default.md?raw'
-import claudeTemplate from './CLAUDE.default.md?raw'
+import { TEAMCLU_DIR } from '@/lib/config/build-config'
+import agentsTemplate from '@/lib/workspace-seed/AGENTS.default.md?raw'
+import claudeTemplate from '@/lib/workspace-seed/CLAUDE.default.md?raw'
 
 function folderNameFromPath(path: string): string {
   const trimmed = path.replace(/[/\\]+$/, '')

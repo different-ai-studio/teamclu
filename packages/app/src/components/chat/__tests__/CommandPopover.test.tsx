@@ -60,8 +60,8 @@ vi.mock('@/lib/backend', () => ({
   getBackend: () => ({}),
 }))
 
-vi.mock('@/lib/daemon-local-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/daemon-local-client')>()
+vi.mock('@/lib/daemon/daemon-local-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/daemon/daemon-local-client')>()
   return {
     ...actual,
     getDaemonPermissions: (...args: unknown[]) => mocks.getDaemonPermissions(...args),
@@ -74,7 +74,7 @@ vi.mock('@/lib/roles/loader', () => ({
   loadAllRoles: (...args: unknown[]) => mocks.loadAllRoles(...args),
 }))
 
-vi.mock('@/lib/teamclu-config', () => ({
+vi.mock('@/lib/daemon/teamclu-config', () => ({
   resolveSkillPermission: () => ({ permission: 'allow', isExact: false }),
 }))
 

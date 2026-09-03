@@ -26,8 +26,8 @@ import { MessageTokenUsage } from "./MessageTokenUsage";
 import { MessageTokenSummary } from "./MessageTokenSummary";
 import { MessageFeedback } from "./MessageFeedback";
 import { MessageStarRating } from "./MessageStarRating";
-import { splitAssistantProcessAndFinalParts } from "@/lib/agent-reply-transcript";
-import { hydrateDeferredProcessParts } from "@/lib/lazy-process-parts";
+import { splitAssistantProcessAndFinalParts } from "@/lib/agent/agent-reply-transcript";
+import { hydrateDeferredProcessParts } from "@/lib/stream/lazy-process-parts";
 import type { MessagePart } from "@/stores/session-types";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import {

@@ -14,7 +14,7 @@ vi.mock('@/components/ui/scroll-area', () => ({
   ),
 }))
 
-vi.mock('@/lib/version', () => ({
+vi.mock('@/lib/config/version', () => ({
   useAppVersion: () => '0.2.3',
 }))
 

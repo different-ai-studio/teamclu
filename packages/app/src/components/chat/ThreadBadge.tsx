@@ -6,10 +6,10 @@ import { useSessionMessageStore } from "@/stores/session-message-store";
 import { MessageKind } from "@/lib/proto/teamclu_pb";
 import type { Message as StoreMessage } from "@/stores/session-types";
 
-import { threadTitleFromMessage, formatThreadRelativeTime } from "@/lib/thread-summary";
+import { threadTitleFromMessage, formatThreadRelativeTime } from "@/lib/session/thread-summary";
 import { useThreadListPanelStore } from "@/stores/thread-list-panel-store";
 import { useThreadSummaryForMessage } from "@/hooks/use-session-thread-summaries";
-import { rememberThreadForkMetadata } from "@/lib/thread-fork-metadata";
+import { rememberThreadForkMetadata } from "@/lib/session/thread-fork-metadata";
 import { MessageActionIconButton } from "./MessageActionIconButton";
 
 export function ThreadBadge({

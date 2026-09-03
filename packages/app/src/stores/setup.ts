@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { isTauri } from '@/lib/utils'
-import { markStartup } from '@/lib/startup-perf'
-import { appStoragePrefix, localAgent } from '@/lib/build-config'
+import { markStartup } from '@/lib/telemetry/startup-perf'
+import { appStoragePrefix, localAgent } from '@/lib/config/build-config'
 
 // Cache the last-known "all required deps satisfied" verdict so a returning user
 // (deps already installed) is never gated behind the cold `setup_list_requirements`

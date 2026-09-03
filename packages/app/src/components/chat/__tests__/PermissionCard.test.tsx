@@ -6,7 +6,7 @@ import { useV2StreamingStore } from '@/stores/v2-streaming-store';
 import {
   resetSessionPermissionModesForTests,
   setSessionPermissionMode,
-} from '@/lib/session-permission-mode';
+} from '@/lib/session/session-permission-mode';
 import { PendingPermissionInline } from '../PendingPermissionInline';
 
 vi.mock('react-i18next', () => ({

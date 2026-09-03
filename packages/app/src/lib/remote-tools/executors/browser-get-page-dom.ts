@@ -1,4 +1,4 @@
-import { TOOL_GET_PAGE_DOM, type GetPageDomArgs, type GetPageDomResult } from '../types'
+import { TOOL_GET_PAGE_DOM, type GetPageDomArgs, type GetPageDomResult } from '@/lib/remote-tools/types'
 
 type ChromeRuntimeLike = {
   sendMessage?: (msg: unknown) => Promise<unknown>

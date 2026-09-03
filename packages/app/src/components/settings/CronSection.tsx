@@ -30,13 +30,13 @@ import {
   type CronScope,
 } from '@/stores/cron'
 import { ToggleSwitch } from './shared'
-import { getDeliveryTargetDisplay } from '@/lib/cron-utils'
+import { getDeliveryTargetDisplay } from '@/lib/cron/cron-utils'
 import { CronJobDialog } from './cron/CronJobDialog'
 import { CronHistoryDialog } from './cron/CronHistoryDialog'
 import {
   listLocalDaemonWorkspaces,
   type LocalDaemonWorkspace,
-} from '@/lib/cron-workspace-models'
+} from '@/lib/cron/cron-workspace-models'
 import { useShallow } from 'zustand/react/shallow'
 
 // ==================== Job Card ====================

@@ -32,10 +32,10 @@ import { useTabsStore } from '@/stores/tabs';
 import { useCurrentTeamStore } from '@/stores/current-team';
 import { useVersionHistoryStore } from '@/stores/version-history';
 import { encodeVersionHistoryTarget } from '@/lib/tabs/teamshare-target';
-import type { SyncBadge } from '@/lib/team-sync-badges';
+import type { SyncBadge } from '@/lib/team/team-sync-badges';
 import { openKnowledgeConflict, openCloudVersion } from '@/lib/tabs/knowledge-tabs';
-import { getFileIcon } from '@/lib/file-icons';
-import { formatDateTime, formatRelativeTime } from '@/lib/date-format';
+import { getFileIcon } from '@/lib/ui/file-icons';
+import { formatDateTime, formatRelativeTime } from '@/lib/ui/date-format';
 import type { FileNode } from "@/stores/workspace";
 import {
   ContextMenu,

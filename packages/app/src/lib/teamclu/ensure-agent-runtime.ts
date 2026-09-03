@@ -3,18 +3,18 @@ import i18n from "@/lib/i18n";
 import {
   resolveAgentDevicePresence,
   type AgentDevicePresence,
-} from "@/lib/agent-device-reachability";
-import { ensureSessionLiveSubscribed } from "@/lib/session-live-subscriptions";
+} from "@/lib/agent/agent-device-reachability";
+import { ensureSessionLiveSubscribed } from "@/lib/session/session-live-subscriptions";
 import {
   startAgentRuntimesAsync,
   type RuntimeStartFailure,
   type RuntimeStartFailureCode,
-} from "@/lib/session-create";
+} from "@/lib/session/session-create";
 import {
   setModel,
   waitForTeamcluRpcIdentity,
   waitForTeamcluRpcReady,
-} from "@/lib/teamclu-rpc";
+} from "@/lib/daemon/teamclu-rpc";
 import {
   isFullyLocal,
   planAgentTransports,
@@ -24,7 +24,7 @@ import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import {
   resolveRuntimeStateEntryForAgent,
   runtimeTargetsForSession,
-} from "@/lib/runtime-state-resolve";
+} from "@/lib/agent/runtime-state-resolve";
 import { resolveSessionWorkspaceHintForRuntimeStart } from "@/lib/teamclu/resolve-runtime-start-workspace";
 import {
   recordRuntimeEnsureAttempt,
@@ -35,7 +35,7 @@ import {
   DEVICE_PRESENCE_GATE_TIMEOUT_MS,
   RUNTIME_START_RPC_TIMEOUT_MS,
 } from "@/lib/teamclu/runtime-rpc-timeouts";
-import { sessionFlowError, sessionFlowLog } from "@/lib/session-flow-log";
+import { sessionFlowError, sessionFlowLog } from "@/lib/session/session-flow-log";
 import {
   isCancelledRuntimeFailure,
   isTransientRuntimeNetworkFailure,
@@ -285,7 +285,7 @@ async function runEnsureRuntimeThenSetModel(
   const { isTauri } = await import("@/lib/utils");
   if (isTauri()) {
     try {
-      const { getLocalDaemonActorId } = await import("@/lib/daemon-agent-admin");
+      const { getLocalDaemonActorId } = await import("@/lib/daemon/daemon-agent-admin");
       localDaemonActorId = await getLocalDaemonActorId();
     } catch {
       localDaemonActorId = null;
@@ -523,7 +523,7 @@ export async function ensureAgentRuntimesForSession(args: EnsureAgentRuntimeArgs
     const { isTauri } = await import("@/lib/utils")
     if (isTauri()) {
       try {
-        const { getLocalDaemonActorId } = await import("@/lib/daemon-agent-admin")
+        const { getLocalDaemonActorId } = await import("@/lib/daemon/daemon-agent-admin")
         localDaemonActorId = await getLocalDaemonActorId()
       } catch {
         localDaemonActorId = null

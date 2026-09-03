@@ -4,7 +4,7 @@ import { Check, Loader2, AlertCircle, Download, Terminal, Cpu, MousePointer2, Bo
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { localAgent } from '@/lib/build-config'
+import { localAgent } from '@/lib/config/build-config'
 import {
   useSetupStore,
   type InstallProgress,
@@ -13,7 +13,7 @@ import {
 } from '@/stores/setup'
 import { useOnboardingStore, type OnboardingRole } from '@/stores/onboarding'
 import { useElapsedSeconds } from '@/hooks/use-elapsed-seconds'
-import type { DaemonLocalAgent } from '@/lib/daemon-local-client'
+import type { DaemonLocalAgent } from '@/lib/daemon/daemon-local-client'
 import { useShallow } from 'zustand/react/shallow'
 
 /**

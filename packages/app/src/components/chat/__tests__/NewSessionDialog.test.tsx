@@ -94,11 +94,11 @@ vi.mock('@/stores/session-store', () => ({
   },
 }))
 
-vi.mock('@/lib/current-actor', () => ({
+vi.mock('@/lib/actor/current-actor', () => ({
   resolveCurrentMemberActorId: vi.fn().mockResolvedValue('member-1'),
 }))
 
-vi.mock('@/lib/local-cache', () => ({
+vi.mock('@/lib/cache/local-cache', () => ({
   loadActorsForTeam: vi.fn().mockResolvedValue([
     { id: 'agent-1', actorType: 'agent', displayName: 'MCA2' },
   ]),
@@ -116,15 +116,15 @@ vi.mock('@/lib/backend', () => ({
   }),
 }))
 
-vi.mock('@/lib/actor-color', () => ({
+vi.mock('@/lib/actor/actor-color', () => ({
   actorAvatarColor: () => ({ bg: '#64748b', fg: '#fff' }),
 }))
 
-vi.mock('@/lib/session-create', () => ({
+vi.mock('@/lib/session/session-create', () => ({
   createSessionWithFirstMessage: (...args: unknown[]) => mocks.createSessionWithFirstMessage(...args),
 }))
 
-vi.mock('@/lib/session-live-subscriptions', () => ({
+vi.mock('@/lib/session/session-live-subscriptions', () => ({
   ensureSessionLiveSubscribed: (...args: unknown[]) => mocks.ensureSessionLiveSubscribed(...args),
 }))
 

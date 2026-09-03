@@ -46,7 +46,7 @@ import {
   saveRole,
 } from "@/lib/roles/loader"
 import type { AttachableSkill, RoleEditorState, RoleRecord } from "@/lib/roles/types"
-import { useEffectiveWorkspacePath } from "@/lib/effective-workspace"
+import { useEffectiveWorkspacePath } from "@/lib/workspace/effective-workspace"
 
 type EditorMode = "structured" | "markdown"
 

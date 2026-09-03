@@ -3,9 +3,9 @@ import { useDiagnosticsStore } from '@/stores/diagnostics-store'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useTabsStore } from '@/stores/tabs'
 import { useTeamShareBrowserStore, type TeamShareSection } from '@/stores/team-share-browser'
-import { resolveEmbedMode } from '@/lib/embed-mode'
-import { scheduleReleaseStuckModalLayers } from '@/lib/modal-layer-cleanup'
-import type { PageContext } from '@/lib/embed-page-context'
+import { resolveEmbedMode } from '@/lib/embed/embed-mode'
+import { scheduleReleaseStuckModalLayers } from '@/lib/ui/modal-layer-cleanup'
+import type { PageContext } from '@/lib/embed/embed-page-context'
 
 type View = 'chat' | 'settings'
 
@@ -298,7 +298,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     const { useWorkspaceStore } = await import('@/stores/workspace')
     const { useTabsStore } = await import('@/stores/tabs')
     const { useCurrentTeamStore } = await import('@/stores/current-team')
-    const { switchToSessionWorkspaceIfNeeded } = await import('@/lib/session-by-workspace')
+    const { switchToSessionWorkspaceIfNeeded } = await import('@/lib/session/session-by-workspace')
     
     const teamId = useCurrentTeamStore.getState().team?.id
 

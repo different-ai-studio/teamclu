@@ -14,7 +14,7 @@ import {
   useInsertPageLink,
   type PromptInputMessage,
 } from "@/packages/ai/prompt-input";
-import { textHasMemberMentionTokens } from "@/lib/member-mention-token";
+import { textHasMemberMentionTokens } from "@/lib/actor/member-mention-token";
 import {
   createInsertHashFile,
   createInsertHashSessionAttachment,
@@ -43,9 +43,9 @@ import { useSessionStore } from "@/stores/session-store";
 import { useComposerInsertStore } from "@/stores/composer-insert";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
-import { isImageFile } from "@/lib/attachment-constants";
-import { textHasSessionAttachmentTokens } from "@/lib/session-attachment-token";
-import { exceedsNonImageLimit } from "@/lib/attachment-constants";
+import { isImageFile } from "@/lib/attachments/attachment-constants";
+import { textHasSessionAttachmentTokens } from "@/lib/attachments/session-attachment-token";
+import { exceedsNonImageLimit } from "@/lib/attachments/attachment-constants";
 
 // ─── Popover wrappers (need PromptInput context for useInsertFileMention) ───
 

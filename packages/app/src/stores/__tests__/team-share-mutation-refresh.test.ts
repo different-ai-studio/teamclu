@@ -13,11 +13,11 @@ const {
 }))
 
 vi.mock('@/lib/utils', () => ({ isTauri: () => true }))
-vi.mock('@/lib/effective-workspace', () => ({
+vi.mock('@/lib/workspace/effective-workspace', () => ({
   effectiveWorkspacePath: async () => '/Users/me/project',
 }))
-vi.mock('@/lib/daemon-local-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/daemon-local-client')>()
+vi.mock('@/lib/daemon/daemon-local-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/daemon/daemon-local-client')>()
   return {
     ...actual,
     notifyDaemonSkillsChanged,
@@ -30,8 +30,8 @@ vi.mock('@/lib/backend/provider', () => ({
     teamSkills: { deleteTeamSkill, listTeamSkills: async () => [] },
   }),
 }))
-vi.mock('@/lib/teamclu-rpc', () => ({ manageAgentCapability }))
-vi.mock('@/lib/agent-device-reachability', () => ({
+vi.mock('@/lib/daemon/teamclu-rpc', () => ({ manageAgentCapability }))
+vi.mock('@/lib/agent/agent-device-reachability', () => ({
   resolveAgentDevicePresenceSync: () => 'online',
 }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => null) }))

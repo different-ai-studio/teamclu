@@ -18,7 +18,7 @@ import {
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { cn } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -35,12 +35,12 @@ import { WeComIcon } from './shared'
 import { GatewayStatusCard } from './GatewayStatusCard'
 import { useChannelConfig } from '@/hooks/use-channel-config'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { botSecretPath, loadChannelSecretKeys } from '@/lib/channel-secret-presence'
+import { botSecretPath, loadChannelSecretKeys } from '@/lib/team/channel-secret-presence'
 import {
   getCurrentDaemonWorkspaceAgent,
   listDaemonWorkspaces,
   type DaemonWorkspace,
-} from '@/lib/daemon-workspaces'
+} from '@/lib/daemon/daemon-workspaces'
 import { useShallow } from 'zustand/react/shallow'
 
 // WeCom Setup Wizard

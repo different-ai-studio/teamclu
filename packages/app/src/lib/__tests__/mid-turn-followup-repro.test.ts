@@ -21,13 +21,13 @@ import {
   MessageKind,
 } from "@/lib/proto/teamclu_pb";
 import { AgentStatus } from "@/lib/proto/amux_pb";
-import { decodeLiveEvent } from "@/lib/teamclu-events";
+import { decodeLiveEvent } from "@/lib/daemon/teamclu-events";
 import {
   clearFlushedTurn,
   registerFlushedTurn,
   resetFlushedTurnRegistryForTests,
-} from "@/lib/flushed-turn-registry";
-import { shouldPatchFlushedToolEvent } from "@/lib/live-agent-stream";
+} from "@/lib/stream/flushed-turn-registry";
+import { shouldPatchFlushedToolEvent } from "@/lib/stream/live-agent-stream";
 import {
   isStreamInterruptible,
   useV2StreamingStore,
@@ -276,7 +276,7 @@ describe("mid-turn follow-up repro (client store simulation)", () => {
     const liveAfter = useV2StreamingStore.getState().byKey[`${sessionId}::${actorId}`];
     expect(liveAfter?.active ?? false).toBe(false);
 
-    const { patchPersistedToolUse } = await import("@/lib/streaming-persist");
+    const { patchPersistedToolUse } = await import("@/lib/stream/streaming-persist");
     const patched = await patchPersistedToolUse({
       sessionId,
       actorId,

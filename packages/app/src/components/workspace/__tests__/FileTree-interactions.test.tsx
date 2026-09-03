@@ -169,7 +169,7 @@ vi.mock('@/components/ui/alert-dialog', () => ({
   AlertDialogCancel: ({ children }: any) => <button>{children}</button>,
 }));
 
-vi.mock('@/lib/file-icons', () => ({
+vi.mock('@/lib/ui/file-icons', () => ({
   getFileIcon: () => null,
 }));
 

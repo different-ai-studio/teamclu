@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseFrontmatter, frontmatterString, writeFrontmatter } from '../frontmatter'
+import { parseFrontmatter, frontmatterString, writeFrontmatter } from '@/lib/skills/frontmatter'
 
 // These fixtures are duplicated in the Rust twin's test module
 // (apps/daemon/src/config/skill_frontmatter.rs). When you add a case here, add

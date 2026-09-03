@@ -1,4 +1,4 @@
-import { appStoragePrefix } from "@/lib/build-config";
+import { appStoragePrefix } from "@/lib/config/build-config";
 
 const STORAGE_KEY = `${appStoragePrefix}-pinned-sessions`;
 

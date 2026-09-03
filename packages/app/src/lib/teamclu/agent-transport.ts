@@ -1,5 +1,5 @@
-import { probeDaemonHttp } from '@/lib/daemon-local-client'
-import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
+import { probeDaemonHttp } from '@/lib/daemon/daemon-local-client'
+import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
 
 /**
  * How this client will actually reach an agent.

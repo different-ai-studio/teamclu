@@ -51,7 +51,7 @@ import { useChannelsStore } from '@/stores/channels-store'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { automationDefaultForBackends } from '@/stores/automation-default-model'
-import { loadCronDialogModels, type CronModelGroup } from '@/lib/cron-workspace-models'
+import { loadCronDialogModels, type CronModelGroup } from '@/lib/cron/cron-workspace-models'
 import {
   Popover,
   PopoverContent,
@@ -71,7 +71,7 @@ import {
   localDatetimeToIso,
   DELIVERY_CHANNEL_REGISTRY,
   getRegistryEntry,
-} from '@/lib/cron-utils'
+} from '@/lib/cron/cron-utils'
 import { useShallow } from 'zustand/react/shallow'
 
 /** One conversation the bot can be addressed in, as amuxd reports it. */

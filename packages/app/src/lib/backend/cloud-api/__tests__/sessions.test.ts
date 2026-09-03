@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createSessionsModule } from "../sessions";
-import type { CloudApiClient } from "../http";
+import { createSessionsModule } from "@/lib/backend/cloud-api/sessions";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 function mockClient(responses: Record<string, unknown>): CloudApiClient {
   return {

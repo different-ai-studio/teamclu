@@ -32,7 +32,7 @@ import type {
   ClawHubLockfile,
 } from "@/lib/clawhub/types"
 import { clawhubInstalledSlugs, parseStats } from "@/lib/clawhub/types"
-import { useEffectiveWorkspacePath } from "@/lib/effective-workspace"
+import { useEffectiveWorkspacePath } from "@/lib/workspace/effective-workspace"
 import {
   Dialog,
   DialogContent,

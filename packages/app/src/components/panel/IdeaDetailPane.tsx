@@ -12,8 +12,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { formatRelativeTime } from '@/lib/date-format'
-import { updateIdea, createIdeaActivity, type IdeaStatus } from '@/lib/idea-mutations'
+import { formatRelativeTime } from '@/lib/ui/date-format'
+import { updateIdea, createIdeaActivity, type IdeaStatus } from '@/lib/team/idea-mutations'
 import { useIdeaDetailStore, type IdeaDetailTarget } from '@/stores/idea-detail'
 import type { IdeaRow } from '@/components/panel/IdeasView'
 import { cn } from '@/lib/utils'

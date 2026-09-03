@@ -1,9 +1,9 @@
 import { create } from "@bufbuild/protobuf";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageKind, MessageSchema } from "@/lib/proto/teamclu_pb";
-import { mergePendingAgentReplies, rememberLiveEventId } from "@/lib/live-agent-stream";
-import { persistStreamingPartsForReply } from "@/lib/streaming-persist";
-import { adaptTeamcluMessages } from "@/lib/v2-message-adapter";
+import { mergePendingAgentReplies, rememberLiveEventId } from "@/lib/stream/live-agent-stream";
+import { persistStreamingPartsForReply } from "@/lib/stream/streaming-persist";
+import { adaptTeamcluMessages } from "@/lib/messages/v2-message-adapter";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 
 const FULL =
@@ -44,7 +44,7 @@ const OUTPUT_CHUNKS = [
   "。",
 ];
 
-vi.mock("@/lib/local-cache", () => ({
+vi.mock("@/lib/cache/local-cache", () => ({
   enrichMessageParts: vi.fn(async (partsJson: string) => partsJson),
   setMessageParts: vi.fn(async (_messageId: string, partsJson: string) => partsJson),
 }));

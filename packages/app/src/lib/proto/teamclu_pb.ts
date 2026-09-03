@@ -4,8 +4,8 @@
 
 import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { AgentType, MemberRole, PeerInfo, RuntimeCommandEnvelope, WorkspaceInfo } from "./amux_pb";
-import { file_amux } from "./amux_pb";
+import type { AgentType, MemberRole, PeerInfo, RuntimeCommandEnvelope, WorkspaceInfo } from "@/lib/proto/amux_pb";
+import { file_amux } from "@/lib/proto/amux_pb";
 import type { Message as Message$1 } from "@bufbuild/protobuf";
 
 /**

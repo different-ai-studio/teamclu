@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { backendTypeFromRuntimeEntry } from '@/lib/runtime-state-resolve'
+import { backendTypeFromRuntimeEntry } from '@/lib/agent/runtime-state-resolve'
 import { attachmentsForSession, useRuntimeStateStore } from '@/stores/runtime-state-store'
 
 type EngagedAgentRuntimeMaps = {

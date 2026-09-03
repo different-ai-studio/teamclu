@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import {
   EXTENSION_SESSION_CLEANUP_INTERVAL_MS,
   runExtensionSessionCleanup,
-} from '@/lib/extension-session-cleanup'
+} from '@/lib/extension/extension-session-cleanup'
 import { useAuthStore } from '@/stores/auth-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useUIStore } from '@/stores/ui'

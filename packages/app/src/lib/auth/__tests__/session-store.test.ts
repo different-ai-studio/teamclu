@@ -6,8 +6,8 @@ import {
   refreshSession,
   setSession,
   subscribe,
-} from "../session-store";
-import type { Session } from "../types";
+} from "@/lib/auth/session-store";
+import type { Session } from "@/lib/auth/types";
 
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {

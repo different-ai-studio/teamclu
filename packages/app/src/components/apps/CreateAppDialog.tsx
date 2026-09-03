@@ -12,8 +12,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { useAppsStore } from '@/stores/apps-store'
-import { APP_TYPES, DEFAULT_APP_TYPE, IMPORTED_APP_TYPE, type AppTypeId } from '@/lib/app-types'
-import { bindDaemonAppWorkdir, inspectDaemonDir } from '@/lib/daemon-local-client'
+import { APP_TYPES, DEFAULT_APP_TYPE, IMPORTED_APP_TYPE, type AppTypeId } from '@/lib/apps/app-types'
+import { bindDaemonAppWorkdir, inspectDaemonDir } from '@/lib/daemon/daemon-local-client'
 import { isTauri } from '@/lib/utils'
 
 type Visibility = 'personal' | 'team'
@@ -187,7 +187,7 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
       // Only once the files exist — an opening message telling the agent to
       // read AGENTS.md is useless if the template was never written.
       if (app.provisionStatus === 'ready') {
-        const { startAppFirstSession } = await import('@/lib/app-session')
+        const { startAppFirstSession } = await import('@/lib/apps/app-session')
         const sessionId = await startAppFirstSession(app)
         if (sessionId) {
           useAppsStore.getState().recordAppSession(app.id, sessionId)

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useWorkspaceStore, WORKSPACE_STORAGE_KEY } from "../workspace";
 import type { FileNode } from "../workspace";
-import { appShortName } from "@/lib/build-config";
+import { appShortName } from "@/lib/config/build-config";
 
 describe("Workspace store (W-03, W-14)", () => {
   beforeEach(() => {

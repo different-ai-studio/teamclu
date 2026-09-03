@@ -89,7 +89,7 @@ vi.mock('@/lib/utils', () => ({
   isTauri: () => false,
   removeStartupSkeleton: () => {},
 }))
-vi.mock('@/lib/platform', () => ({
+vi.mock('@/lib/config/platform', () => ({
   isChromeExtension: () => false,
   getAppPlatform: () => 'web',
   capabilities: {
@@ -98,7 +98,7 @@ vi.mock('@/lib/platform', () => ({
     pageCapture: false,
   },
 }))
-vi.mock('@/lib/build-config', () => ({
+vi.mock('@/lib/config/build-config', () => ({
   appShortName: 'teamclu',
   appStoragePrefix: 'teamclu',
   appScheme: 'teamclu',
@@ -227,7 +227,7 @@ vi.mock('@/components/tab-bar/TabBar', () => ({ TabBar: () => <div data-testid="
 vi.mock('@/components/tab-bar/TabContentRenderer', () => ({ TabContentRenderer: () => <div data-testid="tab-content-renderer" /> }))
 vi.mock('@/components/tab-bar/WebViewToolbar', () => ({ WebViewToolbar: () => null }))
 vi.mock('@/components/tab-bar/FindInPageBar', () => ({ FindInPageBar: () => null }))
-vi.mock('@/lib/webview-utils', () => ({ urlToLabel: (u: string) => u }))
+vi.mock('@/lib/ui/webview-utils', () => ({ urlToLabel: (u: string) => u }))
 vi.mock('@/stores/team-mode', () => ({
   useTeamModeStore: vi.fn((sel: (s: any) => any) => sel(teamModeState)),
 }))

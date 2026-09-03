@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { isChromeExtension } from '@/lib/platform'
-import { getConfiguredSidePanelDomainPatterns } from '@/lib/side-panel-host-gate-config'
+import { isChromeExtension } from '@/lib/config/platform'
+import { getConfiguredSidePanelDomainPatterns } from '@/lib/extension/side-panel-host-gate-config'
 import {
   isSidePanelHostGateEnabled,
   isUrlAllowedBySidePanelPatterns,
   SIDE_PANEL_HOST_GATE_STORAGE_KEY,
   type SidePanelHostGateSnapshot,
-} from '@/lib/side-panel-host-allowlist'
+} from '@/lib/extension/side-panel-host-allowlist'
 
 type ChromeTabsLike = {
   query: (

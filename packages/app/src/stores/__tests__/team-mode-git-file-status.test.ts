@@ -18,12 +18,12 @@ vi.mock('@/lib/utils', () => ({
   isTauri: () => true,
 }))
 
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   encodeWorkspaceId: (path: string) => path,
   deleteDaemonProviderAuth: vi.fn().mockResolvedValue(null),
 }))
 
-vi.mock('@/lib/team-provider', () => ({
+vi.mock('@/lib/agent/team-provider', () => ({
   TEAM_SHARED_PROVIDER_ID: 'team',
 }))
 
@@ -43,7 +43,7 @@ vi.mock('@/stores/workspace', () => ({
   },
 }))
 
-vi.mock('@/lib/build-config', () => ({
+vi.mock('@/lib/config/build-config', () => ({
   appShortName: 'teamclu',
   appStoragePrefix: 'teamclu',
   TEAM_REPO_DIR: 'teamclu-team',

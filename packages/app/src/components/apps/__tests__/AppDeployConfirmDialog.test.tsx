@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { AppDeployConfirmDialog } from "../AppDeployConfirmDialog";
-import { publicDeployConfirm } from "@/lib/app-deploy-confirm";
+import { publicDeployConfirm } from "@/lib/apps/app-deploy-confirm";
 
 vi.mock("@/components/ui/alert-dialog", () => ({
   AlertDialog: ({ open, children }: { open: boolean; children: React.ReactNode }) =>

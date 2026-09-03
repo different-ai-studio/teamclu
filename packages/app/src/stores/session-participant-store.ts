@@ -1,10 +1,10 @@
 import { create } from "zustand";
 import { getBackend } from "@/lib/backend";
-import { isAgentActorType } from "@/lib/actor-type";
+import { isAgentActorType } from "@/lib/actor/actor-type";
 import {
   loadActorsByIds,
   loadSessionParticipants,
-} from "@/lib/local-cache";
+} from "@/lib/cache/local-cache";
 import { syncParticipantsForSession } from "@/lib/sync/session-participant-sync";
 import { isTauri } from "@/lib/utils";
 

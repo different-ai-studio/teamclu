@@ -6,9 +6,9 @@ import {
   createBrowserMqttAdapter,
   type BrowserMqttAdapter,
   type BrowserMqttMessage,
-} from './browser-mqtt-adapter'
-import type { MqttWorkerEvent, MqttWorkerRequest } from './mqtt-connection.worker'
-import { recordMqttDiag } from '../mqtt-diagnostics'
+} from '@/lib/mqtt/browser-mqtt-adapter'
+import type { MqttWorkerEvent, MqttWorkerRequest } from '@/lib/mqtt/mqtt-connection.worker'
+import { recordMqttDiag } from '@/lib/mqtt/mqtt-diagnostics'
 
 export type MqttWorkerLike = {
   postMessage(data: MqttWorkerRequest, transfer?: Transferable[]): void

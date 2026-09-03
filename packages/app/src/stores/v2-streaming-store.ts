@@ -4,12 +4,12 @@ import {
   joinTextPartsFromParts,
   reconcileSingleSegmentDrift,
   replaceLastPostToolTextPart,
-} from "@/lib/agent-reply-transcript";
-import { logInterruptMsgDiag } from "@/lib/interrupt-msg-diag-core";
+} from "@/lib/agent/agent-reply-transcript";
+import { logInterruptMsgDiag } from "@/lib/diagnostics/interrupt-msg-diag-core";
 import {
   logStreamToolDiag,
   summarizeToolCallsForDiag,
-} from "@/lib/stream-tool-diag";
+} from "@/lib/diagnostics/stream-tool-diag";
 import type { MessagePart, ToolCall } from "@/stores/session-types";
 import type { ToolCallContentBlock } from "@/components/chat/tool-calls/tool-call-content";
 import type { AcpEvent } from "@/lib/proto/amux_pb";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { base64ToBytes, bytesToBase64, bytesToDataUrl } from '../base64';
+import { base64ToBytes, bytesToBase64, bytesToDataUrl } from '@/lib/base64';
 
 function roundTrip(bytes: Uint8Array) {
   return base64ToBytes(bytesToBase64(bytes));
@@ -47,7 +47,7 @@ describe('base64', () => {
 
 describe('base64url', () => {
   it('drops padding and swaps the URL-unsafe alphabet', async () => {
-    const { bytesToBase64Url, textToBase64Url } = await import('../base64');
+    const { bytesToBase64Url, textToBase64Url } = await import('@/lib/base64');
     // 0xfb 0xff encodes as "+/8=" in standard base64.
     expect(bytesToBase64Url(new Uint8Array([0xfb, 0xff]))).toBe('-_8');
     expect(textToBase64Url('/Users/me/work')).toBe(
@@ -56,7 +56,7 @@ describe('base64url', () => {
   });
 
   it('encodes non-ASCII text as UTF-8', async () => {
-    const { textToBase64Url } = await import('../base64');
+    const { textToBase64Url } = await import('@/lib/base64');
     const expected = btoa(String.fromCharCode(...new TextEncoder().encode('标题')))
       .replace(/\+/g, '-')
       .replace(/\//g, '_')

@@ -34,7 +34,7 @@ vi.mock('@/lib/i18n', () => ({
   changeLanguage: mockChangeLanguage,
 }))
 
-vi.mock('@/lib/build-config', () => ({
+vi.mock('@/lib/config/build-config', () => ({
   appShortName: 'teamclu',
   appStoragePrefix: 'teamclu',
   TEAMCLU_DIR: '.teamclu',

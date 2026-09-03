@@ -1,10 +1,10 @@
 import * as React from 'react'
 import { create } from 'zustand'
-import { noteLocalDaemonSignals } from '@/lib/agent-device-reachability'
-import { getDaemonMqttConnected } from '@/lib/daemon-agent-admin'
-import { onDaemonProbeRequested } from '@/lib/daemon-probe-signal'
-import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
-import { QUICK_CHAT_DAEMON_PROBE_INTERVAL_MS } from '@/lib/session-agent-probe'
+import { noteLocalDaemonSignals } from '@/lib/agent/agent-device-reachability'
+import { getDaemonMqttConnected } from '@/lib/daemon/daemon-agent-admin'
+import { onDaemonProbeRequested } from '@/lib/daemon/daemon-probe-signal'
+import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
+import { QUICK_CHAT_DAEMON_PROBE_INTERVAL_MS } from '@/lib/session/session-agent-probe'
 
 const DAEMON_MQTT_STARTUP_SETTLE_MS = 15_000
 const DAEMON_MQTT_STARTUP_RETRY_MS = 1_000

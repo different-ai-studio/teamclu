@@ -20,7 +20,7 @@ import { useUIStore } from '@/stores/ui'
 import {
   hydrateCronSessionMessages,
   ensureCronSessionVisible,
-} from '@/lib/cron-session-messages'
+} from '@/lib/cron/cron-session-messages'
 import { useSessionMessageStore } from '@/stores/session-message-store'
 import {
   Dialog,
@@ -40,7 +40,7 @@ import {
 } from '@/stores/cron'
 import { useShallow } from 'zustand/react/shallow'
 
-export { ensureCronSessionVisible } from '@/lib/cron-session-messages'
+export { ensureCronSessionVisible } from '@/lib/cron/cron-session-messages'
 
 export function RunRecordCard({
   run,

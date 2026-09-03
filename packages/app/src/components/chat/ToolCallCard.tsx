@@ -13,7 +13,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { getCommandText, getToolCallOutputText } from "@/lib/terminal-interaction";
+import { getCommandText, getToolCallOutputText } from "@/lib/ui/terminal-interaction";
 
 // Import sub-cards and utilities from tool-calls/
 import { ToolCallStatusGlyph } from "./tool-calls/ToolCallStatusGlyph";

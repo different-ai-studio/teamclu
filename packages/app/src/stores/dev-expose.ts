@@ -1,5 +1,5 @@
 import { useSessionStore } from './session-store'
-import { appShortName } from '@/lib/build-config'
+import { appShortName } from '@/lib/config/build-config'
 
 if (import.meta.env.DEV) {
   ;(window as any)[`__${appShortName.toUpperCase()}_STORES__`] = {

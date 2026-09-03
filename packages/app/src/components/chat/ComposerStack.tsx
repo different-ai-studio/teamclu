@@ -1,8 +1,8 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Loader2, Maximize2, Minimize2, Square } from "lucide-react";
-import { actorAvatarColor } from "@/lib/actor-color";
-import { resolveApprovalAnchorActorId } from "@/lib/permission-actor";
+import { actorAvatarColor } from "@/lib/actor/actor-color";
+import { resolveApprovalAnchorActorId } from "@/lib/actor/permission-actor";
 import { useActorDisplayName } from "@/hooks/use-actor-display-name";
 import { cn } from "@/lib/utils";
 import { type Todo, type QueuedMessage } from "@/stores/session-types";

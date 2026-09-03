@@ -4,7 +4,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { XIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
-import { modalSurfaceProps } from "@/lib/modal-surface-props"
+import { modalSurfaceProps } from "@/lib/ui/modal-surface-props"
 
 function Dialog({
   ...props

@@ -5,14 +5,14 @@ import { create } from '@bufbuild/protobuf'
 import { RuntimeInfoSchema, AgentStatus, AgentType, RuntimeLifecycle } from '@/lib/proto/amux_pb'
 import { useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { SessionActorPanel } from '../SessionActorSheet'
-import { clearSessionCreatedByCacheForTests } from '@/lib/session-created-by-cache'
+import { clearSessionCreatedByCacheForTests } from '@/lib/session/session-created-by-cache'
 
 const workspaceStoreState = vi.hoisted(() => ({
   workspacePath: '/Users/weigan.huang/copilot-ws-v2',
 }))
 
 const mockRuntimeStart = vi.fn().mockResolvedValue({ accepted: true, runtimeId: 'rt-new', sessionId: 'sess-1', rejectedReason: '' })
-vi.mock('@/lib/teamclu-rpc', () => ({
+vi.mock('@/lib/daemon/teamclu-rpc', () => ({
   runtimeStart: (...args: unknown[]) => mockRuntimeStart(...args),
 }))
 
@@ -62,7 +62,7 @@ vi.mock('@/lib/backend', () => ({
   }),
 }))
 
-vi.mock('@/lib/local-cache', () => ({
+vi.mock('@/lib/cache/local-cache', () => ({
   loadSessionParticipants: (...args: unknown[]) => loadSessionParticipantsMock(...args),
   loadSessionsForTeam: (...args: unknown[]) => loadSessionsForTeamMock(...args),
   loadActorsForTeam: (...args: unknown[]) => loadActorsForTeamMock(...args),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { clawhubInstalledSlugs, isClawHubLockfileSource } from '../types'
+import { clawhubInstalledSlugs, isClawHubLockfileSource } from '@/lib/clawhub/types'
 
 describe('isClawHubLockfileSource', () => {
   it('treats absent and empty source as ClawHub (legacy lockfile rows)', () => {

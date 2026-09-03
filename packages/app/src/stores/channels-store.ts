@@ -37,7 +37,7 @@ import {
   loadChannelConfig,
   AmuxdUnreachableError,
   type ChannelStatus as AmuxdChannelStatus,
-} from '@/lib/amuxd-channels'
+} from '@/lib/daemon/amuxd-channels'
 
 function describe(e: unknown): string {
   if (e instanceof AmuxdUnreachableError) return 'amuxd not running. Start amuxd and try again.'

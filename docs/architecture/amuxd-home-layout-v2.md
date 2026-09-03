@@ -352,7 +352,7 @@ teamclu.json        ← 官方          {brand}.json       ← 白标
 
 这个判据**只允许有一个实现**，在 `teamclu-runtime-env::storage_namespace`。
 `apps/desktop/build.rs` 把它作为 build-dependency 直接调用；
-`packages/app/src/lib/build-config.ts` 因为是另一条工具链，镜像那一个字符串，
+`packages/app/src/lib/config/build-config.ts` 因为是另一条工具链，镜像那一个字符串，
 由 `__tests__/brand-parity.test.ts` 读 Rust 源码守住镜像——为一个字符串搭 codegen
 不划算，但一个"Rust 侧一动就红"的测试是值得的。旧代码三处实现两处互相矛盾，
 betly 的家目录因此被劈成两半。

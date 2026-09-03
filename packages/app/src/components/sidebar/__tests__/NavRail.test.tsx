@@ -31,7 +31,7 @@ vi.mock('@/hooks/use-quick-chat-readiness', () => ({
     target: { agentId: 'a1', displayName: 'Bot', source: 'local' },
   }),
 }))
-vi.mock('@/lib/remote-features', () => ({
+vi.mock('@/lib/config/remote-features', () => ({
   useFeatures: () => ({ apps: true }),
 }))
 vi.mock('@/components/sidebar/AppsNavSection', () => ({

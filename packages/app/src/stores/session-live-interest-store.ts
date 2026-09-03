@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { noteInboxOpenedSession } from "@/lib/session-live-subscriptions";
+import { noteInboxOpenedSession } from "@/lib/session/session-live-subscriptions";
 
 type SessionLiveInterestStore = {
   /** Bumps when a session is opened for live interest (triggers MQTT resync). */

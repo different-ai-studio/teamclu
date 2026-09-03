@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createCloudApiBackend, hasCloudApiBackendConfig } from "../index";
+import { createCloudApiBackend, hasCloudApiBackendConfig } from "@/lib/backend/cloud-api/index";
 
 describe("cloud api backend", () => {
   it("requires only cloudApiUrl for config to be considered valid", () => {

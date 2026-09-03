@@ -1,9 +1,9 @@
 import {
   createCloudApiBackend,
   hasCloudApiBackendConfig,
-} from "./cloud-api";
-import { getEffectiveServerConfigSync } from "../server-config";
-import type { BackendKind, TeamCluBackend } from "./types";
+} from "@/lib/backend/cloud-api";
+import { getEffectiveServerConfigSync } from "@/lib/config/server-config";
+import type { BackendKind, TeamCluBackend } from "@/lib/backend/types";
 
 export const BACKEND_CONFIG_MISSING_MESSAGE =
   "Cloud API URL is not configured. Set cloudApiUrl in server config.";

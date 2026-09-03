@@ -8,7 +8,7 @@ import { RolesSection } from "./RolesSection"
 import { SkillsSection } from "./SkillsSection"
 import { loadRolesSkillsWorkspaceState } from "@/lib/roles/loader"
 import type { RolesSkillsWorkspaceState } from "@/lib/roles/types"
-import { useEffectiveWorkspacePath } from "@/lib/effective-workspace"
+import { useEffectiveWorkspacePath } from "@/lib/workspace/effective-workspace"
 
 type ResourceTab = "roles" | "skills"
 

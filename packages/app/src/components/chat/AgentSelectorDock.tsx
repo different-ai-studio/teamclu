@@ -6,15 +6,15 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { ModelPickerCommand } from '@/components/model/ModelPickerCommand'
 import { useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { useLocalDaemonCatalogStore } from '@/stores/local-daemon-catalog-store'
-import { resolveAutoPersistModelId } from '@/lib/agent-model-auto-persist'
+import { resolveAutoPersistModelId } from '@/lib/agent/agent-model-auto-persist'
 import { useWorkspaceStore } from '@/stores/workspace'
 import {
   resolveAgentCatalogModels,
   localRecentModelFallback,
   recordClientModelPick,
-} from '@/lib/agent-model-fallback'
-import { resolveSessionEstablishedModel } from '@/lib/session-established-model'
-import { sessionFlowError, sessionFlowLog } from '@/lib/session-flow-log'
+} from '@/lib/agent/agent-model-fallback'
+import { resolveSessionEstablishedModel } from '@/lib/session/session-established-model'
+import { sessionFlowError, sessionFlowLog } from '@/lib/session/session-flow-log'
 import { RuntimeLifecycle, type RuntimeInfo } from '@/lib/proto/amux_pb'
 import {
   backendTypeFromRuntimeEntry,
@@ -23,7 +23,7 @@ import {
   resolveRuntimeStateEntryForAgent,
   resolveSetModelId,
   selectAgentModel,
-} from '@/lib/runtime-state-resolve'
+} from '@/lib/agent/runtime-state-resolve'
 import { ensureRuntimeThenSetModel } from '@/lib/teamclu/ensure-agent-runtime'
 import {
   DRAFT_SESSION_PICK_KEY,
@@ -34,8 +34,8 @@ import { useSessionMessageStore } from '@/stores/session-message-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { clientMruModels } from '@/stores/client-model-mru'
 import { useSessionListStore } from '@/stores/session-list-store'
-import { useLocalDaemonActorId } from '@/lib/daemon-agent-admin'
-import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
+import { useLocalDaemonActorId } from '@/lib/daemon/daemon-agent-admin'
+import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
 import { cn } from '@/lib/utils'
 import type { AttachedAgent } from '@/packages/ai/prompt-input-insert-hooks'
 import type { EngagedAgentUiEntry } from '@/hooks/use-engaged-agent-ui-states'
@@ -43,9 +43,9 @@ import {
   resolveAgentPillDot,
   type SessionAgentSyncHint,
   type SessionAgentUiState,
-} from '@/lib/session-agent-ui-state'
+} from '@/lib/session/session-agent-ui-state'
 import { pillSuffixForAgentPill } from '@/components/chat/EngagedAgentOfflineBanner'
-import { isSoloBuild } from '@/lib/solo-build'
+import { isSoloBuild } from '@/lib/config/solo-build'
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
@@ -66,7 +66,7 @@ interface AgentSelectorDockProps {
   agentMentionLocked?: boolean
 }
 
-export { resolveAgentAvailableModels } from '@/lib/agent-available-models'
+export { resolveAgentAvailableModels } from '@/lib/agent/agent-available-models'
 
 // ────────────────────────────────────────────────────────────────────────────
 // Component

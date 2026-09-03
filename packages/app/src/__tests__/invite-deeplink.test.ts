@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { buildInviteDeeplink, parseInviteDeeplink, parseInviteTokenInput } from '@/lib/invite-deeplink'
+import { buildInviteDeeplink, parseInviteDeeplink, parseInviteTokenInput } from '@/lib/team/invite-deeplink'
 
 describe('parseInviteDeeplink', () => {
   it('extracts the token from teamclu://invite?token=…', () => {
@@ -61,18 +61,18 @@ describe('buildInviteDeeplink', () => {
 
 describe('a build with its own app.scheme', () => {
   afterEach(() => {
-    vi.doUnmock('@/lib/build-config')
+    vi.doUnmock('@/lib/config/build-config')
     vi.resetModules()
   })
 
   async function loadForScheme(scheme: string) {
     vi.resetModules()
-    vi.doMock('@/lib/build-config', async () => {
+    vi.doMock('@/lib/config/build-config', async () => {
       const actual =
-        await vi.importActual<typeof import('@/lib/build-config')>('@/lib/build-config')
+        await vi.importActual<typeof import('@/lib/config/build-config')>('@/lib/config/build-config')
       return { ...actual, appScheme: scheme }
     })
-    return import('@/lib/invite-deeplink')
+    return import('@/lib/team/invite-deeplink')
   }
 
   it('takes copilot361:// and nothing else', async () => {

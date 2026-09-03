@@ -42,7 +42,7 @@ vi.mock("@/stores/current-team", () => ({
   },
 }));
 
-import { flushSessionPendingPermissions } from "../flush-session-pending-permissions";
+import { flushSessionPendingPermissions } from "@/lib/teamclu/flush-session-pending-permissions";
 
 describe("flushSessionPendingPermissions", () => {
   beforeEach(() => {

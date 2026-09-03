@@ -19,7 +19,7 @@ import {
   collectDaemonResetRemediation,
   type DiagnosticCheck,
   type DiagnosticReport,
-} from '@/lib/diagnostic-report'
+} from '@/lib/diagnostics/diagnostic-report'
 
 export function DaemonResetRemediationCard({
   report,

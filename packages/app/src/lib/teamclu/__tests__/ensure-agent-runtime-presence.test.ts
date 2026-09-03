@@ -4,12 +4,12 @@ const mockGetLocalDaemonActorId = vi.fn();
 const mockGetDaemonMqttConnected = vi.fn();
 const mockProbeDaemonHttp = vi.fn();
 
-vi.mock("@/lib/daemon-agent-admin", () => ({
+vi.mock("@/lib/daemon/daemon-agent-admin", () => ({
   getLocalDaemonActorId: () => mockGetLocalDaemonActorId(),
   getDaemonMqttConnected: () => mockGetDaemonMqttConnected(),
 }));
 
-vi.mock("@/lib/daemon-local-client", () => ({
+vi.mock("@/lib/daemon/daemon-local-client", () => ({
   probeDaemonHttp: () => mockProbeDaemonHttp(),
 }));
 
@@ -24,8 +24,8 @@ describe("resolveAgentDevicePresence", () => {
     mockGetDaemonMqttConnected.mockReset();
     mockProbeDaemonHttp.mockReset();
     mockGetDaemonMqttConnected.mockResolvedValue(null);
-    const { __resetLocalDaemonSignalCacheForTest } = await import("@/lib/agent-device-reachability");
-    const { __resetLocalDaemonIdentityForTest } = await import("@/lib/local-daemon-identity");
+    const { __resetLocalDaemonSignalCacheForTest } = await import("@/lib/agent/agent-device-reachability");
+    const { __resetLocalDaemonIdentityForTest } = await import("@/lib/daemon/local-daemon-identity");
     __resetLocalDaemonSignalCacheForTest();
     __resetLocalDaemonIdentityForTest();
   });
@@ -37,7 +37,7 @@ describe("resolveAgentDevicePresence", () => {
   });
 
   it("returns online when MQTT retain is already present", async () => {
-    const { resolveAgentDevicePresence } = await import("../ensure-agent-runtime");
+    const { resolveAgentDevicePresence } = await import("@/lib/teamclu/ensure-agent-runtime");
     const { useActorPresenceStore } = await import("@/stores/actor-presence-store");
 
     useActorPresenceStore.getState().upsert("agent-1", {
@@ -50,7 +50,7 @@ describe("resolveAgentDevicePresence", () => {
   });
 
   it("waits for MQTT retain before treating presence as unknown", async () => {
-    const { resolveAgentDevicePresence } = await import("../ensure-agent-runtime");
+    const { resolveAgentDevicePresence } = await import("@/lib/teamclu/ensure-agent-runtime");
     const { useActorPresenceStore } = await import("@/stores/actor-presence-store");
 
     mockGetLocalDaemonActorId.mockResolvedValue(null);
@@ -67,7 +67,7 @@ describe("resolveAgentDevicePresence", () => {
   });
 
   it("returns offline only when MQTT explicitly reports offline", async () => {
-    const { resolveAgentDevicePresence } = await import("../ensure-agent-runtime");
+    const { resolveAgentDevicePresence } = await import("@/lib/teamclu/ensure-agent-runtime");
     const { useActorPresenceStore } = await import("@/stores/actor-presence-store");
 
     useActorPresenceStore.getState().upsert("agent-1", {
@@ -80,7 +80,7 @@ describe("resolveAgentDevicePresence", () => {
   });
 
   it("returns online for the local daemon when MQTT is stale offline but daemon mqtt is connected", async () => {
-    const { resolveAgentDevicePresence } = await import("../ensure-agent-runtime");
+    const { resolveAgentDevicePresence } = await import("@/lib/teamclu/ensure-agent-runtime");
     const { useActorPresenceStore } = await import("@/stores/actor-presence-store");
 
     mockGetLocalDaemonActorId.mockResolvedValue("local-agent");
@@ -96,7 +96,7 @@ describe("resolveAgentDevicePresence", () => {
   });
 
   it("returns offline for the local daemon when MQTT ghost-online but daemon mqtt is down", async () => {
-    const { resolveAgentDevicePresence } = await import("../ensure-agent-runtime");
+    const { resolveAgentDevicePresence } = await import("@/lib/teamclu/ensure-agent-runtime");
     const { useActorPresenceStore } = await import("@/stores/actor-presence-store");
 
     mockGetLocalDaemonActorId.mockResolvedValue("local-agent");
@@ -111,7 +111,7 @@ describe("resolveAgentDevicePresence", () => {
   });
 
   it("returns offline for the local daemon when both MQTT and daemon mqtt report offline", async () => {
-    const { resolveAgentDevicePresence } = await import("../ensure-agent-runtime");
+    const { resolveAgentDevicePresence } = await import("@/lib/teamclu/ensure-agent-runtime");
     const { useActorPresenceStore } = await import("@/stores/actor-presence-store");
 
     mockGetLocalDaemonActorId.mockResolvedValue("local-agent");
@@ -126,7 +126,7 @@ describe("resolveAgentDevicePresence", () => {
   });
 
   it("returns unknown when retain is missing and agent is not the local daemon", async () => {
-    const { resolveAgentDevicePresence } = await import("../ensure-agent-runtime");
+    const { resolveAgentDevicePresence } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     mockGetLocalDaemonActorId.mockResolvedValue("local-device");
     mockProbeDaemonHttp.mockResolvedValue({ ok: true, reason: null });
@@ -136,7 +136,7 @@ describe("resolveAgentDevicePresence", () => {
   });
 
   it("uses local HTTP probe for the desktop daemon when MQTT retain is still missing", async () => {
-    const { resolveAgentDevicePresence } = await import("../ensure-agent-runtime");
+    const { resolveAgentDevicePresence } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     mockGetLocalDaemonActorId.mockResolvedValue("local-agent");
     mockProbeDaemonHttp.mockResolvedValue({ ok: true, reason: null });
@@ -145,7 +145,7 @@ describe("resolveAgentDevicePresence", () => {
   });
 
   it("returns unknown when local HTTP probe fails during MQTT bootstrap", async () => {
-    const { resolveAgentDevicePresence } = await import("../ensure-agent-runtime");
+    const { resolveAgentDevicePresence } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     mockGetLocalDaemonActorId.mockResolvedValue("local-agent");
     mockProbeDaemonHttp.mockResolvedValue({ ok: false, reason: "not_running" });
