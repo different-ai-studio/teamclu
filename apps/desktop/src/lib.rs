@@ -14,6 +14,7 @@ use tauri_plugin_aptabase::EventTracker;
 mod branding;
 pub mod commands;
 pub mod daemon_client;
+pub mod fs_scope;
 pub mod http_clients;
 mod local_cache;
 pub mod mqtt;
@@ -474,6 +475,7 @@ pub fn run() {
             commands::system_appearance::get_system_accent_color,
             commands::window::open_local_agent_panel_window,
             commands::window::register_window_workspace,
+            fs_scope::allow_fs_scope_dirs,
             commands::window::set_window_title,
             commands::mqtt_bus::mqtt_connect,
             commands::mqtt_bus::mqtt_subscribe,
@@ -671,6 +673,12 @@ pub fn run() {
                     startup_t0.elapsed().as_secs_f64() * 1000.0
                 );
             }
+
+            // Widen the webview's fs scope to the roots that exist before the
+            // user has opened anything (SEC-2 / ADR-0009). The capability file
+            // no longer grants the whole disk, so this has to happen before the
+            // frontend's first read — skills are scanned during startup.
+            fs_scope::grant_fixed_roots(app.handle());
 
             // Capture the .app bundle path before an update can replace it on disk.
             commands::updater::remember_app_bundle_path();

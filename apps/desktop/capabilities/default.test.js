@@ -98,3 +98,90 @@ test("style-src keeps unsafe-inline effective", () => {
     "Tauri must be told not to inject a style nonce, or 'unsafe-inline' above is silently ignored",
   );
 });
+
+// SEC-2 / ADR-0009. The asset protocol was enabled with a whole-disk scope
+// (`$HOME/**` + `/**`), which let anything rendered in the app origin fetch any
+// file on the machine through `asset:`. Nothing used it: there is not one
+// `convertFileSrc` call or `asset:` URL in the client. Binary reads go through
+// the `read_workspace_binary_file` command instead, which validates the path in
+// Rust and returns base64.
+//
+// Unlike the fs scope, `assetProtocol.scope` is compile-time static — it cannot
+// be extended at runtime — so re-enabling it for one feature means granting a
+// fixed set of roots to every surface in the origin. Keep it off; route new
+// binary reads through a command.
+test("the asset protocol stays disabled", () => {
+  const assetProtocol = tauriConf.app?.security?.assetProtocol ?? {};
+  assert.equal(
+    assetProtocol.enable,
+    false,
+    "assetProtocol.enable must stay false — see ADR-0009",
+  );
+  assert.deepEqual(
+    assetProtocol.scope ?? [],
+    [],
+    "assetProtocol.scope must stay empty while the protocol is disabled",
+  );
+});
+
+test("no CSP directive still admits asset:", () => {
+  for (const key of ["csp", "devCsp"]) {
+    const csp = tauriConf.app?.security?.[key] ?? "";
+    assert.ok(
+      !csp.includes("asset:") && !csp.includes("asset.localhost"),
+      `${key} must not mention asset: or asset.localhost — the protocol is disabled`,
+    );
+  }
+});
+
+// SEC-2 / ADR-0009. Every `fs:` operation used to be granted over `$HOME/**`
+// and `/**` — whole-disk read and write for the app origin, which is the same
+// origin that renders teammate markdown, agent-authored dynamic UI, and
+// arbitrary workspace files.
+//
+// What replaces it has three sources, and only this file is static:
+//   1. here — the fixed skill roots, needed before the user opens anything;
+//   2. `src/fs_scope.rs` — the brand's amuxd home at startup, then each
+//      workspace and the user's configured scan paths as they are opened;
+//   3. Tauri — dialog picks and OS drag-drop, granted by the framework.
+//
+// Sources 2 and 3 are in-memory and do not survive a restart, so anything
+// needed on a cold start has to be here or in `fs_scope::fixed_roots`.
+test("fs grants are not whole-disk", () => {
+  const fsPerms = caps.permissions.filter(
+    (p) => typeof p === "object" && p.identifier?.startsWith("fs:allow-"),
+  );
+  assert.ok(fsPerms.length > 0, "expected scoped fs permissions in the capability");
+
+  for (const perm of fsPerms) {
+    const paths = (perm.allow ?? []).map((entry) => entry.path);
+    assert.ok(
+      paths.length > 0,
+      `${perm.identifier} must grant something explicit, not an empty allow list`,
+    );
+    for (const p of paths) {
+      assert.notEqual(p, "/**", `${perm.identifier} must not grant the whole filesystem`);
+      assert.notEqual(
+        p,
+        "$HOME/**",
+        `${perm.identifier} must not grant the whole home directory — that includes ~/.ssh`,
+      );
+    }
+  }
+});
+
+// A grant that reaches outside the roots ADR-0009 named should be a deliberate
+// amendment to the ADR, not a quiet line in a JSON file.
+test("static fs grants stay inside the documented roots", () => {
+  const allowed = new Set(["$HOME/.agents/**", "$HOME/.claude/skills/**"]);
+  for (const perm of caps.permissions) {
+    if (typeof perm !== "object" || !perm.identifier?.startsWith("fs:allow-")) continue;
+    for (const entry of perm.allow ?? []) {
+      assert.ok(
+        allowed.has(entry.path),
+        `${perm.identifier} grants ${entry.path}, which ADR-0009 does not list. ` +
+          "Grant it at runtime in src/fs_scope.rs, or amend the ADR and this test together.",
+      );
+    }
+  }
+});

@@ -70,3 +70,45 @@ webview 就已经读不到 `~/.ssh` 了。**c 仍然是长期方向**，对新�
   走 `asset:` 的路径要么改走已经存在的 `read_workspace_binary_file`（PERF-16 之后
   它返回 base64），要么给 asset 单独留一组更宽的根。这一条要在动手前定，
   否则收 scope 会直接打断文件预览。
+
+## 实现记录（第一批已落地）
+
+动手之后有四件事和本文写的不一样，记在这里，因为它们改变了剩下的工作量。
+
+**1. `assetProtocol` 不是取舍，是死配置。** 上面「代价与已知的坑」担心收 scope 会打断
+图片预览，要在「改走 `read_workspace_binary_file`」和「给 asset 留一组更宽的根」之间选。
+实际核查：客户端里**一个 `convertFileSrc` 调用都没有，一个 `asset:` URL 都没有**，图片
+早就走 `read_workspace_binary_file`（返回 base64）。所以直接 `enable: false`，scope 清空，
+CSP 里的 `asset:` / `asset.localhost` 一并删掉。**没有取舍要做。**
+
+顺带一个坑：`tauri-build` 会交叉校验 `tauri.conf.json` 和 Cargo feature，关掉
+`assetProtocol` 必须同时把 `tauri` 依赖的 `protocol-asset` feature 去掉，否则构建脚本
+直接失败。
+
+**2. 系统下载目录不需要授权。** 本文把它列进了「需要的根」。实际上产品里三个写下载的
+地方（诊断包导出、附件下载、图片另存）**全都先弹 `save()` 再写它返回的路径**，而
+`tauri-plugin-dialog` 的 `save` 命令自己会 `allow_file`（`commands.rs:222` 起）。静态授权
+下载目录是白给。
+
+**3. 拖拽进来的文件也不需要授权** —— 这条本文完全没提，但它本来会是最大的破坏面。
+Tauri 的 `DragDropEvent::Drop` 处理里，**在把事件发给前端之前**就对每个路径调了
+`allow_file` / `allow_directory`（`tauri::manager::window`）。所以「从 Finder 拖一个文件
+进聊天框」在收窄之后照常工作。
+
+**4. 时序问题的真身不是「第一次读文件时才放行」，是 `register_window_workspace` 根本
+没被 await。** 它挂在 `setWorkspace` 末尾一个 fire-and-forget 的 `.then()` 里，而
+`ensureWorkspaceDirectory` 的 `mkdir` 在它前面几十行就跑了。所以授权点放在
+`setWorkspace` 开头并 await，`register_window_workspace` 里那次只作为兜底。
+
+**还有一条要记住**：运行时授权（dialog / 拖拽 / 我们自己调的）**活不过重启**。所以任何
+冷启动就要用的路径必须落在静态 capability 或 `fs_scope::fixed_roots` 里；用户自己配的
+额外 skill 扫描路径因此要在每次读之前重新授权，而不是等失败了再补。
+
+### 这批没做的
+
+- **`connect-src` 逐条列举**仍是 `https: http: ws: wss:`。
+- **`withGlobalTauri`**：本文说前提是「确认没有依赖 `window.__TAURI__` 的注入脚本」。实际
+  拦路的不是注入脚本，是 **E2E 测试**——`tests/regression/` 和 `tests/functional/` 有 12 处
+  直接 `window.__TAURI__.core.invoke(...)` 驱动应用。产品代码只把它当探测标志用（3 处，
+  都能换成 `isTauri()`）。要关这个开关，得先把 E2E 换成别的驱动方式，这是一件独立的事。
+- 前端 27 个 `@tauri-apps/plugin-fs` 导入点一个没减。c 仍是长期方向。

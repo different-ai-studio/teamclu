@@ -32,17 +32,14 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost https: http:; font-src 'self' data:; media-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost data: blob: https: http: ws: wss:; frame-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost https:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'",
-      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost https: http:; font-src 'self' data:; media-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost data: blob: https: http: ws: wss:; frame-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost https:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost data: blob: https: http: ws: wss:; frame-src 'self' data: blob: https:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost data: blob: https: http: ws: wss:; frame-src 'self' data: blob: https:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'",
       "dangerousDisableAssetCspModification": [
         "style-src"
       ],
       "assetProtocol": {
-        "enable": true,
-        "scope": [
-          "$HOME/**",
-          "/**"
-        ]
+        "enable": false,
+        "scope": []
       }
     }
   },
