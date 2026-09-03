@@ -1,4 +1,4 @@
-import type { Message as StoreMessage } from "@/stores/session";
+import type { Message as StoreMessage } from "@/stores/session-types";
 
 export type ThreadSummary = {
   threadSessionId: string;

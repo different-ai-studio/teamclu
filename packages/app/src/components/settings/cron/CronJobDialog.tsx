@@ -47,7 +47,7 @@ import {
   type ScheduleKind,
   type DeliveryChannel,
 } from '@/stores/cron'
-import { useChannelsStore } from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { automationDefaultForBackends } from '@/stores/automation-default-model'

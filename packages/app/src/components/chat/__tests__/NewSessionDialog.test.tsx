@@ -88,7 +88,7 @@ vi.mock('@/stores/session-list-store', () => ({
   },
 }))
 
-vi.mock('@/stores/session', () => ({
+vi.mock('@/stores/session-store', () => ({
   useSessionStore: {
     getState: () => ({ addHighlightedSession: mocks.addHighlightedSession }),
   },

@@ -26,10 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  type KookGuildConfig,
-  type KookChannelRule,
-} from '@/stores/channels'
+import { type KookGuildConfig, type KookChannelRule } from '@/stores/channels-types'
 import { KookIcon, ToggleSwitch } from './shared'
 
 // KOOK Setup Wizard

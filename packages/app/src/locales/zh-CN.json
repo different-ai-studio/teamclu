@@ -52,6 +52,8 @@
     "marketPublic": "公共",
     "installToAgent": "安装到 Agent",
     "selectAgentFirst": "请先选择 Agent",
+    "personalSourceBuiltin": "内置",
+    "remotePersonalMcpReadOnly": "远程个人 MCP 一期只读",
     "mcp": "MCP",
     "env": "密钥保险箱",
     "knowledge": "知识库",
@@ -1389,6 +1391,25 @@
         "prompt": "prompt",
         "admin": "admin"
       }
+    },
+    "renameFailed": "重命名失败",
+    "authModeUpdateFailed": "更新登录方式失败",
+    "authModeUpdateDenied": "应用不存在或无权修改",
+    "deleteFailed": "删除失败",
+    "deleteDenied": "应用不存在或无权删除",
+    "deleted": "应用已删除",
+    "deployErrorReason": {
+      "uncommitted": "工作区有未提交或未推送的改动，请先 commit 并 push 后再部署。",
+      "installTimeout": "依赖安装超时（10 分钟），请检查网络或 lockfile 后重试。",
+      "buildTimeout": "构建超时（10 分钟），请检查构建脚本后重试。",
+      "artifactTooLarge": "构建产物超过 50 MiB 上限，请精简输出后重试。",
+      "uploadUrlExpired": "上传链接已过期，请重新发起部署。",
+      "unsupportedAuthMode": "第三方登录尚未支持部署，请切换到平台登录或无登录模式。",
+      "vanityRequired": "平台登录需要配置应用公开域名（APPS_PUBLIC_DOMAIN）。",
+      "commitNotOnRemote": "Gitea 上找不到该 commit，请确认已 push 后再部署。",
+      "lockfileOutOfSync": "pnpm-lock.yaml 与 package.json 不一致，请提交 lockfile 后重试。",
+      "buildOutputMissing": "构建未产出 .output/ 目录，请检查构建脚本。",
+      "daemonNotConnected": "本机 amuxd 未连接，无法构建。请确认守护进程在运行后重试。"
     }
   },
   "knowledgeAcl": {

@@ -15,7 +15,7 @@
 import type { DraftActor } from "@/stores/ui";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useOutboxStore } from "@/stores/outbox-store";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";

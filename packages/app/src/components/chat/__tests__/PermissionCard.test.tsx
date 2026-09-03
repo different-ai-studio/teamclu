@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { useSessionStore } from '@/stores/session';
+import { useSessionStore } from '@/stores/session-store';
 import { useSessionSelectionStore } from '@/stores/session-selection-store';
 import { useV2StreamingStore } from '@/stores/v2-streaming-store';
 import {
@@ -18,7 +18,7 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-vi.mock('@/hooks/useActorDisplayName', () => ({
+vi.mock('@/hooks/use-actor-display-name', () => ({
   useActorDisplayName: (actorId: string) => `Agent-${actorId}`,
 }));
 

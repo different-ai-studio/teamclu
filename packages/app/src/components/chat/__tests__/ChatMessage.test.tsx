@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import { useSessionStore } from '@/stores/session';
+import { useSessionStore } from '@/stores/session-store';
 import { ChatMessage } from '../ChatMessage';
 
 // ── Mocks ──────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
 }));
 
-vi.mock('@/hooks/useActorDisplayName', () => ({
+vi.mock('@/hooks/use-actor-display-name', () => ({
   useActorDisplayName: (actorId?: string) => {
     if (actorId === 'actor-mac2') return 'MAC2';
     return actorId ?? '';

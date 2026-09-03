@@ -7,7 +7,7 @@ import { ChatInputArea } from "./ChatInputArea";
 import { SessionErrorAlert } from "./SessionErrorAlert";
 import { SessionNoticeList } from "./SessionNoticeList";
 import { useChatSend } from "./use-chat-send";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";

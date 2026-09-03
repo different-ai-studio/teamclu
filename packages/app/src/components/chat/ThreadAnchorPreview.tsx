@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
-import { useActorDisplayName } from "@/hooks/useActorDisplayName";
+import { useActorDisplayName } from "@/hooks/use-actor-display-name";
 import { actorAvatarColor } from "@/lib/actor-color";
-import type { Message as StoreMessage } from "@/stores/session";
+import type { Message as StoreMessage } from "@/stores/session-types";
 
 function anchorPreviewText(content: string): string {
   const collapsed = content.replace(/\s+/g, " ").trim();

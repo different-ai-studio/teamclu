@@ -5,7 +5,7 @@ import {
   cn,
   isTauri,
 } from "@/lib/utils";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
 import { useWorkspaceStore } from "@/stores/workspace";

@@ -2,7 +2,7 @@ import * as React from "react"
 import { useTranslation } from "react-i18next"
 import { Search, SquarePen, PanelLeftIcon, Settings, ChevronUp, Mail, CalendarDays, LogOut, Users, Trophy } from "lucide-react"
 
-import { useSessionStore } from "@/stores/session"
+import { useSessionStore } from "@/stores/session-store"
 import { useUIStore } from "@/stores/ui"
 import { useWorkspaceStore } from "@/stores/workspace"
 import { useCronStore } from "@/stores/cron"
@@ -33,7 +33,7 @@ import { SessionDetailDialog, type SessionDetailListHints } from "@/components/s
 import { NavRail } from "@/components/sidebar/NavRail"
 import { LocalDaemonCard } from "@/components/sidebar/LocalDaemonCard"
 import { SIDEBAR_INTERACTIVE_CURSOR } from "@/components/sidebar/sidebar-interactive-cursor"
-import { useMqttConnected } from "@/hooks/useMqttConnected"
+import { useMqttConnected } from "@/hooks/use-mqtt-connected"
 import { recoverMqttConnection } from "@/stores/mqtt-reconnect"
 
 /** Sidebar collapse control only (workspace variant sidebar header). */

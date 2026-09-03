@@ -29,14 +29,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  useChannelsStore,
-  type DiscordConfig,
-  type GuildConfig,
-  type DmConfig,
-  type ChannelRule,
-  defaultDiscordConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type DiscordConfig, type GuildConfig, type DmConfig, type ChannelRule, defaultDiscordConfig } from '@/stores/channels-types'
 import { DiscordIcon, SettingCard, ToggleSwitch, StatusBadge } from './shared'
 import {
   SetupWizard,

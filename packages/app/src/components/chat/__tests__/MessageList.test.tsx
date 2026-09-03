@@ -7,14 +7,14 @@ globalThis.ResizeObserver = vi.fn().mockImplementation(function () {
 
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { readFile } from '@tauri-apps/plugin-fs';
-import { useSessionStore } from '@/stores/session';
+import { useSessionStore } from '@/stores/session-store';
 import { useSessionListStore } from '@/stores/session-list-store';
 import {
   useV2StreamingStore,
   type AgentStreamEntry,
 } from '@/stores/v2-streaming-store';
 import { MessageList } from '../MessageList';
-import type { Message } from '@/stores/session';
+import type { Message } from '@/stores/session-types';
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 

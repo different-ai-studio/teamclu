@@ -29,10 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  type GuildConfig,
-  type ChannelRule,
-} from '@/stores/channels'
+import { type GuildConfig, type ChannelRule } from '@/stores/channels-types'
 import { ToggleSwitch } from './shared'
 
 // Setup Wizard Component - steps built with t() inside component

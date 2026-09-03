@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { isTauri } from '@/lib/utils'
-import type { FileChangeBatch } from '@/hooks/useFileChangeBatchListener'
+import type { FileChangeBatch } from '@/hooks/use-file-change-batch-listener'
 
 type FileChangeEvent = {
   payload: { path: string; kind: string }

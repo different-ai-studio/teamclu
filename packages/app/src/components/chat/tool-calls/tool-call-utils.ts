@@ -1,5 +1,5 @@
 import { Clock, Search, FileText, FilePen, Terminal, Globe, Zap, Loader2, Check, X, Brain, Trash2, MoveRight } from "lucide-react";
-import type { ToolCall } from "@/stores/session";
+import type { ToolCall } from "@/stores/session-types";
 
 type ToolCallLike = Pick<ToolCall, "name" | "toolKind" | "arguments">;
 

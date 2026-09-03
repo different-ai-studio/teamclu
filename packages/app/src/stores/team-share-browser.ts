@@ -3,6 +3,7 @@ import { useWorkspaceStore } from '@/stores/workspace'
 import { useEnvVarsStore, type TeamEnvListing } from '@/stores/env-vars'
 import type { SkillSource } from '@/lib/skills/types'
 import { getSourceLabel } from '@/lib/skills/loader'
+import i18n from '@/lib/i18n'
 import { frontmatterString } from '@/lib/skills/frontmatter'
 import { resolveTeamSyncRoot } from '@/lib/team-skill-paths'
 import { invoke } from '@tauri-apps/api/core'
@@ -88,7 +89,7 @@ import {
   type DaemonMcpServerConfig,
   type DaemonMcpServerProbeResult,
 } from '@/lib/daemon-local-client'
-import { SKILLS_CHANGED_EVENT } from '@/hooks/useAppInit'
+import { SKILLS_CHANGED_EVENT } from '@/lib/skills/changed-event';
 import { AgentCapabilityAction, AgentCapabilityKind } from '@/lib/proto/teamclu_pb'
 import { manageAgentCapability } from '@/lib/teamclu-rpc'
 import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
@@ -649,7 +650,11 @@ async function listTeamSkills(
         kind: 'personal',
         personalSource: inventory.source === 'builtin' ? 'builtin' : local?.source ?? 'global-agent',
         personalSourceLabel:
-          inventory.source === 'builtin' ? '内置' : local ? getSourceLabel(local.source) : 'Agent',
+          inventory.source === 'builtin'
+            ? i18n.t('teamShare.personalSourceBuiltin', 'Built-in')
+            : local
+              ? getSourceLabel(local.source)
+              : 'Agent',
         summary: local ? frontmatterValue(local.content, 'description') : null,
         whenToUse: local ? frontmatterValue(local.content, 'when_to_use') : null,
         whenNotToUse: local ? frontmatterValue(local.content, 'when_not_to_use') : null,
@@ -1241,7 +1246,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     const subjectActorId = get().subjectActorId
-    if (!subjectActorId) throw new Error('请先选择 Agent')
+    if (!subjectActorId) throw new Error(i18n.t('teamShare.selectAgentFirst', 'Select an Agent first'))
     requireAgentOnline(subjectActorId)
 
     const listed = get().skills.items.find((s) => s.slug === slug && s.origin === 'registry')
@@ -1274,7 +1279,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     const subjectActorId = get().subjectActorId
-    if (!subjectActorId) throw new Error('请先选择 Agent')
+    if (!subjectActorId) throw new Error(i18n.t('teamShare.selectAgentFirst', 'Select an Agent first'))
     requireAgentOnline(subjectActorId)
     await manageAgent({
       teamId,
@@ -1294,7 +1299,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     const subjectActorId = get().subjectActorId
-    if (!subjectActorId) throw new Error('请先选择 Agent')
+    if (!subjectActorId) throw new Error(i18n.t('teamShare.selectAgentFirst', 'Select an Agent first'))
     requireAgentOnline(subjectActorId)
     const skill = get().skills.items.find((s) => s.slug === slug)
     if (!skill || skill.kind !== 'personal') {
@@ -1346,7 +1351,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     const actorId = get().subjectActorId
-    if (!actorId) throw new Error('请先选择 Agent')
+    if (!actorId) throw new Error(i18n.t('teamShare.selectAgentFirst', 'Select an Agent first'))
     requireAgentOnline(actorId)
     await manageAgent({
       teamId,
@@ -1366,9 +1371,14 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const item = get().mcp.items.find((candidate) => candidate.id === id)
     if (!item) throw new Error(`mcp server ${id} not found`)
     const actorId = get().subjectActorId
-    if (!actorId) throw new Error('请先选择 Agent')
+    if (!actorId) throw new Error(i18n.t('teamShare.selectAgentFirst', 'Select an Agent first'))
     requireAgentOnline(actorId)
-    if (item.kind === 'personal') throw new Error('远程个人 MCP 一期只读')
+    if (item.kind === 'personal') throw new Error(
+        i18n.t(
+          'teamShare.remotePersonalMcpReadOnly',
+          'Personal MCP servers on a remote agent are read-only for now',
+        ),
+      )
     await manageAgent({
       teamId,
       actorId,

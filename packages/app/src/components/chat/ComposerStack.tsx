@@ -3,10 +3,9 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, Loader2, Maximize2, Minimize2, Square } from "lucide-react";
 import { actorAvatarColor } from "@/lib/actor-color";
 import { resolveApprovalAnchorActorId } from "@/lib/permission-actor";
-import { useActorDisplayName } from "@/hooks/useActorDisplayName";
+import { useActorDisplayName } from "@/hooks/use-actor-display-name";
 import { cn } from "@/lib/utils";
-import type { Todo } from "@/stores/session-types";
-import type { QueuedMessage } from "@/stores/session";
+import { type Todo, type QueuedMessage } from "@/stores/session-types";
 import {
   useV2StreamingStore,
   type AgentStreamEntry,
@@ -16,7 +15,7 @@ import { PermissionWaitingBanner } from "./PermissionWaitingBanner";
 import { ComposerPlanSlot } from "./ComposerPlanSlot";
 import { QuestionInputDock } from "./QuestionInputDock";
 import { StreamingAgentBubble } from "./StreamingAgentBubble";
-import type { PendingQuestionState } from "@/stores/session-types";
+import { type PendingQuestionState } from "@/stores/session-types";
 import {
   composerGlassChildClass,
   composerGlassFillClass,

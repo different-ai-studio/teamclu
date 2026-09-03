@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import {
   resetSessionPermissionModesForTests,
 } from "@/lib/session-permission-mode";
@@ -17,7 +17,7 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
-vi.mock("@/hooks/useActorDisplayName", () => ({
+vi.mock("@/hooks/use-actor-display-name", () => ({
   useActorDisplayName: (actorId: string) => `Agent-${actorId}`,
 }));
 

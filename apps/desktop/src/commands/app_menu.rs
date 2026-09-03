@@ -169,7 +169,7 @@ fn label(text: &str) -> String {
 /// supported way to relabel — and it beats holding a `set_text` handle for each
 /// of the ~20 items, half of which only exist behind a `#[cfg]`.
 pub fn install_app_menu(app: &AppHandle, labels: &MenuLabels) -> tauri::Result<()> {
-    let brand = branding::brand_name(app.config().product_name.as_deref());
+    let brand = branding::brand_name();
     let version = app.package_info().version.to_string();
     let about_metadata = AboutMetadata {
         name: Some(brand.clone()),
@@ -317,7 +317,7 @@ pub fn open_app_settings(app: &AppHandle) {
     let state = app.state::<super::window_chrome::MainWindowState>();
     super::window_chrome::show_main_window(app.clone(), state);
     if let Err(e) = app.emit(OPEN_SETTINGS_EVENT, ()) {
-        eprintln!("[app-menu] emit {OPEN_SETTINGS_EVENT}: {e}");
+        log::warn!("[app-menu] emit {OPEN_SETTINGS_EVENT}: {e}");
     }
 }
 

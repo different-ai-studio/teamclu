@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import type { PendingQuestionState } from "@/stores/session-types";
 
 type QuestionInputAppearance = "overlay" | "stack";

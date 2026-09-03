@@ -13,7 +13,7 @@ import {
   UserRound,
   WandSparkles,
 } from "lucide-react"
-import { useSessionStore } from "@/stores/session"
+import { useSessionStore } from "@/stores/session-store"
 import { useUIStore } from "@/stores/ui"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"

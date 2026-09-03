@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Check, Copy, Loader2, ScrollText } from "lucide-react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { cn, copyToClipboard } from "@/lib/utils";
-import type { Message as StoreMessage } from "@/stores/session";
+import type { Message as StoreMessage } from "@/stores/session-types";
 import {
   Message,
   MessageContent,
@@ -36,7 +36,7 @@ import {
 } from "./AgentReplyQuote";
 import { ThreadBadge } from "./ThreadBadge";
 import { MessageActionIconButton } from "./MessageActionIconButton";
-import { useActorDisplayName } from "@/hooks/useActorDisplayName";
+import { useActorDisplayName } from "@/hooks/use-actor-display-name";
 import { useCurrentTeamStore } from "@/stores/current-team";
 
 const DynamicUIMessage = lazyNamed(

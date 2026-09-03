@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useMqttConnected } from '@/hooks/useMqttConnected'
+import { useMqttConnected } from '@/hooks/use-mqtt-connected'
 import { useMqttReconnectStore, recoverMqttConnection } from '@/stores/mqtt-reconnect'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend'

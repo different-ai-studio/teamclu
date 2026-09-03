@@ -149,7 +149,7 @@ pub async fn watch_directory(
     let app_handle = app.clone();
     let matcher = build_ignore_matcher(&watch_path);
     if matcher.is_none() {
-        eprintln!("[FileWatcher] ignore patterns failed to compile; reporting every change");
+        log::error!("[FileWatcher] ignore patterns failed to compile; reporting every change");
     }
 
     // Create a debounced watcher with 500ms delay to batch rapid changes.
@@ -176,11 +176,11 @@ pub async fn watch_directory(
                         return;
                     }
                     if let Err(e) = app_handle.emit("file-change-batch", batch) {
-                        eprintln!("[FileWatcher] Failed to emit batch: {}", e);
+                        log::error!("[FileWatcher] Failed to emit batch: {}", e);
                     }
                 }
                 Err(e) => {
-                    eprintln!("[FileWatcher] Watch error: {:?}", e);
+                    log::error!("[FileWatcher] Watch error: {:?}", e);
                 }
             }
         },
@@ -192,9 +192,10 @@ pub async fn watch_directory(
         .watch(&watch_path, RecursiveMode::Recursive)
         .map_err(|e| format!("Failed to watch path: {}", e))?;
 
-    println!(
+    log::info!(
         "[FileWatcher] Started watching: {} (subscriber: {})",
-        path, label
+        path,
+        label
     );
 
     let mut subscribers = HashSet::new();
@@ -231,12 +232,12 @@ pub async fn unwatch_directory(
     handle.subscribers.remove(label);
     if handle.subscribers.is_empty() {
         watchers.remove(&path);
-        println!(
+        log::info!(
             "[FileWatcher] Stopped watching: {} (last subscriber gone)",
             path
         );
     } else {
-        println!(
+        log::info!(
             "[FileWatcher] Unsubscribed {} from {}; {} subscriber(s) remain",
             label,
             path,

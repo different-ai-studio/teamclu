@@ -10,7 +10,7 @@ export type Command = {
   source?: string;
   _type?: 'role' | 'skill' | 'command';
 }
-import { SKILLS_CHANGED_EVENT } from '@/hooks/useAppInit'
+import { SKILLS_CHANGED_EVENT } from '@/lib/skills/changed-event';
 import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 import { shouldReloadPickerFromDaemonRefresh } from '@/components/chat/command-popover-skills-refresh'
 import { useWorkspaceStore } from '@/stores/workspace'

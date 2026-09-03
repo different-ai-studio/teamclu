@@ -7,7 +7,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ToolCall } from "@/stores/session";
+import { ToolCall } from "@/stores/session-types";
 import {
   Collapsible,
   CollapsibleContent,

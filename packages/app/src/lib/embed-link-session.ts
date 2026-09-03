@@ -10,7 +10,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useEngagedAgentStore } from '@/stores/engaged-agent-store'
 import { useSessionListStore } from '@/stores/session-list-store'
-import { useSessionStore } from '@/stores/session'
+import { useSessionStore } from '@/stores/session-store'
 import { useUIStore } from '@/stores/ui'
 
 export { isPendingLinkOpenPayload, PENDING_LINK_OPEN_KEY }

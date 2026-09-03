@@ -369,7 +369,7 @@ export function MarketplacePane({ slug }: { slug?: string }) {
                         })()}
                       >
                         {!subjectActorId
-                          ? t('teamShare.selectAgentFirst', '先选择 Agent')
+                          ? t('teamShare.selectAgentFirst', 'Select an Agent first')
                           : agentOffline
                             ? t('common.offline', '离线')
                             : t('teamShare.installToAgent', '安装到 Agent')}

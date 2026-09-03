@@ -24,7 +24,7 @@ const mockSessionState = {
   answerQuestion: vi.fn(() => Promise.resolve()),
 };
 
-vi.mock('@/stores/session', () => ({
+vi.mock('@/stores/session-store', () => ({
   useSessionStore: (selector: (s: typeof mockSessionState) => unknown) =>
     selector(mockSessionState),
 }));

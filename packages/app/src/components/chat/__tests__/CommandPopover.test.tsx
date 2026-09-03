@@ -2,7 +2,8 @@ import * as React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { CommandPopover } from '../CommandPopover'
-import { SKILLS_CHANGED_EVENT, useWorkspaceRuntimeRefreshPoll } from '@/hooks/useAppInit'
+import { SKILLS_CHANGED_EVENT } from '@/lib/skills/changed-event';
+import { useWorkspaceRuntimeRefreshPoll } from '@/hooks/use-workspace-runtime-refresh-poll';
 import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 
 const mocks = vi.hoisted(() => ({

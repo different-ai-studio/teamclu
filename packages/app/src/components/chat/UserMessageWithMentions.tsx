@@ -2,7 +2,7 @@ import * as React from "react";
 import { FileText, Folder, User, UserRound, Paperclip, ChevronDown, ChevronUp, Zap, Command as CommandIcon, Link2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { useActorDisplayName } from "@/hooks/useActorDisplayName";
+import { useActorDisplayName } from "@/hooks/use-actor-display-name";
 import { ClickableImage, LocalImage, resolveImagePath } from "@/packages/ai/message";
 import { getTrailingPathLabel } from "@/packages/ai/chip-labels";
 import { hasStructuredMentionLines } from "@/lib/outgoing-mention-content";

@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import { useThreadPanelStore } from "@/stores/thread-panel-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { MessageKind } from "@/lib/proto/teamclu_pb";
-import type { Message as StoreMessage } from "@/stores/session";
+import type { Message as StoreMessage } from "@/stores/session-types";
 
 import { threadTitleFromMessage, formatThreadRelativeTime } from "@/lib/thread-summary";
 import { useThreadListPanelStore } from "@/stores/thread-list-panel-store";

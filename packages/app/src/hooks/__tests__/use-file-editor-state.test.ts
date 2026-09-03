@@ -34,7 +34,7 @@ beforeEach(() => {
 
 describe('useLayoutModePanelSync', () => {
   it('renders without error', async () => {
-    const { useLayoutModePanelSync } = await import('@/hooks/useFileEditorState')
+    const { useLayoutModePanelSync } = await import('@/hooks/use-file-editor-state')
     const { result } = renderHook(() => useLayoutModePanelSync())
     expect(result.current).toBeUndefined()
   })
@@ -42,14 +42,14 @@ describe('useLayoutModePanelSync', () => {
 
 describe('useResizablePanels', () => {
   it('returns initial rightPanelWidth of 400', async () => {
-    const { useResizablePanels } = await import('@/hooks/useFileEditorState')
+    const { useResizablePanels } = await import('@/hooks/use-file-editor-state')
     const { result } = renderHook(() => useResizablePanels())
     expect(result.current.rightPanelWidth).toBe(400)
     expect(result.current.mainSplitLeftWidth).toBe(560)
   })
 
   it('clamps panel width within min/max bounds', async () => {
-    const { useResizablePanels } = await import('@/hooks/useFileEditorState')
+    const { useResizablePanels } = await import('@/hooks/use-file-editor-state')
     const { result } = renderHook(() => useResizablePanels())
 
     act(() => {
@@ -75,7 +75,7 @@ describe('useResizablePanels', () => {
   })
 
   it('uses a dynamic max width for the main split pane when provided', async () => {
-    const { useResizablePanels } = await import('@/hooks/useFileEditorState')
+    const { useResizablePanels } = await import('@/hooks/use-file-editor-state')
     const { result, rerender } = renderHook(
       ({ maxWidth }) => useResizablePanels({ mainSplitLeftMaxWidth: maxWidth }),
       { initialProps: { maxWidth: 720 } },
@@ -93,7 +93,7 @@ describe('useResizablePanels', () => {
 
 describe('useFileTabSync', () => {
   it('renders without error', async () => {
-    const { useFileTabSync } = await import('@/hooks/useFileEditorState')
+    const { useFileTabSync } = await import('@/hooks/use-file-editor-state')
     const { result } = renderHook(() => useFileTabSync())
     expect(result.current).toBeUndefined()
   })

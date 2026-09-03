@@ -12,8 +12,7 @@ import {
   type DeliveryChannel,
   type CronPermissionMode,
 } from '@/stores/cron'
-import { useChannelsStore } from '@/stores/channels'
-
+import { useChannelsStore } from '@/stores/channels-store'
 // ==================== Datetime Helpers ====================
 
 /**

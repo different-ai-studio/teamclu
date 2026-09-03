@@ -31,16 +31,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  useChannelsStore,
-  type FeishuConfig,
-  type FeishuChatConfig,
-  defaultFeishuConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type FeishuConfig, type FeishuChatConfig, defaultFeishuConfig } from '@/stores/channels-types'
 import { FeishuIcon, ToggleSwitch } from './shared'
 import { GatewayStatusCard } from './GatewayStatusCard'
 import { TestCredentialsButton } from './TestCredentialsButton'
-import { useChannelConfig } from '@/hooks/useChannelConfig'
+import { useChannelConfig } from '@/hooks/use-channel-config'
 import { useShallow } from 'zustand/react/shallow'
 
 // Feishu Setup Wizard

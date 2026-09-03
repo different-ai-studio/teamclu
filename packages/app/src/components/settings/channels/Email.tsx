@@ -30,11 +30,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  useChannelsStore,
-  type EmailConfig,
-  defaultEmailConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type EmailConfig, defaultEmailConfig } from '@/stores/channels-types'
 import { GmailIcon, SettingCard, ToggleSwitch, StatusBadge } from './shared'
 import { EmailSetupWizard } from './EmailSetupWizard'
 import { useShallow } from 'zustand/react/shallow'

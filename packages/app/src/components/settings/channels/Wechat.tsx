@@ -24,14 +24,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  useChannelsStore,
-  type WeChatConfig,
-  defaultWeChatConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type WeChatConfig, defaultWeChatConfig } from '@/stores/channels-types'
 import { WeChatIcon } from './shared'
 import { GatewayStatusCard } from './GatewayStatusCard'
-import { useChannelConfig } from '@/hooks/useChannelConfig'
+import { useChannelConfig } from '@/hooks/use-channel-config'
 import { QRCodeSVG } from 'qrcode.react'
 import { invoke } from '@tauri-apps/api/core'
 import { useShallow } from 'zustand/react/shallow'

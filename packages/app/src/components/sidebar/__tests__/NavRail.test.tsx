@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { NavRail } from '../NavRail'
 import { useUIStore } from '@/stores/ui'
-import { useSessionStore } from '@/stores/session'
+import { useSessionStore } from '@/stores/session-store'
 import { useSessionListStore } from '@/stores/session-list-store'
 import { useCronStore } from '@/stores/cron'
 

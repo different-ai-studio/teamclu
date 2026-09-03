@@ -16,7 +16,7 @@ const mockStore = {
   testKookToken: vi.fn(), clearKookTestResult: vi.fn(), setKookHasChanges: vi.fn(),
 }
 
-vi.mock('@/stores/channels', () => ({
+vi.mock('@/stores/channels-store', () => ({
   useChannelsStore: vi.fn(() => mockStore),
   defaultKookConfig: { token: '', enabled: false, guilds: {}, dm: { enabled: false, policy: 'open', allowFrom: [] } },
 }))

@@ -10,7 +10,7 @@ import { isTauri } from '@/lib/utils'
 import { fetchAppVersion } from '@/lib/version'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useMqttReconnectStore } from '@/stores/mqtt-reconnect'
-import { useSessionStore } from '@/stores/session'
+import { useSessionStore } from '@/stores/session-store'
 
 export interface RuntimeStateSnapshot {
   generatedAt: string

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import {
   selectSessionParentLinks,

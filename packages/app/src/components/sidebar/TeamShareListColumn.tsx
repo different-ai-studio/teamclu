@@ -43,7 +43,7 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { useFileChangeListener } from '@/hooks/useFileChangeListener'
+import { useFileChangeListener } from '@/hooks/use-file-change-listener'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend/provider'
 import {
@@ -1112,7 +1112,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             <div className="px-6 py-10 text-center text-[13px] text-muted-foreground">
               {subjectActorId
                 ? t('teamShare.agentSkillsEmpty', '当前 Agent 没有已安装的 Skills')
-                : t('teamShare.selectAgentFirst', '请先选择 Agent')}
+                : t('teamShare.selectAgentFirst', 'Select an Agent first')}
             </div>
           ) : (
             skillGroups.map((group) => (

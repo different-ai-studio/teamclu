@@ -18,7 +18,7 @@ vi.mock("@/stores/v2-streaming-store", () => ({
   },
 }));
 
-vi.mock("@/stores/session", () => ({
+vi.mock("@/stores/session-store", () => ({
   useSessionStore: {
     setState: mocks.setState,
   },

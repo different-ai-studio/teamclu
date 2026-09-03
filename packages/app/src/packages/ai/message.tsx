@@ -716,19 +716,14 @@ function CodeBlock({ language, children }: { language: string; children: string 
       return () => { cancelled = true }
     }
     import('@/components/diff/shiki-renderer').then(
-      async ({
-        getHighlighter,
-        mapLanguage,
-        NOTION_DARK_THEME_NAME,
-        NOTION_LIGHT_THEME_NAME,
-      }) => {
+      async ({ highlightToHtml, NOTION_DARK_THEME_NAME, NOTION_LIGHT_THEME_NAME }) => {
         if (cancelled) return
         try {
-          const highlighter = await getHighlighter()
           const theme = isDark ? NOTION_DARK_THEME_NAME : NOTION_LIGHT_THEME_NAME
-          const lang = mapLanguage(language)
-          const html = highlighter.codeToHtml(code, { lang, theme })
-          if (!cancelled) setHighlightedHtml(html)
+          // null = a language this app carries no grammar for; the plain <pre>
+          // fallback below stays.
+          const html = await highlightToHtml(code, language, theme)
+          if (!cancelled && html) setHighlightedHtml(html)
         } catch {
           // Fallback: no highlighting
         }

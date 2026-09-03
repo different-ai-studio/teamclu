@@ -54,7 +54,7 @@ vi.mock('@/stores/mqtt-reconnect', () => ({
   },
 }))
 
-vi.mock('@/stores/session', () => ({
+vi.mock('@/stores/session-store', () => ({
   useSessionStore: {
     getState: vi.fn(() => ({
       activeSessionId: 'sess-1',

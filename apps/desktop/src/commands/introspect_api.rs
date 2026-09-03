@@ -12,7 +12,13 @@
 //   POST /session-participants — list/add/remove a session's participants
 //   POST /session-export    — export session messages as opencode-compatible JSON
 //
-// Uses raw TCP + manual HTTP parsing to stay minimal (no axum state needed).
+// Served by axum. STR-10: this used to be a raw `TcpStream` with hand-rolled
+// request parsing — a fixed 64 KiB header read, a `\r\n\r\n` scan, a
+// `splitn(3, ' ')` request line and a hand-parsed Content-Length. It handled
+// no chunked encoding, no header continuation, no pipelining, and answered a
+// request whose headers straddled the first read with 400. axum is already a
+// dependency of this crate (and already compiled into release), so the
+// transport is now hyper's and what is left here is routing and policy.
 //
 // Access control (SEC-1). Every route here has side effects an agent runtime
 // must not be able to trigger by accident, and `/mcp-put` is local code
@@ -38,8 +44,12 @@ pub const INTROSPECT_TOKEN_FILE: &str = "introspect.http.token";
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use axum::body::Bytes;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::Router;
 use tauri::{AppHandle, Manager};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 /// Where this process publishes the bearer the sidecar has to present.
@@ -124,14 +134,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Value of the first header named `name` (case-insensitive), trimmed.
-fn header_value<'a>(header_block: &'a str, name: &str) -> Option<&'a str> {
-    header_block.lines().skip(1).find_map(|line| {
-        let (key, value) = line.split_once(':')?;
-        key.trim()
-            .eq_ignore_ascii_case(name)
-            .then_some(value.trim())
-    })
+/// Value of the first header named `name`, trimmed, or None when it is absent
+/// or not valid UTF-8. `HeaderMap` lookup is already case-insensitive.
+fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name)?.to_str().ok().map(str::trim)
 }
 
 /// `127.0.0.1`, `localhost`, `::1` — with or without a port. Anything else
@@ -151,15 +157,19 @@ fn is_loopback_host(host: &str) -> bool {
     name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1" || name == "::1"
 }
 
-/// Gate one request on its header block (request line included). Pure: the
-/// caller has already read the headers, and nothing here touches the body.
-pub(crate) fn authorize_request(header_block: &str, expected_token: &str) -> Result<(), Rejection> {
-    if header_value(header_block, "origin").is_some() {
+/// Gate one request on its headers. Pure: nothing here touches the body, and
+/// nothing here looks at the route — a rejected caller must not learn which
+/// paths exist.
+pub(crate) fn authorize_request(
+    headers: &HeaderMap,
+    expected_token: &str,
+) -> Result<(), Rejection> {
+    if headers.contains_key("origin") {
         return Err(Rejection::Forbidden(
             "Forbidden: browser-originated requests are not accepted",
         ));
     }
-    match header_value(header_block, "host") {
+    match header_value(headers, "host") {
         Some(host) if is_loopback_host(host) => {}
         _ => {
             return Err(Rejection::Forbidden(
@@ -167,7 +177,7 @@ pub(crate) fn authorize_request(header_block: &str, expected_token: &str) -> Res
             ))
         }
     }
-    let presented = header_value(header_block, "authorization")
+    let presented = header_value(headers, "authorization")
         .and_then(|value| {
             let (scheme, token) = value.split_once(' ')?;
             scheme
@@ -186,6 +196,101 @@ pub(crate) fn authorize_request(header_block: &str, expected_token: &str) -> Res
     Ok(())
 }
 
+impl IntoResponse for Rejection {
+    fn into_response(self) -> Response {
+        let status = StatusCode::from_u16(self.status()).unwrap_or(StatusCode::FORBIDDEN);
+        let mut response = (status, self.message().to_string()).into_response();
+        if status == StatusCode::UNAUTHORIZED {
+            // So a client can tell "present a bearer" apart from "your bearer
+            // is wrong" without parsing the body.
+            response.headers_mut().insert(
+                axum::http::header::WWW_AUTHENTICATE,
+                "Bearer".parse().unwrap(),
+            );
+        }
+        response
+    }
+}
+
+/// Turn a handler's `Result<String, String>` into the response the
+/// `teamclu-introspect` sidecar expects: `desktop_api::post` reads a 2xx body
+/// with `resp.json()` and an error body with `resp.text()`, so success is
+/// labelled `application/json` (the raw server this replaced labelled
+/// everything that way) and failure is left as the plain sentence it is.
+fn handler_response(result: Result<String, String>) -> Response {
+    match result {
+        Ok(msg) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            msg,
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// Wrap one `async fn(&AppHandle, &[u8]) -> Result<String, String>` handler as
+/// a POST route.
+macro_rules! post_route {
+    ($handler:path) => {
+        axum::routing::post(|State(app): State<AppHandle>, body: Bytes| async move {
+            handler_response($handler(&app, &body).await)
+        })
+    };
+}
+
+/// Reject anything that is not this launch's sidecar, before the router looks
+/// at the path.
+async fn gate(
+    State(token): State<Arc<str>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if let Err(rejection) = authorize_request(request.headers(), &token) {
+        log::warn!(
+            "[IntrospectAPI] rejected {} {}: {}",
+            request.method(),
+            request.uri().path(),
+            rejection.message()
+        );
+        return rejection.into_response();
+    }
+    next.run(request).await
+}
+
+/// 404 for an unknown path. Wrapped by the same gate as every real route, so
+/// an unauthorised caller cannot use the difference between 404 and 401 to map
+/// which endpoints exist.
+async fn not_found(method: axum::http::Method, uri: axum::http::Uri) -> impl IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        format!("Not found: {} {}", method, uri.path()),
+    )
+}
+
+fn router(app: AppHandle, token: Arc<str>) -> Router {
+    Router::new()
+        .route("/send-wecom", post_route!(handle_send_wecom))
+        .route("/cron-run", post_route!(handle_cron_run))
+        .route("/team-sync-all", post_route!(handle_team_sync_all))
+        .route("/env-var-set", post_route!(handle_env_var_set))
+        .route("/env-var-delete", post_route!(handle_env_var_delete))
+        .route("/session-export", post_route!(handle_session_export))
+        .route("/channel-set", post_route!(handle_channel_set))
+        .route("/mcp-get", post_route!(handle_mcp_get))
+        .route("/mcp-put", post_route!(handle_mcp_put))
+        .route(
+            "/session-participants",
+            post_route!(handle_session_participants),
+        )
+        .route("/session-archive", post_route!(handle_session_archive))
+        .fallback(not_found)
+        .with_state(app)
+        // `layer`, not `route_layer`: this has to wrap the fallback too, or an
+        // unauthorised caller learns which paths exist from the 404.
+        .layer(axum::middleware::from_fn_with_state(token, gate))
+}
+
 pub async fn start_introspect_api(app: AppHandle) -> anyhow::Result<()> {
     // Mint and publish the bearer before accepting anything, so there is no
     // window where the listener is up and unauthenticated.
@@ -199,119 +304,15 @@ pub async fn start_introspect_api(app: AppHandle) -> anyhow::Result<()> {
     })?;
 
     let listener = TcpListener::bind(format!("127.0.0.1:{}", INTROSPECT_API_PORT)).await?;
-    println!(
+    log::info!(
         "[IntrospectAPI] Listening on 127.0.0.1:{} (bearer in {})",
         INTROSPECT_API_PORT,
         token_path.display()
     );
 
-    loop {
-        let (mut stream, _peer) = listener.accept().await?;
-        let app_clone = app.clone();
-        let token = Arc::clone(&token);
-
-        tokio::spawn(async move {
-            // Read initial chunk (headers + maybe partial body)
-            let mut buf = vec![0u8; 65536];
-            let n = match stream.read(&mut buf).await {
-                Ok(0) | Err(_) => return,
-                Ok(n) => n,
-            };
-
-            // Parse headers
-            let header_end = match find_double_crlf(&buf[..n]) {
-                Some(i) => i,
-                None => {
-                    let _ = write_response(&mut stream, 400, "Bad Request").await;
-                    return;
-                }
-            };
-
-            let header_str = match std::str::from_utf8(&buf[..header_end]) {
-                Ok(s) => s,
-                Err(_) => {
-                    let _ = write_response(&mut stream, 400, "Bad Request").await;
-                    return;
-                }
-            };
-
-            let first_line = header_str.lines().next().unwrap_or("");
-            let mut parts = first_line.splitn(3, ' ');
-            let method = parts.next().unwrap_or("");
-            let path = parts.next().unwrap_or("");
-
-            // Gate before reading the body or looking at the route: a rejected
-            // caller learns nothing about which paths exist, and we never
-            // buffer a body we are about to throw away.
-            if let Err(rejection) = authorize_request(header_str, &token) {
-                eprintln!(
-                    "[IntrospectAPI] rejected {} {}: {}",
-                    method,
-                    path,
-                    rejection.message()
-                );
-                let _ = write_response(&mut stream, rejection.status(), rejection.message()).await;
-                return;
-            }
-
-            // Parse Content-Length for large bodies (e.g. image base64)
-            let content_length: usize = header_str
-                .lines()
-                .find_map(|line| {
-                    let lower = line.to_ascii_lowercase();
-                    lower
-                        .strip_prefix("content-length:")
-                        .and_then(|v| v.trim().parse().ok())
-                })
-                .unwrap_or(0);
-
-            // Read remaining body if needed
-            let body_start = header_end + 4;
-            let mut body_buf: Vec<u8> = buf[body_start..n].to_vec();
-            while body_buf.len() < content_length {
-                let mut chunk = vec![0u8; 65536];
-                match stream.read(&mut chunk).await {
-                    Ok(0) => break,
-                    Ok(cn) => body_buf.extend_from_slice(&chunk[..cn]),
-                    Err(_) => break,
-                }
-            }
-            let body_bytes = &body_buf[..];
-
-            let resp = match (method, path) {
-                ("POST", "/send-wecom") => handle_send_wecom(&app_clone, body_bytes).await,
-                ("POST", "/cron-run") => handle_cron_run(&app_clone, body_bytes).await,
-                ("POST", "/team-sync-all") => handle_team_sync_all(&app_clone, body_bytes).await,
-                ("POST", "/env-var-set") => handle_env_var_set(&app_clone, body_bytes).await,
-                ("POST", "/env-var-delete") => handle_env_var_delete(&app_clone, body_bytes).await,
-                ("POST", "/session-export") => handle_session_export(&app_clone, body_bytes).await,
-                ("POST", "/channel-set") => handle_channel_set(&app_clone, body_bytes).await,
-                ("POST", "/mcp-get") => handle_mcp_get(&app_clone, body_bytes).await,
-                ("POST", "/mcp-put") => handle_mcp_put(&app_clone, body_bytes).await,
-                ("POST", "/session-archive") => {
-                    handle_session_archive(&app_clone, body_bytes).await
-                }
-                ("POST", "/session-participants") => {
-                    handle_session_participants(&app_clone, body_bytes).await
-                }
-                _ => {
-                    let _ = write_response(
-                        &mut stream,
-                        404,
-                        &format!("Not found: {} {}", method, path),
-                    )
-                    .await;
-                    return;
-                }
-            };
-
-            let (status, body) = match resp {
-                Ok(msg) => (200u16, msg),
-                Err(e) => (500u16, e),
-            };
-            let _ = write_response(&mut stream, status, &body).await;
-        });
-    }
+    axum::serve(listener, router(app, token))
+        .await
+        .map_err(Into::into)
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
@@ -801,7 +802,7 @@ async fn handle_session_archive(app: &AppHandle, body: &[u8]) -> Result<String, 
     )
     .await
     {
-        eprintln!("[IntrospectAPI] local cache soft-delete after archive failed: {e}");
+        log::error!("[IntrospectAPI] local cache soft-delete after archive failed: {e}");
     }
 
     let payload = serde_json::json!({
@@ -813,10 +814,6 @@ async fn handle_session_archive(app: &AppHandle, body: &[u8]) -> Result<String, 
 }
 
 /// Find the position of `\r\n\r\n` in `data`, returning the index of the first `\r`.
-fn find_double_crlf(data: &[u8]) -> Option<usize> {
-    data.windows(4).position(|w| w == b"\r\n\r\n")
-}
-
 /// Cloud API client for an introspect tool call, on behalf of the signed-in user.
 ///
 /// Body-supplied credentials win: the caller may be pointed at a different
@@ -1127,43 +1124,39 @@ async fn handle_session_participants(app: &AppHandle, body: &[u8]) -> Result<Str
     }
 }
 
-async fn write_response(
-    stream: &mut tokio::net::TcpStream,
-    status: u16,
-    body: &str,
-) -> std::io::Result<()> {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        _ => "Error",
-    };
-    let challenge = if status == 401 {
-        "WWW-Authenticate: Bearer\r\n"
-    } else {
-        ""
-    };
-    let resp = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n{}",
-        status,
-        reason,
-        body.len(),
-        challenge,
-        body
-    );
-    stream.write_all(resp.as_bytes()).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const TOKEN: &str = "s3cr3t-token-value";
 
-    fn request(extra_headers: &str) -> String {
-        format!("POST /mcp-put HTTP/1.1\r\nHost: 127.0.0.1:13144\r\nContent-Type: application/json\r\n{extra_headers}")
+    /// Build the header map for a request carrying `extra_headers` on top of
+    /// the ones every sidecar call has. The literals stay in the raw wire form
+    /// they arrive in, so a test still reads like the request it describes;
+    /// hyper does the parsing in production, and what is under test here is the
+    /// policy, not the parser.
+    fn request(extra_headers: &str) -> HeaderMap {
+        headers_from(&format!(
+            "Host: 127.0.0.1:13144\r\nContent-Type: application/json\r\n{extra_headers}"
+        ))
+    }
+
+    /// Parse CRLF-separated `Name: value` lines into a `HeaderMap`.
+    fn headers_from(raw: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for line in raw.split("\r\n").filter(|l| !l.is_empty()) {
+            let (name, value) = line.split_once(':').expect("header line");
+            headers.append(
+                name.trim()
+                    .parse::<axum::http::HeaderName>()
+                    .expect("header name"),
+                value
+                    .trim_start()
+                    .parse::<axum::http::HeaderValue>()
+                    .expect("header value"),
+            );
+        }
+        headers
     }
 
     #[test]
@@ -1243,9 +1236,9 @@ mod tests {
 
     #[test]
     fn non_loopback_host_is_403_even_with_a_valid_token() {
-        let headers = format!(
-            "POST /mcp-put HTTP/1.1\r\nHost: evil.example:13144\r\nAuthorization: Bearer {TOKEN}\r\n"
-        );
+        let headers = headers_from(&format!(
+            "Host: evil.example:13144\r\nAuthorization: Bearer {TOKEN}\r\n"
+        ));
         assert!(matches!(
             authorize_request(&headers, TOKEN),
             Err(Rejection::Forbidden(_))
@@ -1254,7 +1247,7 @@ mod tests {
 
     #[test]
     fn missing_host_is_403() {
-        let headers = format!("POST /mcp-put HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\n");
+        let headers = headers_from(&format!("Authorization: Bearer {TOKEN}\r\n"));
         assert!(matches!(
             authorize_request(&headers, TOKEN),
             Err(Rejection::Forbidden(_))
@@ -1289,13 +1282,168 @@ mod tests {
         // A browser request with a bad Host and no token: the message names
         // the Origin, so the log says "browser" rather than something the
         // sidecar could plausibly have done.
-        let headers = "POST /x HTTP/1.1\r\nOrigin: https://a.example\r\nHost: a.example\r\n";
+        let headers = headers_from("Origin: https://a.example\r\nHost: a.example\r\n");
         assert_eq!(
-            authorize_request(headers, TOKEN),
+            authorize_request(&headers, TOKEN),
             Err(Rejection::Forbidden(
                 "Forbidden: browser-originated requests are not accepted"
             ))
         );
+    }
+
+    // ── The gate as the router actually applies it ─────────────────────────
+    //
+    // STR-5/STR-10: the checks above are unit tests of a pure function. These
+    // drive the real middleware stack — hyper's header parsing, the layer
+    // ordering, the fallback — because that is where the axum move could go
+    // wrong without any of the assertions above noticing. Real handlers need an
+    // `AppHandle`, so the routes here are stubs; the gate and the fallback are
+    // the production ones.
+
+    fn gated_router(token: Arc<str>) -> Router {
+        Router::new()
+            .route("/mcp-put", axum::routing::post(|| async { "handler ran" }))
+            .fallback(not_found)
+            .layer(axum::middleware::from_fn_with_state(token, gate))
+    }
+
+    async fn send(
+        router: Router,
+        req: axum::http::Request<axum::body::Body>,
+    ) -> (StatusCode, String) {
+        use tower::ServiceExt as _;
+        let response = router.oneshot(req).await.expect("router is infallible");
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    fn post(path: &str) -> axum::http::request::Builder {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("host", "127.0.0.1:13144")
+    }
+
+    #[tokio::test]
+    async fn router_runs_the_handler_for_a_valid_bearer() {
+        let (status, body) = send(
+            gated_router(Arc::from(TOKEN)),
+            post("/mcp-put")
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .body(axum::body::Body::from("{}"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "handler ran");
+    }
+
+    #[test]
+    fn handler_response_labels_success_json_and_failure_plain() {
+        let ok = handler_response(Ok(r#"{"ok":true}"#.into()));
+        assert_eq!(ok.status(), StatusCode::OK);
+        assert_eq!(ok.headers()["content-type"], "application/json");
+
+        let err = handler_response(Err("workspace not set".into()));
+        assert_eq!(err.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            err.headers()
+                .get("content-type")
+                .is_none_or(|v| !v.as_bytes().starts_with(b"application/json")),
+            "an error sentence must not claim to be JSON"
+        );
+    }
+
+    #[tokio::test]
+    async fn router_rejects_a_missing_bearer_with_a_challenge() {
+        use tower::ServiceExt as _;
+        let response = gated_router(Arc::from(TOKEN))
+            .oneshot(post("/mcp-put").body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()["www-authenticate"], "Bearer");
+    }
+
+    #[tokio::test]
+    async fn router_rejects_a_browser_request_even_with_a_valid_bearer() {
+        let (status, _) = send(
+            gated_router(Arc::from(TOKEN)),
+            post("/mcp-put")
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .header("origin", "https://evil.example")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn router_rejects_a_rebound_host_even_with_a_valid_bearer() {
+        let (status, _) = send(
+            gated_router(Arc::from(TOKEN)),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/mcp-put")
+                .header("host", "evil.example")
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_path_is_gated_before_it_is_404() {
+        // The whole reason the layer wraps the fallback: without a bearer,
+        // "does /mcp-put exist?" must be unanswerable.
+        let (unauth_known, _) = send(
+            gated_router(Arc::from(TOKEN)),
+            post("/mcp-put").body(axum::body::Body::empty()).unwrap(),
+        )
+        .await;
+        let (unauth_unknown, _) = send(
+            gated_router(Arc::from(TOKEN)),
+            post("/does-not-exist")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(unauth_known, StatusCode::UNAUTHORIZED);
+        assert_eq!(unauth_unknown, StatusCode::UNAUTHORIZED);
+
+        // With a bearer, the two are told apart.
+        let (auth_unknown, body) = send(
+            gated_router(Arc::from(TOKEN)),
+            post("/does-not-exist")
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(auth_unknown, StatusCode::NOT_FOUND);
+        assert!(body.contains("/does-not-exist"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_get_to_a_post_route_is_405_not_a_side_effect() {
+        let (status, _) = send(
+            gated_router(Arc::from(TOKEN)),
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/mcp-put")
+                .header("host", "127.0.0.1")
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[test]

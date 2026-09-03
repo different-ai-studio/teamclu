@@ -15,7 +15,7 @@ import { isTauri } from "@/lib/utils";
 import { useActorsStore } from "@/stores/actors-store";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useSessionListStore, type SessionListEntry } from "@/stores/session-list-store";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useUIStore } from "@/stores/ui";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { useWorkspaceStore } from "@/stores/workspace";

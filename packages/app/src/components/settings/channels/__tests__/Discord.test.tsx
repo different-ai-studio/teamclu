@@ -22,7 +22,7 @@ const mockStore = {
   toggleDiscordEnabled: vi.fn(),
 }
 
-vi.mock('@/stores/channels', () => ({
+vi.mock('@/stores/channels-store', () => ({
   useChannelsStore: vi.fn(() => mockStore),
   defaultDiscordConfig: { token: '', enabled: false, guilds: {}, dm: { enabled: false, policy: 'open', allowFrom: [] } },
 }))

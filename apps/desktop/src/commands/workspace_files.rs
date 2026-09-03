@@ -81,7 +81,7 @@ fn classify_entry(entry_path: &Path) -> Result<&'static str, String> {
             if std::fs::read_dir(entry_path).is_ok() {
                 Ok("directory")
             } else {
-                eprintln!(
+                log::error!(
                     "[workspace_files] symlink '{}' did not resolve: {follow_err}",
                     entry_path.display()
                 );

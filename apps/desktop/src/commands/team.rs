@@ -42,7 +42,7 @@ fn daemon_default_workspace_path() -> Option<String> {
     let team = crate::commands::amuxd_active_team()?;
     let dir = crate::commands::amuxd_team_workspace_dir(&team);
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!(
+        log::error!(
             "[team] create daemon default workspace dir '{}' failed: {e}",
             dir.display()
         );

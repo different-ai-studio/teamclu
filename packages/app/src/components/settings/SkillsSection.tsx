@@ -28,7 +28,7 @@ import {
   Stethoscope,
 } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
-import { SKILLS_CHANGED_EVENT } from '@/hooks/useAppInit'
+import { SKILLS_CHANGED_EVENT } from '@/lib/skills/changed-event';
 import {
   encodeWorkspaceId,
   getDaemonPermissions,

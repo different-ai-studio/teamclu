@@ -74,7 +74,15 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.9"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 regex = "1"
-libsql = "0.9"
+# PERF-20 / STR-7: local SQLite files only. libsql's default features are
+# `core + replication + remote + sync + tls`, which drag in tonic, tonic-web,
+# tower-http, hyper 0.14 and hyper-rustls — a second HTTP stack and a second
+# TLS stack, for a replication client nothing here opens. WAL comes from an
+# explicit `PRAGMA journal_mode=WAL` (local_cache/store.rs), not from the
+# `sync` feature. Feature unification means BOTH crates have to say this:
+# resolver 2 unifies features across the workspace, so one of them keeping
+# the defaults re-enables them for the other.
+libsql = { version = "0.9", default-features = false, features = ["core"] }
 nanoid = "0.4"
 # Gateway crate
 teamclu-gateway = { path = "../../crates/teamclu-gateway" }
@@ -148,5 +156,8 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+# `ServiceExt::oneshot`, so the introspect router can be driven end-to-end in a
+# unit test without binding a port (STR-5/STR-10).
+tower = { version = "0.5", features = ["util"] }
 wiremock = "0.5"
 loro = "1"

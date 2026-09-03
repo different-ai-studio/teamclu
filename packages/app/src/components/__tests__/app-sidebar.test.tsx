@@ -101,7 +101,7 @@ vi.mock('@/lib/date-format', () => ({
 }))
 
 // Mock stores
-vi.mock('@/stores/session', () => ({
+vi.mock('@/stores/session-store', () => ({
   useSessionStore: Object.assign(
     (sel: (s: Record<string, unknown>) => unknown) =>
       sel(sessionStoreMocks as unknown as Record<string, unknown>),

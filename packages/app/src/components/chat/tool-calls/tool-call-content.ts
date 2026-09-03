@@ -1,4 +1,4 @@
-import type { ToolCall } from "@/stores/session";
+import type { ToolCall } from "@/stores/session-types";
 import {
   extractFilePath,
   extractPatchTextFromToolArgs,

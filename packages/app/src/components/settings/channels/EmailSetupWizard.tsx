@@ -24,9 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  type EmailConfig,
-} from '@/stores/channels'
+import { type EmailConfig } from '@/stores/channels-types'
 import { GmailIcon } from './shared'
 
 // Email Setup Wizard Steps

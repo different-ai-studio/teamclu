@@ -28,13 +28,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  useChannelsStore,
-  type KookConfig,
-  type KookGuildConfig,
-  type KookChannelRule,
-  defaultKookConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type KookConfig, type KookGuildConfig, type KookChannelRule, defaultKookConfig } from '@/stores/channels-types'
 import { KookIcon, SettingCard, ToggleSwitch, StatusBadge } from './shared'
 import {
   KookSetupWizard,

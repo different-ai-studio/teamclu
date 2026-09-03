@@ -17,7 +17,7 @@ const mockStore = {
   setEmailHasChanges: vi.fn(), toggleEmailEnabled: vi.fn(),
 }
 
-vi.mock('@/stores/channels', () => ({
+vi.mock('@/stores/channels-store', () => ({
   useChannelsStore: vi.fn(() => mockStore),
   defaultEmailConfig: { provider: 'gmail', enabled: false, gmailClientId: '', gmailClientSecret: '', gmailEmail: '', gmailAuthorized: false, imapServer: '', imapPort: 993, smtpServer: '', smtpPort: 587, username: '', password: '', displayName: '', allowedSenders: [], labels: [], recipientAlias: '' },
 }))

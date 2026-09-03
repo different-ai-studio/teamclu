@@ -273,7 +273,7 @@ export const useUIStore = create<UIState>((set, get) => ({
       useCronStore.getState().setShowCronSessions(false)
     })
     import('@/stores/session-selection-store').then(({ useSessionSelectionStore }) => {
-      import('@/stores/session').then(({ useSessionStore }) => {
+      import('@/stores/session-store').then(({ useSessionStore }) => {
         useSessionSelectionStore.getState().clearActiveSession()
 
         // Clear session state to show "Start a New Chat" UI
@@ -375,7 +375,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     // dynamic-import to avoid a top-level cycle with session/workspace stores.
     void (async () => {
       const { useSessionSelectionStore } = await import('@/stores/session-selection-store')
-      const { useSessionStore } = await import('@/stores/session')
+      const { useSessionStore } = await import('@/stores/session-store')
       const { useWorkspaceStore } = await import('@/stores/workspace')
       useWorkspaceStore.getState().clearSelection()
       useWorkspaceStore.getState().closePanel()

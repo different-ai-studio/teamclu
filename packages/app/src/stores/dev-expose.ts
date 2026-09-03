@@ -1,4 +1,4 @@
-import { useSessionStore } from './session'
+import { useSessionStore } from './session-store'
 import { appShortName } from '@/lib/build-config'
 
 if (import.meta.env.DEV) {

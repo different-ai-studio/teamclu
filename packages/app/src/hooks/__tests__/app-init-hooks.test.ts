@@ -120,7 +120,7 @@ vi.mock('@/lib/daemon-local-client', () => ({
   invalidateDaemonConnection: vi.fn(),
 }))
 
-vi.mock('@/stores/channels', () => ({
+vi.mock('@/stores/channels-store', () => ({
   useChannelsStore: () => ({
     autoStartEnabledGateways: vi.fn(),
     loadConfig: vi.fn().mockResolvedValue(undefined),
@@ -230,7 +230,7 @@ describe('useWorkspaceInit', () => {
   it('skips workspace restore on extension/web (no local workspace)', async () => {
     mockWorkspaceCapable.value = false
 
-    const { useWorkspaceInit } = await import('@/hooks/useAppInit')
+    const { useWorkspaceInit } = await import('@/hooks/use-workspace-init')
     const { result } = renderHook(() => useWorkspaceInit())
 
     await waitFor(() => {
@@ -242,7 +242,7 @@ describe('useWorkspaceInit', () => {
   it('restores the last workspace when one is saved', async () => {
     localStorage.setItem('teamclu-workspace-path', '/tmp/teamclu-last')
 
-    const { useWorkspaceInit } = await import('@/hooks/useAppInit')
+    const { useWorkspaceInit } = await import('@/hooks/use-workspace-init')
     const { result } = renderHook(() => useWorkspaceInit())
 
     await waitFor(() => {
@@ -256,7 +256,7 @@ describe('useWorkspaceInit', () => {
     mockExists.mockResolvedValue(false)
     localStorage.setItem('teamclu-workspace-path', '/tmp/missing-workspace')
 
-    const { useWorkspaceInit } = await import('@/hooks/useAppInit')
+    const { useWorkspaceInit } = await import('@/hooks/use-workspace-init')
     const { result } = renderHook(() => useWorkspaceInit())
 
     await waitFor(() => {
@@ -267,7 +267,7 @@ describe('useWorkspaceInit', () => {
   })
 
   it('uses the default workspace when nothing is saved', async () => {
-    const { useWorkspaceInit } = await import('@/hooks/useAppInit')
+    const { useWorkspaceInit } = await import('@/hooks/use-workspace-init')
     const { result } = renderHook(() => useWorkspaceInit())
 
     await waitFor(() => {
@@ -280,7 +280,7 @@ describe('useWorkspaceInit', () => {
     mockIsTauri.mockReturnValue(true)
     currentTeamState.team = { id: 'team-xyz' }
 
-    const { useWorkspaceInit } = await import('@/hooks/useAppInit')
+    const { useWorkspaceInit } = await import('@/hooks/use-workspace-init')
     const { result } = renderHook(() => useWorkspaceInit())
 
     await waitFor(() => {
@@ -293,7 +293,7 @@ describe('useWorkspaceInit', () => {
     mockIsTauri.mockReturnValue(true)
     currentTeamState.team = null
 
-    const { useWorkspaceInit } = await import('@/hooks/useAppInit')
+    const { useWorkspaceInit } = await import('@/hooks/use-workspace-init')
     const { result } = renderHook(() => useWorkspaceInit())
 
     await waitFor(() => {
@@ -305,7 +305,7 @@ describe('useWorkspaceInit', () => {
 
 describe('useTauriBodyClass', () => {
   it('does not add tauri class in non-Tauri environment', async () => {
-    const { useTauriBodyClass } = await import('@/hooks/useAppInit')
+    const { useTauriBodyClass } = await import('@/hooks/use-tauri-body-class')
     renderHook(() => useTauriBodyClass())
     expect(document.documentElement.classList.contains('tauri')).toBe(false)
   })
@@ -313,14 +313,14 @@ describe('useTauriBodyClass', () => {
 
 describe('useTelemetryConsent', () => {
   it('initializes telemetry on mount', async () => {
-    const { useTelemetryConsent } = await import('@/hooks/useAppInit')
+    const { useTelemetryConsent } = await import('@/hooks/use-telemetry-consent')
     renderHook(() => useTelemetryConsent(false))
     expect(mockTelemetryInit).toHaveBeenCalled()
   })
 
   it('opens consent dialog on desktop when setup is done and consent is undecided', async () => {
     telemetryState.isInitialized = true
-    const { useTelemetryConsent } = await import('@/hooks/useAppInit')
+    const { useTelemetryConsent } = await import('@/hooks/use-telemetry-consent')
     const { result } = renderHook(() => useTelemetryConsent(false))
     await waitFor(() => {
       expect(result.current.showConsentDialog).toBe(true)
@@ -330,7 +330,7 @@ describe('useTelemetryConsent', () => {
   it('skips consent dialog in embed mode', async () => {
     uiState.embedMode = true
     telemetryState.isInitialized = true
-    const { useTelemetryConsent } = await import('@/hooks/useAppInit')
+    const { useTelemetryConsent } = await import('@/hooks/use-telemetry-consent')
     const { result } = renderHook(() => useTelemetryConsent(false))
     await waitFor(() => {
       expect(result.current.showConsentDialog).toBe(false)
@@ -344,7 +344,7 @@ describe('useGitReposInit', () => {
     workspaceState.workspacePath = '/workspace-team'
     workspaceState.workspaceReady = true
 
-    const { useGitReposInit } = await import('@/hooks/useAppInit')
+    const { useGitReposInit } = await import('@/hooks/use-git-repos-init')
     renderHook(() => useGitReposInit())
 
     await waitFor(() => {

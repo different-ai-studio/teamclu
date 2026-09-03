@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next"
 import { MessageSquare } from "lucide-react"
 
-import { useSessionStore } from "@/stores/session"
+import { useSessionStore } from "@/stores/session-store"
 import { useUIStore } from "@/stores/ui"
 import { formatRelativeTime } from "@/lib/date-format"
 import {

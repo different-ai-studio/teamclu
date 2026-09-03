@@ -3,9 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   STREAM_AWAITING_NEXT_EVENT_MS,
   useStreamAwaitingNextEvent,
-} from "@/hooks/useStreamAwaitingNextEvent";
+} from "@/hooks/use-stream-awaiting-next-event";
 
-describe("useStreamAwaitingNextEvent", () => {
+describe("use-stream-awaiting-next-event", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });

@@ -108,7 +108,7 @@ mod fc_endpoint_tests {
         match option_env!("CLOUD_API_URL") {
             Some(url) if !url.trim().is_empty() => Some(url.trim()),
             _ => {
-                eprintln!(
+                log::warn!(
                     "skipping: no CLOUD_API_URL baked in (no build.config.json).                      Run with VITE_CLOUD_API_URL=<url> to exercise this."
                 );
                 None

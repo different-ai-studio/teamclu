@@ -1,6 +1,6 @@
 import { ensureSessionLiveSubscribed } from '@/lib/session-live-subscriptions'
 import { useSessionListStore, type SessionListEntry } from '@/stores/session-list-store'
-import { useSessionStore } from '@/stores/session'
+import { useSessionStore } from '@/stores/session-store'
 import { useUIStore } from '@/stores/ui'
 
 type PromoteCreatedSessionArgs = {

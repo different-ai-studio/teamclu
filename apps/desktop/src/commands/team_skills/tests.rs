@@ -410,7 +410,7 @@ fn empty_optional_fields_are_not_emitted() {
     let parsed = parse_frontmatter(&out);
     assert_eq!(parsed.string("owner"), None);
     assert_eq!(parsed.string("when_not_to_use"), None);
-    assert!(parsed.data.get("requires").is_none());
+    assert!(!parsed.data.contains_key("requires"));
 }
 
 fn trashed(trash: &std::path::Path, name: &str) -> std::path::PathBuf {

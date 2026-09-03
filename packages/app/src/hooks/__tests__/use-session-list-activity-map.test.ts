@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildSessionListActivityMap } from "@/lib/session-list-activity";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { useSessionListActivityMap } from "@/hooks/use-session-list-activity-map";
 import { renderHook } from "@testing-library/react";

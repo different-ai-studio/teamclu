@@ -14,6 +14,7 @@ use tauri_plugin_aptabase::EventTracker;
 mod branding;
 pub mod commands;
 pub mod daemon_client;
+pub mod http_clients;
 mod local_cache;
 pub mod mqtt;
 pub mod opencode_paths;
@@ -78,9 +79,10 @@ const SHELL_PATH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_
 
 /// Run `<shell> -l -c 'echo $PATH'` with a hard wall-clock timeout.
 ///
-/// Kept synchronous (it runs before the tokio runtime is created) and bounded
-/// with std thread + `recv_timeout`. On timeout the child is killed and an
-/// error is returned so the caller falls back to a minimal PATH.
+/// Runs on the background thread `start_path_probe` spawns; the timeout here is
+/// the *child's* budget, not the main thread's wait. On timeout the child is
+/// killed and an error is returned, so nothing lingers when a shell profile
+/// hangs on a dead network mount.
 fn spawn_shell_path_probe(shell: &str) -> std::io::Result<std::process::Output> {
     use crate::process_util::CommandNoWindow;
     use std::process::Stdio;
@@ -120,29 +122,106 @@ fn spawn_shell_path_probe(shell: &str) -> std::io::Result<std::process::Output> 
     }
 }
 
+// STR-9: everything from here to `tauri::Builder::default()` runs before
+// `tauri_plugin_log` has installed a global logger, so `log::` here would go
+// nowhere. These few `eprintln!` are deliberate; the rest of the crate logs.
+
+/// Prepend the Homebrew-shaped directories a GUI PATH is usually missing.
+///
+/// What the app runs on until (or unless) the login shell answers.
+fn apply_fallback_path() {
+    let current = std::env::var("PATH").unwrap_or_default();
+    let extra = [
+        "/opt/homebrew/bin", // macOS ARM Homebrew
+        "/opt/homebrew/sbin",
+        "/usr/local/bin", // macOS Intel Homebrew
+        "/usr/local/sbin",
+        "/home/linuxbrew/.linuxbrew/bin", // Linux Homebrew
+    ];
+    let mut path = current.clone();
+    for p in extra {
+        if !path.split(':').any(|seg| seg == p) {
+            path = format!("{}:{}", p, path);
+        }
+    }
+    if path != current {
+        std::env::set_var("PATH", &path);
+        #[cfg(debug_assertions)]
+        eprintln!("[fix_path_env] PATH fallback set to: {}", path);
+    }
+}
+
+/// A login-shell PATH probe running on a background thread.
+///
+/// PERF-18: the probe used to run to completion before `tauri::Builder` was
+/// even constructed, so on a cache miss — first launch, or any launch after
+/// the user edited their shell profile — the window did not appear until the
+/// user's `.zshrc` had finished sourcing, up to a 4 s cap. The probe now
+/// starts first and is collected at the top of the `setup` hook, which is
+/// after plugin initialisation and after Tauri has created the webview window:
+/// the shell and the window are built at the same time instead of one after
+/// the other.
+///
+/// The budget is unchanged on purpose. Shortening the wait would hand a user
+/// with a merely slow profile a session whose PATH is missing nvm/pyenv/…,
+/// which reads as "opencode is not installed" — the win here is the overlap,
+/// not a smaller deadline. If the deadline does expire, this launch runs on
+/// the fallback PATH while the background thread finishes and writes the
+/// cache, so the next launch starts correct and instantly.
+struct PendingPathProbe {
+    rx: std::sync::mpsc::Receiver<Option<String>>,
+    deadline: std::time::Instant,
+}
+
+impl PendingPathProbe {
+    /// Wait out the remaining budget and apply the probed PATH if it arrived.
+    ///
+    /// Called on the main thread before anything spawns a child process, so
+    /// this is the only writer of `PATH` and there is no concurrent reader —
+    /// the same position the synchronous version wrote from.
+    fn apply(self) {
+        let remaining = self
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        match self.rx.recv_timeout(remaining) {
+            Ok(Some(full_path)) => {
+                std::env::set_var("PATH", &full_path);
+                #[cfg(debug_assertions)]
+                eprintln!("[fix_path_env] PATH set to: {}", full_path);
+            }
+            Ok(None) => {
+                // The shell answered but had nothing usable to say; the
+                // fallback PATH applied at startup stands.
+            }
+            Err(_) => {
+                eprintln!(
+                    "[fix_path_env] login-shell PATH probe did not answer within {:?}; \
+                     running on the fallback PATH (the cache will be warm next launch)",
+                    SHELL_PATH_PROBE_TIMEOUT
+                );
+            }
+        }
+    }
+}
+
 /// Fix PATH environment variable for GUI apps on macOS/Linux.
 ///
 /// When launched from Dock/Spotlight (not a terminal), GUI apps inherit a minimal
 /// system PATH (e.g. /usr/bin:/bin:/usr/sbin:/sbin) that doesn't include paths
 /// added by Homebrew, nvm, etc. in the user's shell profile (.zshrc/.bashrc).
 ///
-/// This function spawns a login shell to capture the user's full PATH and sets it
-/// on the current process, so all subsequent Command::new() calls can find tools
-/// like git, gh, node, npx, etc.
-fn fix_path_env() {
-    // Determine the user's default shell
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-        if cfg!(target_os = "windows") {
-            "cmd".to_string()
-        } else {
-            "/bin/zsh".to_string()
-        }
-    });
-
+/// Applies the cached or fallback PATH immediately and, on a cache miss,
+/// returns the running login-shell probe for the caller to collect later (see
+/// [`PendingPathProbe`]).
+#[must_use = "the probe has to be applied, or the login-shell PATH is dropped"]
+fn start_path_probe() -> Option<PendingPathProbe> {
     if cfg!(target_os = "windows") {
         // Windows GUI apps generally inherit the full PATH; skip for now
-        return;
+        return None;
     }
+
+    // Determine the user's default shell
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
 
     // Try cache first
     let home = std::env::var("HOME").unwrap_or_default();
@@ -153,51 +232,37 @@ fn fix_path_env() {
         std::env::set_var("PATH", &cached);
         #[cfg(debug_assertions)]
         eprintln!("[fix_path_env] PATH set from cache");
-        return;
+        return None;
     }
 
-    // Spawn a login shell to get the full PATH.
-    //
-    // A pathologically slow shell profile (network mounts, heavy `.zshrc`, etc.)
-    // could otherwise block window creation indefinitely, so we cap the probe
-    // with a hard timeout and fall back to a minimal PATH on timeout. This runs
-    // before the tokio runtime exists, so it uses std threads only.
-    let output = spawn_shell_path_probe(&shell);
+    // Nothing cached: run on the fallback while the login shell is asked.
+    apply_fallback_path();
 
-    match output {
-        Ok(o) if o.status.success() => {
-            let full_path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if !full_path.is_empty() {
-                std::env::set_var("PATH", &full_path);
-                #[cfg(debug_assertions)]
-                eprintln!("[fix_path_env] PATH set to: {}", full_path);
-                // Write cache (fire-and-forget)
-                write_path_cache(&cache_path, profile_mtime, &full_path);
-            }
-        }
-        _ => {
-            // Fallback: append common paths that might be missing
-            let current = std::env::var("PATH").unwrap_or_default();
-            let extra = [
-                "/opt/homebrew/bin", // macOS ARM Homebrew
-                "/opt/homebrew/sbin",
-                "/usr/local/bin", // macOS Intel Homebrew
-                "/usr/local/sbin",
-                "/home/linuxbrew/.linuxbrew/bin", // Linux Homebrew
-            ];
-            let mut path = current.clone();
-            for p in extra {
-                if !path.split(':').any(|seg| seg == p) {
-                    path = format!("{}:{}", p, path);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let deadline = std::time::Instant::now() + SHELL_PATH_PROBE_TIMEOUT;
+    std::thread::Builder::new()
+        .name("path-probe".into())
+        .spawn(move || {
+            let probed = match spawn_shell_path_probe(&shell) {
+                Ok(o) if o.status.success() => {
+                    let full_path = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if full_path.is_empty() {
+                        None
+                    } else {
+                        // Write the cache even if the main thread has already
+                        // given up: the point of the cache is the next launch.
+                        write_path_cache(&cache_path, profile_mtime, &full_path);
+                        Some(full_path)
+                    }
                 }
-            }
-            if path != current {
-                std::env::set_var("PATH", &path);
-                #[cfg(debug_assertions)]
-                eprintln!("[fix_path_env] PATH fallback set to: {}", path);
-            }
-        }
-    }
+                _ => None,
+            };
+            // The receiver is gone if startup timed out — that is fine.
+            let _ = tx.send(probed);
+        })
+        .ok()?;
+
+    Some(PendingPathProbe { rx, deadline })
 }
 
 // Foreground-activation heartbeat for Aptabase DAU.
@@ -238,11 +303,19 @@ fn maybe_emit_app_active(app: &tauri::AppHandle) {
 pub fn run() {
     let startup_t0 = std::time::Instant::now();
 
-    // Fix PATH before anything else so all child processes can find tools
-    fix_path_env();
+    // Fix PATH before anything else so all child processes can find tools.
+    // On a cache hit this is complete when it returns; on a miss it applies the
+    // fallback PATH now and hands back a probe to collect in `setup`, so the
+    // login shell runs while Tauri builds the window (PERF-18).
+    let path_probe = start_path_probe();
     eprintln!(
-        "[Startup] fix_path_env: {:.1}ms",
-        startup_t0.elapsed().as_secs_f64() * 1000.0
+        "[Startup] start_path_probe: {:.1}ms (login shell {})",
+        startup_t0.elapsed().as_secs_f64() * 1000.0,
+        if path_probe.is_some() {
+            "running"
+        } else {
+            "not needed"
+        }
     );
 
     // Create a Tokio runtime and register it with Tauri BEFORE plugin initialization.
@@ -524,8 +597,21 @@ pub fn run() {
             commands::team_sync_proxy::oss_sync_restore_version,
             commands::team_sync_proxy::oss_sync_resolve_conflict,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let setup_t0 = std::time::Instant::now();
+
+            // Collect the login-shell PATH before anything below spawns a child
+            // process (the amuxd supervisor, further down, is the first). The
+            // window already exists at this point — Tauri creates the config
+            // windows during `build()` — so whatever the shell cost was ran
+            // alongside that instead of ahead of it.
+            if let Some(probe) = path_probe {
+                probe.apply();
+                log::info!(
+                    "[Startup] PATH probe collected: {:.1}ms since launch",
+                    startup_t0.elapsed().as_secs_f64() * 1000.0
+                );
+            }
 
             // Capture the .app bundle path before an update can replace it on disk.
             commands::updater::remember_app_bundle_path();
@@ -539,7 +625,7 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = commands::introspect_api::start_introspect_api(app_handle).await {
-                        eprintln!("[IntrospectAPI] Failed to start: {}", e);
+                        log::error!("[IntrospectAPI] Failed to start: {}", e);
                     }
                 });
             }
@@ -561,7 +647,7 @@ pub fn run() {
                         commands::amuxd_supervisor::AmuxdSupervisor::ensure_started(&app_handle)
                             .await
                     {
-                        eprintln!("[amuxd-supervisor] ensure_started failed: {e}");
+                        log::error!("[amuxd-supervisor] ensure_started failed: {e}");
                     }
                 });
             }
@@ -570,7 +656,7 @@ pub fn run() {
             // since workspace_path is not available at setup time.
             // The frontend calls team_sync_repo on startup when team config is enabled.
 
-            eprintln!("[Startup] Setup hook: {:.1}ms", setup_t0.elapsed().as_secs_f64() * 1000.0);
+            log::info!("[Startup] Setup hook: {:.1}ms", setup_t0.elapsed().as_secs_f64() * 1000.0);
 
             // Load remembered close preference (ask / tray / quit).
             {
@@ -592,7 +678,7 @@ pub fn run() {
                         }
                     });
                 }
-                Err(e) => eprintln!("[Startup] install_app_menu failed: {e}"),
+                Err(e) => log::error!("[Startup] install_app_menu failed: {e}"),
             }
 
             // --- System Tray ---
@@ -647,7 +733,7 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .icon(tray_icon)
                 .icon_as_template(tray_icon_is_template)
-                .tooltip(branding::brand_name(app.config().product_name.as_deref()))
+                .tooltip(branding::brand_name())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray: &tauri::tray::TrayIcon, event: TrayIconEvent| {
@@ -672,7 +758,7 @@ pub fn run() {
                             if let Err(e) =
                                 commands::window::open_local_agent_panel_window(app.clone())
                             {
-                                eprintln!("[tray] open_local_agent_panel_window: {e}");
+                                log::warn!("[tray] open_local_agent_panel_window: {e}");
                             }
                         }
                         "quit" => {
@@ -803,7 +889,7 @@ pub fn run() {
 
                     let listener = tokio::net::TcpListener::bind("127.0.0.1:13199").await;
                     if let Ok(listener) = listener {
-                        eprintln!("[Test] Control server listening on http://127.0.0.1:13199");
+                        log::info!("[Test] Control server listening on http://127.0.0.1:13199");
                         let _ = axum::serve(listener, router).await;
                     }
                 });

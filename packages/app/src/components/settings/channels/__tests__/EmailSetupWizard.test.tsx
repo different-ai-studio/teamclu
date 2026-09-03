@@ -19,7 +19,7 @@ vi.mock('@/components/ui/dialog', () => ({
   DialogHeader: ({ children }: any) => <div>{children}</div>,
   DialogTitle: ({ children }: any) => <h2>{children}</h2>,
 }))
-vi.mock('@/stores/channels', () => ({
+vi.mock('@/stores/channels-store', () => ({
   // EmailConfig type is just used for typing
 }))
 vi.mock('../shared', () => ({

@@ -14,7 +14,7 @@ vi.mock('@/lib/i18n', () => ({
   default: { t: (_key: string, fallback: string) => fallback },
 }))
 
-import { useChannelConfig } from '../useChannelConfig'
+import { useChannelConfig } from '../use-channel-config'
 
 type TestConfig = { enabled: boolean }
 

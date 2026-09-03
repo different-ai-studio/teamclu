@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 import { navigateActiveBrowserTab } from '@/lib/remote-tools/browser-navigate'
 import { parsePageNavLinksFromToolCall } from '@/lib/remote-tools/link-utils'
 import { TOOL_SHOW_PAGE_NAV_LINKS } from '@/lib/remote-tools/types'
-import type { ToolCall } from '@/stores/session'
+import type { ToolCall } from '@/stores/session-types'
 import { ToolCallDisclosure } from './ToolCallDisclosure'
 import { ToolCallStatusGlyph } from './ToolCallStatusGlyph'
 

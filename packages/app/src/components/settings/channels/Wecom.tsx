@@ -29,15 +29,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  useChannelsStore,
-  type WeComConfig,
-  type WeComBot,
-  defaultWeComConfig,
-} from '@/stores/channels'
+import { useChannelsStore } from '@/stores/channels-store'
+import { type WeComConfig, type WeComBot, defaultWeComConfig } from '@/stores/channels-types'
 import { WeComIcon } from './shared'
 import { GatewayStatusCard } from './GatewayStatusCard'
-import { useChannelConfig } from '@/hooks/useChannelConfig'
+import { useChannelConfig } from '@/hooks/use-channel-config'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { botSecretPath, loadChannelSecretKeys } from '@/lib/channel-secret-presence'
 import {
