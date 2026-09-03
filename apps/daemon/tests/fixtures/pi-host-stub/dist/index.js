@@ -122,16 +122,81 @@ export class SessionManager {
   }
 }
 
+/** `~/.pi/agent` for the stub: a tempdir the test controls, so `auth_models_*`
+ * writes a real `models.json` somewhere harmless instead of the developer's. */
+export function getAgentDir() {
+  return process.env.TEAMCLU_PI_STUB_AGENT_DIR ?? path.join(process.cwd(), ".pi-stub");
+}
+
+/** Providers the stub offers, shaped like pi's composed `Provider`s.
+ *
+ * `stub-oauth` carries both auth methods so one fixture covers the branch the
+ * settings pane cares about most; `stub-ambient` has an api-key method with no
+ * `login`, which is how pi models Vertex ADC / an AWS profile and which the
+ * host must refuse rather than hand to `ModelRuntime.login`. */
+const stubProviders = [
+  {
+    id: "stub",
+    name: "Stub",
+    auth: { apiKey: { name: "Stub API key", login: async () => ({ type: "api_key", key: "k" }) } },
+  },
+  {
+    id: "stub-oauth",
+    name: "Stub OAuth",
+    auth: {
+      oauth: { name: "Stub OAuth", isSubscription: true, loginLabel: "Sign in with Stub" },
+      apiKey: { name: "Stub OAuth API key", login: async () => ({ type: "api_key", key: "k" }) },
+    },
+  },
+  { id: "stub-ambient", name: "Stub Ambient", auth: { apiKey: { name: "Ambient" } } },
+];
+
+function createStubModelRuntime() {
+  /** providerId -> Credential, standing in for auth.json. */
+  const credentials = new Map();
+  return {
+    getAvailableSnapshot: () => [
+      { provider: "stub", id: "stub-model", name: "Stub Model" },
+      { provider: "stub", id: "stub-mini", name: "Stub Mini" },
+    ],
+    getProviders: () => stubProviders,
+    getProvider: (id) => stubProviders.find((p) => p.id === id),
+    getModels: (id) => (id === "stub" ? [{ id: "stub-model" }, { id: "stub-mini" }] : []),
+    getProviderAuthStatus: (id) =>
+      credentials.has(id) ? { configured: true, source: "stored", label: "stored" } : { configured: false },
+    isUsingOAuth: (id) => credentials.get(id)?.type === "oauth",
+    isUsingSubscription: (id) => credentials.get(id)?.type === "oauth",
+    listCredentials: async () => [...credentials].map(([providerId, c]) => ({ providerId, type: c.type })),
+    /** Drives the full `AuthInteraction` contract: notify → prompt → credential.
+     *
+     * An api-key login asks once for a secret; an oauth login publishes a URL
+     * and then asks for the pasted code, which is the shape every real browser
+     * flow reduces to on the wire. `TEAMCLU_PI_STUB_LOGIN_FAIL` makes it throw
+     * so the failure path is testable too. */
+    login: async (providerId, authType, interaction) => {
+      if (process.env.TEAMCLU_PI_STUB_LOGIN_FAIL) throw new Error("stub login refused");
+      if (authType === "oauth") {
+        interaction.notify({ type: "auth_url", url: "https://stub.example/authorize", instructions: "open it" });
+        const code = await interaction.prompt({ type: "manual_code", message: "Paste the code" });
+        credentials.set(providerId, { type: "oauth", access: code, refresh: "r", expires: 0 });
+      } else {
+        const key = await interaction.prompt({ type: "secret", message: "API key" });
+        credentials.set(providerId, { type: "api_key", key });
+      }
+      return credentials.get(providerId);
+    },
+    logout: async (providerId) => {
+      credentials.delete(providerId);
+    },
+    refresh: async () => ({ aborted: false, errors: new Map() }),
+  };
+}
+
 export async function createAgentSessionServices(options) {
   return {
     cwd: options.cwd,
     agentDir: "",
-    modelRuntime: {
-      getAvailableSnapshot: () => [
-        { provider: "stub", id: "stub-model", name: "Stub Model" },
-        { provider: "stub", id: "stub-mini", name: "Stub Mini" },
-      ],
-    },
+    modelRuntime: createStubModelRuntime(),
     settingsManager: {
       getGlobalSettings: () => ({}),
       getHttpIdleTimeoutMs: () => 0,

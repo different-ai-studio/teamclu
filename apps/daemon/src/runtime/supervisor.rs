@@ -1062,6 +1062,83 @@ pub async fn prewarm_workspace_domains(
     }
 }
 
+/// Why a pi `auth_*` command could not be answered.
+///
+/// The split is the one an HTTP caller has to make: a `Rejected` command was
+/// answered and refused — an unknown provider, an auth type the provider does
+/// not offer — and will fail identically on retry, so it is the caller's
+/// input that is wrong. `Unavailable` means no pi host could answer at all
+/// (this daemon runs another agent, the binary is missing, the child died),
+/// which is about the machine, not the request.
+#[derive(Debug, Clone)]
+pub enum PiAuthError {
+    /// The pi host answered and refused the command.
+    Rejected(String),
+    /// No pi host could answer.
+    Unavailable(String),
+}
+
+impl PiAuthError {
+    /// Sort a backend error into the two kinds, keeping only the part worth
+    /// showing.
+    ///
+    /// A rejection arrives wrapped as `agent error: pi <command> failed: <what
+    /// pi said>`, and the wrapper is noise to whoever reads it in the settings
+    /// pane — pi's own sentence ("Unknown provider: nope", "DeepSeek does not
+    /// support oauth login") already says everything. Transport errors keep
+    /// their full text, where the command name is the useful part.
+    pub fn classify(error: crate::error::AmuxError) -> Self {
+        let text = error.to_string();
+        match text.split_once(crate::runtime::pi_rpc::client::PiClient::REJECTED_MARKER) {
+            Some((_, detail)) if !detail.is_empty() => PiAuthError::Rejected(detail.to_string()),
+            _ => PiAuthError::Unavailable(text),
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            PiAuthError::Rejected(m) | PiAuthError::Unavailable(m) => m,
+        }
+    }
+}
+
+#[cfg(test)]
+mod pi_auth_error_tests {
+    use super::PiAuthError;
+    use crate::error::AmuxError;
+
+    /// The split decides an HTTP status: a rejection must not come back as a
+    /// 503 that a client would retry, and a dead host must not come back as a
+    /// 422 that blames the request.
+    #[test]
+    fn rejections_and_transport_failures_are_told_apart() {
+        let rejected = PiAuthError::classify(AmuxError::Agent(
+            "pi auth_login_start failed: Unknown provider: nope".into(),
+        ));
+        assert!(matches!(rejected, PiAuthError::Rejected(_)));
+        // The internal wrapper is stripped; pi's own sentence survives whole.
+        assert_eq!(rejected.message(), "Unknown provider: nope");
+
+        for transport in [
+            "pi auth_list: response timed out",
+            "pi auth_list: process exited before responding",
+        ] {
+            let e = PiAuthError::classify(AmuxError::Agent(transport.into()));
+            assert!(matches!(e, PiAuthError::Unavailable(_)), "{transport}");
+            // Kept whole, `AmuxError`'s own "agent error: " prefix included:
+            // for an unavailability the command name and the failure mode are
+            // the diagnostic, and there is no provider sentence to surface.
+            assert!(e.message().ends_with(transport), "{}", e.message());
+        }
+    }
+}
+
+impl std::fmt::Display for PiAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
 pub struct RuntimeSupervisor {
     agents: Arc<AsyncMutex<RuntimeManager>>,
     refresh: Arc<RuntimeRefreshCoordinator>,
@@ -1243,6 +1320,36 @@ impl RuntimeSupervisor {
                 .await
                 .map_err(|e| e.to_string())
         }
+    }
+
+    /// Forward one pi `auth_*` command (see `pi_rpc::auth`).
+    ///
+    /// Gated on the configured local agent actually being pi, and on its binary
+    /// being launchable, so the settings pane gets "pi is not the local agent"
+    /// / "pi binary not available" instead of a spawn failure deep in the pool.
+    pub async fn pi_auth_request(
+        &self,
+        workspace_path: &Path,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value, PiAuthError> {
+        let mut manager = self.agents.lock().await;
+        let agent_type = manager.default_agent_type();
+        if agent_type != amux::AgentType::Pi {
+            return Err(PiAuthError::Unavailable(format!(
+                "pi provider auth requires the pi local agent; this daemon runs {}",
+                backend_label(agent_type)
+            )));
+        }
+        let launch = manager.launch_config_for(agent_type);
+        if !backend_launchable(agent_type, &launch) {
+            return Err(PiAuthError::Unavailable(
+                "pi binary not available".to_string(),
+            ));
+        }
+        manager
+            .pi_auth_request(workspace_path, request)
+            .await
+            .map_err(PiAuthError::classify)
     }
 
     /// This device's last-known catalog for `workspace_path` under the

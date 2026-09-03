@@ -56,6 +56,23 @@ impl PiClient {
         self.write_line(&cmd).await
     }
 
+    /// Marker inside a [`PiClient::request`] error meaning the child answered
+    /// and *rejected* the command, as opposed to never answering at all.
+    ///
+    /// Both come back as `AmuxError::Agent`, but they are different kinds of
+    /// problem: a rejection is the caller's fault and will fail again
+    /// identically, while a timeout or a dead child is transport and may not.
+    /// Callers that turn these into HTTP statuses need to tell them apart, and
+    /// this constant lives next to the `format!` it matches so the two cannot
+    /// drift.
+    pub const REJECTED_MARKER: &'static str = " failed: ";
+
+    /// Whether an error from [`PiClient::request`] is a command rejection
+    /// rather than a transport failure.
+    pub fn is_rejection(error: &crate::error::AmuxError) -> bool {
+        error.to_string().contains(Self::REJECTED_MARKER)
+    }
+
     /// Send a command with a correlation `id` and await its
     /// `{"type":"response"}` line. Fails on `success: false`, process death
     /// (pending sender dropped) or a 30s timeout.
@@ -100,7 +117,8 @@ impl PiClient {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown error");
             return Err(crate::error::AmuxError::Agent(format!(
-                "pi {command} failed: {error}"
+                "pi {command}{marker}{error}",
+                marker = Self::REJECTED_MARKER
             )));
         }
         Ok(response)
@@ -128,5 +146,27 @@ impl PiClient {
     /// immediate "process exited" error instead of the 30s timeout.
     pub fn fail_all_pending(&self) {
         self.0.pending.lock().clear();
+    }
+
+    /// Whether both handles write to the same child. Clones share one `Inner`,
+    /// so this is identity, not equality — used to settle only the work that
+    /// belonged to a child that exited, rather than everything in flight.
+    pub fn same_process(&self, other: &PiClient) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// A client wired to a throwaway child, for tests that need a `PiClient`
+    /// value but never exercise the wire (registry bookkeeping, rejection
+    /// paths). `cat` is used only because it holds an open stdin; anything
+    /// written to it is discarded, and it exits when the test process does.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn cat for a test PiClient");
+        Self::new(child.stdin.take().expect("piped stdin"))
     }
 }

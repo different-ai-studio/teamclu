@@ -58,6 +58,22 @@
  *   {id, type:"get_commands", sessionId}       -> {commands}
  *   {type:"extension_ui_response", id, value|confirmed|cancelled}
  *
+ * Provider auth — pi's `/login`, driven from the TeamClu settings pane. These
+ * are host-level (no `sessionId`): credentials live in one device-wide
+ * `auth.json` and custom providers in one device-wide `models.json`, so they
+ * are a property of the host, not of any session. See the "provider auth"
+ * section below for why login is ack-then-event rather than one long response.
+ *
+ *   {id, type:"auth_list"}                     -> {agentDir, authPath, modelsPath, providers}
+ *   {id, type:"auth_login_start", loginId, providerId, authType}  -> {} (ack)
+ *   {id, type:"auth_login_cancel", loginId}    -> {}
+ *   {id, type:"auth_logout", providerId}       -> {}
+ *   {id, type:"auth_refresh", providerId?}     -> {aborted, errors}
+ *   {id, type:"auth_models_get"}               -> {path, providers}
+ *   {id, type:"auth_models_put", providerId, provider} -> {}
+ *   {id, type:"auth_models_delete", providerId}        -> {}
+ *   {type:"auth_prompt_response", loginId, promptId, value|cancelled}
+ *
  * Output (stdout, one JSON object per line):
  *
  *   {type:"host_ready", protocol, piVersion}
@@ -65,6 +81,10 @@
  *   {type:"<pi event>", sessionId, …}
  *   {type:"extension_ui_request", id, sessionId, method, …}
  *   {type:"extension_error", sessionId, …}
+ *   {type:"auth_event", loginId, event}            (pi's AuthEvent, verbatim)
+ *   {type:"auth_prompt", loginId, promptId, prompt}
+ *   {type:"auth_prompt_cancel", loginId, promptId}
+ *   {type:"auth_login_end", loginId, providerId, success, error?, refreshError?}
  *
  * `sessionId` is `pi:<absolute session file path>` — the same acp session id
  * amuxd already uses, so it stays self-contained across daemon restarts. The
@@ -73,6 +93,7 @@
  */
 
 import * as crypto from "node:crypto";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -447,6 +468,264 @@ async function closeSession(sessionId) {
 }
 
 // ---------------------------------------------------------------------------
+// provider auth (pi's `/login`)
+// ---------------------------------------------------------------------------
+
+/**
+ * pi's `/login` is `ModelRuntime.login(providerId, authType, interaction)`, and
+ * `AuthInteraction` is deliberately UI-neutral: `prompt(AuthPrompt)` returns a
+ * string, `notify(AuthEvent)` reports a URL / device code / progress line. pi's
+ * own TUI is one implementation of that interface; this is another, with the
+ * two calls projected onto the JSONL wire so the real UI can live in the
+ * desktop app.
+ *
+ * Everything provider-specific therefore stays inside pi: PKCE and the loopback
+ * callback for OpenRouter, the ChatGPT/Claude/Copilot subscription exchanges,
+ * device-code polling, the per-provider api-key prompts that also collect
+ * provider env (Cloudflare account id, Azure deployment map). We add no OAuth
+ * of our own — reimplementing those flows is exactly how they drift out of date.
+ *
+ * Login is **ack-then-event**, not a single long response: a browser round trip
+ * routinely outlives `PiClient`'s 30s request timeout, and a timed-out request
+ * would abandon a flow pi is still running. So `auth_login_start` acks
+ * immediately and the flow reports through `auth_event` / `auth_prompt` /
+ * `auth_login_end`, correlated by a caller-supplied `loginId`.
+ */
+
+/** loginId -> {controller, providerId, prompts: Map<promptId, {resolve, reject}>} */
+const logins = new Map();
+
+/** `~/.pi/agent` and friends — resolved by pi, never rebuilt from `homedir()`.
+ *
+ * `getAgentDir()` honours `PI_CODING_AGENT_DIR`, and the `.pi` segment itself
+ * comes from the package's `piConfig.configDir`, so a rebranded pi build puts
+ * these somewhere else entirely. Asking pi is the only way to stay right. */
+function authPaths() {
+  const agentDir = pi.getAgentDir();
+  return {
+    agentDir,
+    authPath: path.join(agentDir, "auth.json"),
+    modelsPath: path.join(agentDir, "models.json"),
+  };
+}
+
+/** Read `models.json`, or `null` when it does not exist.
+ *
+ * A malformed file throws rather than reading as "empty": treating a parse
+ * error as no-config would let the next write silently replace a hand-edited
+ * file with whatever the UI happened to be showing. */
+async function readModelsJson() {
+  const { modelsPath } = authPaths();
+  let raw;
+  try {
+    raw = await fs.readFile(modelsPath, "utf8");
+  } catch (e) {
+    if (e?.code === "ENOENT") return null;
+    throw new Error(`${modelsPath}: ${e?.message ?? e}`);
+  }
+  try {
+    // Strip a BOM: pi's own loader does, and an editor-written file can carry one.
+    return JSON.parse(raw.replace(/^﻿/, ""));
+  } catch (e) {
+    throw new Error(`${modelsPath} is not valid JSON: ${e?.message ?? e}`);
+  }
+}
+
+/** Write `models.json` atomically, preserving every key we do not model.
+ *
+ * `mutate` receives the parsed document (a fresh `{}` when absent) and edits it
+ * in place. Read-modify-write of the whole document is what keeps a hand-written
+ * `modelOverrides`, `oauth` or top-level key alive across an edit to one
+ * provider. 0600 because `apiKey` values live here. */
+async function writeModelsJson(mutate) {
+  const { agentDir, modelsPath } = authPaths();
+  const doc = (await readModelsJson()) ?? {};
+  if (!doc.providers || typeof doc.providers !== "object") doc.providers = {};
+  mutate(doc);
+  await fs.mkdir(agentDir, { recursive: true });
+  // tmp + rename: a crash mid-write must not leave pi with a truncated config
+  // it then refuses to load, taking every custom provider down with it.
+  const tmp = `${modelsPath}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await fs.rename(tmp, modelsPath);
+  return doc;
+}
+
+/** Reload `models.json` and recompose providers in this live host.
+ *
+ * `ModelRuntime.refresh()` re-reads the file (`ModelConfig.load(modelsPath)`)
+ * before rebuilding, so an edited custom provider takes effect without
+ * respawning — and without disturbing the sessions this host is running. */
+async function refreshModelRuntime(providerId, timeoutMs = 20_000) {
+  const result = await services.modelRuntime.refresh({
+    ...(providerId ? { providers: [providerId] } : {}),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  return {
+    aborted: result?.aborted === true,
+    errors: [...(result?.errors ?? new Map())].map(([provider, error]) => ({
+      provider,
+      error: error?.message ?? String(error),
+    })),
+  };
+}
+
+/** The provider list behind the settings pane.
+ *
+ * Mirrors `getLoginProviderOptions` in pi's interactive mode: one entry per
+ * provider, carrying every auth method it actually offers. `canLogin` is false
+ * for ambient-only api-key providers (Vertex ADC, an AWS profile) — those have
+ * no `login` on their `ApiKeyAuth`, and pi shows guidance instead of a key
+ * field. Rendering a key box for them would collect a credential pi will not
+ * read. */
+async function listAuthProviders() {
+  const runtime = services.modelRuntime;
+  const available = new Set(runtime.getAvailableSnapshot().map((m) => m.provider));
+  let customIds = new Set();
+  try {
+    customIds = new Set(Object.keys((await readModelsJson())?.providers ?? {}));
+  } catch (e) {
+    // A broken models.json must not blank the whole provider list; the custom
+    // section reports the parse error separately.
+    log(`models.json unreadable while listing providers: ${e?.message ?? e}`);
+  }
+
+  const providers = [];
+  for (const provider of runtime.getProviders()) {
+    const status = runtime.getProviderAuthStatus(provider.id);
+    const methods = [];
+    if (provider.auth?.oauth) {
+      methods.push({
+        authType: "oauth",
+        name: provider.auth.oauth.name,
+        loginLabel: provider.auth.oauth.loginLabel,
+        isSubscription: provider.auth.oauth.isSubscription === true,
+        canLogin: true,
+      });
+    }
+    if (provider.auth?.apiKey) {
+      methods.push({
+        authType: "api_key",
+        name: provider.auth.apiKey.name,
+        canLogin: typeof provider.auth.apiKey.login === "function",
+      });
+    }
+    providers.push({
+      id: provider.id,
+      name: provider.name,
+      configured: status.configured === true,
+      // "stored" | "runtime" | "environment" | "fallback" | "models_json_key" |
+      // "models_json_command" — the UI needs this to say *why* a provider is
+      // configured, and in particular that logging out will not undo an
+      // environment variable or a models.json key.
+      source: status.source,
+      label: status.label,
+      credentialType: status.configured
+        ? runtime.isUsingOAuth(provider.id)
+          ? "oauth"
+          : "api_key"
+        : undefined,
+      isSubscription: runtime.isUsingSubscription(provider.id),
+      custom: customIds.has(provider.id),
+      modelCount: runtime.getModels(provider.id).length,
+      availableModelCount: available.has(provider.id)
+        ? runtime.getAvailableSnapshot().filter((m) => m.provider === provider.id).length
+        : 0,
+      methods,
+    });
+  }
+  providers.sort((a, b) => a.name.localeCompare(b.name));
+  return providers;
+}
+
+/** Reject and forget every prompt still outstanding on a login. */
+function settlePrompts(entry, message) {
+  for (const pending of [...entry.prompts.values()]) pending.reject(new Error(message));
+  entry.prompts.clear();
+}
+
+function startLogin(loginId, providerId, authType) {
+  const controller = new AbortController();
+  const entry = { controller, providerId, prompts: new Map() };
+  logins.set(loginId, entry);
+
+  const interaction = {
+    signal: controller.signal,
+    notify: (event) => out({ type: "auth_event", loginId, event }),
+    prompt: (prompt) =>
+      new Promise((resolve, reject) => {
+        const promptId = crypto.randomUUID();
+        // `AuthPrompt.signal` is an AbortSignal — not serializable, and not
+        // ours to forward. It is stripped here and honoured below.
+        const { signal, ...wire } = prompt;
+        let onAbort;
+        const cleanup = () => {
+          entry.prompts.delete(promptId);
+          if (onAbort && signal) signal.removeEventListener("abort", onAbort);
+        };
+        if (signal?.aborted) {
+          reject(new Error("Login cancelled"));
+          return;
+        }
+        if (signal) {
+          // Per-prompt cancellation, distinct from cancelling the login: pi
+          // races a `manual_code` prompt against its loopback callback server
+          // and aborts the prompt when the callback wins. Without this the UI
+          // would sit on a paste-your-code box that pi has already moved past.
+          onAbort = () => {
+            cleanup();
+            out({ type: "auth_prompt_cancel", loginId, promptId });
+            reject(new Error("Login cancelled"));
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+        }
+        entry.prompts.set(promptId, {
+          resolve: (value) => {
+            cleanup();
+            resolve(value);
+          },
+          reject: (error) => {
+            cleanup();
+            reject(error);
+          },
+        });
+        out({ type: "auth_prompt", loginId, promptId, prompt: wire });
+      }),
+  };
+
+  void services.modelRuntime
+    .login(providerId, authType, interaction)
+    .then(async () => {
+      // Same follow-up as interactive mode: reload this provider's catalog so
+      // the models it just unlocked appear without a respawn. A refresh failure
+      // is reported but does not demote the login — the credential is stored,
+      // and pi falls back to the cached catalog.
+      let refreshError;
+      try {
+        const result = await refreshModelRuntime(providerId, 15_000);
+        if (result.aborted) refreshError = "model catalog refresh timed out";
+        else if (result.errors.length > 0) refreshError = result.errors[0].error;
+      } catch (e) {
+        refreshError = e?.message ?? String(e);
+      }
+      out({ type: "auth_login_end", loginId, providerId, success: true, refreshError });
+    })
+    .catch((e) => {
+      out({
+        type: "auth_login_end",
+        loginId,
+        providerId,
+        success: false,
+        error: e?.message ?? String(e),
+      });
+    })
+    .finally(() => {
+      settlePrompts(entry, "Login finished");
+      logins.delete(loginId);
+    });
+}
+
+// ---------------------------------------------------------------------------
 // commands
 // ---------------------------------------------------------------------------
 
@@ -641,6 +920,101 @@ async function handleCommand(command) {
       return ok(id, "get_commands", { commands });
     }
 
+    // ── provider auth ────────────────────────────────────────────────────────
+
+    case "auth_list": {
+      const { agentDir, authPath, modelsPath } = authPaths();
+      return ok(id, "auth_list", {
+        agentDir,
+        authPath,
+        modelsPath,
+        providers: await listAuthProviders(),
+      });
+    }
+
+    case "auth_login_start": {
+      if (!command.loginId) return fail(id, "auth_login_start", "loginId is required");
+      if (!command.providerId) return fail(id, "auth_login_start", "providerId is required");
+      const authType = command.authType;
+      if (authType !== "oauth" && authType !== "api_key") {
+        return fail(id, "auth_login_start", `Unsupported authType: ${authType}`);
+      }
+      if (logins.has(command.loginId)) {
+        return fail(id, "auth_login_start", `Login already running: ${command.loginId}`);
+      }
+      const provider = services.modelRuntime.getProvider(command.providerId);
+      if (!provider) {
+        return fail(id, "auth_login_start", `Unknown provider: ${command.providerId}`);
+      }
+      // Refused here rather than left to pi so the caller gets a real error
+      // instead of a login that emits nothing and never ends. Ambient api-key
+      // providers (AWS profile, Vertex ADC) land here too — they have no
+      // interactive setup at all.
+      const method = authType === "oauth" ? provider.auth?.oauth : provider.auth?.apiKey;
+      if (!method || (authType === "api_key" && typeof method.login !== "function")) {
+        return fail(
+          id,
+          "auth_login_start",
+          `${provider.name} does not support ${authType} login`,
+        );
+      }
+      startLogin(command.loginId, command.providerId, authType);
+      return ok(id, "auth_login_start");
+    }
+
+    case "auth_login_cancel": {
+      const entry = logins.get(command.loginId);
+      if (entry) {
+        // Abort first so a provider flow blocked on its own network wait
+        // unwinds, then reject the prompt it is parked on: the interaction
+        // signal alone does not settle a promise we created.
+        entry.controller.abort();
+        settlePrompts(entry, "Login cancelled");
+      }
+      return ok(id, "auth_login_cancel");
+    }
+
+    case "auth_logout": {
+      if (!command.providerId) return fail(id, "auth_logout", "providerId is required");
+      await services.modelRuntime.logout(command.providerId, {
+        signal: AbortSignal.timeout(15_000),
+      });
+      return ok(id, "auth_logout");
+    }
+
+    case "auth_refresh":
+      return ok(id, "auth_refresh", await refreshModelRuntime(command.providerId));
+
+    case "auth_models_get": {
+      const { modelsPath } = authPaths();
+      return ok(id, "auth_models_get", {
+        path: modelsPath,
+        providers: (await readModelsJson())?.providers ?? {},
+      });
+    }
+
+    case "auth_models_put": {
+      if (!command.providerId) return fail(id, "auth_models_put", "providerId is required");
+      if (!command.provider || typeof command.provider !== "object") {
+        return fail(id, "auth_models_put", "provider must be an object");
+      }
+      await writeModelsJson((doc) => {
+        doc.providers[command.providerId] = command.provider;
+      });
+      // Full rebuild, not `{providers:[id]}`: a brand-new provider id has
+      // nothing to recompose yet, and `recomposeProvider` on an id the runtime
+      // has never seen leaves it absent from the snapshot.
+      return ok(id, "auth_models_put", await refreshModelRuntime());
+    }
+
+    case "auth_models_delete": {
+      if (!command.providerId) return fail(id, "auth_models_delete", "providerId is required");
+      await writeModelsJson((doc) => {
+        delete doc.providers[command.providerId];
+      });
+      return ok(id, "auth_models_delete", await refreshModelRuntime());
+    }
+
     default:
       return fail(id, command.type ?? "unknown", `Unknown command: ${command.type}`);
   }
@@ -668,6 +1042,18 @@ async function handleLine(line) {
     }
     return;
   }
+  if (parsed?.type === "auth_prompt_response") {
+    const pending = logins.get(parsed.loginId)?.prompts.get(parsed.promptId);
+    if (!pending) {
+      // Normal on a race: pi aborted this prompt (its callback server won) at
+      // the same moment the user answered it. The flow is already past it.
+      log(`auth_prompt_response for unknown prompt ${parsed.loginId}/${parsed.promptId}`);
+      return;
+    }
+    if (parsed.cancelled) pending.reject(new Error("Login cancelled"));
+    else pending.resolve(String(parsed.value ?? ""));
+    return;
+  }
   try {
     const response = await handleCommand(parsed);
     if (response) out(response);
@@ -682,8 +1068,42 @@ async function handleLine(line) {
 // interleave, or both would build an AgentSession over the same jsonl. Prompts
 // are not affected — `prompt` returns as soon as preflight answers, and the
 // turn itself runs concurrently with everything else.
+//
+// Provider auth gets its own queue rather than sharing that one. It still needs
+// serializing among itself — two `auth_models_put`s must not interleave their
+// read-modify-write of `models.json` — but `auth_refresh` awaits a network
+// catalog fetch that can take many seconds, and on the shared queue that would
+// stall every session command behind it, an `abort` included. The two never
+// touch the same state, so nothing is lost by letting them run in parallel.
+const AUTH_COMMANDS = new Set([
+  "auth_list",
+  "auth_login_start",
+  "auth_login_cancel",
+  "auth_logout",
+  "auth_refresh",
+  "auth_models_get",
+  "auth_models_put",
+  "auth_models_delete",
+  "auth_prompt_response",
+]);
+
 let queue = Promise.resolve();
+let authQueue = Promise.resolve();
 function enqueue(line) {
+  // Peeking at the type costs one parse that `handleLine` repeats. Worth it:
+  // routing has to happen before the line is queued, and a line that fails to
+  // parse belongs on the session queue, which is where the parse error is
+  // already reported.
+  let type;
+  try {
+    type = JSON.parse(line)?.type;
+  } catch {
+    type = undefined;
+  }
+  if (AUTH_COMMANDS.has(type)) {
+    authQueue = authQueue.then(() => handleLine(line)).catch((e) => log(`auth loop error: ${e}`));
+    return;
+  }
   queue = queue.then(() => handleLine(line)).catch((e) => log(`command loop error: ${e}`));
 }
 

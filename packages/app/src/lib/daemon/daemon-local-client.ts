@@ -309,6 +309,17 @@ async function daemonFetchData<T>(path: string, init?: RequestInit): Promise<T> 
   return result.data
 }
 
+/**
+ * `daemonFetchData` for callers in sibling modules.
+ *
+ * Exported so a self-contained daemon surface can live in its own file rather
+ * than growing this one; it carries the same connection discovery, token
+ * exchange and single reconnect retry. See `daemon-pi-auth.ts`.
+ */
+export async function daemonRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  return daemonFetchData<T>(path, init)
+}
+
 type DaemonMqttRecoveryReason =
   | 'startup'
   | 'visibility_resume'

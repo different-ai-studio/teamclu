@@ -1054,6 +1054,24 @@ impl RuntimeManager {
         Ok(models)
     }
 
+    /// Forward one pi `auth_*` command to the local agent backend.
+    ///
+    /// No `record_catalog` alongside it, unlike the probe above: an auth
+    /// command's payload is a provider list or a write ack, not a model
+    /// catalog. Callers that change the catalog (login, custom-provider edits)
+    /// let the next probe pick it up.
+    pub async fn pi_auth_request(
+        &mut self,
+        workspace_path: &std::path::Path,
+        request: serde_json::Value,
+    ) -> crate::error::Result<serde_json::Value> {
+        self.agent_backend
+            .lock()
+            .await
+            .pi_auth_request(workspace_path, request)
+            .await
+    }
+
     pub async fn probe_catalog_models_with_context(
         &mut self,
         context: crate::runtime::execution_context::ExecutionContext,
