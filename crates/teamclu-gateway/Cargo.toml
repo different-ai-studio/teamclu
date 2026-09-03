@@ -45,7 +45,15 @@ anyhow = "1"
 regex = "1"
 url = "2"
 nanoid = "0.4"
-libsql = "0.9"
+# PERF-20 / STR-7: local SQLite files only. libsql's default features are
+# `core + replication + remote + sync + tls`, which drag in tonic, tonic-web,
+# tower-http, hyper 0.14 and hyper-rustls — a second HTTP stack and a second
+# TLS stack, for a replication client nothing here opens. WAL comes from an
+# explicit `PRAGMA journal_mode=WAL` (local_cache/store.rs), not from the
+# `sync` feature. Feature unification means BOTH crates have to say this:
+# resolver 2 unifies features across the workspace, so one of them keeping
+# the defaults re-enables them for the other.
+libsql = { version = "0.9", default-features = false, features = ["core"] }
 indexmap = { version = "2", features = ["serde"] }
 urlencoding = "2"
 getrandom = "0.2"

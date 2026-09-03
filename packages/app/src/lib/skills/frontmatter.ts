@@ -25,9 +25,9 @@
  * exotic field should still load, it just does not get structured access.
  */
 
-export type FrontmatterValue = string | string[]
+type FrontmatterValue = string | string[]
 
-export interface ParsedFrontmatter {
+interface ParsedFrontmatter {
   /** Parsed key/value pairs. Keys keep their original casing. */
   data: Record<string, FrontmatterValue>
   /** Everything after the closing `---`. */

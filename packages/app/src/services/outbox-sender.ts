@@ -11,7 +11,7 @@
 // be called once on app boot after the outbox store is hydrated.
 
 import { create as createMessage, toBinary } from "@bufbuild/protobuf";
-import { isAgentActorType } from "@/lib/actor-type";
+import { isAgentActorType } from "@/lib/actor/actor-type";
 import { BackendError, getBackend } from "@/lib/backend";
 import { ensureAgentRuntimesForSession } from "@/lib/teamclu/ensure-agent-runtime";
 import { resolveSessionWorkspaceHintForRuntimeStart } from "@/lib/teamclu/resolve-runtime-start-workspace";
@@ -22,7 +22,7 @@ import {
   SessionMessageEnvelopeSchema,
   type LiveEventEnvelope,
 } from "@/lib/proto/teamclu_pb";
-import { mqttPublish } from "@/lib/mqtt-bridge";
+import { mqttPublish } from "@/lib/mqtt/mqtt-bridge";
 import {
   OUTBOX_MAX_ATTEMPTS,
   outboxBackoffMs,
@@ -34,11 +34,11 @@ import {
   sessionFlowError,
   sessionFlowLog,
   summarizeText,
-} from "@/lib/session-flow-log";
-import { bumpSessionListLastMessage } from "@/lib/session-list-preview";
-import { maybeAutoTitleSessionFromFirstMessage } from "@/lib/session-auto-title";
+} from "@/lib/session/session-flow-log";
+import { bumpSessionListLastMessage } from "@/lib/session/session-list-preview";
+import { maybeAutoTitleSessionFromFirstMessage } from "@/lib/session/session-auto-title";
 import { useSessionListStore } from "@/stores/session-list-store";
-import { runtimeForkFromForSession } from "@/lib/thread-fork";
+import { runtimeForkFromForSession } from "@/lib/session/thread-fork";
 
 const TICK_MS = 1000;
 const DELIVERED_GC_MS = 5000;
@@ -95,7 +95,7 @@ async function resolveLocalDaemonActorIdIfTauri(): Promise<string | null> {
   const { isTauri } = await import("@/lib/utils");
   if (!isTauri()) return null;
   try {
-    const { getLocalDaemonActorId } = await import("@/lib/daemon-agent-admin");
+    const { getLocalDaemonActorId } = await import("@/lib/daemon/daemon-agent-admin");
     return await getLocalDaemonActorId();
   } catch {
     return null;
@@ -116,12 +116,12 @@ async function ensureLocalRuntimeForFastPath(
   entry: OutboxEntry,
   localDaemonActorId: string,
 ): Promise<void> {
-  const { runtimeStart } = await import("@/lib/teamclu-rpc");
+  const { runtimeStart } = await import("@/lib/daemon/teamclu-rpc");
   const { AgentType } = await import("@/lib/proto/amux_pb");
   let agentType = AgentType.OPENCODE;
   try {
-    const { getDaemonLocalAgent } = await import("@/lib/daemon-local-client");
-    const { resolveAmuxAgentType } = await import("@/lib/amux-agent-type");
+    const { getDaemonLocalAgent } = await import("@/lib/daemon/daemon-local-client");
+    const { resolveAmuxAgentType } = await import("@/lib/agent/amux-agent-type");
     agentType = resolveAmuxAgentType(await getDaemonLocalAgent());
   } catch {
     // Keep OPENCODE — matches daemon default when config is unavailable.
@@ -356,7 +356,7 @@ async function attemptLocalFastPath(
 
   await ensureLocalRuntimeForFastPath(entry, localDaemonActorId);
 
-  const { ingestSessionLiveLocally } = await import("@/lib/daemon-local-client");
+  const { ingestSessionLiveLocally } = await import("@/lib/daemon/daemon-local-client");
   sessionFlowLog("outbox_sender.local_ingest.begin", {
     messageId: entry.messageId,
     sessionId: entry.sessionId,

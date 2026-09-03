@@ -9,7 +9,6 @@ use tokio::sync::RwLock;
 use super::delivery::DeliveryManager;
 use super::storage::CronStorage;
 use super::types::*;
-use crate::process_util::CommandNoWindow;
 
 const CRON_RUN_HEARTBEAT_INTERVAL_SECS: u64 = 30;
 const STALE_RUN_ERROR: &str =
@@ -120,7 +119,7 @@ impl CronScheduler {
             return;
         }
 
-        println!(
+        log::info!(
             "[Cron] Reconciling {} interrupted run(s) from previous executor (marking Stale)",
             running.len()
         );
@@ -147,7 +146,7 @@ impl CronScheduler {
         let current_gen = *gen;
         drop(gen);
 
-        println!(
+        log::info!(
             "[Cron] Scheduler started (gen: {}, tick every 15 seconds)",
             current_gen
         );
@@ -158,9 +157,10 @@ impl CronScheduler {
                 // Check if this loop's generation is still current
                 let active_gen = *scheduler.generation.read().await;
                 if active_gen != current_gen {
-                    println!(
+                    log::info!(
                         "[Cron] Scheduler gen {} stopped (current: {})",
-                        current_gen, active_gen
+                        current_gen,
+                        active_gen
                     );
                     break;
                 }
@@ -181,7 +181,7 @@ impl CronScheduler {
     pub async fn stop(&self) {
         let mut gen = self.generation.write().await;
         *gen += 1;
-        println!("[Cron] Scheduler stop requested (new gen: {})", *gen);
+        log::info!("[Cron] Scheduler stop requested (new gen: {})", *gen);
     }
 
     /// One tick of the scheduler - check all jobs and fire due ones
@@ -209,9 +209,10 @@ impl CronScheduler {
             };
 
             if is_due {
-                println!(
+                log::info!(
                     "[Cron] Job '{}' ({}) is due, executing...",
-                    job.name, job.id
+                    job.name,
+                    job.id
                 );
 
                 // IMPORTANT: Update next_run_at IMMEDIATELY before spawning,
@@ -267,9 +268,11 @@ impl CronScheduler {
             () => {
                 let active_gen = *self.generation.read().await;
                 if active_gen != my_generation {
-                    println!(
+                    log::info!(
                         "[Cron] Job '{}' aborted: scheduler restarted (gen {} -> {})",
-                        job.name, my_generation, active_gen
+                        job.name,
+                        my_generation,
+                        active_gen
                     );
                     record.status = RunStatus::Failed;
                     record.finished_at = Some(Utc::now());
@@ -452,14 +455,15 @@ impl CronScheduler {
                     {
                         Ok(()) => {
                             record.delivery_status = Some("delivered".to_string());
-                            println!(
+                            log::info!(
                                 "[Cron] Delivered results for job '{}' via {:?}",
-                                job.name, delivery.channel
+                                job.name,
+                                delivery.channel
                             );
                         }
                         Err(e) => {
                             let err_msg = format!("Delivery failed: {}", e);
-                            println!("[Cron] {}", err_msg);
+                            log::info!("[Cron] {}", err_msg);
                             record.delivery_status = Some(err_msg.clone());
                             delivery_failed = true;
                             if !delivery.best_effort {
@@ -496,19 +500,19 @@ impl CronScheduler {
         // Handle delete_after_run for one-time jobs
         // Do NOT delete if delivery failed — user should see the result and retry
         if job.delete_after_run && job.schedule.kind == ScheduleKind::At && !delivery_failed {
-            println!(
+            log::info!(
                 "[Cron] Deleting one-time job '{}' after fully successful run",
                 job.name
             );
             let _ = self.storage.remove_job(&job.id).await;
         } else if delivery_failed && job.delete_after_run {
-            println!(
+            log::info!(
                 "[Cron] Keeping one-time job '{}' because delivery failed (can retry)",
                 job.name
             );
         }
 
-        println!("[Cron] Job '{}' completed successfully", job.name);
+        log::info!("[Cron] Job '{}' completed successfully", job.name);
     }
 
     /// Update job timestamps after a run.
@@ -523,7 +527,7 @@ impl CronScheduler {
         // Verify we're still in the same workspace before updating
         let current_workspace = self.storage.get_workspace_path().await;
         if current_workspace.as_deref() != Some(expected_workspace) {
-            println!(
+            log::info!(
                 "[Cron] Skip update_job_after_run for job '{}': workspace changed (expected '{}', now '{:?}')",
                 job.name, expected_workspace, current_workspace
             );
@@ -564,11 +568,9 @@ impl CronScheduler {
             }
             ScheduleKind::Every => {
                 // Interval: add every_ms to the last run (or now if first run)
-                if let Some(ms) = job.schedule.every_ms {
-                    Some(after + chrono::Duration::milliseconds(ms as i64))
-                } else {
-                    None
-                }
+                job.schedule
+                    .every_ms
+                    .map(|ms| after + chrono::Duration::milliseconds(ms as i64))
             }
             ScheduleKind::Cron => {
                 // Cron expression: find the next occurrence.
@@ -591,7 +593,7 @@ impl CronScheduler {
                                 .and_then(|s| match Tz::from_str(s) {
                                     Ok(tz) => Some(tz),
                                     Err(_) => {
-                                        eprintln!(
+                                        log::warn!(
                                             "[Cron] Unknown IANA timezone '{}', using system local",
                                             s
                                         );
@@ -617,7 +619,7 @@ impl CronScheduler {
                             }
                         }
                         Err(e) => {
-                            eprintln!("[Cron] Invalid cron expression '{}': {}", expr, e);
+                            log::error!("[Cron] Invalid cron expression '{}': {}", expr, e);
                             None
                         }
                     }

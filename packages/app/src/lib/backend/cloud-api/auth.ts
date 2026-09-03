@@ -1,7 +1,7 @@
-import type { AuthBackend, AuthClaimResult, AuthSession, PendingInvite, Unsubscribe } from "../types";
-import { BackendError } from "../errors";
-import type { CloudApiClient } from "./http";
-import { isChromeExtension } from "@/lib/platform";
+import type { AuthBackend, AuthClaimResult, AuthSession, PendingInvite, Unsubscribe } from "@/lib/backend/types";
+import { BackendError } from "@/lib/backend/errors";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
+import { isChromeExtension } from "@/lib/config/platform";
 import {
   adoptRefreshToken,
   createAuthClient,

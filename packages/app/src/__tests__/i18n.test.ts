@@ -1,4 +1,4 @@
-import { appShortName } from '@/lib/build-config'
+import { appShortName } from '@/lib/config/build-config'
 import { vi } from 'vitest'
 
 // Mock localStorage BEFORE importing i18n (i18n.init calls getUserLanguage which uses localStorage)

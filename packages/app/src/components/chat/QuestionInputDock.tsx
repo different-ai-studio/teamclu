@@ -6,10 +6,10 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import type { PendingQuestionState } from "@/stores/session-types";
 
-export type QuestionInputAppearance = "overlay" | "stack";
+type QuestionInputAppearance = "overlay" | "stack";
 
 interface QuestionInputDockProps {
   pendingQuestion: PendingQuestionState;
@@ -311,7 +311,7 @@ export function QuestionInputDock({
           </div>
 
           <div className={cn(isStack ? "px-3.5 pb-3 pt-2" : "px-4 pb-3 pt-3")}>
-            <QuestionMarkdown>{currentQuestion.question}</QuestionMarkdown>
+            <QuestionMarkdown>{currentQuestion.question ?? ""}</QuestionMarkdown>
 
             <div className="space-y-1">
               {currentQuestion.options?.map((option: any, optionIndex: number) => {

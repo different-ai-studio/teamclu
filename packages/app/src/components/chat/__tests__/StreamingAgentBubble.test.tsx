@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
-import { STREAM_AWAITING_NEXT_EVENT_MS } from "@/hooks/useStreamAwaitingNextEvent";
+import { STREAM_AWAITING_NEXT_EVENT_MS } from "@/hooks/use-stream-awaiting-next-event";
 import { StreamingAgentBubble } from "../StreamingAgentBubble";
 import { selectStreamsForSession, useV2StreamingStore } from "@/stores/v2-streaming-store";
 

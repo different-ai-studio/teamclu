@@ -13,13 +13,9 @@
 //! Cloud API current-team store.
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
-use crate::commands::oss_sync::error::SyncError;
-use crate::commands::oss_sync::fc_client::FcClient;
-use crate::commands::oss_sync::resolve_runtime_fc_endpoint;
+use crate::commands::team_secret_store;
 use crate::commands::team_sync_proxy;
-use crate::commands::{team_secret_store, TEAM_REPO_DIR};
 use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +145,7 @@ pub(crate) fn global_team_dir_display(team_id: &str) -> Option<String> {
 #[cfg(test)]
 mod link_status_tests {
     use super::*;
+    use crate::commands::TEAM_REPO_DIR;
 
     #[test]
     fn global_path_contains_team_and_amuxd() {

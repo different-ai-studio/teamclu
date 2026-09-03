@@ -22,9 +22,9 @@ vi.mock('../shared', () => ({
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
-vi.mock('@/lib/amuxd-channels', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/amuxd-channels')>(
-    '@/lib/amuxd-channels',
+vi.mock('@/lib/daemon/amuxd-channels', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/daemon/amuxd-channels')>(
+    '@/lib/daemon/amuxd-channels',
   )
   return {
     ...actual,
@@ -34,7 +34,7 @@ vi.mock('@/lib/amuxd-channels', async () => {
 
 // ── imports after mocks ──────────────────────────────────────────────────────
 
-import * as api from '@/lib/amuxd-channels'
+import * as api from '@/lib/daemon/amuxd-channels'
 import { GatewayStatusCard } from '../GatewayStatusCard'
 
 // ── shared props ─────────────────────────────────────────────────────────────

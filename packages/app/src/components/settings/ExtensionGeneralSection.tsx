@@ -22,8 +22,8 @@ import {
   removeUrlPatternFromConfig,
   writeLinkHoverConfig,
   type LinkHoverConfig,
-} from '@/lib/extension-link-hover'
-import { clearLinkSessionMapForTeam } from '@/lib/extension-link-session'
+} from '@/lib/extension/link-hover'
+import { clearLinkSessionMapForTeam } from '@/lib/extension/link-session'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { SettingCard, SectionHeader } from './shared'
 

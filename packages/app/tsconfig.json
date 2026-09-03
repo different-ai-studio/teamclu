@@ -19,7 +19,7 @@
     "strict": true,
     /* TODO Phase 2: re-enable. Disabled while Phase 1E compat shim
        leaves intentionally-unused `_var` declarations in consumer files. */
-    "noUnusedLocals": false,
+    "noUnusedLocals": true,
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,

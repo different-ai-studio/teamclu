@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent/agent-device-reachability'
 import { ensureAgentRuntimesForSession } from '@/lib/teamclu/ensure-agent-runtime'
 import type { EngagedAgentUiEntry } from '@/hooks/use-engaged-agent-ui-states'
 import {
@@ -47,7 +47,7 @@ export function agentIdsNeedingRecoverableRuntimeWake(
 }
 
 /** Same-session signature wakes: only connecting (offline recovers on focus / retry). */
-export function agentIdsNeedingConnectingWake(
+function agentIdsNeedingConnectingWake(
   entries: ReadonlyArray<EngagedAgentUiEntry>,
   sessionRuntimeByAgent?: ReadonlyMap<string, string> | null,
 ): string[] {
@@ -68,7 +68,7 @@ export function hasConnectingEngagedAgent(
 }
 
 /** Offline pills that may recover (transport glitch), excluding hard-offline agents. */
-export function hasRecoverableOfflineEngagedAgent(
+function hasRecoverableOfflineEngagedAgent(
   entries: ReadonlyArray<EngagedAgentUiEntry>,
   _presenceByActor?: Record<string, { online: boolean } | undefined>,
 ): boolean {

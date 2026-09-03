@@ -3,9 +3,9 @@ import type {
   IdeaSyncRow,
   SessionParticipantSyncRow,
   SyncBackend,
-} from "../types";
-import type { CloudApiClient } from "./http";
-import { fetchAllSyncPages } from "./sync-paging";
+} from "@/lib/backend/types";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
+import { fetchAllSyncPages } from "@/lib/backend/cloud-api/sync-paging";
 
 export function createSyncModule(client: CloudApiClient): SyncBackend {
   return {

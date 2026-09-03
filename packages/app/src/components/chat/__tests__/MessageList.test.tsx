@@ -7,14 +7,14 @@ globalThis.ResizeObserver = vi.fn().mockImplementation(function () {
 
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { readFile } from '@tauri-apps/plugin-fs';
-import { useSessionStore } from '@/stores/session';
-import { useStreamingStore } from '@/stores/streaming';
+import { useSessionStore } from '@/stores/session-store';
+import { useSessionListStore } from '@/stores/session-list-store';
 import {
   useV2StreamingStore,
   type AgentStreamEntry,
 } from '@/stores/v2-streaming-store';
 import { MessageList } from '../MessageList';
-import type { Message } from '@/stores/session';
+import type { Message } from '@/stores/session-types';
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
@@ -76,12 +76,7 @@ function makeAssistantWithTokens(
 describe('MessageList', () => {
   beforeEach(() => {
     readFileMock.mockResolvedValue(new Uint8Array([1, 2, 3]));
-    useStreamingStore.setState({
-      streamingMessageId: null,
-      streamingContent: '',
-      streamingUpdateTrigger: 0,
-      childSessionStreaming: {},
-    });
+    useSessionListStore.setState({ loading: false });
     useSessionStore.setState({
       isLoading: false,
       messageQueue: [],
@@ -143,7 +138,8 @@ describe('MessageList', () => {
   });
 
   it('keeps welcome emptyState visible while session list isLoading with no active session', () => {
-    useSessionStore.setState({ isLoading: true, activeSessionId: null });
+    useSessionListStore.setState({ loading: true });
+    useSessionStore.setState({ activeSessionId: null });
     const emptyStateNode = <div data-testid="welcome-empty">Ready when you are</div>;
 
     const { getByTestId, queryByTestId } = render(
@@ -161,7 +157,8 @@ describe('MessageList', () => {
   });
 
   it('shows session loading spinner when isLoading with an active session and no messages', () => {
-    useSessionStore.setState({ isLoading: true, activeSessionId: 'sess-1' });
+    useSessionListStore.setState({ loading: true });
+    useSessionStore.setState({ activeSessionId: 'sess-1' });
 
     const { getByTestId, queryByTestId } = render(
       <MessageList

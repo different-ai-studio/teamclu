@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('@/lib/amuxd-channels', () => {
+vi.mock('@/lib/daemon/amuxd-channels', () => {
   class AmuxdUnreachableError extends Error {
     constructor() {
       super('amuxd unreachable')
@@ -22,7 +22,7 @@ import {
   saveChannelConfig,
   reloadChannels,
   AmuxdUnreachableError,
-} from '@/lib/amuxd-channels'
+} from '@/lib/daemon/amuxd-channels'
 
 describe('createWecomActions', () => {
   beforeEach(() => {

@@ -26,11 +26,11 @@ const {
 }))
 
 vi.mock('@/lib/utils', () => ({ isTauri: () => true }))
-vi.mock('@/lib/effective-workspace', () => ({
+vi.mock('@/lib/workspace/effective-workspace', () => ({
   effectiveWorkspacePath: async () => '/Users/me/project',
 }))
-vi.mock('@/lib/daemon-local-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/daemon-local-client')>()
+vi.mock('@/lib/daemon/daemon-local-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/daemon/daemon-local-client')>()
   return {
     ...actual,
     notifyDaemonSkillsChanged,
@@ -46,7 +46,7 @@ vi.mock('@/lib/backend/provider', () => ({
 vi.mock('@/lib/auth/session-store', () => ({
   getFreshAccessToken: async () => 'token',
 }))
-vi.mock('@/lib/server-config', () => ({
+vi.mock('@/lib/config/server-config', () => ({
   getEffectiveServerConfig: async () => ({ cloudApiUrl: 'https://api.example' }),
 }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke }))

@@ -51,8 +51,6 @@ tauri-plugin-aptabase = "1.0"
 sys-locale = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-prost = "0.13"
-prost-types = "0.13"
 teamclu-proto = { path = "../../crates/teamclu-proto" }
 teamclu-types = { path = "../../crates/teamclu-types" }
 teamclu-skillpack = { path = "../../crates/teamclu-skillpack" }
@@ -64,9 +62,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "blo
 rumqttc = { version = "0.24", features = ["websocket"] }
 notify = { version = "8", features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.7"
-futures = "0.3"
 base64 = "0.22"
-tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 flate2 = "1"
 tar = "0.4"
 minisign-verify = "0.2"
@@ -77,9 +73,16 @@ cron = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.9"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
-jsonwebtoken = "9"
 regex = "1"
-libsql = "0.9"
+# PERF-20 / STR-7: local SQLite files only. libsql's default features are
+# `core + replication + remote + sync + tls`, which drag in tonic, tonic-web,
+# tower-http, hyper 0.14 and hyper-rustls — a second HTTP stack and a second
+# TLS stack, for a replication client nothing here opens. WAL comes from an
+# explicit `PRAGMA journal_mode=WAL` (local_cache/store.rs), not from the
+# `sync` feature. Feature unification means BOTH crates have to say this:
+# resolver 2 unifies features across the workspace, so one of them keeping
+# the defaults re-enables them for the other.
+libsql = { version = "0.9", default-features = false, features = ["core"] }
 nanoid = "0.4"
 # Gateway crate
 teamclu-gateway = { path = "../../crates/teamclu-gateway" }
@@ -93,13 +96,9 @@ thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }
 tauri-plugin-log = "2"
 
-filetime = "0.2"
-arboard = "3"
-futures-lite = "2"
 
 # axum: E2E test control server (debug builds only, lib.rs)
 axum = "0.7"
-tower-http = { version = "0.6", features = ["cors"] }
 gethostname = "1.1.0"
 # whoami: cross-platform OS account real-name / username for seeding default
 # member display names (macOS/Windows/Linux via one API).
@@ -122,15 +121,9 @@ tauri-plugin-mcp = { path = "tauri-plugin-mcp-local", features = ["devtools"] }
 
 # Crypto (used by shared_secrets_crypto, device_token)
 aes-gcm = "0.10"
-hmac = "0.12"
-hkdf = "0.12"
-hex = "0.4"
-getrandom = "0.2"
 url = "2"
 log = "0.4"
 rand = "0.8"
-tokio-util = "0.7"
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 sentry = { version = "0.47.0", features = ["backtrace", "debug-images"] }
 portable-pty = "0.8"
@@ -163,5 +156,8 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+# `ServiceExt::oneshot`, so the introspect router can be driven end-to-end in a
+# unit test without binding a port (STR-5/STR-10).
+tower = { version = "0.5", features = ["util"] }
 wiremock = "0.5"
 loro = "1"

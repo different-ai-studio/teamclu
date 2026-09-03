@@ -5,7 +5,7 @@ import {
   openTerminal as openTerminalIpc,
 } from "@/lib/terminal/client";
 
-export type TerminalTabId = string;
+type TerminalTabId = string;
 
 export interface TerminalTab {
   id: TerminalTabId;

@@ -16,8 +16,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { getBackend } from '@/lib/backend'
-import { formatAppDataCell, cellEditValue, parseCellInput } from '@/lib/app-data-cell'
-import { appDataRowKey } from '@/lib/app-data-row-key'
+import { formatAppDataCell, cellEditValue, parseCellInput } from '@/lib/apps/app-data-cell'
+import { appDataRowKey } from '@/lib/apps/app-data-row-key'
 import type { AppDataRowsPage, AppDataTable, AppRow } from '@/lib/backend/types'
 
 interface AppDataBrowserProps {

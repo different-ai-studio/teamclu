@@ -46,11 +46,11 @@ vi.mock('@tauri-apps/api/core', () => ({
   }),
 }))
 
-vi.mock('@/lib/local-daemon-identity', () => ({
+vi.mock('@/lib/daemon/local-daemon-identity', () => ({
   getKnownLocalDaemonActorId: () => 'agent-1',
 }))
 
-vi.mock('@/lib/effective-workspace', () => ({
+vi.mock('@/lib/workspace/effective-workspace', () => ({
   effectiveWorkspacePath: async () => '/ws',
   useEffectiveWorkspacePath: () => '/ws',
 }))

@@ -48,7 +48,7 @@ export type RuntimePermissionResponseInput = {
   optionId?: string;
 };
 
-export type RuntimeCancelInput = {
+type RuntimeCancelInput = {
   targetActorId: string;
   runtimeId: string;
   /** Preferred address. Falls back to `runtimeId` topic routing when absent. */

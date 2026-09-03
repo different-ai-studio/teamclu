@@ -19,8 +19,8 @@ import {
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
-import { teamSyncKeyForPath } from '@/lib/team-skill-paths'
-import { formatDateTime } from '@/lib/date-format'
+import { teamSyncKeyForPath } from '@/lib/team/team-skill-paths'
+import { formatDateTime } from '@/lib/ui/date-format'
 
 /** One entry of a document's cloud history, as the daemon reports it. */
 interface CloudVersion {

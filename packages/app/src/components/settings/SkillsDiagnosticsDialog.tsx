@@ -25,7 +25,7 @@ import {
   type SkillDiagnosticCheck,
   type SkillDiagnosticStatus,
   type SkillsDiagnosticsReport,
-} from '@/lib/skill-diagnostics'
+} from '@/lib/diagnostics/skill-diagnostics'
 
 function statusIcon(status: SkillDiagnosticStatus) {
   switch (status) {
@@ -68,7 +68,7 @@ function summaryLabel(status: SkillDiagnosticStatus, t: (key: string, fallback: 
   }
 }
 
-export interface SkillsDiagnosticsDialogProps {
+interface SkillsDiagnosticsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   workspacePath: string | null

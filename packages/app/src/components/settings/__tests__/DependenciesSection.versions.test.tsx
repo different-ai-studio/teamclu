@@ -76,6 +76,24 @@ describe('DependenciesSection update affordance', () => {
     expect(within(rowFor('opencode')).queryByText('已是最新')).toBeNull()
   })
 
+  // Reported: Dependencies showed pi 0.84.4 with a green "Up to date" while the
+  // runtime picker refused it as "not installed". pi's own version was fine;
+  // the MCP bridge amuxd installs beside its extension was missing, and the one
+  // button that reinstalls it was the button "Up to date" had replaced.
+  it('offers a repair instead of a green tick when the runtime is current but unusable', () => {
+    useDepsStore.setState({
+      versions: {
+        pi: { installed: '0.84.4', latest: '0.84.4', upToDate: true, needsRepair: true },
+      },
+    })
+    render(<DependenciesSection />)
+
+    const row = rowFor('pi')
+    expect(within(row).queryByText('已是最新')).toBeNull()
+    expect(within(row).getByRole('button', { name: '修复' })).toBeTruthy()
+    expect(within(row).getByText(/运行时有一部分缺失/)).toBeTruthy()
+  })
+
   // A mirror we could not reach reports `upToDate: null`, and "unknown" must
   // not be shown as "you're current" — the update stays on offer.
   it('keeps offering the update when the available version is unknown', () => {

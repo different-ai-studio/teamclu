@@ -43,7 +43,7 @@ vi.mock('sonner', () => ({
   },
 }))
 
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   reloadDaemonRuntime: (...args: unknown[]) => mockReloadDaemonRuntime(...args),
   notifyDaemonRuntimePendingChanges: (...args: unknown[]) =>
     mockNotifyDaemonRuntimePendingChanges(...args),
@@ -120,7 +120,7 @@ vi.mock('@/stores/team-members', () => ({
     }),
 }))
 
-vi.mock('@/lib/team-permissions', () => ({
+vi.mock('@/lib/team/team-permissions', () => ({
   useTeamPermissions: () => ({ role: 'owner', isOwner: true }),
 }))
 

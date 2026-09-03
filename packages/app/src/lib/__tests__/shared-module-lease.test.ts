@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createSharedModuleLeaseManager } from '../shared-module-lease'
+import { createSharedModuleLeaseManager } from '@/lib/shared-module-lease'
 
 function deferred() {
   let resolve!: () => void

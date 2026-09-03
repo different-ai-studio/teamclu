@@ -30,7 +30,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
 
 use super::shared_secrets_crypto::{
-    decrypt_secret_for_team, derive_key, encrypt_secret, EncryptedEnvelope, SecretEntry, SecretMeta,
+    decrypt_secret_for_team, derive_key, encrypt_secret, EncryptedEnvelope, SecretEntry,
 };
 
 // ---------------------------------------------------------------------------

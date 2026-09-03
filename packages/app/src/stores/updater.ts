@@ -1,12 +1,12 @@
 import { create } from "zustand"
-import { getFeatures } from "@/lib/remote-features"
+import { getFeatures } from "@/lib/config/remote-features"
 import { isTauri } from "@/lib/utils"
 
 function isUpdaterEnabled(): boolean {
   return getFeatures().updater && !import.meta.env.DEV
 }
 
-export type UpdateState =
+type UpdateState =
   | "idle"
   | "checking"
   | "available"
@@ -15,7 +15,7 @@ export type UpdateState =
   | "ready"
   | "error"
 
-export interface UpdateInfo {
+interface UpdateInfo {
   state: UpdateState
   version?: string
   notes?: string

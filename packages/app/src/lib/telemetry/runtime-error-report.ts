@@ -1,4 +1,4 @@
-import type { RuntimeStartFailure, RuntimeStartFailureCode } from '@/lib/session-create'
+import type { RuntimeStartFailure, RuntimeStartFailureCode } from '@/lib/session/session-create'
 import {
   captureTelemetry,
   shouldReportThrottled,
@@ -20,7 +20,7 @@ export {
  * rule every reporter here follows.
  */
 
-export type RuntimeErrorKind =
+type RuntimeErrorKind =
   /** A per-agent failure from the runtimeStart fanout or its gates. */
   | 'runtime_start_failure'
   /** MQTT/RPC never became ready, so runtimeStart was never attempted. */
@@ -33,7 +33,7 @@ export type RuntimeErrorKind =
  * cannot distinguish "the daemon took too long" from "we never managed to
  * publish" — both arrive as `runtime_rpc_failed`.
  */
-export type RuntimeFailureReasonKind =
+type RuntimeFailureReasonKind =
   | 'rpc_timeout'
   | 'local_rpc_timeout'
   | 'rpc_not_initialized'

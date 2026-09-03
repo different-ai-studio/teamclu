@@ -4,7 +4,7 @@ import {
   useRuntimeStateStore,
 } from '@/stores/runtime-state-store'
 
-export const RUNTIME_ENSURE_MIN_INTERVAL_MS = 3_000
+const RUNTIME_ENSURE_MIN_INTERVAL_MS = 3_000
 
 /**
  * Wake/recover paths — skip when THIS SESSION's bound spawn is already live.

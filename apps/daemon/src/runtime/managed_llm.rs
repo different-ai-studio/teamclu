@@ -77,13 +77,34 @@ impl ManagedLlmResolver {
 
     /// Attach the token source after construction, for the resolver the daemon
     /// builds before its HTTP layer exists.
+    ///
+    /// Set-once: a second `GatewayTokenSource` would mint a different token
+    /// (each source has its own `OnceLock`) and rewrite `provider.team` forever.
     pub fn set_tokens(&self, tokens: super::gateway_token::GatewayTokenSource) {
-        *self.tokens.write() = Some(tokens);
+        let mut slot = self.tokens.write();
+        if slot.is_some() {
+            tracing::debug!(
+                "managed LLM token source already attached; ignoring a second GatewayTokenSource"
+            );
+            return;
+        }
+        *slot = Some(tokens);
     }
 
     /// Record this daemon's own HTTP origin, once its listener has an address.
     pub fn set_local_http_base(&self, base: String) {
-        *self.local_http_base.write() = Some(base);
+        let mut slot = self.local_http_base.write();
+        if slot.is_some() {
+            tracing::debug!("managed LLM local HTTP base already set; ignoring replacement");
+            return;
+        }
+        *slot = Some(base);
+    }
+
+    /// Drop cached cloud answers so the next `resolve` hits the backend.
+    #[cfg(test)]
+    pub async fn clear_cache(&self) {
+        self.cache.lock().await.clear();
     }
 
     /// The AI proxy URL a runtime should call for `team_id`, or None when this
@@ -288,7 +309,7 @@ mod tests {
             "team-x".to_string(),
             config_with_models(&["model-b", "model-c"]),
         );
-        resolver.cache.lock().await.clear();
+        resolver.clear_cache().await;
 
         resolver.reconcile_global("team-x").await;
         assert_eq!(
@@ -458,5 +479,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(team_model_ids(), vec!["model-a".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn set_tokens_does_not_replace_an_existing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::http::tokens::TokenStore::load_or_init(&dir.path().join("t")).unwrap();
+        let resolver = ManagedLlmResolver::new(mock_resolver());
+        resolver.set_tokens(crate::runtime::gateway_token::GatewayTokenSource::new(
+            store.clone(),
+        ));
+        let first = resolver.gateway_token().expect("token after first set");
+        resolver.set_tokens(crate::runtime::gateway_token::GatewayTokenSource::new(
+            store,
+        ));
+        assert_eq!(
+            resolver.gateway_token().expect("token after second set"),
+            first,
+            "replacing GatewayTokenSource would mint a second apiKey and rewrite provider.team"
+        );
     }
 }

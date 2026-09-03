@@ -1,16 +1,16 @@
-import { discardPendingStreamReply } from "@/lib/live-agent-stream";
-import { mqttPublish } from "@/lib/mqtt-bridge";
+import { discardPendingStreamReply } from "@/lib/stream/live-agent-stream";
+import { mqttPublish } from "@/lib/mqtt/mqtt-bridge";
 import {
   resolvePermissionCommandTarget,
   runtimeTargetsForSession,
-} from "@/lib/runtime-state-resolve";
-import { sessionFlowError, sessionFlowLog } from "@/lib/session-flow-log";
-import { logStreamToolDiag } from "@/lib/stream-tool-diag";
+} from "@/lib/agent/runtime-state-resolve";
+import { sessionFlowError, sessionFlowLog } from "@/lib/session/session-flow-log";
+import { logStreamToolDiag } from "@/lib/diagnostics/stream-tool-diag";
 import { createRuntimeCommandSender } from "@/lib/teamclu/runtime-command";
-import { runtimeCommand } from "@/lib/teamclu-rpc";
+import { runtimeCommand } from "@/lib/daemon/teamclu-rpc";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
-import { isStreamInterruptible, useV2StreamingStore } from "@/stores/v2-streaming-store";
+import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 
 
 function cleanupLocalAgentStream(sessionId: string, agentActorId: string): void {
@@ -19,20 +19,6 @@ function cleanupLocalAgentStream(sessionId: string, agentActorId: string): void 
   useV2StreamingStore.getState().finishSessionActor(sessionId, agentActorId, {
     reason: "interrupt",
   });
-}
-
-export function listActiveAgentActorIdsForSession(sessionId: string): string[] {
-  const trimmedSessionId = sessionId.trim();
-  if (!trimmedSessionId) return [];
-  const seen = new Set<string>();
-  const actorIds: string[] = [];
-  for (const entry of Object.values(useV2StreamingStore.getState().byKey)) {
-    if (entry.sessionId !== trimmedSessionId || !isStreamInterruptible(entry)) continue;
-    if (seen.has(entry.actorId)) continue;
-    seen.add(entry.actorId);
-    actorIds.push(entry.actorId);
-  }
-  return actorIds;
 }
 
 export async function interruptAgentActor(args: {
@@ -133,10 +119,3 @@ export async function interruptAgentActor(args: {
   });
 }
 
-export async function interruptAllActiveAgents(sessionId: string): Promise<void> {
-  const actorIds = listActiveAgentActorIdsForSession(sessionId);
-  if (actorIds.length === 0) return;
-  await Promise.allSettled(
-    actorIds.map((agentActorId) => interruptAgentActor({ sessionId, agentActorId })),
-  );
-}

@@ -5,11 +5,16 @@ import { toast } from 'sonner'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
 import { type TeamShareTarget } from '@/lib/tabs/teamshare-target'
-import { SkillDetail } from './SkillDetail'
+import { lazyNamed } from '@/lib/lazy-component'
+import { PaneLoading } from '@/components/ui/pane-loading'
 import { SkillFileEditor } from './SkillFileEditor'
 import { MarketplacePane } from './MarketplacePane'
 import { McpDetail, McpEditForm } from './McpDetail'
 import { EnvDetail, EnvCreateForm } from './EnvDetail'
+
+// SkillDetail is the largest team-share view by a wide margin (2,200+ lines with
+// eight private components); it loads when a skill is first opened.
+const SkillDetail = lazyNamed(() => import('./SkillDetail'), 'SkillDetail')
 
 /**
  * Compose surface for a new item. Authoring happens here, never in the list.
@@ -125,7 +130,11 @@ function CreatePane({ section }: { section: 'mcp' | 'env' }) {
 export function TeamShareDetailContent({ target }: { target: TeamShareTarget }) {
   switch (target.kind) {
     case 'skill':
-      return <SkillDetail key={target.id} slug={target.id} />
+      return (
+        <React.Suspense fallback={<PaneLoading />}>
+          <SkillDetail key={target.id} slug={target.id} />
+        </React.Suspense>
+      )
     case 'skill-file':
       return (
         <SkillFileEditor

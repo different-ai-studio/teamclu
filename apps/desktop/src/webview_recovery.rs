@@ -22,7 +22,7 @@ pub fn probe_main_webview(app: &tauri::AppHandle) -> MainWebviewProbe {
     match window.url() {
         Ok(_) => MainWebviewProbe::Healthy,
         Err(err) => {
-            eprintln!("[WebViewRecovery] main webview URL probe failed: {err}");
+            log::error!("[WebViewRecovery] main webview URL probe failed: {err}");
             MainWebviewProbe::Unresponsive
         }
     }
@@ -37,7 +37,7 @@ pub fn request_restart_if_main_webview_unhealthy(app: &tauri::AppHandle, reason:
     let message = format!(
         "[WebViewRecovery] Requesting app restart after {reason}; main webview probe: {probe:?}"
     );
-    eprintln!("{message}");
+    log::warn!("{message}");
     crate::sentry_utils::capture_warning(&message);
     app.request_restart();
     true

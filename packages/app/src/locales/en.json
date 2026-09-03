@@ -52,6 +52,8 @@
     "marketPublic": "Public",
     "installToAgent": "Install to Agent",
     "selectAgentFirst": "Select an Agent first",
+    "personalSourceBuiltin": "Built-in",
+    "remotePersonalMcpReadOnly": "Personal MCP servers on a remote agent are read-only for now",
     "mcp": "MCP",
     "env": "Secret Vault",
     "knowledge": "Knowledge",
@@ -513,17 +515,16 @@
     }
   },
   "navigation": {
-    "changes": "Changes",
     "shortcuts": "Shortcuts",
     "files": "Files",
     "hideTabs": "Hide files",
     "restoreTabs": "Show files",
     "collapsePanel": "Collapse panel",
-    "toggleSidebar": "Toggle Sidebar",
     "collapseSidebar": "Collapse sidebar",
     "settings": "Settings"
   },
   "chat": {
+    "diagnoseSession": "Diagnose this session",
     "sendStatus": {
       "sending": "Sending…",
       "delivered": "Delivered",
@@ -567,11 +568,6 @@
       "routingMultiAgent": "Multiple agents — @ a name to choose who replies.",
       "participantCount": "{{count}} participants · Waiting for the first message"
     },
-    "backToActiveSession": "Back to active session",
-    "archivedSession": "Archived session",
-    "restoreSession": "Restore",
-    "archivedSessionLoadError": "Could not load archived session",
-    "restoreArchivedHint": "Restore this session to continue chatting",
     "agent": "Agent",
     "startNewChat": "Start a New Chat",
     "askAboutFile": "Ask questions about the file",
@@ -757,12 +753,8 @@
     "inputPlaceholderContinue": "Continue typing...",
     "refreshMessages": "Refresh messages",
     "startingAgent": "Starting agent...",
-    "taskRunning": "Task running...",
     "waitingForAgent": "Sessions are ready. Waiting for agent runtime to finish starting.",
-    "waitingForConfirmationShort": "Waiting",
     "newSessionBadge": "NEW",
-    "messageCountShort": "{{count}} msg",
-    "messageCountShort_plural": "{{count}} msgs",
     "draftContinueBanner": "{{count}} session in progress with {{name}}",
     "draftContinueRecent": "Recent sessions",
     "draftWithAgentHint": "Type below — a session is created when you send",
@@ -961,7 +953,9 @@
       "install": "Install",
       "upgrade": "Upgrade",
       "needsApiKey": "Needs an API key — add it in Settings → LLM later.",
-      "needsNode": "Install Node.js 22.19 or later to use Pi.",
+      "needsNode": "Install Node.js {{required}} or later to use Pi.",
+      "needsNewerNode": "Node {{found}} is too old for Pi, which needs {{required}} or later. Switch to a newer Node, then restart the app.",
+      "needsMcpSdk": "Pi is here; its MCP bridge is not. Install to finish it.",
       "recheck": "I installed Node.js — check again",
       "rechecking": "Checking…",
       "installed": "installed",
@@ -1056,7 +1050,6 @@
     "teamLastSyncTooltip": "Last sync: {{time}}",
     "teamSyncing": "Syncing…",
     "duplicateFailed": "Duplicate failed",
-    "pathCopied": "Path copied",
     "undo": "Undo: {{desc}}"
   },
   "sessions": {
@@ -1115,11 +1108,6 @@
     "searchSessions": "Search Sessions",
     "searchDescription": "Search and navigate to a session",
     "searchPlaceholder": "Search sessions...",
-    "searchActive": "Active",
-    "searchArchived": "Archived",
-    "searchAll": "All",
-    "archivedAt": "Archived {{date}}",
-    "loadingArchivedSessions": "Loading archived sessions...",
     "sessions": "Sessions",
     "active": "Active",
     "selectWorkspaceFirst": "Please select a workspace first",
@@ -1409,6 +1397,25 @@
         "prompt": "prompt",
         "admin": "admin"
       }
+    },
+    "renameFailed": "Rename failed",
+    "authModeUpdateFailed": "Could not change the sign-in method",
+    "authModeUpdateDenied": "App not found, or you cannot change it",
+    "deleteFailed": "Delete failed",
+    "deleteDenied": "App not found, or you cannot delete it",
+    "deleted": "App deleted",
+    "deployErrorReason": {
+      "uncommitted": "The workspace has uncommitted or unpushed changes. Commit and push, then deploy.",
+      "installTimeout": "Dependency install timed out after 10 minutes. Check the network or the lockfile, then retry.",
+      "buildTimeout": "Build timed out after 10 minutes. Check the build script, then retry.",
+      "artifactTooLarge": "Build output is over the 50 MiB limit. Trim it, then retry.",
+      "uploadUrlExpired": "The upload link expired. Start the deploy again.",
+      "unsupportedAuthMode": "Third-party login cannot be deployed yet. Switch to platform login or no login.",
+      "vanityRequired": "Platform login needs a public domain for apps (APPS_PUBLIC_DOMAIN).",
+      "commitNotOnRemote": "That commit is not on Gitea. Push it, then deploy.",
+      "lockfileOutOfSync": "pnpm-lock.yaml does not match package.json. Commit the lockfile, then retry.",
+      "buildOutputMissing": "The build produced no .output/ directory. Check the build script.",
+      "daemonNotConnected": "The local amuxd is not connected, so nothing can build. Make sure the daemon is running, then retry."
     }
   },
   "knowledgeAcl": {
@@ -1468,6 +1475,12 @@
       "desktopOnlyDetail": "One-click diagnostics requires the TeamClu Desktop client. Install it and try again.",
       "openFromError": "Open Diagnostics",
       "openFromSidebar": "Run diagnostics",
+      "sessionFocus": "Looking at session {{id}}",
+      "mqttReconnected": "MQTT reconnect requested",
+      "mqttReconnectFailed": "Reconnect failed: {{message}}",
+      "confirmReloginTitle": "Sign in again?",
+      "confirmReloginDescription": "Signs out of this account and returns to the login page, so the session and MQTT credentials are reissued.",
+      "confirmReloginAction": "Sign out",
       "liveConsole": {
         "title": "Live Debug Console",
         "description": "View console output, runtime state, and disk logs without Web Inspector.",
@@ -1775,8 +1788,12 @@
       "runtimeNotInstalled": "not installed",
       "runtimeNeedsApiKey": "API key missing",
       "runtimeNeedsNode": "node missing",
+      "runtimeNodeOutdated": "node too old",
+      "runtimeMcpSdkMissing": "MCP bridge missing",
       "runtimeBridgeMissing": "bridge not ready",
       "runtimeBlockedHint": "{{agent}} is not usable yet: {{reason}}. Until then, agents in this team cannot start.",
+      "runtimeBlockerFound": "Found {{found}}; {{required}} or later is required.",
+      "runtimeBlockerNeeds": "{{required}} or later is required.",
       "runtimeScope": "Runtime scope",
       "runtimeCurrentTeam": "the current team",
       "runtimePerTeamHint": "The runtime is configured per team — this setting applies to {{team}} only.",
@@ -2928,7 +2945,10 @@
       "updateDone": "Updated",
       "updateFailed": "Update failed",
       "installFailed": "Install failed",
-      "upToDate": "Up to date"
+      "upToDate": "Up to date",
+      "repair": "Repair",
+      "repairTitle": "Reinstall to restore the pieces this runtime is missing",
+      "needsRepairHint": "Installed and current, but not usable yet — part of the runtime is missing. Repair reinstalls it."
     },
     "permissions": {
       "allow": "Allow",
@@ -3160,7 +3180,6 @@
     "expandAll": "Expand all",
     "explainChange": "Explain Change",
     "generatePatch": "Generate Patch",
-    "openFile": "Open File",
     "pathCopied": "Path copied",
     "reviewCode": "Review Code",
     "suggestRefactor": "Suggest Refactor"
@@ -3393,6 +3412,14 @@
     "accepted": "Joined the team",
     "acceptFailed": "Failed to join team: {{msg}}",
     "declineFailed": "Failed to decline: {{msg}}"
+  },
+  "inviteLink": {
+    "title": "Join a team from this invite link?",
+    "description": "Accepting joins the team this link belongs to, switches your active organization, and re-binds the local agent to that team. Continue only if you trust whoever sent it.",
+    "tokenLabel": "Invite token",
+    "signInFirst": "You'll sign in first; the invite is claimed right after.",
+    "cancel": "Not now",
+    "accept": "Join team"
   },
   "terminal": {
     "label": "Terminal",

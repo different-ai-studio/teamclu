@@ -1,14 +1,14 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { Loader2 } from 'lucide-react'
-import { actorAvatarColor } from '@/lib/actor-color'
-import { resolveCurrentMemberActorId } from '@/lib/current-actor'
+import { actorAvatarColor } from '@/lib/actor/actor-color'
+import { resolveCurrentMemberActorId } from '@/lib/actor/current-actor'
 import {
   formatEmptyThreadRosterNames,
   resolveEmptyThreadRoutingKind,
   type EmptyThreadParticipant,
-} from '@/lib/session-empty-thread-starters'
-import { isSoloBuild } from '@/lib/solo-build'
+} from '@/lib/session/session-empty-thread-starters'
+import { isSoloBuild } from '@/lib/config/solo-build'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
@@ -18,7 +18,7 @@ import {
 } from '@/stores/session-participant-store'
 import { useWorkspaceStore } from '@/stores/workspace'
 
-export type SessionEmptyThreadStateProps = {
+type SessionEmptyThreadStateProps = {
   sessionId: string
 }
 

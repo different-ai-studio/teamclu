@@ -11,7 +11,7 @@
  * from the admin surface.
  */
 
-import type { CloudApiClient } from './http';
+import type { CloudApiClient } from '@/lib/backend/cloud-api/http';
 
 export interface KnowledgeAclRule {
   id: string;
@@ -34,7 +34,7 @@ export interface KnowledgeAclImpact {
   affectedMembers: number;
 }
 
-export interface KnowledgeAclWrite {
+interface KnowledgeAclWrite {
   pathPrefix: string;
   actorIds?: string[];
   /**

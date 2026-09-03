@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { getDaemonLocalAgent, type DaemonLocalAgent } from '@/lib/daemon-local-client'
+import { getDaemonLocalAgent, type DaemonLocalAgent } from '@/lib/daemon/daemon-local-client'
 import { isTauri } from '@/lib/utils'
 import { OpenCodeLLMSection } from './LLMSection'
 import { PiLLMSection } from './PiLLMSection'

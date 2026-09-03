@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { loadFromStorage, saveToStorage } from '@/lib/storage'
-import { appStoragePrefix } from '@/lib/build-config'
+import { loadFromStorage, saveToStorage } from '@/lib/config/storage'
+import { appStoragePrefix } from '@/lib/config/build-config'
 
 /**
  * Per-user preferences for the conversation header's right-side action icons.
@@ -19,7 +19,7 @@ import { appStoragePrefix } from '@/lib/build-config'
  * round-trip via `loadFromStorage`/`saveToStorage`, keyed with the shared
  * `appStoragePrefix`.
  */
-export interface HeaderPreferencesState {
+interface HeaderPreferencesState {
   /** Show the terminal toggle icon in the conversation header. Default false. */
   showTerminalToggle: boolean
   /** Show the "Changes" (file diff) panel entry in the conversation header. Default false. */

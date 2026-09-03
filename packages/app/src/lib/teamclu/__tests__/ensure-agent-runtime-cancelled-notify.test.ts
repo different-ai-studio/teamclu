@@ -35,7 +35,7 @@ describe("notifyRuntimeStartFailures", () => {
   });
 
   it("does not toast a request we cancelled ourselves", async () => {
-    const { notifyRuntimeStartFailures } = await import("../ensure-agent-runtime");
+    const { notifyRuntimeStartFailures } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     notifyRuntimeStartFailures(
       [{ agentActorId: "agent-1", code: "runtime_rpc_failed", reason: "rpc disposed" }],
@@ -49,7 +49,7 @@ describe("notifyRuntimeStartFailures", () => {
   });
 
   it("does not toast when an agent device is offline", async () => {
-    const { notifyRuntimeStartFailures } = await import("../ensure-agent-runtime");
+    const { notifyRuntimeStartFailures } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     notifyRuntimeStartFailures(
       [{ agentActorId: "remote-agent-1", code: "device_offline", reason: "device offline" }],
@@ -64,7 +64,7 @@ describe("notifyRuntimeStartFailures", () => {
   });
 
   it("does not toast a transient Cloud API network failure", async () => {
-    const { notifyRuntimeStartFailures } = await import("../ensure-agent-runtime");
+    const { notifyRuntimeStartFailures } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     notifyRuntimeStartFailures(
       [
@@ -84,7 +84,7 @@ describe("notifyRuntimeStartFailures", () => {
   });
 
   it("still toasts a terminal Cloud API auth failure", async () => {
-    const { notifyRuntimeStartFailures } = await import("../ensure-agent-runtime");
+    const { notifyRuntimeStartFailures } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     notifyRuntimeStartFailures([
       {
@@ -99,7 +99,7 @@ describe("notifyRuntimeStartFailures", () => {
   });
 
   it("still toasts a genuine runtime failure", async () => {
-    const { notifyRuntimeStartFailures } = await import("../ensure-agent-runtime");
+    const { notifyRuntimeStartFailures } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     notifyRuntimeStartFailures([
       { agentActorId: "agent-1", code: "runtime_rpc_failed", reason: "rpc timeout after 20000ms" },
@@ -110,7 +110,7 @@ describe("notifyRuntimeStartFailures", () => {
   });
 
   it("toasts only the real failures in a mixed batch", async () => {
-    const { notifyRuntimeStartFailures } = await import("../ensure-agent-runtime");
+    const { notifyRuntimeStartFailures } = await import("@/lib/teamclu/ensure-agent-runtime");
 
     notifyRuntimeStartFailures([
       { agentActorId: "agent-1", code: "runtime_rpc_failed", reason: "rpc disposed" },
@@ -127,7 +127,7 @@ describe("notifyRuntimeStartFailures", () => {
 
   it("shows host capacity full instead of agent-not-started", async () => {
     const i18n = (await import("@/lib/i18n")).default;
-    const { classifyRuntimeRpcError } = await import("@/lib/session-create");
+    const { classifyRuntimeRpcError } = await import("@/lib/session/session-create");
     const { notifyRuntimeStartFailures } = await import("../ensure-agent-runtime");
 
     const reason =

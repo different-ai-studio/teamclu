@@ -1,9 +1,9 @@
 import { create } from "zustand";
 import { UNSUPPORTED_BINARY_EXTENSIONS } from "@/components/viewers/UnsupportedFileViewer";
 import { isTauri } from '@/lib/utils'
-import { ensureGitignoreEntries } from '@/lib/gitignore-manager'
+import { ensureGitignoreEntries } from '@/lib/workspace/gitignore-manager'
 import { seedDefaultWorkspaceInstructions } from '@/lib/workspace-seed/seed-default-instructions'
-import { appDisplayName, appStoragePrefix, TEAM_REPO_DIR } from '@/lib/build-config'
+import { appDisplayName, appStoragePrefix, TEAM_REPO_DIR } from '@/lib/config/build-config'
 import { useTeamModeStore } from './team-mode'
 
 // Start watching a directory for file changes
@@ -82,7 +82,7 @@ export interface FileNode {
 // the team repo dir, which is empty now that knowledge syncs to
 // `shared/knowledge`, and its header entry already moved to the left-nav
 // Knowledge column.
-export type RightPanelTab = "diff" | "shortcuts" | "files" | "actors";
+export type RightPanelTab = "shortcuts" | "files" | "actors";
 
 // Undo operation types for file operations
 interface UndoOperation {
@@ -173,6 +173,7 @@ interface WorkspaceState {
   collapseDirectory: (path: string) => void;
   collapseAll: () => void;
   refreshFileTree: () => Promise<void>;
+  refreshChangedDirectories: (directories: string[]) => Promise<void>;
   revealFile: (path: string) => Promise<void>;
 
   // File actions
@@ -207,13 +208,13 @@ async function readWorkspaceTextFile(
   return invoke<string>("read_workspace_text_file", { workspacePath, path });
 }
 
-async function readWorkspaceBinaryFile(
+/** Base64, straight through from Rust — see PERF-16 in `lib/base64.ts`. */
+async function readWorkspaceBinaryFileBase64(
   workspacePath: string,
   path: string,
-): Promise<Uint8Array> {
+): Promise<string> {
   const { invoke } = await import("@tauri-apps/api/core");
-  const bytes = await invoke<number[]>("read_workspace_binary_file", { workspacePath, path });
-  return new Uint8Array(bytes);
+  return invoke<string>("read_workspace_binary_file", { workspacePath, path });
 }
 
 async function readWorkspaceDirectory(
@@ -908,6 +909,84 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     });
   },
 
+  /**
+   * Re-list only the directories a file-change batch touched.
+   *
+   * `refreshFileTree` re-reads the root plus every expanded directory on any
+   * change — one IPC per open folder for every save in the editor. A batch
+   * names the parents whose listing can actually differ, so this reads those
+   * and nothing else. A directory that is not on screen (never expanded, or
+   * under no root this store owns) is skipped; the workspace root and every
+   * registered external root always count as on screen.
+   */
+  refreshChangedDirectories: async (directories: string[]) => {
+    if (directories.length === 0) return;
+    const { workspacePath, loadDirectory } = get();
+    const externalRoots = Object.keys(get().externalTrees);
+
+    const ownerOf = (dir: string): string | null => {
+      const external = externalRootFor(externalRoots, dir);
+      if (external) return external;
+      if (workspacePath && (dir === workspacePath || dir.startsWith(`${workspacePath}/`))) {
+        return workspacePath;
+      }
+      return null;
+    };
+
+    // Parents before children: a directory deleted along with its contents is
+    // dropped by its parent's re-list before its own read would come up empty.
+    const targets = [...new Set(directories)]
+      .filter((dir) => ownerOf(dir) !== null)
+      .sort((a, b) => a.length - b.length);
+    if (targets.length === 0) return;
+
+    for (const dir of targets) {
+      const external = externalRootFor(externalRoots, dir);
+      const isRoot = dir === (external ?? workspacePath);
+      const tree = external ? (get().externalTrees[external] ?? []) : get().fileTree;
+
+      if (!isRoot) {
+        const node = findNodeByPath(tree, dir);
+        // Not listed, or listed but never expanded: nothing on screen to update.
+        if (!node || node.type !== "directory" || node.children === undefined) continue;
+      }
+
+      const children = await loadDirectory(dir);
+
+      // Re-read after the await — another update may have landed meanwhile.
+      if (external) {
+        const current = get().externalTrees[external];
+        if (current === undefined) continue; // root was closed while listing
+        const next = isRoot
+          ? mergeLoadedChildren(current, children)
+          : updateNodeChildren(current, dir, children);
+        set({ externalTrees: { ...get().externalTrees, [external]: next } });
+      } else {
+        if (get().workspacePath !== workspacePath) return; // workspace switched
+        const next = isRoot
+          ? mergeLoadedChildren(get().fileTree, children)
+          : updateNodeChildren(get().fileTree, dir, children);
+        set({ fileTree: next });
+      }
+    }
+
+    // Expansions whose directory vanished are dropped, as refreshFileTree does.
+    // Roots stay: they are trees, not nodes in one.
+    const roots = new Set<string>([workspacePath ?? "", ...externalRoots]);
+    const trees = [get().fileTree, ...Object.values(get().externalTrees)];
+    const nextExpanded = new Set<string>();
+    let pruned = false;
+    for (const path of get().expandedPaths) {
+      const underTarget = targets.some((dir) => path.startsWith(`${dir}/`));
+      if (underTarget && !roots.has(path) && !trees.some((t) => findNodeByPath(t, path))) {
+        pruned = true;
+        continue;
+      }
+      nextExpanded.add(path);
+    }
+    if (pruned) set({ expandedPaths: nextExpanded });
+  },
+
   // Helper function to flatten visible file tree into ordered list of file paths
   flattenVisibleFileTree: (nodes: FileNode[]): string[] => {
     const { expandedPaths } = get();
@@ -1000,15 +1079,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         if (!readRoot) {
           throw new Error("No workspace path set");
         }
-        const bytes = await readWorkspaceBinaryFile(readRoot, path);
-
-        // Convert to base64
-        let binary = "";
-        const len = bytes.length;
-        for (let i = 0; i < len; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        const base64 = btoa(binary);
+        const base64 = await readWorkspaceBinaryFileBase64(readRoot, path);
 
         // Determine MIME type
         const mimeTypes: Record<string, string> = {

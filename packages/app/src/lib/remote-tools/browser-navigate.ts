@@ -1,4 +1,4 @@
-import { TOOL_NAVIGATE } from './types'
+import { TOOL_NAVIGATE } from '@/lib/remote-tools/types'
 
 type ChromeRuntimeLike = {
   sendMessage?: (msg: unknown) => Promise<unknown>

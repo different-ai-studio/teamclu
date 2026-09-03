@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,

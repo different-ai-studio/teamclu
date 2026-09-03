@@ -1,5 +1,5 @@
-import { probeDaemonHttp } from '@/lib/daemon-local-client'
-import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
+import { probeDaemonHttp } from '@/lib/daemon/daemon-local-client'
+import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
 
 /**
  * How this client will actually reach an agent.
@@ -22,9 +22,9 @@ import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
  * answers on loopback right now. Anything else is `mqtt`, including a local
  * daemon that is down: there is no fast path to a process that is not running.
  */
-export type AgentTransport = 'local' | 'mqtt'
+type AgentTransport = 'local' | 'mqtt'
 
-export type AgentTransportPlan = {
+type AgentTransportPlan = {
   byAgent: Map<string, AgentTransport>
   /** Agents reachable without the broker. */
   local: string[]

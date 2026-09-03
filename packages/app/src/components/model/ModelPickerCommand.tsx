@@ -12,10 +12,10 @@ import {
 import {
   groupAgentModelOptions,
   type AgentModelOption,
-} from '@/lib/agent-available-models'
+} from '@/lib/agent/agent-available-models'
 import { cn } from '@/lib/utils'
 
-export interface ModelPickerCommandProps {
+interface ModelPickerCommandProps {
   /** Flat, provider-grouped-on-render model list. Searched + grouped inside. */
   models: AgentModelOption[]
   /** Currently selected model id (empty string = nothing selected). */

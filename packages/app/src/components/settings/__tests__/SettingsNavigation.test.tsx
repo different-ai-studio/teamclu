@@ -23,7 +23,7 @@ vi.mock('@/components/ui/button', () => ({
   ),
 }))
 
-vi.mock('@/lib/version', () => ({
+vi.mock('@/lib/config/version', () => ({
   useAppVersion: () => '2.4.1',
 }))
 
@@ -36,7 +36,7 @@ vi.mock('@/stores/updater', () => ({
     }),
 }))
 
-vi.mock('@/lib/build-config', () => ({
+vi.mock('@/lib/config/build-config', () => ({
   TEAMCLU_DIR: '.teamclu',
   appShortName: 'teamclu',
   buildConfig: {

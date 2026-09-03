@@ -4,12 +4,12 @@ import {
   listAllOutbox,
   upsertOutbox,
   type OutboxRow,
-} from "@/lib/local-cache";
+} from "@/lib/cache/local-cache";
 import {
   sessionFlowError,
   sessionFlowLog,
   summarizeText,
-} from "@/lib/session-flow-log";
+} from "@/lib/session/session-flow-log";
 
 export type OutboxState = "pending" | "inFlight" | "delivered" | "failed";
 

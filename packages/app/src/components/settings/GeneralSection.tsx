@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useMqttConnected } from '@/hooks/useMqttConnected'
+import { useMqttConnected } from '@/hooks/use-mqtt-connected'
 import { useMqttReconnectStore, recoverMqttConnection } from '@/stores/mqtt-reconnect'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend'
@@ -36,11 +36,12 @@ import { TeamDefaultAgentCard } from './TeamDefaultAgentCard'
 import { SwitchTeamDialog } from '@/components/auth/SwitchTeamDialog'
 import { useAcpDebugStore } from '@/stores/acp-debug-store'
 import { useHeaderPreferencesStore } from '@/stores/header-preferences-store'
-import { appStoragePrefix, buildConfig } from '@/lib/build-config'
-import { NOTIFICATION_LEVEL_KEY } from '@/lib/notification-service'
+import { appStoragePrefix, buildConfig } from '@/lib/config/build-config'
+import { NOTIFICATION_LEVEL_KEY } from '@/lib/ui/notification-service'
 import { LANGUAGE_OPTIONS, getPreferredLanguage, normalizeSupportedLanguage, persistLanguage } from '@/lib/locale'
-import { getEffectiveServerConfig, type ServerConfig } from '@/lib/server-config'
-import { fetchAndApplyBootstrap } from '@/lib/bootstrap'
+import { changeLanguage } from '@/lib/i18n'
+import { getEffectiveServerConfig, type ServerConfig } from '@/lib/config/server-config'
+import { fetchAndApplyBootstrap } from '@/lib/config/bootstrap'
 import { useAuthStore } from '@/stores/auth-store'
 
 // Theme helpers
@@ -203,7 +204,11 @@ export const GeneralSection = React.memo(function GeneralSection() {
   const handleLanguageChange = React.useCallback((value: string) => {
     const normalizedValue = normalizeSupportedLanguage(value)
     setLanguage(normalizedValue)
-    i18next.changeLanguage(normalizedValue)
+    // Through `@/lib/i18n`, not `i18next` directly: catalogues are fetched on
+    // demand (PERF-15), and only this wrapper loads the target one before
+    // switching. Calling i18next straight through swaps to a locale with no
+    // strings and paints raw keys.
+    void changeLanguage(normalizedValue)
     persistLanguage(normalizedValue)
     void invoke('set_config_locale', { locale: normalizedValue }).catch(() => {
       // Settings should still update locally if the native config is unavailable.

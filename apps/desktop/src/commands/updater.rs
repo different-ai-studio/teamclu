@@ -328,7 +328,7 @@ async fn try_download_asset<R: Runtime>(
         buffer.extend_from_slice(&chunk);
 
         if downloaded % (100 * 1024) < chunk.len() as u64
-            || content_length.map_or(false, |cl| downloaded >= cl)
+            || content_length.is_some_and(|cl| downloaded >= cl)
         {
             let _ = app.emit(
                 "update-download-progress",
@@ -793,7 +793,7 @@ async fn try_download_file<R: Runtime>(
         buffer.extend_from_slice(&chunk);
 
         if downloaded % (100 * 1024) < chunk.len() as u64
-            || content_length.map_or(false, |cl| downloaded >= cl)
+            || content_length.is_some_and(|cl| downloaded >= cl)
         {
             let _ = app.emit(
                 "update-download-progress",

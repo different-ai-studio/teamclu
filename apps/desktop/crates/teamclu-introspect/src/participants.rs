@@ -65,22 +65,7 @@ pub async fn handle(workspace: &str, api_port: u16, arguments: &Value) -> Result
 }
 
 async fn post(api_port: u16, body: &Value) -> Result<Value, String> {
-    let url = format!("http://127.0.0.1:{api_port}/session-participants");
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .json(body)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {e}. Is the TeamClu app running?"))?;
-
-    if !resp.status().is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("API error: {text}"));
-    }
-
-    resp.json::<Value>()
-        .await
-        .map_err(|e| format!("Failed to parse response: {e}"))
+    crate::desktop_api::post(api_port, "/session-participants", body).await
 }
 
 #[cfg(test)]
@@ -133,8 +118,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_needs_no_target() {
-        // Reaches the loopback call (port 1 refuses) rather than failing on
-        // arguments — proving `list` does not require actor_id/name.
+        // Gets past argument validation into the desktop call — proving `list`
+        // does not require actor_id/name. That call fails on the bearer file
+        // when no desktop is running here, or on the socket (port 1 refuses)
+        // when one is; either message comes from `desktop_api`, not from an
+        // argument check.
         let err = handle(
             "/tmp",
             1,
@@ -142,6 +130,9 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.contains("Request failed"), "{err}");
+        assert!(
+            err.contains("Request failed") || err.contains("desktop token unavailable"),
+            "{err}"
+        );
     }
 }

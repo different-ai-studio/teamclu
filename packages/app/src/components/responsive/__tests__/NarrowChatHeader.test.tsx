@@ -18,12 +18,12 @@ vi.mock('@/components/sidebar/SessionListColumn', () => ({
   SessionListColumn: () => <div data-testid="session-list-column" />,
 }))
 
-vi.mock('@/lib/platform', () => ({
+vi.mock('@/lib/config/platform', () => ({
   capabilities: { pageCapture: true },
 }))
 
-vi.mock('@/lib/build-config', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/build-config')>()
+vi.mock('@/lib/config/build-config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/config/build-config')>()
   return {
     ...actual,
     hideExtensionSettingsButton: false,
@@ -31,7 +31,7 @@ vi.mock('@/lib/build-config', async (importOriginal) => {
 })
 
 const createQuickSession = vi.fn()
-vi.mock('@/lib/create-quick-session', () => ({
+vi.mock('@/lib/session/create-quick-session', () => ({
   createQuickSession: (...args: unknown[]) => createQuickSession(...args),
   describeQuickSessionFailure: () => ({ title: 'fail', description: 'desc' }),
 }))

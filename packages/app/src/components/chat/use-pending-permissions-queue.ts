@@ -3,8 +3,8 @@ import {
   collectAcpBystanderWaitingPermissions,
   collectAcpStreamingPermissions,
 } from "@/lib/teamclu/acp-permission-entries";
-import { useSessionPermissionMode } from "@/lib/session-permission-mode";
-import { useSessionStore } from "@/stores/session";
+import { useSessionPermissionMode } from "@/lib/session/session-permission-mode";
+import { useSessionStore } from "@/stores/session-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { collectVisiblePermissions } from "./permission-queue";
 

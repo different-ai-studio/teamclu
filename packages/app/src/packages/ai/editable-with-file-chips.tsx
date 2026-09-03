@@ -1,15 +1,15 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
-import { encodeMemberMentionToken, parseMemberMentionBody } from "@/lib/member-mention-token"
+import { encodeMemberMentionToken, parseMemberMentionBody } from "@/lib/actor/member-mention-token"
 import {
   encodePageLinkToken,
   pageLinkChipLabel,
   parsePageLinkBody,
-} from "@/lib/page-link-token"
+} from "@/lib/embed/page-link-token"
 import {
   encodeSessionAttachmentToken,
   parseSessionAttachmentBody,
-} from "@/lib/session-attachment-token"
+} from "@/lib/attachments/session-attachment-token"
 import { COMPOSER_CHIP_SELECTOR, isComposerChipElement } from "./chip-classes"
 import { getTrailingPathLabel } from "./chip-labels"
 

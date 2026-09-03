@@ -1,15 +1,15 @@
 // Thin HTTP client for TeamClu's FC auth proxy endpoints (/v1/auth/*).
 // Returns / consumes the raw GoTrue session shape.
 
-import { AuthError, type AuthUser, type OtpType, type Session } from "./types";
+import { AuthError, type AuthUser, type OtpType, type Session } from "@/lib/auth/types";
 import {
   configureSessionStore,
   getSession,
   refreshSession,
   setSession,
-} from "./session-store";
+} from "@/lib/auth/session-store";
 
-export interface AuthClientOptions {
+interface AuthClientOptions {
   baseUrl: string;
   fetchImpl?: typeof fetch;
 }

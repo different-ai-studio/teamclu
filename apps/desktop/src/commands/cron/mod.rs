@@ -70,15 +70,11 @@ impl CronState {
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum CronScope {
+    #[default]
     Global,
     Workspace,
-}
-
-impl Default for CronScope {
-    fn default() -> Self {
-        Self::Global
-    }
 }
 
 fn global_cron_root() -> Result<String, String> {
@@ -165,7 +161,7 @@ pub async fn cron_init(
 
     instance.scheduler.start().await;
 
-    println!("[Cron] System initialized (scope={scope:?}, storage={storage_path})");
+    log::info!("[Cron] System initialized (scope={scope:?}, storage={storage_path})");
     Ok(())
 }
 
@@ -230,7 +226,7 @@ pub async fn cron_add_job(
     job.next_run_at = next;
 
     instance.storage.add_job(job.clone()).await;
-    println!("[Cron] Job created: {} ({})", job.name, job.id);
+    log::info!("[Cron] Job created: {} ({})", job.name, job.id);
 
     Ok(job)
 }
@@ -286,7 +282,7 @@ pub async fn cron_update_job(
     job.updated_at = chrono::Utc::now();
 
     instance.storage.update_job(job.clone()).await?;
-    println!("[Cron] Job updated: {} ({})", job.name, job.id);
+    log::info!("[Cron] Job updated: {} ({})", job.name, job.id);
 
     Ok(job)
 }
@@ -310,7 +306,7 @@ pub async fn cron_remove_job(
     )
     .await?;
     instance.storage.remove_job(&job_id).await?;
-    println!("[Cron] Job removed: {}", job_id);
+    log::info!("[Cron] Job removed: {}", job_id);
     Ok(())
 }
 
@@ -342,7 +338,7 @@ pub async fn cron_toggle_enabled(
         }
     }
 
-    println!(
+    log::info!(
         "[Cron] Job {} {}",
         job_id,
         if enabled { "enabled" } else { "disabled" }
@@ -375,7 +371,7 @@ pub async fn cron_run_job(
         .await
         .ok_or_else(|| format!("Job not found: {}", job_id))?;
 
-    println!("[Cron] Manual run triggered for: {} ({})", job.name, job.id);
+    log::info!("[Cron] Manual run triggered for: {} ({})", job.name, job.id);
 
     let scheduler = instance.scheduler.clone();
     tokio::spawn(async move {
@@ -411,6 +407,6 @@ pub async fn cron_get_runs(
 /// Refresh delivery configs (no-op now — `DeliveryManager` reads config on demand).
 #[tauri::command]
 pub async fn cron_refresh_delivery() -> Result<(), String> {
-    println!("[Cron] Delivery config refresh requested (no-op, config is read on demand)");
+    log::info!("[Cron] Delivery config refresh requested (no-op, config is read on demand)");
     Ok(())
 }

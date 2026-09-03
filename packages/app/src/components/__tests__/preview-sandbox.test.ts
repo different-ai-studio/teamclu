@@ -62,7 +62,19 @@ describe('srcDoc iframes stay origin-isolated', () => {
 
   it('actually scanned the HTML preview frame', () => {
     const editor = fs.readFileSync(path.join(SRC, 'components', 'FileEditor.tsx'), 'utf8')
-    expect(editor).toMatch(/srcDoc=\{currentContent\}/)
+    expect(editor).toMatch(/srcDoc=\{previewSrcDoc\}/)
     expect(editor).toMatch(/sandbox="allow-scripts"/)
+  })
+
+  /**
+   * SEC-9: the sandbox denies the frame an origin, not the network. A srcdoc
+   * frame inherits the embedder's CSP, and the app's own policy allows
+   * `connect-src … https:` — so the previewed document carries a policy of its
+   * own. Losing that silently is the whole failure mode this guards.
+   */
+  it('feeds the preview through withHtmlPreviewCsp', () => {
+    const editor = fs.readFileSync(path.join(SRC, 'components', 'FileEditor.tsx'), 'utf8')
+    expect(editor).toContain('withHtmlPreviewCsp')
+    expect(editor).toMatch(/previewSrcDoc\s*=\s*useMemo\(/)
   })
 })

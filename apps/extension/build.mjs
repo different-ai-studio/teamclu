@@ -10,8 +10,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const dist = resolve(here, 'dist')
 const repoRoot = resolve(here, '../..')
 const appDir = resolve(here, '../../packages/app')
-const linkHoverShared = resolve(appDir, 'src/lib/extension-link-hover')
-const linkSessionShared = resolve(appDir, 'src/lib/extension-link-session')
+const linkHoverShared = resolve(appDir, 'src/lib/extension/link-hover')
+const linkSessionShared = resolve(appDir, 'src/lib/extension/link-session')
 const nodeRequire = createRequire(import.meta.url)
 const {
   resolveExtensionPack,
@@ -104,7 +104,7 @@ if (!backend.mqttWsUrl) {
 
 const esbuildAliasWithAllowlist = {
   ...esbuildAlias,
-  '@teamclu/side-panel-host-allowlist': resolve(appDir, 'src/lib/side-panel-host-allowlist.ts'),
+  '@teamclu/side-panel-host-allowlist': resolve(appDir, 'src/lib/extension/side-panel-host-allowlist.ts'),
 }
 
 rmSync(dist, { recursive: true, force: true })

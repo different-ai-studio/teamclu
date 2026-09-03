@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createIdeasModule } from "../ideas";
-import type { CloudApiClient } from "../http";
+import { createIdeasModule } from "@/lib/backend/cloud-api/ideas";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 function mockClient(responses: Record<string, unknown>) {
   const post = vi.fn(async (path: string, _body?: unknown) => {

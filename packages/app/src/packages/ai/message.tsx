@@ -7,6 +7,7 @@ import { Download, X, Copy, Check, Maximize2 } from "lucide-react"
 
 import i18n from "@/lib/i18n"
 import { cn, isTauri } from "@/lib/utils"
+import { bytesToDataUrl } from "@/lib/base64"
 import {
   Dialog,
   DialogContent,
@@ -211,6 +212,69 @@ export function resolveImagePath(src: string, basePath?: string): string {
   return src
 }
 
+function isRemoteOrInlineImage(src: string): boolean {
+  return src.startsWith('data:') || src.startsWith('http://') || src.startsWith('https://')
+}
+
+function isAbsoluteFsPath(p: string): boolean {
+  return p.startsWith('/') || /^[A-Za-z]:\//.test(p)
+}
+
+/**
+ * Lexical normalization: forward slashes, `.`/`..` resolved, no duplicate or
+ * trailing separators. Keeps a leading `/` or a Windows drive prefix. Purely
+ * textual — no symlink resolution, which the fs plugin does at read time.
+ */
+function normalizeFsPath(p: string): string {
+  const unified = p.replace(/\\/g, '/')
+  const drive = /^[A-Za-z]:/.exec(unified)?.[0] ?? ''
+  const rest = drive ? unified.slice(drive.length) : unified
+  const absolute = rest.startsWith('/')
+  const out: string[] = []
+  for (const seg of rest.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') {
+      if (out.length > 0 && out[out.length - 1] !== '..') out.pop()
+      else if (!absolute) out.push('..')
+      continue
+    }
+    out.push(seg)
+  }
+  const body = out.join('/')
+  return `${drive}${absolute ? '/' : ''}${body}`
+}
+
+function isPathInside(candidate: string, root: string): boolean {
+  if (candidate === root) return true
+  const prefix = root.endsWith('/') ? root : `${root}/`
+  return candidate.startsWith(prefix)
+}
+
+/**
+ * SEC-5: image source for content the AGENT wrote (assistant markdown, inline
+ * image lists). Local files are readable only inside the session directory
+ * (`basePath`); anything else — an absolute path elsewhere, `..` escaping the
+ * root, or a local path with no root to check against — resolves to null and
+ * is not rendered.
+ *
+ * The plain `resolveImagePath` above stays for the user's own attachments,
+ * which they picked from anywhere on disk themselves. This one exists because
+ * rendering assistant text used to mean `![](/Users/me/.ssh/id_rsa)` was read
+ * into a data URL through the whole-disk fs grant the moment it scrolled into
+ * view.
+ */
+export function resolveAgentImagePath(src: string, basePath?: string): string | null {
+  if (!src) return null
+  if (isRemoteOrInlineImage(src)) return src
+  if (!basePath || !isAbsoluteFsPath(basePath.replace(/\\/g, '/'))) return null
+  const root = normalizeFsPath(basePath)
+  const unified = src.replace(/\\/g, '/')
+  const resolved = isAbsoluteFsPath(unified)
+    ? normalizeFsPath(unified)
+    : normalizeFsPath(`${root}/${unified}`)
+  return isPathInside(resolved, root) ? resolved : null
+}
+
 // Get MIME type from file extension
 function getMimeType(filename: string): string {
   const ext = filename.split('.').pop()?.toLowerCase() || ''
@@ -313,6 +377,7 @@ function PreviewImage({
     <img
       src={src}
       alt={alt || 'Image'}
+      referrerPolicy="no-referrer"
       className={className}
     />
   )
@@ -361,12 +426,7 @@ export function LocalImage({ src, alt, className, onError: onErrorCallback, onLo
         const data = await readFile(src)
         if (cancelled) return
         
-        // Convert Uint8Array to base64
-        const base64 = btoa(
-          Array.from(data).map(byte => String.fromCharCode(byte)).join('')
-        )
-        const mimeType = getMimeType(src)
-        setDataUrl(`data:${mimeType};base64,${base64}`)
+        setDataUrl(bytesToDataUrl(data, getMimeType(src)))
         setLoading(false)
         onLoadCallback?.()
       } catch (err) {
@@ -444,6 +504,9 @@ export function LocalImage({ src, alt, className, onError: onErrorCallback, onLo
     </>
   )
 }
+
+/** Stable identity so the streaming-tail short-circuit does not churn deps. */
+const EMPTY_INLINE_IMAGES: string[] = []
 
 // Extract inline image references from text (e.g., "filename.png" mentioned in text)
 function extractInlineImageReferences(text: string): string[] {
@@ -556,9 +619,15 @@ export function ClickableImage({ src, alt, className }: { src: string; alt?: str
 
   return (
     <>
-      <img 
-        src={src} 
-        alt={alt || 'Image'} 
+      {/* SEC-5: a remote image in content is a tracking pixel — it reports the
+          reader's IP and read time to whoever wrote the markdown. Lazy so
+          nothing is fetched until it scrolls into view, and never with a
+          referrer. */}
+      <img
+        src={src}
+        alt={alt || 'Image'}
+        loading="lazy"
+        referrerPolicy="no-referrer"
         className={cn(className, "cursor-pointer hover:opacity-90 transition-opacity")}
         onClick={() => setIsOpen(true)}
         title={t("chat.imageViewer.clickToEnlarge", "点击查看大图")}
@@ -647,19 +716,14 @@ function CodeBlock({ language, children }: { language: string; children: string 
       return () => { cancelled = true }
     }
     import('@/components/diff/shiki-renderer').then(
-      async ({
-        getHighlighter,
-        mapLanguage,
-        NOTION_DARK_THEME_NAME,
-        NOTION_LIGHT_THEME_NAME,
-      }) => {
+      async ({ highlightToHtml, NOTION_DARK_THEME_NAME, NOTION_LIGHT_THEME_NAME }) => {
         if (cancelled) return
         try {
-          const highlighter = await getHighlighter()
           const theme = isDark ? NOTION_DARK_THEME_NAME : NOTION_LIGHT_THEME_NAME
-          const lang = mapLanguage(language)
-          const html = highlighter.codeToHtml(code, { lang, theme })
-          if (!cancelled) setHighlightedHtml(html)
+          // null = a language this app carries no grammar for; the plain <pre>
+          // fallback below stays.
+          const html = await highlightToHtml(code, language, theme)
+          if (!cancelled && html) setHighlightedHtml(html)
         } catch {
           // Fallback: no highlighting
         }
@@ -923,6 +987,14 @@ export function MessageResponse({
 }: React.ComponentProps<"div">) {
   const { from, basePath } = useMessageContext()
   const isUserMessage = from === "user"
+  // PERF-13: inside the growing tail the content changes every frame, so a
+  // memo keyed on it is no memo at all. The two cosmetic passes below are
+  // skipped while that is true and run once the block closes into a
+  // `StableBlock` (or when the message finalises) — which is the only point at
+  // which their answers are meaningful anyway: a half-arrived ASCII diagram
+  // has no closing border to fence, and a half-arrived image path resolves to
+  // nothing.
+  const isStreamingTail = React.useContext(StreamingTailContext)
 
   // Parse content to detect/clean images and attachments
   // PERF: memoized to avoid re-running regex every render during streaming
@@ -933,18 +1005,21 @@ export function MessageResponse({
   )
   const hasMediaParts = parsedParts.some(p => p.type === 'image' || p.type === 'attachment')
   const inlineImages = React.useMemo(() => {
+    if (isStreamingTail) return EMPTY_INLINE_IMAGES
     const allText = parsedParts.filter(p => p.type === 'text').map(p => p.content).join(' ')
     return extractInlineImageReferences(allText)
-  }, [parsedParts])
+  }, [parsedParts, isStreamingTail])
 
   // PERF: the line-by-line normalization scan is O(content) — memoize so it
   // runs once per content change, not on every re-render during streaming.
   const normalizedTextByIndex = React.useMemo(
     () =>
-      parsedParts.map(p =>
-        p.type === 'text' ? normalizeAssistantMarkdownForDisplay(p.content) : null,
-      ),
-    [parsedParts],
+      isStreamingTail
+        ? parsedParts.map(() => null)
+        : parsedParts.map(p =>
+            p.type === 'text' ? normalizeAssistantMarkdownForDisplay(p.content) : null,
+          ),
+    [parsedParts, isStreamingTail],
   )
 
   // PERF: Merge base components with basePath-dependent `img` handler.
@@ -952,8 +1027,11 @@ export function MessageResponse({
   const markdownComponents = React.useMemo(() => ({
     ...markdownComponentsBase,
     img: ({ src, alt }: { src?: string; alt?: string }) => {
-      const resolvedSrc = resolveImagePath(src || '', basePath)
-      if (resolvedSrc.startsWith('/')) {
+      // SEC-5: assistant-authored image references may only read files inside
+      // the session directory; anything else renders nothing.
+      const resolvedSrc = resolveAgentImagePath(src || '', basePath)
+      if (!resolvedSrc) return null
+      if (!isRemoteOrInlineImage(resolvedSrc)) {
         return (
           <LocalImage
             src={resolvedSrc}
@@ -1066,9 +1144,11 @@ function InlineImageCard({ imageName, basePath }: { imageName: string; basePath:
   const { t } = useTranslation()
   const [failed, setFailed] = React.useState(false)
   const [imageDataUrl, setImageDataUrl] = React.useState<string | null>(null)
-  const imageSrc = resolveImagePath(imageName, basePath)
+  // SEC-5: same root check as the markdown `img` handler — these names come
+  // from the assistant's text.
+  const imageSrc = resolveAgentImagePath(imageName, basePath)
 
-  if (failed) return null
+  if (failed || !imageSrc) return null
 
   return (
     <div className="w-28 rounded-lg overflow-hidden border bg-muted/30 flex flex-col group relative">
@@ -1079,21 +1159,19 @@ function InlineImageCard({ imageName, basePath }: { imageName: string; basePath:
           className="w-full h-full object-cover"
           onError={() => setFailed(true)}
           onLoad={() => {
-            async function loadForDownload() {
+            // Arrow, not a hoisted declaration: the null-check above only
+            // narrows `imageSrc` for closures created after it.
+            const loadForDownload = async () => {
               try {
-                if (imageSrc.startsWith('data:') || imageSrc.startsWith('http')) {
+                if (isRemoteOrInlineImage(imageSrc)) {
                   setImageDataUrl(imageSrc)
                   return
                 }
                 const data = await readFile(imageSrc)
-                const base64 = btoa(
-                  Array.from(data).map(byte => String.fromCharCode(byte)).join('')
-                )
-                const mimeType = getMimeType(imageSrc)
-                setImageDataUrl(`data:${mimeType};base64,${base64}`)
+                setImageDataUrl(bytesToDataUrl(data, getMimeType(imageSrc)))
               } catch { /* ignore */ }
             }
-            loadForDownload()
+            void loadForDownload()
           }}
         />
         {imageDataUrl && (
@@ -1118,65 +1196,3 @@ function InlineImageCard({ imageName, basePath }: { imageName: string; basePath:
   )
 }
 
-export function MessageBranch({
-  children,
-  className,
-  ...props
-}: React.ComponentProps<"div">) {
-  return (
-    <div className={cn("flex flex-col gap-2", className)} {...props}>
-      {children}
-    </div>
-  )
-}
-
-export function MessageBranchContent({
-  children,
-  className,
-  ...props
-}: React.ComponentProps<"div">) {
-  return (
-    <div className={cn("flex flex-col gap-2", className)} {...props}>
-      {children}
-    </div>
-  )
-}
-
-export function MessageBranchSelector({
-  children,
-  className,
-  ...props
-}: React.ComponentProps<"div">) {
-  return (
-    <div className={cn("flex items-center justify-center gap-2 text-xs", className)} {...props}>
-      {children}
-    </div>
-  )
-}
-
-export function MessageBranchPrevious(props: React.ComponentProps<"button">) {
-  return (
-    <button className="text-muted-foreground hover:text-foreground" {...props}>
-      Prev
-    </button>
-  )
-}
-
-export function MessageBranchNext(props: React.ComponentProps<"button">) {
-  return (
-    <button className="text-muted-foreground hover:text-foreground" {...props}>
-      Next
-    </button>
-  )
-}
-
-export function MessageBranchPage({
-  children = "1 / 1",
-  ...props
-}: React.ComponentProps<"span">) {
-  return (
-    <span className="text-muted-foreground" {...props}>
-      {children}
-    </span>
-  )
-}

@@ -1,5 +1,5 @@
-import type { CloudApiClient } from "./http";
-import type { TeamSkill, TeamSkillCategory } from "./team-skills";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
+import type { TeamSkill, TeamSkillCategory } from "@/lib/backend/cloud-api/team-skills";
 
 /**
  * First-party skills marketplace client.
@@ -14,7 +14,7 @@ import type { TeamSkill, TeamSkillCategory } from "./team-skills";
  */
 
 /** Present on a catalog row only when the caller passed `teamId` (§6). */
-export interface AdoptedByTeam {
+interface AdoptedByTeam {
   /** The team's own slug for this skill — may differ from the catalog slug (§8.1). */
   slug: string;
   latestVersion: number;
@@ -40,7 +40,7 @@ export interface MarketplaceSkill {
   adoptedByTeam?: AdoptedByTeam | null;
 }
 
-export interface MarketplaceSkillVersion {
+interface MarketplaceSkillVersion {
   version: number;
   contentHash: string;
   size: number;
@@ -55,7 +55,7 @@ export interface MarketplaceSkillVersion {
   createdAt: string | null;
 }
 
-export interface MarketplaceSimilarSkill {
+interface MarketplaceSimilarSkill {
   slug: string;
   summary: string;
 }

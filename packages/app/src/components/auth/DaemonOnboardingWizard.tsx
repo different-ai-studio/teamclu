@@ -10,6 +10,7 @@ import {
   type OnboardingStep,
 } from '@/stores/daemon-onboarding'
 import { useElapsedSeconds } from '@/hooks/use-elapsed-seconds'
+import { useShallow } from 'zustand/react/shallow'
 
 /** Show elapsed time and a per-step hint once a run passes this. */
 const SLOW_HINT_MS = 8_000
@@ -94,7 +95,9 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
     refresh,
     forceReset,
     autoHealCloudSession,
-  } = useDaemonOnboardingStore()
+  } = useDaemonOnboardingStore(
+    useShallow((s) => ({ status: s.status, busy: s.busy, error: s.error, step: s.step, completedSteps: s.completedSteps, failedStep: s.failedStep, runStartedAt: s.runStartedAt, completedAgent: s.completedAgent, pendingName: s.pendingName, nameDeviceAgent: s.nameDeviceAgent, refresh: s.refresh, forceReset: s.forceReset, autoHealCloudSession: s.autoHealCloudSession })),
+  )
   const elapsed = useElapsedSeconds(runStartedAt)
   const [name, setName] = React.useState('')
 

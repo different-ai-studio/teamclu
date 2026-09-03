@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 
-export type CloseActionChoice = 'tray' | 'quit'
+type CloseActionChoice = 'tray' | 'quit'
 
 /**
  * Desktop-only: listens for `window-close-requested` and shows a confirm dialog.

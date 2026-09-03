@@ -52,6 +52,8 @@
     "marketPublic": "公共",
     "installToAgent": "安装到 Agent",
     "selectAgentFirst": "请先选择 Agent",
+    "personalSourceBuiltin": "内置",
+    "remotePersonalMcpReadOnly": "远程个人 MCP 一期只读",
     "mcp": "MCP",
     "env": "密钥保险箱",
     "knowledge": "知识库",
@@ -513,17 +515,16 @@
     }
   },
   "navigation": {
-    "changes": "变更",
     "shortcuts": "快捷方式",
     "files": "文件",
     "hideTabs": "隐藏文件",
     "restoreTabs": "显示文件",
     "collapsePanel": "收起面板",
-    "toggleSidebar": "切换侧边栏",
     "collapseSidebar": "收起侧边栏",
     "settings": "设置"
   },
   "chat": {
+    "diagnoseSession": "诊断此会话",
     "sendStatus": {
       "sending": "发送中…",
       "delivered": "已送达",
@@ -567,11 +568,6 @@
       "routingMultiAgent": "多位 Agent 在场——请 @名字 指定回复对象。",
       "participantCount": "{{count}} 位参与者 · 等待第一条消息"
     },
-    "backToActiveSession": "返回活跃会话",
-    "archivedSession": "归档会话",
-    "restoreSession": "恢复",
-    "archivedSessionLoadError": "无法加载归档会话",
-    "restoreArchivedHint": "恢复此会话后可继续聊天",
     "agent": "助手",
     "startNewChat": "开始新对话",
     "askAboutFile": "询问关于文件的问题",
@@ -757,12 +753,8 @@
     "inputPlaceholderContinue": "继续输入...",
     "refreshMessages": "刷新消息",
     "startingAgent": "正在启动助手...",
-    "taskRunning": "任务运行中...",
     "waitingForAgent": "会话已准备好。正在等待助手运行时完成启动。",
-    "waitingForConfirmationShort": "待确认",
     "newSessionBadge": "新",
-    "messageCountShort": "{{count}} 条消息",
-    "messageCountShort_plural": "{{count}} 条消息",
     "draftContinueBanner": "与 {{name}} 还有 {{count}} 个进行中",
     "draftContinueRecent": "最近会话",
     "draftWithAgentHint": "在下方输入消息，发送后创建与该 Agent 的会话",
@@ -961,7 +953,9 @@
       "install": "安装",
       "upgrade": "升级",
       "needsApiKey": "缺 API Key——进去后在「设置 → LLM」里填。",
-      "needsNode": "使用 Pi 前请先安装 Node.js 22.19 或更高版本。",
+      "needsNode": "使用 Pi 前请先安装 Node.js {{required}} 或更高版本。",
+      "needsNewerNode": "找到的 Node 是 {{found}}，Pi 需要 {{required}} 或更高版本。请切换到更新的 Node 后重启应用。",
+      "needsMcpSdk": "Pi 已安装，但它的 MCP 桥还没装好。点安装补齐。",
       "recheck": "我已安装 Node.js，重新检测",
       "rechecking": "检测中…",
       "installed": "已安装",
@@ -1056,7 +1050,6 @@
     "teamLastSyncTooltip": "最后同步：{{time}}",
     "teamSyncing": "同步中…",
     "duplicateFailed": "创建副本失败",
-    "pathCopied": "路径已复制",
     "undo": "撤销：{{desc}}"
   },
   "sessions": {
@@ -1115,11 +1108,6 @@
     "searchSessions": "搜索会话",
     "searchDescription": "搜索并导航到会话",
     "searchPlaceholder": "搜索会话...",
-    "searchActive": "活跃",
-    "searchArchived": "已归档",
-    "searchAll": "全部",
-    "archivedAt": "归档于 {{date}}",
-    "loadingArchivedSessions": "正在加载归档会话...",
     "sessions": "会话",
     "active": "活动中",
     "selectWorkspaceFirst": "请先选择工作区",
@@ -1409,6 +1397,25 @@
         "prompt": "prompt",
         "admin": "admin"
       }
+    },
+    "renameFailed": "重命名失败",
+    "authModeUpdateFailed": "更新登录方式失败",
+    "authModeUpdateDenied": "应用不存在或无权修改",
+    "deleteFailed": "删除失败",
+    "deleteDenied": "应用不存在或无权删除",
+    "deleted": "应用已删除",
+    "deployErrorReason": {
+      "uncommitted": "工作区有未提交或未推送的改动，请先 commit 并 push 后再部署。",
+      "installTimeout": "依赖安装超时（10 分钟），请检查网络或 lockfile 后重试。",
+      "buildTimeout": "构建超时（10 分钟），请检查构建脚本后重试。",
+      "artifactTooLarge": "构建产物超过 50 MiB 上限，请精简输出后重试。",
+      "uploadUrlExpired": "上传链接已过期，请重新发起部署。",
+      "unsupportedAuthMode": "第三方登录尚未支持部署，请切换到平台登录或无登录模式。",
+      "vanityRequired": "平台登录需要配置应用公开域名（APPS_PUBLIC_DOMAIN）。",
+      "commitNotOnRemote": "Gitea 上找不到该 commit，请确认已 push 后再部署。",
+      "lockfileOutOfSync": "pnpm-lock.yaml 与 package.json 不一致，请提交 lockfile 后重试。",
+      "buildOutputMissing": "构建未产出 .output/ 目录，请检查构建脚本。",
+      "daemonNotConnected": "本机 amuxd 未连接，无法构建。请确认守护进程在运行后重试。"
     }
   },
   "knowledgeAcl": {
@@ -1468,6 +1475,12 @@
       "desktopOnlyDetail": "一键诊断需要在 Desktop 客户端中使用。请下载并安装 TeamClu Desktop 后重试。",
       "openFromError": "打开诊断",
       "openFromSidebar": "运行诊断",
+      "sessionFocus": "正在查看会话 {{id}}",
+      "mqttReconnected": "已请求重连 MQTT",
+      "mqttReconnectFailed": "重连失败：{{message}}",
+      "confirmReloginTitle": "重新登录？",
+      "confirmReloginDescription": "将退出当前账号并返回登录页，以便刷新会话与 MQTT 凭据。",
+      "confirmReloginAction": "确认退出",
       "liveConsole": {
         "title": "实时调试台",
         "description": "查看 Console 输出、运行状态与磁盘日志，无需 Web Inspector。",
@@ -1775,8 +1788,12 @@
       "runtimeNotInstalled": "未安装",
       "runtimeNeedsApiKey": "缺 API Key",
       "runtimeNeedsNode": "缺 node",
+      "runtimeNodeOutdated": "node 版本太低",
+      "runtimeMcpSdkMissing": "缺 MCP 桥",
       "runtimeBridgeMissing": "桥接未就绪",
       "runtimeBlockedHint": "{{agent}} 还不能用：{{reason}}。在此之前，这个团队的 agent 无法启动。",
+      "runtimeBlockerFound": "找到的是 {{found}}，需要 {{required}} 或更高版本。",
+      "runtimeBlockerNeeds": "需要 {{required}} 或更高版本。",
       "runtimeScope": "运行时作用范围",
       "runtimeCurrentTeam": "当前团队",
       "runtimePerTeamHint": "运行时按团队独立配置——此设置仅对「{{team}}」生效。",
@@ -2928,7 +2945,10 @@
       "updateDone": "已更新",
       "updateFailed": "更新失败",
       "installFailed": "安装失败",
-      "upToDate": "已是最新"
+      "upToDate": "已是最新",
+      "repair": "修复",
+      "repairTitle": "重新安装，补齐这个运行时缺失的部分",
+      "needsRepairHint": "已安装且是最新版本，但还不能用 —— 运行时有一部分缺失。点「修复」重新安装。"
     },
     "permissions": {
       "allow": "允许",
@@ -3160,7 +3180,6 @@
     "expandAll": "全部展开",
     "explainChange": "解释变更",
     "generatePatch": "生成补丁",
-    "openFile": "打开文件",
     "pathCopied": "路径已复制",
     "reviewCode": "审查代码",
     "suggestRefactor": "建议重构"
@@ -3393,6 +3412,14 @@
     "accepted": "已加入团队",
     "acceptFailed": "加入团队失败：{{msg}}",
     "declineFailed": "拒绝失败：{{msg}}"
+  },
+  "inviteLink": {
+    "title": "通过这条邀请链接加入团队？",
+    "description": "接受后会加入链接所属的团队、切换当前组织，并把本机 agent 重新绑定到该团队。只有信任发送者时才继续。",
+    "tokenLabel": "邀请令牌",
+    "signInFirst": "会先登录，登录后立即认领邀请。",
+    "cancel": "暂不",
+    "accept": "加入团队"
   },
   "terminal": {
     "label": "终端",

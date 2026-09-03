@@ -1,8 +1,8 @@
 import * as React from 'react'
-import { noteLocalDaemonSignals } from '@/lib/agent-device-reachability'
-import { probeDaemonHttp } from '@/lib/daemon-local-client'
-import { onDaemonProbeRequested, requestDaemonProbe } from '@/lib/daemon-probe-signal'
-import { QUICK_CHAT_DAEMON_PROBE_INTERVAL_MS } from '@/lib/session-agent-probe'
+import { noteLocalDaemonSignals } from '@/lib/agent/agent-device-reachability'
+import { probeDaemonHttp } from '@/lib/daemon/daemon-local-client'
+import { onDaemonProbeRequested, requestDaemonProbe } from '@/lib/daemon/daemon-probe-signal'
+import { QUICK_CHAT_DAEMON_PROBE_INTERVAL_MS } from '@/lib/session/session-agent-probe'
 import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
 import { useDaemonMqttConnected } from '@/stores/daemon-mqtt-status'
 

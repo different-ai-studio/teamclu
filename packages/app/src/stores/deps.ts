@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { isTauri } from '@/lib/utils'
-import { appStoragePrefix } from '@/lib/build-config'
+import { appStoragePrefix } from '@/lib/config/build-config'
 
 export interface DependencyInfo {
   name: string
@@ -25,14 +25,20 @@ export interface DependencyInfo {
  * manifest, pi's is the minimum `pi.lock.json` pins — but the question the UI
  * asks is the same either way: is there something to update to.
  */
-export interface DependencyVersions {
+interface DependencyVersions {
   installed: string | null
   latest: string | null
   /** null = latest unknown (mirror unreachable); keep offering the update. */
   upToDate: boolean | null
+  /**
+   * At the pinned version and still unusable — pi's MCP SDK is installed beside
+   * the extension by amuxd, not by npm, so a pi installed by hand is current
+   * and broken at once. "Up to date" must not hide the button that repairs it.
+   */
+  needsRepair?: boolean
 }
 
-export interface InstallResult {
+interface InstallResult {
   success: boolean
   error?: string
 }
@@ -147,7 +153,7 @@ export const useDepsStore = create<DepsState>((set, get) => ({
       // `getDaemonLocalAgent` already falls back to opencode when the daemon
       // cannot be reached, which is the conservative default the backend uses
       // for `undefined` too.
-      const { getDaemonLocalAgent } = await import('@/lib/daemon-local-client')
+      const { getDaemonLocalAgent } = await import('@/lib/daemon/daemon-local-client')
       const localAgent = await getDaemonLocalAgent().catch(() => undefined)
       const result = await invoke<DependencyInfo[]>('check_dependencies', { localAgent })
       set({ dependencies: result, checked: true, loading: false })

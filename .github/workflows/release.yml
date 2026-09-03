@@ -102,8 +102,9 @@ jobs:
           restore-keys: pnpm-store-${{ runner.os }}-
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.97.1" # must match rust-toolchain.toml (ci.yml rust-check enforces it)
           targets: ${{ matrix.target }}
 
       - name: Setup sccache
@@ -367,7 +368,9 @@ jobs:
           restore-keys: pnpm-store-${{ runner.os }}-
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1" # must match rust-toolchain.toml (ci.yml rust-check enforces it)
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.11

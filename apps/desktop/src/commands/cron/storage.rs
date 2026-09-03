@@ -76,7 +76,7 @@ impl CronStorage {
         // Hold the I/O lock so an in-flight mutation/persist or reload can't race
         // the atomic data + workspace_path swap below.
         let _io = self.io_lock.lock().await;
-        println!("[Cron] Initializing storage at: {}", workspace_path);
+        log::info!("[Cron] Initializing storage at: {}", workspace_path);
 
         // Load existing jobs from new workspace, or use empty data if file doesn't exist
         let jobs_path = Self::jobs_path(workspace_path);
@@ -84,21 +84,21 @@ impl CronStorage {
             match std::fs::read_to_string(&jobs_path) {
                 Ok(content) => match serde_json::from_str::<CronJobsData>(&content) {
                     Ok(loaded) => {
-                        println!("[Cron] Loaded {} jobs from file", loaded.jobs.len());
+                        log::info!("[Cron] Loaded {} jobs from file", loaded.jobs.len());
                         loaded
                     }
                     Err(e) => {
-                        eprintln!("[Cron] Failed to parse jobs file: {}", e);
+                        log::error!("[Cron] Failed to parse jobs file: {}", e);
                         CronJobsData::default()
                     }
                 },
                 Err(e) => {
-                    eprintln!("[Cron] Failed to read jobs file: {}", e);
+                    log::error!("[Cron] Failed to read jobs file: {}", e);
                     CronJobsData::default()
                 }
             }
         } else {
-            println!("[Cron] No existing jobs file found, starting with empty jobs");
+            log::info!("[Cron] No existing jobs file found, starting with empty jobs");
             CronJobsData::default()
         };
 
@@ -148,11 +148,11 @@ impl CronStorage {
             match serde_json::to_string_pretty(&*data) {
                 Ok(content) => {
                     if let Err(e) = std::fs::write(Self::jobs_path(ws), content) {
-                        eprintln!("[Cron] Failed to save jobs: {}", e);
+                        log::error!("[Cron] Failed to save jobs: {}", e);
                     }
                 }
                 Err(e) => {
-                    eprintln!("[Cron] Failed to serialize jobs: {}", e);
+                    log::error!("[Cron] Failed to serialize jobs: {}", e);
                 }
             }
         }
@@ -181,11 +181,11 @@ impl CronStorage {
                     *data = loaded;
                 }
                 Err(e) => {
-                    eprintln!("[Cron] Failed to parse jobs file during reload: {}", e);
+                    log::error!("[Cron] Failed to parse jobs file during reload: {}", e);
                 }
             },
             Err(e) => {
-                eprintln!("[Cron] Failed to read jobs file during reload: {}", e);
+                log::error!("[Cron] Failed to read jobs file during reload: {}", e);
             }
         }
     }
@@ -334,16 +334,16 @@ impl CronStorage {
                     {
                         Ok(mut file) => {
                             if let Err(e) = writeln!(file, "{}", line) {
-                                eprintln!("[Cron] Failed to write run record: {}", e);
+                                log::error!("[Cron] Failed to write run record: {}", e);
                             }
                         }
                         Err(e) => {
-                            eprintln!("[Cron] Failed to open run file: {}", e);
+                            log::error!("[Cron] Failed to open run file: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("[Cron] Failed to serialize run record: {}", e);
+                    log::error!("[Cron] Failed to serialize run record: {}", e);
                 }
             }
         }
@@ -386,12 +386,12 @@ impl CronStorage {
                     if found {
                         let new_content = lines.join("\n") + "\n";
                         if let Err(e) = std::fs::write(&run_file, new_content) {
-                            eprintln!("[Cron] Failed to update run file: {}", e);
+                            log::error!("[Cron] Failed to update run file: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("[Cron] Failed to read run file: {}", e);
+                    log::error!("[Cron] Failed to read run file: {}", e);
                 }
             }
         }
@@ -436,7 +436,7 @@ impl CronStorage {
                     records
                 }
                 Err(e) => {
-                    eprintln!("[Cron] Failed to read runs for {}: {}", job_id, e);
+                    log::error!("[Cron] Failed to read runs for {}: {}", job_id, e);
                     Vec::new()
                 }
             }

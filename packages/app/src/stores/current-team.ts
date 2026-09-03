@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { getBackend } from "@/lib/backend";
 import { useAuthStore } from "./auth-store";
-import { trackEvent } from "@/lib/analytics";
+import { trackEvent } from "@/lib/telemetry/analytics";
 
 export async function setLocalCacheTeamGate(teamId: string | null): Promise<void> {
   try {
@@ -14,13 +14,13 @@ export async function setLocalCacheTeamGate(teamId: string | null): Promise<void
   }
 }
 
-export interface CurrentTeam {
+interface CurrentTeam {
   id: string;
   name: string;
   slug: string;
 }
 
-export interface CurrentTeamMember {
+interface CurrentTeamMember {
   id: string;
   displayName: string;
   role: string | null;
@@ -34,7 +34,7 @@ export interface CurrentTeamMember {
  * (listCurrentUserTeams + member). The live `load()` still runs in the
  * background (App mounts and calls it) to revalidate and reconcile.
  */
-export interface CachedCurrentTeam {
+interface CachedCurrentTeam {
   team: CurrentTeam | null;
   currentMember: CurrentTeamMember | null;
   /** Auth user id the cache belongs to — guards against cross-user reuse. */
@@ -85,7 +85,7 @@ export function initialCurrentTeamState(): Pick<State, "team" | "currentMember" 
 
 type TeamListRow = { id: string; name: string; slug?: string | null };
 
-export type ResolveTeamFromListResult =
+type ResolveTeamFromListResult =
   | { action: "revalidate"; row: TeamListRow }
   | { action: "preserve" }
   | { action: "clear" }

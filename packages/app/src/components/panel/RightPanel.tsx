@@ -1,34 +1,28 @@
-import { SessionDiffPanel } from '@/components/chat/SessionDiffPanel'
-import { SessionList } from '@/components/chat/SessionList'
 import { SessionActorPanel } from '@/components/chat/SessionActorSheet'
 import { ShortcutsPanel } from './ShortcutsPanel'
 import { FileBrowser } from '@/components/workspace/FileBrowser'
 import { ActorsView } from '@/components/panel/ActorsView'
-import { useWorkspaceStore } from '@/stores/workspace'
-import { useSessionStore } from '@/stores/session'
+import { useWorkspaceStore, type RightPanelTab } from '@/stores/workspace'
+import { useSessionSelectionStore } from '@/stores/session-selection-store'
 import { useSessionListStore } from '@/stores/session-list-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import type { FileDiff } from '@/stores/session-types'
 
 interface RightPanelProps {
-  diff?: FileDiff[]
   // Override the active tab from store
-  defaultTab?: 'diff' | 'session' | 'shortcuts' | 'files' | 'actors'
+  defaultTab?: RightPanelTab
   // Compact mode for file mode layout
   compact?: boolean
 }
 
-export function RightPanel({ diff, defaultTab, compact }: RightPanelProps) {
+export function RightPanel({ defaultTab, compact }: RightPanelProps) {
   const storeActiveTab = useWorkspaceStore(s => s.activeTab)
-  const sessionDiff = useSessionStore(s => s.sessionDiff)
-  const activeSessionId = useSessionStore(s => s.activeSessionId)
+  const activeSessionId = useSessionSelectionStore(s => s.activeSessionId)
   const sessionRow = useSessionListStore(s => s.rows.find(r => r.id === activeSessionId))
   const currentTeamId = useCurrentTeamStore(s => s.team?.id ?? null)
   const teamIdForActors = sessionRow?.team_id ?? currentTeamId
 
   // Use defaultTab if provided, otherwise use store's activeTab
   const activeTab = defaultTab || storeActiveTab
-  const diffData = diff ?? sessionDiff
 
   // `files` renders a self-contained FileBrowser that owns its own scroll
   // area and keeps a fixed toolbar. That pane must NOT sit inside an outer
@@ -36,7 +30,7 @@ export function RightPanel({ diff, defaultTab, compact }: RightPanelProps) {
   // the tree. Give it a bounded flex column so the inner scroll area (and thus
   // the pinned toolbar) works.
   const selfScrolling = activeTab === 'files'
-  const noPadding = activeTab === 'session' || activeTab === 'actors'
+  const noPadding = activeTab === 'actors'
 
   return (
     <div
@@ -44,12 +38,6 @@ export function RightPanel({ diff, defaultTab, compact }: RightPanelProps) {
     >
       {activeTab === 'shortcuts' && (
         <ShortcutsPanel />
-      )}
-      {activeTab === 'diff' && (
-        <DiffTab diff={diffData} compact={compact} />
-      )}
-      {activeTab === 'session' && (
-        <SessionList compact={compact} />
       )}
       {activeTab === 'files' && (
         <FileBrowser variant="panel" />
@@ -61,17 +49,4 @@ export function RightPanel({ diff, defaultTab, compact }: RightPanelProps) {
       )}
     </div>
   )
-}
-
-// Diff tab content
-function DiffTab({ diff, compact }: { diff: FileDiff[], compact?: boolean }) {
-  if (diff.length === 0) {
-    return (
-      <div className={`text-muted-foreground text-center ${compact ? 'text-xs py-3' : 'text-xs py-4'}`}>
-        No changes yet
-      </div>
-    )
-  }
-
-  return <SessionDiffPanel diff={diff} compact={compact} />
 }

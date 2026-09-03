@@ -2,6 +2,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
@@ -11,6 +12,25 @@ use super::ring::RingBuffer;
 use super::shell_integration;
 
 const READ_BUF_BYTES: usize = 4096;
+
+/// Where PTY output goes. Called with each chunk as it is read; returns `false`
+/// once the receiver is gone, and the sink is dropped.
+///
+/// The desktop wires a Tauri IPC channel in here so bytes reach the webview as
+/// an `ArrayBuffer`. They used to travel as a JSON `number[]` event payload —
+/// three to four bytes of text per byte of output, parsed on the main thread,
+/// and broadcast to every window whether or not it showed the terminal.
+pub type DataSink = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
+
+/// The ring and its sinks share one lock on purpose: [`PtyHandle::attach`]
+/// hands the sink the ring's contents and registers it under the same guard,
+/// so no chunk can land in between and be both missing from the snapshot and
+/// never delivered. That ordering guarantee is what let the frontend drop its
+/// snapshot / subscribe / re-snapshot / de-duplicate dance.
+struct Output {
+    ring: RingBuffer,
+    sinks: Vec<(u64, DataSink)>,
+}
 
 pub struct PtyHandle {
     pub id: String,
@@ -23,7 +43,8 @@ pub struct PtyHandle {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn std::io::Write + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
-    ring: Arc<Mutex<RingBuffer>>,
+    output: Arc<Mutex<Output>>,
+    next_sink_id: AtomicU64,
     status: Mutex<TerminalStatus>,
     exit_code: Mutex<Option<i32>>,
 }
@@ -37,11 +58,11 @@ pub struct SpawnArgs {
     pub rows: u16,
 }
 
+/// Called once with `(event_name, code)` when the child exits or reader stops.
+pub type ExitEmitter = Arc<dyn Fn(&str, Option<i32>) + Send + Sync>;
+
 pub struct EmitContext {
-    /// Called with `(event_name, payload_bytes)` for data events.
-    pub emit_data: Arc<dyn Fn(&str, Vec<u8>) + Send + Sync>,
-    /// Called once with `(event_name, code)` when the child exits or reader stops.
-    pub emit_exit: Arc<dyn Fn(&str, Option<i32>) + Send + Sync>,
+    pub emit_exit: ExitEmitter,
 }
 
 impl PtyHandle {
@@ -88,7 +109,11 @@ impl PtyHandle {
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
             child: Mutex::new(child),
-            ring: Arc::new(Mutex::new(RingBuffer::new())),
+            output: Arc::new(Mutex::new(Output {
+                ring: RingBuffer::new(),
+                sinks: Vec::new(),
+            })),
+            next_sink_id: AtomicU64::new(1),
             status: Mutex::new(TerminalStatus::Running),
             exit_code: Mutex::new(None),
         });
@@ -102,9 +127,8 @@ impl PtyHandle {
         mut reader: Box<dyn std::io::Read + Send>,
         emit: EmitContext,
     ) {
-        let data_event = format!("terminal://{}/data", handle.id);
         let exit_event = format!("terminal://{}/exit", handle.id);
-        let ring = handle.ring.clone();
+        let output = handle.output.clone();
 
         std::thread::Builder::new()
             .name(format!("pty-reader-{}", handle.id))
@@ -122,8 +146,13 @@ impl PtyHandle {
                         match reader.read(&mut tmp) {
                             Ok(0) => break,
                             Ok(n) => {
-                                ring.lock().unwrap().write(&tmp[..n]);
-                                (emit.emit_data)(&data_event, tmp[..n].to_vec());
+                                let chunk = &tmp[..n];
+                                let mut out = output.lock().unwrap();
+                                out.ring.write(chunk);
+                                // Under the same guard as the ring write — see
+                                // `Output`. A sink that reports its receiver
+                                // gone is dropped here rather than retried.
+                                out.sinks.retain(|(_, sink)| sink(chunk));
                             }
                             Err(_) => break,
                         }
@@ -175,8 +204,36 @@ impl PtyHandle {
         let _ = self.child.lock().unwrap().kill();
     }
 
+    /// Register a sink and hand it everything the ring holds, atomically.
+    ///
+    /// The snapshot is delivered as the sink's first call — possibly empty, so
+    /// a receiver can treat "first message" as "replay complete". Every chunk
+    /// read after this call follows in order. Returns the id [`detach`] takes.
+    ///
+    /// [`detach`]: PtyHandle::detach
+    pub fn attach(&self, sink: DataSink) -> u64 {
+        let id = self.next_sink_id.fetch_add(1, Ordering::Relaxed);
+        let mut out = self.output.lock().unwrap();
+        let snapshot = out.ring.snapshot();
+        if sink(&snapshot) {
+            out.sinks.push((id, sink));
+        }
+        id
+    }
+
+    /// Stop delivering to the sink `attach` returned this id for. Unknown ids
+    /// are a no-op: the reader thread may already have dropped it.
+    pub fn detach(&self, sink_id: u64) {
+        self.output
+            .lock()
+            .unwrap()
+            .sinks
+            .retain(|(id, _)| *id != sink_id);
+    }
+
+    #[cfg(test)]
     pub fn snapshot(&self) -> Vec<u8> {
-        self.ring.lock().unwrap().snapshot()
+        self.output.lock().unwrap().ring.snapshot()
     }
 
     pub fn status(&self) -> TerminalStatus {
@@ -248,30 +305,30 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    fn make_emit() -> (
-        EmitContext,
-        mpsc::Receiver<(String, Vec<u8>)>,
-        mpsc::Receiver<(String, Option<i32>)>,
-    ) {
-        let (data_tx, data_rx) = mpsc::channel();
+    fn make_emit() -> (EmitContext, mpsc::Receiver<(String, Option<i32>)>) {
         let (exit_tx, exit_rx) = mpsc::channel();
-        let data_tx = Mutex::new(data_tx);
         let exit_tx = Mutex::new(exit_tx);
         let emit = EmitContext {
-            emit_data: Arc::new(move |name, bytes| {
-                let _ = data_tx.lock().unwrap().send((name.to_string(), bytes));
-            }),
             emit_exit: Arc::new(move |name, code| {
                 let _ = exit_tx.lock().unwrap().send((name.to_string(), code));
             }),
         };
-        (emit, data_rx, exit_rx)
+        (emit, exit_rx)
+    }
+
+    /// A sink that forwards every chunk to an mpsc receiver.
+    fn collecting_sink() -> (DataSink, mpsc::Receiver<Vec<u8>>) {
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let sink: DataSink =
+            Arc::new(move |chunk: &[u8]| tx.lock().unwrap().send(chunk.to_vec()).is_ok());
+        (sink, rx)
     }
 
     #[test]
     fn echo_produces_output_and_exit() {
         let tmp = std::env::temp_dir();
-        let (emit, data_rx, exit_rx) = make_emit();
+        let (emit, exit_rx) = make_emit();
         let handle = PtyHandle::spawn(
             SpawnArgs {
                 id: "test-1".into(),
@@ -284,6 +341,8 @@ mod tests {
             emit,
         )
         .expect("spawn");
+        let (sink, data_rx) = collecting_sink();
+        handle.attach(sink);
 
         handle.write(b"echo hello\nexit\n").expect("write");
 
@@ -294,7 +353,7 @@ mod tests {
         assert!(exit_msg.0.starts_with("terminal://test-1/exit"));
 
         let mut buf = Vec::new();
-        while let Ok((_, chunk)) = data_rx.try_recv() {
+        while let Ok(chunk) = data_rx.try_recv() {
             buf.extend_from_slice(&chunk);
         }
         let text = String::from_utf8_lossy(&buf);
@@ -308,7 +367,7 @@ mod tests {
     #[test]
     fn ring_buffer_replay_after_output() {
         let tmp = std::env::temp_dir();
-        let (emit, _data_rx, exit_rx) = make_emit();
+        let (emit, exit_rx) = make_emit();
         let handle = PtyHandle::spawn(
             SpawnArgs {
                 id: "test-2".into(),
@@ -331,5 +390,90 @@ mod tests {
             text.contains("marker_xyz"),
             "snapshot missing marker: {text}"
         );
+    }
+
+    /// The reason ring and sinks share a lock: a late attach gets the whole
+    /// history as its first chunk, then live output, with nothing lost or
+    /// doubled in between.
+    #[test]
+    fn a_late_attach_replays_the_ring_first_then_streams() {
+        let tmp = std::env::temp_dir();
+        let (emit, exit_rx) = make_emit();
+        let handle = PtyHandle::spawn(
+            SpawnArgs {
+                id: "test-3".into(),
+                workspace_id: "ws".into(),
+                cwd: tmp,
+                shell: "/bin/sh".into(),
+                cols: 80,
+                rows: 24,
+            },
+            emit,
+        )
+        .expect("spawn");
+
+        handle.write(b"printf first_marker\n").expect("write");
+        // Wait until the ring has the first marker before attaching.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !String::from_utf8_lossy(&handle.snapshot()).contains("first_marker") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "first marker never arrived"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let (sink, data_rx) = collecting_sink();
+        let sink_id = handle.attach(sink);
+        let replay = data_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("replay chunk");
+        assert!(
+            String::from_utf8_lossy(&replay).contains("first_marker"),
+            "first chunk should be the ring snapshot"
+        );
+
+        handle
+            .write(b"printf second_marker\nexit\n")
+            .expect("write");
+        let _ = exit_rx.recv_timeout(Duration::from_secs(5));
+        let mut live = Vec::new();
+        while let Ok(chunk) = data_rx.try_recv() {
+            live.extend_from_slice(&chunk);
+        }
+        let live = String::from_utf8_lossy(&live);
+        assert!(
+            live.contains("second_marker"),
+            "live output missing: {live}"
+        );
+
+        handle.detach(sink_id);
+        assert!(handle.output.lock().unwrap().sinks.is_empty());
+    }
+
+    /// A sink whose receiver is gone must be dropped, not retried forever.
+    #[test]
+    fn a_dead_sink_is_dropped_on_the_next_chunk() {
+        let tmp = std::env::temp_dir();
+        let (emit, exit_rx) = make_emit();
+        let handle = PtyHandle::spawn(
+            SpawnArgs {
+                id: "test-4".into(),
+                workspace_id: "ws".into(),
+                cwd: tmp,
+                shell: "/bin/sh".into(),
+                cols: 80,
+                rows: 24,
+            },
+            emit,
+        )
+        .expect("spawn");
+
+        let (sink, data_rx) = collecting_sink();
+        handle.attach(sink);
+        drop(data_rx);
+        handle.write(b"echo x\nexit\n").expect("write");
+        let _ = exit_rx.recv_timeout(Duration::from_secs(5));
+        assert!(handle.output.lock().unwrap().sinks.is_empty());
     }
 }

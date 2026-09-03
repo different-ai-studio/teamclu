@@ -12,7 +12,7 @@
 // The actual refresh HTTP call is injected by `auth-client` to avoid an import
 // cycle.
 
-import type { AuthChangeEvent, AuthListener, Session } from "./types";
+import type { AuthChangeEvent, AuthListener, Session } from "@/lib/auth/types";
 
 const STORAGE_KEY = "teamclu.session.v1";
 // Pre-rebrand key. A historical fact about what sits in users' localStorage, not

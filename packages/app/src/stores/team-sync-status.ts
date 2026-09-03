@@ -11,7 +11,7 @@ interface RemotePendingItem {
 }
 
 /** A file the pull keeps failing on. Carries why, so the UI can say it. */
-export interface StuckFile {
+interface StuckFile {
   reason: string
   attempts: number
 }

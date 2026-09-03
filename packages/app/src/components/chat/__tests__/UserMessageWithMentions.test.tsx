@@ -8,11 +8,11 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
-vi.mock('@/lib/download-remote-attachment', () => ({
+vi.mock('@/lib/attachments/download-remote-attachment', () => ({
   openOrDownloadRemoteAttachment: vi.fn(async () => 'downloaded' as const),
 }))
 
-vi.mock('@/lib/attachment-download-index', () => ({
+vi.mock('@/lib/attachments/attachment-download-index', () => ({
   normalizeAttachmentUrlKey: (url: string) => url.split('?')[0],
   getCachedAttachmentPath: () => null,
 }))
@@ -139,7 +139,7 @@ describe('UserMessageWithMentions', () => {
   })
 
   it('renders page-link tokens as inline chips', async () => {
-    const { encodePageLinkToken } = await import('@/lib/page-link-token')
+    const { encodePageLinkToken } = await import('@/lib/embed/page-link-token')
     const token = encodePageLinkToken({
       title: 'Example',
       url: 'https://example.com/page',
@@ -154,7 +154,7 @@ describe('UserMessageWithMentions', () => {
   })
 
   it('renders sent Page chips without exposing hidden instruction', async () => {
-    const { buildPageLinkChip } = await import('@/lib/expand-page-link-tokens')
+    const { buildPageLinkChip } = await import('@/lib/embed/expand-page-link-tokens')
     const chip = buildPageLinkChip({
       title: 'Pending Approval Request',
       url: 'https://example.com/req',

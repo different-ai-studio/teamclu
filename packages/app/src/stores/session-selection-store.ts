@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { preloadSessionCreatedByActorId } from "@/lib/session-created-by-cache";
+import { preloadSessionCreatedByActorId } from "@/lib/session/session-created-by-cache";
 import { useCurrentTeamStore } from "./current-team";
 import { useSessionListStore } from "./session-list-store";
 

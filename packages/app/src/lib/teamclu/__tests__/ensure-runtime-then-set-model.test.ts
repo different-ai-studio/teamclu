@@ -11,16 +11,16 @@ const mocks = vi.hoisted(() => ({
   mqttConnected: true as boolean | null,
 }))
 
-vi.mock('@/lib/session-create', () => ({
+vi.mock('@/lib/session/session-create', () => ({
   startAgentRuntimesAsync: (...args: unknown[]) => mocks.startAgentRuntimesAsync(...args),
 }))
 
-vi.mock('@/lib/teamclu-rpc', () => ({
+vi.mock('@/lib/daemon/teamclu-rpc', () => ({
   setModel: (...args: unknown[]) => mocks.setModel(...args),
   waitForTeamcluRpcReady: (...args: unknown[]) => mocks.waitForTeamcluRpcReady(...args),
 }))
 
-vi.mock('@/lib/agent-device-reachability', () => ({
+vi.mock('@/lib/agent/agent-device-reachability', () => ({
   resolveAgentDevicePresence: (...args: unknown[]) => mocks.resolveAgentDevicePresence(...args),
 }))
 
@@ -88,7 +88,7 @@ describe('ensureRuntimeThenSetModel', () => {
   })
 
   it('runtimeStarts then setModels with the daemon-returned spawn id', async () => {
-    const { ensureRuntimeThenSetModel } = await import('../ensure-agent-runtime')
+    const { ensureRuntimeThenSetModel } = await import('@/lib/teamclu/ensure-agent-runtime')
     const result = await ensureRuntimeThenSetModel({
       sessionId: 'sess-1',
       teamId: 'team-1',
@@ -120,7 +120,7 @@ describe('ensureRuntimeThenSetModel', () => {
       runtimeIdsByAgent: {},
     })
 
-    const { ensureRuntimeThenSetModel } = await import('../ensure-agent-runtime')
+    const { ensureRuntimeThenSetModel } = await import('@/lib/teamclu/ensure-agent-runtime')
     await expect(
       ensureRuntimeThenSetModel({
         sessionId: 'sess-1',
@@ -139,7 +139,7 @@ describe('ensureRuntimeThenSetModel', () => {
     mocks.listParticipants.mockResolvedValue([])
     mocks.addParticipant.mockRejectedValue(new Error('row-level security violation'))
 
-    const { ensureRuntimeThenSetModel } = await import('../ensure-agent-runtime')
+    const { ensureRuntimeThenSetModel } = await import('@/lib/teamclu/ensure-agent-runtime')
     await expect(
       ensureRuntimeThenSetModel({
         sessionId: 'sess-1',
@@ -158,7 +158,7 @@ describe('ensureRuntimeThenSetModel', () => {
     // agent must not be affected by the abort above.
     mocks.listParticipants.mockResolvedValue([{ id: 'agent-1' }])
 
-    const { ensureRuntimeThenSetModel } = await import('../ensure-agent-runtime')
+    const { ensureRuntimeThenSetModel } = await import('@/lib/teamclu/ensure-agent-runtime')
     await expect(
       ensureRuntimeThenSetModel({
         sessionId: 'sess-1',
@@ -172,7 +172,7 @@ describe('ensureRuntimeThenSetModel', () => {
 
   it('throws when mqtt is disconnected', async () => {
     mocks.mqttConnected = false
-    const { ensureRuntimeThenSetModel } = await import('../ensure-agent-runtime')
+    const { ensureRuntimeThenSetModel } = await import('@/lib/teamclu/ensure-agent-runtime')
     await expect(
       ensureRuntimeThenSetModel({
         sessionId: 'sess-1',

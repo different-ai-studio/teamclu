@@ -5,12 +5,12 @@ import {
   getDaemonRuntime,
   type DaemonRuntimeRefresh,
   type DaemonRuntimeRefreshStatus,
-} from '@/lib/daemon-local-client'
+} from '@/lib/daemon/daemon-local-client'
 
 const POLL_CLEAN_MS = 12_000
 const POLL_ACTIVE_MS = 4_000
 
-export interface WorkspaceRuntimeRefreshState {
+interface WorkspaceRuntimeRefreshState {
   workspacePath: string | null
   refresh: DaemonRuntimeRefresh | null
   dismissedAt: string | null

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { loadAllRoles, loadRolesSkillsWorkspaceState, parseRoleMarkdown, serializeRoleMarkdown } from "../loader"
+import { loadAllRoles, loadRolesSkillsWorkspaceState, parseRoleMarkdown, serializeRoleMarkdown } from "@/lib/roles/loader"
 
 const mockExists = vi.fn()
 const mockReadDir = vi.fn()
@@ -34,7 +34,7 @@ vi.mock("@/lib/utils", () => ({
   isTauri: () => mockIsTauri(),
 }))
 
-vi.mock("@/lib/daemon-local-client", () => ({
+vi.mock("@/lib/daemon/daemon-local-client", () => ({
   encodeWorkspaceId: (path: string) => `wid:${path}`,
   getDaemonRolesSkillsState: (...args: unknown[]) => mockGetDaemonRolesSkillsState(...args),
   putDaemonRole: vi.fn(),

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('@/lib/amuxd-channels', () => {
+vi.mock('@/lib/daemon/amuxd-channels', () => {
   class AmuxdUnreachableError extends Error {
     constructor() {
       super('amuxd unreachable')
@@ -76,14 +76,14 @@ describe('useChannelsStore', () => {
   })
 
   it('keepAliveCheck calls amuxd listChannels', async () => {
-    const { listChannels } = await import('@/lib/amuxd-channels')
+    const { listChannels } = await import('@/lib/daemon/amuxd-channels')
     const { useChannelsStore } = await import('@/stores/channels-store')
     await useChannelsStore.getState().keepAliveCheck()
     expect(listChannels).toHaveBeenCalled()
   })
 
   it('loadConfig surfaces amuxd-unreachable as a UI error', async () => {
-    const { listChannels, AmuxdUnreachableError } = await import('@/lib/amuxd-channels')
+    const { listChannels, AmuxdUnreachableError } = await import('@/lib/daemon/amuxd-channels')
     vi.mocked(listChannels).mockRejectedValueOnce(new AmuxdUnreachableError())
     const { useChannelsStore } = await import('@/stores/channels-store')
     await useChannelsStore.getState().loadConfig()

@@ -81,7 +81,7 @@ fn classify_entry(entry_path: &Path) -> Result<&'static str, String> {
             if std::fs::read_dir(entry_path).is_ok() {
                 Ok("directory")
             } else {
-                eprintln!(
+                log::error!(
                     "[workspace_files] symlink '{}' did not resolve: {follow_err}",
                     entry_path.display()
                 );
@@ -91,12 +91,28 @@ fn classify_entry(entry_path: &Path) -> Result<&'static str, String> {
     }
 }
 
+/// List one directory of a workspace view, as the file tree renders it.
+///
+/// Off the main thread: Tauri runs a non-`async` command inline in the IPC
+/// handler, and `read_dir` plus a `stat` per entry on a network volume or a
+/// directory of thousands of files froze the window for the duration. The
+/// blocking body lives in [`list_workspace_directory`] so tests can call it
+/// without a runtime.
 #[tauri::command]
-pub fn read_workspace_directory(
+pub async fn read_workspace_directory(
     workspace_path: String,
     path: String,
 ) -> Result<Vec<WorkspaceDirectoryEntry>, String> {
-    let target = resolve_workspace_view_path(&workspace_path, &path)?;
+    tokio::task::spawn_blocking(move || list_workspace_directory(&workspace_path, &path))
+        .await
+        .map_err(|e| format!("read_workspace_directory task failed: {e}"))?
+}
+
+pub(crate) fn list_workspace_directory(
+    workspace_path: &str,
+    path: &str,
+) -> Result<Vec<WorkspaceDirectoryEntry>, String> {
+    let target = resolve_workspace_view_path(workspace_path, path)?;
     let entries = std::fs::read_dir(&target)
         .map_err(|e| format!("Failed to read directory '{}': {}", target.display(), e))?;
 
@@ -158,16 +174,26 @@ pub async fn read_workspace_text_file(
     .map_err(|e| format!("read task failed: {}", e))?
 }
 
+/// Returns the file base64-encoded, not as `Vec<u8>`.
+///
+/// PERF-16: a `Vec<u8>` crosses the IPC boundary as a JSON array of decimal
+/// numbers — `[137,80,78,71,…]`, three to four bytes of wire and one JS number
+/// per byte of file — and every caller's next move was to base64 it anyway for
+/// a `data:` URL. Encoding here makes the payload ~1.33× the file instead of
+/// ~4×, and hands the webview a string it can use directly.
 #[tauri::command]
 pub async fn read_workspace_binary_file(
     workspace_path: String,
     path: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<String, String> {
+    use base64::Engine as _;
+
     let target = resolve_workspace_view_path(&workspace_path, &path)?;
-    tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
         guard_file_size(&target)?;
-        std::fs::read(&target)
-            .map_err(|e| format!("Failed to read binary file '{}': {}", target.display(), e))
+        let bytes = std::fs::read(&target)
+            .map_err(|e| format!("Failed to read binary file '{}': {}", target.display(), e))?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
     })
     .await
     .map_err(|e| format!("read task failed: {}", e))?
@@ -180,7 +206,7 @@ mod tests {
     #[test]
     fn rejects_paths_outside_workspace_view() {
         let workspace = "/tmp/workspace";
-        let result = read_workspace_directory(workspace.to_string(), "/tmp/other".to_string());
+        let result = list_workspace_directory(workspace, "/tmp/other");
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("outside workspace view"));
@@ -196,13 +222,9 @@ mod tests {
         std::fs::write(external.path().join("README.md"), "linked content").unwrap();
         symlink(external.path(), workspace.path().join("linked-dir")).unwrap();
 
-        let entries = read_workspace_directory(
-            workspace.path().to_string_lossy().to_string(),
-            workspace
-                .path()
-                .join("linked-dir")
-                .to_string_lossy()
-                .to_string(),
+        let entries = list_workspace_directory(
+            &workspace.path().to_string_lossy(),
+            &workspace.path().join("linked-dir").to_string_lossy(),
         )
         .unwrap();
 
@@ -228,9 +250,9 @@ mod tests {
         let external = tempfile::tempdir().unwrap();
         symlink(external.path(), workspace.path().join("linked-dir")).unwrap();
 
-        let entries = read_workspace_directory(
-            workspace.path().to_string_lossy().to_string(),
-            workspace.path().to_string_lossy().to_string(),
+        let entries = list_workspace_directory(
+            &workspace.path().to_string_lossy(),
+            &workspace.path().to_string_lossy(),
         )
         .unwrap();
 
@@ -254,9 +276,9 @@ mod tests {
         )
         .unwrap();
 
-        let entries = read_workspace_directory(
-            workspace.path().to_string_lossy().to_string(),
-            workspace.path().to_string_lossy().to_string(),
+        let entries = list_workspace_directory(
+            &workspace.path().to_string_lossy(),
+            &workspace.path().to_string_lossy(),
         )
         .unwrap();
 

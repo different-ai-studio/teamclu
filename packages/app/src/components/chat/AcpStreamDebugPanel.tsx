@@ -7,7 +7,7 @@ import {
   formatAcpDebugLine,
   getAcpDebugLogDirectory,
   revealAcpDebugLog,
-} from "@/lib/acp-debug-file-log";
+} from "@/lib/diagnostics/acp-debug-file-log";
 import { isTauri } from "@/lib/utils";
 import {
   ACP_DEBUG_PANEL_LINES,

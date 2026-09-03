@@ -15,7 +15,7 @@ import {
   resolveSessionAgentSyncHint,
   resolveSessionAgentUiState,
   type ReachabilityEvidence,
-} from '@/lib/session-agent-ui-state'
+} from '@/lib/session/session-agent-ui-state'
 import {
   subscribeDaemonMqttStatus,
   useDaemonMqttStatusStore,
@@ -24,12 +24,12 @@ import {
 
 const getDaemonMqttConnected = vi.hoisted(() => vi.fn<() => Promise<boolean | null>>())
 
-vi.mock('@/lib/daemon-agent-admin', () => ({ getDaemonMqttConnected }))
-vi.mock('@/lib/agent-device-reachability', () => ({ noteLocalDaemonSignals: vi.fn() }))
-vi.mock('@/lib/local-daemon-identity', () => ({
+vi.mock('@/lib/daemon/daemon-agent-admin', () => ({ getDaemonMqttConnected }))
+vi.mock('@/lib/agent/agent-device-reachability', () => ({ noteLocalDaemonSignals: vi.fn() }))
+vi.mock('@/lib/daemon/local-daemon-identity', () => ({
   getKnownLocalDaemonActorId: () => 'local-agent',
 }))
-vi.mock('@/lib/daemon-probe-signal', () => ({
+vi.mock('@/lib/daemon/daemon-probe-signal', () => ({
   onDaemonProbeRequested: () => () => {},
 }))
 

@@ -1,12 +1,12 @@
 import * as React from "react"
 import type { MentionedPerson, PromptInputContextValue } from "./prompt-input-types"
-import type { PageContext } from "@/lib/embed-page-context"
-import { encodeMemberMentionToken } from "@/lib/member-mention-token"
-import { encodePageLinkToken } from "@/lib/page-link-token"
+import type { PageContext } from "@/lib/embed/embed-page-context"
+import { encodeMemberMentionToken } from "@/lib/actor/member-mention-token"
+import { encodePageLinkToken } from "@/lib/embed/page-link-token"
 import {
   encodeSessionAttachmentToken,
   type SessionAttachmentPayload,
-} from "@/lib/session-attachment-token"
+} from "@/lib/attachments/session-attachment-token"
 
 function encodeSlashChip(type: 'role' | 'skill' | 'command', name: string) {
   return `/{${type}:${name}}`
@@ -291,7 +291,7 @@ export function createInsertFileMention(context: PromptInputContextValue) {
   }
 }
 
-export function createInsertSkillMention(context: PromptInputContextValue) {
+function createInsertSkillMention(context: PromptInputContextValue) {
   const { text, setText, onCommandClose, textareaRef, commandStartRef } = context
 
   return (skillName: string, type: 'role' | 'skill' | 'command' = 'skill') => {
@@ -334,7 +334,7 @@ export function createInsertSkillMention(context: PromptInputContextValue) {
   }
 }
 
-export function createInsertPageLink(context: PromptInputContextValue) {
+function createInsertPageLink(context: PromptInputContextValue) {
   const { text, setText, textareaRef } = context
 
   return (page: PageContext) => {

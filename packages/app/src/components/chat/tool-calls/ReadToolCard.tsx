@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { FileText } from "lucide-react";
-import { ToolCall } from "@/stores/session";
+import { ToolCall } from "@/stores/session-types";
 import { extractFilePath, getFileName } from "./tool-call-utils";
 import { ToolCallDisclosure } from "./ToolCallDisclosure";
 import { ToolCallStatusGlyph } from "./ToolCallStatusGlyph";

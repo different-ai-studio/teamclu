@@ -1,7 +1,7 @@
 import { create as createZustand } from 'zustand'
 import { fromBinary } from '@bufbuild/protobuf'
 import { ActorPresenceSchema } from '@/lib/proto/amux_pb'
-import { mqttSubscribe, listenForEnvelopes, type IncomingEnvelope } from '@/lib/mqtt-bridge'
+import { mqttSubscribe, listenForEnvelopes, type IncomingEnvelope } from '@/lib/mqtt/mqtt-bridge'
 import { createSharedModuleLeaseManager, type SharedModuleLease } from '@/lib/shared-module-lease'
 
 // Per-actor presence. Fed by retained `amux/{team}/{actor}/state` publishes —
@@ -14,7 +14,7 @@ import { createSharedModuleLeaseManager, type SharedModuleLease } from '@/lib/sh
 // The topic's `{actor}` segment is the agent's `actor_id`, so callers index
 // this store by the agent's actor id when they want agent presence.
 
-export type ActorPresenceEntry = {
+type ActorPresenceEntry = {
   online: boolean
   displayName: string
   lastUpdated: number // ms epoch

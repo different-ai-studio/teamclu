@@ -172,7 +172,7 @@ provider 面板因此不是自己实现一套登录，而是**把 pi 的
 
 1. **build config**（`build.config.*.json`）：顶层新增
    `"localAgent": "opencode" | "pi"`（缺省 `opencode`）。vite 注入
-   `import.meta.env.VITE_LOCAL_AGENT` → `packages/app/src/lib/build-config.ts`
+   `import.meta.env.VITE_LOCAL_AGENT` → `packages/app/src/lib/config/build-config.ts`
    暴露 `getLocalAgent()`。
 2. **app → daemon**：桌面端 setup/onboarding 与 daemon 注册时，把
    `localAgent` 写入 daemon 配置（既有 daemon settings API），落到

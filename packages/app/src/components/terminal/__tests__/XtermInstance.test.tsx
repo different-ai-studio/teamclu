@@ -2,8 +2,8 @@ import { render, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const {
-  subscribeMock,
-  onDataMock,
+  attachMock,
+  detachMock,
   onExitMock,
   resizeMock,
   writeMock,
@@ -11,14 +11,8 @@ const {
   xtermWriteMock,
   xtermDisposeMock,
 } = vi.hoisted(() => ({
-  subscribeMock: vi.fn(async () => ({
-    ring_snapshot: [104, 105, 10], // "hi\n"
-    cols: 80,
-    rows: 24,
-    status: "running",
-    exit_code: null,
-  })),
-  onDataMock: vi.fn(async () => () => {}),
+  attachMock: vi.fn(),
+  detachMock: vi.fn(async () => {}),
   onExitMock: vi.fn(async () => () => {}),
   resizeMock: vi.fn(async () => {}),
   writeMock: vi.fn(async () => {}),
@@ -28,8 +22,7 @@ const {
 }));
 
 vi.mock("@/lib/terminal/client", () => ({
-  subscribeTerminal: subscribeMock,
-  onTerminalData: onDataMock,
+  attachTerminal: attachMock,
   onTerminalExit: onExitMock,
   resizeTerminal: resizeMock,
   writeTerminal: writeMock,
@@ -46,6 +39,8 @@ vi.mock("@xterm/xterm", () => ({
       onData: vi.fn(() => ({ dispose: vi.fn() })),
       onResize: vi.fn(() => ({ dispose: vi.fn() })),
       focus: vi.fn(),
+      refresh: vi.fn(),
+      rows: 24,
       options: {},
     }
   }),
@@ -66,18 +61,32 @@ vi.mock("@xterm/addon-web-links", () => ({
 
 import { XtermInstance } from "@/components/terminal/XtermInstance";
 
-describe("XtermInstance", () => {
-  beforeEach(() => {
-    subscribeMock.mockClear();
-    subscribeMock.mockResolvedValue({
-      ring_snapshot: [104, 105, 10], // "hi\n"
+/**
+ * Drive `attachTerminal` the way the backend does: the snapshot is the first
+ * chunk on the channel, live output follows, all before the promise resolves
+ * or after — order across the two is not something the component may assume.
+ */
+function attachDelivering(chunks: Uint8Array[]) {
+  attachMock.mockImplementation(async (_id: string, onData: (c: Uint8Array) => void) => {
+    for (const chunk of chunks) onData(chunk);
+    return {
+      sink_id: 7,
       cols: 80,
       rows: 24,
       status: "running",
       exit_code: null,
-    });
-    onDataMock.mockClear();
-    onDataMock.mockResolvedValue(() => {});
+      detach: detachMock,
+    };
+  });
+}
+
+describe("XtermInstance", () => {
+  beforeEach(() => {
+    attachMock.mockReset();
+    attachDelivering([new Uint8Array([104, 105, 10])]); // "hi\n"
+    detachMock.mockClear();
+    onExitMock.mockClear();
+    onExitMock.mockResolvedValue(() => {});
     xtermWriteMock.mockClear();
     xtermDisposeMock.mockClear();
     closeMock.mockClear();
@@ -85,44 +94,42 @@ describe("XtermInstance", () => {
 
   afterEach(() => cleanup());
 
-  test("on mount: subscribes and replays ring", async () => {
+  test("on mount: attaches and replays the snapshot chunk", async () => {
     render(<XtermInstance tabId="t1" active />);
     await new Promise(r => setTimeout(r, 0));
-    expect(subscribeMock).toHaveBeenCalledWith("t1");
-    // ring replay
-    expect(xtermWriteMock).toHaveBeenCalled();
+    expect(attachMock).toHaveBeenCalledWith("t1", expect.any(Function));
+    expect(xtermWriteMock).toHaveBeenCalledWith(new Uint8Array([104, 105, 10]));
   });
 
-  test("on unmount: disposes xterm but does NOT call terminal_close", async () => {
+  test("an empty snapshot is not written but still triggers the repaint", async () => {
+    attachDelivering([new Uint8Array(0)]);
+    render(<XtermInstance tabId="t1" active />);
+    await new Promise(r => setTimeout(r, 0));
+    // Only the "" repaint write, never an empty byte write.
+    const byteWrites = xtermWriteMock.mock.calls.filter(([arg]) => arg instanceof Uint8Array);
+    expect(byteWrites).toHaveLength(0);
+    expect(xtermWriteMock).toHaveBeenCalledWith("", expect.any(Function));
+  });
+
+  test("live chunks after the snapshot are written in order", async () => {
+    attachDelivering([
+      new Uint8Array([37, 32]), // "% " snapshot
+      new Uint8Array([108, 115]), // "ls" live
+    ]);
+    render(<XtermInstance tabId="t1" active />);
+    await new Promise(r => setTimeout(r, 0));
+    const byteWrites = xtermWriteMock.mock.calls
+      .map(([arg]) => arg)
+      .filter((arg): arg is Uint8Array => arg instanceof Uint8Array);
+    expect(byteWrites).toEqual([new Uint8Array([37, 32]), new Uint8Array([108, 115])]);
+  });
+
+  test("on unmount: detaches and disposes xterm but does NOT call terminal_close", async () => {
     const { unmount } = render(<XtermInstance tabId="t1" active />);
     await new Promise(r => setTimeout(r, 0));
     unmount();
+    expect(detachMock).toHaveBeenCalled();
     expect(xtermDisposeMock).toHaveBeenCalled();
     expect(closeMock).not.toHaveBeenCalled();
-  });
-
-  test("catches prompt output emitted between initial snapshot and data listener registration", async () => {
-    subscribeMock
-      .mockResolvedValueOnce({
-        ring_snapshot: [],
-        cols: 80,
-        rows: 24,
-        status: "running",
-        exit_code: null,
-      })
-      .mockResolvedValueOnce({
-        ring_snapshot: [37, 32], // "% "
-        cols: 80,
-        rows: 24,
-        status: "running",
-        exit_code: null,
-      });
-
-    render(<XtermInstance tabId="t1" active />);
-    await new Promise(r => setTimeout(r, 0));
-
-    expect(onDataMock).toHaveBeenCalledWith("t1", expect.any(Function));
-    expect(subscribeMock).toHaveBeenCalledTimes(2);
-    expect(xtermWriteMock).toHaveBeenCalledWith(new Uint8Array([37, 32]));
   });
 });

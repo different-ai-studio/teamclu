@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { isSoloBuild } from '@/lib/solo-build'
+import { isSoloBuild } from '@/lib/config/solo-build'
 
-export type LayoutBreakpoint = 'wide' | 'medium' | 'narrow'
+type LayoutBreakpoint = 'wide' | 'medium' | 'narrow'
 
 const WIDE_MIN_WIDTH = 1024
 const SESSION_LIST_MIN_WIDTH = 900

@@ -30,18 +30,18 @@ vi.mock("@/lib/backend", () => ({
 
 vi.mock("@/lib/utils", () => ({ isTauri: () => true }));
 
-vi.mock("@/lib/local-cache", () => ({
+vi.mock("@/lib/cache/local-cache", () => ({
   loadSessionsForTeam: (...args: unknown[]) => mocks.loadSessionsForTeam(...args),
   loadSessionIdsForActor: (...args: unknown[]) => mocks.loadSessionIdsForActor(...args),
   upsertSessionsBatch: (...args: unknown[]) => mocks.upsertSessionsBatch(...args),
   softDeleteSession: vi.fn(),
 }));
 
-vi.mock("@/lib/session-workspace-sync", () => ({
+vi.mock("@/lib/session/session-workspace-sync", () => ({
   syncSessionWorkspaces: (...args: unknown[]) => mocks.syncSessionWorkspaces(...args),
 }));
 
-vi.mock("@/lib/extension-link-session", () => ({
+vi.mock("@/lib/extension/link-session", () => ({
   removeLinkSessionEntriesForSession: vi.fn().mockResolvedValue(undefined),
 }));
 

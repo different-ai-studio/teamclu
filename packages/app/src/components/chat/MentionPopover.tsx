@@ -11,15 +11,15 @@ import {
 import {
   presenceOnlineFlag,
   resolveAgentDevicePresenceSync,
-} from '@/lib/agent-device-reachability'
+} from '@/lib/agent/agent-device-reachability'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
-import { isSupersededLocalAgent } from '@/lib/local-daemon-identity'
+import { isSupersededLocalAgent } from '@/lib/daemon/local-daemon-identity'
 import { type MentionedPerson } from '@/packages/ai/prompt-input'
 import type { AttachedAgent } from '@/packages/ai/prompt-input-insert-hooks'
 
 export type { MentionedPerson }
 
-export type MemberMentionSelectOptions = {
+type MemberMentionSelectOptions = {
   clearEngagedAgent: boolean
 }
 
@@ -48,7 +48,7 @@ type MentionItem = ParticipantRow & { itemType: 'member' | 'agent' | 'external' 
 
 type PopoverStep = 'browse' | 'confirm'
 
-export function participantsToMentionRows(
+function participantsToMentionRows(
   participants: SessionParticipantInfo[],
   excludeMemberActorId?: string | null,
 ): ParticipantRow[] {

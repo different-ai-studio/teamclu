@@ -15,7 +15,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { SettingCard, ToggleSwitch, StatusBadge } from './shared'
 
-export interface GatewayStatusCardProps {
+interface GatewayStatusCardProps {
   /** The channel icon component */
   icon: React.ReactNode
   /** The gateway display name (e.g., "Discord Gateway") */

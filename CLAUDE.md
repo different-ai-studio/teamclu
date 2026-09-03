@@ -100,8 +100,29 @@ pnpm ios:test               # iOS UI tests
 - `packages/app/src/hooks/` — React hooks
 
 **Rust backend key paths:**
-- `apps/desktop/src/commands/` — Tauri IPC commands (oss_sync/, team_share/, team_git.rs, gateway/, cron/, etc.)
+- `apps/desktop/src/commands/` — Tauri IPC commands (oss_sync/, team_share/, gateway/, cron/, etc.)
 - `apps/desktop/binaries/` — sidecar binaries (teamclu-introspect, etc.)
+
+**Desktop-owned surfaces** (they live in the Tauri process and are documented
+nowhere else; this describes what exists, it decides nothing):
+- **Cron** — `apps/desktop/src/commands/cron/`: the scheduler runs inside the
+  desktop process, one `CronInstance` per workspace. Global jobs are stored
+  under `dirs::config_dir()/<brand storage dir>/cron-global`, workspace jobs
+  are keyed by workspace path. The daemon only executes the turns a job
+  triggers, so a headless daemon has no cron.
+- **Terminal** — `apps/desktop/src/terminal/` + `commands/terminal.rs`:
+  `portable-pty` PTYs with an 8 MiB per-terminal ring buffer replayed on
+  re-attach. The cwd must fall under one of the allowed roots the frontend
+  passes with the call; no roots, no terminal.
+- **Local cache** — `apps/desktop/src/local_cache/`: a libsql (SQLite) file at
+  `<brand home>/local-cache.db` mirroring Cloud API rows (actors, sessions,
+  participants, messages, ideas, claims, submissions, outbox, watermarks) for
+  offline reads. Commands are `local_cache_*`, all gated on the current team.
+- **Introspect API** — `commands/introspect_api.rs`: a loopback HTTP server on
+  `127.0.0.1:13144` that the `teamclu-introspect` MCP sidecar calls for WeCom
+  sends, cron runs, team sync, env vars, workspace MCP config, and session
+  archive / participants / export. Requests carry a per-launch bearer token;
+  the module header documents the token file and the rejection rules.
 
 **Editor system:** Markdown (Tiptap) / HTML (Tiptap + sandbox preview) / Code (CodeMirror 6 + Shiki)
 
@@ -140,10 +161,22 @@ Do not bypass the Cloud API and call Supabase directly from client code. The fac
 ## Streaming Architecture (Critical)
 
 Single source of truth principle — **never mix content sources**:
-- **Streaming phase**: display from `streamingContent` (built from delta buffer)
+- **Streaming phase**: display from the v2 stream entry (`useV2StreamingStore`,
+  built from the delta buffer); the v1 `useStreamingStore` is gone
 - **Completed phase**: display from `message.content` (built from `message.parts[]`)
 - **Never** write to `msg.content` during streaming
 - **Never** use "longest content" strategy on completion
+
+**The one exception, and where it lives.** Completed content is reconciled in
+exactly one place: `deriveAgentReplyContent` in
+`packages/app/src/lib/agent/agent-reply-transcript.ts`, and the finalize path in
+`stores/v2-stream-parts.ts` goes through its `reconcileEquivalentAgentReplyText`.
+When the streamed text and the daemon's final content are the *same text after
+whitespace normalization*, that helper keeps the longer one, because MQTT QoS0
+can drop post-tool deltas and the daemon final carries the tail. Texts that
+differ are never merged by length. `pickCanonicalAgentReplyText` may be imported
+only by that module; `lib/__tests__/agent-reply-single-reconciliation.test.ts`
+fails the build on a second importer.
 
 ## Team Collaboration
 

@@ -1,6 +1,5 @@
-import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { useActorDisplayName } from "@/hooks/useActorDisplayName";
+import { useActorDisplayName } from "@/hooks/use-actor-display-name";
 import { cn } from "@/lib/utils";
 import { composerGlassChildClass } from "./composer-glass";
 

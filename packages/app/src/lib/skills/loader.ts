@@ -1,10 +1,10 @@
 import { readDir, readTextFile, exists } from '@tauri-apps/plugin-fs'
-import { collectTeamSkillPaths } from '@/lib/team-skill-paths'
+import { collectTeamSkillPaths } from '@/lib/team/team-skill-paths'
 import { frontmatterString } from '@/lib/skills/frontmatter'
 import { homeDir } from '@tauri-apps/api/path'
-import type { SkillWithSource, SkillSource } from './types'
-import { INHERENT_SKILL_NAMES, shouldIncludeDesktopControlSkill } from './types'
-import { appDisplayName } from '@/lib/build-config'
+import type { SkillWithSource, SkillSource } from '@/lib/skills/types'
+import { INHERENT_SKILL_NAMES, shouldIncludeDesktopControlSkill } from '@/lib/skills/types'
+import { appDisplayName } from '@/lib/config/build-config'
 import i18n from '@/lib/i18n'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ async function loadSkillsFromDir(
 
 // ─── Multi-Source Loader ────────────────────────────────────────────────────
 
-export { collectTeamSkillPaths, readConfigSkillPaths } from '@/lib/team-skill-paths'
+export { collectTeamSkillPaths, readConfigSkillPaths } from '@/lib/team/team-skill-paths'
 
 /**
  * Every skill directory scanned for the current workspace/user context, in the
@@ -329,26 +329,3 @@ export function getSourceDirHint(source: SkillSource): string {
   }
 }
 
-/**
- * Get the source badge CSS class for display
- */
-export function getSourceBadgeClass(source: SkillSource): string {
-  switch (source) {
-    case 'local':
-      return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300'
-    case 'claude':
-      return 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300'
-    case 'shared':
-      return 'bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-300'
-    case 'team':
-      return 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300'
-    case 'builtin':
-      return 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300 border border-blue-200/60 dark:border-blue-700/50'
-    case 'personal':
-      return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300'
-    case 'global-claude':
-      return 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300'
-    case 'global-agent':
-      return 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-300'
-  }
-}

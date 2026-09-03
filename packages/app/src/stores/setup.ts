@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { isTauri } from '@/lib/utils'
-import { markStartup } from '@/lib/startup-perf'
-import { appStoragePrefix, localAgent } from '@/lib/build-config'
+import { markStartup } from '@/lib/telemetry/startup-perf'
+import { appStoragePrefix, localAgent } from '@/lib/config/build-config'
 
 // Cache the last-known "all required deps satisfied" verdict so a returning user
 // (deps already installed) is never gated behind the cold `setup_list_requirements`
@@ -43,10 +43,16 @@ function persistSetupSatisfied(ok: boolean): void {
 
 /**
  * Why a runtime is not usable, when "not installed" would be misleading.
- * Only cursor reports one — its readiness is an AND of four conditions and the
- * usual failure is a missing API key, not a missing install.
+ * Cursor and pi both report one: their readiness is an AND of several
+ * conditions, and the usual failure is not a missing install — it is a missing
+ * API key, a Node too old, or an npm package amuxd installs beside the pi
+ * extension.
+ *
+ * `node` and `node_outdated` are separate because the fix is: "there is no Node
+ * here" sends the user to install one, while "the Node we can see is 20.20.2"
+ * sends them to a version manager they already have.
  */
-export type RuntimeBlocker = 'api_key' | 'node' | 'bridge'
+export type RuntimeBlocker = 'api_key' | 'node' | 'node_outdated' | 'bridge' | 'mcp_sdk'
 
 export type RequirementStatus = {
   id: string
@@ -55,9 +61,13 @@ export type RequirementStatus = {
   present: boolean
   version: string | null
   blocker?: RuntimeBlocker | null
+  /** What the blocker found, e.g. `20.20.2 (/usr/local/bin/node)`. */
+  blockerFound?: string | null
+  /** What it needs, e.g. `22.19.0`. */
+  blockerRequired?: string | null
 }
 
-export type SetupProgress = {
+type SetupProgress = {
   id: string
   status: 'started' | 'running' | 'done' | 'failed'
   line: string | null

@@ -15,7 +15,7 @@
  * special bytes — see the shell-integration scripts shipped from Rust.
  */
 
-export interface Osc633Handlers {
+interface Osc633Handlers {
   onCwd?: (cwd: string) => void;
   onCommandStart?: (commandLine: string) => void;
   onCommandFinish?: (exitCode: number | null) => void;

@@ -8,13 +8,13 @@ import type {
   RoleRecord,
   RoleSkillLink,
   RolesSkillsWorkspaceState,
-} from "./types"
+} from "@/lib/roles/types"
 import { loadAllSkills } from "@/lib/skills/loader"
 import type { SkillSource } from "@/lib/skills/types"
 import { isTauri } from "@/lib/utils"
-import { encodeWorkspaceId, getDaemonRolesSkillsState, putDaemonRole, deleteDaemonRole } from "@/lib/daemon-local-client"
+import { encodeWorkspaceId, getDaemonRolesSkillsState, putDaemonRole, deleteDaemonRole } from "@/lib/daemon/daemon-local-client"
 
-import { TEAMCLU_DIR } from "@/lib/build-config"
+import { TEAMCLU_DIR } from "@/lib/config/build-config"
 
 const ROLE_ROOT = `${TEAMCLU_DIR}/roles`
 const ROLE_SKILL_DIR = `${TEAMCLU_DIR}/roles/skills`
@@ -93,19 +93,6 @@ type RoleRoot = {
   isDefault: boolean
 }
 
-function roleToEditorState(role: RoleRecord): RoleEditorState {
-  return {
-    slug: role.slug,
-    name: role.name,
-    description: role.description,
-    role: role.role,
-    whenToUse: role.whenToUse,
-    workingStyle: role.workingStyle,
-    roleSkills: role.roleSkills,
-    rawMarkdown: role.rawMarkdown,
-  }
-}
-
 export function createEmptyRoleEditorState(): RoleEditorState {
   const empty = {
     slug: "",
@@ -172,7 +159,7 @@ export function serializeRoleMarkdown(input: Pick<RoleEditorState, "slug" | "nam
   return parts.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n"
 }
 
-export async function ensureRolesRoot(workspacePath: string): Promise<void> {
+async function ensureRolesRoot(workspacePath: string): Promise<void> {
   const rolesRoot = `${workspacePath}/${ROLE_ROOT}`
   if (!(await exists(rolesRoot))) {
     await mkdir(rolesRoot, { recursive: true })
@@ -661,4 +648,4 @@ export async function attachSkillToRole(input: AttachSkillToRoleInput): Promise<
   return parseRoleMarkdown(await readTextFile(rolePath), roleSlug, rolePath)
 }
 
-export { roleToEditorState, extractSkillDescription }
+export { extractSkillDescription }

@@ -1,127 +1,158 @@
 import { create } from "zustand";
 import type { Message } from "@/lib/proto/teamclu_pb";
-import type { SessionErrorEvent } from "./session-types";
+import type {
+  PendingPermissionEntry,
+  PendingQuestionState,
+  Question,
+  QueuedMessage,
+  Session,
+  SessionErrorEvent,
+  SessionStatusInfo,
+} from "./session-types";
 import { useSessionMessageStore } from "./session-message-store";
-import { useSessionListStore } from "./session-list-store";
-import { createLoaderActions } from "./session-loader";
-import { createMessageActions } from "./session-messages";
+import { useSessionListStore, type SessionListEntry } from "./session-list-store";
 import { useSessionSelectionStore } from "./session-selection-store";
 import { useCurrentTeamStore } from "./current-team";
 
 // ────────────────────────────────────────────────────────────────────
-// v2 Phase 1 compat shim.
+// Session store.
 //
-// Phase 1E removed the legacy session store but left ~167
-// `@ts-expect-error Phase 1E removal` references across 26 production
-// files (AppSidebar, ChatPanel, SessionList, etc) that read fields and
-// call methods which no longer exist. Those calls crash on render.
+// The v2 stores own the session list (useSessionListStore), the selection
+// (useSessionSelectionStore) and the message log (useSessionMessageStore).
+// This store mirrors the slices of those that older chat consumers still read
+// through one hook, and hosts the small amount of chat state that has no v2
+// home yet: the composer draft, turn errors, and the `question` tool queue.
 //
-// Until Phase 2 rewrites those consumers against the lean v2 stores,
-// this shim exposes safe defaults so the app boots and the smoke-test
-// path (login → pick session → send → MQTT round-trip) is reachable.
-// Compat fields are typed as `any` via the Record<string, Compat>
-// overlay so consumers compile without enumerating every prop. v2
-// native fields keep their real types.
+// Every field is typed. There is no index signature and no `any`: a consumer
+// that reads a field which does not exist here fails to compile instead of
+// silently reading `undefined`.
 // ────────────────────────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Compat = any;
+/** Q&A snapshot kept per tool call so Process cards stay populated after the answer. */
+export interface AnsweredQuestionSnapshot {
+  questions: Question[];
+  answers: Record<string, string>;
+}
 
-type V2Native = {
+export interface SessionState {
+  // ── Mirrors of the v2 stores. Write to the source, never here. ──
+  /** Mirror of useSessionMessageStore.messages. */
   messages: Record<string, Message[]>;
-  currentSessionId: string | null;
-  /** Bumped by reloadActiveSessionMessages so the App.tsx history loader
-   * effect can detect a user-driven refresh and force a full pull. */
+  /** Mirror of useSessionMessageStore.messageRefreshTrigger. Bumped by
+   * reloadActiveSessionMessages so the App.tsx history loader can detect a
+   * user-driven refresh and force a full pull. */
   messageRefreshTrigger: number;
+  /** Mirror of useSessionSelectionStore.activeSessionId. */
+  activeSessionId: string | null;
+  /** Mirror of useSessionSelectionStore.currentSessionId. */
+  currentSessionId: string | null;
+  /** Mirror of useSessionListStore.rows adapted to the legacy Session shape
+   * (`messages` is always empty and `parentID` always unset: the list store
+   * carries neither). */
+  sessions: Session[];
+  /** Mirror of useSessionListStore.loading; loadSessions also drives it. */
+  isLoading: boolean;
+
+  // ── State hosted only here ──
+  /** Plain error banner text shown above the composer. */
+  error: string | null;
+  /** Session the plain error belongs to, so other sessions do not show it. */
+  errorSessionId: string | null;
+  /** Structured agent-turn error rendered as a SessionErrorAlert bubble. */
+  sessionError: SessionErrorEvent | null;
+  /** Composer draft, preserved when navigating away from the chat. */
+  draftInput: string;
+  /** Open `question` tool prompts (question.asked), newest last. */
+  pendingQuestions: PendingQuestionState[];
+  answeredQuestionsByToolCallId: Record<string, AnsweredQuestionSnapshot>;
+  /** Legacy permission.asked queue. Nothing produces entries any more: the v2
+   * ACP path keeps permissions in useV2StreamingStore.pendingPermissionsByRequestId.
+   * Kept typed because the legacy approval components and their tests still
+   * read it; retire together with them. */
+  pendingPermissions: PendingPermissionEntry[];
+  /** Composer queue shown while an agent turn is running. Nothing produces
+   * entries since the pre-outbox send path was removed. */
+  messageQueue: QueuedMessage[];
+  /** Per-session runtime status consumed by the sidebar activity map. No producer today. */
+  sessionStatuses: Record<string, SessionStatusInfo | undefined>;
+  /** Question ids per session consumed by the sidebar activity map. No producer today. */
+  pendingQuestionIdsBySession: Record<string, string[] | undefined>;
+
+  // ── Actions ──
   setCurrent: (sid: string | null) => void;
   appendMessage: (sid: string, msg: Message) => void;
   setMessages: (sid: string, msgs: Message[]) => void;
   currentMessages: () => Message[];
-};
+  /** The mirrored row for currentSessionId (falling back to activeSessionId). */
+  getActiveSession: () => Session | null;
+  setActiveSession: (sid: string | null) => Promise<void>;
+  loadSessions: (workspacePath?: string) => Promise<void>;
+  resetSessions: () => void;
+  reloadActiveSessionMessages: () => Promise<void>;
+  archiveSession: (sid: string) => Promise<void>;
+  toggleSessionPinned: (sid: string) => void;
+  /** Briefly mark a session as freshly created in the sidebar. Auto-clears after ttlMs. */
+  addHighlightedSession: (sid: string, ttlMs?: number) => void;
+  setDraftInput: (text: string) => void;
+  setError: (msg: string | null, sid?: string | null) => void;
+  /** Show a structured error alert (SessionErrorAlert) in a session's thread. */
+  setSessionErrorEvent: (event: SessionErrorEvent) => void;
+  clearSessionError: () => void;
+  removeFromQueue: (id: string) => void;
+  /** Legacy pending-permission UI entry point; the v2 path replies directly. */
+  replyPermission: (
+    permissionId: string,
+    decision: "allow" | "deny" | "always",
+  ) => Promise<void>;
+  addPendingQuestion: (question: PendingQuestionState) => void;
+  resolveQuestion: (questionId: string) => void;
+  answerQuestion: (answers: Record<string, string>, questionId?: string) => Promise<void>;
+  skipQuestion: (questionId?: string) => Promise<void>;
+}
 
-// Phase 1E compat fields explicitly typed so consumers' .map / .filter /
-// .includes / [] indexing pass typecheck without per-callsite annotations.
-// `Compat` (= any) keeps element shapes loose since the v1 shape is gone.
-type CompatExplicit = {
-  sessions: Compat[];
-  archivedSessions: Compat[];
-  pinnedSessionIds: string[];
-  highlightedSessionIds: string[];
-  pendingPermissions: Compat[];
-  pendingQuestions: Compat[];
-  messageQueue: Compat[];
-  cronSessionIds: string[];
-  sessionDiff: Compat[];
-  pendingQuestionIdsBySession: Record<string, Compat>;
-  sessionStatuses: Record<string, Compat>;
-  todos: Compat[];
-};
-
-type SessionState = V2Native & CompatExplicit & { [key: string]: Compat };
-
-const stub = (name: string) => (...args: Compat[]) => {
-  if (typeof console !== "undefined") {
-    console.warn(`[session-store stub] ${name} called (no-op in v2)`, args);
-  }
-};
-const stubAsync = (name: string) => async (...args: Compat[]) => {
-  if (typeof console !== "undefined") {
-    console.warn(`[session-store stub] ${name} called (no-op in v2)`, args);
-  }
-};
+/** `Record<questionId|index, label>` → `[[label], ...]` in question order. */
+function orderAnswers(questions: Question[], answers: Record<string, string>): string[][] {
+  return questions.map((q, idx) => {
+    const key = q.id || String(idx);
+    const answer = answers[key];
+    return answer ? [answer] : [];
+  });
+}
 
 export const useSessionStore = create<SessionState>((set, get) => ({
-  // ── v2 native ────────────────────────────────────────────────────
+  // ── mirrors ────────────────────────────────────────────────────────
   messages: {},
-  currentSessionId: null,
   messageRefreshTrigger: 0,
+  activeSessionId: null,
+  currentSessionId: null,
+  sessions: [],
+  isLoading: false,
+
+  // ── hosted state ───────────────────────────────────────────────────
+  error: null,
+  errorSessionId: null,
+  sessionError: null,
+  draftInput: "",
+  pendingQuestions: [],
+  answeredQuestionsByToolCallId: {},
+  pendingPermissions: [],
+  messageQueue: [],
+  sessionStatuses: {},
+  pendingQuestionIdsBySession: {},
+
+  // ── delegations to the v2 stores ───────────────────────────────────
   setCurrent: (sid) => {
     useSessionSelectionStore.getState().setCurrent(sid);
   },
   appendMessage: (sid, msg) => useSessionMessageStore.getState().appendMessage(sid, msg),
   setMessages: (sid, msgs) => useSessionMessageStore.getState().setMessages(sid, msgs),
   currentMessages: () => useSessionMessageStore.getState().currentMessages(),
-
-  // ── Phase 1E compat: read-field defaults ─────────────────────────
-  sessions: [],
-  archivedSessions: [],
-  activeSessionId: null,
-  pinnedSessionIds: [],
-  highlightedSessionIds: [],
-  visibleSessionCount: 50,
-  hasMoreSessions: false,
-  isLoading: false,
-  isLoadingMore: false,
-  isLoadingArchivedSessions: false,
-  archivedSessionError: null,
-  sessionError: null,
-  errorSessionId: null,
-  inactivityWarning: null,
-  isConnected: true,
-  viewingArchivedSessionId: null,
-  draftInput: "",
-  messageQueue: [],
-  pendingPermissions: [],
-  pendingQuestions: [],
-  pendingQuestionIdsBySession: {},
-  answeredQuestionsByToolCallId: {},
-  sessionStatuses: {},
-  sessionStatus: null,
-  cronSessionIds: [],
-  todos: [],
-  sessionDiff: [],
-
-  // Re-enable the legacy chat/session pipeline on top of the v2 compat shim.
-  ...createLoaderActions(set as never, get as never),
-  ...createMessageActions(set as never, get as never),
-
-  // ── Phase 1E compat: methods with light wiring ───────────────────
   getActiveSession: () => {
     const sid = get().currentSessionId ?? get().activeSessionId;
     if (!sid) return null;
-    return get().sessions.find((s: Compat) => s.id === sid) ?? null;
+    return get().sessions.find((s) => s.id === sid) ?? null;
   },
-  setActiveSession: async (sid: string | null) => {
+  setActiveSession: async (sid) => {
     await useSessionSelectionStore.getState().setActiveSession(sid);
   },
   loadSessions: async () => {
@@ -134,72 +165,85 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     useSessionSelectionStore.getState().clearActiveSession();
     set({ sessions: [] });
   },
-  setDraftInput: (text: string) => set({ draftInput: text }),
-  setError: (msg: string | null, sid?: string | null) =>
-    set({ sessionError: msg, errorSessionId: sid ?? null }),
-  setSessionErrorEvent: (event: SessionErrorEvent) =>
-    set({ sessionError: event, errorSessionId: event?.sessionId ?? null }),
-  clearSessionError: () => set({ sessionError: null, errorSessionId: null }),
-  toggleSessionPinned: (sid: string) => {
+  archiveSession: async (id) => {
+    const wasActiveSession = useSessionSelectionStore.getState().activeSessionId === id;
+    try {
+      await useSessionListStore.getState().archiveSession(id);
+      if (wasActiveSession) {
+        await useSessionSelectionStore.getState().setActiveSession(null);
+      }
+      set((state) => ({
+        pendingQuestions: state.pendingQuestions.filter((q) => q.sessionId !== id),
+        pendingPermissions: state.pendingPermissions.filter(
+          (entry) =>
+            entry.childSessionId !== id &&
+            entry.permission.sessionID !== id &&
+            entry.ownerSessionId !== id,
+        ),
+        sessionError: wasActiveSession ? null : state.sessionError,
+      }));
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : "Failed to archive session",
+      });
+    }
+  },
+  toggleSessionPinned: (sid) => {
     const teamId = useCurrentTeamStore.getState().team?.id ?? null;
     useSessionListStore.getState().toggleSessionPinned(sid, teamId);
   },
-  /** Briefly mark a session as freshly-created in the sidebar.
-   * Auto-clears after ttlMs. */
-  addHighlightedSession: (sid: string, ttlMs = 4000) => {
+  addHighlightedSession: (sid, ttlMs = 4000) => {
     useSessionListStore.getState().addHighlightedSession(sid, ttlMs);
   },
-  setSelectedModel: (model: Compat) => set({ selectedModel: model }),
-  setConnected: (v: boolean) => set({ isConnected: v }),
-  setInactivityWarning: (v: Compat) => set({ inactivityWarning: v }),
 
-  // ── Phase 1E compat: legacy pending-permission UI still calls replyPermission ──
-  replyPermission: async (permissionId: string, decision: "allow" | "deny" | "always") => {
+  // ── hosted state actions ───────────────────────────────────────────
+  setDraftInput: (text) => set({ draftInput: text }),
+  setError: (msg, sid) => set({ error: msg, errorSessionId: sid ?? null }),
+  setSessionErrorEvent: (event) =>
+    set({ sessionError: event, errorSessionId: event?.sessionId ?? null }),
+  clearSessionError: () => set({ sessionError: null, errorSessionId: null }),
+  removeFromQueue: (id) =>
+    set((state) => ({ messageQueue: state.messageQueue.filter((m) => m.id !== id) })),
+
+  replyPermission: async (permissionId, decision) => {
     const { replyPermissionById } = await import("@/lib/teamclu/reply-acp-permission");
     await replyPermissionById(permissionId, decision);
   },
+
   // ── opencode `question` tool ─────────────────────────────────────
-  // question.asked arrives as a `question_asked` raw acp event (App.tsx),
-  // parsed into PendingQuestionState here; QuestionCard renders on the tool
-  // call and answers route back over the runtime command topic.
-  addPendingQuestion: (question: Compat) =>
-    set((s: Compat) => ({
+  // question.asked arrives as a `question_asked` raw acp event
+  // (MqttLiveWiring), parsed into PendingQuestionState; QuestionCard renders
+  // on the tool call and answers route back over the runtime command topic.
+  addPendingQuestion: (question) =>
+    set((s) => ({
       pendingQuestions: [
-        ...s.pendingQuestions.filter((q: Compat) => q.questionId !== question.questionId),
+        ...s.pendingQuestions.filter((q) => q.questionId !== question.questionId),
         question,
       ],
     })),
-  resolveQuestion: (questionId: string) =>
-    set((s: Compat) => ({
-      pendingQuestions: s.pendingQuestions.filter(
-        (q: Compat) => q.questionId !== questionId,
-      ),
+  resolveQuestion: (questionId) =>
+    set((s) => ({
+      pendingQuestions: s.pendingQuestions.filter((q) => q.questionId !== questionId),
     })),
-  answerQuestion: async (answers: Record<string, string>, questionId?: string) => {
+  answerQuestion: async (answers, questionId) => {
     const pending = get().pendingQuestions.find(
-      (q: Compat) => !questionId || q.questionId === questionId,
+      (q) => !questionId || q.questionId === questionId,
     );
     if (!pending) {
       console.warn("[answerQuestion] no pending question", questionId);
       return;
     }
-    // Record<questionId|index, label> → [[label], ...] in question order.
-    const list: Compat[] = Array.isArray(pending.questions) ? pending.questions : [];
-    const ordered: string[][] = list.map((q: Compat, idx: number) => {
-      const key = q.id || String(idx);
-      const answer = answers[key];
-      return answer ? [answer] : [];
-    });
+    const list: Question[] = Array.isArray(pending.questions) ? pending.questions : [];
     const { answerAcpQuestion } = await import("@/lib/teamclu/answer-question");
     await answerAcpQuestion({
       sessionId: pending.sessionId ?? "",
       agentActorId: pending.agentActorId ?? "",
       requestId: pending.questionId,
-      answers: ordered,
+      answers: orderAnswers(list, answers),
     });
-    set((s: Compat) => ({
+    set((s) => ({
       answeredQuestionsByToolCallId: {
-        ...(s.answeredQuestionsByToolCallId ?? {}),
+        ...s.answeredQuestionsByToolCallId,
         [pending.toolCallId]: { questions: list, answers },
       },
     }));
@@ -207,12 +251,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // the command succeeds, same as skipQuestion.
     get().resolveQuestion(pending.questionId);
   },
-  skipQuestion: async (questionId?: string) => {
+  skipQuestion: async (questionId) => {
     const pending = get().pendingQuestions.find(
-      (q: Compat) => !questionId || q.questionId === questionId,
+      (q) => !questionId || q.questionId === questionId,
     );
     if (!pending) return;
-    const list: Compat[] = Array.isArray(pending.questions) ? pending.questions : [];
+    const list: Question[] = Array.isArray(pending.questions) ? pending.questions : [];
     const { answerAcpQuestion } = await import("@/lib/teamclu/answer-question");
     await answerAcpQuestion({
       sessionId: pending.sessionId ?? "",
@@ -221,67 +265,38 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       answers: [],
       reject: true,
     });
-    set((s: Compat) => ({
+    set((s) => ({
       answeredQuestionsByToolCallId: {
-        ...(s.answeredQuestionsByToolCallId ?? {}),
+        ...s.answeredQuestionsByToolCallId,
         [pending.toolCallId]: { questions: list, answers: {} },
       },
     }));
     get().resolveQuestion(pending.questionId);
   },
-  getSessionMessages: () => [],
-  loadAllSessionMessages: stubAsync("loadAllSessionMessages"),
-  handleMessageCreated: stub("handleMessageCreated"),
-  handleMessagePartCreated: stub("handleMessagePartCreated"),
-  handleMessagePartUpdated: stub("handleMessagePartUpdated"),
-  handleMessageCompleted: stub("handleMessageCompleted"),
-  handleToolExecuting: stub("handleToolExecuting"),
-  handleQuestionAsked: stub("handleQuestionAsked"),
-  handleTodoUpdated: stub("handleTodoUpdated"),
-  handleSessionDiff: stub("handleSessionDiff"),
-  handleFileEdited: stub("handleFileEdited"),
-  handleSessionError: stub("handleSessionError"),
-  handleSessionCreated: stub("handleSessionCreated"),
-  handleSessionUpdated: stub("handleSessionUpdated"),
-  handleExternalMessage: stub("handleExternalMessage"),
-  handleSessionStatus: stub("handleSessionStatus"),
-  handleSessionBusy: stub("handleSessionBusy"),
-  handleSessionIdle: stub("handleSessionIdle"),
-  handleChildSessionEvent: stub("handleChildSessionEvent"),
 }));
 
-// Adapt v2 SessionListEntry → old Session shape so consumers that read
-// .updatedAt / .createdAt / .messages / .parentID don't crash.
-function adaptSessionRow(r: Compat): Compat {
-  const ts = r.last_message_at
-    ? new Date(r.last_message_at)
-    : new Date(0);
+// ── Mirrors ──────────────────────────────────────────────────────────
+
+/** Adapt a v2 SessionListEntry to the legacy Session shape consumers read. */
+function adaptSessionRow(r: SessionListEntry): Session {
+  const ts = r.last_message_at ? new Date(r.last_message_at) : new Date(0);
   return {
-    ...r,
+    id: r.id,
+    title: r.title,
+    messages: [],
     updatedAt: ts,
     createdAt: ts,
-    messages: [],
-    parentID: null,
     ideaId: r.idea_id ?? null,
-    source: r.source ?? undefined,
+    source: (r.source as Session["source"] | null | undefined) ?? undefined,
     cronJobId: r.cron_job_id ?? null,
   };
 }
 
-// Mirror useSessionListStore.rows → useSessionStore.sessions so old
-// consumers reading `s.sessions` see a reactive list. Only push when
-// values actually changed to avoid unnecessary re-render cascades.
+// Only push when values actually changed to avoid re-render cascades.
 useSessionListStore.subscribe((state, prev) => {
   const updates: Partial<SessionState> = {};
   if (state.rows !== prev.rows) updates.sessions = state.rows.map(adaptSessionRow);
   if (state.loading !== prev.loading) updates.isLoading = state.loading;
-  if (state.pinnedSessionIds !== prev.pinnedSessionIds) {
-    updates.pinnedSessionIds = state.pinnedSessionIds;
-  }
-  if (state.highlightedSessionIds !== prev.highlightedSessionIds) {
-    updates.highlightedSessionIds = state.highlightedSessionIds;
-  }
-  if (state.hasMore !== prev.hasMore) updates.hasMoreSessions = state.hasMore;
   if (Object.keys(updates).length > 0) {
     useSessionStore.setState(updates);
   }
@@ -291,24 +306,19 @@ useSessionListStore.subscribe((state, prev) => {
   useSessionStore.setState({
     sessions: initial.rows.map(adaptSessionRow),
     isLoading: initial.loading,
-    pinnedSessionIds: initial.pinnedSessionIds,
-    highlightedSessionIds: initial.highlightedSessionIds,
-    hasMoreSessions: initial.hasMore,
   });
 }
 
 useSessionSelectionStore.subscribe((state, prev) => {
   if (
     state.activeSessionId === prev.activeSessionId &&
-    state.currentSessionId === prev.currentSessionId &&
-    state.viewingArchivedSessionId === prev.viewingArchivedSessionId
+    state.currentSessionId === prev.currentSessionId
   ) {
     return;
   }
   useSessionStore.setState({
     activeSessionId: state.activeSessionId,
     currentSessionId: state.currentSessionId,
-    viewingArchivedSessionId: state.viewingArchivedSessionId,
   });
 });
 {
@@ -316,7 +326,6 @@ useSessionSelectionStore.subscribe((state, prev) => {
   useSessionStore.setState({
     activeSessionId: initial.activeSessionId,
     currentSessionId: initial.currentSessionId,
-    viewingArchivedSessionId: initial.viewingArchivedSessionId,
   });
 }
 

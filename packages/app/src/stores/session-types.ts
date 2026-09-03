@@ -1,36 +1,64 @@
-import type { StoreApi } from 'zustand';
+// ── Concrete shapes for the state the session store still hosts ──
 
-// ── Local type stubs for the legacy agent SDK shapes ──
-// Chat runtime is disabled and the consuming stores below are dead code that
-// we only need to keep typechecking. Stubs are intentionally loose (`any`)
-// to avoid chasing every legacy field.
-export type Question = any;
-export type Todo = any;
-export type FileDiff = any;
-export type SendMessageFilePart = any;
-export type SessionStatusInfo = any;
+/** One choice offered by the agent's `question` tool. */
+export interface QuestionOption {
+  label: string;
+  value?: string;
+  description?: string;
+}
 
-export type PermissionAskedEvent = any;
+/** One question raised by the agent's `question` tool (question.asked payload). */
+export interface Question {
+  id?: string;
+  header?: string;
+  question?: string;
+  options?: QuestionOption[];
+  multiple?: boolean;
+}
 
-export type TodoUpdatedEvent = any;
-export type SessionDiffEvent = any;
-export type SessionErrorEvent = any;
+/** A plan entry rendered in the composer plan slot (live plan or persisted). */
+export interface Todo {
+  id: string;
+  content: string;
+  /** "pending" | "in_progress" | "completed" for plans; other runtimes may add values. */
+  status: string;
+  /** "high" | "medium" | "low" when the runtime reports one. */
+  priority?: string;
+}
 
-export type SessionCreatedEvent = any;
-export type SessionUpdatedEvent = any;
-export type ExternalMessageEvent = any;
-export type SessionBusyEvent = any;
-export type SessionIdleEvent = any;
-export type SessionStatusEvent = any;
-export type AgentSSEEvent = any;
+/** Per-session runtime status as consumed by the sidebar activity map. */
+export interface SessionStatusInfo {
+  /** "idle" | "busy" | "retry"; anything else is treated as running. */
+  type: string;
+}
 
-export type MessageCreatedEvent = any;
-export type MessagePartCreatedEvent = any;
-export type MessagePartUpdatedEvent = any;
-export type MessageCompletedEvent = any;
-export type ToolExecutingEvent = any;
-export type QuestionAskedEvent = any;
-// ── End local stubs ──
+/** Permission request as carried by a legacy permission.asked event. */
+export interface PermissionAskedEvent {
+  id: string;
+  permission: string;
+  sessionID?: string;
+  patterns?: string[];
+  always?: string[];
+  alwaysAllow?: boolean;
+  decision?: "pending" | "approved" | "denied" | "allowlisted";
+  metadata?: Record<string, unknown>;
+}
+
+/** Structured agent-turn error rendered by SessionErrorAlert. */
+interface SessionErrorEventDetail {
+  name?: string;
+  data?: {
+    message?: string;
+    statusCode?: number;
+    providerID?: string;
+    isRetryable?: boolean;
+  };
+}
+
+export interface SessionErrorEvent {
+  sessionId?: string | null;
+  error?: SessionErrorEventDetail;
+}
 
 export interface PendingPermissionEntry {
   permission: PermissionAskedEvent;
@@ -195,7 +223,7 @@ export interface Message {
   };
 }
 
-export interface PlanEntry {
+interface PlanEntry {
   content: string;
   priority: "high" | "medium" | "low";
   status: "pending" | "in_progress" | "completed";
@@ -220,185 +248,9 @@ export interface Session {
   cronJobId?: string | null;
 }
 
-// Child session (subagent) streaming state
-export interface ChildStreamingState {
-  sessionId: string;
-  text: string;
-  reasoning: string;
-  isStreaming: boolean;
-}
-
 // Queued message type
 export interface QueuedMessage {
   id: string;
   content: string;
   timestamp: Date;
 }
-
-// Selected model for chat
-export interface SelectedModel {
-  providerID: string;
-  modelID: string;
-  name: string;
-}
-
-export interface SessionState {
-  // State
-  sessions: Session[];
-  pinnedSessionIds: string[];
-  currentWorkspacePath: string | null;
-  activeSessionId: string | null;
-  currentSessionId: string | null;
-  isLoading: boolean;
-  isLoadingMore: boolean; // Loading more sessions (UI pagination)
-  hasMoreSessions: boolean; // Whether there are more sessions to show
-  visibleSessionCount: number; // How many sessions are currently visible in sidebar
-  error: string | null;
-  errorSessionId: string | null;
-  isConnected: boolean;
-
-  // Selected model
-  selectedModel: SelectedModel | null;
-
-  // Streaming state — moved to streaming.ts (useStreamingStore)
-  // streamingMessageId, streamingContent, childSessionStreaming are now in useStreamingStore
-
-  // Message queue
-  messageQueue: QueuedMessage[];
-
-  // Permission requests (scoped to child session lifecycle; multiple concurrent sub-agents)
-  pendingPermissions: PendingPermissionEntry[];
-
-  // Pending questions (from question tool; multiple concurrent)
-  pendingQuestions: PendingQuestionState[];
-  pendingQuestionIdsBySession: Record<string, string[] | undefined>;
-  /** Snapshot Q&A by toolCallId so Process cards stay populated after answer. */
-  answeredQuestionsByToolCallId: Record<
-    string,
-    { questions: Question[]; answers: Record<string, string> }
-  >;
-
-  // Todo list (from todowrite tool)
-  todos: Todo[];
-
-  // Session diff (file changes in current session)
-  sessionDiff: FileDiff[];
-
-  // Session error
-  sessionError: SessionErrorEvent | null;
-
-  // Session status (mirrors the agent runtime's server-side session status)
-  sessionStatus: SessionStatusInfo | null;
-  sessionStatuses: Record<string, SessionStatusInfo | undefined>;
-
-  // childSessionStreaming — moved to streaming.ts (useStreamingStore)
-
-  // Inactivity warning (no SSE events for 30+ seconds during streaming)
-  inactivityWarning: boolean;
-
-  // Highlighted session IDs (newly created externally, auto-clears after 5s)
-  highlightedSessionIds: string[];
-
-  // Draft input text (preserved when navigating away from chat)
-  draftInput: string;
-
-  // Archived session viewing - separate from active session navigation
-  archivedSessions: Session[];
-  isLoadingArchivedSessions: boolean;
-  archivedSessionError: string | null;
-  viewingArchivedSessionId: string | null;
-  archivedSessionMessages: Record<string, Message[]>;
-
-  // Actions - Session management
-  loadSessions: (workspacePath?: string) => Promise<void>;
-  loadMoreSessions: () => Promise<void>;
-  createSession: (workspacePath?: string) => Promise<Session | null>;
-  setActiveSession: (id: string) => Promise<void>;
-  archiveSession: (id: string) => Promise<void>;
-  loadArchivedSessions: (workspacePath?: string) => Promise<void>;
-  openArchivedSession: (id: string) => Promise<void>;
-  closeArchivedSession: () => void;
-  restoreSession: (id: string) => Promise<void>;
-  updateSessionTitle: (id: string, title: string) => Promise<void>;
-  toggleSessionPinned: (id: string) => void;
-  resetSessions: () => void;
-
-  // Actions - Model selection
-  setSelectedModel: (model: SelectedModel | null) => void;
-
-  // Actions - Draft input
-  setDraftInput: (input: string) => void;
-  clearDraftInput: () => void;
-
-  // Actions - Message handling
-  sendMessage: (content: string, agent?: string, imageParts?: SendMessageFilePart[]) => Promise<void>;
-  abortSession: () => Promise<void>;
-  removeFromQueue: (id: string) => void;
-
-  // Actions - SSE event handlers
-  handleMessageCreated: (event: MessageCreatedEvent) => void;
-  handleMessagePartCreated: (event: MessagePartCreatedEvent) => void;
-  handleMessagePartUpdated: (event: MessagePartUpdatedEvent) => void;
-  handleMessageCompleted: (event: MessageCompletedEvent) => void;
-  handleToolExecuting: (event: ToolExecutingEvent) => void;
-
-  // Actions - Permission (legacy UI; v2 ACP path uses replyAcpPermission directly)
-  replyPermission: (
-    permissionId: string,
-    decision: "allow" | "deny" | "always",
-  ) => Promise<void>;
-
-  // Actions - Question
-  answerQuestion: (answers: Record<string, string>, questionId?: string) => Promise<void>;
-  skipQuestion: (questionId?: string) => Promise<void>;
-  setPendingQuestion: (
-    question: PendingQuestionState | null,
-  ) => void;
-  handleQuestionAsked: (event: QuestionAskedEvent) => void;
-
-  // Actions - Session lifecycle (SSE global events)
-  handleSessionCreated: (event: SessionCreatedEvent) => void;
-  handleSessionUpdated: (event: SessionUpdatedEvent) => void;
-  clearHighlightedSession: (sessionId: string) => void;
-
-  // Actions - Child session (subagent) streaming
-  handleChildSessionEvent: (event: AgentSSEEvent) => void;
-
-  // Actions - External message handling
-  handleExternalMessage: (event: ExternalMessageEvent) => void;
-  reloadActiveSessionMessages: () => Promise<void>;
-
-  // Actions - Session status tracking
-  handleSessionStatus: (event: SessionStatusEvent) => void;
-  handleSessionBusy: (event: SessionBusyEvent) => void;
-  handleSessionIdle: (event: SessionIdleEvent) => void;
-
-  // Actions - Todo, Diff, Error
-  handleTodoUpdated: (event: TodoUpdatedEvent) => void;
-  handleSessionDiff: (event: SessionDiffEvent) => void;
-  handleFileEdited: (file: string) => void;
-  refreshSessionDiff: () => Promise<void>;
-  handleSessionError: (event: SessionErrorEvent) => void;
-  clearSessionError: () => void;
-
-  // Actions - Dashboard batch loading
-  dashboardLoading: boolean;
-  dashboardLoadProgress: { loaded: number; total: number };
-  dashboardLoadError?: string;
-  loadAllSessionMessages: (workspacePath?: string) => Promise<void>;
-
-  // Actions - Connection
-  setConnected: (connected: boolean) => void;
-  setError: (error: string | null, sessionId?: string | null) => void;
-  /** Show a structured error alert (SessionErrorAlert) in a session's thread. */
-  setSessionErrorEvent: (event: SessionErrorEvent) => void;
-  setInactivityWarning: (active: boolean) => void;
-
-  // Getters
-  getActiveSession: () => Session | undefined;
-  getSessionMessages: (sessionId: string) => Message[];
-}
-
-// Zustand action creator helper types
-export type SessionSet = StoreApi<SessionState>['setState'];
-export type SessionGet = StoreApi<SessionState>['getState'];

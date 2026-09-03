@@ -1,11 +1,10 @@
 import * as React from "react";
-import { useSessionStore } from "@/stores/session";
-import { useStreamingStore } from "@/stores/streaming";
+import { useSessionStore } from "@/stores/session-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import {
   selectSessionParentLinks,
-} from "@/lib/session-parent-links";
-import { buildSessionListActivityMap } from "@/lib/session-list-activity";
+} from "@/lib/session/session-parent-links";
+import { buildSessionListActivityMap } from "@/lib/session/session-list-activity";
 import type { PendingPermissionEntry } from "@/stores/session-types";
 import {
   collectAcpStreamingPermissionsForList,
@@ -40,8 +39,6 @@ export function useSessionListActivityMap(activeSessionId: string | null) {
   const pendingQuestions = useSessionStore((s) => s.pendingQuestions) || [];
   const legacyPendingPermissions =
     useSessionStore((s) => s.pendingPermissions) || [];
-  const streamingMessageId = useStreamingStore((s) => s.streamingMessageId);
-  const childSessionStreaming = useStreamingStore((s) => s.childSessionStreaming);
   const permissionSnapshot = useV2StreamingStore((s) =>
     selectStreamingPermissionSnapshot(s.byKey),
   );
@@ -60,21 +57,19 @@ export function useSessionListActivityMap(activeSessionId: string | null) {
             useV2StreamingStore.getState().byKey,
           ),
         ),
-        streamingMessageId,
-        streamingChildSessionIds: Object.values(childSessionStreaming)
-          .filter((state) => state?.isStreaming)
-          .map((state) => state.sessionId),
+        // The v1 streaming store is gone; live turns are reported through the
+        // permissionSnapshot / acp paths above and by useV2StreamingStore readers.
+        streamingMessageId: null,
+        streamingChildSessionIds: [],
       }),
     [
       activeSessionId,
       sessionParentLinks,
-      childSessionStreaming,
       legacyPendingPermissions,
       pendingQuestionIdsBySession,
       pendingQuestions,
       permissionSnapshot,
       sessionStatuses,
-      streamingMessageId,
     ],
   );
 }

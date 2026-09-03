@@ -23,7 +23,7 @@ vi.mock('@/stores/cron', () => ({
   getChannelDisplayName: (channel: string) => channel,
 }))
 
-vi.mock('@/lib/cron-utils', () => ({
+vi.mock('@/lib/cron/cron-utils', () => ({
   getDeliveryTargetDisplay: () => 'target',
 }))
 

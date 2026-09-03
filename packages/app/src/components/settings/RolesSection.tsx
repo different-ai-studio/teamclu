@@ -13,7 +13,7 @@ import {
   UserRound,
   WandSparkles,
 } from "lucide-react"
-import { useSessionStore } from "@/stores/session"
+import { useSessionStore } from "@/stores/session-store"
 import { useUIStore } from "@/stores/ui"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -46,7 +46,7 @@ import {
   saveRole,
 } from "@/lib/roles/loader"
 import type { AttachableSkill, RoleEditorState, RoleRecord } from "@/lib/roles/types"
-import { useEffectiveWorkspacePath } from "@/lib/effective-workspace"
+import { useEffectiveWorkspacePath } from "@/lib/workspace/effective-workspace"
 
 type EditorMode = "structured" | "markdown"
 

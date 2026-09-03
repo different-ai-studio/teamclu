@@ -96,13 +96,24 @@ pub async fn mqtt_unsubscribe(bus: State<'_, MqttBus>, topic: String) -> Result<
     Ok(())
 }
 
+/// Takes the payload base64-encoded, not as `Vec<u8>`.
+///
+/// PERF-16: a `Vec<u8>` argument arrives as a JSON array of decimal numbers,
+/// so a protobuf envelope crossed the IPC boundary at three to four times its
+/// size and the webview built that array one `Array.from` element at a time.
 #[tauri::command]
 pub async fn mqtt_publish(
     bus: State<'_, MqttBus>,
     topic: String,
-    bytes: Vec<u8>,
+    payload_b64: String,
     retain: bool,
 ) -> Result<(), String> {
+    use base64::Engine as _;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload_b64.as_bytes())
+        .map_err(|e| format!("mqtt_publish: payload is not valid base64: {e}"))?;
+
     let _client_guard = bus.client_gate.read().await;
     let generation = bus.ready_generation().ok_or("mqtt not ready")?;
     let client_guard = bus.client.lock().await;

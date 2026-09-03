@@ -1,4 +1,3 @@
-import * as React from "react";
 import { ComposerStack, type ActiveStreamingAgent } from "./ComposerStack";
 
 export type { ActiveStreamingAgent };

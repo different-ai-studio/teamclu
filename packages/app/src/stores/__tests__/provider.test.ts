@@ -17,12 +17,12 @@ vi.mock('sonner', () => ({
   },
 }))
 
-vi.mock('@/lib/build-config', () => ({
+vi.mock('@/lib/config/build-config', () => ({
   appShortName: 'teamclu',
   appStoragePrefix: 'teamclu',
 }))
 
-vi.mock('@/lib/storage', () => ({
+vi.mock('@/lib/config/storage', () => ({
   workspaceScopedKey: (base: string, workspacePath?: string | null) => `${base}:${workspacePath ?? ''}`,
 }))
 
@@ -42,7 +42,7 @@ const daemonMocks = vi.hoisted(() => ({
   deleteDaemonProviderAuth: vi.fn(),
 }))
 
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   encodeWorkspaceId: (path: string) => path,
   getDaemonProviders: mocks.getDaemonProviders,
   getDaemonDeviceProviderAuthMethods: mocks.getDaemonDeviceProviderAuthMethods,

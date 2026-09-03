@@ -2,10 +2,10 @@ import { useEffect, useRef, useState, useCallback } from "react"
 import { useTranslation } from "react-i18next"
 import { Loader2, ExternalLink } from "lucide-react"
 import { isTauri } from "@/lib/utils"
-import { normalizeUrl, urlToLabel } from "@/lib/webview-utils"
+import { normalizeUrl, urlToLabel } from "@/lib/ui/webview-utils"
 import { useTabsStore } from "@/stores/tabs"
 import { useCurrentTeamStore } from "@/stores/current-team"
-import { adminSsoInjectionFor } from "@/lib/admin-sso-inject"
+import { adminSsoInjectionFor } from "@/lib/extension/admin-sso-inject"
 
 interface WebViewContentProps {
   url: string
@@ -137,7 +137,9 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
             // Identity injection is vestigial now: `window.teamclu.deviceToken`
             // is always null and the `get_persistent_device_id` command was
             // removed. Pass no deviceNo so the native side skips injecting the
-            // (empty) identity script.
+            // (empty) identity script. Should it come back, the native side now
+            // injects only into trusted origins (Cloud API host, the SSO-vetted
+            // admin console, loopback) and never after a cross-origin navigation.
             const deviceNo: string | undefined = undefined
 
             // Device name is purely a display value and must NOT gate injection:

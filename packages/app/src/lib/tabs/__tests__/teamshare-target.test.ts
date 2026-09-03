@@ -7,7 +7,7 @@ import {
   isTeamShareOwnedTarget,
   tabSelectionForSection,
   type TeamShareTabTarget,
-} from '../teamshare-target'
+} from '@/lib/tabs/teamshare-target'
 
 const round = (t: TeamShareTabTarget) => decodeTeamShareTarget(encodeTeamShareTarget(t))
 

@@ -22,17 +22,17 @@ import {
 import { useProviderStore } from '@/stores/provider'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useTeamModeStore } from '@/stores/team-mode'
-import { TEAM_SHARED_PROVIDER_ID } from '@/lib/team-provider'
+import { TEAM_SHARED_PROVIDER_ID } from '@/lib/agent/team-provider'
 import { TeamProviderCard } from './llm/TeamProviderCard'
 import {
   catalogModelsForProvider,
   groupCatalogModelsByProvider,
-} from '@/lib/group-catalog-models-by-provider'
+} from '@/lib/agent/group-catalog-models-by-provider'
 import {
   ensureLocalDaemonCatalog,
   useLocalDaemonCatalogStore,
 } from '@/stores/local-daemon-catalog-store'
-import { MAINSTREAM_PROVIDER_IDS } from '@/lib/mainstream-providers'
+import { MAINSTREAM_PROVIDER_IDS } from '@/lib/agent/mainstream-providers'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'

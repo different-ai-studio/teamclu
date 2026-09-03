@@ -1,4 +1,4 @@
-import type { CloudApiClient } from "./http";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 /**
  * Team skills registry client.
@@ -76,11 +76,11 @@ export interface TeamSkillVersion {
   createdAt: string | null;
 }
 
-export interface TeamSkillDetail extends TeamSkill {
+interface TeamSkillDetail extends TeamSkill {
   versions: TeamSkillVersion[];
 }
 
-export interface TeamSkillInstall {
+interface TeamSkillInstall {
   id: string;
   teamId: string;
   actorId: string;
@@ -94,7 +94,7 @@ export interface TeamSkillInstall {
   hasUpdate?: boolean;
 }
 
-export interface TeamSkillPublishInput {
+interface TeamSkillPublishInput {
   slug: string;
   summary: string;
   category: TeamSkillCategory;

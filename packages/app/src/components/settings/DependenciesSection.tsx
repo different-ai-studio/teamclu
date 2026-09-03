@@ -14,9 +14,10 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn, isTauri, copyToClipboard } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { useDepsStore } from '@/stores/deps'
 import type { DependencyInfo } from '@/stores/deps'
+import { useShallow } from 'zustand/react/shallow'
 
 
 function getPlatformCommand(commands: DependencyInfo['install_commands']): string {
@@ -90,7 +91,9 @@ function SectionHeader({
 
 function InstallButton({ dep }: { dep: DependencyInfo }) {
   const { t } = useTranslation()
-  const { installDependencies, installing, currentInstalling, installResults, checkDependencies, resetInstallState } = useDepsStore()
+  const { installDependencies, installing, currentInstalling, installResults, checkDependencies, resetInstallState } = useDepsStore(
+    useShallow((s) => ({ installDependencies: s.installDependencies, installing: s.installing, currentInstalling: s.currentInstalling, installResults: s.installResults, checkDependencies: s.checkDependencies, resetInstallState: s.resetInstallState })),
+  )
   const isInstallingThis = currentInstalling === dep.name
   const result = installResults[dep.name]
   const isDone = result?.success
@@ -146,7 +149,9 @@ function UpdateButton({ dep }: { dep: DependencyInfo }) {
   const {
     updateDependency, installing, currentInstalling, installResults,
     checkDependencies, resetInstallState, versions, checkVersions,
-  } = useDepsStore()
+  } = useDepsStore(
+    useShallow((s) => ({ updateDependency: s.updateDependency, installing: s.installing, currentInstalling: s.currentInstalling, installResults: s.installResults, checkDependencies: s.checkDependencies, resetInstallState: s.resetInstallState, versions: s.versions, checkVersions: s.checkVersions })),
+  )
   const isUpdatingThis = currentInstalling === dep.name
   const result = installResults[dep.name]
   const isFailed = result?.error !== undefined && !result?.success
@@ -158,6 +163,11 @@ function UpdateButton({ dep }: { dep: DependencyInfo }) {
   // Only `true` counts as up to date: null means we could not reach the mirror,
   // and "unknown" must not be presented to the user as "you're current".
   const upToDate = depVersions?.upToDate === true
+  // At the pinned version and still unusable — pi installed by hand never got
+  // the MCP bridge amuxd installs beside its extension. Painting "Up to date"
+  // over that hid the row's only button, which is the one that repairs it,
+  // while the runtime picker two screens away said "pi is not installed".
+  const needsRepair = depVersions?.needsRepair === true
 
   const handleUpdate = async () => {
     resetInstallState()
@@ -167,7 +177,7 @@ function UpdateButton({ dep }: { dep: DependencyInfo }) {
     await checkVersions()
   }
 
-  if (upToDate && !isUpdatingThis) {
+  if (upToDate && !needsRepair && !isUpdatingThis) {
     return (
       <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-500">
         <CheckCircle2 className="h-3.5 w-3.5" />
@@ -184,17 +194,21 @@ function UpdateButton({ dep }: { dep: DependencyInfo }) {
       disabled={installing}
       className={cn('gap-1.5 h-7 px-2 text-xs', isFailed && 'text-red-500 hover:text-red-600')}
       title={
-        latest
-          ? t('settings.deps.updateToVersion', { defaultValue: 'Update to {{version}}', version: latest })
-          : t('settings.deps.updateTitle', 'Update to the latest version')
+        needsRepair
+          ? t('settings.deps.repairTitle', 'Reinstall to restore the pieces this runtime is missing')
+          : latest
+            ? t('settings.deps.updateToVersion', { defaultValue: 'Update to {{version}}', version: latest })
+            : t('settings.deps.updateTitle', 'Update to the latest version')
       }
     >
       {isUpdatingThis ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
       {isUpdatingThis
         ? t('settings.deps.updating', 'Updating...')
-        : latest
-          ? t('settings.deps.updateToVersion', { defaultValue: 'Update to {{version}}', version: latest })
-          : t('settings.deps.update', 'Update')}
+        : needsRepair
+          ? t('settings.deps.repair', 'Repair')
+          : latest
+            ? t('settings.deps.updateToVersion', { defaultValue: 'Update to {{version}}', version: latest })
+            : t('settings.deps.update', 'Update')}
     </Button>
   )
 }
@@ -206,7 +220,9 @@ function UpdateButton({ dep }: { dep: DependencyInfo }) {
  */
 function DepProgress({ dep }: { dep: DependencyInfo }) {
   const { t } = useTranslation()
-  const { currentInstalling, installResults, installOutput, lastOperation } = useDepsStore()
+  const { currentInstalling, installResults, installOutput, lastOperation } = useDepsStore(
+    useShallow((s) => ({ currentInstalling: s.currentInstalling, installResults: s.installResults, installOutput: s.installOutput, lastOperation: s.lastOperation })),
+  )
   const isActive = currentInstalling === dep.name
   const result = installResults[dep.name]
   const lines = installOutput[dep.name] ?? []
@@ -266,7 +282,9 @@ function DepProgress({ dep }: { dep: DependencyInfo }) {
 
 export function DependenciesSection() {
   const { t } = useTranslation()
-  const { dependencies: deps, loading: isLoading, checkDependencies, checkVersions } = useDepsStore()
+  const { dependencies: deps, loading: isLoading, checkDependencies, checkVersions, versions } = useDepsStore(
+    useShallow((s) => ({ dependencies: s.dependencies, loading: s.loading, checkDependencies: s.checkDependencies, checkVersions: s.checkVersions, versions: s.versions })),
+  )
   const [isChecking, setIsChecking] = React.useState(false)
 
   // Trigger initial check if not yet done
@@ -416,6 +434,18 @@ export function DependenciesSection() {
                       </div>
 
                       <p className="text-xs text-muted-foreground">{dep.description}</p>
+
+                      {/* Current, installed, and still not usable. Without this
+                          the row says nothing at all about why the runtime
+                          picker refuses it. */}
+                      {versions[dep.name]?.needsRepair && (
+                        <p className="text-xs text-amber-600 dark:text-amber-500">
+                          {t(
+                            'settings.deps.needsRepairHint',
+                            'Installed and current, but not usable yet — part of the runtime is missing. Repair reinstalls it.',
+                          )}
+                        </p>
+                      )}
 
                       {/* Install/update progress and outcome */}
                       <DepProgress dep={dep} />

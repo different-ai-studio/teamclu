@@ -4,7 +4,7 @@ import { FileInputButton } from '../FileInputButton'
 
 const platformState = vi.hoisted(() => ({ tauriInvoke: false }))
 
-vi.mock('@/lib/platform', () => ({
+vi.mock('@/lib/config/platform', () => ({
   capabilities: {
     get tauriInvoke() {
       return platformState.tauriInvoke

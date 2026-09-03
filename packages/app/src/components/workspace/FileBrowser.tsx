@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { cn } from '@/lib/utils'
-import { useFileChangeListener } from '@/hooks/useFileChangeListener'
+import { useFileChangeBatchListener } from '@/hooks/use-file-change-batch-listener'
 import { useWorkspaceStore, type FileNode } from '@/stores/workspace'
 import { useOssSyncStore } from '@/stores/oss-sync'
 import { ScrollBar } from '@/components/ui/scroll-area'
@@ -70,8 +70,8 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
   const fileTree = useWorkspaceStore(s => s.fileTree)
   const externalTrees = useWorkspaceStore(s => s.externalTrees)
   const openExternalRoot = useWorkspaceStore(s => s.openExternalRoot)
-  const refreshExternalRoot = useWorkspaceStore(s => s.refreshExternalRoot)
   const refreshFileTree = useWorkspaceStore(s => s.refreshFileTree)
+  const refreshChangedDirectories = useWorkspaceStore(s => s.refreshChangedDirectories)
   const collapseAll = useWorkspaceStore(s => s.collapseAll)
   const undo = useWorkspaceStore(s => s.undo)
   const undoStack = useWorkspaceStore(s => s.undoStack)
@@ -196,24 +196,27 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
     }
   }, [variant, isPanelOpen, workspacePath, fileTree.length, refreshFileTree, isExternalRoot])
 
-  // Listen for file-change events from Tauri file watcher
-  useFileChangeListener(() => refreshFileTree(), 300, !!workspacePath && !isExternalRoot)
+  // Re-list only the directories the watcher saw change. The batch already
+  // excludes build and dependency trees, and `refreshChangedDirectories` skips
+  // anything not on screen — so a save in the editor costs one listing of its
+  // parent, not the root plus every expanded folder.
+  useFileChangeBatchListener(
+    (batch) => void refreshChangedDirectories(batch.directories),
+    !!workspacePath && !isExternalRoot,
+  )
 
   // An external root is watched in its own right (see `openExternalRoot`) and is
-  // not part of the workspace tree, so it re-lists itself — and only for events
-  // that landed inside it, which is also what keeps the debounce from being
-  // starved by unrelated workspace writes.
-  useFileChangeListener(
-    () => {
-      if (rootPath) void refreshExternalRoot(rootPath)
+  // not part of the workspace tree, so it re-lists itself — only the changed
+  // directories, and only those that landed inside it.
+  useFileChangeBatchListener(
+    (batch) => {
+      if (!rootPath) return
+      const inside = batch.directories.filter(
+        (dir) => dir === rootPath || dir.startsWith(`${rootPath}/`),
+      )
+      if (inside.length > 0) void refreshChangedDirectories(inside)
     },
-    300,
     isExternalRoot,
-    (event) => {
-      if (!rootPath) return false
-      const changed = event.payload.path
-      return changed === rootPath || changed.startsWith(`${rootPath}/`)
-    },
   )
 
   // Ctrl/Cmd+Z undo handler

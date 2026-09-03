@@ -1,25 +1,24 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { AlertCircle, Archive, ArrowLeft, Loader2, RefreshCw } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import {
   cn,
   isTauri,
 } from "@/lib/utils";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
-import { useStreamingStore } from "@/stores/streaming";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useProviderStore } from "@/stores/provider";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { useTeamModeStore } from "@/stores/team-mode";
 import { useCurrentTeamStore } from "@/stores/current-team";
-import { TEAMCLU_DIR, CONFIG_FILE_NAME, TEAM_REPO_DIR } from "@/lib/build-config";
-import { adaptTeamcluMessages } from "@/lib/v2-message-adapter";
-import { clearDeferredProcessCache } from "@/lib/lazy-process-parts";
-import { logInterruptMsgDiag } from "@/lib/interrupt-msg-diag";
-import { logExtMsgDiag } from "@/lib/extension-msg-diag";
-import { isChromeExtension } from "@/lib/platform";
+import { TEAMCLU_DIR, CONFIG_FILE_NAME, TEAM_REPO_DIR } from "@/lib/config/build-config";
+import { adaptTeamcluMessages } from "@/lib/messages/v2-message-adapter";
+import { clearDeferredProcessCache } from "@/lib/stream/lazy-process-parts";
+import { logInterruptMsgDiag } from "@/lib/diagnostics/interrupt-msg-diag";
+import { logExtMsgDiag } from "@/lib/diagnostics/extension-msg-diag";
+import { isChromeExtension } from "@/lib/config/platform";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
 import {
@@ -29,14 +28,12 @@ import {
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useUIStore } from "@/stores/ui";
 import { getBackend } from "@/lib/backend";
-import { resolveSessionActivityOwner } from "@/lib/session-list-activity";
-import { selectSessionParentLinks } from "@/lib/session-parent-links";
-import { isAgentActorType } from "@/lib/actor-type";
+import { resolveSessionActivityOwner } from "@/lib/session/session-list-activity";
+import { selectSessionParentLinks } from "@/lib/session/session-parent-links";
+import { isAgentActorType } from "@/lib/actor/actor-type";
 import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
-import { Button } from "@/components/ui/button";
-import { createQuickSession, describeQuickSessionFailure, type QuickSessionFailureReason } from "@/lib/create-quick-session";
-import { isSoloAgentSession } from "@/lib/session-empty-thread-starters";
-import type { Message } from "@/stores/session";
+import { createQuickSession, describeQuickSessionFailure, type QuickSessionFailureReason } from "@/lib/session/create-quick-session";
+import { isSoloAgentSession } from "@/lib/session/session-empty-thread-starters";
 import { ChatInputArea } from "./ChatInputArea";
 import { SessionNoticeList } from "./SessionNoticeList";
 import { useEngagedAgentRuntimeMap } from "@/hooks/use-engaged-agent-runtime-map";
@@ -53,10 +50,10 @@ import { MessageList, type MessageListHandle } from "./MessageList";
 import { useChatSend } from "./use-chat-send";
 import { renderChatEmptyState } from "./chat-empty-state";
 import { SessionErrorAlert } from "./SessionErrorAlert";
-import { isPersistentSessionTurnError } from "@/lib/agent-turn-error";
+import { isPersistentSessionTurnError } from "@/lib/agent/agent-turn-error";
 import { hasVisiblePendingPermissions } from "./PermissionCard";
 import { collectAcpStreamingPermissions } from "@/lib/teamclu/acp-permission-entries";
-import { useSessionPermissionMode } from "@/lib/session-permission-mode";
+import { useSessionPermissionMode } from "@/lib/session/session-permission-mode";
 import { interruptAgentActor } from "@/lib/teamclu/interrupt-agent";
 import { toast } from "sonner";
 import { AcpStreamDebugPanel } from "./AcpStreamDebugPanel";
@@ -71,12 +68,12 @@ import {
   selectPersistedPlanForSession,
   type StreamingPlanEntry,
 } from "@/stores/v2-streaming-store";
-import { resolveSessionEstablishedModel } from "@/lib/session-established-model";
+import { resolveSessionEstablishedModel } from "@/lib/session/session-established-model";
 import {
   resolveAgentCatalogModels,
   localRecentModelFallback,
-} from '@/lib/agent-model-fallback'
-import { useLocalDaemonActorId } from "@/lib/daemon-agent-admin";
+} from '@/lib/agent/agent-model-fallback'
+import { useLocalDaemonActorId } from "@/lib/daemon/daemon-agent-admin";
 import { clientMruModels } from "@/stores/client-model-mru";
 import { ensureParticipantModels } from "@/stores/participant-model-store";
 import { useLocalDaemonCatalogStore } from "@/stores/local-daemon-catalog-store";
@@ -84,14 +81,13 @@ import {
   selectAgentModel,
   resolveRuntimeStateEntryForAgent,
   backendTypeFromRuntimeEntry,
-} from "@/lib/runtime-state-resolve";
+} from "@/lib/agent/runtime-state-resolve";
 // xterm + its webgl/search addons are ~560KB of the startup chunk and are only
 // needed once the terminal drawer is actually opened, so pay for them then.
 const TerminalPanel = React.lazy(async () => ({
   default: (await import("@/components/terminal/TerminalPanel")).TerminalPanel,
 }));
 import { useTerminalStore } from "@/stores/terminal-store";
-const EMPTY_MESSAGES: Message[] = [];
 const EMPTY_AGENTS: AttachedAgent[] = [];
 
 // ─── Main component ────────────────────────────────────────────────────────
@@ -119,12 +115,8 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
 
   const error = useSessionStore(s => s.error);
   const errorSessionId = useSessionStore(s => s.errorSessionId);
-  const isConnected = useSessionStore(s => s.isConnected);
-  const streamingMessageId = useStreamingStore(s => s.streamingMessageId);
   const messageQueue = useSessionStore(s => s.messageQueue);
   const sessionError = useSessionStore(s => s.sessionError);
-  const inactivityWarning = useSessionStore(s => s.inactivityWarning);
-  const todos = useSessionStore(s => s.todos);
   const pendingPermissions = useSessionStore(s => s.pendingPermissions);
   const pendingQuestions = useSessionStore(s => s.pendingQuestions);
   // Only id/parentID — ignore unrelated session field writes (title, preview, …).
@@ -138,23 +130,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sessionParentLinksKey],
   );
-  // Fingerprint embedded tool-call permissions on the active session so we
-  // recompute showInlineTodo without subscribing to the full sessions array.
-  const activeToolPermissionSig = useSessionStore((s) => {
-    if (!activeSessionId) return "";
-    const session = s.sessions.find((row) => row.id === activeSessionId);
-    if (!session) return "";
-    const ids: string[] = [];
-    for (const message of session.messages || []) {
-      for (const toolCall of message.toolCalls || []) {
-        const permission = toolCall.permission;
-        if (!permission || permission.decision !== "pending") continue;
-        if (toolCall.status !== "calling" && toolCall.status !== "waiting") continue;
-        ids.push(permission.id);
-      }
-    }
-    return ids.join(",");
-  });
 
   // ── V2 agent streaming (acp.event deltas) ───────────────────────────
   // Render ALL bubbles for the active session — current turn (active or
@@ -215,21 +190,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     return [];
   }, [v2Streams, persistedSessionPlan]);
 
-  // ── Archived session viewing ────────────────────────────────────────
-  const viewingArchivedSessionId = useSessionStore(s => s.viewingArchivedSessionId);
-  const archivedSessionMessages = useSessionStore(s =>
-    s.viewingArchivedSessionId
-      ? (s.archivedSessionMessages[s.viewingArchivedSessionId] || EMPTY_MESSAGES)
-      : EMPTY_MESSAGES
-  );
-  const archivedSession = useSessionStore(s =>
-    s.viewingArchivedSessionId
-      ? s.archivedSessions.find((session) => session.id === s.viewingArchivedSessionId)
-      : undefined
-  );
-  const archivedSessionError = useSessionStore(s => s.archivedSessionError);
-  const isViewingArchived = !!viewingArchivedSessionId;
-
   const acpPendingForTodo = React.useMemo(
     () =>
       collectAcpStreamingPermissions(
@@ -243,9 +203,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     [activeSessionId, v2ActiveSessionRevision],
   );
   const showInlineTodo = React.useMemo(() => {
-    if (isViewingArchived) return false;
-    if (todos.length === 0 && messageQueue.length === 0 && planTodos.length === 0)
-      return false;
+    if (messageQueue.length === 0 && planTodos.length === 0) return false;
     return !hasVisiblePendingPermissions(
       activeSessionId,
       useSessionStore.getState().sessions,
@@ -253,35 +211,24 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
       acpPendingForTodo,
       sessionPermissionMode,
     );
-    // activeToolPermissionSig / sessionParentLinks are change signals for the
-    // getState() read above.
+    // sessionParentLinks is the change signal for the getState() read above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeSessionId,
     acpPendingForTodo,
-    activeToolPermissionSig,
-    isViewingArchived,
     messageQueue.length,
     pendingPermissions,
     sessionPermissionMode,
     sessionParentLinks,
-    todos,
     planTodos.length,
   ]);
 
-  // Render order: planTodos first (live, being worked on) then static todos.
-  // Dedup pass not needed — plan ids are namespaced `plan:` while todos use
-  // their own id space.
-  const combinedTodos = React.useMemo(
-    () => (planTodos.length > 0 ? [...planTodos, ...todos] : todos),
-    [planTodos, todos],
-  );
-  const hasComposerPlanData =
-    !isViewingArchived &&
-    (combinedTodos.length > 0 || messageQueue.length > 0);
+  // The plan slot shows the live plan entries from the v2 stream (or the
+  // persisted plan for the session).
+  const combinedTodos = planTodos;
+  const hasComposerPlanData = combinedTodos.length > 0 || messageQueue.length > 0;
   const activeInputQuestion = React.useMemo(() => {
     if (!activeSessionId) return null;
-    if (isViewingArchived) return null;
     return (
       pendingQuestions.find((question) => {
         if (!question.sessionId) return true;
@@ -297,7 +244,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     );
   }, [
     activeSessionId,
-    isViewingArchived,
     pendingQuestions,
     sessionParentLinks,
   ]);
@@ -334,9 +280,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   const resetSessions = acts.resetSessions;
   const clearSessionError = acts.clearSessionError;
   const setError = acts.setError;
-  const setStoreSelectedModel = acts.setSelectedModel;
-  const closeArchivedSession = acts.closeArchivedSession;
-  const restoreSession = acts.restoreSession;
 
   // ── Workspace store ───────────────────────────────────────────────────
   const workspacePath = useWorkspaceStore(s => s.workspacePath);
@@ -663,8 +606,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   );
   const [welcomeSessionStarting, setWelcomeSessionStarting] = React.useState(false);
 
-  const [isRestoringArchived, setIsRestoringArchived] = React.useState(false);
-  const isRestoringArchivedRef = React.useRef(false);
 
   // ── Provider store ────────────────────────────────────────────────────
   const initProviderStore = useProviderStore(s => s.initAll);
@@ -841,7 +782,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     return () => clearTimeout(t);
   }, [activeSessionId, displaySessionId]);
 
-  const isStreaming = !!streamingMessageId || activeStreamingAgents.length > 0;
+  const isStreaming = activeStreamingAgents.length > 0;
 
   // ── Provider & Team mode init ──────────────────────────────────────
   // Merged to avoid race condition: team mode restarts the agent, which
@@ -888,10 +829,13 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
 
     (async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      unlisten = await listen<{ path: string; kind: string }>('file-change', (event) => {
-        const isTeamConfigChange = event.payload.path.includes(`${TEAMCLU_DIR}/${CONFIG_FILE_NAME}`);
-        const isProviderMetaChange = event.payload.path.includes(`${TEAM_REPO_DIR}/_meta/provider.json`);
-        if (!isTeamConfigChange && !isProviderMetaChange) return;
+      unlisten = await listen<{ paths: string[]; directories: string[] }>('file-change-batch', (event) => {
+        const touched = event.payload.paths.some(
+          (path) =>
+            path.includes(`${TEAMCLU_DIR}/${CONFIG_FILE_NAME}`) ||
+            path.includes(`${TEAM_REPO_DIR}/_meta/provider.json`),
+        );
+        if (!touched) return;
         if (debounceTimer) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(async () => {
           console.log('[TeamMode] Team config changed, reloading team config');
@@ -915,16 +859,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
       if (debounceTimer) clearTimeout(debounceTimer);
     };
   }, [workspaceReady, workspacePath]);
-
-  // Sync the resolved session model to the session store. Its only reader is
-  // the FileEditor "ask the agent" entry point (session-messages `sendMessage`).
-  React.useEffect(() => {
-    if (!activeSessionModelId) return;
-    const idx = activeSessionModelId.indexOf("/");
-    const providerID = idx > 0 ? activeSessionModelId.slice(0, idx) : "";
-    const modelID = idx > 0 ? activeSessionModelId.slice(idx + 1) : activeSessionModelId;
-    setStoreSelectedModel({ providerID, modelID, name: modelID });
-  }, [activeSessionModelId, setStoreSelectedModel]);
 
   // Per-actor draft + voice insert live in ChatInputArea.
 
@@ -973,7 +907,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
         const teamId = useCurrentTeamStore.getState().team?.id;
         let preserve = false;
         if (activeId && teamId) {
-          const { sessionBelongsToWorkspace } = await import("@/lib/session-by-workspace");
+          const { sessionBelongsToWorkspace } = await import("@/lib/session/session-by-workspace");
           preserve = await sessionBelongsToWorkspace(teamId, activeId, workspacePath);
         }
         if (cancelled) return;
@@ -1087,22 +1021,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   }, []);
 
   // ── Empty state ───────────────────────────────────────────────────────
-  const handleCloseArchivedSession = React.useCallback(() => {
-    closeArchivedSession();
-  }, [closeArchivedSession]);
-
-  const handleRestoreArchivedSession = React.useCallback(async () => {
-    if (!viewingArchivedSessionId || isRestoringArchivedRef.current) return;
-    isRestoringArchivedRef.current = true;
-    setIsRestoringArchived(true);
-    try {
-      await restoreSession(viewingArchivedSessionId);
-    } finally {
-      isRestoringArchivedRef.current = false;
-      setIsRestoringArchived(false);
-    }
-  }, [restoreSession, viewingArchivedSessionId]);
-
   const emptyState = React.useMemo(
     () =>
       renderChatEmptyState({
@@ -1264,45 +1182,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
       {/* Actors panel mounts in RightPanel for the 'actors' tab; trigger
        *  lives in App.tsx header alongside Knowledge / Changes. */}
 
-      {/* Inactivity warning - task still running but no events */}
-      {inactivityWarning && isStreaming && isConnected && (
-        <div className="absolute top-2 right-12 z-20 flex items-center gap-2 rounded-full bg-blue-100 px-3 py-1 text-xs text-blue-800">
-          <Loader2 className="h-3 w-3 animate-spin" />
-          {t("chat.taskRunning", "Task running...")}
-        </div>
-      )}
-
-      {/* ─── Archived session read-only bar ─── */}
-      {isViewingArchived && (
-        <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-3 py-2">
-          <button
-            type="button"
-            onClick={handleCloseArchivedSession}
-            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <ArrowLeft size={14} />
-            <span>{t("chat.backToActiveSession", "Back to active session")}</span>
-          </button>
-          <div className="min-w-0 flex flex-1 items-center gap-1.5 text-xs text-muted-foreground">
-            <Archive size={12} />
-            <span className="truncate">
-              {archivedSession?.title || t("chat.archivedSession", "Archived session")}
-            </span>
-          </div>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 gap-1.5 px-2 text-xs"
-            disabled={isRestoringArchived}
-            onClick={() => void handleRestoreArchivedSession()}
-          >
-            <RefreshCw className={cn("h-3 w-3", isRestoringArchived && "animate-spin")} />
-            {t("chat.restoreSession", "Restore")}
-          </Button>
-        </div>
-      )}
-
       {workspaceBootstrapped && !workspaceReady && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-background/80 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3 px-4 text-center">
@@ -1325,57 +1204,23 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
           "flex-1 min-h-0 flex flex-col overflow-hidden",
           "transition-opacity duration-150 ease-in-out motion-reduce:transition-none",
         )}
-        style={{ opacity: isViewingArchived ? 1 : sessionFadeOpacity }}
+        style={{ opacity: sessionFadeOpacity }}
       >
-        {!isViewingArchived ? (
-          <AcpStreamDebugPanel sessionId={displaySessionId} />
-        ) : null}
-        {isViewingArchived ? (
-          <MessageList
-            ref={messageListRef}
-            messages={archivedSessionMessages}
-            activeSessionId={viewingArchivedSessionId}
-            isStreaming={false}
-            streamingMessageId={null}
-            compact={compact}
-            sessionDirectory={archivedSession?.directory}
-          />
-        ) : (
-          <MessageList
-            ref={messageListRef}
-            messages={displayMessages ?? []}
-            activeSessionId={displaySessionId}
-            isStreaming={isStreaming}
-            streamingMessageId={streamingMessageId}
-            compact={compact}
-            emptyState={emptyState}
-            bottomContent={messageBottomContent}
-          />
-        )}
+        <AcpStreamDebugPanel sessionId={displaySessionId} />
+        <MessageList
+          ref={messageListRef}
+          messages={displayMessages ?? []}
+          activeSessionId={displaySessionId}
+          isStreaming={isStreaming}
+          streamingMessageId={null}
+          compact={compact}
+          emptyState={emptyState}
+          bottomContent={messageBottomContent}
+        />
       </div>
 
       {/* ─── Input Area (with Permission & Error UI above it) ─────────── */}
-      {isViewingArchived ? (
-        <div className="border-t border-border bg-background px-3 py-3">
-          {archivedSessionError && (
-            <div className="mb-2 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <div className="min-w-0">
-                <div className="font-medium">
-                  {t("chat.archivedSessionLoadError", "Could not load archived session")}
-                </div>
-                <div className="break-words text-xs text-destructive/80">
-                  {archivedSessionError}
-                </div>
-              </div>
-            </div>
-          )}
-          <div className="rounded-lg border border-dashed bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-            {t("chat.restoreArchivedHint", "Restore this session to continue chatting")}
-          </div>
-        </div>
-      ) : (
-        activeSessionId || draftPreselectedActor ? (
+      {activeSessionId || draftPreselectedActor ? (
           <ChatInputArea
             activeSessionId={activeSessionId}
             compact={compact}
@@ -1421,8 +1266,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
             planSlotHidden={hasComposerPlanData && !showInlineTodo}
             pendingQuestion={activeInputQuestion}
           />
-        ) : null
-      )}
+      ) : null}
 
       {terminalOpen && workspacePath && (
         <React.Suspense fallback={null}>

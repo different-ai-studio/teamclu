@@ -10,7 +10,7 @@
 
 import { getBackend } from "@/lib/backend";
 import type { ActorDirectorySyncRow } from "@/lib/backend/types";
-import * as cache from "@/lib/local-cache";
+import * as cache from "@/lib/cache/local-cache";
 import { isTauri } from "@/lib/utils";
 import { notifyActorDirectorySynced } from "@/stores/actor-directory-store";
 

@@ -4,21 +4,26 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronRight, File } from "lucide-react";
 
 import { toast } from 'sonner';
-import { isChatInputDropTarget, isPointOverElement } from '@/lib/chat-file-drop';
 import { copyToClipboard, isTauri } from '@/lib/utils';
 import { useWorkspaceStore, type FileNode } from "@/stores/workspace";
 import { useOssSyncStore } from "@/stores/oss-sync";
 import { useTeamConflictsStore } from "@/stores/team-conflicts";
-import { withDefaultExtension } from "@/lib/knowledge-file-names";
-import { pruneKnowledgeNoise } from "@/lib/knowledge-tree-pruning";
-import { useTeamPermissions } from "@/lib/team-permissions";
-import { KnowledgeAclDialog } from "@/components/teamshare/KnowledgeAclDialog";
+import { withDefaultExtension } from "@/lib/knowledge/knowledge-file-names";
+import { pruneKnowledgeNoise } from "@/lib/knowledge/knowledge-tree-pruning";
+import { useTeamPermissions } from "@/lib/team/team-permissions";
+import { lazyNamed } from "@/lib/lazy-component";
+
+// Team-share subtree; loads the first time a folder's ACL dialog is opened.
+const KnowledgeAclDialog = lazyNamed(
+  () => import("@/components/teamshare/KnowledgeAclDialog"),
+  "KnowledgeAclDialog",
+);
 import { getBackend } from "@/lib/backend";
 import { useCurrentTeamStore } from "@/stores/current-team";
-import { isIgnoredSyncKey } from "@/lib/knowledge-ignored";
+import { isIgnoredSyncKey } from "@/lib/knowledge/knowledge-ignored";
 import { useTeamSyncStatusStore } from "@/stores/team-sync-status";
-import { buildBadgeMap, badgeForDirectory } from "@/lib/team-sync-badges";
-import { teamSyncKeyForPath } from "@/lib/team-skill-paths";
+import { buildBadgeMap, badgeForDirectory } from "@/lib/team/team-sync-badges";
+import { teamSyncKeyForPath } from "@/lib/team/team-skill-paths";
 import {
   hasSystemClipboardFiles,
   writeSystemClipboardFiles,
@@ -47,115 +52,10 @@ import {
   duplicateItem,
   readFileContent,
 } from "./file-tree-operations";
-import { TEAM_REPO_DIR, appShortName } from "@/lib/build-config";
-
-// Flattened tree node for virtualization
-interface FlatTreeNode {
-  node: FileNode;
-  level: number;
-  /** Display name for compact folders, e.g. "src/main/java" */
-  compactName?: string;
-  /** All directory paths in a compacted chain (for collapsing all at once) */
-  compactedPaths?: string[];
-}
-
-// Filter tree nodes recursively based on filter text.
-// Returns { nodes, autoExpandPaths } where autoExpandPaths contains
-// directories that should be auto-expanded because they have matching children.
-function filterTree(
-  nodes: FileNode[],
-  filterText: string,
-  autoExpandPaths: Set<string> = new Set(),
-): { nodes: FileNode[]; autoExpandPaths: Set<string> } {
-  if (!filterText.trim()) {
-    return { nodes, autoExpandPaths };
-  }
-
-  const lowerFilter = filterText.toLowerCase();
-  const filtered: FileNode[] = [];
-
-  for (const node of nodes) {
-    const matchesFilter = node.name.toLowerCase().includes(lowerFilter);
-
-    // If it's a directory, check if any children match
-    let matchingChildren: FileNode[] = [];
-    if (node.type === "directory" && node.children) {
-      const result = filterTree(node.children, filterText, autoExpandPaths);
-      matchingChildren = result.nodes;
-    }
-
-    // Include node if:
-    // 1. The node itself matches, OR
-    // 2. It's a directory with matching children
-    if (matchesFilter || matchingChildren.length > 0) {
-      if (matchingChildren.length > 0) {
-        // Auto-expand directories that have matching children
-        autoExpandPaths.add(node.path);
-        filtered.push({
-          ...node,
-          children: matchingChildren,
-        });
-      } else {
-        filtered.push(node);
-      }
-    }
-  }
-
-  return { nodes: filtered, autoExpandPaths };
-}
-
-// Flatten the recursive tree into a flat list of visible nodes
-function flattenTree(
-  nodes: FileNode[],
-  expandedPaths: Set<string>,
-  level: number = 0,
-  result: FlatTreeNode[] = [],
-): FlatTreeNode[] {
-  for (const node of nodes) {
-    if (node.type === "directory" && expandedPaths.has(node.path) && node.children) {
-      // Check for compact folder chain: single directory child only
-      let current = node;
-      const nameParts = [current.name];
-      const chainPaths = [current.path];
-
-      while (
-        current.children &&
-        current.children.length === 1 &&
-        current.children[0].type === "directory" &&
-        expandedPaths.has(current.children[0].path)
-      ) {
-        current = current.children[0];
-        nameParts.push(current.name);
-        chainPaths.push(current.path);
-      }
-
-      if (nameParts.length > 1) {
-        result.push({
-          node: current,
-          level,
-          compactName: nameParts.join("/"),
-          compactedPaths: chainPaths,
-        });
-      } else {
-        result.push({ node, level });
-      }
-
-      if (current.children) {
-        flattenTree(current.children, expandedPaths, level + 1, result);
-      }
-    } else {
-      result.push({ node, level });
-      if (
-        node.type === "directory" &&
-        expandedPaths.has(node.path) &&
-        node.children
-      ) {
-        flattenTree(node.children, expandedPaths, level + 1, result);
-      }
-    }
-  }
-  return result;
-}
+import { TEAM_REPO_DIR, appShortName } from "@/lib/config/build-config";
+import { filterTree, flattenTree, type FlatTreeNode } from "./file-tree/flatten";
+import { useFileTreeKeyboard } from "./file-tree/use-file-tree-keyboard";
+import { useOsFileDrop } from "./file-tree/use-os-file-drop";
 
 // Row height in pixels (matches py-1 + text-sm line-height)
 const ROW_HEIGHT = 28;
@@ -647,7 +547,7 @@ export function FileTree({
       return;
     }
     try {
-      const { listKnownDocuments } = await import('@/lib/daemon-local-client');
+      const { listKnownDocuments } = await import('@/lib/daemon/daemon-local-client');
       const items = await listKnownDocuments(aclTeamId);
       setKnownDocs(new Map(items.map((i) => [i.path, i.size])));
     } catch {
@@ -695,7 +595,7 @@ export function FileTree({
       : [...knownDocs.keys()].filter((k) => k.startsWith(`${key}/`));
     if (targets.length === 0) return;
 
-    const { fetchDocuments } = await import('@/lib/daemon-local-client');
+    const { fetchDocuments } = await import('@/lib/daemon/daemon-local-client');
 
     // One file needs no progress reporting; the row's own state is enough.
     if (targets.length === 1) {
@@ -786,7 +686,7 @@ export function FileTree({
     const key = teamSyncKeyForPath(path, { syncRoot, workspacePath });
     if (!key) return;
     try {
-      const { releaseDocuments } = await import('@/lib/daemon-local-client');
+      const { releaseDocuments } = await import('@/lib/daemon/daemon-local-client');
       const released = await releaseDocuments(aclTeamId, [key]);
       if (released.length === 0) {
         // Refused — almost always because the file holds unpushed edits.
@@ -988,213 +888,29 @@ export function FileTree({
     overscan: 20,
   });
 
-  // ── Keyboard navigation ──
-  const handleKeyDown = useCallback(
-    async (e: React.KeyboardEvent) => {
-      if (!flatNodes.length) return;
-      // Don't handle keys when renaming
-      if (renamingPath || creatingIn) return;
-
-      // ⌘D = Duplicate focused item
-      if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
-        e.preventDefault();
-        if (focusedPath) {
-          handleDuplicate(focusedPath);
-        }
-        return;
-      }
-
-      // Clipboard shortcuts
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey) {
-        if (e.key === 'c') {
-          e.preventDefault();
-          const paths = selectedFiles.length > 0 ? selectedFiles : (focusedPath ? [focusedPath] : []);
-          if (paths.length > 0) {
-            handleCopy(paths);
-          }
-          return;
-        }
-        if (e.key === 'x') {
-          e.preventDefault();
-          const paths = selectedFiles.length > 0 ? selectedFiles : (focusedPath ? [focusedPath] : []);
-          if (paths.length > 0) {
-            handleCut(paths);
-          }
-          return;
-        }
-        if (e.key === 'v') {
-          e.preventDefault();
-          // No internal-clipboard precondition: the paths may be coming from
-          // Finder, in which case only the OS pasteboard knows about them.
-          // pasteFiles resolves both sources and no-ops when neither has files.
-          let targetDir = treeRoot;
-          if (focusedPath) {
-            const node = flatNodes.find(n => n.node.path === focusedPath);
-            if (node?.node.type === 'directory') {
-              targetDir = focusedPath;
-            } else {
-              targetDir = focusedPath.substring(0, focusedPath.lastIndexOf('/'));
-            }
-          }
-          if (targetDir) {
-            const success = await pasteFiles(targetDir);
-            if (success) {
-              await expandDirectory(targetDir);
-            } else if (clipboardPaths.length > 0 || systemClipboardHasFiles) {
-              toast.error(t('fileExplorer.pasteFailed', 'Paste failed'));
-            }
-          }
-          return;
-        }
-      }
-
-      const currentIndex = flatNodes.findIndex(
-        (n) => n.node.path === focusedPath,
-      );
-
-      switch (e.key) {
-        case "ArrowDown": {
-          e.preventDefault();
-          const nextIndex = currentIndex < flatNodes.length - 1
-            ? currentIndex + 1
-            : 0;
-          setFocusedPath(flatNodes[nextIndex].node.path);
-          // Scroll into view
-          const el = treeContainerRef.current?.querySelector(
-            `[data-path="${CSS.escape(flatNodes[nextIndex].node.path)}"]`,
-          );
-          el?.scrollIntoView({ block: "nearest" });
-          break;
-        }
-        case "ArrowUp": {
-          e.preventDefault();
-          const prevIndex = currentIndex > 0
-            ? currentIndex - 1
-            : flatNodes.length - 1;
-          setFocusedPath(flatNodes[prevIndex].node.path);
-          const el = treeContainerRef.current?.querySelector(
-            `[data-path="${CSS.escape(flatNodes[prevIndex].node.path)}"]`,
-          );
-          el?.scrollIntoView({ block: "nearest" });
-          break;
-        }
-        case "ArrowRight": {
-          e.preventDefault();
-          if (currentIndex === -1) break;
-          const node = flatNodes[currentIndex].node;
-          if (node.type === "directory" && !effectiveExpandedPaths.has(node.path)) {
-            expandDirectory(node.path);
-          }
-          break;
-        }
-        case "ArrowLeft": {
-          e.preventDefault();
-          if (currentIndex === -1) break;
-          const { node, compactedPaths } = flatNodes[currentIndex];
-          if (node.type === "directory" && effectiveExpandedPaths.has(node.path)) {
-            if (compactedPaths && compactedPaths.length > 1) {
-              collapseCompacted(compactedPaths);
-            } else {
-              collapseDirectory(node.path);
-            }
-          } else {
-            // Navigate to parent directory
-            const parentPath = node.path.substring(0, node.path.lastIndexOf("/"));
-            if (parentPath && parentPath !== treeRoot) {
-              setFocusedPath(parentPath);
-              const el = treeContainerRef.current?.querySelector(
-                `[data-path="${CSS.escape(parentPath)}"]`,
-              );
-              el?.scrollIntoView({ block: "nearest" });
-            }
-          }
-          break;
-        }
-        case "Enter": {
-          e.preventDefault();
-          if (currentIndex === -1) break;
-          const entryNode = flatNodes[currentIndex];
-          if (entryNode.node.type === "directory") {
-            if (effectiveExpandedPaths.has(entryNode.node.path)) {
-              if (entryNode.compactedPaths && entryNode.compactedPaths.length > 1) {
-                collapseCompacted(entryNode.compactedPaths);
-              } else {
-                collapseDirectory(entryNode.node.path);
-              }
-            } else {
-              expandDirectory(entryNode.node.path);
-            }
-          } else {
-            selectFile(entryNode.node.path);
-          }
-          break;
-        }
-        case "Home": {
-          e.preventDefault();
-          if (flatNodes.length > 0) {
-            setFocusedPath(flatNodes[0].node.path);
-            const el = treeContainerRef.current?.querySelector(
-              `[data-path="${CSS.escape(flatNodes[0].node.path)}"]`,
-            );
-            el?.scrollIntoView({ block: "nearest" });
-          }
-          break;
-        }
-        case "End": {
-          e.preventDefault();
-          const last = flatNodes[flatNodes.length - 1];
-          if (last) {
-            setFocusedPath(last.node.path);
-            const el = treeContainerRef.current?.querySelector(
-              `[data-path="${CSS.escape(last.node.path)}"]`,
-            );
-            el?.scrollIntoView({ block: "nearest" });
-          }
-          break;
-        }
-        case "F2": {
-          e.preventDefault();
-          if (focusedPath) {
-            setRenamingPath(focusedPath);
-          }
-          break;
-        }
-        case "Delete":
-        case "Backspace": {
-          e.preventDefault();
-          if (focusedPath) {
-            const node = flatNodes.find((n) => n.node.path === focusedPath);
-            if (node) {
-              handleDelete(node.node.path, node.node.type === "directory");
-            }
-          }
-          break;
-        }
-      }
-    },
-    [
-      flatNodes,
-      focusedPath,
-      renamingPath,
-      creatingIn,
-      effectiveExpandedPaths,
-      treeRoot,
-      selectedFiles,
-      setFocusedPath,
-      expandDirectory,
-      collapseDirectory,
-      collapseCompacted,
-      selectFile,
-      handleDelete,
-      handleDuplicate,
-      handleCopy,
-      handleCut,
-      clipboardPaths,
-      systemClipboardHasFiles,
-      pasteFiles,
-      t,
-    ],
-  );
+  const handleKeyDown = useFileTreeKeyboard({
+    flatNodes,
+    focusedPath,
+    renamingPath,
+    creatingIn,
+    effectiveExpandedPaths,
+    treeRoot,
+    selectedFiles,
+    setFocusedPath,
+    expandDirectory,
+    collapseDirectory,
+    collapseCompacted,
+    selectFile,
+    handleDelete,
+    handleDuplicate,
+    handleCopy,
+    handleCut,
+    clipboardPaths,
+    systemClipboardHasFiles,
+    pasteFiles,
+    treeContainerRef,
+    setRenamingPath,
+  });
 
   // Auto-scroll to reveal selected file (when file is selected from editor)
   useEffect(() => {
@@ -1244,146 +960,18 @@ export function FileTree({
   const flatNodesRef = useRef(flatNodes);
   useEffect(() => { flatNodesRef.current = flatNodes; }, [flatNodes]);
 
-  useEffect(() => {
-    if (!isTauri() || !workspacePath) return;
-    let cancelled = false;
-    const unlisteners: (() => void)[] = [];
-
-    import('@tauri-apps/api/event').then(async ({ listen }) => {
-      if (cancelled) return;
-
-      // Handle external file drop (or internal drag that landed outside the file tree)
-      unlisteners.push(await listen<{ paths: string[]; position: { x: number; y: number } }>(
-        'tauri://drag-drop',
-        async (event) => {
-          // Internal drag-move: Tauri intercepts the HTML5 drop event.
-          // Check if the drop target was inside the file tree (perform move)
-          // or outside (dispatch to prompt input / other drop targets).
-          if (dragSourcePathRef.current) {
-            const sourcePath = dragSourcePathRef.current;
-            // Read refs before clearing state to avoid race with useEffect sync
-            let targetDir = dragOverPathRef.current;
-            dragSourcePathRef.current = null;
-            setDragSourcePath(null);
-            setDragOverPath(null);
-
-            // Resolve drop target: prefer dragOverPath (set by HTML5 dragover
-            // on directories), fall back to elementFromPoint for file targets
-            if (!targetDir) {
-              const { x, y } = event.payload.position;
-              const el = document.elementFromPoint(x, y);
-              const treeItem = el?.closest('[data-path]') as HTMLElement | null;
-              if (treeItem) {
-                const path = treeItem.getAttribute('data-path');
-                if (path) {
-                  const node = flatNodesRef.current.find(fn => fn.node.path === path);
-                  if (node && node.node.type === 'file') {
-                    targetDir = path.substring(0, path.lastIndexOf('/')) || treeRoot;
-                  } else {
-                    targetDir = path;
-                  }
-                }
-              }
-            }
-
-            // Drop landed on a directory in the file tree → move
-            if (targetDir && targetDir !== sourcePath && !targetDir.startsWith(sourcePath + '/')) {
-              const fileName = sourcePath.substring(sourcePath.lastIndexOf('/') + 1);
-              const newPath = `${targetDir}/${fileName}`;
-              const { moveItem } = await import('./file-tree-operations');
-              const success = await moveItem(sourcePath, targetDir);
-              if (success) {
-                pushUndoRef.current({
-                  type: 'move',
-                  description: `Move ${fileName} to ${targetDir.substring(targetDir.lastIndexOf('/') + 1)}`,
-                  originalPath: sourcePath,
-                  newPath,
-                  isDirectory: false,
-                });
-                await refreshFileTree();
-                await expandDirectory(targetDir);
-              }
-              return;
-            }
-
-            // Drop landed outside the file tree → dispatch for prompt input
-            window.dispatchEvent(new CustomEvent('teamclu:filedrop', {
-              detail: { path: sourcePath, position: event.payload.position },
-            }));
-            return;
-          }
-          const paths = event.payload.paths;
-          if (!paths || paths.length === 0) return;
-
-          // OS drops on the chat composer attach as pending files (PromptInput
-          // listens to the same tauri://drag-drop event). Do not copy into the
-          // workspace in that case — previously every external drop was treated
-          // as a file-tree import, so drag-to-input silently stopped working.
-          const dropPos = event.payload.position;
-          const chatInput = document.querySelector('[data-testid="chat-input-area"]');
-          // Prefer geometry over elementFromPoint — during native DnD the
-          // hit-test under the cursor can miss the composer chrome.
-          if (
-            isPointOverElement(dropPos, chatInput) ||
-            isChatInputDropTarget(document.elementFromPoint(dropPos.x, dropPos.y))
-          ) {
-            setDragOverPath(null);
-            return;
-          }
-
-          const targetDir = dragOverPathRef.current || treeRoot;
-          if (!targetDir) return;
-
-          const { copyExternalFiles } = await import('./file-tree-operations');
-          const success = await copyExternalFiles(paths, targetDir);
-          if (success) {
-            await refreshFileTree();
-            if (targetDir !== treeRoot) {
-              await expandDirectory(targetDir);
-            }
-          } else {
-            toast.error(t('fileExplorer.externalDropFailed', 'Failed to copy files'));
-          }
-          setDragOverPath(null);
-        },
-      ));
-      if (cancelled) { unlisteners.forEach(fn => fn()); return; }
-
-      // Highlight hovered directory during external drag (skip for internal drags)
-      unlisteners.push(await listen<{ paths: string[]; position: { x: number; y: number } }>(
-        'tauri://drag-over',
-        (event) => {
-          if (dragSourcePathRef.current) return; // Internal drag handled by HTML5 handlers
-          const el = document.elementFromPoint(event.payload.position.x, event.payload.position.y);
-          const treeItem = el?.closest('[data-path]') as HTMLElement | null;
-          if (treeItem) {
-            const path = treeItem.getAttribute('data-path');
-            if (path) {
-              // Resolve to parent directory if hovering over a file
-              const node = flatNodesRef.current.find(fn => fn.node.path === path);
-              if (node && node.node.type === 'file') {
-                const parentDir = path.substring(0, path.lastIndexOf('/'));
-                setDragOverPath(parentDir || treeRoot);
-              } else {
-                setDragOverPath(path);
-              }
-            }
-          } else {
-            setDragOverPath(null);
-          }
-        },
-      ));
-      if (cancelled) { unlisteners.forEach(fn => fn()); return; }
-
-      // Clear highlight when drag leaves window
-      unlisteners.push(await listen('tauri://drag-leave', () => {
-        setDragOverPath(null);
-      }));
-      if (cancelled) { unlisteners.forEach(fn => fn()); return; }
-    });
-
-    return () => { cancelled = true; unlisteners.forEach(fn => fn()); };
-  }, [workspacePath, treeRoot, refreshFileTree, expandDirectory, t]);
+  useOsFileDrop({
+    workspacePath,
+    treeRoot,
+    refreshFileTree,
+    expandDirectory,
+    dragSourcePathRef,
+    dragOverPathRef,
+    flatNodesRef,
+    pushUndoRef,
+    setDragSourcePath,
+    setDragOverPath,
+  });
 
   // An empty tree still has to render the root create row when one is pending:
   // the per-node create flow hangs off a node's context menu, so an empty tree
@@ -1685,16 +1273,18 @@ export function FileTree({
         ordinary workspace tree never pays for it.
       */}
       {aclPrefix && (
-        <KnowledgeAclDialog
-          prefix={aclPrefix}
-          open={aclPrefix !== null}
-          onOpenChange={(open) => {
-            if (open) return;
-            setAclPrefix(null);
-            // The dialog may have added or dropped a rule.
-            void refreshRestricted();
-          }}
-        />
+        <React.Suspense fallback={null}>
+          <KnowledgeAclDialog
+            prefix={aclPrefix}
+            open={aclPrefix !== null}
+            onOpenChange={(open) => {
+              if (open) return;
+              setAclPrefix(null);
+              // The dialog may have added or dropped a rule.
+              void refreshRestricted();
+            }}
+          />
+        </React.Suspense>
       )}
 
       {/* Delete confirmation dialog */}

@@ -9,7 +9,7 @@ import {
   type DiffLine,
 } from "@/components/diff/diff-ast";
 
-export interface ParsedToolPatch {
+interface ParsedToolPatch {
   lines: DiffLine[];
   additions: number;
   deletions: number;

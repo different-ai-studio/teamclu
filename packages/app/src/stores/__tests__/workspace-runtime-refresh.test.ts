@@ -9,8 +9,8 @@ vi.mock('@/lib/utils', () => ({
   isTauri: mocks.isTauri,
 }))
 
-vi.mock('@/lib/daemon-local-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/daemon-local-client')>()
+vi.mock('@/lib/daemon/daemon-local-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/daemon/daemon-local-client')>()
   return {
     ...actual,
     encodeWorkspaceId: (path: string) => `id:${path}`,

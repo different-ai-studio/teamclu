@@ -37,24 +37,24 @@ vi.mock("@/lib/backend", () => ({
   hasBackendConfig: () => backendConfig.hasConfig,
 }));
 
-vi.mock("@/lib/version", () => ({
+vi.mock("@/lib/config/version", () => ({
   useAppVersion: () => "0.1.0",
 }));
 
 // Only the resolved URL is faked; displayHost stays real so the footer is
 // rendered by the same code the desktop screen uses.
-vi.mock("@/lib/server-config", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/server-config")>()),
+vi.mock("@/lib/config/server-config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/config/server-config")>()),
   getEffectiveServerConfigSync: () => ({ cloudApiUrl: serverConfig.cloudApiUrl }),
 }));
 
-vi.mock("@/lib/build-config", () => ({
+vi.mock("@/lib/config/build-config", () => ({
   buildConfig: { app: { name: "TeamClu" } },
   appDisplayName: "TeamClu",
   extensionTeamOnboarding: extensionPolicy,
 }));
 
-vi.mock("@/lib/platform", () => ({
+vi.mock("@/lib/config/platform", () => ({
   isChromeExtension: () => extensionPolicy.isExtension,
   capabilities: { oauthSignIn: false },
 }));

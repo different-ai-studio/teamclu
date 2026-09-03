@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { pillSuffixForAgentPill, pillSuffixForUiState } from '../EngagedAgentOfflineBanner'
-import type { SessionAgentUiState } from '@/lib/session-agent-ui-state'
+import type { SessionAgentUiState } from '@/lib/session/session-agent-ui-state'
 
 // Returns the key so a missing case is visible as `null` rather than as a
 // plausible-looking English string.

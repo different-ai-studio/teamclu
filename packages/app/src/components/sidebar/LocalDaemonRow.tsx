@@ -27,16 +27,16 @@ import {
   createDaemonWorkspace,
   updateDaemonWorkspace,
   type DaemonWorkspace,
-} from '@/lib/daemon-workspaces'
-import { syncSessionWorkspaces } from '@/lib/session-workspace-sync'
-import { amuxAgentTypeFromBackend } from '@/lib/amux-agent-type'
+} from '@/lib/daemon/daemon-workspaces'
+import { syncSessionWorkspaces } from '@/lib/session/session-workspace-sync'
+import { amuxAgentTypeFromBackend } from '@/lib/agent/amux-agent-type'
 import { useUIStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { recoverMqttConnection } from '@/stores/mqtt-reconnect'
-import { requestDaemonProbe } from '@/lib/daemon-probe-signal'
+import { requestDaemonProbe } from '@/lib/daemon/daemon-probe-signal'
 import { type LocalDaemonRuntimeStatus } from '@/hooks/use-local-daemon-http-status'
 import { workspacePathsMatch } from '@/stores/session-utils'
 import { cn } from '@/lib/utils'

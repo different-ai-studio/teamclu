@@ -1,6 +1,6 @@
 import { getBackend } from '@/lib/backend'
 
-export interface SessionReportInsert {
+interface SessionReportInsert {
   actorId: string
   teamId: string
   sessionId?: string | null

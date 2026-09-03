@@ -1,6 +1,6 @@
-export const MAX_PAGE_NAV_LINKS = 8
+const MAX_PAGE_NAV_LINKS = 8
 
-export type ParsedPageNavLinks = {
+type ParsedPageNavLinks = {
   links: string[]
   labels: string[]
 }

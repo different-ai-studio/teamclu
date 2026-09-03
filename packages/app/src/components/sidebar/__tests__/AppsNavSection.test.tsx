@@ -61,11 +61,12 @@ describe('AppsNavSection', () => {
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
   })
 
-  it('the header button opens the library, not a create dialog', () => {
+  it('the header button opens the library, not a create dialog', async () => {
     render(<AppsNavSection />)
     expect(screen.queryByTestId('app-library-dialog')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /所有应用/ }))
-    expect(screen.getByTestId('app-library-dialog')).toBeInTheDocument()
+    // The dialog is lazy-loaded on first open.
+    expect(await screen.findByTestId('app-library-dialog')).toBeInTheDocument()
   })
 
   it('selecting an app never opens the list', () => {

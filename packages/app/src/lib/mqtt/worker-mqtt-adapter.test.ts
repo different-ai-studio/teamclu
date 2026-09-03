@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { createWorkerMqttAdapter, type MqttWorkerLike } from './worker-mqtt-adapter'
-import type { MqttWorkerEvent, MqttWorkerRequest } from './mqtt-connection.worker'
+import { createWorkerMqttAdapter, type MqttWorkerLike } from '@/lib/mqtt/worker-mqtt-adapter'
+import type { MqttWorkerEvent, MqttWorkerRequest } from '@/lib/mqtt/mqtt-connection.worker'
 
 function makeFakeWorker() {
   const sent: MqttWorkerRequest[] = []

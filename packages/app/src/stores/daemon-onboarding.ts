@@ -10,15 +10,15 @@ import {
   fetchDaemonCloudAuthStatus,
   getDaemonLocalAgent,
   setDaemonLocalAgent,
-} from '@/lib/daemon-local-client'
+} from '@/lib/daemon/daemon-local-client'
 import { useOnboardingStore } from '@/stores/onboarding'
-import { markStartup } from '@/lib/startup-perf'
-import { appScheme } from '@/lib/build-config'
+import { markStartup } from '@/lib/telemetry/startup-perf'
+import { appScheme } from '@/lib/config/build-config'
 import {
   clearDaemonOnboardingIdentity,
   readDaemonOnboardingIdentity,
   writeDaemonOnboardingIdentity,
-} from '@/lib/daemon-onboarding-identity'
+} from '@/lib/daemon/daemon-onboarding-identity'
 import { useAuthStore } from '@/stores/auth-store'
 
 /**
@@ -95,7 +95,7 @@ async function applyPendingLocalAgent(): Promise<void> {
 // that make `refresh` bind this machine's agent, and the user sees 'starting'
 // while it happens. They stay in the type because they are still the honest
 // description of what the daemon's config says.
-export type OnboardingStatus = 'unknown' | 'needs-onboard' | 'mismatch' | 'starting' | 'ready' | 'error'
+type OnboardingStatus = 'unknown' | 'needs-onboard' | 'mismatch' | 'starting' | 'ready' | 'error'
 
 /**
  * The distinct operations hiding behind `status === 'starting'` (#881).
@@ -271,7 +271,7 @@ const DEVICE_ID_POLL_MS = 500
  * of surfacing as a bare "can't read this machine's id" with no step at all.
  */
 async function requireDeviceId(): Promise<string> {
-  const { fetchDaemonDeviceId } = await import('@/lib/daemon-local-client')
+  const { fetchDaemonDeviceId } = await import('@/lib/daemon/daemon-local-client')
   // Fast path: a daemon that is already up answers the first ask, and the common
   // case should not pay for a step transition.
   const ready = await fetchDaemonDeviceId()
@@ -332,7 +332,7 @@ async function bindDeviceAgent(
   // Carry this app's effective Cloud API endpoint into the invite so the daemon
   // talks to the same backend the desktop build/runtime resolved — otherwise it
   // falls back to its own hardcoded default and diverges in non-prod builds.
-  const { getEffectiveServerConfig } = await import('@/lib/server-config')
+  const { getEffectiveServerConfig } = await import('@/lib/config/server-config')
   const cloudApiUrl = (await getEffectiveServerConfig()).cloudApiUrl
   let inviteUrl = `${appScheme}://invite?token=${encodeURIComponent(invite.token)}`
   if (cloudApiUrl) {
@@ -455,7 +455,7 @@ async function ensureDefaultWorkspaceRegistered(teamId: string): Promise<void> {
   // state dirs, not user project workspaces.
   if (!workspacePath || /\/\.amuxd(-[^/]+)?\//.test(workspacePath)) return
 
-  const { getLocalDaemonActorId } = await import('@/lib/daemon-agent-admin')
+  const { getLocalDaemonActorId } = await import('@/lib/daemon/daemon-agent-admin')
   let agentId: string | null = null
   for (let i = 0; i < 20; i++) {
     agentId = await getLocalDaemonActorId()
@@ -474,7 +474,7 @@ async function ensureDefaultWorkspaceRegistered(teamId: string): Promise<void> {
     createDaemonWorkspace,
     getCurrentDaemonWorkspaceAgent,
     setAgentDefaultWorkspace,
-  } = await import('@/lib/daemon-workspaces')
+  } = await import('@/lib/daemon/daemon-workspaces')
 
   // Cloud identity first so listDaemonWorkspaces(teamId, agentId) sees the row.
   const created = await createDaemonWorkspace({

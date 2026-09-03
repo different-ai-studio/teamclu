@@ -26,6 +26,12 @@ pub struct MqttBusInner {
     pub(crate) event_gate: RwLock<()>,
 }
 
+impl Default for MqttBusInner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MqttBusInner {
     pub fn new() -> Self {
         Self {
@@ -117,6 +123,8 @@ impl MqttBusInner {
     }
 }
 
+pub type MqttBus = Arc<MqttBusInner>;
+
 #[cfg(test)]
 mod tests {
     use super::{MqttBusInner, MqttClient};
@@ -178,5 +186,3 @@ mod tests {
             .unwrap();
     }
 }
-
-pub type MqttBus = Arc<MqttBusInner>;

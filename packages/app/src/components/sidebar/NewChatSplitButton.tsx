@@ -5,7 +5,7 @@ import type { QuickChatState } from '@/hooks/use-quick-chat-readiness'
 import { useUIStore } from '@/stores/ui'
 import { cn } from '@/lib/utils'
 
-export type NewChatSplitButtonProps = {
+type NewChatSplitButtonProps = {
   quickChatState: QuickChatState
   creating: boolean
   onPrimaryClick: () => void

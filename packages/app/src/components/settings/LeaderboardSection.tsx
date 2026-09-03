@@ -2,8 +2,8 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { Trophy, Flame, MessageSquareHeart, Sparkles, RefreshCw, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { TEAM_SYNCED_EVENT } from '@/lib/build-config'
-import { buildSharedRankMap } from '@/lib/team-leaderboard-ranks'
+import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
+import { buildSharedRankMap } from '@/lib/team/team-leaderboard-ranks'
 import { Button } from '@/components/ui/button'
 import { fetchTeamLeaderboard } from '@/lib/telemetry/cloud-leaderboard'
 import { useCurrentTeamStore } from '@/stores/current-team'
@@ -23,7 +23,7 @@ function formatTokens(tokens: number | undefined | null): string {
 
 // ── Types ──────────────────────────────────────────────────────────
 
-export interface LeaderboardStats {
+interface LeaderboardStats {
   totalFeedbacks: number
   positiveCount: number
   negativeCount: number
@@ -33,7 +33,7 @@ export interface LeaderboardStats {
   skillUsage?: Record<string, number>
 }
 
-export interface MemberLeaderboardExport {
+interface MemberLeaderboardExport {
   memberId: string
   memberName: string
   exportedAt: string

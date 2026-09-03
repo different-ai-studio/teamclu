@@ -3,8 +3,8 @@ import { useAuthStore, type AuthClaimResult } from "@/stores/auth-store";
 import { useCurrentTeamStore, readCachedCurrentTeam } from "@/stores/current-team";
 import { getBackend } from "@/lib/backend";
 import { isTauri, removeStartupSkeleton } from "@/lib/utils";
-import { devSkipDaemonOnboarding, devSkipSetup } from "@/lib/dev-onboarding-flags";
-import { resolveDefaultDisplayName } from "@/lib/default-display-name";
+import { devSkipDaemonOnboarding, devSkipSetup } from "@/lib/config/dev-onboarding-flags";
+import { resolveDefaultDisplayName } from "@/lib/actor/default-display-name";
 import { DesktopOnboarding } from "./DesktopOnboarding";
 import { LoginScreen } from "./LoginScreen";
 import { isLocaleLocked, availableLanguages } from "@/lib/i18n";
@@ -18,13 +18,15 @@ import { TeamBootstrapErrorScreen } from "@/components/auth/TeamBootstrapErrorSc
 import { useDaemonOnboardingStore } from "@/stores/daemon-onboarding";
 import { refreshSession } from "@/lib/auth";
 import { CloudApiError } from "@/lib/backend/cloud-api/http";
-import { humanizeFcError } from "@/lib/fc-error";
-import { markStartup } from "@/lib/startup-perf";
+import { humanizeFcError } from "@/lib/team/fc-error";
+import { markStartup } from "@/lib/telemetry/startup-perf";
 import { TeamPicker } from "./TeamPicker";
 import { PendingInvitesDialog } from "@/components/auth/PendingInvitesDialog";
-import { extensionTeamOnboarding } from "@/lib/build-config";
+import { extensionTeamOnboarding } from "@/lib/config/build-config";
 import { NoTeamScreen } from "./NoTeamScreen";
+import { useInviteLinkConfirmation } from "@/lib/team/invite-link-confirmation";
 import type { MembershipTeam } from "@/lib/backend";
+import { useShallow } from "zustand/react/shallow";
 
 /** A one-option "choice" is noise: single-locale builds skip the language step
  *  entirely rather than showing a screen with nothing to decide. */
@@ -73,7 +75,9 @@ function pickAutoRestoreTarget(
 }
 
 export function AuthGate({ children }: AuthGateProps) {
-  const { session, loading, authFlow, hydrate, signOut } = useAuthStore();
+  const { session, loading, authFlow, hydrate, signOut } = useAuthStore(
+    useShallow((s) => ({ session: s.session, loading: s.loading, authFlow: s.authFlow, hydrate: s.hydrate, signOut: s.signOut })),
+  );
   const [bootstrap, setBootstrap] = useState<BootstrapState>("idle");
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [bootstrapNonce, setBootstrapNonce] = useState(0);
@@ -223,6 +227,12 @@ export function AuthGate({ children }: AuthGateProps) {
   // in claim_team_invite), so the onboarding stashes the token and routes the
   // user through sign-in; this completes the join afterward.
   const pendingInviteToken = useAuthStore((s) => s.pendingInviteToken);
+  // SEC-3: the token the user accepted in the confirmation dialog this run.
+  // A stashed token that does not match is asked about, never claimed — that
+  // covers a link opened while signed out (stashed by the deep-link handler)
+  // and a token left over in localStorage by a previous run alike.
+  const confirmedInviteToken = useInviteLinkConfirmation((s) => s.confirmedToken);
+  const inviteConfirmed = !!pendingInviteToken && confirmedInviteToken === pendingInviteToken;
   // Which token this mount has already run a claim for. Team bootstrap defers
   // to a pending claim (below), so without this a claim that fails and leaves
   // the token in place would block bootstrap forever and the gate would render
@@ -232,6 +242,10 @@ export function AuthGate({ children }: AuthGateProps) {
   useEffect(() => {
     if (!session) return;
     if (!pendingInviteToken) return;
+    if (!inviteConfirmed) {
+      useInviteLinkConfirmation.getState().request(pendingInviteToken);
+      return;
+    }
     if (inviteClaimAttempted.current === pendingInviteToken) return;
     inviteClaimAttempted.current = pendingInviteToken;
     const claimPromise = useAuthStore.getState().claimPendingInvite();
@@ -248,7 +262,7 @@ export function AuthGate({ children }: AuthGateProps) {
       .finally(() => {
         if (inviteClaimPromise.current === claimPromise) inviteClaimPromise.current = null;
       });
-  }, [session, pendingInviteToken]);
+  }, [session, pendingInviteToken, inviteConfirmed]);
 
   // Separate from the token replay above: these invites were addressed to the
   // user's verified email/phone and matched server-side, so the user never had
@@ -284,7 +298,12 @@ export function AuthGate({ children }: AuthGateProps) {
     // the claim is still unattempted: a failed claim keeps its token for a
     // later retry, and waiting on that pinned `bootstrap` at "idle" — every
     // gate below then rendered null, i.e. a white screen with no way out.
-    if (pendingInviteToken && inviteClaimAttempted.current !== pendingInviteToken) return;
+    //
+    // Only a CONFIRMED token holds bootstrap. An unconfirmed one is being asked
+    // about in a dialog; the user keeps their current team behind it, and an
+    // accepted claim switches teams afterwards (same as a claim that finishes
+    // while the gate is resolving).
+    if (inviteConfirmed && inviteClaimAttempted.current !== pendingInviteToken) return;
     // Browser runtime (Chrome extension / web build) is a real cloud client:
     // it still needs a current team for MQTT + team-scoped reads, so it must
     // run the same team-bootstrap as desktop. The bootstrap path below is
@@ -393,7 +412,7 @@ export function AuthGate({ children }: AuthGateProps) {
         setBootstrap("error");
       }
     })();
-  }, [loading, session, bootstrapNonce, pendingInviteToken, signOut]);
+  }, [loading, session, bootstrapNonce, pendingInviteToken, inviteConfirmed, signOut]);
 
   const retryBootstrap = () => {
     // Re-arm the per-user ref guard and bump the nonce so the bootstrap effect

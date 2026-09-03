@@ -10,22 +10,22 @@ import {
   type MessageRow,
   type SessionParticipantRow,
   type SessionRow,
-} from "@/lib/local-cache";
+} from "@/lib/cache/local-cache";
 import { isTauri } from "@/lib/utils";
 import { useActorsStore } from "@/stores/actors-store";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useSessionListStore, type SessionListEntry } from "@/stores/session-list-store";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useUIStore } from "@/stores/ui";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { useWorkspaceStore } from "@/stores/workspace";
-import { sortSessionListRows } from "@/lib/session-list-sort";
+import { sortSessionListRows } from "@/lib/session/session-list-sort";
 import {
   E2E_BUILD,
   isV2E2EControlActive,
   markV2E2EControlInstalled,
   setV2E2EControlActive,
-} from "./v2-control-active";
+} from "@/lib/e2e/v2-control-active";
 
 type SeedActor = {
   id?: string;
@@ -686,8 +686,6 @@ const control: V2E2EControl = {
       messageQueue: [],
       pendingPermissions: [],
       pendingQuestions: [],
-      todos: [],
-      sessionDiff: [],
     });
 
     return { runId: input.runId, warnings };
@@ -826,8 +824,6 @@ const control: V2E2EControl = {
         messageQueue: [],
         pendingPermissions: [],
         pendingQuestions: [],
-        todos: [],
-        sessionDiff: [],
         sessionError: null,
       };
     });

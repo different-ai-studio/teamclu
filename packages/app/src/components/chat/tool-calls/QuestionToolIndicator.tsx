@@ -1,6 +1,6 @@
 import { HelpCircle, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { ToolCall } from "@/stores/session";
+import type { ToolCall } from "@/stores/session-types";
 
 function getQuestionCount(toolCall: ToolCall): number {
   if (Array.isArray(toolCall.questions)) return toolCall.questions.length;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAttachmentsModule } from "../attachments";
+import { createAttachmentsModule } from "@/lib/backend/cloud-api/attachments";
 
 describe("cloud api attachments", () => {
   it("maps upload response url field to signedUrl", async () => {

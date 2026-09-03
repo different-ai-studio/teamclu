@@ -5,12 +5,12 @@ import { cn } from '@/lib/utils'
 import { SessionContinueBanner } from '@/components/chat/SessionContinueBanner'
 import { useUIStore } from '@/stores/ui'
 
-export type LocalAgentWelcomeAgent = {
+type LocalAgentWelcomeAgent = {
   id: string
   displayName: string
 }
 
-export type LocalAgentWelcomeEmptyStateProps = {
+type LocalAgentWelcomeEmptyStateProps = {
   agent: LocalAgentWelcomeAgent | null
   agentLoading?: boolean
   starting?: boolean

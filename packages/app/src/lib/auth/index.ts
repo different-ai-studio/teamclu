@@ -5,8 +5,8 @@ export type {
   OtpType,
   Session,
   Unsubscribe,
-} from "./types";
-export { AuthError } from "./types";
+} from "@/lib/auth/types";
+export { AuthError } from "@/lib/auth/types";
 export {
   getSession,
   setSession,
@@ -16,8 +16,8 @@ export {
   adoptRefreshToken,
   configureSessionStore,
   __resetSessionStoreForTests,
-} from "./session-store";
-export { createAuthClient, type AuthClient, type PhoneLoginResult, type PhoneUser } from "./auth-client";
-export { runDesktopOAuth, cancelDesktopOAuth, type OAuthProvider } from "./desktop-oauth";
-export { runExtensionOAuth, cancelExtensionOAuth } from "./extension-oauth";
-export { generatePkce, type PkcePair } from "./oauth-pkce";
+} from "@/lib/auth/session-store";
+export { createAuthClient, type AuthClient, type PhoneLoginResult, type PhoneUser } from "@/lib/auth/auth-client";
+export { runDesktopOAuth, cancelDesktopOAuth, type OAuthProvider } from "@/lib/auth/desktop-oauth";
+export { runExtensionOAuth, cancelExtensionOAuth } from "@/lib/auth/extension-oauth";
+export { generatePkce, type PkcePair } from "@/lib/auth/oauth-pkce";

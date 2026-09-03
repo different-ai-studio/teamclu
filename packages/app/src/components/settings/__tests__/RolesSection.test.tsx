@@ -26,7 +26,7 @@ vi.mock("@/stores/ui", () => ({
 }))
 
 const setDraftInput = vi.fn()
-vi.mock("@/stores/session", () => ({
+vi.mock("@/stores/session-store", () => ({
   useSessionStore: {
     getState: () => ({
       setDraftInput,

@@ -23,12 +23,16 @@ vi.mock('../AppSessionsColumn', () => ({
   AppSessionsColumn: () => <div data-testid="app-sessions-column" />,
 }))
 
-vi.mock('@/lib/remote-features', () => ({
+vi.mock('@/lib/config/remote-features', () => ({
   useFeatures: () => ({ apps: true }),
 }))
 
-vi.mock('@/components/panel', () => ({
+// The column lazy-loads these from their leaf modules (not the panel barrel),
+// so the mocks target the leaves.
+vi.mock('@/components/panel/IdeasView', () => ({
   IdeasView: () => <div data-testid="ideas-list-column" />,
+}))
+vi.mock('@/components/panel/ActorsView', () => ({
   ActorsView: () => <div data-testid="actors-list-column" />,
 }))
 
@@ -109,25 +113,27 @@ describe('SidebarSecondColumn', () => {
     expect(screen.getByTestId('session-list-column')).toBeInTheDocument()
   })
 
-  it('renders shortcuts when the shortcuts filter is active', () => {
+  // Every column other than the session list is lazy-loaded, so these await
+  // the first paint of the column instead of asserting synchronously.
+  it('renders shortcuts when the shortcuts filter is active', async () => {
     useUIStore.setState({ sidebarFilter: { kind: 'shortcuts' } })
     renderWithSidebar()
-    expect(screen.getByText('Shortcuts')).toBeInTheDocument()
+    expect(await screen.findByText('Shortcuts')).toBeInTheDocument()
     expect(screen.getByText('Docs')).toBeInTheDocument()
     expect(screen.queryByTestId('session-list-column')).not.toBeInTheDocument()
   })
 
-  it('renders the full ideas list when the ideas filter is active', () => {
+  it('renders the full ideas list when the ideas filter is active', async () => {
     useUIStore.setState({ sidebarFilter: { kind: 'ideas' } })
     renderWithSidebar()
-    expect(screen.getByTestId('ideas-list-column')).toBeInTheDocument()
+    expect(await screen.findByTestId('ideas-list-column')).toBeInTheDocument()
     expect(screen.queryByTestId('session-list-column')).not.toBeInTheDocument()
   })
 
-  it('renders the full actor list when the actors filter is active', () => {
+  it('renders the full actor list when the actors filter is active', async () => {
     useUIStore.setState({ sidebarFilter: { kind: 'actors' } })
     renderWithSidebar()
-    expect(screen.getByTestId('actors-list-column')).toBeInTheDocument()
+    expect(await screen.findByTestId('actors-list-column')).toBeInTheDocument()
     expect(screen.queryByTestId('session-list-column')).not.toBeInTheDocument()
   })
 
@@ -141,10 +147,10 @@ describe('SidebarSecondColumn', () => {
     expect(screen.getAllByTestId('session-list-column').length).toBeGreaterThan(0)
   })
 
-  it('renders AppSessionsColumn for apps filter (not the app list)', () => {
+  it('renders AppSessionsColumn for apps filter (not the app list)', async () => {
     useUIStore.setState({ sidebarFilter: { kind: 'apps' } })
     renderWithSidebar()
-    expect(screen.getByTestId('app-sessions-column')).toBeInTheDocument()
+    expect(await screen.findByTestId('app-sessions-column')).toBeInTheDocument()
     expect(screen.queryByTestId('session-list-column')).not.toBeInTheDocument()
   })
 })

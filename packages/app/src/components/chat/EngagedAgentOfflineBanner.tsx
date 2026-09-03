@@ -1,9 +1,8 @@
-import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { AlertCircle } from 'lucide-react'
 import type { AttachedAgent } from '@/packages/ai/prompt-input-insert-hooks'
 import type { EngagedAgentUiEntry } from '@/hooks/use-engaged-agent-ui-states'
-import type { SessionAgentUiState, SessionAgentSyncHint } from '@/lib/session-agent-ui-state'
+import type { SessionAgentUiState, SessionAgentSyncHint } from '@/lib/session/session-agent-ui-state'
 
 type Props = {
   entries: EngagedAgentUiEntry[]

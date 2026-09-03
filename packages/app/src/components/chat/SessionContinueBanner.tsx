@@ -6,7 +6,7 @@ import { getBackend } from '@/lib/backend'
 import { useSessionListStore, type SessionListEntry } from '@/stores/session-list-store'
 import { useCronStore } from '@/stores/cron'
 import { useUIStore } from '@/stores/ui'
-import { isScheduledSession } from '@/lib/session-origin'
+import { isScheduledSession } from '@/lib/session/session-origin'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 
 interface Props {

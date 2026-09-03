@@ -6,7 +6,7 @@ import {
 } from '@/stores/agent-default-workspace-store'
 
 /** Inputs for picking the cloud workspace id sent in runtimeStart. */
-export type AgentWorkspaceLookup = {
+type AgentWorkspaceLookup = {
   /** Explicit hint from send/outbox — highest priority. */
   callerWorkspaceId?: string | null
   /** Latest `agent_runtimes.workspace_id` for this agent *in this session*. */
@@ -150,7 +150,7 @@ export async function resolveCloudWorkspaceIdForLocalPath(
 }
 
 /** Prefer the sole cloud workspace row bound to an agent when path matching fails. */
-export async function resolveCloudWorkspaceIdForAgents(
+async function resolveCloudWorkspaceIdForAgents(
   teamId: string,
   agentActorIds: string[],
 ): Promise<string | null> {
@@ -288,7 +288,7 @@ export async function cachedSessionWorkspaceForLocalDaemon(args: {
     const { useCurrentTeamStore } = await import('@/stores/current-team')
     const viewerMemberId = useCurrentTeamStore.getState().currentMember?.id?.trim() ?? ''
     if (!viewerMemberId) return null
-    const { loadSessionWorkspacesForTeam } = await import('@/lib/local-cache')
+    const { loadSessionWorkspacesForTeam } = await import('@/lib/cache/local-cache')
     const rows = await loadSessionWorkspacesForTeam(teamId, viewerMemberId)
     const row = rows.find((r) => r.sessionId === sessionId && r.agentId === agentId)
     const workspaceId = row?.workspaceId?.trim() ?? ''
@@ -319,7 +319,7 @@ async function resolveLiveWorkspaceHint(
   // background round trip. Sending in a just-opened app otherwise resolved to
   // whichever app happened to be open before, and the agent ran there.
   if (localDaemonActorId && args.sessionId?.trim()) {
-    const { resolveSessionWorkspacePath } = await import('@/lib/session-by-workspace')
+    const { resolveSessionWorkspacePath } = await import('@/lib/session/session-by-workspace')
     const bound = (
       await resolveSessionWorkspacePath(args.teamId, args.sessionId.trim()).catch(() => null)
     )?.trim()

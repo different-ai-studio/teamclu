@@ -3,8 +3,9 @@ import { useWorkspaceStore } from '@/stores/workspace'
 import { useEnvVarsStore, type TeamEnvListing } from '@/stores/env-vars'
 import type { SkillSource } from '@/lib/skills/types'
 import { getSourceLabel } from '@/lib/skills/loader'
+import i18n from '@/lib/i18n'
 import { frontmatterString } from '@/lib/skills/frontmatter'
-import { resolveTeamSyncRoot } from '@/lib/team-skill-paths'
+import { resolveTeamSyncRoot } from '@/lib/team/team-skill-paths'
 import { invoke } from '@tauri-apps/api/core'
 import { getBackend } from '@/lib/backend/provider'
 import { isCloudAuthError } from '@/lib/backend/cloud-api/http'
@@ -18,7 +19,7 @@ import {
   type SkillLocalState,
 } from '@/lib/skills/auto-follow'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { effectiveWorkspacePath } from '@/lib/effective-workspace'
+import { effectiveWorkspacePath } from '@/lib/workspace/effective-workspace'
 import { isTauri } from '@/lib/utils'
 import { useTabsStore } from '@/stores/tabs'
 import {
@@ -87,12 +88,12 @@ import {
   notifyDaemonSkillsChanged,
   type DaemonMcpServerConfig,
   type DaemonMcpServerProbeResult,
-} from '@/lib/daemon-local-client'
-import { SKILLS_CHANGED_EVENT } from '@/hooks/useAppInit'
+} from '@/lib/daemon/daemon-local-client'
+import { SKILLS_CHANGED_EVENT } from '@/lib/skills/changed-event';
 import { AgentCapabilityAction, AgentCapabilityKind } from '@/lib/proto/teamclu_pb'
-import { manageAgentCapability } from '@/lib/teamclu-rpc'
-import { resolveAgentDevicePresenceSync } from '@/lib/agent-device-reachability'
-import { getKnownLocalDaemonActorId } from '@/lib/local-daemon-identity'
+import { manageAgentCapability } from '@/lib/daemon/teamclu-rpc'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent/agent-device-reachability'
+import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
 
 function requireAgentOnline(actorId: string): void {
   if (resolveAgentDevicePresenceSync(actorId) === 'offline') {
@@ -156,14 +157,12 @@ async function manageAgent(args: {
 /** The four browsable team-shared content kinds. */
 export type TeamShareSection = 'skills' | 'mcp' | 'env' | 'knowledge'
 
-export const TEAM_SHARE_SECTIONS: TeamShareSection[] = ['skills', 'mcp', 'env', 'knowledge']
-
 export type TeamSkillKind = 'team-available' | 'team-installed' | 'personal'
 
 export type TeamMcpKind = 'team-available' | 'team-installed' | 'personal' | 'builtin'
 
 /** What became of a local pack when the team deleted the skill. */
-export type SkillRetirement = 'removed' | 'kept'
+type SkillRetirement = 'removed' | 'kept'
 
 /**
  * A row in the unified skills list.
@@ -230,13 +229,13 @@ export interface TeamMcpItem {
   installed: boolean
 }
 
-export interface TeamKnowledgeItem {
+interface TeamKnowledgeItem {
   path: string
   relPath: string
   name: string
 }
 
-export interface TeamSkillShareInput {
+interface TeamSkillShareInput {
   slug: string
   summary: string
   category: TeamSkillCategory
@@ -381,7 +380,7 @@ interface TeamShareBrowserState {
   loadCounts: () => Promise<void>
 }
 
-export interface TeamSkillVersionInput {
+interface TeamSkillVersionInput {
   changelog: string
   summary?: string
   category?: TeamSkillCategory
@@ -651,7 +650,11 @@ async function listTeamSkills(
         kind: 'personal',
         personalSource: inventory.source === 'builtin' ? 'builtin' : local?.source ?? 'global-agent',
         personalSourceLabel:
-          inventory.source === 'builtin' ? '内置' : local ? getSourceLabel(local.source) : 'Agent',
+          inventory.source === 'builtin'
+            ? i18n.t('teamShare.personalSourceBuiltin', 'Built-in')
+            : local
+              ? getSourceLabel(local.source)
+              : 'Agent',
         summary: local ? frontmatterValue(local.content, 'description') : null,
         whenToUse: local ? frontmatterValue(local.content, 'when_to_use') : null,
         whenNotToUse: local ? frontmatterValue(local.content, 'when_not_to_use') : null,
@@ -701,7 +704,7 @@ export function mergeTeamMcpCatalogAndDaemon(
  * Keep the last known probe for a surviving row so switching sections does not
  * briefly repaint it as "0 tools" before the daemon's cached probe returns.
  */
-export function preserveMcpProbes(items: TeamMcpItem[], previousItems: TeamMcpItem[]): TeamMcpItem[] {
+function preserveMcpProbes(items: TeamMcpItem[], previousItems: TeamMcpItem[]): TeamMcpItem[] {
   const previousById = new Map(previousItems.map((item) => [item.id, item]))
   return items.map((item) => {
     const previous = previousById.get(item.id)
@@ -900,7 +903,7 @@ export class StaleDirtySkillPublishError extends Error {
   }
 }
 
-export function isStaleTeamSkillPublish(e: unknown): boolean {
+function isStaleTeamSkillPublish(e: unknown): boolean {
   if (e instanceof StaleTeamSkillPublishError) return true
   if (e && typeof e === 'object' && 'code' in e) {
     return (e as { code?: string }).code === 'stale_team_skill_base'
@@ -1243,7 +1246,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     const subjectActorId = get().subjectActorId
-    if (!subjectActorId) throw new Error('请先选择 Agent')
+    if (!subjectActorId) throw new Error(i18n.t('teamShare.selectAgentFirst', 'Select an Agent first'))
     requireAgentOnline(subjectActorId)
 
     const listed = get().skills.items.find((s) => s.slug === slug && s.origin === 'registry')
@@ -1276,7 +1279,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     const subjectActorId = get().subjectActorId
-    if (!subjectActorId) throw new Error('请先选择 Agent')
+    if (!subjectActorId) throw new Error(i18n.t('teamShare.selectAgentFirst', 'Select an Agent first'))
     requireAgentOnline(subjectActorId)
     await manageAgent({
       teamId,
@@ -1296,7 +1299,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     const subjectActorId = get().subjectActorId
-    if (!subjectActorId) throw new Error('请先选择 Agent')
+    if (!subjectActorId) throw new Error(i18n.t('teamShare.selectAgentFirst', 'Select an Agent first'))
     requireAgentOnline(subjectActorId)
     const skill = get().skills.items.find((s) => s.slug === slug)
     if (!skill || skill.kind !== 'personal') {
@@ -1348,7 +1351,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     const actorId = get().subjectActorId
-    if (!actorId) throw new Error('请先选择 Agent')
+    if (!actorId) throw new Error(i18n.t('teamShare.selectAgentFirst', 'Select an Agent first'))
     requireAgentOnline(actorId)
     await manageAgent({
       teamId,
@@ -1368,9 +1371,14 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const item = get().mcp.items.find((candidate) => candidate.id === id)
     if (!item) throw new Error(`mcp server ${id} not found`)
     const actorId = get().subjectActorId
-    if (!actorId) throw new Error('请先选择 Agent')
+    if (!actorId) throw new Error(i18n.t('teamShare.selectAgentFirst', 'Select an Agent first'))
     requireAgentOnline(actorId)
-    if (item.kind === 'personal') throw new Error('远程个人 MCP 一期只读')
+    if (item.kind === 'personal') throw new Error(
+        i18n.t(
+          'teamShare.remotePersonalMcpReadOnly',
+          'Personal MCP servers on a remote agent are read-only for now',
+        ),
+      )
     await manageAgent({
       teamId,
       actorId,
@@ -1500,7 +1508,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       throw new SkillSlugTakenError(input.slug)
     }
 
-    const { getEffectiveServerConfig } = await import('@/lib/server-config')
+    const { getEffectiveServerConfig } = await import('@/lib/config/server-config')
     const { cloudApiUrl } = await getEffectiveServerConfig()
     if (!cloudApiUrl) throw new Error('Cloud API URL is not configured')
     const accessToken = await getFreshAccessToken()
@@ -1605,7 +1613,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       throw new Error(`${slug} has no installed baseline version to publish from`)
     }
 
-    const { getEffectiveServerConfig } = await import('@/lib/server-config')
+    const { getEffectiveServerConfig } = await import('@/lib/config/server-config')
     const { cloudApiUrl } = await getEffectiveServerConfig()
     if (!cloudApiUrl) throw new Error('Cloud API URL is not configured')
     const accessToken = await getFreshAccessToken()

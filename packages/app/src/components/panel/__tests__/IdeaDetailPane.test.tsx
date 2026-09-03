@@ -7,11 +7,11 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (_k: string, fallback?: string) => fallback ?? _k }),
 }))
 
-vi.mock('@/lib/date-format', () => ({
+vi.mock('@/lib/ui/date-format', () => ({
   formatRelativeTime: () => 'just now',
 }))
 
-vi.mock('@/lib/idea-mutations', () => ({
+vi.mock('@/lib/team/idea-mutations', () => ({
   createIdeaActivity: vi.fn(),
   updateIdea: vi.fn(),
 }))

@@ -3,9 +3,9 @@ import type {
   MessageHistoryRow,
   MessagesBackend,
   OutgoingMessageInput,
-} from "../types";
-import type { CloudApiClient } from "./http";
-import { fetchAllSyncPages } from "./sync-paging";
+} from "@/lib/backend/types";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
+import { fetchAllSyncPages } from "@/lib/backend/cloud-api/sync-paging";
 
 type CloudMessage = {
   id: string;
@@ -84,7 +84,7 @@ export function createMessagesModule(client: CloudApiClient): MessagesBackend {
     // Pages to exhaustion — the route is keyset-paginated now, and a delta sync
     // that stopped at the first page would leave the local cache behind.
     async listMessagesForSessionSince(sessionId, updatedAfter) {
-      return fetchAllSyncPages<import("../types").MessageSyncRow>(client, "/v1/sync/messages", {
+      return fetchAllSyncPages<import("@/lib/backend/types").MessageSyncRow>(client, "/v1/sync/messages", {
         sessionId,
         since: updatedAfter ?? null,
       });

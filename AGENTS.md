@@ -259,7 +259,7 @@ Bottom row layout:
 
 Actors don't carry an avatar color in the data model, so the letter-fallback
 disc takes its color from `actorAvatarColor(actorId)` in
-`packages/app/src/lib/actor-color.ts`. Same actor → same color across the app.
+`packages/app/src/lib/actor/actor-color.ts`. Same actor → same color across the app.
 
 The palette is intentionally saturated-but-muted (coral, violet, green,
 amber, blue, plum, teal, olive, terracotta, slate). The disc renders the
@@ -303,6 +303,83 @@ The user-facing rule is "适度区分 — 清晰但不抢眼". Concretely:
   panel, background, or selected? If you can't answer, you probably need a
   new token; raise it before adding ad-hoc colors.
 
+### Which state is shared between windows
+
+**Default: window-local.** Every workspace window and the local-agent panel gets
+its own store graph and its own `MqttLiveWiring`. A store's state is not
+promised to be consistent across windows, and does not need to be.
+
+**The one exception is auth.** `lib/auth/session-store.ts` syncs the session
+across windows over a `BroadcastChannel`, because "one window signed out while
+another still holds a token" is a security problem, not a cosmetic one.
+
+**Everything persisted today is a preference, and last-writer-wins is fine for
+it.** Five stores use the zustand `persist()` middleware —
+`agent-default-workspace-store`, `agent-model-pick-store`,
+`automation-default-model`, `client-model-mru`,
+`offline-send-preference-store` — and a few more hand-roll the same thing over
+`localStorage` (`header-preferences-store`, `git-settings`). The cost of another
+window overwriting any of them is that the user picks again.
+
+**So a new `localStorage.setItem` is a preference by default.** If a value
+cannot tolerate last-writer-wins, it does not belong in `localStorage` — raise
+it instead of reaching for a `BroadcastChannel`. Making cross-window
+consistency the default would decide, for every value, a question nobody asked.
+
+See [ADR-0012](docs/adr/0012-window-local-state-is-the-default.md). It also
+records which values are worth promoting to device-shared state (current team,
+agent default workspace) — one at a time, each argued on its own.
+
+### `packages/app/src/lib` layout
+
+`lib/` is one directory per domain. Put a new module in the domain it belongs
+to; only genuinely domain-free primitives live at `lib/` root, and there are
+seven of them (`utils`, `store-utils`, `base64`, `lazy-component`,
+`shared-module-lease`, `i18n`, `locale`). If a new file seems to have no
+domain, that is usually a sign it is doing two things.
+
+    actor/        who is speaking — identity, colours, presence, mentions
+    agent/        agent identity, model choice, runtime reachability and state
+    apps/         the Apps feature (deploy, data browser, app sessions)
+    attachments/  upload, download, image handling
+    auth/         sign-in, token storage, OAuth
+    backend/      the Cloud API client (see §7)
+    cache/        the local libsql mirror of Cloud API rows
+    clawhub/      skill registry types
+    config/       build config, server config, feature flags, platform, version
+    cron/         desktop-scheduled jobs
+    daemon/       every call into amuxd: discovery, RPC, workspaces, admin
+    diagnostics/  redaction, probes, the diagnostics bundle, debug logs
+    dynamic-ui/   agent-authored UI descriptions
+    e2e/          the tauri-mcp harness surface
+    embed/        the embedded/side-panel chat mode
+    extension/    the browser extension — incl. link-hover + link-session,
+                  which apps/extension compiles too (see the guard test there)
+    history/      version history providers
+    knowledge/    knowledge tree, wiki links, Obsidian compatibility
+    messages/     message rows, inbox, outbox display, send-path selection
+    mqtt/         broker bridges (Tauri / browser / worker) and diagnostics
+    opencode/     opencode config + templates
+    proto/        generated protobuf
+    remote-tools/ tools an agent can drive in the user's browser
+    roles/        role markdown + role skills
+    session/      sessions: create, list, resolve, fork, permissions, workspace
+    session-export/  transcript export
+    skills/       skill discovery, frontmatter, auto-follow
+    stream/       the streaming pipeline — deltas, persistence, recovery
+    sync/         Cloud API ⇄ local-cache row sync
+    tabs/         tab models
+    team/         teams, invites, permissions, skill paths
+    teamclu/      agent runtime protocol (ACP permissions, runtime commands)
+    telemetry/    Sentry, scoring, usage, startup timing
+    terminal/     PTY client
+    ui/           presentation helpers with no domain of their own
+    workspace/    workspace paths, gitignore, desktop file reads
+    workspace-seed/  first-run workspace instructions
+
+`lib/__tests__/` keeps the tests that span domains (or test a root module);
+everything else lives in its domain's own `__tests__/`.
+
 ### Supabase schema changes
 
 - For any live Supabase schema/RLS/RPC change, use the configured Supabase
@@ -320,9 +397,9 @@ The user-facing rule is "适度区分 — 清晰但不抢眼". Concretely:
 
 ---
 
-## 7. Backend access boundary — Cloud API is the default backend
+## 7. Backend access boundary — Cloud API is the only client backend
 
-**`cloud_api` is the default and canonical backend. The `supabase` backend kind is deprecated and will be removed in a future release.**
+**`cloud_api` is the only backend kind for clients. The `supabase` and `pocketbase` backend kinds have been removed from `packages/app/`; direct `@supabase/supabase-js` usage in client code is forbidden and enforced by a guardrail test (`packages/app/src/lib/backend/__tests__/no-supabase-import.test.ts`).**
 
 The API contract is defined in `docs/openapi/teamclu-api.v1.yaml`. All business data operations must go through the TeamClu Cloud API (`/v1`) rather than direct Supabase client calls.
 
@@ -368,11 +445,10 @@ Also future work, listed here so the team has it:
   side `session_read_marker` table, (b) a writer hook on session-activate,
   (c) sync wiring, (d) UI render. The card already reserves the right-edge
   slot for it; see `renderSessionItem` in `SessionListColumn.tsx`.
-- **Pagination beyond 50 rows.** `useSessionListStore.load()` caps at 50
-  per fetch and has no loadMore. The old `useSessionStore.loadMoreSessions`
-  was removed from the column when it switched to the v2 store. Add an
-  offset/cursor pagination API on the list store, then re-introduce the
-  Load-More UI.
+- **Pagination beyond 50 rows — done.** `useSessionListStore` pages by
+  cursor (`loadFirstPage` / `loadMore`, 50 per page, `hasMore` / `nextCursor`
+  tracked per list kind) and `SessionListColumn` renders the Load-more button
+  (`sidebar.loadMoreSessions`). Listed here so nobody re-plans it.
 - **Realtime participant invalidation.** `participantsBySession` in
   `SessionListColumn` is loaded lazily and never invalidated. When the
   realtime envelope handler in `App.tsx` sees `session_participant`

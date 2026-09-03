@@ -25,7 +25,7 @@ import {
   type PiAuthPrompt,
   type PiAuthType,
   type PiLoginOutcome,
-} from '@/lib/daemon-pi-auth'
+} from '@/lib/daemon/daemon-pi-auth'
 
 /**
  * The UI half of `pi /login`.

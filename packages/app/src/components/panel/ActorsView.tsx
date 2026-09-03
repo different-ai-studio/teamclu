@@ -17,14 +17,14 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { getBackend } from '@/lib/backend'
-import { formatActorRemoveError } from '@/lib/actor-remove-error'
+import { formatActorRemoveError } from '@/lib/actor/actor-remove-error'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
 import { useSidebar } from '@/components/ui/sidebar'
-import { actorAvatarColor } from '@/lib/actor-color'
-import { formatRelativeTimeShort } from '@/lib/date-format'
-import { externalSourceLabel } from '@/lib/external-actor-source'
+import { actorAvatarColor } from '@/lib/actor/actor-color'
+import { formatRelativeTimeShort } from '@/lib/ui/date-format'
+import { externalSourceLabel } from '@/lib/actor/external-actor-source'
 import { useActorDetailStore } from '@/stores/actor-detail-store'
 import { cn } from '@/lib/utils'
 import {
@@ -40,7 +40,7 @@ import { useCurrentTeamStore } from '@/stores/current-team'
  * accumulates one external actor per person who ever wrote in, which buried the
  * actual teammates. They are one filter click away instead.
  */
-export type ActorTypeFilter = 'all' | 'agent' | 'member' | 'external'
+type ActorTypeFilter = 'all' | 'agent' | 'member' | 'external'
 
 /** Whether a row survives the type filter. Exported so the rule is unit-testable
  *  without driving the filter popover. */

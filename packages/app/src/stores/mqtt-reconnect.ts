@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 function logMqttNetworkDiag(event: string, data?: Record<string, unknown>): void {
-  void import('@/lib/mqtt-diagnostics')
+  void import('@/lib/mqtt/mqtt-diagnostics')
     .then(({ recordMqttDiag }) => {
       recordMqttDiag('mqtt-reconnect', event, data)
     })
@@ -106,11 +106,11 @@ async function runMqttRecovery(
   if (generation !== recoveryGeneration) return
   const utils = await import('@/lib/utils')
   if (utils.isTauri() && reason !== 'user_requested' && reason !== 'credential_rejected') {
-    const { getDaemonMqttSnapshot } = await import('@/lib/daemon-local-client')
+    const { getDaemonMqttSnapshot } = await import('@/lib/daemon/daemon-local-client')
     const snapshot = await getDaemonMqttSnapshot()
     if (snapshot?.connected) {
       get().setConnected(true)
-      void import('@/lib/daemon-probe-signal')
+      void import('@/lib/daemon/daemon-probe-signal')
         .then((m) => m.requestDaemonProbe())
         .catch(() => {})
       return
@@ -119,7 +119,7 @@ async function runMqttRecovery(
   const tasks: Promise<unknown>[] = []
   if (utils.isTauri()) {
     tasks.push(
-      import('@/lib/daemon-local-client')
+      import('@/lib/daemon/daemon-local-client')
         .then(({ recoverDaemonMqtt }) => recoverDaemonMqtt(reason))
         .catch(() => undefined),
     )
@@ -132,7 +132,7 @@ async function runMqttRecovery(
   await Promise.all(tasks)
   if (generation !== recoveryGeneration) return
   get().bump()
-  void import('@/lib/daemon-probe-signal')
+  void import('@/lib/daemon/daemon-probe-signal')
     .then((m) => m.requestDaemonProbe())
     .catch(() => {})
 }
@@ -203,14 +203,14 @@ export const useMqttReconnectStore = create<MqttReconnectState>((set, get) => ({
       if (typeof window !== 'undefined') {
         window.addEventListener('online', () => {
           void recoverMqttCredentials(get, 'auto', 'network_online')
-          void import('@/lib/daemon-probe-signal')
+          void import('@/lib/daemon/daemon-probe-signal')
             .then((m) => m.requestDaemonProbe())
             .catch(() => {})
         })
       }
       if (!utils.isTauri()) {
         // Browser path: subscribe to browser MQTT state/error from the browser bridge
-        const browserBridge = await import('@/lib/mqtt-browser-bridge').catch(() => null)
+        const browserBridge = await import('@/lib/mqtt/mqtt-browser-bridge').catch(() => null)
         if (!browserBridge) return
         const { subscribeBrowserMqttState, subscribeBrowserMqttError } = browserBridge
         const setConnected = get().setConnected
@@ -248,10 +248,10 @@ export const useMqttReconnectStore = create<MqttReconnectState>((set, get) => ({
         })
         return
       }
-      const bridge = await import('@/lib/mqtt-bridge').catch(() => null)
+      const bridge = await import('@/lib/mqtt/mqtt-bridge').catch(() => null)
       if (!bridge) return
       const { mqttStatus } = bridge
-      const { getDaemonMqttSnapshot } = await import('@/lib/daemon-local-client').catch(() => ({
+      const { getDaemonMqttSnapshot } = await import('@/lib/daemon/daemon-local-client').catch(() => ({
         getDaemonMqttSnapshot: async () => null,
       }))
       const setConnected = get().setConnected

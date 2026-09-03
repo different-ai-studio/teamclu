@@ -27,10 +27,10 @@ import {
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
-import { useAppVersion } from '@/lib/version'
+import { useAppVersion } from '@/lib/config/version'
 import { useUpdaterStore } from '@/stores/updater'
-import { hasAnyChannel } from '@/lib/build-config'
-import { getFeatures, useFeatures } from '@/lib/remote-features'
+import { hasAnyChannel } from '@/lib/config/build-config'
+import { getFeatures, useFeatures } from '@/lib/config/remote-features'
 import { useUIStore, type SettingsSection } from '@/stores/ui'
 import { SettingsSectionBody } from './section-registry'
 interface SettingsProps {

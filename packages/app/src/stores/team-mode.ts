@@ -1,14 +1,14 @@
 import { create } from 'zustand'
-import { deleteDaemonProviderAuth, encodeWorkspaceId } from '@/lib/daemon-local-client'
-import { TEAM_SHARED_PROVIDER_ID } from '@/lib/team-provider'
+import { deleteDaemonProviderAuth, encodeWorkspaceId } from '@/lib/daemon/daemon-local-client'
+import { TEAM_SHARED_PROVIDER_ID } from '@/lib/agent/team-provider'
 import { getBackend } from '@/lib/backend'
 import { useProviderStore } from './provider'
 import { useWorkspaceStore } from './workspace'
 import { useCurrentTeamStore } from './current-team'
 import { isTauri } from '@/lib/utils'
-import { workspaceScopedKey } from '@/lib/storage'
-import { appStoragePrefix, TEAM_REPO_DIR, type TeamModelOption } from '@/lib/build-config'
-import { getFeatures } from '@/lib/remote-features'
+import { workspaceScopedKey } from '@/lib/config/storage'
+import { appStoragePrefix, TEAM_REPO_DIR, type TeamModelOption } from '@/lib/config/build-config'
+import { getFeatures } from '@/lib/config/remote-features'
 
 
 const TEAM_PROVIDER_ID = TEAM_SHARED_PROVIDER_ID
@@ -58,7 +58,7 @@ function normalizeLlmBaseUrl(url: string): string {
   }
 }
 
-export interface TeamModelConfig {
+interface TeamModelConfig {
   baseUrl: string
   model: string
   modelName: string

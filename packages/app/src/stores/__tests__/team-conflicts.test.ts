@@ -6,7 +6,7 @@ vi.mock('@/lib/utils', () => ({ isTauri: () => true }))
 vi.mock('@/stores/current-team', () => ({
   useCurrentTeamStore: { getState: () => ({ team: { id: 'team-1' } }) },
 }))
-vi.mock('@/lib/team-skill-paths', () => ({
+vi.mock('@/lib/team/team-skill-paths', () => ({
   globalTeamSyncShareRoot: () => Promise.resolve('/home/u/.amuxd/teams/team-1/shared/team-sync'),
 }))
 

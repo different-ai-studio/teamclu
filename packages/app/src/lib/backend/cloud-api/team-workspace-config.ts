@@ -3,8 +3,8 @@ import type {
   TeamLlmConfigInput,
   TeamWorkspaceConfigBackend,
   TeamWorkspaceConfigRow,
-} from "../types";
-import { CloudApiError, type CloudApiClient } from "./http";
+} from "@/lib/backend/types";
+import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 export function createTeamWorkspaceConfigModule(client: CloudApiClient): TeamWorkspaceConfigBackend {
   return {

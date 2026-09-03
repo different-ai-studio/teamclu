@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { CornerDownRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export { jumpToMessageById } from "@/lib/chat-scroll-to-message";
+export { jumpToMessageById } from "@/lib/ui/chat-scroll-to-message";
 
 /** Soft-strip quote (style B): faint pad + author + inline AGENT pills + body. */
 export function AgentReplyQuote({

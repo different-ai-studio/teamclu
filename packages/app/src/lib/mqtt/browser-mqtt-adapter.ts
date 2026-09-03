@@ -1,6 +1,6 @@
 import mqttPkg from 'mqtt'
 import * as mqttNamespace from 'mqtt'
-import { recordMqttDiag } from '../mqtt-diagnostics'
+import { recordMqttDiag } from '@/lib/mqtt/mqtt-diagnostics'
 
 type MqttNamespace = { connect: (url: string, options?: unknown) => unknown }
 const mqtt: MqttNamespace =
@@ -26,7 +26,7 @@ export type BrowserMqttConnectOptions = {
   rejectUnauthorized?: boolean
 }
 
-export type BrowserMqttConnectArgs = { url: string; options?: BrowserMqttConnectOptions }
+type BrowserMqttConnectArgs = { url: string; options?: BrowserMqttConnectOptions }
 
 type MqttLikeClient = {
   on(e: string, h: (...a: never[]) => void): MqttLikeClient
@@ -54,7 +54,7 @@ export type BrowserMqttAdapter = {
   onError?(handler: (message: string) => void): () => void
 }
 
-export type BrowserMqttAdapterDeps = {
+type BrowserMqttAdapterDeps = {
   createClient?: (url: string, options?: BrowserMqttConnectOptions) => MqttLikeClient
 }
 

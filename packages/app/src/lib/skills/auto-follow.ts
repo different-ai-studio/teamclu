@@ -51,7 +51,7 @@ export interface OnDiskSkill {
   teamId: string | null
 }
 
-export interface ReconcilePlan {
+interface ReconcilePlan {
   /** Download and lay down (fresh install or version bump). */
   install: Array<{ slug: string; version: number }>
   /** On disk but no longer in the desired set. */

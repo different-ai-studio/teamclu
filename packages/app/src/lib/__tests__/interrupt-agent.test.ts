@@ -22,11 +22,11 @@ function seedAttachment(sessionId: string, runtimeId: string) {
   };
 }
 
-vi.mock("@/lib/mqtt-bridge", () => ({
+vi.mock("@/lib/mqtt/mqtt-bridge", () => ({
   mqttPublish: (...args: unknown[]) => mqttPublish(...args),
 }));
 
-vi.mock("@/lib/teamclu-rpc", () => ({
+vi.mock("@/lib/daemon/teamclu-rpc", () => ({
   runtimeCommand: (...args: unknown[]) => runtimeCommand(...args),
 }));
 
@@ -59,8 +59,8 @@ vi.mock("@/stores/runtime-state-store", async (importOriginal) => {
 
 const discardPendingStreamReply = vi.fn();
 
-vi.mock("@/lib/live-agent-stream", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/live-agent-stream")>();
+vi.mock("@/lib/stream/live-agent-stream", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/stream/live-agent-stream")>();
   return {
     ...actual,
     discardPendingStreamReply: (...args: [string, string]) =>

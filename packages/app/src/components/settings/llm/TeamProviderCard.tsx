@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { ChevronRight, Lock, Users, Zap } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { TEAM_MODEL_TIERS, TEAM_SHARED_PROVIDER_ID } from '@/lib/team-provider'
+import { TEAM_MODEL_TIERS, TEAM_SHARED_PROVIDER_ID } from '@/lib/agent/team-provider'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { SettingCard } from '../shared'
 

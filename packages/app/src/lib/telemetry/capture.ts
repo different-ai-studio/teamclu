@@ -10,7 +10,7 @@
 
 export type TelemetryLevel = 'warning' | 'error'
 
-export type TelemetryCaptureArgs = {
+type TelemetryCaptureArgs = {
   /** Stable across occurrences — no ids, no numbers. */
   message: string
   level: TelemetryLevel

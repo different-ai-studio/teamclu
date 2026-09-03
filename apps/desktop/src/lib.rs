@@ -1,47 +1,20 @@
 // Suppress cfg warnings from the legacy `objc` crate's `msg_send!` / `sel_impl!` macros.
 #![allow(unexpected_cfgs)]
-// Suppress dead-code and unused-import warnings from legacy/in-progress code.
-#![allow(dead_code, unused_imports)]
-// Suppress new_without_default for types that intentionally use new() with no args.
-#![allow(clippy::new_without_default)]
-// Suppress style/complexity clippy lints that are non-critical for this codebase.
-#![allow(
-    clippy::cloned_ref_to_slice_refs,
-    clippy::collapsible_else_if,
-    clippy::collapsible_if,
-    clippy::derivable_impls,
-    clippy::for_kv_map,
-    clippy::io_other_error,
-    clippy::iter_nth_zero,
-    clippy::manual_clamp,
-    clippy::manual_is_multiple_of,
-    clippy::manual_map,
-    clippy::manual_strip,
-    clippy::map_identity,
-    clippy::needless_borrow,
-    clippy::needless_borrows_for_generic_args,
-    clippy::ptr_arg,
-    clippy::redundant_closure,
-    clippy::redundant_guards,
-    clippy::redundant_pattern_matching,
-    clippy::same_item_push,
-    clippy::too_many_arguments,
-    clippy::trim_split_whitespace,
-    clippy::type_complexity,
-    clippy::unnecessary_lazy_evaluations,
-    clippy::unnecessary_map_or,
-    clippy::unnecessary_unwrap,
-    clippy::unwrap_or_default,
-    clippy::useless_asref,
-    clippy::useless_format,
-    clippy::useless_vec
-)]
+// Eight Tauri command signatures take 8-14 flat arguments (env_catalog_set /
+// env_catalog_delete and their _for_workspace twins, mqtt_connect, mqtt_probe,
+// terminal_open, webview_create). Commands receive their arguments as flat JS
+// invoke() fields, so folding them into a struct changes the IPC shape; left as
+// a crate-level allow with that count until those commands are redesigned.
+// Every other lint that used to be allowed here hid zero warnings or was fixed.
+#![allow(clippy::too_many_arguments)]
 
 use tauri::Manager;
 use tauri_plugin_aptabase::EventTracker;
 
 mod branding;
 pub mod commands;
+pub mod daemon_client;
+pub mod http_clients;
 mod local_cache;
 pub mod mqtt;
 pub mod opencode_paths;
@@ -55,32 +28,55 @@ mod terminal;
 pub mod test_home;
 mod webview_recovery;
 
-/// Get the mtime of the user's shell profile file as a u64 (seconds since epoch).
-/// Returns 0 if the file doesn't exist or can't be read.
-fn get_shell_profile_mtime(shell: &str, home: &str) -> u64 {
-    let profile = if shell.ends_with("zsh") {
-        format!("{}/.zshrc", home)
+/// Every startup file of `shell` that can change PATH.
+///
+/// All of them, not just the interactive one: nvm and fnm write to `.zshrc`,
+/// Homebrew's installer writes to `.zprofile`, and a cache keyed on one of them
+/// happily serves a stale PATH after the user edits the other.
+fn shell_profile_files(shell: &str, home: &str) -> Vec<String> {
+    let names: &[&str] = if shell.ends_with("zsh") {
+        &[".zshrc", ".zprofile", ".zshenv", ".zlogin"]
     } else if shell.ends_with("bash") {
-        format!("{}/.bashrc", home)
+        &[".bashrc", ".bash_profile", ".bash_login", ".profile"]
     } else {
-        return 0;
+        return Vec::new();
     };
-    std::fs::metadata(&profile)
-        .and_then(|m| m.modified())
-        .and_then(|t| {
-            t.duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    names.iter().map(|n| format!("{}/{}", home, n)).collect()
+}
+
+/// Newest mtime across the shell's startup files, as seconds since epoch.
+/// Returns 0 when none of them exists or can be read.
+fn get_shell_profile_mtime(shell: &str, home: &str) -> u64 {
+    shell_profile_files(shell, home)
+        .iter()
+        .filter_map(|profile| {
+            std::fs::metadata(profile)
+                .and_then(|m| m.modified())
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs())
         })
-        .map(|d| d.as_secs())
+        .max()
         .unwrap_or(0)
 }
 
-/// Read cached PATH if cache exists and profile mtime matches.
+/// Bumped whenever the probe itself changes, so every existing cache misses
+/// once. Without it the fix that made the probe read `~/.zshrc` would not have
+/// reached anyone who already had a cache file: the key is the profile's mtime,
+/// and fixing our own code does not touch the user's profile.
+const PATH_CACHE_VERSION: u32 = 2;
+
+/// Read cached PATH if the cache was written by this probe and the profile
+/// mtime still matches.
 fn read_path_cache(cache_path: &std::path::Path, current_mtime: u64) -> Option<String> {
     let content = std::fs::read_to_string(cache_path).ok()?;
     let mut lines = content.lines();
-    let cached_mtime: u64 = lines.next()?.parse().ok()?;
-    if cached_mtime != current_mtime || current_mtime == 0 {
+    let (version, cached_mtime) = lines.next()?.split_once(':')?;
+    if version.parse::<u32>().ok()? != PATH_CACHE_VERSION {
+        return None;
+    }
+    if cached_mtime.parse::<u64>().ok()? != current_mtime || current_mtime == 0 {
         return None;
     }
     let path = lines.next()?;
@@ -95,7 +91,7 @@ fn write_path_cache(cache_path: &std::path::Path, mtime: u64, path: &str) {
     if let Some(parent) = cache_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let content = format!("{}\n{}", mtime, path);
+    let content = format!("{}:{}\n{}", PATH_CACHE_VERSION, mtime, path);
     let _ = std::fs::write(cache_path, content);
 }
 
@@ -104,18 +100,55 @@ fn write_path_cache(cache_path: &std::path::Path, mtime: u64, path: &str) {
 /// stuck profile and we fall back rather than block startup.
 const SHELL_PATH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Run `<shell> -l -c 'echo $PATH'` with a hard wall-clock timeout.
+/// Marks our line in the probe's output. An interactive shell prints whatever
+/// the user's prompt framework prints (powerlevel10k's instant prompt, version
+/// managers announcing themselves, MOTDs), so the answer has to be findable
+/// rather than "whatever came out".
+const PATH_PROBE_SENTINEL: &str = "__TEAMCLU_PATH__";
+
+/// Extract the probe's answer from a shell's noisy output.
+fn parse_probed_path(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix(PATH_PROBE_SENTINEL))
+        .map(str::to_string)
+        .filter(|path| !path.is_empty())
+}
+
+/// Run `<shell> [-i] -l -c 'echo <sentinel>$PATH'` with a hard wall-clock
+/// timeout.
 ///
-/// Kept synchronous (it runs before the tokio runtime is created) and bounded
-/// with std thread + `recv_timeout`. On timeout the child is killed and an
-/// error is returned so the caller falls back to a minimal PATH.
-fn spawn_shell_path_probe(shell: &str) -> std::io::Result<std::process::Output> {
+/// `interactive` is the whole point of this probe. zsh reads `~/.zshrc` only
+/// for *interactive* shells, and `~/.zshrc` is where every Node version manager
+/// installs itself — nvm, fnm, n, volta, asdf all put their PATH entry there.
+/// A plain `-l -c` therefore returns a PATH the user's terminal never uses, and
+/// the app then measures whichever stale `node` is left in `/usr/local/bin`.
+///
+/// Runs on the background thread `start_path_probe` spawns; the timeout here is
+/// the *child's* budget, not the main thread's wait. On timeout the child is
+/// killed and an error is returned, so nothing lingers when a shell profile
+/// hangs on a dead network mount.
+fn spawn_shell_path_probe(shell: &str, interactive: bool) -> std::io::Result<std::process::Output> {
     use crate::process_util::CommandNoWindow;
     use std::process::Stdio;
 
+    let script = format!("echo {PATH_PROBE_SENTINEL}$PATH");
+    let mut args: Vec<&str> = Vec::new();
+    if interactive {
+        args.push("-i");
+    }
+    args.extend(["-l", "-c", script.as_str()]);
     let mut child = std::process::Command::new(shell)
         .no_window()
-        .args(["-l", "-c", "echo $PATH"])
+        .args(&args)
+        // A GUI app inherits no TERM, and an interactive zsh without one warns
+        // about a missing terminal definition on the way through. A real
+        // terminfo name, deliberately not `dumb`: the widespread tramp guard
+        // (`[[ $TERM == dumb ]] && return`) sits at the *top* of a `.zshrc`, so
+        // asking for the plain version of a profile would skip the very lines
+        // this probe was made interactive to read.
+        .env("TERM", "xterm-256color")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
@@ -148,29 +181,106 @@ fn spawn_shell_path_probe(shell: &str) -> std::io::Result<std::process::Output> 
     }
 }
 
+// STR-9: everything from here to `tauri::Builder::default()` runs before
+// `tauri_plugin_log` has installed a global logger, so `log::` here would go
+// nowhere. These few `eprintln!` are deliberate; the rest of the crate logs.
+
+/// Prepend the Homebrew-shaped directories a GUI PATH is usually missing.
+///
+/// What the app runs on until (or unless) the login shell answers.
+fn apply_fallback_path() {
+    let current = std::env::var("PATH").unwrap_or_default();
+    let extra = [
+        "/opt/homebrew/bin", // macOS ARM Homebrew
+        "/opt/homebrew/sbin",
+        "/usr/local/bin", // macOS Intel Homebrew
+        "/usr/local/sbin",
+        "/home/linuxbrew/.linuxbrew/bin", // Linux Homebrew
+    ];
+    let mut path = current.clone();
+    for p in extra {
+        if !path.split(':').any(|seg| seg == p) {
+            path = format!("{}:{}", p, path);
+        }
+    }
+    if path != current {
+        std::env::set_var("PATH", &path);
+        #[cfg(debug_assertions)]
+        eprintln!("[fix_path_env] PATH fallback set to: {}", path);
+    }
+}
+
+/// A login-shell PATH probe running on a background thread.
+///
+/// PERF-18: the probe used to run to completion before `tauri::Builder` was
+/// even constructed, so on a cache miss — first launch, or any launch after
+/// the user edited their shell profile — the window did not appear until the
+/// user's `.zshrc` had finished sourcing, up to a 4 s cap. The probe now
+/// starts first and is collected at the top of the `setup` hook, which is
+/// after plugin initialisation and after Tauri has created the webview window:
+/// the shell and the window are built at the same time instead of one after
+/// the other.
+///
+/// The budget is unchanged on purpose. Shortening the wait would hand a user
+/// with a merely slow profile a session whose PATH is missing nvm/pyenv/…,
+/// which reads as "opencode is not installed" — the win here is the overlap,
+/// not a smaller deadline. If the deadline does expire, this launch runs on
+/// the fallback PATH while the background thread finishes and writes the
+/// cache, so the next launch starts correct and instantly.
+struct PendingPathProbe {
+    rx: std::sync::mpsc::Receiver<Option<String>>,
+    deadline: std::time::Instant,
+}
+
+impl PendingPathProbe {
+    /// Wait out the remaining budget and apply the probed PATH if it arrived.
+    ///
+    /// Called on the main thread before anything spawns a child process, so
+    /// this is the only writer of `PATH` and there is no concurrent reader —
+    /// the same position the synchronous version wrote from.
+    fn apply(self) {
+        let remaining = self
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        match self.rx.recv_timeout(remaining) {
+            Ok(Some(full_path)) => {
+                std::env::set_var("PATH", &full_path);
+                #[cfg(debug_assertions)]
+                eprintln!("[fix_path_env] PATH set to: {}", full_path);
+            }
+            Ok(None) => {
+                // The shell answered but had nothing usable to say; the
+                // fallback PATH applied at startup stands.
+            }
+            Err(_) => {
+                eprintln!(
+                    "[fix_path_env] login-shell PATH probe did not answer within {:?}; \
+                     running on the fallback PATH (the cache will be warm next launch)",
+                    SHELL_PATH_PROBE_TIMEOUT
+                );
+            }
+        }
+    }
+}
+
 /// Fix PATH environment variable for GUI apps on macOS/Linux.
 ///
 /// When launched from Dock/Spotlight (not a terminal), GUI apps inherit a minimal
 /// system PATH (e.g. /usr/bin:/bin:/usr/sbin:/sbin) that doesn't include paths
 /// added by Homebrew, nvm, etc. in the user's shell profile (.zshrc/.bashrc).
 ///
-/// This function spawns a login shell to capture the user's full PATH and sets it
-/// on the current process, so all subsequent Command::new() calls can find tools
-/// like git, gh, node, npx, etc.
-fn fix_path_env() {
-    // Determine the user's default shell
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-        if cfg!(target_os = "windows") {
-            "cmd".to_string()
-        } else {
-            "/bin/zsh".to_string()
-        }
-    });
-
+/// Applies the cached or fallback PATH immediately and, on a cache miss,
+/// returns the running login-shell probe for the caller to collect later (see
+/// [`PendingPathProbe`]).
+#[must_use = "the probe has to be applied, or the login-shell PATH is dropped"]
+fn start_path_probe() -> Option<PendingPathProbe> {
     if cfg!(target_os = "windows") {
         // Windows GUI apps generally inherit the full PATH; skip for now
-        return;
+        return None;
     }
+
+    // Determine the user's default shell
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
 
     // Try cache first
     let home = std::env::var("HOME").unwrap_or_default();
@@ -181,51 +291,37 @@ fn fix_path_env() {
         std::env::set_var("PATH", &cached);
         #[cfg(debug_assertions)]
         eprintln!("[fix_path_env] PATH set from cache");
-        return;
+        return None;
     }
 
-    // Spawn a login shell to get the full PATH.
-    //
-    // A pathologically slow shell profile (network mounts, heavy `.zshrc`, etc.)
-    // could otherwise block window creation indefinitely, so we cap the probe
-    // with a hard timeout and fall back to a minimal PATH on timeout. This runs
-    // before the tokio runtime exists, so it uses std threads only.
-    let output = spawn_shell_path_probe(&shell);
+    // Nothing cached: run on the fallback while the login shell is asked.
+    apply_fallback_path();
 
-    match output {
-        Ok(o) if o.status.success() => {
-            let full_path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if !full_path.is_empty() {
-                std::env::set_var("PATH", &full_path);
-                #[cfg(debug_assertions)]
-                eprintln!("[fix_path_env] PATH set to: {}", full_path);
-                // Write cache (fire-and-forget)
-                write_path_cache(&cache_path, profile_mtime, &full_path);
-            }
-        }
-        _ => {
-            // Fallback: append common paths that might be missing
-            let current = std::env::var("PATH").unwrap_or_default();
-            let extra = [
-                "/opt/homebrew/bin", // macOS ARM Homebrew
-                "/opt/homebrew/sbin",
-                "/usr/local/bin", // macOS Intel Homebrew
-                "/usr/local/sbin",
-                "/home/linuxbrew/.linuxbrew/bin", // Linux Homebrew
-            ];
-            let mut path = current.clone();
-            for p in extra {
-                if !path.split(':').any(|seg| seg == p) {
-                    path = format!("{}:{}", p, path);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let deadline = std::time::Instant::now() + SHELL_PATH_PROBE_TIMEOUT;
+    std::thread::Builder::new()
+        .name("path-probe".into())
+        .spawn(move || {
+            // Interactive first — that is the only mode which reads `~/.zshrc`,
+            // where every Node version manager installs itself — then plain
+            // login for a profile that misbehaves without a terminal.
+            let probed = [true, false].into_iter().find_map(|interactive| {
+                let out = spawn_shell_path_probe(&shell, interactive).ok()?;
+                if !out.status.success() {
+                    return None;
                 }
-            }
-            if path != current {
-                std::env::set_var("PATH", &path);
-                #[cfg(debug_assertions)]
-                eprintln!("[fix_path_env] PATH fallback set to: {}", path);
-            }
-        }
-    }
+                let full_path = parse_probed_path(&String::from_utf8_lossy(&out.stdout))?;
+                // Write the cache even if the main thread has already given
+                // up: the point of the cache is the next launch.
+                write_path_cache(&cache_path, profile_mtime, &full_path);
+                Some(full_path)
+            });
+            // The receiver is gone if startup timed out — that is fine.
+            let _ = tx.send(probed);
+        })
+        .ok()?;
+
+    Some(PendingPathProbe { rx, deadline })
 }
 
 // Foreground-activation heartbeat for Aptabase DAU.
@@ -266,11 +362,19 @@ fn maybe_emit_app_active(app: &tauri::AppHandle) {
 pub fn run() {
     let startup_t0 = std::time::Instant::now();
 
-    // Fix PATH before anything else so all child processes can find tools
-    fix_path_env();
+    // Fix PATH before anything else so all child processes can find tools.
+    // On a cache hit this is complete when it returns; on a miss it applies the
+    // fallback PATH now and hands back a probe to collect in `setup`, so the
+    // login shell runs while Tauri builds the window (PERF-18).
+    let path_probe = start_path_probe();
     eprintln!(
-        "[Startup] fix_path_env: {:.1}ms",
-        startup_t0.elapsed().as_secs_f64() * 1000.0
+        "[Startup] start_path_probe: {:.1}ms (login shell {})",
+        startup_t0.elapsed().as_secs_f64() * 1000.0,
+        if path_probe.is_some() {
+            "running"
+        } else {
+            "not needed"
+        }
     );
 
     // Create a Tokio runtime and register it with Tauri BEFORE plugin initialization.
@@ -368,7 +472,6 @@ pub fn run() {
             commands::open_with_default_app,
             commands::open_in_terminal,
             commands::system_appearance::get_system_accent_color,
-            commands::window::create_workspace_window,
             commands::window::open_local_agent_panel_window,
             commands::window::register_window_workspace,
             commands::window::set_window_title,
@@ -385,8 +488,6 @@ pub fn run() {
             commands::obsidian::obsidian_open_vault,
             commands::filewatcher::watch_directory,
             commands::filewatcher::unwatch_directory,
-            commands::filewatcher::unwatch_all,
-            commands::filewatcher::get_watched_directories,
             commands::gateway::list_channels,
             commands::gateway::list_wecom_bots_status,
             commands::gateway::list_wecom_chats,
@@ -419,8 +520,6 @@ pub fn run() {
             commands::daemon_onboarding::daemon_clear,
             commands::amuxd_supervisor::daemon_ensure_running,
             commands::amuxd_supervisor::daemon_restart_managed,
-            commands::amuxd_supervisor::daemon_stop_managed,
-            commands::amuxd_supervisor::daemon_supervisor_status,
             commands::setup::setup_list_requirements,
             commands::setup::setup_list_agent_runtimes,
             commands::setup::setup_install,
@@ -431,12 +530,10 @@ pub fn run() {
             commands::clawhub::clawhub_install,
             commands::clawhub::clawhub_uninstall,
             commands::clawhub::clawhub_list_installed,
-            commands::clawhub::clawhub_check_updates,
             commands::clawhub::clawhub_update,
             commands::team_skills::team_skill_install,
             commands::team_skills::team_skill_uninstall,
             commands::team_skills::team_skill_list_installed,
-            commands::team_skills::team_skill_pack,
             commands::team_skills::team_skill_pack_and_upload,
             commands::team_skills::team_skill_install_from_dir,
             commands::team_skills::team_skill_rebaseline,
@@ -460,8 +557,8 @@ pub fn run() {
             commands::terminal::terminal_open,
             commands::terminal::terminal_resize,
             commands::terminal::terminal_subscribe,
+            commands::terminal::terminal_detach,
             commands::terminal::terminal_write,
-            commands::team::workspace_read_team_meta,
             commands::team_sync_proxy::team_file_versions,
             commands::team_sync_proxy::team_file_content,
             commands::team_sync_proxy::team_changed_files,
@@ -475,17 +572,15 @@ pub fn run() {
             commands::deps::install_dependency,
             commands::deps::update_dependency,
             commands::env_vars::env_var_get,
+            commands::env_vars::env_var_reveal,
             commands::env_vars::env_catalog_list,
             commands::env_vars::team_env_diagnostics,
-            commands::env_vars::personal_env_diagnostics,
             commands::diagnostics::collect_diagnostic_bundle,
             commands::diagnostics::build_diagnostic_zip,
             commands::diagnostics::tail_log_files,
             commands::diagnostics::reveal_log_directory,
             commands::env_vars::env_catalog_set,
             commands::env_vars::env_catalog_delete,
-            commands::env_vars::env_var_resolve,
-            commands::session_export::session_export,
             local_cache::commands::local_cache_actor_upsert_batch,
             local_cache::commands::local_cache_actor_load_team,
             local_cache::commands::local_cache_actor_load_by_ids,
@@ -523,7 +618,6 @@ pub fn run() {
             local_cache::commands::local_cache_watermark_set,
             local_cache::commands::local_cache_clear_team,
             local_cache::commands::local_cache_set_current_team,
-            local_cache::commands::local_cache_get_current_team,
             telemetry::commands::telemetry_get_consent,
             telemetry::commands::telemetry_set_consent,
             telemetry::commands::telemetry_track,
@@ -532,7 +626,6 @@ pub fn run() {
             commands::webview::webview_hide,
             commands::webview::webview_show,
             commands::webview::webview_set_bounds,
-            commands::webview::webview_focus,
             commands::webview::webview_go_back,
             commands::webview::webview_go_forward,
             commands::webview::webview_reload,
@@ -563,8 +656,21 @@ pub fn run() {
             commands::team_sync_proxy::oss_sync_restore_version,
             commands::team_sync_proxy::oss_sync_resolve_conflict,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let setup_t0 = std::time::Instant::now();
+
+            // Collect the login-shell PATH before anything below spawns a child
+            // process (the amuxd supervisor, further down, is the first). The
+            // window already exists at this point — Tauri creates the config
+            // windows during `build()` — so whatever the shell cost was ran
+            // alongside that instead of ahead of it.
+            if let Some(probe) = path_probe {
+                probe.apply();
+                log::info!(
+                    "[Startup] PATH probe collected: {:.1}ms since launch",
+                    startup_t0.elapsed().as_secs_f64() * 1000.0
+                );
+            }
 
             // Capture the .app bundle path before an update can replace it on disk.
             commands::updater::remember_app_bundle_path();
@@ -578,7 +684,7 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = commands::introspect_api::start_introspect_api(app_handle).await {
-                        eprintln!("[IntrospectAPI] Failed to start: {}", e);
+                        log::error!("[IntrospectAPI] Failed to start: {}", e);
                     }
                 });
             }
@@ -600,7 +706,7 @@ pub fn run() {
                         commands::amuxd_supervisor::AmuxdSupervisor::ensure_started(&app_handle)
                             .await
                     {
-                        eprintln!("[amuxd-supervisor] ensure_started failed: {e}");
+                        log::error!("[amuxd-supervisor] ensure_started failed: {e}");
                     }
                 });
             }
@@ -609,7 +715,7 @@ pub fn run() {
             // since workspace_path is not available at setup time.
             // The frontend calls team_sync_repo on startup when team config is enabled.
 
-            eprintln!("[Startup] Setup hook: {:.1}ms", setup_t0.elapsed().as_secs_f64() * 1000.0);
+            log::info!("[Startup] Setup hook: {:.1}ms", setup_t0.elapsed().as_secs_f64() * 1000.0);
 
             // Load remembered close preference (ask / tray / quit).
             {
@@ -631,7 +737,7 @@ pub fn run() {
                         }
                     });
                 }
-                Err(e) => eprintln!("[Startup] install_app_menu failed: {e}"),
+                Err(e) => log::error!("[Startup] install_app_menu failed: {e}"),
             }
 
             // --- System Tray ---
@@ -686,7 +792,7 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .icon(tray_icon)
                 .icon_as_template(tray_icon_is_template)
-                .tooltip(branding::brand_name(app.config().product_name.as_deref()))
+                .tooltip(branding::brand_name())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray: &tauri::tray::TrayIcon, event: TrayIconEvent| {
@@ -711,7 +817,7 @@ pub fn run() {
                             if let Err(e) =
                                 commands::window::open_local_agent_panel_window(app.clone())
                             {
-                                eprintln!("[tray] open_local_agent_panel_window: {e}");
+                                log::warn!("[tray] open_local_agent_panel_window: {e}");
                             }
                         }
                         "quit" => {
@@ -842,7 +948,7 @@ pub fn run() {
 
                     let listener = tokio::net::TcpListener::bind("127.0.0.1:13199").await;
                     if let Ok(listener) = listener {
-                        eprintln!("[Test] Control server listening on http://127.0.0.1:13199");
+                        log::info!("[Test] Control server listening on http://127.0.0.1:13199");
                         let _ = axum::serve(listener, router).await;
                     }
                 });
@@ -924,4 +1030,60 @@ pub fn run() {
                 _ => {}
             }
         });
+}
+
+// Kept at the end of the file: clippy's `items_after_test_module` fires on a
+// `#[cfg(test)] mod` with anything after it, and CI lints `--all-targets`.
+#[cfg(test)]
+mod path_env_tests {
+    use super::*;
+
+    #[test]
+    fn the_answer_is_found_among_a_noisy_profile_s_output() {
+        // An interactive shell prints whatever the user's prompt framework
+        // prints. Taking "the output" as the PATH would set PATH to a banner.
+        let stdout = format!(
+            "p10k instant prompt\nnvm: using v24.18.0\n{PATH_PROBE_SENTINEL}/a/bin:/b/bin\n"
+        );
+        assert_eq!(parse_probed_path(&stdout).as_deref(), Some("/a/bin:/b/bin"));
+    }
+
+    #[test]
+    fn output_without_our_marker_is_not_a_path() {
+        assert_eq!(parse_probed_path("some warning\n"), None);
+        assert_eq!(parse_probed_path(&format!("{PATH_PROBE_SENTINEL}\n")), None);
+    }
+
+    #[test]
+    fn zsh_profiles_cover_the_interactive_file_version_managers_write_to() {
+        let files = shell_profile_files("/bin/zsh", "/home/u");
+        assert!(files.contains(&"/home/u/.zshrc".to_string()), "{files:?}");
+        assert!(
+            files.contains(&"/home/u/.zprofile".to_string()),
+            "{files:?}"
+        );
+        assert!(shell_profile_files("/usr/bin/fish", "/home/u").is_empty());
+    }
+
+    #[test]
+    fn a_cache_from_the_previous_probe_is_not_reused() {
+        // The whole point of the version: the profile's mtime is unchanged when
+        // *our* probe is what got fixed, so without it every existing install
+        // would keep serving the PATH the old probe captured.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cached-path.txt");
+        std::fs::write(&cache, "1770000000\n/old/bin").unwrap();
+        assert_eq!(read_path_cache(&cache, 1770000000), None);
+
+        write_path_cache(&cache, 1770000000, "/new/bin");
+        assert_eq!(
+            read_path_cache(&cache, 1770000000).as_deref(),
+            Some("/new/bin")
+        );
+        assert_eq!(
+            read_path_cache(&cache, 1770000001),
+            None,
+            "mtime still keys it"
+        );
+    }
 }

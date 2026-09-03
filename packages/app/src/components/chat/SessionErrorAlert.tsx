@@ -6,7 +6,7 @@ import {
   isAgentTurnAbortError,
   isQuotaLikeAgentMessage,
   TURN_INTERRUPTED_ERROR_NAME,
-} from '@/lib/agent-turn-error'
+} from '@/lib/agent/agent-turn-error'
 import type { SessionErrorEvent } from '@/stores/session-types'
 
 interface SessionErrorAlertProps {

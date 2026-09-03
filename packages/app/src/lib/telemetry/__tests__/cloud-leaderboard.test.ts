@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchTeamLeaderboard } from "../cloud-leaderboard";
+import { fetchTeamLeaderboard } from "@/lib/telemetry/cloud-leaderboard";
 
 vi.mock("@/lib/backend", () => ({
   getBackend: () => ({

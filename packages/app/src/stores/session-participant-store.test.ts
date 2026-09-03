@@ -23,7 +23,7 @@ vi.mock("@/lib/backend", () => ({
   }),
 }));
 
-vi.mock("@/lib/local-cache", () => ({
+vi.mock("@/lib/cache/local-cache", () => ({
   loadSessionParticipants: vi.fn(async (sessionId: string) => {
     if (sessionId === "s1") return [{ actorId: "a1" }, { actorId: "agent-1" }];
     return [];

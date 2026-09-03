@@ -1,5 +1,5 @@
-import type { CurrentTeamMemberSummary, DirectoryBackend, DirectoryMemberActor } from "../types";
-import { CloudApiError, type CloudApiClient } from "./http";
+import type { CurrentTeamMemberSummary, DirectoryBackend, DirectoryMemberActor } from "@/lib/backend/types";
+import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 export function createDirectoryModule(client: CloudApiClient): DirectoryBackend {
   return {

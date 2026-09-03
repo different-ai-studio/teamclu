@@ -28,6 +28,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 // Only the Windows paths shell out to a console program.
 #[cfg(target_os = "windows")]
@@ -59,11 +61,25 @@ pub enum OpenOutcome {
 /// Is Obsidian installed, and is `vault_path` registered with it?
 ///
 /// `vault_path` may be empty — then only `installed` is meaningful.
+///
+/// `async` + `spawn_blocking`: the frontend re-asks on every window focus, and
+/// the answer can involve spawning `mdfind` / `reg` / `flatpak`. A non-`async`
+/// command runs inline on the main thread, so that spawn used to freeze the
+/// window on every focus for anyone with Obsidian outside `/Applications`.
 #[tauri::command]
-pub fn obsidian_status(vault_path: String) -> ObsidianStatus {
+pub async fn obsidian_status(vault_path: String) -> ObsidianStatus {
+    tokio::task::spawn_blocking(move || status_blocking(&vault_path))
+        .await
+        .unwrap_or(ObsidianStatus {
+            installed: false,
+            vault_registered: false,
+        })
+}
+
+fn status_blocking(vault_path: &str) -> ObsidianStatus {
     ObsidianStatus {
-        installed: obsidian_app_path().is_some() || uri_handler_registered(),
-        vault_registered: !vault_path.is_empty() && is_vault_registered(&vault_path),
+        installed: obsidian_installed(),
+        vault_registered: !vault_path.is_empty() && is_vault_registered(vault_path),
     }
 }
 
@@ -73,26 +89,32 @@ pub fn obsidian_status(vault_path: String) -> ObsidianStatus {
 /// case, so reaching here means the UI and the filesystem disagree — saying so
 /// beats silently doing nothing.
 #[tauri::command]
-pub fn obsidian_open_vault(vault_path: String) -> Result<OpenOutcome, String> {
+pub async fn obsidian_open_vault(vault_path: String) -> Result<OpenOutcome, String> {
+    tokio::task::spawn_blocking(move || open_vault_blocking(&vault_path))
+        .await
+        .map_err(|e| format!("obsidian: open task failed: {e}"))?
+}
+
+fn open_vault_blocking(vault_path: &str) -> Result<OpenOutcome, String> {
     if vault_path.trim().is_empty() {
         return Err("obsidian: empty vault path".to_string());
     }
-    let dir = Path::new(&vault_path);
+    let dir = Path::new(vault_path);
     if !dir.is_dir() {
         return Err(format!("obsidian: no such directory: {vault_path}"));
     }
-    if obsidian_app_path().is_none() && !uri_handler_registered() {
+    if !obsidian_installed() {
         return Err("obsidian: not installed".to_string());
     }
 
-    if is_vault_registered(&vault_path) {
-        open_target(&open_uri(&vault_path))?;
+    if is_vault_registered(vault_path) {
+        open_target(&open_uri(vault_path))?;
         return Ok(OpenOutcome::Opened);
     }
 
     // First time: seed the vault's own config, then register it.
     seed_vault_config(dir);
-    register_vault(&vault_path)?;
+    register_vault(vault_path)?;
 
     if obsidian_is_running() {
         // The registry write lands, but the running instance will not see it.
@@ -100,9 +122,56 @@ pub fn obsidian_open_vault(vault_path: String) -> Result<OpenOutcome, String> {
         // reads as a broken button — say what happened instead.
         Ok(OpenOutcome::RegisteredNeedsRestart)
     } else {
-        open_target(&open_uri(&vault_path))?;
+        open_target(&open_uri(vault_path))?;
         Ok(OpenOutcome::Opened)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Installation cache
+// ---------------------------------------------------------------------------
+
+/// How long a "not installed" answer is trusted before the probes run again.
+///
+/// Installing Obsidian is the one thing that flips it, and that takes longer
+/// than this. A found install is not subject to the TTL: it is re-verified by
+/// a single `exists()` on the remembered path, which is as cheap as it gets.
+const NOT_INSTALLED_TTL: Duration = Duration::from_secs(60);
+
+struct AppPathProbe {
+    at: Instant,
+    found: Option<PathBuf>,
+}
+
+static APP_PATH_CACHE: Mutex<Option<AppPathProbe>> = Mutex::new(None);
+
+/// [`obsidian_app_path`], remembered process-wide.
+///
+/// The probe is what made `obsidian_status` expensive: on macOS it ends in a
+/// Spotlight query when the bundle is not in one of the two usual places, and
+/// the frontend asks on every window focus.
+fn cached_obsidian_app_path() -> Option<PathBuf> {
+    let mut guard = APP_PATH_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(probe) = guard.as_ref() {
+        match &probe.found {
+            Some(path) if path.exists() => return Some(path.clone()),
+            None if probe.at.elapsed() < NOT_INSTALLED_TTL => return None,
+            // Found before but gone now, or a stale negative: probe again.
+            _ => {}
+        }
+    }
+    let found = obsidian_app_path();
+    *guard = Some(AppPathProbe {
+        at: Instant::now(),
+        found: found.clone(),
+    });
+    found
+}
+
+/// Installed by either probe: a known bundle/executable path, or a registered
+/// `obsidian://` handler (the path probe can miss portable installs).
+fn obsidian_installed() -> bool {
+    cached_obsidian_app_path().is_some() || uri_handler_registered()
 }
 
 // ---------------------------------------------------------------------------
@@ -319,10 +388,14 @@ fn open_target(uri: &str) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     let mut cmd = {
-        let mut c = Command::new("cmd");
-        // `start` needs the empty "" title argument, or it treats the quoted
-        // URI as a window title and opens nothing.
-        c.no_window().args(["/C", "start", "", uri]);
+        // Not `cmd /C start "" <uri>`: `start` goes through cmd's parser, where
+        // `&`, `|` and `^` in the argument are operators, so anything derived
+        // from a caller-supplied path is a command injection waiting for the
+        // one character the encoder misses. `explorer` hands its single
+        // argument to ShellExecute as-is, which resolves the `obsidian://`
+        // scheme to its registered handler without a shell in between.
+        let mut c = Command::new("explorer.exe");
+        c.no_window().arg(uri);
         c
     };
 
@@ -579,12 +652,12 @@ mod tests {
 
     #[test]
     fn opening_a_missing_directory_is_an_error() {
-        let err = obsidian_open_vault("/nope/does/not/exist".into()).unwrap_err();
+        let err = open_vault_blocking("/nope/does/not/exist").unwrap_err();
         assert!(err.contains("no such directory"), "{err}");
     }
 
     #[test]
     fn opening_an_empty_path_is_an_error() {
-        assert!(obsidian_open_vault("   ".into()).is_err());
+        assert!(open_vault_blocking("   ").is_err());
     }
 }

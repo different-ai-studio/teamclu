@@ -17,18 +17,18 @@ import {
   postDaemonDeviceProviderOAuthCallback,
   reloadDaemonRuntime,
   type DaemonProviderInfo,
-} from '@/lib/daemon-local-client'
+} from '@/lib/daemon/daemon-local-client'
 import {
   fallbackProviderAuthMethods,
   mergeProviderAuthMethods,
-} from '@/lib/daemon-provider-auth'
+} from '@/lib/daemon/daemon-provider-auth'
 import {
   type CustomProviderConfig,
   customProviderIdFromName,
   providerApiKeyName,
 } from '@/lib/opencode/config'
-import { TEAM_SHARED_PROVIDER_ID } from '@/lib/team-provider'
-import { effectiveWorkspacePath } from '@/lib/effective-workspace'
+import { TEAM_SHARED_PROVIDER_ID } from '@/lib/agent/team-provider'
+import { effectiveWorkspacePath } from '@/lib/workspace/effective-workspace'
 
 const DEFAULT_CONNECTABLE_PROVIDERS: ProviderEntry[] = [
   { id: 'openai', name: 'OpenAI', configured: false },
@@ -309,18 +309,6 @@ async function loadDaemonProviderSnapshot(
   }
 }
 
-/** Load configured models for an explicit workspace path (cron scope, etc.). */
-export async function loadConfiguredProvidersForWorkspace(
-  workspacePath: string,
-): Promise<{ configuredProviders: ConfiguredProvider[]; models: ModelOption[] } | null> {
-  const snapshot = await loadDaemonProviderSnapshot(workspacePath, new Set())
-  if (!snapshot) return null
-  return {
-    configuredProviders: snapshot.configuredProviders,
-    models: flattenConfiguredProviders(snapshot.configuredProviders),
-  }
-}
-
 export interface ProviderAuthMethod {
   type: 'oauth' | 'api'
   label: string
@@ -328,21 +316,21 @@ export interface ProviderAuthMethod {
 }
 
 // A model option available for selection in the ChatPanel
-export interface ModelOption {
+interface ModelOption {
   id: string
   name: string
   provider: string
 }
 
 // Provider entry for the Settings provider list
-export interface ProviderEntry {
+interface ProviderEntry {
   id: string
   name: string
   configured: boolean // true if in the `connected` list
 }
 
 // Configured provider with full model info (from GET /config/providers)
-export interface ConfiguredProvider {
+interface ConfiguredProvider {
   id: string
   name: string
   models: Array<{ id: string; name: string }>
@@ -358,7 +346,7 @@ function flattenConfiguredProviders(configuredProviders: ConfiguredProvider[]): 
   )
 }
 
-export interface ProviderState {
+interface ProviderState {
   // All available providers (from GET /provider), with configured status
   providers: ProviderEntry[]
   providersLoading: boolean

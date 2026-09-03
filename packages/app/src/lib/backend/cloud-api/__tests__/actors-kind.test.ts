@@ -11,7 +11,7 @@
  * So this asserts the literal, which is the only place the mistake is visible.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { createActorsModule } from '../actors'
+import { createActorsModule } from '@/lib/backend/cloud-api/actors'
 
 const ACTOR_TYPES = ['member', 'agent', 'external'] as const
 

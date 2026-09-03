@@ -131,8 +131,9 @@ jobs:
           restore-keys: pnpm-store-${{ runner.os }}-
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.97.1" # must match rust-toolchain.toml (ci.yml rust-check enforces it)
           targets: ${{ matrix.target }}
 
       - name: Setup sccache
@@ -488,7 +489,9 @@ jobs:
           restore-keys: pnpm-store-${{ runner.os }}-
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1" # must match rust-toolchain.toml (ci.yml rust-check enforces it)
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.11
@@ -751,8 +754,14 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Rust target
-        run: rustup target add ${{ matrix.target }}
+      # This job has no Setup Rust step: it relies on the runner's rustup, which
+      # reads rust-toolchain.toml. Install that channel explicitly (a rustup
+      # without implicit installs would otherwise fail on the first cargo call)
+      # and add the cross target to it, not to the runner's default `stable`.
+      - name: Install Rust toolchain + target
+        run: |
+          rustup toolchain install "$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)" --profile minimal --no-self-update
+          rustup target add ${{ matrix.target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2

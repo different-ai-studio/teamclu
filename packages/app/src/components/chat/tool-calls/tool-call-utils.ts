@@ -1,24 +1,7 @@
-import {
-  Clock,
-  Search,
-  Circle,
-  FileText,
-  FilePen,
-  Terminal,
-  Globe,
-  Zap,
-  HelpCircle,
-  Loader2,
-  Check,
-  X,
-  Sparkles,
-  Brain,
-  Trash2,
-  MoveRight,
-} from "lucide-react";
-import type { ToolCall } from "@/stores/session";
+import { Clock, Search, FileText, FilePen, Terminal, Globe, Zap, Loader2, Check, X, Brain, Trash2, MoveRight } from "lucide-react";
+import type { ToolCall } from "@/stores/session-types";
 
-export type ToolCallLike = Pick<ToolCall, "name" | "toolKind" | "arguments">;
+type ToolCallLike = Pick<ToolCall, "name" | "toolKind" | "arguments">;
 
 function stringParam(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
@@ -135,59 +118,6 @@ function isContentOnlyWrite(args: Record<string, unknown> | undefined): boolean 
   return typeof content === "string" && content.trim().length > 0;
 }
 
-/**
- * @deprecated Prefer storing ACP title in `ToolCall.name` and routing via `routeToolPresentation`.
- * Kept for legacy metadata where tool_name was canonicalized (grep/bash) on the wire.
- */
-export function resolveWireToolName(
-  toolKind: string | undefined,
-  wireName: string,
-  params: Record<string, string> = {},
-): string {
-  const fromKind = toolNameFromKind(toolKind);
-  if (fromKind) return fromKind;
-
-  const normalized = wireName.trim().toLowerCase();
-  if (normalized && normalized !== "other" && normalized !== "unknown") {
-    return normalized;
-  }
-
-  const hint = (params.description ?? params._description ?? "").trim().toLowerCase();
-  if (
-    hint === "skill" ||
-    hint === "role_skill" ||
-    hint === "role_load" ||
-    hint === "task" ||
-    hint === "question"
-  ) {
-    return hint;
-  }
-  if (hint.includes("role_load")) return "role_load";
-  if (hint.includes("role_skill")) return "role_skill";
-
-  if (params.subagent_type || params.task_id) return "task";
-  if (params.todos) return "todo_write";
-  if (params.questions) return "question";
-  if (params.role !== undefined && params.name) return "role_load";
-
-  if (
-    params.name &&
-    !params.command &&
-    !params.path &&
-    !params.pattern &&
-    !params.query &&
-    !params.url
-  ) {
-    return "skill";
-  }
-
-  return normalized || "unknown";
-}
-
-export function resolvedToolName(toolCall: ToolCallLike): string {
-  return routeToolPresentation(toolCall);
-}
-
 export function matchesWriteTool(toolCall: ToolCallLike): boolean {
   return routeToolPresentation(toolCall) === "write";
 }
@@ -198,35 +128,6 @@ export function matchesEditTool(toolCall: ToolCallLike): boolean {
   if (route === "edit" || route === "apply_patch") return true;
   if (toolCall.toolKind === "edit") return true;
   return isEditTool(toolCall.name);
-}
-
-export function skillNameFromToolCall(toolCall: ToolCallLike): string | undefined {
-  const args = toolCall.arguments as { name?: unknown } | undefined;
-  return stringParam(args?.name);
-}
-
-/** ACP `tool_kind` → icon/category hint (legacy routing only). */
-export function toolNameFromKind(toolKind?: string): string {
-  switch (toolKind) {
-    case "execute":
-      return "bash";
-    case "search":
-      return "grep";
-    case "read":
-      return "read";
-    case "edit":
-      return "edit";
-    case "fetch":
-      return "web_search";
-    case "delete":
-      return "delete";
-    case "move":
-      return "move";
-    case "think":
-      return "think";
-    default:
-      return "";
-  }
 }
 
 function hasArgument(
@@ -329,45 +230,6 @@ export function getStatusConfig(t: TranslateFn) {
   } as const;
 }
 
-// Get appropriate icon based on tool name
-export function getToolIcon(toolName: string) {
-  const name = toolName.toLowerCase();
-  if (name === "role_load") {
-    return Sparkles;
-  }
-  if (name === "question") {
-    return HelpCircle;
-  }
-  if (
-    name.includes("search") ||
-    name.includes("web") ||
-    name.includes("fetch")
-  ) {
-    return Globe;
-  }
-  if (name.includes("glob")) {
-    return Circle;
-  }
-  if (
-    name.includes("file") ||
-    name.includes("read") ||
-    name.includes("write")
-  ) {
-    return FileText;
-  }
-  if (
-    name.includes("bash") ||
-    name.includes("shell") ||
-    name.includes("terminal")
-  ) {
-    return Terminal;
-  }
-  if (name.includes("find") || name.includes("grep")) {
-    return Search;
-  }
-  return Zap;
-}
-
 // Get icon from ACP ToolKind (snake_case string from daemon).
 // Falls back to Zap when kind is absent or unrecognized.
 export function getToolIconByKind(kind: string | undefined) {
@@ -384,19 +246,8 @@ export function getToolIconByKind(kind: string | undefined) {
   }
 }
 
-// Check if this is a question tool
-export function isQuestionTool(toolName: string): boolean {
-  return toolName.toLowerCase() === "question";
-}
-
-// Check if this is a Write tool
-export function isWriteTool(toolName: string): boolean {
-  const name = toolName.toLowerCase();
-  return name === "write" || name === "write_file" || name === "writefile";
-}
-
 // Check if this is an Edit tool
-export function isEditTool(toolName: string): boolean {
+function isEditTool(toolName: string): boolean {
   const name = toolName.toLowerCase();
   return (
     name === "edit" ||
@@ -409,90 +260,9 @@ export function isEditTool(toolName: string): boolean {
   );
 }
 
-// Check if this is a Read tool
-export function isReadTool(toolName: string): boolean {
-  const name = toolName.toLowerCase();
-  return name === "read" || name === "read_file" || name === "readfile";
-}
-
-// Check if this is a command tool (bash, shell, terminal, run_command)
-export function isCommandTool(toolName: string): boolean {
-  const name = toolName.toLowerCase();
-  return (
-    name.includes("bash") ||
-    name.includes("shell") ||
-    name.includes("terminal") ||
-    name.includes("run_command")
-  );
-}
-
 export function isTodoTool(toolName: string): boolean {
   const name = toolName.toLowerCase();
   return name === "todowrite" || name === "todoread" || name === "todo_write" || name === "todo_read";
-}
-
-export function isCommandToolLikelyWaitingForInput(
-  _toolCall: Pick<ToolCall, "name" | "status" | "arguments" | "result">,
-): boolean {
-  return false;
-}
-
-// Check if this is a Task tool (subagent)
-export function isTaskTool(toolName: string): boolean {
-  return toolName.toLowerCase() === "task";
-}
-
-// Check if this is a Skill tool
-export function isSkillTool(toolName: string): boolean {
-  return toolName.toLowerCase() === "skill";
-}
-
-export function isRoleSkillTool(toolName: string): boolean {
-  return toolName.toLowerCase() === "role_skill";
-}
-
-export function isRoleLoadTool(toolName: string): boolean {
-  return toolName.toLowerCase() === "role_load";
-}
-
-// Get file extension from path
-export function getFileExtension(path: string): string {
-  const parts = path.split(".");
-  return parts.length > 1 ? parts.pop()?.toLowerCase() || "" : "";
-}
-
-// Get language name for display
-export function getLanguageName(ext: string): string {
-  const langMap: Record<string, string> = {
-    ts: "TypeScript",
-    tsx: "TypeScript",
-    js: "JavaScript",
-    jsx: "JavaScript",
-    py: "Python",
-    rb: "Ruby",
-    go: "Go",
-    rs: "Rust",
-    java: "Java",
-    cpp: "C++",
-    c: "C",
-    h: "C Header",
-    css: "CSS",
-    scss: "SCSS",
-    html: "HTML",
-    json: "JSON",
-    yaml: "YAML",
-    yml: "YAML",
-    md: "Markdown",
-    sql: "SQL",
-    sh: "Shell",
-    bash: "Bash",
-    zsh: "Zsh",
-    toml: "TOML",
-    xml: "XML",
-    swift: "Swift",
-    kt: "Kotlin",
-  };
-  return langMap[ext] || ext.toUpperCase();
 }
 
 // Format tool name for display
@@ -558,7 +328,7 @@ export function parseDeleteOnlyPatch(patchText: string): string[] | null {
   return deleteFiles.length > 0 ? deleteFiles : null;
 }
 
-export type ManageSkillsToolResult = {
+type ManageSkillsToolResult = {
   slug?: string;
   path?: string;
   runtimeActivation?: string;

@@ -14,8 +14,23 @@ prost-build = "0.13"
 
 [profile.release]
 # Use unwind so catch_unwind in email.rs and deps (e.g. html2md) work; abort would conflict.
+# (That is about `panic`, not about `lto` — the two were run together in an
+#  earlier version of this comment and `lto = false` inherited a reason that
+#  was never its own.)
+#
+# PERF-20: thin LTO. `lto = false` gave up every cross-crate inline in a
+# workspace whose hot paths span crates (teamclu-proto / teamclu-transport /
+# teamclu-gateway into the desktop binary). Thin is the right rung here rather
+# than `"fat"`: it runs in parallel across codegen units, so it costs link time
+# in the tens of seconds rather than the several minutes fat LTO adds to every
+# release build and every tagged release run.
+#
+# `opt-level = "s"` stays. This binary ships through the updater, users are on
+# consumer connections, and its own hot loops are I/O and SQLite rather than
+# arithmetic — the size is worth more here than the last few percent of code
+# speed. Revisit with a profile, not a hunch.
 codegen-units = 16
-lto = false
+lto = "thin"
 opt-level = "s"
 strip = "debuginfo"
 debug = 1

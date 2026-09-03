@@ -28,8 +28,8 @@ import {
   type PiAuthType,
   type PiProvider,
   type PiProviderList,
-} from '@/lib/daemon-pi-auth'
-import { encodeWorkspaceId } from '@/lib/daemon-local-client'
+} from '@/lib/daemon/daemon-pi-auth'
+import { encodeWorkspaceId } from '@/lib/daemon/daemon-local-client'
 import { SectionHeader, SettingCard } from './shared'
 import { TeamProviderCard } from './llm/TeamProviderCard'
 import { PiLoginDialog } from './llm/PiLoginDialog'

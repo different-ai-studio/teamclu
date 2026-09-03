@@ -2,12 +2,12 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 
 const getDaemonModelCatalog = vi.hoisted(() => vi.fn())
 
-vi.mock('@/lib/daemon-local-client', () => ({
+vi.mock('@/lib/daemon/daemon-local-client', () => ({
   getDaemonModelCatalog,
   encodeWorkspaceId: (p: string) => p,
 }))
 
-import { fetchLocalDaemonCatalog } from '../local-daemon-model-catalog'
+import { fetchLocalDaemonCatalog } from '@/lib/agent/local-daemon-model-catalog'
 
 const WS = '/Users/me/TeamClu Dev'
 

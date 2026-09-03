@@ -3,9 +3,9 @@ import { useDiagnosticsStore } from '@/stores/diagnostics-store'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useTabsStore } from '@/stores/tabs'
 import { useTeamShareBrowserStore, type TeamShareSection } from '@/stores/team-share-browser'
-import { resolveEmbedMode } from '@/lib/embed-mode'
-import { scheduleReleaseStuckModalLayers } from '@/lib/modal-layer-cleanup'
-import type { PageContext } from '@/lib/embed-page-context'
+import { resolveEmbedMode } from '@/lib/embed/embed-mode'
+import { scheduleReleaseStuckModalLayers } from '@/lib/ui/modal-layer-cleanup'
+import type { PageContext } from '@/lib/embed/embed-page-context'
 
 type View = 'chat' | 'settings'
 
@@ -20,13 +20,13 @@ function releaseStuckModalLayersAfterViewSwitch(): void {
   scheduleReleaseStuckModalLayers()
 }
 
-export type LayoutMode = 'task'
-export type MainContentLayout = 'stacked' | 'split'
+type LayoutMode = 'task'
+type MainContentLayout = 'stacked' | 'split'
 
 // Right panel tab in file mode
-export type FileModeRightTab = 'shortcuts' | 'changes' | 'files' | 'agent'
-export type DefaultPrimaryTab = 'session' | 'actors' | 'ideas' | 'shortcuts'
-export type DefaultMoreDestination = 'settings'
+type FileModeRightTab = 'shortcuts' | 'changes' | 'files' | 'agent'
+type DefaultPrimaryTab = 'session' | 'actors' | 'ideas' | 'shortcuts'
+type DefaultMoreDestination = 'settings'
 
 /** Preselected actor for the draft chat state: when the user taps an actor
  * row in the Actors tab, we record it here, switch nav back to Session, and
@@ -55,7 +55,7 @@ export type SettingsSection = 'llm' | 'general' | 'prompt' | 'channels' | 'autom
   | 'knowledgeAcl'
 
 /** Context passed when opening Agent settings from a blocked quick-new-chat action. */
-export type DaemonGeneralPrompt = 'quick_chat'
+type DaemonGeneralPrompt = 'quick_chat'
 
 interface UIState {
   /** True when the page was loaded with ?embed=chat — renders minimal layout. Read-only; no setter. */
@@ -242,7 +242,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   clearDaemonGeneralPrompt: () => set({ daemonGeneralPrompt: null }),
 
   closeSettings: () => {
-    useDiagnosticsStore.getState().clearReport()
+    const diagnostics = useDiagnosticsStore.getState()
+    diagnostics.clearReport()
+    diagnostics.clearFocus()
     set({
       currentView: 'chat',
       settingsInitialSection: null,
@@ -273,23 +275,17 @@ export const useUIStore = create<UIState>((set, get) => ({
       useCronStore.getState().setShowCronSessions(false)
     })
     import('@/stores/session-selection-store').then(({ useSessionSelectionStore }) => {
-      import('@/stores/streaming').then(({ useStreamingStore }) => {
-        import('@/stores/session').then(({ useSessionStore }) => {
-            useStreamingStore.getState().clearStreaming()
-            useSessionSelectionStore.getState().clearActiveSession()
+      import('@/stores/session-store').then(({ useSessionStore }) => {
+        useSessionSelectionStore.getState().clearActiveSession()
 
-            // Clear session state to show "Start a New Chat" UI
-            // Actual session will be created when user sends first message
-            useSessionStore.setState({
-              isLoading: false,
-              messageQueue: [],
-              todos: [],
-              sessionDiff: [],
-              sessionError: null,
-              sessionStatus: null,
-              pendingQuestions: [],
-              pendingPermissions: [],
-            })
+        // Clear session state to show "Start a New Chat" UI
+        // Actual session will be created when user sends first message
+        useSessionStore.setState({
+          isLoading: false,
+          messageQueue: [],
+          sessionError: null,
+          pendingQuestions: [],
+          pendingPermissions: [],
         })
       })
     })
@@ -304,7 +300,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     const { useWorkspaceStore } = await import('@/stores/workspace')
     const { useTabsStore } = await import('@/stores/tabs')
     const { useCurrentTeamStore } = await import('@/stores/current-team')
-    const { switchToSessionWorkspaceIfNeeded } = await import('@/lib/session-by-workspace')
+    const { switchToSessionWorkspaceIfNeeded } = await import('@/lib/session/session-by-workspace')
     
     const teamId = useCurrentTeamStore.getState().team?.id
 
@@ -381,7 +377,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     // dynamic-import to avoid a top-level cycle with session/workspace stores.
     void (async () => {
       const { useSessionSelectionStore } = await import('@/stores/session-selection-store')
-      const { useSessionStore } = await import('@/stores/session')
+      const { useSessionStore } = await import('@/stores/session-store')
       const { useWorkspaceStore } = await import('@/stores/workspace')
       useWorkspaceStore.getState().clearSelection()
       useWorkspaceStore.getState().closePanel()
@@ -389,10 +385,7 @@ export const useUIStore = create<UIState>((set, get) => ({
       useSessionStore.setState({
         isLoading: false,
         messageQueue: [],
-        todos: [],
-        sessionDiff: [],
         sessionError: null,
-        sessionStatus: null,
         pendingQuestions: [],
         pendingPermissions: [],
       })

@@ -16,7 +16,7 @@ import {
   reconcileDaemonTeamCloudConfig,
   uninstallDaemonTeamMcp,
   invalidateDaemonConnection,
-} from '../daemon-local-client'
+} from '@/lib/daemon/daemon-local-client'
 
 beforeEach(() => {
   invalidateDaemonConnection()

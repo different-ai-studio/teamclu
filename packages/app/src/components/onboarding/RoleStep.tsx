@@ -1,8 +1,8 @@
 import { useTranslation } from 'react-i18next'
 import { Terminal, Sparkles } from 'lucide-react'
 
-import { appDisplayName } from '@/lib/build-config'
-import { useAppVersion } from '@/lib/version'
+import { appDisplayName } from '@/lib/config/build-config'
+import { useAppVersion } from '@/lib/config/version'
 import { useOnboardingStore, type OnboardingRole } from '@/stores/onboarding'
 import { cn } from '@/lib/utils'
 

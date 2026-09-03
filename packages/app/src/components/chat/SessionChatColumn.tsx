@@ -1,19 +1,18 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { adaptTeamcluMessages } from "@/lib/v2-message-adapter";
+import { adaptTeamcluMessages } from "@/lib/messages/v2-message-adapter";
 import { MessageList, type MessageListHandle } from "./MessageList";
 import { ChatInputArea } from "./ChatInputArea";
 import { SessionErrorAlert } from "./SessionErrorAlert";
 import { SessionNoticeList } from "./SessionNoticeList";
 import { useChatSend } from "./use-chat-send";
-import { useSessionStore } from "@/stores/session";
+import { useSessionStore } from "@/stores/session-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useCurrentTeamStore } from "@/stores/current-team";
-import { useStreamingStore } from "@/stores/streaming";
 import {
   isStreamInterruptible,
   useV2StreamingStore,
@@ -24,22 +23,22 @@ import { useEngagedAgentRuntimeMap } from "@/hooks/use-engaged-agent-runtime-map
 import { useEngagedAgentUiStates } from "@/hooks/use-engaged-agent-ui-states";
 import { useEnsureEngagedRuntimesOnSessionFocus } from "@/hooks/use-ensure-engaged-runtimes-on-session-focus";
 import { useReensureRuntimesOnMqttReconnect } from "@/hooks/use-reensure-runtimes-on-mqtt-reconnect";
-import { ensureSessionLiveSubscribed } from "@/lib/session-live-subscriptions";
+import { ensureSessionLiveSubscribed } from "@/lib/session/session-live-subscriptions";
 import { ensureParticipantModels } from "@/stores/participant-model-store";
-import { isSoloAgentSession } from "@/lib/session-empty-thread-starters";
-import { isAgentActorType } from "@/lib/actor-type";
+import { isSoloAgentSession } from "@/lib/session/session-empty-thread-starters";
+import { isAgentActorType } from "@/lib/actor/actor-type";
 import { getBackend } from "@/lib/backend";
-import { resolveSessionEstablishedModel } from "@/lib/session-established-model";
+import { resolveSessionEstablishedModel } from "@/lib/session/session-established-model";
 import {
   selectAgentModel,
   resolveRuntimeStateEntryForAgent,
   backendTypeFromRuntimeEntry,
-} from "@/lib/runtime-state-resolve";
+} from "@/lib/agent/runtime-state-resolve";
 import {
   resolveAgentCatalogModels,
   localRecentModelFallback,
-} from "@/lib/agent-model-fallback";
-import { useLocalDaemonActorId } from "@/lib/daemon-agent-admin";
+} from "@/lib/agent/agent-model-fallback";
+import { useLocalDaemonActorId } from "@/lib/daemon/daemon-agent-admin";
 import { useLocalDaemonCatalogStore } from "@/stores/local-daemon-catalog-store";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { useAgentModelPickStore } from "@/stores/agent-model-pick-store";
@@ -52,7 +51,7 @@ import {
 import { useSessionNoticeStore } from "@/stores/session-notice-store";
 import { hasVisiblePendingPermissions } from "./PermissionCard";
 import { collectAcpStreamingPermissions } from "@/lib/teamclu/acp-permission-entries";
-import { useSessionPermissionMode } from "@/lib/session-permission-mode";
+import { useSessionPermissionMode } from "@/lib/session/session-permission-mode";
 import { interruptAgentActor } from "@/lib/teamclu/interrupt-agent";
 import { toast } from "sonner";
 import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
@@ -63,7 +62,7 @@ import type { Message as ProtoMessage } from "@/lib/proto/teamclu_pb";
 const EMPTY_AGENTS: AttachedAgent[] = [];
 const EMPTY_PROTO_MESSAGES: ProtoMessage[] = [];
 
-export type SessionChatColumnProps = {
+type SessionChatColumnProps = {
   /** Persisted session for messages / MQTT (null before lazy thread create). */
   sessionId: string | null;
   /** Key for composer-scoped state (engaged agent, model pick). Always set. */
@@ -108,8 +107,6 @@ export function SessionChatColumn({
   const messageQueue = useSessionStore((s) => s.messageQueue);
   const removeFromQueue = useSessionStore.getState().removeFromQueue;
   const clearSessionError = useSessionStore.getState().clearSessionError;
-  const streamingMessageId = useStreamingStore((s) => s.streamingMessageId);
-  const todos = useSessionStore((s) => s.todos);
   const pendingPermissions = useSessionStore((s) => s.pendingPermissions);
   const sessionError = useSessionStore((s) => s.sessionError);
   const error = useSessionStore((s) => s.error);
@@ -155,7 +152,7 @@ export function SessionChatColumn({
 
   const showInlineTodo = React.useMemo(() => {
     if (!sessionId) return false;
-    if (todos.length === 0 && messageQueue.length === 0 && planTodos.length === 0) return false;
+    if (messageQueue.length === 0 && planTodos.length === 0) return false;
     return !hasVisiblePendingPermissions(
       sessionId,
       useSessionStore.getState().sessions,
@@ -169,14 +166,10 @@ export function SessionChatColumn({
     messageQueue.length,
     pendingPermissions,
     sessionPermissionMode,
-    todos,
     planTodos.length,
   ]);
 
-  const combinedTodos = React.useMemo(
-    () => (planTodos.length > 0 ? [...planTodos, ...todos] : todos),
-    [planTodos, todos],
-  );
+  const combinedTodos = planTodos;
   const hasComposerPlanData =
     Boolean(sessionId) && (combinedTodos.length > 0 || messageQueue.length > 0);
 
@@ -501,10 +494,7 @@ export function SessionChatColumn({
       ? Object.values(s.byKey).some((e) => e.sessionId === sessionId && e.active)
       : false,
   );
-  const isStreaming =
-    activeStreamingAgents.length > 0 ||
-    v2HasActiveStream ||
-    Boolean(streamingMessageId && sessionId && displayMessages.some((m) => m.id === streamingMessageId));
+  const isStreaming = activeStreamingAgents.length > 0 || v2HasActiveStream;
 
   const handleInterruptAgent = React.useCallback(
     (agentActorId: string) => {
@@ -593,11 +583,7 @@ export function SessionChatColumn({
           messages={displayMessages}
           activeSessionId={sessionId}
           isStreaming={isStreaming}
-          streamingMessageId={
-            sessionId && streamingMessageId && displayMessages.some((m) => m.id === streamingMessageId)
-              ? streamingMessageId
-              : null
-          }
+          streamingMessageId={null}
           compact={compact}
           externalComposer={inputLayout === "inline"}
           emptyState={suppressThreadBadge ? null : undefined}

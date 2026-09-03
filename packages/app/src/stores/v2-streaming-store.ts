@@ -4,12 +4,12 @@ import {
   joinTextPartsFromParts,
   reconcileSingleSegmentDrift,
   replaceLastPostToolTextPart,
-} from "@/lib/agent-reply-transcript";
-import { logInterruptMsgDiag } from "@/lib/interrupt-msg-diag-core";
+} from "@/lib/agent/agent-reply-transcript";
+import { logInterruptMsgDiag } from "@/lib/diagnostics/interrupt-msg-diag-core";
 import {
   logStreamToolDiag,
   summarizeToolCallsForDiag,
-} from "@/lib/stream-tool-diag";
+} from "@/lib/diagnostics/stream-tool-diag";
 import type { MessagePart, ToolCall } from "@/stores/session-types";
 import type { ToolCallContentBlock } from "@/components/chat/tool-calls/tool-call-content";
 import type { AcpEvent } from "@/lib/proto/amux_pb";
@@ -82,7 +82,7 @@ export interface ArchivedEntry extends AgentStreamEntry {
 }
 
 /** Last non-empty agent plan for a session — survives `clearActor` after reply persist. */
-export interface PersistedSessionPlan {
+interface PersistedSessionPlan {
   actorId: string;
   planEntries: StreamingPlanEntry[];
   lastUpdate: number;
@@ -321,7 +321,7 @@ function persistSessionPlan(
 
 
 /** True when the stream has thinking, output, or tools — excluding error banners. */
-export function streamEntryHasNonErrorContent(entry: AgentStreamEntry): boolean {
+function streamEntryHasNonErrorContent(entry: AgentStreamEntry): boolean {
   if (entry.thinkingText.length > 0 || entry.outputText.length > 0) return true;
   if (entry.toolCalls.length > 0) return true;
   return entryParts(entry).some(

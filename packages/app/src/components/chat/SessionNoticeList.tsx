@@ -1,4 +1,3 @@
-import * as React from 'react'
 import { useSessionNoticeStore, type SessionNotice } from '@/stores/session-notice-store'
 
 type Props = {

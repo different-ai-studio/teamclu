@@ -5,13 +5,13 @@
 // valid against TeamClu's Cloud API. This is the reverse of
 // admin-sso-inject.ts.
 
-import { getFeatures } from "@/lib/remote-features";
-import { fetchPublicConfig } from "@/lib/bootstrap";
-import { getEffectiveServerConfigSync } from "@/lib/server-config";
+import { getFeatures } from "@/lib/config/remote-features";
+import { fetchPublicConfig } from "@/lib/config/bootstrap";
+import { getEffectiveServerConfigSync } from "@/lib/config/server-config";
 import { invoke } from "@tauri-apps/api/core";
 import { AuthError } from "@/lib/auth/types";
 
-export interface SsoConfig {
+interface SsoConfig {
   /** Full sign-in URL to load in the webview. */
   loginUrl: string;
   /** Admin host — passed to the native commands so read/clear only act here. */

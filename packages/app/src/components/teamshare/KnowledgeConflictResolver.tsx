@@ -25,9 +25,9 @@ import {
   type ConflictChoice,
   type TeamConflict,
 } from '@/stores/team-conflicts'
-import { teamSyncKeyForPath } from '@/lib/team-skill-paths'
+import { teamSyncKeyForPath } from '@/lib/team/team-skill-paths'
 import { encodeKnowledgeConflictTarget } from '@/lib/tabs/teamshare-target'
-import { formatDateTime } from '@/lib/date-format'
+import { formatDateTime } from '@/lib/ui/date-format'
 
 async function readText(path: string): Promise<string | null> {
   try {

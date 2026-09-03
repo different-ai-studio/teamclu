@@ -76,7 +76,7 @@ vi.mock("@/lib/utils", () => ({
   isTauri: () => false,
 }));
 
-vi.mock("@/hooks/useFileChangeListener", () => ({
+vi.mock("@/hooks/use-file-change-listener", () => ({
   useFileChangeListener: vi.fn(),
 }));
 

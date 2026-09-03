@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createTelemetryModule } from "../telemetry";
+import { createTelemetryModule } from "@/lib/backend/cloud-api/telemetry";
 
 function fakeClient() {
   const calls: Array<{ method: string; path: string; body?: unknown }> = [];

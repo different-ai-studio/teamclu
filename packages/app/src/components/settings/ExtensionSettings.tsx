@@ -3,13 +3,13 @@ import { useTranslation } from 'react-i18next'
 import { ChevronDown, Puzzle, Settings2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useAppVersion } from '@/lib/version'
+import { useAppVersion } from '@/lib/config/version'
 import { ExtensionGeneralSection } from './ExtensionGeneralSection'
 
 type ExtensionSettingsSection = 'general'
 
 /** Sidebar collapses to icon-only below this container width (px). */
-export const EXTENSION_SETTINGS_COMPACT_MAX_WIDTH = 560
+const EXTENSION_SETTINGS_COMPACT_MAX_WIDTH = 560
 
 interface Section {
   id: ExtensionSettingsSection

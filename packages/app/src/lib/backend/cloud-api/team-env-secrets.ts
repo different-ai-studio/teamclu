@@ -1,4 +1,4 @@
-import type { CloudApiClient } from "./http";
+import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 /**
  * Team env secrets client.
@@ -14,7 +14,7 @@ import type { CloudApiClient } from "./http";
  * only after the Rust side decrypts.
  */
 
-export interface TeamEnvEnvelope {
+interface TeamEnvEnvelope {
   v: number;
   /** Base64 12-byte nonce. */
   nonce: string;

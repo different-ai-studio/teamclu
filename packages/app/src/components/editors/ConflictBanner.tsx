@@ -11,7 +11,7 @@ import { useTranslation } from "react-i18next";
 import { AlertTriangle, Check, X, GitCompare } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export interface ConflictBannerProps {
+interface ConflictBannerProps {
   /** Called when user accepts the agent's version */
   onAcceptAgent: () => void;
   /** Called when user keeps their own version */

@@ -5,8 +5,9 @@ import { ChevronDown, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
-import { useSessionStore, type Message } from "@/stores/session";
-import { useStreamingStore } from "@/stores/streaming";
+import { useSessionStore } from "@/stores/session-store";
+import { type Message } from "@/stores/session-types";
+import { useSessionListStore } from "@/stores/session-list-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { Button } from "@/components/ui/button";
 import { ChatMessage } from "./ChatMessage";
@@ -17,9 +18,9 @@ import {
   flashChatMessage,
   scrollChatMessageIntoView,
   type ChatScrollToMessageDetail,
-} from "@/lib/chat-scroll-to-message";
+} from "@/lib/ui/chat-scroll-to-message";
 import { DEFAULT_INPUT_AREA_HEIGHT, SAFE_BOTTOM_SPACING } from "./layout-constants";
-import { canStartThreadFromNewestIndex } from "@/lib/thread-fork";
+import { canStartThreadFromNewestIndex } from "@/lib/session/thread-fork";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -33,7 +34,7 @@ const LOAD_EARLIER_MESSAGE_COUNT = 60;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface MessageListProps {
+interface MessageListProps {
   messages: Message[];
   activeSessionId: string | null;
   isStreaming: boolean;
@@ -80,19 +81,11 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
     const { t } = useTranslation();
 
     // ── Store selectors ──────────────────────────────────────────────────
-    const isLoading = useSessionStore((s) => s.isLoading);
+    const isLoading = useSessionListStore((s) => s.loading);
     const v2StreamScrollTrigger = useV2StreamingStore((s) =>
       activeSessionId ? (s.revisionBySession[activeSessionId] ?? 0) : 0,
     );
 
-    const childStreamingScrollTrigger = useStreamingStore((s) => {
-      const cs = s.childSessionStreaming;
-      let len = 0;
-      for (const k in cs) {
-        len += cs[k]?.text?.length || 0;
-      }
-      return len;
-    });
     // PERF: Return primitive string instead of session object.
     // Object references from .find() change on every sessions update → unnecessary re-renders.
     // Use `activeSessionId` prop (may lag store during ChatPanel fade) so paths match shown messages.
@@ -404,10 +397,10 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
     // ResizeObserver is the primary driver in real browsers; this is the
     // fallback for JSDOM (tests) where ResizeObserver does not fire.
     React.useEffect(() => {
-      if (v2StreamScrollTrigger > 0 || childStreamingScrollTrigger > 0) {
+      if (v2StreamScrollTrigger > 0) {
         scrollToBottomIfAtBottom();
       }
-    }, [v2StreamScrollTrigger, childStreamingScrollTrigger, scrollToBottomIfAtBottom]);
+    }, [v2StreamScrollTrigger, scrollToBottomIfAtBottom]);
 
     // After a persisted agent reply lands in the list, re-pin to the bottom
     // once layout commits (stream bubble may shrink/move in the same tick).

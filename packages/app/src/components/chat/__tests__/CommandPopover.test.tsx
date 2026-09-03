@@ -2,7 +2,8 @@ import * as React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { CommandPopover } from '../CommandPopover'
-import { SKILLS_CHANGED_EVENT, useWorkspaceRuntimeRefreshPoll } from '@/hooks/useAppInit'
+import { SKILLS_CHANGED_EVENT } from '@/lib/skills/changed-event';
+import { useWorkspaceRuntimeRefreshPoll } from '@/hooks/use-workspace-runtime-refresh-poll';
 import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 
 const mocks = vi.hoisted(() => ({
@@ -59,8 +60,8 @@ vi.mock('@/lib/backend', () => ({
   getBackend: () => ({}),
 }))
 
-vi.mock('@/lib/daemon-local-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/daemon-local-client')>()
+vi.mock('@/lib/daemon/daemon-local-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/daemon/daemon-local-client')>()
   return {
     ...actual,
     getDaemonPermissions: (...args: unknown[]) => mocks.getDaemonPermissions(...args),
@@ -73,7 +74,7 @@ vi.mock('@/lib/roles/loader', () => ({
   loadAllRoles: (...args: unknown[]) => mocks.loadAllRoles(...args),
 }))
 
-vi.mock('@/lib/teamclu-config', () => ({
+vi.mock('@/lib/daemon/teamclu-config', () => ({
   resolveSkillPermission: () => ({ permission: 'allow', isExact: false }),
 }))
 

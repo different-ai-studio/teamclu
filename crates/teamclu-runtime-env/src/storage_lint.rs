@@ -28,7 +28,6 @@ const OWNERS: &[&str] = &[
 ///
 /// **This list may only get shorter.** Sorted; keep it that way.
 const DEBT: &[&str] = &[
-    "apps/daemon/src/channels/manager.rs",
     // Test-only, and the name is the subject of the test: it plants
     // `.amuxd-copilot361` as a branded `AMUXD_HOME` and checks the reaper stays
     // inside it. Landed with #1218. Clearable by asking `storage_namespace` to
@@ -63,11 +62,8 @@ const DEBT: &[&str] = &[
     // of those assertions — this is the one entry that wants OWNERS-like
     // treatment rather than a rewrite.
     "apps/desktop/src/commands/amuxd_supervisor.rs",
-    "apps/desktop/src/commands/cron/delivery.rs",
     "apps/desktop/src/commands/diagnostics.rs",
-    "apps/desktop/src/commands/mod.rs",
     "apps/desktop/src/commands/team_share/enable.rs",
-    "apps/desktop/src/commands/team_skills.rs",
     "apps/desktop/tests/team_share_smoke.rs",
     "crates/teamclu-gateway/src/lib.rs",
     "crates/teamclu-runtime-env/src/active_session.rs",
@@ -79,7 +75,7 @@ const DEBT: &[&str] = &[
     "packages/app/src/components/settings/__tests__/SettingsNavigation.test.tsx",
     "packages/app/src/lib/__tests__/mid-turn-followup-repro.test.ts",
     "packages/app/src/lib/__tests__/session-binding-live.test.ts",
-    "packages/app/src/lib/build-config.ts",
+    "packages/app/src/lib/config/build-config.ts",
 ];
 
 /// A hand-written home dir is a quote immediately followed by one of these.
@@ -99,7 +95,13 @@ const SKIP_DIRS: &[&str] = &[
 const SCANNED_EXTENSIONS: &[&str] = &["rs", "ts", "tsx"];
 
 /// True when `text` contains a string literal starting with a home-dir name.
-fn has_hand_written_home_dir(text: &str) -> bool {
+///
+/// `backtick_opens_a_string` is per-language: in TypeScript a backtick opens a
+/// template literal, so `` `.teamclu/x` `` there really is a hand-written path.
+/// Rust has no backtick literal — a backtick can only be doc prose, and
+/// rewriting a doc comment that names the directory it documents is exactly the
+/// noise this lint set out not to create.
+fn has_hand_written_home_dir(text: &str, backtick_opens_a_string: bool) -> bool {
     let bytes = text.as_bytes();
     for needle in NEEDLES {
         let mut from = 0usize;
@@ -107,7 +109,10 @@ fn has_hand_written_home_dir(text: &str) -> bool {
             let at = from + rel;
             // Only a quoted literal counts — prose and comments mention these
             // names constantly and rewriting them would be pure noise.
-            if at > 0 && matches!(bytes[at - 1], b'"' | b'\'' | b'`') {
+            let quoted = at > 0
+                && (matches!(bytes[at - 1], b'"' | b'\'')
+                    || (backtick_opens_a_string && bytes[at - 1] == b'`'));
+            if quoted {
                 return true;
             }
             from = at + needle.len();
@@ -171,14 +176,29 @@ mod tests {
 
     #[test]
     fn needle_matches_only_quoted_literals() {
-        assert!(has_hand_written_home_dir(r#"h.join(".amuxd")"#));
-        assert!(has_hand_written_home_dir(r#"'.teamclu/secrets'"#));
-        assert!(has_hand_written_home_dir(r#"`.teamclaw`"#));
-        assert!(has_hand_written_home_dir(r#"".amuxd-copilot361""#));
+        assert!(has_hand_written_home_dir(r#"h.join(".amuxd")"#, false));
+        assert!(has_hand_written_home_dir(r#"'.teamclu/secrets'"#, false));
+        assert!(has_hand_written_home_dir(r#"".amuxd-copilot361""#, false));
         // Prose, comments and derived paths are not the target.
-        assert!(!has_hand_written_home_dir("// lives under ~/.amuxd today"));
         assert!(!has_hand_written_home_dir(
-            r#"amuxd_home_from_env().join("teams")"#
+            "// lives under ~/.amuxd today",
+            false
+        ));
+        assert!(!has_hand_written_home_dir(
+            r#"amuxd_home_from_env().join("teams")"#,
+            false
+        ));
+    }
+
+    #[test]
+    fn a_backtick_is_a_literal_in_ts_and_prose_in_rust() {
+        // A TypeScript template literal really does build the path.
+        assert!(has_hand_written_home_dir(r#"`.teamclaw/${team}`"#, true));
+        // The same characters in a Rust doc comment document the directory;
+        // rewriting that sentence would say less and pass a lint.
+        assert!(!has_hand_written_home_dir(
+            r#"/// writes `.teamclu/` into the workspace"#,
+            false
         ));
     }
 
@@ -203,8 +223,9 @@ mod tests {
         let mut offenders: Vec<String> = sources
             .iter()
             .filter(|path| {
+                let backticks = path.extension().and_then(|e| e.to_str()) != Some("rs");
                 fs::read_to_string(path)
-                    .map(|text| has_hand_written_home_dir(&text))
+                    .map(|text| has_hand_written_home_dir(&text, backticks))
                     .unwrap_or(false)
             })
             .filter_map(|path| repo_relative(&root, path))

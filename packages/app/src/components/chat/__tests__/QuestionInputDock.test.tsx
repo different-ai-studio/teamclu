@@ -26,7 +26,7 @@ vi.mock('@/lib/utils', () => ({
 const mockAnswerQuestion = vi.fn(() => Promise.resolve());
 const mockSkipQuestion = vi.fn(() => Promise.resolve());
 
-vi.mock('@/stores/session', () => ({
+vi.mock('@/stores/session-store', () => ({
   useSessionStore: (selector: (state: { answerQuestion: typeof mockAnswerQuestion; skipQuestion: typeof mockSkipQuestion }) => unknown) =>
     selector({
       answerQuestion: mockAnswerQuestion,

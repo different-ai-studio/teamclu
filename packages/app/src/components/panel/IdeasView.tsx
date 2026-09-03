@@ -9,9 +9,9 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { getBackend } from '@/lib/backend'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useIdeaDetailStore } from '@/stores/idea-detail'
-import { formatRelativeTime } from '@/lib/date-format'
+import { formatRelativeTime } from '@/lib/ui/date-format'
 import { cn, isTauri } from '@/lib/utils'
-import * as localCache from '@/lib/local-cache'
+import * as localCache from '@/lib/cache/local-cache'
 import { syncIdeasForTeam } from '@/lib/sync/idea-sync'
 
 export type IdeaRow = {
@@ -23,9 +23,9 @@ export type IdeaRow = {
   updated_at: string
 }
 
-export type IdeaCreatorMap = Map<string, string>
+type IdeaCreatorMap = Map<string, string>
 
-export interface UseIdeasForTeamResult {
+interface UseIdeasForTeamResult {
   ideas: IdeaRow[]
   creators: IdeaCreatorMap
   loading: boolean
@@ -34,7 +34,7 @@ export interface UseIdeasForTeamResult {
   refetch: () => void
 }
 
-export function useIdeasForTeam(): UseIdeasForTeamResult {
+function useIdeasForTeam(): UseIdeasForTeamResult {
   const currentTeamId = useCurrentTeamStore(s => s.team?.id ?? null)
   const [teamId, setTeamId] = React.useState<string | null>(null)
   const [ideas, setIdeas] = React.useState<IdeaRow[]>([])
@@ -169,7 +169,7 @@ type DragOverlay = {
   width: number
 }
 
-export function reorderIdeaRows(rows: IdeaRow[], activeId: string, overId: string): IdeaRow[] {
+function reorderIdeaRows(rows: IdeaRow[], activeId: string, overId: string): IdeaRow[] {
   if (activeId === overId) return rows
   const activeIndex = rows.findIndex((row) => row.id === activeId)
   const overIndex = rows.findIndex((row) => row.id === overId)

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Shield } from 'lucide-react'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { cn } from '@/lib/utils'
-import { appDisplayName } from '@/lib/build-config'
+import { appDisplayName } from '@/lib/config/build-config'
 import { ToggleSwitch } from './shared'
 
 export function PrivacySection() {

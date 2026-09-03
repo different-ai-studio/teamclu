@@ -186,6 +186,7 @@ pub async fn spawn(
         None,
         runtime_context,
         session_prompt,
+        None,
     )
     .await
 }
@@ -215,6 +216,9 @@ pub async fn spawn_with_refresh_watch_registry(
     >,
     runtime_context: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
     session_prompt: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
+    // Shared with the daemon spawn path. `None` in focused HTTP tests, which
+    // then fall back to a resolver built from `backend` if one is present.
+    managed_llm: Option<Arc<crate::runtime::managed_llm::ManagedLlmResolver>>,
 ) -> anyhow::Result<HttpHandle> {
     // Resolve token + port files (defaults live in DaemonConfig::config_dir).
     let token_path = http
@@ -252,16 +256,23 @@ pub async fn spawn_with_refresh_watch_registry(
     let cors_layer = cors::build(&http.allowed_origins)
         .map_err(|e| anyhow::anyhow!("cors build: {}", e.detail))?;
 
-    // Built from the same backend the routes already hold, so `get_providers`
-    // can reconcile `provider.team` against the team's current cloud LLM config
-    // before reading it back off disk.
-    let managed_llm = backend.clone().map(|b| {
-        Arc::new(
-            crate::runtime::managed_llm::ManagedLlmResolver::new(b).with_tokens(Some(
-                crate::runtime::gateway_token::GatewayTokenSource::new(tokens.clone()),
-            )),
-        )
-    });
+    // The listener owns TokenStore and the bound address, so the shared
+    // resolver is completed here — after bind, before the router accepts
+    // requests. Runtime assemble and provider GET must mint from this
+    // source and write the same local proxy URL; a second resolver would
+    // oscillate `provider.team` and roll every OpenCode host.
+    let local_http_base = loopback_runtime_context_url(addr, local_addr);
+    let managed_llm = match managed_llm {
+        Some(resolver) => {
+            bind_managed_llm_to_listener(&resolver, &tokens, local_http_base);
+            Some(resolver)
+        }
+        None => backend.clone().map(|b| {
+            let resolver = Arc::new(crate::runtime::managed_llm::ManagedLlmResolver::new(b));
+            bind_managed_llm_to_listener(&resolver, &tokens, local_http_base);
+            resolver
+        }),
+    };
     // Same shape for team MCP / team env: desktop posts after a Cloud API write
     // so the daemon cache converges immediately instead of waiting for the tick.
     let team_cloud = backend
@@ -343,6 +354,17 @@ pub async fn spawn_with_refresh_watch_registry(
         runtime_context_join,
         runtime_context_shutdown,
     })
+}
+
+fn bind_managed_llm_to_listener(
+    resolver: &crate::runtime::managed_llm::ManagedLlmResolver,
+    tokens: &TokenStore,
+    local_http_base: String,
+) {
+    resolver.set_tokens(crate::runtime::gateway_token::GatewayTokenSource::new(
+        tokens.clone(),
+    ));
+    resolver.set_local_http_base(local_http_base);
 }
 
 /// Background reaper: prunes expired session tokens every minute.
@@ -1609,9 +1631,7 @@ mod tests {
         {
             let mut mgr = manager.lock().await;
             mgr.add_test_runtime("runtime-prompt");
-            mgr.get_handle_mut("runtime-prompt")
-                .unwrap()
-                .owner_actor_id = "agent-1".into();
+            mgr.get_handle_mut("runtime-prompt").unwrap().owner_actor_id = "agent-1".into();
         }
         let prompt_service = Arc::new(SessionPromptService::new(
             Arc::clone(&manager),
@@ -1772,11 +1792,7 @@ mod tests {
             .expect("token");
 
         let backend = Arc::new(MockBackend::default());
-        seed_session_prompt_backend(
-            &backend,
-            "teamclu-z",
-            &[("agent-z", "Bot", "agent")],
-        );
+        seed_session_prompt_backend(&backend, "teamclu-z", &[("agent-z", "Bot", "agent")]);
         let manager = Arc::new(Mutex::new(RuntimeManager::new(
             std::collections::HashMap::new(),
             None,
@@ -1784,14 +1800,9 @@ mod tests {
         {
             let mut mgr = manager.lock().await;
             mgr.add_test_runtime("runtime-z");
-            mgr.get_handle_mut("runtime-z")
-                .unwrap()
-                .owner_actor_id = "agent-z".into();
+            mgr.get_handle_mut("runtime-z").unwrap().owner_actor_id = "agent-z".into();
         }
-        let prompt_service = Arc::new(SessionPromptService::new(
-            Arc::clone(&manager),
-            backend,
-        ));
+        let prompt_service = Arc::new(SessionPromptService::new(Arc::clone(&manager), backend));
 
         let meta = metadata("actor-test".into(), "test");
         let runtime = crate::http::runtime_adapter::StubRuntimeAdapter::new(256);
@@ -1809,11 +1820,14 @@ mod tests {
         .with_runtime_context(Arc::clone(&service))
         .with_session_prompt(Some(prompt_service));
 
-        let (dedicated_base, join, shutdown_tx) =
-            spawn_dedicated_runtime_context_listener(state).await.unwrap();
+        let (dedicated_base, join, shutdown_tx) = spawn_dedicated_runtime_context_listener(state)
+            .await
+            .unwrap();
         let client = reqwest::Client::new();
         let ok: serde_json::Value = client
-            .post(format!("{dedicated_base}/internal/runtime-context/session-prompt"))
+            .post(format!(
+                "{dedicated_base}/internal/runtime-context/session-prompt"
+            ))
             .bearer_auth(&token)
             .json(&ResolveRuntimeContextRequest {
                 backend_session_id: "backend-z".into(),

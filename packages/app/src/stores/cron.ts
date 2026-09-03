@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { withAsync } from '@/lib/store-utils'
 import { getPreferredLanguage } from '@/lib/locale'
 import i18n from '@/lib/i18n'
-import { ensureCronSessionVisible, hydrateCronSessionMessages } from '@/lib/cron-session-messages'
+import { ensureCronSessionVisible, hydrateCronSessionMessages } from '@/lib/cron/cron-session-messages'
 // ==================== Types ====================
 
 export type ScheduleKind = 'at' | 'every' | 'cron'
@@ -77,7 +77,7 @@ async function pinJobModelToSession(sessionId: string, jobId: string): Promise<v
   try {
     const model = useCronStore.getState().jobs.find((j) => j.id === jobId)?.payload.model?.trim()
     if (!model) return
-    const { getLocalDaemonActorId } = await import('@/lib/daemon-agent-admin')
+    const { getLocalDaemonActorId } = await import('@/lib/daemon/daemon-agent-admin')
     const agentActorId = (await getLocalDaemonActorId())?.trim()
     if (!agentActorId) return
     const { useAgentModelPickStore } = await import('@/stores/agent-model-pick-store')
@@ -157,7 +157,7 @@ export interface CronPayload {
 
 export type CronPermissionMode = 'full_access' | 'default'
 
-export type DeliveryMode = 'announce' | 'none'
+type DeliveryMode = 'announce' | 'none'
 export type DeliveryChannel = 'discord' | 'feishu' | 'email' | 'kook' | 'wechat' | 'wecom' | 'seatalk'
 
 export interface CronDelivery {
@@ -167,7 +167,7 @@ export interface CronDelivery {
   bestEffort: boolean
 }
 
-export type RunStatus = 'success' | 'failed' | 'timeout' | 'running' | 'stale'
+type RunStatus = 'success' | 'failed' | 'timeout' | 'running' | 'stale'
 
 export interface CronJob {
   id: string

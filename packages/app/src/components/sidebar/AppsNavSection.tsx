@@ -11,9 +11,15 @@ import { cn } from '@/lib/utils'
 import { useUIStore } from '@/stores/ui'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { AppLibraryDialog } from '@/components/apps/AppLibraryDialog'
-import { resolveAppType } from '@/lib/app-types'
-import { appStatusMeta, showsPublicBadge } from '@/lib/app-list-helpers'
+import { lazyNamed } from '@/lib/lazy-component'
+import { useEverTrue } from '@/hooks/use-ever-true'
+
+const AppLibraryDialog = lazyNamed(
+  () => import('@/components/apps/AppLibraryDialog'),
+  'AppLibraryDialog',
+)
+import { resolveAppType } from '@/lib/apps/app-types'
+import { appStatusMeta, showsPublicBadge } from '@/lib/apps/app-list-helpers'
 import type { AppRow } from '@/lib/backend/types'
 
 const APPS_EXPANDED_STORAGE_KEY = 'teamclu.nav.appsExpanded'
@@ -132,6 +138,9 @@ export function AppsNavSection() {
 
   const [listExpanded, setListExpanded] = React.useState(readStoredAppsExpanded)
   const [libraryOpen, setLibraryOpen] = React.useState(false)
+  // Loads the library dialog's chunk on first open; stays mounted after so the
+  // close animation and dialog state behave as with a permanent mount.
+  const mountLibraryDialog = useEverTrue(libraryOpen)
   const selectedRowRef = React.useRef<HTMLButtonElement>(null)
   const prevSelectedAppId = React.useRef<string | null>(null)
 
@@ -277,7 +286,11 @@ export function AppsNavSection() {
         )}
       </div>
 
-      <AppLibraryDialog open={libraryOpen} onOpenChange={setLibraryOpen} teamId={teamId} />
+      {mountLibraryDialog ? (
+        <React.Suspense fallback={null}>
+          <AppLibraryDialog open={libraryOpen} onOpenChange={setLibraryOpen} teamId={teamId} />
+        </React.Suspense>
+      ) : null}
     </>
   )
 }

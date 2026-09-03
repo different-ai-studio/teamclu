@@ -5,9 +5,9 @@ import {
   loadActorsForTeam,
   upsertActorsBatch,
   type ActorRow as CachedActorRow,
-} from '@/lib/local-cache'
+} from '@/lib/cache/local-cache'
 import { isTauri } from '@/lib/utils'
-import { isActorOnline, resolveActorOnlineStatus } from '@/lib/actor-online'
+import { isActorOnline, resolveActorOnlineStatus } from '@/lib/actor/actor-online'
 import { useCurrentTeamStore } from '@/stores/current-team'
 
 export { isActorOnline, resolveActorOnlineStatus }
@@ -42,7 +42,7 @@ export { isActorOnline, resolveActorOnlineStatus }
  * It used to be flattened into `member` here, which put every WeCom contact in
  * the members list wearing the "Team" subtitle.
  */
-export type ActorKind = 'member' | 'agent' | 'external'
+type ActorKind = 'member' | 'agent' | 'external'
 
 export type ActorRow = {
   id: string
@@ -293,7 +293,7 @@ export function notifyActorDirectorySynced(teamId: string): void {
   if (slice?.started && loadTeamDirectory) void loadTeamDirectory(teamId, false)
 }
 
-export interface UseActorDirectoryResult {
+interface UseActorDirectoryResult {
   actors: ActorRow[]
   loading: boolean
   error: boolean

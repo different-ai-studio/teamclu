@@ -4,7 +4,7 @@ import {
   isTerminalAgentStatus,
   normalizeToolResultEvent,
   normalizeToolUseEvent,
-} from "@/lib/live-agent-stream";
+} from "@/lib/stream/live-agent-stream";
 import { handleAcpPermissionRequest } from "@/lib/teamclu/handle-acp-permission-request";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 

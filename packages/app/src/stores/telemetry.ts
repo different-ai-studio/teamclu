@@ -1,4 +1,4 @@
-import { appShortName } from '@/lib/build-config'
+import { appShortName } from '@/lib/config/build-config'
 import { create } from 'zustand'
 import type {
   TelemetryConsent,
@@ -7,7 +7,7 @@ import type {
 } from '@/lib/telemetry/types'
 import { ScoringEngine } from '@/lib/telemetry/scoring-engine'
 import { buildSessionReport } from '@/lib/telemetry/report-builder'
-import { useSessionStore } from '@/stores/session'
+import { useSessionStore } from '@/stores/session-store'
 import { insertFeedback } from '@/lib/telemetry/supabase-feedback'
 import { insertSessionReport } from '@/lib/telemetry/supabase-session-report'
 import { getBackend } from '@/lib/backend'
@@ -92,7 +92,7 @@ const scoredSessions = new Set<string>()
  */
 async function ensureSessionMessagesLoaded(sessionId: string): Promise<void> {
   const sessionStore = useSessionStore.getState()
-  const messages = sessionStore.getSessionMessages(sessionId)
+  const messages = sessionStore.sessions.find((s) => s.id === sessionId)?.messages ?? []
   
   // If session has messages with token data, we're good
   if (messages && messages.length > 0) {
@@ -395,7 +395,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     idleTimers.set(sessionId, timer)
   },
 
-  generateAllSessionReports: async (workspacePath?: string) => {
+  generateAllSessionReports: async (_workspacePath?: string) => {
     if (!isTauri()) return
     const { consent, isGeneratingReports } = get()
     if (consent !== 'granted') {
@@ -412,11 +412,6 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
 
     try {
       const sessionStore = useSessionStore.getState()
-      
-      // Load all sessions and their messages (same as Token Usage page)
-      console.log('[telemetry] Loading all session messages...')
-      await sessionStore.loadAllSessionMessages(workspacePath)
-
       const sessions = sessionStore.sessions
       console.log(`[telemetry] Processing ${sessions.length} sessions`)
 

@@ -67,7 +67,7 @@ impl Registry {
             .read()
             .unwrap()
             .values()
-            .filter(|h| workspace_id.map_or(true, |w| h.workspace_id == w))
+            .filter(|h| workspace_id.is_none_or(|w| h.workspace_id == w))
             .map(|h| TerminalSummary {
                 id: h.id.clone(),
                 shell: h.shell.clone(),

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { ArrowLeft, ArrowRight, RotateCw, Lock } from "lucide-react"
 import { cn, isTauri } from "@/lib/utils"
-import { normalizeUrl } from "@/lib/webview-utils"
+import { normalizeUrl } from "@/lib/ui/webview-utils"
 import { useTabsStore } from "@/stores/tabs"
 
 interface WebViewToolbarProps {

@@ -1,7 +1,7 @@
 import { useOssSyncStore } from '@/stores/oss-sync'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useVersionHistoryStore } from '@/stores/version-history'
-import type { HistoryProvider, HistoryPage } from './types'
+import type { HistoryProvider, HistoryPage } from '@/lib/history/types'
 
 /**
  * History backed by FC server-side version records (OSS sync mode).

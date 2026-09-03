@@ -5,7 +5,7 @@ import { FolderPlus, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
-import { linkDaemonTeamWorkspace, TEAM_LINK_LEGACY_DAEMON } from '@/lib/daemon-local-client'
+import { linkDaemonTeamWorkspace, TEAM_LINK_LEGACY_DAEMON } from '@/lib/daemon/daemon-local-client'
 import { isTauri } from '@/lib/utils'
 
 /**

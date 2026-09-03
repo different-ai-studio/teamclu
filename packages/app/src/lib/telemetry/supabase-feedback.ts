@@ -2,7 +2,7 @@ import { getBackend } from '@/lib/backend'
 
 export type FeedbackKind = 'positive' | 'negative'
 
-export interface FeedbackInsert {
+interface FeedbackInsert {
   actorId: string
   teamId: string
   sessionId?: string | null

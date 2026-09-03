@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleOsc633 } from "../osc633";
+import { handleOsc633 } from "@/lib/terminal/osc633";
 
 describe("handleOsc633", () => {
   it("parses prompt and exit markers without payload", () => {

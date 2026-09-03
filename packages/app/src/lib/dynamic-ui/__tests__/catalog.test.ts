@@ -2,9 +2,16 @@ import { describe, expect, it } from "vitest"
 
 describe("dynamic UI catalog", () => {
   it("loads against the installed @json-render/core API", async () => {
-    const { catalogPrompt, uiCatalog } = await import("../catalog")
+    const { getCatalogPrompt, getUiCatalog } = await import("@/lib/dynamic-ui/catalog")
 
-    expect(catalogPrompt).toContain("Card")
-    expect(uiCatalog.data.components.Card.description).toBe("卡片容器，用于分组相关内容")
+    expect(getCatalogPrompt()).toContain("Card")
+    expect(getUiCatalog().data.components.Card.description).toBe("卡片容器，用于分组相关内容")
+  })
+
+  it("builds the catalog once and reuses it", async () => {
+    const { getUiCatalog, getCatalogPrompt } = await import("@/lib/dynamic-ui/catalog")
+
+    expect(getUiCatalog()).toBe(getUiCatalog())
+    expect(getCatalogPrompt()).toBe(getCatalogPrompt())
   })
 })

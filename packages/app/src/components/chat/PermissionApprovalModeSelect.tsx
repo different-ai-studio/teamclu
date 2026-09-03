@@ -1,4 +1,3 @@
-import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Check, ChevronDown, Hand, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -13,8 +12,8 @@ import {
   setSessionPermissionMode,
   useSessionPermissionMode,
   type SessionPermissionMode,
-} from "@/lib/session-permission-mode";
-import { isSoloBuild } from "@/lib/solo-build";
+} from "@/lib/session/session-permission-mode";
+import { isSoloBuild } from "@/lib/config/solo-build";
 import { PromptInputButton } from "@/packages/ai/prompt-input-ui";
 
 type PermissionApprovalModeSelectProps = {

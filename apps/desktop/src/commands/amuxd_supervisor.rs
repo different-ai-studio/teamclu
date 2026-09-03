@@ -19,9 +19,6 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::process_util::CommandNoWindow;
 
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
 const HEALTH_TICK: Duration = Duration::from_millis(200);
 /// Heal / restart can afford a longer wait.
@@ -31,6 +28,11 @@ const EXIT_CHILD_GRACE: Duration = Duration::from_millis(500);
 const INTROSPECT_ENV: &str = "TEAMCLU_INTROSPECT_BIN";
 const CURSOR_BRIDGE_MAIN_ENV: &str = "TEAMCLU_CURSOR_BRIDGE_MAIN";
 const CLAUDE_BRIDGE_MAIN_ENV: &str = "TEAMCLU_CLAUDE_BRIDGE_MAIN";
+/// The launchd job the app used to install. Only `legacy_service_active`
+/// reads it, and only on macOS — without the gate this is dead code on
+/// every other platform, which the crate-level `allow(dead_code)` used to
+/// hide and Linux clippy now rejects.
+#[cfg(target_os = "macos")]
 const LAUNCHD_LABEL: &str = "cc.ucar.amuxd";
 
 struct SupervisorInner {
@@ -531,9 +533,9 @@ async fn migrate_legacy_service_if_needed(supervisor: &AmuxdSupervisor) -> Resul
         return Ok(());
     }
 
-    eprintln!("[amuxd-supervisor] uninstalling legacy background service");
+    log::info!("[amuxd-supervisor] uninstalling legacy background service");
     if let Err(e) = run_bundled_once_async(&["uninstall-service"]).await {
-        eprintln!("[amuxd-supervisor] uninstall-service: {e}");
+        log::warn!("[amuxd-supervisor] uninstall-service: {e}");
     }
     // bootout is async on macOS — give launchd a moment, then re-check.
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -548,7 +550,7 @@ async fn migrate_legacy_service_if_needed(supervisor: &AmuxdSupervisor) -> Resul
     }
 
     if amuxd_pid_is_running() {
-        eprintln!("[amuxd-supervisor] stopping leftover amuxd before managed start");
+        log::info!("[amuxd-supervisor] stopping leftover amuxd before managed start");
         let _ = run_bundled_once_async(&["stop"]).await;
         wait_for_amuxd_stopped(STOP_TIMEOUT).await?;
     }
@@ -655,7 +657,7 @@ fn stop_with_child_fallback(inner: &mut SupervisorInner, grace: Duration) {
     if let Some(mut child) = inner.child.take() {
         signal_child_stop(&child);
         if !wait_reap_child(&mut child, grace) {
-            eprintln!("[amuxd-supervisor] warning: amuxd child did not reap after kill");
+            log::warn!("[amuxd-supervisor] warning: amuxd child did not reap after kill");
         }
     }
 
@@ -663,7 +665,7 @@ fn stop_with_child_fallback(inner: &mut SupervisorInner, grace: Duration) {
     // this returns quickly when the Child was already reaped.
     match run_bundled_once(&["stop"]) {
         Ok(()) => {}
-        Err(e) => eprintln!("[amuxd-supervisor] amuxd stop (cleanup): {e}"),
+        Err(e) => log::warn!("[amuxd-supervisor] amuxd stop (cleanup): {e}"),
     }
 }
 
@@ -673,12 +675,12 @@ async fn stop_with_child_fallback_async(inner: &mut SupervisorInner, grace: Dura
     if let Some(mut child) = inner.child.take() {
         signal_child_stop(&child);
         if !wait_reap_child_async(&mut child, grace).await {
-            eprintln!("[amuxd-supervisor] warning: amuxd child did not reap after kill");
+            log::warn!("[amuxd-supervisor] warning: amuxd child did not reap after kill");
         }
     }
     match run_bundled_once_async(&["stop"]).await {
         Ok(()) => {}
-        Err(e) => eprintln!("[amuxd-supervisor] amuxd stop (cleanup): {e}"),
+        Err(e) => log::warn!("[amuxd-supervisor] amuxd stop (cleanup): {e}"),
     }
 }
 
@@ -701,7 +703,7 @@ fn stop_without_lock() {
     std::thread::sleep(Duration::from_millis(100));
     match run_bundled_once(&["stop"]) {
         Ok(()) => {}
-        Err(e) => eprintln!("[amuxd-supervisor] amuxd stop without lock: {e}"),
+        Err(e) => log::warn!("[amuxd-supervisor] amuxd stop without lock: {e}"),
     }
 }
 
@@ -803,7 +805,7 @@ impl AmuxdSupervisor {
         if let Some(main) = locate_bundled_bridge_main("claude-bridge") {
             cmd.env(CLAUDE_BRIDGE_MAIN_ENV, main);
         }
-        eprintln!(
+        log::info!(
             "[amuxd-supervisor] spawning managed amuxd: {}",
             bin.display()
         );
@@ -844,7 +846,7 @@ impl AmuxdSupervisor {
                 return;
             }
             if std::time::Instant::now() >= deadline {
-                eprintln!("[amuxd-supervisor] lifecycle lock busy on exit; stopping without lock");
+                log::warn!("[amuxd-supervisor] lifecycle lock busy on exit; stopping without lock");
                 stop_without_lock();
                 return;
             }
@@ -859,7 +861,7 @@ impl AmuxdSupervisor {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(e) = run_signal_shutdown_loop(app).await {
-                eprintln!("[amuxd-supervisor] signal listener ended: {e}");
+                log::warn!("[amuxd-supervisor] signal listener ended: {e}");
             }
         });
     }
@@ -881,11 +883,11 @@ async fn run_signal_shutdown_loop<R: Runtime>(app: AppHandle<R>) -> Result<(), S
                 _ = sigterm.recv() => {}
             }
             if saw_first {
-                eprintln!("[amuxd-supervisor] second terminate signal; forcing exit");
+                log::warn!("[amuxd-supervisor] second terminate signal; forcing exit");
                 std::process::exit(1);
             }
             saw_first = true;
-            eprintln!("[amuxd-supervisor] terminate signal received; stopping amuxd via app.exit");
+            log::info!("[amuxd-supervisor] terminate signal received; stopping amuxd via app.exit");
             // Normal Tauri exit → RunEvent::Exit → shutdown_blocking.
             app.exit(0);
         }
@@ -898,11 +900,11 @@ async fn run_signal_shutdown_loop<R: Runtime>(app: AppHandle<R>) -> Result<(), S
                 .await
                 .map_err(|e| format!("listen Ctrl+C: {e}"))?;
             if saw_first {
-                eprintln!("[amuxd-supervisor] second Ctrl+C; forcing exit");
+                log::warn!("[amuxd-supervisor] second Ctrl+C; forcing exit");
                 std::process::exit(1);
             }
             saw_first = true;
-            eprintln!("[amuxd-supervisor] Ctrl+C received; stopping amuxd via app.exit");
+            log::info!("[amuxd-supervisor] Ctrl+C received; stopping amuxd via app.exit");
             app.exit(0);
         }
     }
@@ -961,19 +963,6 @@ pub async fn daemon_ensure_running<R: Runtime>(app: AppHandle<R>) -> Result<(), 
 #[tauri::command]
 pub async fn daemon_restart_managed<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     AmuxdSupervisor::restart(&app).await
-}
-
-#[tauri::command]
-pub async fn daemon_stop_managed<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    AmuxdSupervisor::shutdown(&app).await;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn daemon_supervisor_status<R: Runtime>(
-    app: AppHandle<R>,
-) -> Result<DaemonSupervisorStatus, String> {
-    Ok(AmuxdSupervisor::status(&app).await)
 }
 
 #[cfg(test)]
@@ -1140,9 +1129,8 @@ mod tests {
         assert!(err.contains("refuse to spawn"), "{err}");
         // Gate used by ensure_started_locked: `wait_for_amuxd_stopped(...).await?`
         // happens before spawn. An Err here is the "do not spawn" proof.
-        assert!(matches!(
-            wait_for_amuxd_stopped(Duration::from_millis(0)).await,
-            Err(_)
-        ));
+        assert!(wait_for_amuxd_stopped(Duration::from_millis(0))
+            .await
+            .is_err());
     }
 }
