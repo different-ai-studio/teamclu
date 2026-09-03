@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # 除 auth 外，一切前端状态默认窗口局部
@@ -12,10 +12,11 @@ status: proposed
 - **唯一的例外是 auth。** `lib/auth/session-store.ts` 用 `BroadcastChannel`
   （`session-store.ts:38`）跨窗口同步会话，因为「一个窗口登出、另一个窗口还拿着
   旧 token 打 API」是安全问题，不是体验问题。
-- **6 个 `persist()` store 属于「偏好」，允许后写者赢**：
-  `agent-model-pick-store`、`agent-default-workspace-store`、
-  `automation-default-model`、`client-model-mru`、`header-preferences-store`、
-  `offline-send-preference-store`。偏好被另一个窗口覆盖，代价是用户重新选一次。
+- **今天所有被持久化的值都属于「偏好」，允许后写者赢**：走 zustand `persist()`
+  中间件的 5 个是 `agent-default-workspace-store`、`agent-model-pick-store`、
+  `automation-default-model`、`client-model-mru`、`offline-send-preference-store`；
+  另有几个自己手写 `localStorage`（`header-preferences-store`、`git-settings`），
+  性质相同。偏好被另一个窗口覆盖，代价是用户重新选一次。
 - **新增 `localStorage` 写入点默认落在上面这条**：它是偏好，不是共享状态。
   如果一个值不能接受"后写者赢"，那它就不该在 localStorage 里。
 
@@ -34,7 +35,7 @@ status: proposed
 
 ## 之后逐个评估，而不是一次性搬家
 
-规则定下之后，对 6 个 `persist()` store 逐个问：这个值真的需要设备一致吗？只有
+规则定下之后，对这些持久化的值逐个问：这个值真的需要设备一致吗？只有
 答案为「是」的才做搬家（挪到 Rust 持有、以 emit 广播变更）。候选是三个：
 
 - **当前团队** —— 两个窗口显示不同团队，用户几乎一定会误操作
@@ -46,7 +47,7 @@ status: proposed
 ## 考虑过的其它方案
 
 **给每个 `persist()` store 加 `BroadcastChannel` 同步。** 实现简单，但它只解决
-6 个 store，那 67 处裸 `localStorage.setItem` 仍然各写各的——而且它把"跨窗口
+那 5 个 store，其余手写持久化和 67 处裸 `localStorage.setItem` 仍然各写各的——而且它把"跨窗口
 一致"变成默认行为，等于在没有判断的情况下替所有值做了决定。方向反了：默认应该是
 局部，一致性是要论证的例外。
 
