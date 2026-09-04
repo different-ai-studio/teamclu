@@ -45,6 +45,8 @@ fn team_skill_list_installed_blocking() -> Result<Vec<InstalledTeamSkill>, Strin
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EffectiveSkillSource {
+    /// Legacy: inspect no longer targets the cache. Kept so old payloads decode.
+    #[allow(dead_code)]
     HostedAgent,
     Member,
 }
@@ -64,49 +66,50 @@ pub(super) fn hosted_team_skills_dir(team_id: &str) -> std::path::PathBuf {
         .join("skills")
 }
 
-/// Resolve the copy OpenCode actually sees for this slug. The daemon registers
-/// its hosted-Agent root before `~/.agents/skills`, so the first existing
-/// directory wins. A cloud directory for another (non-active) team is ignored:
-/// this desktop cannot be running it through the local daemon.
+/// The working copy: `~/.agents/skills/<slug>`.
+///
+/// `cloud/skills` is a remote snapshot cache used as the dirty baseline. It is
+/// never the directory inspect / edit / publish / restore should touch.
 pub(super) fn effective_team_skill_dir(
     slug: &str,
-    team_id: Option<&str>,
+    _team_id: Option<&str>,
 ) -> Result<(std::path::PathBuf, EffectiveSkillSource), String> {
-    let hosted = team_id
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .filter(|id| crate::commands::amuxd_active_team().as_deref() == Some(*id))
-        .map(|id| hosted_team_skills_dir(id).join(slug));
-    if let Some(path) = hosted.filter(|path| path.is_dir()) {
-        return Ok((path, EffectiveSkillSource::HostedAgent));
-    }
     Ok((
         global_skills_dir()?.join(slug),
         EffectiveSkillSource::Member,
     ))
 }
 
-/// Restore targets differ from reads: after a hosted copy was moved aside its
-/// directory no longer exists, but undo must put it back into the higher-ranked
-/// hosted root rather than silently restoring it as a member copy.
+/// Restore always returns the working copy. The hosted cache is not a draft.
 pub(super) fn preferred_team_skill_dir(
     slug: &str,
-    team_id: Option<&str>,
+    _team_id: Option<&str>,
 ) -> Result<std::path::PathBuf, String> {
-    if let Some(id) = team_id
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .filter(|id| crate::commands::amuxd_active_team().as_deref() == Some(*id))
-    {
-        return Ok(hosted_team_skills_dir(id).join(slug));
-    }
     Ok(global_skills_dir()?.join(slug))
 }
 
-/// Where the effective installed pack lives. The publish-a-new-version flow
-/// packs this directory rather than a hardcoded member projection — after a
-/// Hosted Agent edits its higher-priority cloud copy, that is the content the
-/// team expects to ship.
+/// Remote snapshot for this slug, when the cache is present and is ours.
+///
+/// Used only as the inspect baseline. Hosted files themselves are not hashed
+/// live: if the cache was mutated, `origin.json` still describes the last pull.
+fn hosted_snapshot(
+    slug: &str,
+    team_id: Option<&str>,
+) -> Option<(String, teamclu_skillpack::FileManifest)> {
+    let id = team_id.map(str::trim).filter(|s| !s.is_empty())?;
+    let hosted = hosted_team_skills_dir(id).join(slug);
+    if !hosted.is_dir() {
+        return None;
+    }
+    let origin = read_origin(&hosted)?;
+    if origin.registry != SOURCE_TEAM || belongs_to_another_team(&origin, Some(id)) {
+        return None;
+    }
+    Some((origin.installed_version, origin.files?))
+}
+
+/// Where the working copy lives (`~/.agents/skills/<slug>`). Publish packs this
+/// directory. The hosted cache is never the source.
 #[tauri::command]
 pub async fn team_skill_installed_dir(
     slug: String,
@@ -196,6 +199,7 @@ pub(crate) fn inspect_team_skill(
     let slug = slug.trim().to_string();
     validate_slug(&slug)?;
     let (target, source) = effective_team_skill_dir(&slug, team_id.as_deref())?;
+    let hosted = hosted_snapshot(&slug, team_id.as_deref());
 
     let missing = |slug: String| TeamSkillInspectResult {
         slug,
@@ -243,7 +247,7 @@ pub(crate) fn inspect_team_skill(
         });
     }
 
-    if origin.as_ref().and_then(|o| o.files.as_ref()).is_none() {
+    if origin.as_ref().and_then(|o| o.files.as_ref()).is_none() && hosted.is_none() {
         return Ok(missing(slug));
     }
 
@@ -254,7 +258,18 @@ pub(crate) fn inspect_team_skill(
         .unwrap_or(0);
     let registry_latest = registry_latest_version.unwrap_or(base_version);
 
-    let baseline = origin.and_then(|o| o.files);
+    // Prefer the hosted snapshot when it is the same installed version. A
+    // cache that has already moved to a newer pull must not paint "behind"
+    // as local edits — that is `stale_dirty` via registry_latest, not dirty.
+    let hosted_same_version = hosted
+        .as_ref()
+        .and_then(|(version, _)| version.parse::<i64>().ok())
+        == Some(base_version);
+    let baseline = if hosted_same_version {
+        hosted.map(|(_, files)| files)
+    } else {
+        origin.and_then(|o| o.files)
+    };
     match inspect(&target, baseline.as_ref()) {
         DirtyState::Dirty {
             modified,

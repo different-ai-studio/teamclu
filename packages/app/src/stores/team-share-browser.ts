@@ -471,6 +471,12 @@ async function listTeamKnowledge(knowledgeDir: string): Promise<TeamKnowledgeIte
 
 type OnDisk = { content: string; dirPath: string; invocationName: string; source: SkillSource }
 
+/** The daemon's remote snapshot cache — not a working copy, not a list row. */
+export function isHostedTeamSkillsDir(dirPath: string): boolean {
+  const normalized = dirPath.replace(/\\/g, '/').replace(/\/+$/, '')
+  return /\/\.amuxd(?:-[^/]+)?\/teams\/[^/]+\/state\/cloud\/skills$/.test(normalized)
+}
+
 /** Whether a team pack row should borrow on-disk paths from the local scan. */
 export function teamPackOnDisk(slug: string, onDisk: Map<string, OnDisk>): boolean {
   return onDisk.has(slug)
@@ -585,7 +591,8 @@ async function localSkillFiles(
   const skills = await getDaemonSkills(encodeWorkspaceId(wsPath)).catch(() => null)
   const byFilename = new Map<string, OnDisk>()
   for (const skill of skills ?? []) {
-    // First wins: the daemon returns roots in resolution order.
+    if (isHostedTeamSkillsDir(skill.dirPath)) continue
+    // First wins among working-copy roots.
     if (byFilename.has(skill.filename)) continue
     byFilename.set(skill.filename, {
       content: skill.content,

@@ -646,12 +646,10 @@ pub(crate) fn is_hosted_team_skills_path(path: &str, teams_root: &Path) -> bool 
     }
 }
 
-/// Put the two system-managed skill roots first, in the order OpenCode must
-/// search them, then keep any user-defined extras.
+/// Put the system-managed skill root first, then keep any user-defined extras.
 ///
-/// Hosted (current team) before `~/.agents/skills`. Every hosted root for a
-/// *different* team is dropped so a team switch cannot leave the previous
-/// team's packs in the search path.
+/// Runtime path is `~/.agents/skills`. Hosted `cloud/skills` is a comparison
+/// cache and is stripped from `skills.paths` so OpenCode never loads it.
 pub fn normalize_managed_skill_paths(
     existing: &[String],
     hosted: Option<&str>,
@@ -662,15 +660,11 @@ pub fn normalize_managed_skill_paths(
     let is_member =
         |path: &str| path_eq(path, "~/.agents/skills") || member.is_some_and(|m| path_eq(path, m));
     let is_managed = |path: &str| is_hosted_team_skills_path(path, teams_root) || is_member(path);
+    let _ = hosted;
 
     let mut out = Vec::new();
-    if let Some(hosted) = hosted.filter(|p| !p.is_empty()) {
-        out.push(hosted.to_string());
-    }
     if let Some(member) = member.filter(|p| !p.is_empty()) {
-        if !out.iter().any(|p| path_eq(p, member)) {
-            out.push(member.to_string());
-        }
+        out.push(member.to_string());
     }
     for path in existing {
         if path.trim().is_empty() || is_managed(path) {
@@ -684,16 +678,11 @@ pub fn normalize_managed_skill_paths(
     out
 }
 
-/// Seed the real skill roots into the active team's global config, absolutely —
-/// so no workspace has to be standing in the right place for them to resolve.
+/// Seed `~/.agents/skills` into the active team's global config.
 ///
-/// The two roots that actually receive skills, in the same order
-/// `config::team_skill_roots` uses:
-///
-/// 1. `~/.amuxd/teams/<id>/state/cloud/skills` — what an admin assigned to this
-///    hosted agent. First, so a member's private edit of the same slug cannot
-///    decide what a team agent executes.
-/// 2. `~/.agents/skills` — the member-side registry install dir.
+/// Hosted `cloud/skills` is a comparison cache, not a runtime root — it is
+/// stripped from `skills.paths` rather than registered. OpenCode loads the
+/// working copy only.
 ///
 /// Notably NOT the team share's `teamclu-team/skills`: file sync carries
 /// documents only, so nothing is ever installed there (see the note on
@@ -4194,30 +4183,30 @@ mod skill_path_normalize_tests {
     }
 
     #[test]
-    fn empty_config_emits_hosted_then_member() {
+    fn empty_config_emits_member_only() {
         assert_eq!(
             normalize(&[], Some(HOSTED_A), Some(MEMBER)),
-            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+            vec![MEMBER.to_string()]
         );
     }
 
     #[test]
-    fn member_only_existing_puts_hosted_first() {
+    fn member_only_existing_stays_member() {
         assert_eq!(
             normalize(&[MEMBER.to_string()], Some(HOSTED_A), Some(MEMBER)),
-            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+            vec![MEMBER.to_string()]
         );
     }
 
     #[test]
-    fn reverses_member_before_hosted() {
+    fn drops_hosted_even_when_listed_first() {
         assert_eq!(
             normalize(
-                &[MEMBER.to_string(), HOSTED_A.to_string()],
+                &[HOSTED_A.to_string(), MEMBER.to_string()],
                 Some(HOSTED_A),
                 Some(MEMBER)
             ),
-            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+            vec![MEMBER.to_string()]
         );
     }
 
@@ -4234,7 +4223,7 @@ mod skill_path_normalize_tests {
                 Some(HOSTED_A),
                 Some(MEMBER)
             ),
-            vec![HOSTED_A.to_string(), MEMBER.to_string()]
+            vec![MEMBER.to_string()]
         );
     }
 
@@ -4248,7 +4237,6 @@ mod skill_path_normalize_tests {
                 Some(MEMBER)
             ),
             vec![
-                HOSTED_A.to_string(),
                 MEMBER.to_string(),
                 CUSTOM.to_string(),
                 extra.to_string()
@@ -4264,7 +4252,7 @@ mod skill_path_normalize_tests {
                 Some(HOSTED_B),
                 Some(MEMBER)
             ),
-            vec![HOSTED_B.to_string(), MEMBER.to_string()]
+            vec![MEMBER.to_string()]
         );
     }
 
@@ -4288,7 +4276,7 @@ mod skill_path_normalize_tests {
                 Some(HOSTED_A),
                 Some(MEMBER)
             ),
-            vec![HOSTED_A.to_string(), MEMBER.to_string(), CUSTOM.to_string()]
+            vec![MEMBER.to_string(), CUSTOM.to_string()]
         );
     }
 
@@ -4338,11 +4326,7 @@ mod skill_path_normalize_tests {
                 Some(HOSTED_A),
                 Some(MEMBER)
             ),
-            vec![
-                HOSTED_A.to_string(),
-                MEMBER.to_string(),
-                LOOKALIKE.to_string()
-            ]
+            vec![MEMBER.to_string(), LOOKALIKE.to_string()]
         );
     }
 }

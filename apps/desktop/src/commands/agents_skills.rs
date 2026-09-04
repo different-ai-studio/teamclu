@@ -96,9 +96,8 @@ pub fn ensure_agents_skills_paths(workspace_path: Option<String>) -> Result<Stri
         .filter(|s| !s.is_empty())
     {
         // Workspace `opencode.json` used to get `~/.agents/skills` prepended here.
-        // That copy outranks the team's global hosted-first `skills.paths`, so
-        // an older member pack shadowed the hosted team skill. Claude still
-        // needs the member root; OpenCode reads it from the global config.
+        // The working copy now lives there exclusively; the hosted cache is not
+        // a runtime path. Claude still needs the member root registered.
         let claude_ws = Path::new(ws).join(".claude").join("settings.json");
         if patch_config_file(&claude_ws, &agents_str)? {
             touched.push(claude_ws.display().to_string());
