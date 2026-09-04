@@ -69,9 +69,15 @@ pub fn reconcile_after_managed_mutation(
         return Ok(vec![WARNING_CLAUDE_LOCAL_OVERRIDE.into()]);
     }
     if !claude_bridge_points_to_canonical(workspace_path, slug, canonical_pack) {
-        return Err(WorkspaceControlError::Io(format!(
-            "claude bridge for skill {slug} is not ready"
-        )));
+        // Soft warning, not Err: `ensure_claude_team_skills` may have skipped
+        // Windows symlink creation (os error 1314). OpenCode still resolves the
+        // pack via team skill roots; only Claude Code discovery under
+        // `.claude/skills/` is affected.
+        tracing::warn!(
+            slug,
+            "claude skill bridge not ready after reconcile; OpenCode team skills still resolve via team roots"
+        );
+        return Ok(vec![WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED.into()]);
     }
     Ok(Vec::new())
 }
@@ -121,7 +127,29 @@ pub fn ensure_claude_team_skills(workspace_path: &Path) -> Result<(), WorkspaceC
             Ok(_) => continue,
             Err(_) => {}
         }
-        create_dir_symlink(target, &link)?;
+        match create_dir_symlink(target, &link) {
+            Ok(()) => {}
+            // Windows without Developer Mode / SeCreateSymbolicLinkPrivilege:
+            // CreateSymbolicLink fails with ERROR_PRIVILEGE_NOT_HELD (os error 1314).
+            // Soft-skip so prepare_workspace / runtime refresh still succeed for
+            // OpenCode-only users (do not surface "运行时配置读取失败").
+            //
+            // Consequence: team skills are NOT mirrored under `.claude/skills/`,
+            // so Claude Code will not discover them until the user enables
+            // Developer Mode (or runs elevated). OpenCode continues to resolve
+            // the same packs via teamclu-team / global team skill roots.
+            Err(e) if is_symlink_privilege_denied(&e) => {
+                tracing::warn!(
+                    slug,
+                    link = %link.display(),
+                    target = %target.display(),
+                    error = %e,
+                    "skipping Claude skill bridge symlink (Windows privilege missing); OpenCode team skills still resolve via team roots"
+                );
+                break;
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     prune_stale_team_symlinks(&claude_skills, &team_roots, &desired_slugs)?;
@@ -287,6 +315,18 @@ fn create_dir_symlink(target: &Path, link: &Path) -> Result<(), WorkspaceControl
     }
 }
 
+/// Windows `ERROR_PRIVILEGE_NOT_HELD` (1314) when creating directory symlinks.
+/// Message text is localized (e.g. Chinese "客户端没有所需的特权"), so match
+/// the os-error code rather than English wording.
+fn is_symlink_privilege_denied(err: &WorkspaceControlError) -> bool {
+    match err {
+        WorkspaceControlError::Io(msg) => {
+            msg.contains("os error 1314") || msg.contains("(os error 1314)")
+        }
+        _ => false,
+    }
+}
+
 fn io_err(e: std::io::Error) -> WorkspaceControlError {
     WorkspaceControlError::Io(e.to_string())
 }
@@ -295,6 +335,19 @@ fn io_err(e: std::io::Error) -> WorkspaceControlError {
 mod tests {
     use super::*;
     use crate::config::global_team_store::TEST_HOME_LOCK;
+
+    #[test]
+    fn detects_windows_symlink_privilege_error_text() {
+        assert!(is_symlink_privilege_denied(&WorkspaceControlError::Io(
+            "客户端没有所需的特权。(os error 1314)".into()
+        )));
+        assert!(is_symlink_privilege_denied(&WorkspaceControlError::Io(
+            "A required privilege is not held by the client. (os error 1314)".into()
+        )));
+        assert!(!is_symlink_privilege_denied(&WorkspaceControlError::Io(
+            "Access is denied. (os error 5)".into()
+        )));
+    }
 
     /// A workspace whose only team skill root is one it declares itself.
     ///

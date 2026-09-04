@@ -940,6 +940,8 @@ pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlEr
     crate::config::materialize_policy_file(workspace_path)?;
     materialize_opencode_for_prepare(workspace_path)?;
     ensure_inherent_skills_in_dir(&inherent_skills_dir()?)?;
+    // Claude bridge only: may soft-skip on Windows without symlink privilege
+    // (see `ensure_claude_team_skills`). Failure there must not block OpenCode.
     crate::runtime::claude_skills::ensure_claude_team_skills(workspace_path)?;
 
     if let Ok(Some(result)) =
