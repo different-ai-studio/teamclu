@@ -25,9 +25,37 @@ fn scrub_pii(
     Some(event)
 }
 
+const SENTRY_DSN: &str =
+    "https://f7626cc6e80f4561b1673dd027742714@o60909.ingest.us.sentry.io/4511110362169344";
+
+/// The DSN this build reports to, or `None` to report nowhere.
+///
+/// Debug builds share the shipped project, and the org is on the free tier:
+/// 5,000 errors per *month* with no on-demand budget. On the webview side
+/// `environment:development` was 1,507 of 4,930 events over one billing
+/// period — enough to exhaust the quota and blackhole production reporting for
+/// the rest of it. The same policy applies here so a `pnpm tauri:dev` session
+/// cannot spend the budget that shipped crashes need. `TEAMCLU_SENTRY_DEBUG=1`
+/// opts a debug run back in; it is the counterpart of `VITE_SENTRY_DEBUG` in
+/// `packages/app/src/main.tsx`.
+///
+/// `None` still constructs the client — it just gets no transport, so every
+/// `capture_*` call behaves as it does in production and simply drops. The
+/// `debug_assertions` check is shared with `environment` below so the two
+/// cannot drift.
+fn sentry_dsn() -> Option<&'static str> {
+    if !cfg!(debug_assertions) {
+        return Some(SENTRY_DSN);
+    }
+    match std::env::var("TEAMCLU_SENTRY_DEBUG") {
+        Ok(value) if value == "1" => Some(SENTRY_DSN),
+        _ => None,
+    }
+}
+
 fn main() {
     let _sentry_guard = sentry::init((
-        "https://f7626cc6e80f4561b1673dd027742714@o60909.ingest.us.sentry.io/4511110362169344",
+        sentry_dsn(),
         sentry::ClientOptions {
             release: sentry::release_name!(),
             // Crash reports need a stack and a release, not who was at the
