@@ -1,4 +1,3 @@
-mod agent_discover;
 mod backend;
 mod channels;
 mod claude_install;
@@ -16,6 +15,7 @@ mod logging;
 mod mcp_probe;
 mod mqtt;
 mod nats;
+mod node_install;
 mod onboarding;
 mod opencode_install;
 mod opencode_settings;
@@ -169,14 +169,16 @@ fn main() -> anyhow::Result<()> {
             if let Err(e) = config::team_config::hydrate(&mut daemon_config) {
                 tracing::warn!(error = %e, "team.toml unreadable; running with default team config");
             }
-            // Boot is the moment "which runtime does this team run here" is
-            // decided, and the only caller that should write an answer down —
-            // the other `hydrate` callers are readers (status, channel reload).
-            if let Err(e) = config::team_config::seed_local_agent_if_unset(&mut daemon_config) {
-                tracing::warn!(error = %e, "could not seed team local_agent; keeping the default");
-            }
-            if let Err(e) = agent_discover::discover_and_persist(&mut daemon_config, &config_path) {
-                tracing::warn!("agent auto-discovery failed: {e}");
+            if daemon_config
+                .agents
+                .pi
+                .as_ref()
+                .and_then(|pi| pi.binary.as_deref())
+                .is_some_and(|b| !b.trim().is_empty())
+            {
+                tracing::warn!(
+                    "[agents.pi] binary is ignored since #1250: amuxd runs its own pi package; use `package_root` (and `node`) for a developer override"
+                );
             }
 
             let rt = tokio::runtime::Runtime::new()?;
@@ -286,12 +288,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Doctor => {
             cli::doctor::run()?;
         }
-        Commands::InstallOpencode { force } => {
-            cli::install_opencode::run(force)?;
-        }
-        Commands::OpencodeVersions => {
-            cli::install_opencode::print_versions();
-        }
         Commands::InstallPi { force } => {
             pi_install::run_install(force)?;
         }
@@ -337,10 +333,7 @@ fn main() -> anyhow::Result<()> {
                 .init();
 
             let config_path = config.unwrap_or_else(config::DaemonConfig::default_path);
-            let mut daemon_config = config::DaemonConfig::load(&config_path)?;
-            if let Err(e) = agent_discover::discover_and_persist(&mut daemon_config, &config_path) {
-                tracing::warn!("agent auto-discovery failed: {e}");
-            }
+            let daemon_config = config::DaemonConfig::load(&config_path)?;
 
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {

@@ -1,5 +1,10 @@
 //! Cursor SDK bridge discovery for `amuxd doctor`.
 
+// Nothing constructs this backend since pi became the only runtime (#1247 /
+// #1250). The module is compiled until #1247 deletes it, so dead-code lints
+// are silenced here rather than chased through every function.
+#![allow(dead_code)]
+
 use serde::Serialize;
 
 use crate::runtime::cursor_sdk::process::{default_bridge_command, default_bridge_main};

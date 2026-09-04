@@ -93,7 +93,10 @@ daemon.toml  device-id  mcp.json  teams/  run/  logs/  cache/
 ├── cache/                             # 机器级缓存，删了只影响性能
 │   ├── model-catalog.toml             # 键控：backend → worktree
 │   ├── model-mru.toml                 # 键控：backend
-│   └── pi/                            # pi runtime 扩展
+│   ├── node/<version>/                # amuxd 托管的 Node.js（ADR-0015）
+│   └── pi/                            # 托管 pi 运行时：package.json + node_modules/
+│       ├── extensions/teamclu.ts      #   + 扩展、host 脚本、权限规则、MCP 工具缓存
+│       └── host/host.mjs
 │
 └── teams/
     ├── _unclaimed/                    # 未 onboard 时的落盘位置（§4.1）

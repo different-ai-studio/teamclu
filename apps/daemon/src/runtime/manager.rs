@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::agent_runtime_state::PerAgentRuntimeState;
-use super::backend::{agent_type_for_local_agent, create_backend, AcpCommand, AcpStartupMetadata, AgentBackend};
+use super::backend::{create_backend, AcpCommand, AcpStartupMetadata, AgentBackend};
 use super::builtin_commands::builtin_commands;
 use super::execution_context::{ExecutionContext, IsolationDomainKey, ProcessEnvRevision};
 use super::handle::RuntimeHandle;
@@ -152,11 +152,10 @@ pub struct RuntimeManager {
     agents: HashMap<String, RuntimeHandle>,
     pub aggregators: std::collections::HashMap<String, TurnAggregator>,
     launch_configs: HashMap<amux::AgentType, AgentLaunchConfig>,
-    /// Local agent backend selected by daemon config `agents.local_agent`
-    /// (`opencode` / `pi` / `cursor` / `claude-code` via `dyn AgentBackend`).
+    /// The local agent backend (pi, via `dyn AgentBackend` so tests can
+    /// substitute a fake).
     pub(super) agent_backend: Arc<AsyncMutex<Box<dyn AgentBackend>>>,
-    /// The agent type `agents.local_agent` resolved to — the same value
-    /// [`create_backend`] dispatched on when building `agent_backend`.
+    /// The agent type this daemon runs: pi.
     ///
     /// Recorded rather than re-derived because `launch_configs` cannot answer
     /// the question: ClaudeCode and Pi entries are inserted unconditionally, so
@@ -223,7 +222,10 @@ impl RuntimeManager {
         self.refresh_coordinator = Some(coordinator);
     }
 
-    pub fn attach_context_service(&mut self, service: Arc<super::context_service::RuntimeContextService>) {
+    pub fn attach_context_service(
+        &mut self,
+        service: Arc<super::context_service::RuntimeContextService>,
+    ) {
         self.context_service = Some(service);
     }
 
@@ -252,16 +254,6 @@ impl RuntimeManager {
         launch_configs: HashMap<amux::AgentType, AgentLaunchConfig>,
         backend: Option<Arc<dyn Backend>>,
     ) -> Self {
-        Self::with_local_agent("opencode", launch_configs, backend)
-    }
-
-    /// Like [`Self::new`] but selects the local agent backend from the daemon
-    /// config's `agents.local_agent` ("opencode" default | "pi").
-    pub fn with_local_agent(
-        local_agent: &str,
-        launch_configs: HashMap<amux::AgentType, AgentLaunchConfig>,
-        backend: Option<Arc<dyn Backend>>,
-    ) -> Self {
         // Tests must never write into the developer's real `~/.amuxd`, but
         // should still exercise the record-and-save path, so give each manager
         // its own throwaway file instead of stubbing the store out.
@@ -276,8 +268,10 @@ impl RuntimeManager {
             agents: HashMap::new(),
             aggregators: std::collections::HashMap::new(),
             launch_configs,
-            agent_backend: Arc::new(AsyncMutex::new(create_backend(local_agent))),
-            default_agent_type: agent_type_for_local_agent(local_agent),
+            agent_backend: Arc::new(AsyncMutex::new(create_backend())),
+            // pi is the only runtime (#1247); `daemon::runtime_resolution` says
+            // the same, but `runtime/` must not reach into `daemon/`.
+            default_agent_type: amux::AgentType::Pi,
             opencode_snapshots: HashMap::new(),
             agent_state: PerAgentRuntimeState::new(),
             model_catalog: DeviceModelCatalog::load(&model_catalog_path),
@@ -307,8 +301,7 @@ impl RuntimeManager {
     /// gateway path (WeCom/Discord/Feishu/…), cron, the MRU lookup, and the
     /// model-catalog probe.
     ///
-    /// This is simply what `agents.local_agent` selected, which is what
-    /// single-agent mode means. It used to be inferred by probing
+    /// pi, always (#1247) — there is no `agents.local_agent` to select from. It used to be inferred by probing
     /// `launch_configs` for Opencode, then Codex, then falling back to
     /// ClaudeCode — which had no branch for Pi or Cursor, so a pi or cursor
     /// daemon reported ClaudeCode here. That fed `launch_config_for` and made
@@ -536,10 +529,7 @@ impl RuntimeManager {
     }
 
     fn uses_deferred_initial_prompt(agent_type: amux::AgentType) -> bool {
-        matches!(
-            agent_type,
-            amux::AgentType::Opencode | amux::AgentType::Pi
-        )
+        matches!(agent_type, amux::AgentType::Opencode | amux::AgentType::Pi)
     }
 
     fn validate_managed_session_metadata(
@@ -639,7 +629,9 @@ impl RuntimeManager {
         cmd_tx: &mpsc::Sender<AcpCommand>,
         prompt: &str,
     ) -> crate::error::Result<()> {
-        if let Err(err) = Self::validate_managed_session_metadata(agent_type, startup, teamclu_session_id) {
+        if let Err(err) =
+            Self::validate_managed_session_metadata(agent_type, startup, teamclu_session_id)
+        {
             Self::detach_backend_session(cmd_tx, &startup.acp_session_id).await;
             return Err(err);
         }
@@ -791,12 +783,7 @@ impl RuntimeManager {
             .await?;
 
         self.finalize_attached_session(
-            agent_type,
-            &startup,
-            session_id,
-            &agent_id,
-            &cmd_tx,
-            prompt,
+            agent_type, &startup, session_id, &agent_id, &cmd_tx, prompt,
         )
         .await?;
 
@@ -966,12 +953,7 @@ impl RuntimeManager {
             .await?;
 
         self.finalize_attached_session(
-            agent_type,
-            &startup,
-            session_id,
-            session_id,
-            &cmd_tx,
-            prompt,
+            agent_type, &startup, session_id, session_id, &cmd_tx, prompt,
         )
         .await?;
 
@@ -2992,23 +2974,30 @@ mod tests {
         assert!(mgr.last_sent_to("rt1").is_none());
     }
 
+    /// A pi that cannot be spawned fails `start_runtime` and leaves nothing
+    /// registered — no half-started agent for the next caller to find.
     #[tokio::test]
-    async fn start_runtime_errors_when_opencode_serve_cannot_spawn() {
-        let mut configs = HashMap::new();
-        configs.insert(
-            amux::AgentType::ClaudeCode,
-            AgentLaunchConfig::new(
-                "/definitely/not/a/teamclu-agent-binary",
-                Vec::new(),
-                "claude",
-            ),
-        );
-        let mut mgr = RuntimeManager::new(configs, None);
+    async fn start_runtime_errors_when_pi_cannot_spawn() {
+        // Hermetic home, so the `[agents.pi]` override below is what the
+        // launch reads and the developer's ~/.amuxd stays untouched.
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let config_path = crate::config::DaemonConfig::default_path();
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            "[actor]\nid = \"d\"\nname = \"m\"\n[mqtt]\nbroker_url = \"tcp://x:1883\"\n\
+             [agents.pi]\nnode = \"/definitely/not/a/node\"\n\
+             package_root = \"/definitely/not/a/pi-package\"\n",
+        )
+        .unwrap();
+
+        let mut mgr = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
         let tmp = tempfile::TempDir::new().unwrap();
 
         let result = mgr
             .start_runtime_with_model(
-                amux::AgentType::ClaudeCode,
+                amux::AgentType::Pi,
                 "",
                 "workspace-1",
                 None,
@@ -3021,10 +3010,12 @@ mod tests {
             )
             .await;
 
-        let err = result.expect_err("missing agent binary should fail startup");
+        let err = result.expect_err("a missing node binary should fail startup");
+        // The pre-spawn check names the fix; this is the text the desktop
+        // shows, so it is the one worth pinning.
+        let text = err.to_string();
         assert!(
-            err.to_string().contains("spawn opencode serve")
-                || err.to_string().contains("opencode serve unavailable"),
+            text.contains("agent_binary_missing(pi)") && text.contains("amuxd install-pi"),
             "got: {err}"
         );
         assert_eq!(mgr.agent_count().await, 0);
@@ -3629,10 +3620,15 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("session context metadata incomplete"));
+        assert!(err
+            .to_string()
+            .contains("session context metadata incomplete"));
         drop(cmd_tx);
         let (prompt_seen, detach_seen) = drain.await.unwrap();
         assert!(!prompt_seen, "prompt must not be enqueued");
-        assert!(detach_seen, "backend session must be detached on validation failure");
+        assert!(
+            detach_seen,
+            "backend session must be detached on validation failure"
+        );
     }
 }

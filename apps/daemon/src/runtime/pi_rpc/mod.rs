@@ -1423,17 +1423,6 @@ impl PiRpcBackend {
             })
             .clone()
     }
-
-    fn apply_binary_hint(&self, launch_configs: &HashMap<amux::AgentType, AgentLaunchConfig>) {
-        // Only the pi launch config may override the pi binary. Reading every
-        // launch config (as before) picked up the claude/codex/opencode full
-        // paths and made pi_rpc spawn the wrong binary. A plain "pi" here is
-        // treated as unconfigured by `set_binary_hint`, so the override only
-        // sticks for a genuine `[agents.pi].binary` path.
-        if let Some(pi) = launch_configs.get(&amux::AgentType::Pi) {
-            self.shared.pool.set_binary_hint(&pi.binary);
-        }
-    }
 }
 
 impl Default for PiRpcBackend {
@@ -1475,7 +1464,7 @@ impl AgentBackend for PiRpcBackend {
         // session), NOT necessarily pi. Its binary is an unrelated full path, so
         // it must NOT drive the pi binary — doing so made pi_rpc spawn
         // claude/codex and fail with "process exited before responding". The pi
-        // binary is resolved independently via `resolve_binary` (PATH / ~/.pi).
+        // runtime is the managed one (`pi_install::package_root`).
         let _ = &launch;
         let cmd_tx = self.command_sender();
         let startup = attach(
@@ -1503,7 +1492,7 @@ impl AgentBackend for PiRpcBackend {
     async fn prewarm(&mut self, launch_configs: &HashMap<amux::AgentType, AgentLaunchConfig>) {
         // Processes are per (domain, env, worktree); nothing to warm without
         // an execution context. The binary hint is still worth capturing.
-        self.apply_binary_hint(launch_configs);
+        let _ = launch_configs;
     }
 
     async fn prewarm_with_env(
@@ -1513,7 +1502,7 @@ impl AgentBackend for PiRpcBackend {
         _force_env_override: bool,
         worktree: Option<&str>,
     ) {
-        self.apply_binary_hint(launch_configs);
+        let _ = launch_configs;
         // Without an isolation domain there is no pool key to warm — spawning
         // under a made-up key would never match the session's real key and the
         // child would be respawned at attach anyway. The workspace prewarm
@@ -1532,7 +1521,7 @@ impl AgentBackend for PiRpcBackend {
         force_env_override: bool,
         worktree: &str,
     ) {
-        self.apply_binary_hint(launch_configs);
+        let _ = launch_configs;
         let worktree = canonical_dir(worktree);
         let key = PoolKey {
             domain: isolation_domain,
@@ -1916,15 +1905,13 @@ mod tests {
     #[tokio::test]
     async fn model_catalog_spawns_when_no_process_live() {
         // No static fallback: with no live process the catalog request must try
-        // to bring a pi child up. Point the pool at a binary that cannot exist
+        // to bring a pi child up. A hermetic amuxd home holds no managed Node,
         // so the spawn fails deterministically (instead of returning a phantom
         // empty list) — proving the code path attempts to spawn rather than
         // short-circuiting to `Ok(vec![])`.
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
         let mut backend = PiRpcBackend::new();
-        backend
-            .shared
-            .pool
-            .set_binary_hint("/nonexistent/teamclu-pi-does-not-exist");
         let result = backend.model_catalog(Path::new("/tmp")).await;
         assert!(
             result.is_err(),

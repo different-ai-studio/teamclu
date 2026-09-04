@@ -14,20 +14,20 @@ pub use self::opencode_http as adapter;
 mod agent_runtime_state;
 mod agent_trace;
 pub mod builtin_commands;
-pub mod env_assembly;
 pub mod context_registry;
 pub mod context_service;
+pub mod env_assembly;
+pub mod gateway_token;
 mod handle;
 mod instruction_delivery;
-pub mod gateway_token;
 pub mod managed_llm;
 mod manager;
 mod native_skill_fallback_guard;
 pub(crate) use native_skill_fallback_guard::{
-    apply_violations_to_emitted, ensure_turn_guard, event_may_open_implicit_turn,
-    guard_enabled, prepare_guard_for_acp_event, snapshot_baseline,
-    take_violations_for_turn_end, violations_after_turn, AGENT_REPLY_CONTENT,
-    NativeSkillBaseline, NativeSkillTurnGuard, NativeSkillViolation,
+    apply_violations_to_emitted, ensure_turn_guard, event_may_open_implicit_turn, guard_enabled,
+    prepare_guard_for_acp_event, snapshot_baseline, take_violations_for_turn_end,
+    violations_after_turn, NativeSkillBaseline, NativeSkillTurnGuard, NativeSkillViolation,
+    AGENT_REPLY_CONTENT,
 };
 pub mod permission_policy;
 pub mod prompt_attachments;
@@ -67,6 +67,7 @@ pub use workspace_runtime::{apply_workspace_system_instructions, instruction_plu
 /// read-only). Where `agents.{cursor,claude}.api_key` went: an API key is a
 /// personal credential, not machine configuration, so it lives with the rest
 /// of the user's personal env instead of in plaintext daemon.toml.
+#[allow(dead_code)] // cursor / claude credentials only (#1247)
 pub(crate) fn personal_api_key(name: &str) -> Option<String> {
     teamclu_runtime_env::personal_secrets::load_personal_env()
         .ok()

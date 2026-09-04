@@ -17,6 +17,11 @@
 //! flowing immediately. `session_routes` maps `(bridge_id, sessionKey)` to the
 //! TeamClu ACP session id.
 
+// Nothing constructs this backend since pi became the only runtime (#1247 /
+// #1250). The module is compiled until #1247 deletes it, so dead-code lints
+// are silenced here rather than chased through every function.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,8 +43,8 @@ mod events;
 pub use events::available_commands_from_slash_commands_event;
 pub mod permission;
 pub mod process;
-mod types;
 pub mod translate;
+mod types;
 
 use permission::PendingPermission;
 use process::ClaudeProcessPool;
@@ -591,7 +596,10 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                 let desired = flat_model_id(&model_id);
                 if let Ok(proc) = shared.pool.ensure(&shared, &worktree) {
                     if proc.bridge_id != bridge_id {
-                        warn!(acp_session_id, "set_model for stale claude bridge generation");
+                        warn!(
+                            acp_session_id,
+                            "set_model for stale claude bridge generation"
+                        );
                         continue;
                     }
                     match proc
@@ -676,9 +684,7 @@ impl ClaudeAgentBackend {
 
     /// Override the claude-bridge spawn command (integration tests only).
     pub fn set_bridge_command(&mut self, command: Vec<String>) {
-        self.shared
-            .pool
-            .configure(Some(command), None, None);
+        self.shared.pool.configure(Some(command), None, None);
     }
 
     fn command_sender(&self) -> mpsc::Sender<AcpCommand> {

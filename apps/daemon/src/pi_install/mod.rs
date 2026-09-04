@@ -1,30 +1,52 @@
-//! pi coding-agent discovery + install for amuxd (parity with `opencode_install`).
+//! The managed pi runtime: pi + the MCP SDK, installed by amuxd into one
+//! directory on amuxd's own Node (#1250).
 //!
-//! `pi.lock.json` records the MINIMUM pi version this build requires. pi is
-//! installed via npm (`npm install -g @earendil-works/pi-coding-agent@<lock>`,
-//! bun fallback); the global `pi` binary is resolved via `~/.pi/bin/pi` when
-//! present, otherwise `pi` on PATH (including `~/.npm-global/bin`).
+//! `apps/daemon/pi-runtime/package.json` + `package-lock.json` pin the two
+//! packages exactly; `pi.lock.json` repeats those versions for the mirror
+//! workflows and doctor, and pins the Node they run on. Installing means:
 //!
-//! The same lock file pins `@modelcontextprotocol/sdk`, which the TeamClu pi
-//! extension imports to bridge MCP servers into pi (pi itself ships no MCP —
-//! see `mcp_sdk`). Installing pi installs that too: they are one runtime.
+//! 1. [`crate::node_install::run_install`] — the pinned Node under
+//!    `<amuxd cache>/node/<version>/`.
+//! 2. `node npm-cli.js ci` in `<amuxd cache>/pi/`, with the two manifests
+//!    materialized there. The package root is then a *constant*
+//!    (`<cache>/pi/node_modules/@earendil-works/pi-coding-agent`): no `pi`
+//!    shim, no PATH, no `~/.pi`, no global npm prefix, nothing of the user's.
+//!
+//! On Windows a prebuilt archive of exactly that layout is tried first
+//! (`bundle`), because npm writing thousands of small files is the slow part
+//! of a first run there.
+//!
+//! Layout under `<amuxd cache>/pi/`:
+//!
+//! ```text
+//! package.json  package-lock.json      ← materialized from pi-runtime/
+//! node_modules/@earendil-works/pi-coding-agent/   ← package root
+//! node_modules/@modelcontextprotocol/sdk/
+//! extensions/teamclu.ts                ← resolves the SDK one level up
+//! host/host.mjs
+//! ```
+//!
+//! Developers who need a different pi or Node set `[agents.pi] package_root`
+//! / `[agents.pi] node` in daemon.toml. Those are explicit paths, never
+//! searches.
 
+pub mod bundle;
 pub mod mcp_sdk;
+
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::opencode_install::{parse_semver, version_ge};
+use crate::opencode_install::version_ge;
 use crate::process_util::CommandNoWindow;
-// Pi 0.84.x declares `node >=22.19.0`. The minimum lives in the shared crate so
-// the daemon, the desktop's Dependencies row and first-run setup all make one
-// decision — and it is a minimum over *every* node on the machine, not over
-// whatever `node` happens to resolve to: see `teamclu_runtime_env::node`.
-use teamclu_runtime_env::node::{NodeChoice, PI_MIN_VERSION as MIN_NODE_VERSION};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PiLock {
+    /// The Node.js release the runtime runs on (`node_install`).
+    #[serde(default)]
+    pub node: String,
     pub version: String,
     /// `@modelcontextprotocol/sdk` version the pi extension's MCP bridge is
     /// written against. Defaulted rather than required so a lock file from an
@@ -36,9 +58,19 @@ pub struct PiLock {
 /// Embedded at compile time from apps/daemon/pi.lock.json
 pub const LOCK_JSON: &str = include_str!("../../pi.lock.json");
 
-/// The minimum pi version this build requires (lock version, no leading `v`).
+/// The npm project that *is* the runtime. Materialized verbatim into
+/// `<cache>/pi/` and installed with `npm ci`, so what runs is exactly what the
+/// lock resolved — on every machine, from any registry.
+pub const RUNTIME_PACKAGE_JSON: &str = include_str!("../../pi-runtime/package.json");
+pub const RUNTIME_PACKAGE_LOCK: &str = include_str!("../../pi-runtime/package-lock.json");
+
+fn lock() -> Option<PiLock> {
+    serde_json::from_str::<PiLock>(LOCK_JSON).ok()
+}
+
+/// The pi version this build runs (lock version, no leading `v`).
 pub fn required_version() -> String {
-    serde_json::from_str::<PiLock>(LOCK_JSON)
+    lock()
         .map(|l| l.version.trim().trim_start_matches('v').to_string())
         .unwrap_or_default()
 }
@@ -46,41 +78,79 @@ pub fn required_version() -> String {
 /// The `@modelcontextprotocol/sdk` version this build's extension requires.
 /// Empty means the lock file does not pin one — treat MCP as unmanaged.
 pub fn required_mcp_sdk_version() -> String {
-    serde_json::from_str::<PiLock>(LOCK_JSON)
+    lock()
         .map(|l| l.mcp_sdk_version.trim().trim_start_matches('v').to_string())
         .unwrap_or_default()
 }
 
-/// Resolve the pi binary amuxd should run. Order: explicit daemon config
-/// override (`agents.pi.binary`) → `~/.pi/bin/pi` → `pi` on PATH.
-pub fn resolve_binary(configured: Option<&str>) -> String {
-    crate::runtime::pi_rpc::process::resolve_binary(configured)
+/// The Node.js release the runtime runs on (no leading `v`).
+pub fn required_node_version() -> String {
+    lock()
+        .map(|l| l.node.trim().trim_start_matches('v').to_string())
+        .unwrap_or_default()
 }
 
-/// `<bin> --version` → the first version-like token.
-fn pi_version_of(bin: &str) -> Option<String> {
-    // PATH augmented: pi installs as an npm shim whose shebang is
-    // `#!/usr/bin/env node`, so finding the file is not enough to run it.
-    let out = command_with_runtime_path(bin)
-        .arg("--version")
-        .output()
-        .ok()?;
-    if !out.status.success() {
+// ---------------------------------------------------------------------------
+// Layout
+// ---------------------------------------------------------------------------
+
+pub const PI_NPM_PKG: &str = "@earendil-works/pi-coding-agent";
+
+/// `<amuxd cache>/pi` — the runtime's npm project root and everything amuxd
+/// materializes for pi (extension, host script, permissions, tool cache).
+pub fn pi_dir() -> PathBuf {
+    crate::config::layout::cache_dir().join("pi")
+}
+
+pub(crate) fn node_modules_dir() -> PathBuf {
+    pi_dir().join("node_modules")
+}
+
+/// `[agents.pi] package_root = "<dir>"` — a developer's explicit pi checkout
+/// (the directory holding pi's `package.json` and `dist/`). Read at call time
+/// so a config edit applies on the next spawn.
+fn configured_package_root() -> Option<PathBuf> {
+    crate::config::DaemonConfig::load(&crate::config::DaemonConfig::default_path())
+        .ok()
+        .and_then(|c| c.agents.pi.and_then(|pi| pi.package_root))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+/// The npm package root of the pi the daemon runs: the directory whose
+/// `dist/index.js` the multi-session host imports and whose
+/// `dist/cli.js` legacy `--mode rpc` runs.
+pub fn package_root() -> PathBuf {
+    configured_package_root().unwrap_or_else(|| {
+        node_modules_dir()
+            .join("@earendil-works")
+            .join("pi-coding-agent")
+    })
+}
+
+/// Whether [`package_root`] is amuxd's own install rather than an override.
+pub fn is_managed() -> bool {
+    configured_package_root().is_none()
+}
+
+/// `version` out of an npm package manifest.
+pub(crate) fn version_of_manifest(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let version = value.get("version")?.as_str()?.trim();
+    (!version.is_empty()).then(|| version.to_string())
+}
+
+/// The pi version installed at [`package_root`], read off its manifest. No
+/// `--version` spawn: the manifest is the truth and reading it is free.
+pub fn installed_version() -> Option<String> {
+    let manifest = std::fs::read_to_string(package_root().join("package.json")).ok()?;
+    // A wrapper package at the configured root would also have a version;
+    // only pi's own manifest counts.
+    if !manifest.contains(&format!("\"{PI_NPM_PKG}\"")) {
         return None;
     }
-    let s = String::from_utf8_lossy(&out.stdout);
-    let line = s.lines().next().unwrap_or("").trim();
-    line.split_whitespace()
-        .find(|tok| parse_semver(tok).is_some())
-        .map(|t| t.to_string())
-        .or_else(|| (!line.is_empty()).then(|| line.to_string()))
-}
-
-/// Detect the pi amuxd would run + its reported version.
-pub fn detect_pi() -> Option<(String, String)> {
-    let bin = resolve_binary(None);
-    let version = pi_version_of(&bin)?;
-    Some((bin, version))
+    version_of_manifest(&manifest)
 }
 
 #[derive(Debug, Serialize)]
@@ -88,85 +158,77 @@ pub fn detect_pi() -> Option<(String, String)> {
 pub struct PiStatus {
     pub present: bool,
     pub version: Option<String>,
+    /// The package root (see [`package_root`]).
     pub path: Option<String>,
-    /// Pi is a Node CLI. Keep this separate from Pi's own version so onboarding
-    /// can explain the real prerequisite before attempting `npm install`.
+    /// Pi is a Node CLI. Kept separate from Pi's own version so onboarding and
+    /// diagnostics can say which half is missing.
     pub node_present: bool,
     pub node_version: Option<String>,
-    /// Which node that version came from. Reported because the usual failure is
-    /// not an absent Node but the *wrong* one: a machine can hold three, and
-    /// naming the file is the difference between "node missing" and an answer
-    /// the user can act on.
     pub node_path: Option<String>,
     pub node_satisfied: bool,
     pub required_node_version: String,
+    /// amuxd's own Node (true) or a `[agents.pi] node` override (false).
+    pub node_managed: bool,
     pub required_version: String,
-    /// `@modelcontextprotocol/sdk` under the materialized extension directory.
-    /// Reported separately from pi's own version because it is installed
-    /// separately, but folded into `satisfied` — without it the extension
-    /// bridges no MCP servers at all, which costs remote-tools and every team
-    /// tool with it.
+    /// `@modelcontextprotocol/sdk` in the managed runtime. Reported separately
+    /// because it is a separate package, but folded into `satisfied` — without
+    /// it the extension bridges no MCP servers at all, which costs remote-tools
+    /// and every team tool with it.
     pub mcp_sdk_present: bool,
     pub mcp_sdk_version: Option<String>,
     pub required_mcp_sdk_version: String,
     pub mcp_sdk_satisfied: bool,
+    /// Whether amuxd installed pi (true) or `[agents.pi] package_root` points
+    /// at the user's own (false).
+    pub managed: bool,
     pub satisfied: bool,
-}
-
-/// The node pi will be installed with and run under.
-///
-/// Resolved once per process: it costs a `--version` spawn per candidate, and
-/// `doctor` alone asks several times per settings screen. A node installed
-/// while amuxd is running is picked up on the next start — which every install
-/// path already triggers (`restart_amuxd_after_update`).
-pub(crate) fn node() -> Option<NodeChoice> {
-    static NODE: std::sync::OnceLock<Option<NodeChoice>> = std::sync::OnceLock::new();
-    NODE.get_or_init(|| teamclu_runtime_env::node::resolve_node(MIN_NODE_VERSION))
-        .clone()
 }
 
 pub fn doctor() -> PiStatus {
     let want = required_version();
-    let node = node();
-    let node_satisfied = node.as_ref().map(|n| n.satisfies).unwrap_or(false);
-    let detected = detect_pi();
-    let (present, version, path) = match &detected {
-        Some((p, v)) => (true, Some(v.clone()), Some(p.clone())),
-        None => (false, None, None),
-    };
+    let managed = is_managed();
+    let version = installed_version();
     let pi_satisfied = version
         .as_deref()
-        .map(|v| version_ge(v, &want))
+        .map(|have| {
+            if managed {
+                have == want
+            } else {
+                version_ge(have, &want)
+            }
+        })
         .unwrap_or(false);
+    let node = crate::node_install::doctor();
     let want_sdk = required_mcp_sdk_version();
     let sdk_version = mcp_sdk::installed_version();
-    let sdk_satisfied = if want_sdk.is_empty() {
-        true
-    } else {
-        sdk_version
-            .as_deref()
-            .map(|v| version_ge(v, &want_sdk))
-            .unwrap_or(false)
-    };
+    let sdk_satisfied = mcp_sdk::satisfied();
     PiStatus {
-        present,
+        present: version.is_some(),
+        path: version
+            .is_some()
+            .then(|| package_root().to_string_lossy().to_string()),
         version,
-        path,
-        node_present: node.is_some(),
-        node_version: node.as_ref().map(|n| n.version.clone()),
-        node_path: node.as_ref().map(|n| n.path.to_string_lossy().to_string()),
-        node_satisfied,
-        required_node_version: MIN_NODE_VERSION.to_string(),
+        node_present: node.present,
+        node_version: node.version.clone(),
+        node_path: node.path.clone(),
+        node_satisfied: node.satisfied,
+        required_node_version: node.required_version.clone(),
+        node_managed: node.managed,
         required_version: want,
         mcp_sdk_present: sdk_version.is_some(),
         mcp_sdk_version: sdk_version,
         required_mcp_sdk_version: want_sdk,
         mcp_sdk_satisfied: sdk_satisfied,
-        satisfied: pi_satisfied && node_satisfied && sdk_satisfied,
+        managed,
+        satisfied: pi_satisfied && node.satisfied && sdk_satisfied,
     }
 }
 
-pub(super) fn progress(event: &str, message: &str) {
+// ---------------------------------------------------------------------------
+// Progress narration
+// ---------------------------------------------------------------------------
+
+pub(crate) fn progress(event: &str, message: &str) {
     println!(
         "{}",
         serde_json::json!({ "event": event, "message": message })
@@ -178,14 +240,38 @@ pub(super) fn progress(event: &str, message: &str) {
 /// `route` is one of [`crate::route_probe::route`]. The message stays the
 /// human-readable detail (measured speeds, which URL); `route` is the part the
 /// wizard can translate and keep on screen after the line itself scrolls away.
-pub(super) fn progress_route(event: &str, message: &str, route: &str) {
+pub(crate) fn progress_route(event: &str, message: &str, route: &str) {
     println!(
         "{}",
         serde_json::json!({ "event": event, "message": message, "route": route })
     );
 }
 
-const PI_NPM_PKG: &str = "@earendil-works/pi-coding-agent";
+// ---------------------------------------------------------------------------
+// npm
+// ---------------------------------------------------------------------------
+
+/// `node npm-cli.js …` on the managed Node, in the runtime directory.
+///
+/// Never `npm` by name: the shim is `npm.cmd` on Windows (#1046), and whichever
+/// Node is first on PATH is the one a shim would run under (#1232). Spelling
+/// out both files removes both questions. `PATH` is still led by the managed
+/// Node's `bin` for the `#!/usr/bin/env node` scripts npm itself spawns.
+pub(crate) fn npm_command() -> std::process::Command {
+    let node = crate::node_install::node_binary();
+    let mut command = std::process::Command::new(&node);
+    command.no_window();
+    command.arg(crate::node_install::npm_cli_for(&node));
+    command.env(
+        "PATH",
+        crate::runtime::well_known_bin::augmented_path_led_by(node.parent()),
+    );
+    let dir = pi_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    command.current_dir(dir);
+    command
+}
+
 const PI_MIRROR_BASE: &str = "https://teamclaw.ucar.cc/pi";
 const OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
 
@@ -193,11 +279,11 @@ const OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
 /// route that actually works from mainland China. Verified to carry both
 /// packages we pin, at the pinned versions.
 ///
-/// Only ever applied to our own `npm`/`bun` invocation (via the environment),
-/// never written to the user's npmrc.
+/// Only ever applied to our own npm invocation (via the environment), never
+/// written to the user's npmrc.
 const CN_NPM_REGISTRY: &str = "https://registry.npmmirror.com";
 
-pub(super) const NETWORK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const NETWORK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Sample size for a registry route. The pi tarball is ~5 MB, so 512 KiB is a
 /// tenth of it: past the initial burst, cheap enough to throw away.
@@ -226,50 +312,14 @@ pub(super) struct MirrorManifest {
     pub sha256: String,
 }
 
-fn npm_package_spec(min_version: &str) -> String {
-    format!("{PI_NPM_PKG}@{min_version}")
-}
-
-/// `Command` for a CLI we shell out to, with every platform repair applied:
-/// the enriched PATH, the Windows shim name (`npm` is `npm.cmd` — see
-/// `well_known_bin::spawn_name`), and no console window (#1045).
-///
-/// Routing the version probes through here is why they no longer call
-/// `.no_window()` themselves: one helper, one place to get it right.
-pub(super) fn command_with_runtime_path(command: &str) -> std::process::Command {
-    let mut process =
-        std::process::Command::new(crate::runtime::well_known_bin::spawn_name(command));
-    process.no_window();
-    // Led by the node we settled on: npm is a shim with a `#!/usr/bin/env node`
-    // shebang, so the first node on this PATH is the one that installs and runs
-    // pi. Validating one node and then installing under another is how a
-    // machine ended up advertising node 24 while pi ran on node 20.
-    let node = node();
-    process.env(
-        "PATH",
-        crate::runtime::well_known_bin::augmented_path_led_by(
-            node.as_ref().and_then(|n| n.path.parent()),
-        ),
-    );
-    process
-}
-
-pub(super) fn has_command(cmd: &str) -> bool {
-    command_with_runtime_path(cmd)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// Where the npm packages should come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RegistrySource {
-    /// Whatever npm (or bun) is already configured with. No override.
+    /// Whatever npm is already configured with. No override.
     NpmDefault,
     /// Override our own invocation with this registry.
     Mirror(&'static str),
-    /// No registry is usable from here; install from the OSS tarball bundle.
+    /// No registry is usable from here; install from the OSS tarball bundles.
     OssBundle,
 }
 
@@ -293,10 +343,12 @@ fn registry_probe() -> crate::route_probe::Probe {
     }
 }
 
-/// What `npm config get registry` reports, or None when npm cannot answer
-/// (not installed, or a bun-only machine).
+/// What `npm config get registry` reports, or None when npm cannot answer.
+///
+/// Our npm, but the *user's* config: npm reads `~/.npmrc` regardless of which
+/// copy runs, so a registry the user configured is still honoured.
 fn npm_configured_registry() -> Option<String> {
-    let out = command_with_runtime_path("npm")
+    let out = npm_command()
         .args(["config", "get", "registry"])
         .output()
         .ok()?;
@@ -360,15 +412,7 @@ fn resolve_registry_source(package: &str, version: &str) -> RegistrySource {
     // the window that runs long.
     progress("probe", "checking which download route is fastest");
 
-    // Both routes are measured every time. Skipping the mirror whenever the
-    // official registry cleared some bar was the tempting shortcut, and it is
-    // exactly how a user on a 1.2 MB/s route keeps an install that the mirror
-    // would have served six times faster. One 512 KiB sample is cheaper than
-    // being wrong about that.
-    //
-    // Concurrently, though: back to back they were two full budgets — up to
-    // ~18s before npm was even invoked — and the case where both run long is
-    // the same slow network the probe exists to detect. A panicking probe
+    // Both routes are measured every time, concurrently. A panicking probe
     // counts as "no answer" rather than taking the install down with it.
     let probe = registry_probe();
     let (official, mirror) = std::thread::scope(|scope| {
@@ -408,7 +452,7 @@ fn resolve_registry_source(package: &str, version: &str) -> RegistrySource {
         (None, _) => {
             progress_route(
                 "source",
-                "no npm registry is reachable; falling back to the OSS bundle",
+                "no npm registry is reachable; falling back to the OSS bundles",
                 crate::route_probe::route::SELF_HOSTED,
             );
             RegistrySource::OssBundle
@@ -416,25 +460,18 @@ fn resolve_registry_source(package: &str, version: &str) -> RegistrySource {
     }
 }
 
-/// The registry decision, made once per process.
-///
-/// Route speed is a property of the network, not of the package, so pi and the
-/// MCP SDK share one measurement instead of probing twice. Resolved lazily:
-/// an install that early-returns "already satisfied" must not pay for a probe.
+/// The registry decision, made once per process. Resolved lazily: an install
+/// that early-returns "already satisfied" must not pay for a probe.
 pub(super) fn registry_source() -> RegistrySource {
     static SOURCE: std::sync::OnceLock<RegistrySource> = std::sync::OnceLock::new();
     *SOURCE.get_or_init(|| resolve_registry_source(PI_NPM_PKG, &required_version()))
 }
 
-/// Apply a chosen registry to a child process.
-///
-/// Through the environment rather than a flag: npm and bun spell the flag
-/// differently, but both read their config from the environment, and neither
-/// user's npmrc is touched.
+/// Apply a chosen registry to a child process, through the environment: the
+/// user's npmrc is never touched.
 pub(super) fn apply_registry(command: &mut std::process::Command, source: RegistrySource) {
     if let RegistrySource::Mirror(url) = source {
         command.env("NPM_CONFIG_REGISTRY", url);
-        command.env("BUN_CONFIG_REGISTRY", url);
     }
 }
 
@@ -463,7 +500,7 @@ pub(super) fn mirror_manifest(base: &str) -> Option<MirrorManifest> {
 
 /// Streams byte-count progress lines while the body arrives, so a slow OSS
 /// route shows movement instead of a frozen "installing…".
-pub(super) fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
     crate::download_progress::download(url)
 }
 
@@ -486,8 +523,7 @@ fn pump_output<R: std::io::Read + Send + 'static>(
         // install narration with it. npm on a non-English Windows console emits
         // its output in the OEM codepage (GBK on zh-CN), so that is not a
         // hypothetical — it is the platform this streaming exists for. Read raw
-        // and transcode lossily, which is what the `.output()` path this
-        // replaced did for free.
+        // and transcode lossily.
         let mut reader = std::io::BufReader::new(reader);
         let mut buf = Vec::new();
         loop {
@@ -515,9 +551,8 @@ fn pump_output<R: std::io::Read + Send + 'static>(
 ///
 /// npm spends minutes on a slow route and writes its status to *stderr*.
 /// `.output()` buffered every byte of that until exit, so the wizard's install
-/// row had nothing to show for the whole wait — the "stuck on installing…"
-/// report. Returns the exit status and the tail of the combined output, which
-/// is what callers quote when it fails.
+/// row had nothing to show for the whole wait. Returns the exit status and the
+/// tail of the combined output, which is what callers quote when it fails.
 pub(super) fn run_streaming(
     cmd: &str,
     command: &mut std::process::Command,
@@ -559,7 +594,7 @@ pub(super) fn run_streaming(
     Ok((status, tail))
 }
 
-pub(super) fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
@@ -606,103 +641,184 @@ pub(super) fn safe_mirror_asset(asset: &str) -> bool {
     !asset.is_empty() && !asset.contains('/') && !asset.contains('\\') && asset.ends_with(".tgz")
 }
 
-/// Install or upgrade the whole pi runtime: the agent itself, then the MCP SDK
-/// its extension needs.
-///
-/// The two steps are separate functions rather than one body because
-/// `ensure_pi` returns early on every "nothing to do" path, and an early return
-/// there used to skip the SDK — which is the path *every existing install*
-/// takes, so the bridge silently never appeared.
-pub fn run_install(force: bool) -> anyhow::Result<()> {
-    ensure_pi(force)?;
-    mcp_sdk::run_install(force)
+// ---------------------------------------------------------------------------
+// Install
+// ---------------------------------------------------------------------------
+
+/// Write embedded content to its on-disk path (only when the content changed,
+/// so mtimes stay stable).
+pub(crate) fn materialize(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    let current = std::fs::read_to_string(path).unwrap_or_default();
+    if current != content {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, content)?;
+    }
+    Ok(())
 }
 
-/// Install or upgrade pi via `npm install -g @earendil-works/pi-coding-agent@<lock>`
-/// (falls back to `bun add -g` when npm is absent).
-fn ensure_pi(force: bool) -> anyhow::Result<()> {
-    let want = required_version();
-    let node = node();
-    if !node.as_ref().map(|n| n.satisfies).unwrap_or(false) {
-        let found = node
-            .as_ref()
-            .map(NodeChoice::describe)
-            .unwrap_or_else(|| "no node on this machine".to_string());
-        anyhow::bail!(
-            "Pi requires Node.js >= {MIN_NODE_VERSION}; the newest one here is {found}. \
-             Install or upgrade Node.js first"
-        );
-    }
+/// Put the runtime's `package.json` + `package-lock.json` in place for `npm ci`.
+fn materialize_runtime_manifests() -> anyhow::Result<()> {
+    let dir = pi_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", dir.display()))?;
+    materialize(&dir.join("package.json"), RUNTIME_PACKAGE_JSON)
+        .map_err(|e| anyhow::anyhow!("cannot write the pi runtime package.json: {e}"))?;
+    materialize(&dir.join("package-lock.json"), RUNTIME_PACKAGE_LOCK)
+        .map_err(|e| anyhow::anyhow!("cannot write the pi runtime package-lock.json: {e}"))?;
+    Ok(())
+}
 
-    if !force {
-        if let Some((path, have)) = detect_pi() {
-            if version_ge(&have, &want) {
-                progress(
-                    "ok",
-                    &format!("pi {have} already satisfies >= {want} ({path})"),
-                );
-                return Ok(());
-            }
-            progress(
-                "upgrade",
-                &format!("pi {have} is older than required {want}; upgrading"),
-            );
-        } else {
-            progress("install", &format!("installing pi (require >= {want})"));
-        }
-    }
-
-    if !has_command("npm") && !has_command("bun") {
-        // Node was already proved present above, so reaching here with a Node
-        // install means npm is missing from *this process's* PATH rather than
-        // from the machine — say which one to check.
-        anyhow::bail!(
-            "neither npm nor bun found on PATH (node {} is installed); \
-             install Node.js or Bun first, or add npm's directory to PATH",
-            node.as_ref().map(NodeChoice::describe).unwrap_or_default()
-        );
-    }
-
-    let pkg = npm_package_spec(&want);
-    let source = registry_source();
-    let (cmd, args, _bundle): (&str, Vec<String>, Option<tempfile::NamedTempFile>) =
-        if source == RegistrySource::OssBundle {
-            // Node distributions include npm. Only npm can reliably consume our
-            // bundled tarball in offline mode, so do not silently send a blocked
-            // network to Bun when the fallback has been selected.
-            if !has_command("npm") {
-                anyhow::bail!(
-                    "official npm registry is unreachable and the Pi OSS fallback requires npm"
-                );
-            }
-            let bundle = mirrored_bundle("Pi", PI_MIRROR_BASE, &want)?;
-            let local = bundle.path().to_string_lossy().to_string();
-            (
-                "npm",
-                vec![
-                    "install".into(),
-                    "-g".into(),
-                    "--offline".into(),
-                    "--no-audit".into(),
-                    "--no-fund".into(),
-                    local,
-                ],
-                Some(bundle),
-            )
-        } else if has_command("npm") {
-            ("npm", vec!["install".into(), "-g".into(), pkg], None)
-        } else {
-            ("bun", vec!["add".into(), "-g".into(), pkg], None)
-        };
-
-    progress("install", &format!("running {cmd} {}", args.join(" ")));
-    let mut command = command_with_runtime_path(cmd);
+/// `npm ci` against the lock, through the chosen registry.
+fn install_with_npm_ci(source: RegistrySource) -> anyhow::Result<()> {
+    let args = ["ci", "--omit=dev", "--no-audit", "--no-fund"];
+    progress("install", &format!("running npm {}", args.join(" ")));
+    let mut command = npm_command();
     apply_registry(&mut command, source);
-    let (status, tail) = run_streaming(cmd, command.args(args.iter().map(String::as_str)))?;
+    let (status, tail) = run_streaming("npm", command.args(args))?;
     if !status.success() {
         anyhow::bail!("pi install failed ({status}): {tail}");
     }
-    progress("ok", &format!("pi installed/upgraded (require >= {want})"));
+    Ok(())
+}
+
+/// No registry reachable: install the two dependency-bundled tarballs from
+/// OSS with `npm --offline`. Their dependencies are inlined
+/// (`bundledDependencies`, see `mirror-pi-oss.yml`), so nothing is fetched.
+/// `--no-save` keeps the materialized manifests exactly as the lock has them.
+fn install_from_oss_bundles(pi_version: &str, sdk_version: &str) -> anyhow::Result<()> {
+    let pi = mirrored_bundle("Pi", PI_MIRROR_BASE, pi_version)?;
+    let sdk = if sdk_version.is_empty() {
+        None
+    } else {
+        Some(mirrored_bundle(
+            "MCP SDK",
+            mcp_sdk::MIRROR_BASE,
+            sdk_version,
+        )?)
+    };
+    let mut args: Vec<String> = vec![
+        "install".into(),
+        "--offline".into(),
+        "--no-save".into(),
+        "--no-audit".into(),
+        "--no-fund".into(),
+        "--omit=dev".into(),
+        pi.path().to_string_lossy().to_string(),
+    ];
+    if let Some(sdk) = &sdk {
+        args.push(sdk.path().to_string_lossy().to_string());
+    }
+    progress("install", &format!("running npm {}", args.join(" ")));
+    let mut command = npm_command();
+    let (status, tail) = run_streaming("npm", command.args(args.iter().map(String::as_str)))?;
+    if !status.success() {
+        anyhow::bail!("pi install from the OSS bundles failed ({status}): {tail}");
+    }
+    Ok(())
+}
+
+/// Check the tree, not npm's exit code: an `--offline` install of a bundled
+/// tarball can succeed while resolving to a different version.
+fn verify_installed(pi_version: &str, sdk_version: &str) -> anyhow::Result<()> {
+    match installed_version() {
+        Some(have) if have == pi_version => {}
+        Some(have) => anyhow::bail!("pi install produced {have}, but {pi_version} is required"),
+        None => anyhow::bail!(
+            "pi install reported success but {} holds no pi",
+            package_root().display()
+        ),
+    }
+    if !sdk_version.is_empty() {
+        match mcp_sdk::installed_version() {
+            Some(have) if have == sdk_version => {}
+            Some(have) => {
+                anyhow::bail!("MCP SDK install produced {have}, but {sdk_version} is required")
+            }
+            None => anyhow::bail!(
+                "pi install reported success but {} is missing",
+                mcp_sdk::NPM_PKG
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Older builds installed the SDK into `extensions/node_modules` beside the
+/// extension; the managed runtime has it one level up. Leave nothing that
+/// could shadow it. Best-effort.
+fn cleanup_legacy_layout() {
+    let extensions = pi_dir().join("extensions");
+    let _ = std::fs::remove_dir_all(extensions.join("node_modules"));
+    let _ = std::fs::remove_file(extensions.join("package.json"));
+    let _ = std::fs::remove_file(extensions.join("package-lock.json"));
+}
+
+/// Install (or repair) the whole runtime: the managed Node, then pi and the MCP
+/// SDK on it. Idempotent; `force` reinstalls even when everything is in place.
+pub fn run_install(force: bool) -> anyhow::Result<()> {
+    if !is_managed() {
+        let status = doctor();
+        if status.satisfied {
+            progress(
+                "ok",
+                &format!(
+                    "using the configured pi {} ({}); nothing to install",
+                    status.version.unwrap_or_default(),
+                    package_root().display()
+                ),
+            );
+            return Ok(());
+        }
+        anyhow::bail!(
+            "[agents.pi] package_root ({}) is not a usable pi {} install; fix the override or remove it to let amuxd manage pi",
+            package_root().display(),
+            required_version()
+        );
+    }
+
+    crate::node_install::run_install(force)?;
+
+    let want = required_version();
+    let want_sdk = required_mcp_sdk_version();
+    if want.is_empty() {
+        anyhow::bail!("pi.lock.json pins no pi version");
+    }
+    if !force && doctor().satisfied {
+        cleanup_legacy_layout();
+        progress(
+            "ok",
+            &format!("pi {want} already installed ({})", package_root().display()),
+        );
+        return Ok(());
+    }
+
+    if bundle::try_install(force)? {
+        verify_installed(&want, &want_sdk)?;
+        cleanup_legacy_layout();
+        progress(
+            "ok",
+            &format!("pi {want} installed from the prebuilt bundle"),
+        );
+        return Ok(());
+    }
+
+    progress(
+        "install",
+        &format!("installing pi {want} and {} {want_sdk}", mcp_sdk::NPM_PKG),
+    );
+    materialize_runtime_manifests()?;
+    match registry_source() {
+        RegistrySource::OssBundle => install_from_oss_bundles(&want, &want_sdk)?,
+        source => install_with_npm_ci(source)?,
+    }
+    verify_installed(&want, &want_sdk)?;
+    cleanup_legacy_layout();
+    progress(
+        "ok",
+        &format!("pi {want} installed ({})", package_root().display()),
+    );
     Ok(())
 }
 
@@ -711,10 +827,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lock_parses_and_pins_0_84_2_minimum() {
+    fn lock_pins_pi_0_84_2_or_newer() {
         // 0.84.2 is the SDK surface the multi-session host (`assets/pi-host/`)
         // is written against (createAgentSessionServices / SessionManager.open
-        // signatures); older installs must be flagged by doctor.
+        // signatures); older builds must never be pinned.
         let v = required_version();
         assert!(!v.starts_with('v'), "got {v}");
         assert!(version_ge(&v, "0.84.2"), "lock too old: {v}");
@@ -727,6 +843,68 @@ mod tests {
         let v = required_mcp_sdk_version();
         assert!(!v.is_empty(), "lock must pin an MCP SDK version");
         assert!(version_ge(&v, "1.29.0"), "MCP SDK lock too old: {v}");
+    }
+
+    #[test]
+    fn lock_pins_a_node_pi_can_run_on() {
+        // pi 0.84.x declares `engines.node >= 22.19.0`.
+        let v = required_node_version();
+        assert!(!v.is_empty(), "lock must pin a Node.js version");
+        assert!(version_ge(&v, "22.19.0"), "Node lock too old for pi: {v}");
+    }
+
+    #[test]
+    fn the_runtime_manifest_and_the_lock_agree() {
+        // Two files pin the same versions on purpose (the mirror workflows read
+        // pi.lock.json; npm ci reads package.json + package-lock.json). This is
+        // what keeps a bump to one from silently leaving the other behind.
+        let manifest: serde_json::Value = serde_json::from_str(RUNTIME_PACKAGE_JSON).unwrap();
+        let deps = &manifest["dependencies"];
+        assert_eq!(deps[PI_NPM_PKG], serde_json::json!(required_version()));
+        assert_eq!(
+            deps[mcp_sdk::NPM_PKG],
+            serde_json::json!(required_mcp_sdk_version())
+        );
+
+        let lock: serde_json::Value = serde_json::from_str(RUNTIME_PACKAGE_LOCK).unwrap();
+        assert_eq!(lock["lockfileVersion"], serde_json::json!(3));
+        let packages = &lock["packages"];
+        assert_eq!(
+            packages[format!("node_modules/{PI_NPM_PKG}")]["version"],
+            serde_json::json!(required_version())
+        );
+        assert_eq!(
+            packages[format!("node_modules/{}", mcp_sdk::NPM_PKG)]["version"],
+            serde_json::json!(required_mcp_sdk_version())
+        );
+        // Exact pins: a caret here would let `npm install` drift the tree.
+        assert!(!deps[PI_NPM_PKG].as_str().unwrap().starts_with('^'));
+        assert!(!deps[mcp_sdk::NPM_PKG].as_str().unwrap().starts_with('^'));
+    }
+
+    #[test]
+    fn the_package_root_is_a_constant_under_the_runtime_dir() {
+        // No shim walking, no `~/.pi`, no PATH: the root is where npm ci puts
+        // it. (Only holds without a `[agents.pi] package_root` override, which
+        // the test machine must not carry.)
+        let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu-test-pi-layout");
+        let root = package_root();
+        assert!(
+            root.ends_with("pi/node_modules/@earendil-works/pi-coding-agent"),
+            "{}",
+            root.display()
+        );
+        assert!(root.starts_with(pi_dir()));
+    }
+
+    #[test]
+    fn version_of_manifest_reads_the_version_field_only() {
+        assert_eq!(
+            version_of_manifest(r#"{"name":"x","version":" 0.84.2 "}"#).as_deref(),
+            Some("0.84.2")
+        );
+        assert!(version_of_manifest(r#"{"name":"x"}"#).is_none());
+        assert!(version_of_manifest("not json").is_none());
     }
 
     #[test]
@@ -823,14 +1001,6 @@ mod tests {
     }
 
     #[test]
-    fn npm_package_spec_uses_pi_coding_agent() {
-        assert_eq!(
-            npm_package_spec("0.81.1"),
-            "@earendil-works/pi-coding-agent@0.81.1"
-        );
-    }
-
-    #[test]
     fn pi_mirror_manifest_is_versioned_and_uses_a_safe_asset_name() {
         let manifest: MirrorManifest = serde_json::from_str(
             r#"{"version":"0.84.2","asset":"earendil-works-pi-coding-agent-0.84.2.tgz","sha256":"abc"}"#,
@@ -846,29 +1016,31 @@ mod tests {
     fn pi_status_serializes_camel_case() {
         let s = PiStatus {
             present: true,
-            version: Some("0.81.1".into()),
+            version: Some("0.84.2".into()),
             path: Some("/x/pi".into()),
             node_present: true,
-            node_version: Some("v22.19.0".into()),
+            node_version: Some("24.20.0".into()),
             node_path: Some("/x/node".into()),
             node_satisfied: true,
-            required_node_version: "22.19.0".into(),
-            required_version: "0.81.1".into(),
+            required_node_version: "24.20.0".into(),
+            node_managed: true,
+            required_version: "0.84.2".into(),
             mcp_sdk_present: true,
             mcp_sdk_version: Some("1.30.0".into()),
             required_mcp_sdk_version: "1.30.0".into(),
             mcp_sdk_satisfied: true,
+            managed: true,
             satisfied: true,
         };
         let v = serde_json::to_value(&s).unwrap();
-        assert_eq!(v["requiredVersion"], serde_json::json!("0.81.1"));
+        assert_eq!(v["requiredVersion"], serde_json::json!("0.84.2"));
         assert_eq!(v["nodeSatisfied"], serde_json::json!(true));
-        // The client names the node it found and the one it needs; both have to
-        // survive serialization or the UI falls back to "node missing".
         assert_eq!(v["nodePath"], serde_json::json!("/x/node"));
-        assert_eq!(v["requiredNodeVersion"], serde_json::json!("22.19.0"));
+        assert_eq!(v["requiredNodeVersion"], serde_json::json!("24.20.0"));
+        assert_eq!(v["nodeManaged"], serde_json::json!(true));
         assert_eq!(v["mcpSdkVersion"], serde_json::json!("1.30.0"));
         assert_eq!(v["requiredMcpSdkVersion"], serde_json::json!("1.30.0"));
+        assert_eq!(v["managed"], serde_json::json!(true));
         assert_eq!(v["satisfied"], serde_json::json!(true));
     }
 }

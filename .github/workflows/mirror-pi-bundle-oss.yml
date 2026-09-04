@@ -1,0 +1,203 @@
+name: Build the Windows pi runtime bundle for OSS
+
+# One archive holding exactly what `amuxd install-pi` produces on Windows —
+# `<cache>/node/<version>/` (the official Node distribution, unpacked) and
+# `<cache>/pi/` (package.json + package-lock.json + the `npm ci` tree) — so a
+# first run there is one download and one extraction instead of npm writing
+# thousands of small files under Defender (apps/daemon/src/pi_install/bundle.rs).
+#
+# Layout on OSS:
+#
+#   pi-bundle/win-<arch>/latest.json
+#       {"piVersion","nodeVersion","mcpSdkVersion","asset","sha256"}
+#   pi-bundle/win-<arch>/<piVersion>-<nodeVersion>/<asset>   immutable
+#
+# The daemon uses a bundle only when all three versions equal its own locks
+# (pi.lock.json + pi-runtime/package.json), so this rebuilds whenever either
+# changes. Both Windows architectures are built on the x64 runner: the arm64
+# tree is produced with `--os=win32 --cpu=arm64` so optional platform packages
+# resolve for the target, and its Node comes from the arm64 distribution.
+
+on:
+  workflow_call: {}
+  push:
+    paths:
+      - apps/daemon/pi.lock.json
+      - apps/daemon/pi-runtime/**
+      - .github/workflows/mirror-pi-bundle-oss.yml
+  schedule:
+    - cron: "50 18 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: mirror-pi-bundle-oss
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    env:
+      OSS_BASE: https://teamclaw.ucar.cc/pi-bundle
+      DIST_BASE: https://nodejs.org/dist
+      ARCH: ${{ matrix.arch }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve the pinned versions
+        id: pins
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          lock = json.load(open("apps/daemon/pi.lock.json"))
+          pkg = json.load(open("apps/daemon/pi-runtime/package.json"))["dependencies"]
+          pi = lock["version"].lstrip("v"); node = lock["node"].lstrip("v"); sdk = lock.get("mcpSdkVersion", "").lstrip("v")
+          assert pkg["@earendil-works/pi-coding-agent"] == pi, (pkg, pi)
+          assert pkg["@modelcontextprotocol/sdk"] == sdk, (pkg, sdk)
+          print(f"pi={pi}\nnode={node}\nsdk={sdk}")
+          PY
+          cat "$GITHUB_OUTPUT"
+
+      - name: Skip when OSS already serves this exact runtime
+        id: skip
+        env:
+          PI: ${{ steps.pins.outputs.pi }}
+          NODE: ${{ steps.pins.outputs.node }}
+          SDK: ${{ steps.pins.outputs.sdk }}
+        run: |
+          set -euo pipefail
+          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/win-$ARCH/latest.json" 2>/dev/null || echo '{}')
+          python3 - "$SERVED" <<'PY'
+          import json, os, sys
+          m = json.loads(sys.argv[1] or '{}')
+          strip = lambda v: str(v or '').lstrip('v')
+          skip = (strip(m.get('piVersion')) == os.environ['PI']
+                  and strip(m.get('nodeVersion')) == os.environ['NODE']
+                  and strip(m.get('mcpSdkVersion')) == os.environ['SDK'])
+          print(f"served={m} skip={skip}")
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write(f"skip={'true' if skip else 'false'}\n")
+          PY
+
+      - name: Download the Node.js distributions (x64 to build with, target to ship)
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          NODE: ${{ steps.pins.outputs.node }}
+        run: |
+          set -euo pipefail
+          RETRY=(--connect-timeout 15 --max-time 600 --retry 3 --retry-delay 5)
+          curl -fsSL "${RETRY[@]}" -o SHASUMS256.txt "$DIST_BASE/v$NODE/SHASUMS256.txt"
+          for a in "node-v$NODE-win-x64.zip" "node-v$NODE-win-$ARCH.zip"; do
+            [ -f "$a" ] || curl -fsSL "${RETRY[@]}" -o "$a" "$DIST_BASE/v$NODE/$a"
+          done
+          grep -E "  node-v$NODE-win-(x64|$ARCH)\.zip$" SHASUMS256.txt | sha256sum -c -
+          python3 - "$NODE" "$ARCH" <<'PY'
+          import os, shutil, sys, zipfile
+          node, arch = sys.argv[1], sys.argv[2]
+          def unpack(zip_name, dest):
+              with zipfile.ZipFile(zip_name) as z:
+                  z.extractall("_unpack")
+              top = os.path.join("_unpack", zip_name[:-4])
+              shutil.move(top, dest)
+              shutil.rmtree("_unpack", ignore_errors=True)
+          unpack(f"node-v{node}-win-x64.zip", "buildnode")
+          os.makedirs("bundle/node", exist_ok=True)
+          unpack(f"node-v{node}-win-{arch}.zip", os.path.join("bundle", "node", node))
+          PY
+          ./buildnode/node.exe --version
+
+      - name: npm ci the runtime tree for the target
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p bundle/pi
+          cp apps/daemon/pi-runtime/package.json apps/daemon/pi-runtime/package-lock.json bundle/pi/
+          EXTRA=()
+          if [ "$ARCH" != "x64" ]; then EXTRA=(--os=win32 --cpu="$ARCH"); fi
+          (cd bundle/pi && ../../buildnode/node.exe ../../buildnode/node_modules/npm/bin/npm-cli.js ci --omit=dev --no-audit --no-fund "${EXTRA[@]}")
+          test -f bundle/pi/node_modules/@earendil-works/pi-coding-agent/dist/index.js
+          test -f bundle/pi/node_modules/@modelcontextprotocol/sdk/package.json
+
+      - name: Zip the bundle and compute its digest
+        if: steps.skip.outputs.skip != 'true'
+        id: zip
+        env:
+          PI: ${{ steps.pins.outputs.pi }}
+          NODE: ${{ steps.pins.outputs.node }}
+        run: |
+          set -euo pipefail
+          ASSET="pi-bundle-win-$ARCH-pi$PI-node$NODE.zip"
+          python3 - "$ASSET" <<'PY'
+          import hashlib, os, sys, zipfile
+          asset = sys.argv[1]
+          with zipfile.ZipFile(asset, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+              for root, dirs, files in os.walk("bundle"):
+                  dirs.sort(); files.sort()
+                  for f in files:
+                      p = os.path.join(root, f)
+                      z.write(p, os.path.relpath(p, "bundle").replace(os.sep, "/"))
+          sha = hashlib.sha256(open(asset, "rb").read()).hexdigest()
+          print(f"{asset} {os.path.getsize(asset)} bytes sha256={sha}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"asset={asset}\nsha256={sha}\n")
+          PY
+
+      - name: Upload the immutable bundle, then the manifest
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+          PI: ${{ steps.pins.outputs.pi }}
+          NODE: ${{ steps.pins.outputs.node }}
+          SDK: ${{ steps.pins.outputs.sdk }}
+          ASSET: ${{ steps.zip.outputs.asset }}
+          SHA256: ${{ steps.zip.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          test -n "${OSS_ACCESS_KEY_ID:-}" || { echo '::error::OSS secrets not configured'; exit 1; }
+          python3 -m pip install oss2 --quiet
+          python3 - <<'PY'
+          import json, os
+          import oss2
+          endpoint = os.environ['OSS_ENDPOINT']
+          if not endpoint.startswith('http'):
+              endpoint = 'https://' + endpoint
+          auth = oss2.Auth(os.environ['OSS_ACCESS_KEY_ID'], os.environ['OSS_ACCESS_KEY_SECRET'])
+          bucket = oss2.Bucket(auth, endpoint, os.environ['OSS_BUCKET'])
+          arch, pi, node, sdk = os.environ['ARCH'], os.environ['PI'], os.environ['NODE'], os.environ['SDK']
+          asset, sha = os.environ['ASSET'], os.environ['SHA256']
+          key = f'pi-bundle/win-{arch}/{pi}-{node}/{asset}'
+          bucket.put_object_from_file(key, asset, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+          manifest = json.dumps({'piVersion': pi, 'nodeVersion': node, 'mcpSdkVersion': sdk, 'asset': asset, 'sha256': sha}, indent=2).encode()
+          bucket.put_object(f'pi-bundle/win-{arch}/latest.json', manifest, headers={
+              'Cache-Control': 'no-cache, no-store, max-age=0',
+              'Content-Type': 'application/json',
+          })
+          print(f'✅ {key} ({sha})')
+          PY
+
+      - name: Verify the public manifest
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          PI: ${{ steps.pins.outputs.pi }}
+          NODE: ${{ steps.pins.outputs.node }}
+          SHA256: ${{ steps.zip.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          MANIFEST=$(curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 "$OSS_BASE/win-$ARCH/latest.json")
+          python3 - "$MANIFEST" <<'PY'
+          import json, os, sys
+          m = json.loads(sys.argv[1])
+          assert m['piVersion'] == os.environ['PI'] and m['nodeVersion'] == os.environ['NODE'], m
+          assert m['sha256'] == os.environ['SHA256'], m
+          print(m)
+          PY

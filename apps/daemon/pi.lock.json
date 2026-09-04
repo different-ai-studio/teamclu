@@ -1,4 +1,5 @@
 {
+  "node": "24.20.0",
   "version": "0.84.2",
   "mcpSdkVersion": "1.30.0"
 }

@@ -60,14 +60,13 @@ pub async fn run(raw_url: &str, config_path: Option<&Path>) -> Result<InitOutcom
 
     let daemon_path = DaemonConfig::default_path();
     let existing_daemon_cfg = DaemonConfig::load(&daemon_path).ok();
-    let mut daemon_cfg = daemon_config_for_invite(
+    let daemon_cfg = daemon_config_for_invite(
         existing_daemon_cfg,
         &claim.display_name,
         &claim.team_id,
         &claim.actor_id,
         &invite,
     );
-    let _ = crate::agent_discover::discover_and_merge(&mut daemon_cfg);
     daemon_cfg
         .save(&daemon_path)
         .map_err(|e| anyhow!("write daemon.toml: {e}"))?;

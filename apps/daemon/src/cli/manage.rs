@@ -10,8 +10,8 @@ use serde::{de::DeserializeOwned, Deserialize};
 
 use crate::backend::TeamSkillRow;
 use crate::config::{
-    encode_workspace_path, AgentBackendConfig, DaemonConfig, OpenCodeCompatStore,
-    ProviderAuthRequest, ProviderModelConfig, WorkspaceControlStore,
+    encode_workspace_path, DaemonConfig, OpenCodeCompatStore, ProviderAuthRequest,
+    ProviderModelConfig, WorkspaceControlStore,
 };
 use crate::sync::oss::state::LocalSyncState;
 use crate::sync::secret_store::{mask_secret, validate_team_secret, SecretStore, TeamSecrets};
@@ -124,7 +124,7 @@ pub fn run() -> anyhow::Result<()> {
             .with_prompt("Choose an action")
             .items(&[
                 "Status overview",
-                "Agent runtime (install & default)",
+                "Agent runtime (pi)",
                 "LLM provider",
                 "Team share secrets",
                 "Team skills",
@@ -184,23 +184,16 @@ fn show_status() -> anyhow::Result<()> {
         None => println!("Daemon:    not running"),
     }
 
-    if let Ok((cfg, _)) = load_daemon_config() {
-        println!("Local agent: {}", cfg.agents.local_agent);
-    }
-
-    let doctor = crate::opencode_install::doctor();
+    let doctor = crate::cli::doctor::report();
     println!(
-        "opencode:  {} ({})",
-        if doctor.opencode.satisfied {
+        "pi:        {} ({}, node {})",
+        if doctor.pi.satisfied {
             "ready"
         } else {
             "missing"
         },
-        doctor
-            .opencode
-            .version
-            .as_deref()
-            .unwrap_or("(not installed)")
+        doctor.pi.version.as_deref().unwrap_or("(not installed)"),
+        doctor.node.version.as_deref().unwrap_or("(not installed)")
     );
     println!(
         "git:       {} ({})",
@@ -242,71 +235,52 @@ fn show_status() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Headless-friendly agent options for `agents.local_agent`.
-const LOCAL_AGENT_CHOICES: &[(&str, &str)] = &[
-    (
-        "opencode",
-        "OpenCode — default, recommended for Linux servers",
-    ),
-    ("pi", "pi — requires npm or bun on the host"),
-    ("claude-code", "Claude Code CLI — requires `claude` on PATH"),
-];
-
 fn agent_runtime_menu(theme: &ColorfulTheme) -> anyhow::Result<()> {
     loop {
-        let (cfg, _) = load_daemon_config()?;
-        print_agent_runtime_status(&cfg);
+        print_agent_runtime_status();
 
         let choice = Select::with_theme(theme)
             .with_prompt("Agent runtime")
-            .items(&[
-                "Refresh status",
-                "Install / update OpenCode",
-                "Install / update pi",
-                "Set default agent (agents.local_agent)",
-                "Back",
-            ])
+            .items(&["Refresh status", "Install / repair pi", "Back"])
             .default(0)
             .interact()?;
 
         match choice {
             0 => continue,
-            1 => install_opencode_interactive(theme)?,
-            2 => install_pi_interactive(theme)?,
-            3 => set_local_agent_interactive(theme)?,
+            1 => install_pi_interactive(theme)?,
             _ => break,
         }
     }
     Ok(())
 }
 
-fn print_agent_runtime_status(cfg: &DaemonConfig) {
+fn print_agent_runtime_status() {
     println!();
-    println!("Default agent: {}", cfg.agents.local_agent);
-    let doctor = crate::opencode_install::doctor();
+    let doctor = crate::cli::doctor::report();
     print_component_status(
-        "OpenCode",
-        doctor.opencode.present,
-        doctor.opencode.version.as_deref(),
-        doctor.opencode.path.as_deref(),
+        "Node.js (managed)",
+        doctor.node.present,
+        doctor.node.version.as_deref(),
+        doctor.node.path.as_deref(),
     );
-    if cfg.agents.local_agent == "pi" {
-        let pi = crate::pi_install::doctor();
-        print_component_status("pi", pi.present, pi.version.as_deref(), pi.path.as_deref());
-        if !pi.satisfied {
-            println!("  required pi version: {}", pi.required_version);
-        }
+    if !doctor.node.satisfied {
+        println!(
+            "  required Node.js version: {}",
+            doctor.node.required_version
+        );
     }
-    if matches!(
-        cfg.agents.local_agent.as_str(),
-        "claude" | "claude-code" | "claude_code"
-    ) {
-        let claude = crate::claude_install::doctor();
-        print_component_status(
-            "Claude CLI",
-            claude.binary_present,
-            claude.version.as_deref(),
-            Some(claude.binary.as_str()),
+    print_component_status(
+        "pi",
+        doctor.pi.present,
+        doctor.pi.version.as_deref(),
+        doctor.pi.path.as_deref(),
+    );
+    if !doctor.pi.satisfied {
+        println!("  required pi version: {}", doctor.pi.required_version);
+        println!(
+            "  MCP SDK: {} (required {})",
+            doctor.pi.mcp_sdk_version.as_deref().unwrap_or("(missing)"),
+            doctor.pi.required_mcp_sdk_version
         );
     }
     print_component_status(
@@ -327,27 +301,6 @@ fn print_component_status(name: &str, present: bool, version: Option<&str>, path
     }
 }
 
-fn install_opencode_interactive(theme: &ColorfulTheme) -> anyhow::Result<()> {
-    let doctor = crate::opencode_install::doctor();
-    let force = if doctor.opencode.present {
-        Confirm::with_theme(theme)
-            .with_prompt("OpenCode is already installed — re-download the latest release?")
-            .default(false)
-            .interact()?
-    } else {
-        println!("OpenCode is not installed — downloading the latest release…");
-        false
-    };
-    crate::opencode_install::run_install(force)?;
-    let after = crate::opencode_install::doctor();
-    if after.opencode.present {
-        println!("✓ OpenCode ready.");
-        ensure_opencode_agent_section()?;
-        println!("  Restart the daemon if it is already running.");
-    }
-    Ok(())
-}
-
 fn install_pi_interactive(theme: &ColorfulTheme) -> anyhow::Result<()> {
     let pi = crate::pi_install::doctor();
     let force = if pi.present {
@@ -356,119 +309,21 @@ fn install_pi_interactive(theme: &ColorfulTheme) -> anyhow::Result<()> {
             .default(false)
             .interact()?
     } else {
-        println!("pi is not installed — installing via npm/bun…");
+        println!("pi is not installed — installing the managed Node.js and pi…");
         false
     };
     crate::pi_install::run_install(force)?;
     let after = crate::pi_install::doctor();
     if after.satisfied {
-        println!("✓ pi ready (>= {}).", after.required_version);
-        println!("  Set default agent to pi if you want to use it.");
+        println!(
+            "✓ pi {} ready on Node.js {}.",
+            after.required_version, after.required_node_version
+        );
+        println!("  Restart the daemon if it is already running.");
     } else {
         println!("pi install finished but version check did not pass — run `amuxd doctor`.");
     }
     Ok(())
-}
-
-fn set_local_agent_interactive(theme: &ColorfulTheme) -> anyhow::Result<()> {
-    let (mut cfg, path) = load_daemon_config()?;
-    let labels: Vec<String> = LOCAL_AGENT_CHOICES
-        .iter()
-        .map(|(_, label)| label.to_string())
-        .collect();
-    let current_idx = LOCAL_AGENT_CHOICES
-        .iter()
-        .position(|(id, _)| *id == cfg.agents.local_agent)
-        .unwrap_or(0);
-    let idx = Select::with_theme(theme)
-        .with_prompt("Default agent (agents.local_agent)")
-        .items(&labels)
-        .default(current_idx)
-        .interact()?;
-    let selected = LOCAL_AGENT_CHOICES[idx].0;
-
-    match selected {
-        "opencode" if !crate::opencode_install::doctor().opencode.present => {
-            if Confirm::with_theme(theme)
-                .with_prompt("OpenCode is not installed yet — install it now?")
-                .default(true)
-                .interact()?
-            {
-                install_opencode_interactive(theme)?;
-            } else {
-                println!("You can install later from this menu.");
-            }
-        }
-        "pi" if !crate::pi_install::doctor().satisfied => {
-            if Confirm::with_theme(theme)
-                .with_prompt("pi is not installed (or too old) — install it now?")
-                .default(true)
-                .interact()?
-            {
-                install_pi_interactive(theme)?;
-            } else {
-                println!("You can install later from this menu.");
-            }
-        }
-        "claude-code" if !crate::claude_install::doctor().binary_present => {
-            println!("Warning: Claude CLI not detected on PATH.");
-            if !Confirm::with_theme(theme)
-                .with_prompt("Set claude-code anyway?")
-                .default(false)
-                .interact()?
-            {
-                return Ok(());
-            }
-        }
-        _ => {}
-    }
-
-    // local_agent is team config: daemon.toml serde-skips it, so a cfg.save
-    // here would print success and change nothing. The routed edit surface
-    // writes team.toml; the machine-level agent sections still go to
-    // daemon.toml.
-    ensure_opencode_section(&mut cfg);
-    cfg.save(&path)
-        .map_err(|e| anyhow::anyhow!("save {}: {e}", path.display()))?;
-    crate::config::edit::set_config_toml_value(
-        &path,
-        "agents.local_agent",
-        toml::Value::String(selected.to_string()),
-    )?;
-    println!("✓ Default agent set to {selected}.");
-    println!("  Restart the daemon (`amuxd stop && amuxd start`) to apply.");
-    Ok(())
-}
-
-fn load_daemon_config() -> anyhow::Result<(DaemonConfig, PathBuf)> {
-    let path = DaemonConfig::default_path();
-    let mut cfg = DaemonConfig::load_or_bootstrap(&path)
-        .map_err(|e| anyhow::anyhow!("load {}: {e}", path.display()))?;
-    // local_agent / team_share / channels live in the team's team.toml.
-    crate::config::team_config::hydrate(&mut cfg).map_err(|e| anyhow::anyhow!("team.toml: {e}"))?;
-    Ok((cfg, path))
-}
-
-/// After installing OpenCode, merge `[agents.opencode]` into daemon.toml.
-fn ensure_opencode_agent_section() -> anyhow::Result<()> {
-    let (mut cfg, path) = load_daemon_config()?;
-    ensure_opencode_section(&mut cfg);
-    if cfg.agents.opencode.is_some() {
-        cfg.save(&path)
-            .map_err(|e| anyhow::anyhow!("save {}: {e}", path.display()))?;
-        println!("✓ Updated [agents.opencode] in {}.", path.display());
-    }
-    Ok(())
-}
-
-fn ensure_opencode_section(cfg: &mut DaemonConfig) {
-    crate::agent_discover::discover_and_merge(cfg);
-    if cfg.agents.local_agent == "opencode" && cfg.agents.opencode.is_none() {
-        cfg.agents.opencode = Some(AgentBackendConfig {
-            binary: crate::opencode_install::resolve_binary(None),
-            default_flags: vec!["acp".to_string()],
-        });
-    }
 }
 
 fn llm_menu(theme: &ColorfulTheme) -> anyhow::Result<()> {
@@ -1199,13 +1054,5 @@ mod tests {
         let id = encode_workspace_path(dir.path()).unwrap();
         let decoded = crate::config::decode_workspace_path(&id).unwrap();
         assert_eq!(decoded, dir.path());
-    }
-
-    #[test]
-    fn ensure_opencode_section_writes_backend_when_missing() {
-        let mut cfg = DaemonConfig::bootstrap();
-        cfg.agents.local_agent = "opencode".to_string();
-        ensure_opencode_section(&mut cfg);
-        assert!(cfg.agents.opencode.is_some());
     }
 }

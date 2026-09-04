@@ -5,6 +5,11 @@
 //! surface (`AcpCommand`, `AcpStartupMetadata`, `OpencodeHost`) keeps the old
 //! names and signatures so `RuntimeManager` / gateway plumbing is unchanged.
 
+// Nothing constructs this backend since pi became the only runtime (#1247 /
+// #1250). The module is compiled until #1247 deletes it, so dead-code lints
+// are silenced here rather than chased through every function.
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1085,9 +1090,7 @@ async fn do_prompt(
             );
             let taken = {
                 let mut routes = shared.routes.lock();
-                routes
-                    .get_mut(session_id)
-                    .and_then(take_active_turn)
+                routes.get_mut(session_id).and_then(take_active_turn)
             };
             close_orphaned_turn(session_id, taken).await;
         } else if phase == client::OpencodeSessionPhase::Running {
@@ -2542,11 +2545,7 @@ mod turn_activity_tests {
             route.turn_active = true;
             route.turn_seq += 1;
             route.tools_in_flight.clear();
-            (
-                route.event_tx.clone(),
-                route.turn_seq,
-                !was_turn_active,
-            )
+            (route.event_tx.clone(), route.turn_seq, !was_turn_active)
         };
         assert!(was_turn_active);
         assert!(!emit_turn_open);

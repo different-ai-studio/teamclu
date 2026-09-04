@@ -1006,8 +1006,9 @@ fn backend_label(agent_type: amux::AgentType) -> &'static str {
 fn backend_launchable(agent_type: amux::AgentType, cfg: &AgentLaunchConfig) -> bool {
     match agent_type {
         amux::AgentType::Pi => {
-            let resolved = crate::runtime::pi_rpc::process::resolve_binary(None);
-            binary_available(&AgentLaunchConfig::new(resolved, Vec::new(), "pi"))
+            // No spawn: the managed runtime is two known paths.
+            crate::pi_install::installed_version().is_some()
+                && crate::node_install::node_binary().exists()
         }
         amux::AgentType::Cursor => {
             let cmd = crate::runtime::cursor_sdk::process::default_bridge_command();

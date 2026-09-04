@@ -12,6 +12,11 @@
 //! (`~/.opencode/bin/opencode`) so a background launchd/systemd service finds it
 //! without a login PATH.
 
+// Nothing constructs this backend since pi became the only runtime (#1247 /
+// #1250). The module is compiled until #1247 deletes it, so dead-code lints
+// are silenced here rather than chased through every function.
+#![allow(dead_code)]
+
 use crate::process_util::CommandNoWindow;
 use serde::Serialize;
 use std::path::PathBuf;
