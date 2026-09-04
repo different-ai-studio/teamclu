@@ -318,3 +318,18 @@ Give 2-5 short imperative phrases separated by ` | `. seahelm turns that line in
 clickable buttons for the user. Make it the LAST line of your message; do NOT run
 a tool or shell command to produce it.
 <!-- seahelm:suggest:end -->
+
+<!-- seahelm:worktree:start -->
+## Moving into another worktree (seahelm)
+
+seahelm draws one card per git worktree, and your pane is filed under the one it
+started in. If you move into a different worktree and start working there, say so:
+
+    seahelm pane move "$SEAHELM_PANE_ID" <absolute-worktree-path>
+
+Your pane — and everything running in it — moves to that worktree's card, instead
+of a stray empty pane appearing there while you keep reporting under the old one.
+
+Only when you actually work in it. Creating a worktree you do not move into needs
+nothing. seahelm often notices on its own; saying it means it is never missed.
+<!-- seahelm:worktree:end -->
