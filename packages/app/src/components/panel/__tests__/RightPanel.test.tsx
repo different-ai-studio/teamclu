@@ -51,10 +51,22 @@ vi.mock('@/components/chat/SessionActorSheet', () => ({
     React.createElement('div', { 'data-testid': 'session-actor-panel' }, `${sessionId}:${teamId}`),
 }))
 
+const mockLocalWorkspace = {
+  hasLocalAgent: true,
+  agentName: 'Mac-mini-3' as string | null,
+  path: '/Volumes/openbeta/workspace/teamclu' as string | null,
+}
+vi.mock('@/hooks/use-session-local-workspace', () => ({
+  useSessionLocalWorkspace: () => mockLocalWorkspace,
+}))
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockStoreState.activeTab = 'shortcuts'
   mockSelection.activeSessionId = null
+  mockLocalWorkspace.hasLocalAgent = true
+  mockLocalWorkspace.agentName = 'Mac-mini-3'
+  mockLocalWorkspace.path = '/Volumes/openbeta/workspace/teamclu'
 })
 
 describe('RightPanel', () => {
@@ -76,6 +88,25 @@ describe('RightPanel', () => {
     render(React.createElement(RightPanel, { defaultTab: 'files' }))
     expect(screen.getByTestId('file-browser')).toBeDefined()
     expect(screen.queryByTestId('shortcuts-panel')).toBeNull()
+  })
+
+  // A session created a second ago has no workspace binding until its runtime
+  // starts. Rendering the tree anyway showed the PREVIOUS session's folder,
+  // because the workspace store is ambient and lags the session switch.
+  it('files tab says the agent has not started while the session has no bound folder', () => {
+    mockStoreState.activeTab = 'files'
+    mockLocalWorkspace.path = null
+    render(React.createElement(RightPanel))
+    expect(screen.getByTestId('files-agent-not-started')).toBeDefined()
+    expect(screen.queryByTestId('file-browser')).toBeNull()
+  })
+
+  it('files tab names the agent and its folder under the tree', () => {
+    mockStoreState.activeTab = 'files'
+    render(React.createElement(RightPanel))
+    const footer = screen.getByTestId('files-workspace-footer')
+    expect(footer.textContent).toContain('Mac-mini-3')
+    expect(footer.getAttribute('title')).toBe('/Volumes/openbeta/workspace/teamclu')
   })
 
   it('actors tab shows the team actors view without an active session', () => {

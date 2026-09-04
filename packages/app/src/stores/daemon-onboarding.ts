@@ -444,7 +444,13 @@ async function ensureHealthy(): Promise<boolean> {
  * side effect after status flipped to ready. That raced the agent bind and
  * never told the sidebar to reload, so WORKSPACE stayed empty until a later
  * incidental refresh. Fix: after bind, POST /v1/workspaces with this machine's
- * agentId (user JWT), bump workspaceSyncEpoch so LocalDaemonRow reloads.
+ * agentId (user JWT).
+ *
+ * `workspaceSyncEpoch` was the reload signal for the sidebar's workspace list.
+ * That list is gone — workspaces are managed in Settings and picked per session
+ * in the advanced new-session dialog — so the counter currently has no reader.
+ * Kept as the signal for whoever needs to react to a newly registered
+ * workspace next.
  *
  * The local daemon mirror is best-effort and needs daemon cloud auth.
  */

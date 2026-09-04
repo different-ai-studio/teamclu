@@ -24,6 +24,7 @@ import {
   setAgentDefaultWorkspace,
   type DaemonWorkspace,
 } from '@/lib/daemon/daemon-workspaces'
+import { shortenWorkspacePath } from '@/lib/workspace/shorten-path'
 import { computeInitialSelection } from './new-session-prefill'
 
 type Candidate = {
@@ -511,11 +512,10 @@ export function NewSessionDialog() {
             )}
             {selectedWorkspace?.path && (
               <div
-                className="truncate pt-1.5 text-left text-[11.5px] text-faint"
-                dir="rtl"
+                className="truncate pt-1.5 text-[11.5px] text-faint"
                 title={selectedWorkspace.path}
               >
-                {selectedWorkspace.path}
+                {shortenWorkspacePath(selectedWorkspace.path)}
               </div>
             )}
             {selectedWorkspace && selectedWorkspace.id !== localAgentDefaultWorkspaceId && (

@@ -1014,10 +1014,10 @@
       "pendingBody": "运行中的会话保持当前配置，运行环境下次启动时自动加载最新配置。",
       "failedGeneric": "无法读取更新后的工作区配置。",
       "dismiss": "知道了"
-    },
-    "selectWorkspace": "选择工作区"
+    }
   },
   "fileExplorer": {
+    "agentNotStarted": "Agent 尚未启动",
     "newFile": "新建文件",
     "newFolder": "新建文件夹",
     "copyPath": "复制路径",
@@ -1108,16 +1108,7 @@
   },
   "sidebar": {
     "apps": "应用",
-    "newWorkspace": "新建工作区",
-    "workspacesLoading": "正在加载工作区…",
-    "noWorkspaces": "暂无工作区",
     "noWorkspaceSessions": "该工作区下暂无会话",
-    "workspaceAddFailed": "添加工作区失败：{{msg}}",
-    "switchToWorkspace": "切换到此工作区",
-    "workspaceSwitchFailed": "切换工作区失败：{{msg}}",
-    "workspaceDeleteFailed": "删除工作区失败：{{msg}}",
-    "currentWorkspace": "当前：{{path}}",
-    "defaultWorkspace": "默认工作区",
     "searchSessions": "搜索会话",
     "searchDescription": "搜索并导航到会话",
     "searchPlaceholder": "搜索会话...",
@@ -1168,7 +1159,6 @@
     "localDaemonExpandSheet": "展开菜单",
     "localDaemonCollapseSheet": "收起菜单",
     "localDaemonGroupConnection": "连接",
-    "localDaemonGroupWorkspace": "Workspace",
     "localDaemonGroupDevice": "设备",
     "localDaemonGroupTeam": "团队",
     "localDaemonDaemonSettings": "Daemon 设置",

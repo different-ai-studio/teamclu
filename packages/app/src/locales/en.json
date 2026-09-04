@@ -1014,10 +1014,10 @@
       "pendingBody": "Running sessions keep their current configuration; the latest configuration loads the next time their runtime starts.",
       "failedGeneric": "Could not read the updated workspace configuration.",
       "dismiss": "Got it"
-    },
-    "selectWorkspace": "Select Workspace"
+    }
   },
   "fileExplorer": {
+    "agentNotStarted": "Agent has not started yet",
     "newFile": "New File",
     "newFolder": "New Folder",
     "copyPath": "Copy Path",
@@ -1108,16 +1108,7 @@
   },
   "sidebar": {
     "apps": "Apps",
-    "newWorkspace": "New workspace",
-    "workspacesLoading": "Loading workspaces…",
-    "noWorkspaces": "No workspaces yet",
     "noWorkspaceSessions": "No sessions in this workspace yet",
-    "workspaceAddFailed": "Failed to add workspace: {{msg}}",
-    "switchToWorkspace": "Switch to this workspace",
-    "workspaceSwitchFailed": "Failed to switch workspace: {{msg}}",
-    "workspaceDeleteFailed": "Failed to delete workspace: {{msg}}",
-    "currentWorkspace": "Current: {{path}}",
-    "defaultWorkspace": "Default workspace",
     "searchSessions": "Search Sessions",
     "searchDescription": "Search and navigate to a session",
     "searchPlaceholder": "Search sessions...",
@@ -1168,7 +1159,6 @@
     "localDaemonExpandSheet": "Expand menu",
     "localDaemonCollapseSheet": "Collapse menu",
     "localDaemonGroupConnection": "Connection",
-    "localDaemonGroupWorkspace": "Workspace",
     "localDaemonGroupDevice": "Device",
     "localDaemonGroupTeam": "Team",
     "localDaemonDaemonSettings": "Daemon settings",

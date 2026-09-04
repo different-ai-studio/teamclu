@@ -47,6 +47,7 @@ import { RuntimeRefreshWorkspaceBanner } from "@/components/workspace/RuntimeRef
 import { useSessionStore } from "@/stores/session-store";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
+import { useSessionLocalWorkspace } from "@/hooks/use-session-local-workspace";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOutboxStore } from "@/stores/outbox-store";
 import { startOutboxSender } from "@/services/outbox-sender";
@@ -192,6 +193,12 @@ function AppContent() {
     isPanelOpen &&
     activeTab === "shortcuts";
   const showAppControlPanel = appControlPanelOpen && !!controlPanelApp;
+  // The file tree and the terminal both reach this machine's filesystem, so
+  // they only mean something for a session the local agent is in. Without this
+  // gate they kept showing the previous session's directory: the workspace
+  // store is ambient and only moves when a session resolving to a local path
+  // is opened.
+  const { hasLocalAgent: sessionHasLocalAgent } = useSessionLocalWorkspace();
   const showRightWorkspacePanel = isPanelOpen && !leftDockActive && !showAppControlPanel;
   const showRightSidePanel = showRightWorkspacePanel || showAppControlPanel;
   const settingsOpen = currentView === "settings";
@@ -659,7 +666,7 @@ function AppContent() {
                   <AppWindow className="h-4 w-4" />
                 </button>
               )}
-              {capabilities.workspace && workspacePath && showTerminalToggle && (
+              {capabilities.workspace && workspacePath && showTerminalToggle && sessionHasLocalAgent && (
                 <TerminalToggleButton workspacePath={workspacePath} />
               )}
               {activeSession && hasCurrentSession && (
@@ -673,11 +680,11 @@ function AppContent() {
                   onClick={() => isPanelOpen && activeTab === "actors" ? closePanel() : openPanel("actors")}
                 />
               )}
-              {/* Workspace file tree. Restored as a header entry that opens the
-                  right-panel `files` tab (rendered by the existing FileBrowser,
-                  not the deleted RAG KnowledgeBrowser). Gate mirrors the
-                  pre-#1054 condition: desktop + a workspace path. */}
-              {capabilities.workspace && (
+              {/* Workspace file tree — the folder the local agent works in for
+                  the open session. No local agent in it, no folder to show, so
+                  the entry disappears rather than pointing at whatever was open
+                  before. */}
+              {capabilities.workspace && sessionHasLocalAgent && (
                 <HeaderPanelTab
                   icon={BookOpen}
                   label={t("navigation.files", "files")}
