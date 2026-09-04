@@ -46,6 +46,7 @@ pub use team_skill_draft::{
 pub use roles_skills::{
     find_managed_skill_in_session_inventory, is_inherent_skill, scan_roles_skills_state,
     team_skill_roots,     };
+pub use knowledge_scaffold::{domain_index_template, scaffold_knowledge, ScaffoldReport};
 pub use session_store::{SessionBinding, SessionStore};
 pub use workspace_control::{
     decode_workspace_path, encode_workspace_path, ApplyOutcome, OpenCodeCompatStore, ProviderAuthRequest, ProviderModelConfig, WorkspaceControlStore,
