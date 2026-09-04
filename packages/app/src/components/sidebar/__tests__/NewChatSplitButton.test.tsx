@@ -55,7 +55,7 @@ describe('NewChatSplitButton', () => {
     expect(screen.getByRole('button', { name: /新聊天/i })).toBeDisabled()
   })
 
-  it('expands inline panel without workspace when team is available', () => {
+  it('opens the advanced dialog directly, with no intermediate menu', () => {
     render(
       <NewChatSplitButton
         quickChatState={{
@@ -66,24 +66,27 @@ describe('NewChatSplitButton', () => {
         onPrimaryClick={onPrimaryClick}
       />,
     )
-    const wrap = screen.getByTestId('new-chat-more-panel-wrap')
-    expect(wrap).toHaveAttribute('aria-hidden', 'true')
-    fireEvent.click(screen.getByRole('button', { name: /更多新建选项/i }))
-    expect(wrap).toHaveAttribute('aria-hidden', 'false')
-    fireEvent.click(screen.getByRole('button', { name: /多人会话/i }))
-    expect(openDialog).toHaveBeenCalled()
-    expect(wrap).toHaveAttribute('aria-hidden', 'true')
+    fireEvent.click(screen.getByTestId('new-chat-advanced'))
+    expect(openDialog).toHaveBeenCalledTimes(1)
   })
 
-  it('disables more-options chevron when no team', () => {
-    render(
-      <NewChatSplitButton
-        quickChatState={{ kind: 'no_team' }}
-        creating={false}
-        onPrimaryClick={onPrimaryClick}
-      />,
-    )
-    expect(screen.getByRole('button', { name: /更多新建选项/i })).toBeDisabled()
-    expect(screen.queryByTestId('new-chat-more-panel-wrap')).not.toBeInTheDocument()
-  })
+  // The advanced half is the escape hatch: it is the only way to start a chat
+  // when the quick half is dead, so it stays live in every state the quick half
+  // refuses — including `no_team`, which the dialog answers with its empty state.
+  it.each(['no_team', 'no_agent', 'loading'] as const)(
+    'keeps the advanced half enabled when quick chat is %s',
+    (kind) => {
+      render(
+        <NewChatSplitButton
+          quickChatState={{ kind }}
+          creating={true}
+          onPrimaryClick={onPrimaryClick}
+        />,
+      )
+      const advanced = screen.getByTestId('new-chat-advanced')
+      expect(advanced).not.toBeDisabled()
+      fireEvent.click(advanced)
+      expect(openDialog).toHaveBeenCalled()
+    },
+  )
 })

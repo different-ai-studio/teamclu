@@ -531,8 +531,7 @@
       "failedClickToRetry": "Failed — click to retry"
     },
     "newChat": "New Chat",
-    "newChatMoreOptions": "More new chat options",
-    "newMultiPersonSession": "Group Session",
+    "advancedSession": "Advanced session",
     "quickSessionCreateError": "Could not start a session",
     "quickSessionNoAgentHint": "Set a personal default agent, or ask admin for a team default.",
     "quickSessionNoAgentTitle": "No default agent set",
@@ -834,7 +833,21 @@
       "create": "Create session",
       "noActorError": "No member identity found for this team",
       "createError": "Failed to create session",
-      "removeParticipantAria": "Remove participant"
+      "removeParticipantAria": "Remove participant",
+      "localAgentBadge": "This machine",
+      "noTeamTitle": "No team yet",
+      "noTeamHint": "Create or join a team before starting a session.",
+      "workspaceLabel": "Workspace",
+      "workspaceScope": "Applies to the agent on this machine",
+      "workspaceNone": "No workspace on this machine yet",
+      "workspaceDefaultTag": "default",
+      "workspaceBrowse": "Choose a workspace folder",
+      "workspaceBrowseAction": "Browse…",
+      "workspaceAddFailed": "Failed to add workspace: {{msg}}",
+      "workspaceSetDefault": "Set as default",
+      "workspaceDefaultWarning": "Changes this agent's default folder for every future session and scheduled task",
+      "workspaceDefaultSet": "Default workspace updated",
+      "workspaceDefaultFailed": "Failed to set default workspace: {{msg}}"
     },
     "commandPopover": {
       "prompt": "Select role, skill, or command",

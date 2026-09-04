@@ -531,8 +531,7 @@
       "failedClickToRetry": "发送失败 — 点击重试"
     },
     "newChat": "新聊天",
-    "newChatMoreOptions": "更多新建选项",
-    "newMultiPersonSession": "多人会话",
+    "advancedSession": "高级会话",
     "quickSessionCreateError": "无法创建会话",
     "quickSessionNoAgentHint": "请设置个人默认 Agent，或联系管理员设置团队默认 Agent。",
     "quickSessionNoAgentTitle": "尚未设置默认 Agent",
@@ -834,7 +833,21 @@
       "create": "创建会话",
       "noActorError": "当前团队没有找到成员身份",
       "createError": "创建会话失败",
-      "removeParticipantAria": "移除成员"
+      "removeParticipantAria": "移除成员",
+      "localAgentBadge": "本机",
+      "noTeamTitle": "还没有团队",
+      "noTeamHint": "先创建或加入一个团队，才能发起会话。",
+      "workspaceLabel": "工作目录",
+      "workspaceScope": "仅对本机 Agent 生效",
+      "workspaceNone": "本机还没有工作目录",
+      "workspaceDefaultTag": "默认",
+      "workspaceBrowse": "选择工作目录",
+      "workspaceBrowseAction": "浏览…",
+      "workspaceAddFailed": "添加工作目录失败：{{msg}}",
+      "workspaceSetDefault": "设为默认",
+      "workspaceDefaultWarning": "将改变该 Agent 今后所有会话与定时任务的默认目录",
+      "workspaceDefaultSet": "已设为默认工作目录",
+      "workspaceDefaultFailed": "设置默认工作目录失败：{{msg}}"
     },
     "commandPopover": {
       "prompt": "选择角色、技能或命令",

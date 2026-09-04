@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Search, Loader2, MessageSquare, Pin, Archive, Pencil, Ellipsis, Info, SquarePen, Users, X, ListChecks, Check, HelpCircle, Stamp, Clock } from 'lucide-react'
+import { Search, Loader2, MessageSquare, Pin, Archive, Pencil, Ellipsis, Info, SquarePen, SlidersHorizontal, X, ListChecks, Check, HelpCircle, Stamp, Clock } from 'lucide-react'
 import { useSessionStore } from '@/stores/session-store'
 import { useUIStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -1017,9 +1017,9 @@ export function SessionListColumn({
                   size="icon"
                   className="h-7 w-7 text-muted-foreground hover:text-foreground"
                   onClick={() => useUIStore.getState().openNewSessionDialog()}
-                  title={t('chat.newMultiPersonSession', 'Group session')}
+                  title={t('chat.advancedSession', 'Advanced session')}
                 >
-                  <Users className="h-4 w-4" />
+                  <SlidersHorizontal className="h-4 w-4" />
                 </Button>
               ) : null}
             </>

@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Loader2, Pencil, Search, X } from 'lucide-react'
+import { FolderOpen, Loader2, Pencil, Search, Star, X } from 'lucide-react'
 import {
   Dialog, DialogContent, DialogTitle,
 } from '@/components/ui/dialog'
@@ -15,14 +15,26 @@ import { actorAvatarColor } from '@/lib/actor/actor-color'
 import { createSessionWithFirstMessage } from '@/lib/session/session-create'
 import { promoteCreatedSessionToUi } from '@/lib/session/promote-created-session'
 import { useEngagedAgentStore } from '@/stores/engaged-agent-store'
-import { cn } from '@/lib/utils'
+import { cn, isTauri } from '@/lib/utils'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
+import { rememberDefaultWorkspaceId } from '@/stores/agent-default-workspace-store'
+import {
+  createDaemonWorkspace,
+  listDaemonWorkspaces,
+  setAgentDefaultWorkspace,
+  type DaemonWorkspace,
+} from '@/lib/daemon/daemon-workspaces'
 import { computeInitialSelection } from './new-session-prefill'
 
 type Candidate = {
   id: string
   actor_type: 'member' | 'agent'
   display_name: string
+}
+
+function workspaceNameFromPath(path: string): string {
+  const trimmed = path.replace(/\/+$/, '')
+  return trimmed.split('/').pop() || trimmed
 }
 
 export function NewSessionDialog() {
@@ -48,9 +60,34 @@ export function NewSessionDialog() {
   const [message, setMessage] = React.useState('')
   const [submitting, setSubmitting] = React.useState(false)
 
+  // The agent running on THIS machine. Resolved from the local daemon's own
+  // `/v1/info`, not from the directory — several agents in a team can share a
+  // display name (three rows reading `liziliudeMacBook-Air` is the normal
+  // case), so the badge and the workspace picker cannot be driven by name.
+  const [localAgentId, setLocalAgentId] = React.useState<string | null>(null)
+  const [workspaces, setWorkspaces] = React.useState<DaemonWorkspace[]>([])
+  const [workspacesLoading, setWorkspacesLoading] = React.useState(false)
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = React.useState<string>('')
+  const [workspaceBusy, setWorkspaceBusy] = React.useState(false)
+
   React.useEffect(() => {
     if (open) setMessage(initialMessage ?? '')
   }, [open, initialMessage])
+
+  React.useEffect(() => {
+    if (!open || !isTauri()) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const { getLocalDaemonActorId } = await import('@/lib/daemon/daemon-agent-admin')
+        const id = await getLocalDaemonActorId()
+        if (!cancelled) setLocalAgentId(id?.trim() || null)
+      } catch {
+        if (!cancelled) setLocalAgentId(null)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [open])
 
   // On open: reset the picker, pull a fresh reconcile, kick a full background
   // sync, and trigger a load of the effective default agent.
@@ -95,6 +132,112 @@ export function NewSessionDialog() {
     [candidates, picked],
   )
 
+  // A workspace is a folder on one machine, so the picker only means anything
+  // when the agent that would run there is in the session. Deselect it and the
+  // choice is dropped rather than left dangling on an absent agent.
+  const localAgentPicked = !!localAgentId && picked.has(localAgentId)
+
+  const localAgentDefaultWorkspaceId = React.useMemo(() => {
+    if (!localAgentId) return ''
+    const row = actors.find((a) => a.id === localAgentId)
+    return row?.default_workspace_id?.trim() ?? ''
+  }, [actors, localAgentId])
+
+  const loadWorkspaces = React.useCallback(async () => {
+    if (!teamId || !localAgentId) return
+    setWorkspacesLoading(true)
+    try {
+      const rows = await listDaemonWorkspaces(teamId, localAgentId)
+      setWorkspaces(rows.filter((w) => !w.archived && !!w.path))
+    } catch (e) {
+      console.warn('[NewSessionDialog] workspace load failed (non-fatal):', e)
+      setWorkspaces([])
+    } finally {
+      setWorkspacesLoading(false)
+    }
+  }, [teamId, localAgentId])
+
+  React.useEffect(() => {
+    if (!open || !localAgentPicked) {
+      setWorkspaces([])
+      setSelectedWorkspaceId('')
+      return
+    }
+    void loadWorkspaces()
+  }, [open, localAgentPicked, loadWorkspaces])
+
+  // Land on the agent's own default; fall back to its first folder so the
+  // picker is never empty-but-populated.
+  React.useEffect(() => {
+    if (!localAgentPicked || workspaces.length === 0) return
+    setSelectedWorkspaceId((current) => {
+      if (current && workspaces.some((w) => w.id === current)) return current
+      const preferred = workspaces.find((w) => w.id === localAgentDefaultWorkspaceId)
+      return (preferred ?? workspaces[0]).id
+    })
+  }, [localAgentPicked, workspaces, localAgentDefaultWorkspaceId])
+
+  const selectedWorkspace = React.useMemo(
+    () => workspaces.find((w) => w.id === selectedWorkspaceId) ?? null,
+    [workspaces, selectedWorkspaceId],
+  )
+
+  const handleBrowseWorkspace = async () => {
+    if (!teamId || !localAgentId) return
+    setWorkspaceBusy(true)
+    try {
+      const { open: openDialog } = await import('@tauri-apps/plugin-dialog')
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: t('chat.newSessionDialog.workspaceBrowse', '选择工作目录'),
+      })
+      const path = typeof selected === 'string' ? selected.trim() : ''
+      if (!path) return
+      const created = await createDaemonWorkspace({
+        teamId,
+        agentId: localAgentId,
+        createdByMemberId: currentMemberId,
+        name: workspaceNameFromPath(path),
+        path,
+      })
+      await loadWorkspaces()
+      setSelectedWorkspaceId(created.id)
+    } catch (e) {
+      const { toast } = await import('sonner')
+      toast.error(
+        t('chat.newSessionDialog.workspaceAddFailed', '添加工作目录失败：{{msg}}', {
+          msg: e instanceof Error ? e.message : String(e),
+        }),
+      )
+    } finally {
+      setWorkspaceBusy(false)
+    }
+  }
+
+  const handleSetDefaultWorkspace = async () => {
+    if (!localAgentId || !selectedWorkspace) return
+    setWorkspaceBusy(true)
+    try {
+      await setAgentDefaultWorkspace(localAgentId, selectedWorkspace.id)
+      // Keep the send-path fast cache in step with what we just wrote; a stale
+      // entry here is what makes the next first message cold-start twice.
+      rememberDefaultWorkspaceId([localAgentId], selectedWorkspace.id)
+      refetch()
+      const { toast } = await import('sonner')
+      toast.success(t('chat.newSessionDialog.workspaceDefaultSet', '已设为默认工作目录'))
+    } catch (e) {
+      const { toast } = await import('sonner')
+      toast.error(
+        t('chat.newSessionDialog.workspaceDefaultFailed', '设置默认工作目录失败：{{msg}}', {
+          msg: e instanceof Error ? e.message : String(e),
+        }),
+      )
+    } finally {
+      setWorkspaceBusy(false)
+    }
+  }
+
   // One-shot prefill: once per open, apply effective default agent selection.
   // Waits until the effective default has finished loading for this team before
   // applying, so we don't prematurely lock in an empty selection.
@@ -118,7 +261,7 @@ export function NewSessionDialog() {
 
   const clearPicks = () => setPicked(new Set())
 
-  const canSubmit = message.trim().length > 0 && !submitting
+  const canSubmit = message.trim().length > 0 && !submitting && !!teamId
 
   const handleClose = () => {
     if (submitting) return
@@ -153,6 +296,10 @@ export function NewSessionDialog() {
         additionalActorIds,
         agentActorIds,
         messageText: trimmed,
+        localWorkspace:
+          localAgentPicked && selectedWorkspace?.path
+            ? { workspaceId: selectedWorkspace.id, path: selectedWorkspace.path }
+            : null,
       })
       const agentPicks = pickedActors.filter((p) => p.actor_type === 'agent')
       if (agentPicks.length > 0) {
@@ -217,6 +364,29 @@ export function NewSessionDialog() {
           </button>
         </div>
 
+        {/*
+          No team, no session: the participant list, the creator actor and the
+          session row all hang off a team id. The advanced button stays live in
+          this state on purpose — it is the escape hatch when quick chat is
+          dead — so it has to land somewhere that says what is missing.
+        */}
+        {!teamId ? (
+          <div
+            data-testid="new-session-no-team"
+            className="border-t border-border px-5 py-10 text-center"
+          >
+            <div className="text-[13px] font-medium text-foreground">
+              {t('chat.newSessionDialog.noTeamTitle', '还没有团队')}
+            </div>
+            <div className="pt-1.5 text-[12.5px] text-muted-foreground">
+              {t(
+                'chat.newSessionDialog.noTeamHint',
+                '先创建或加入一个团队，才能发起会话。',
+              )}
+            </div>
+          </div>
+        ) : (
+        <>
         {/* Participants chips */}
         <div className="px-5 pt-2 pb-3">
           <div className="flex items-center justify-between pb-2">
@@ -280,10 +450,91 @@ export function NewSessionDialog() {
               key={c.id}
               candidate={c}
               checked={picked.has(c.id)}
+              isLocal={c.id === localAgentId}
               onToggle={() => togglePick(c.id)}
             />
           ))}
         </div>
+
+        {/* Workspace — only once the agent on this machine is in the session */}
+        {localAgentPicked && (
+          <div
+            data-testid="new-session-workspace"
+            className="border-b border-border px-5 pt-4 pb-3"
+          >
+            <div className="flex items-baseline justify-between pb-2">
+              <label className="text-[12px] text-muted-foreground">
+                {t('chat.newSessionDialog.workspaceLabel', '工作目录')}
+              </label>
+              <span className="text-[11.5px] text-faint">
+                {t('chat.newSessionDialog.workspaceScope', '仅对本机 Agent 生效')}
+              </span>
+            </div>
+            {workspacesLoading ? (
+              <div className="flex items-center gap-2 py-1.5 text-[12.5px] text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {t('chat.newSessionDialog.loading', '加载中…')}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <select
+                  value={selectedWorkspaceId}
+                  onChange={(e) => setSelectedWorkspaceId(e.target.value)}
+                  disabled={workspaceBusy || workspaces.length === 0}
+                  aria-label={t('chat.newSessionDialog.workspaceLabel', '工作目录')}
+                  className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-muted/30 px-2.5 text-[13px] outline-none focus:border-foreground/30 disabled:opacity-50"
+                >
+                  {workspaces.length === 0 && (
+                    <option value="">
+                      {t('chat.newSessionDialog.workspaceNone', '本机还没有工作目录')}
+                    </option>
+                  )}
+                  {workspaces.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.id === localAgentDefaultWorkspaceId
+                        ? `${w.name} · ${t('chat.newSessionDialog.workspaceDefaultTag', '默认')}`
+                        : w.name}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9 shrink-0 gap-1.5"
+                  disabled={workspaceBusy}
+                  onClick={() => void handleBrowseWorkspace()}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  {t('chat.newSessionDialog.workspaceBrowseAction', '浏览…')}
+                </Button>
+              </div>
+            )}
+            {selectedWorkspace?.path && (
+              <div
+                className="truncate pt-1.5 text-left text-[11.5px] text-faint"
+                dir="rtl"
+                title={selectedWorkspace.path}
+              >
+                {selectedWorkspace.path}
+              </div>
+            )}
+            {selectedWorkspace && selectedWorkspace.id !== localAgentDefaultWorkspaceId && (
+              <button
+                type="button"
+                disabled={workspaceBusy}
+                onClick={() => void handleSetDefaultWorkspace()}
+                className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+                title={t(
+                  'chat.newSessionDialog.workspaceDefaultWarning',
+                  '将改变该 Agent 今后所有会话与定时任务的默认目录',
+                )}
+              >
+                <Star className="h-3 w-3" />
+                {t('chat.newSessionDialog.workspaceSetDefault', '设为默认')}
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Opening message */}
         <div className="px-5 pt-4 pb-3">
@@ -302,6 +553,8 @@ export function NewSessionDialog() {
             className="w-full resize-none rounded-lg border border-border bg-muted/20 px-3 py-2.5 text-[13px] leading-[1.5] outline-none placeholder:text-muted-foreground focus:border-foreground/30"
           />
         </div>
+        </>
+        )}
 
         {/* Footer */}
         <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/30 px-5 py-3">
@@ -377,12 +630,16 @@ function ParticipantChip({
 function CandidateRow({
   candidate,
   checked,
+  isLocal,
   onToggle,
 }: {
   candidate: Candidate
   checked: boolean
+  /** The agent running on this machine — the only one the workspace picker applies to. */
+  isLocal: boolean
   onToggle: () => void
 }) {
+  const { t } = useTranslation()
   const isAgent = candidate.actor_type === 'agent'
   const c = actorAvatarColor(candidate.id)
   return (
@@ -411,6 +668,16 @@ function CandidateRow({
           {isAgent && (
             <span className="shrink-0 rounded border border-coral/40 bg-coral/10 px-1 py-px font-mono text-[9px] font-semibold tracking-wider text-coral">
               AI
+            </span>
+          )}
+          {/* Several agents in a team commonly share a display name, so this
+              badge is the only way to tell which row is the machine you are on. */}
+          {isLocal && (
+            <span
+              data-testid="candidate-local-badge"
+              className="shrink-0 rounded border border-border bg-muted px-1 py-px text-[9.5px] font-semibold tracking-wide text-muted-foreground"
+            >
+              {t('chat.newSessionDialog.localAgentBadge', '本机')}
             </span>
           )}
         </div>
