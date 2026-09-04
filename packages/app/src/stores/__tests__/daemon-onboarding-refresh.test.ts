@@ -152,7 +152,6 @@ const reset = () =>
     cloudAuthExpired: false,
     healing: false,
     healError: null,
-    workspaceSyncEpoch: 0,
   })
 
 beforeEach(() => {
@@ -445,7 +444,6 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(setAgentDefaultWorkspace).toHaveBeenCalledWith('actor-1', 'ws-cloud-1')
     expect(h.invokeCalls).toContain('register_daemon_workspace')
     expect(h.registerArgs?.workspacePath).toBe('/home/u/projects/app')
-    expect(useDaemonOnboardingStore.getState().workspaceSyncEpoch).toBe(1)
   })
 
   it('skips local daemon mirror while cloud auth is expired but still registers cloud workspace', async () => {
@@ -457,9 +455,9 @@ describe('daemon-onboarding refresh() orchestration', () => {
     h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
     await useDaemonOnboardingStore.getState().refresh()
     expect(useDaemonOnboardingStore.getState().status).toBe('ready')
-    // Cloud row is written with the app JWT so the sidebar can populate.
+    // Cloud row is written with the app JWT, so Settings and the advanced
+    // new-session dialog can list it.
     expect(createDaemonWorkspace).toHaveBeenCalled()
-    expect(useDaemonOnboardingStore.getState().workspaceSyncEpoch).toBe(1)
     // Local amuxd mirror needs daemon cloud auth — skipped while expired.
     expect(h.invokeCalls).not.toContain('register_daemon_workspace')
   })

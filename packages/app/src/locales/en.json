@@ -531,8 +531,7 @@
       "failedClickToRetry": "Failed — click to retry"
     },
     "newChat": "New Chat",
-    "newChatMoreOptions": "More new chat options",
-    "newMultiPersonSession": "Group Session",
+    "advancedSession": "Advanced session",
     "quickSessionCreateError": "Could not start a session",
     "quickSessionNoAgentHint": "Set a personal default agent, or ask admin for a team default.",
     "quickSessionNoAgentTitle": "No default agent set",
@@ -834,7 +833,21 @@
       "create": "Create session",
       "noActorError": "No member identity found for this team",
       "createError": "Failed to create session",
-      "removeParticipantAria": "Remove participant"
+      "removeParticipantAria": "Remove participant",
+      "localAgentBadge": "This machine",
+      "noTeamTitle": "No team yet",
+      "noTeamHint": "Create or join a team before starting a session.",
+      "workspaceLabel": "Workspace",
+      "workspaceScope": "Applies to the agent on this machine",
+      "workspaceNone": "No workspace on this machine yet",
+      "workspaceDefaultTag": "default",
+      "workspaceBrowse": "Choose a workspace folder",
+      "workspaceBrowseAction": "Browse…",
+      "workspaceAddFailed": "Failed to add workspace: {{msg}}",
+      "workspaceSetDefault": "Set as default",
+      "workspaceDefaultWarning": "Changes this agent's default folder for every future session and scheduled task",
+      "workspaceDefaultSet": "Default workspace updated",
+      "workspaceDefaultFailed": "Failed to set default workspace: {{msg}}"
     },
     "commandPopover": {
       "prompt": "Select role, skill, or command",
@@ -1001,10 +1014,10 @@
       "pendingBody": "Running sessions keep their current configuration; the latest configuration loads the next time their runtime starts.",
       "failedGeneric": "Could not read the updated workspace configuration.",
       "dismiss": "Got it"
-    },
-    "selectWorkspace": "Select Workspace"
+    }
   },
   "fileExplorer": {
+    "agentNotStarted": "Agent has not started yet",
     "newFile": "New File",
     "newFolder": "New Folder",
     "copyPath": "Copy Path",
@@ -1047,8 +1060,6 @@
     "confirmDeleteFileDesc": "This will permanently delete this file.",
     "confirmDeleteDirDesc": "This will permanently delete this folder and all its contents.",
     "confirmBatchDeleteDesc": "This will permanently delete all selected items. This action cannot be undone for directories.",
-    "teamLastSyncTooltip": "Last sync: {{time}}",
-    "teamSyncing": "Syncing…",
     "duplicateFailed": "Duplicate failed",
     "undo": "Undo: {{desc}}"
   },
@@ -1095,16 +1106,6 @@
   },
   "sidebar": {
     "apps": "Apps",
-    "newWorkspace": "New workspace",
-    "workspacesLoading": "Loading workspaces…",
-    "noWorkspaces": "No workspaces yet",
-    "noWorkspaceSessions": "No sessions in this workspace yet",
-    "workspaceAddFailed": "Failed to add workspace: {{msg}}",
-    "switchToWorkspace": "Switch to this workspace",
-    "workspaceSwitchFailed": "Failed to switch workspace: {{msg}}",
-    "workspaceDeleteFailed": "Failed to delete workspace: {{msg}}",
-    "currentWorkspace": "Current: {{path}}",
-    "defaultWorkspace": "Default workspace",
     "searchSessions": "Search Sessions",
     "searchDescription": "Search and navigate to a session",
     "searchPlaceholder": "Search sessions...",
@@ -1155,7 +1156,6 @@
     "localDaemonExpandSheet": "Expand menu",
     "localDaemonCollapseSheet": "Collapse menu",
     "localDaemonGroupConnection": "Connection",
-    "localDaemonGroupWorkspace": "Workspace",
     "localDaemonGroupDevice": "Device",
     "localDaemonGroupTeam": "Team",
     "localDaemonDaemonSettings": "Daemon settings",
@@ -1886,6 +1886,10 @@
       "resetIncomplete": "Reset did not take effect: this machine is still bound to team {{teamId}}. Check ~/.amuxd/logs/amuxd.managed.log."
     },
     "daemonWorkspaces": {
+      "current": "Open",
+      "open": "Open",
+      "opened": "Opened {{name}}",
+      "openFailed": "Could not open this workspace: {{msg}}",
       "title": "Workspace",
       "description": "Manage workspaces that daemon agents can use",
       "noTeam": "Join or create a team before configuring daemon workspaces.",
@@ -2407,9 +2411,6 @@
       "secretStored": "Configured · leave empty to keep"
     },
     "team": {
-      "oss": {
-        "syncNow": "Sync now"
-      },
       "joinedAt": "Joined",
       "disconnectMigrationRequired": "Cloud database is missing the disable_team_share migration. Apply services/supabase/migrations/20260604120000_disable_team_share.sql and redeploy FC.",
       "disconnectSchemaDrift": "Cloud API schema is out of date (disable_team_share). Deploy the latest FC and Supabase migration, then retry.",

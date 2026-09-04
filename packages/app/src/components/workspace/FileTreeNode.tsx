@@ -35,7 +35,6 @@ import { encodeVersionHistoryTarget } from '@/lib/tabs/teamshare-target';
 import type { SyncBadge } from '@/lib/team/team-sync-badges';
 import { openKnowledgeConflict, openCloudVersion } from '@/lib/tabs/knowledge-tabs';
 import { getFileIcon } from '@/lib/ui/file-icons';
-import { formatDateTime, formatRelativeTime } from '@/lib/ui/date-format';
 import type { FileNode } from "@/stores/workspace";
 import {
   ContextMenu,
@@ -204,10 +203,6 @@ export interface FileTreeItemProps {
   isDragOver: boolean;
   /** Whether this is the root teamclu-team directory (for visual styling) */
   isTeamCluTeam?: boolean;
-  /** Whether the team directory is currently syncing */
-  teamSyncing?: boolean;
-  /** ISO timestamp of last successful team repo sync (for relative-time label) */
-  teamLastSyncAt?: string | null;
   /**
    * What this document's sync state is, for team knowledge. `null` for
    * everything else — a workspace file has no cloud counterpart to differ from.
@@ -327,8 +322,6 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   isRenaming,
   isDragOver,
   isTeamCluTeam,
-  teamSyncing,
-  teamLastSyncAt,
   isTeamKnowledge,
   syncStatus,
   syncIgnored = false,
@@ -506,9 +499,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
       )}
 
       {isTeamCluTeam && (
-        teamSyncing
-          ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
-          : <img src="/logo-64.png" alt="" className="h-3.5 w-3.5 shrink-0" />
+        <img src="/logo-64.png" alt="" className="h-3.5 w-3.5 shrink-0" />
       )}
 
       {isKnowledgeDir && !isTeamCluTeam && (
@@ -566,19 +557,6 @@ export const FileTreeItem = React.memo(function FileTreeItem({
         </span>
       )}
 
-      {isTeamCluTeam && !teamSyncing && teamLastSyncAt && (
-        <span
-          className="ml-auto pl-2 text-[10px] text-muted-foreground/70 font-normal shrink-0"
-          title={t('fileExplorer.teamLastSyncTooltip', 'Last sync: {{time}}', { time: formatDateTime(teamLastSyncAt) })}
-        >
-          {formatRelativeTime(teamLastSyncAt)}
-        </span>
-      )}
-      {isTeamCluTeam && teamSyncing && (
-        <span className="ml-auto pl-2 text-[10px] text-muted-foreground/70 font-normal shrink-0">
-          {t('fileExplorer.teamSyncing', 'Syncing…')}
-        </span>
-      )}
     </button>
   );
 

@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Search, Loader2, MessageSquare, Pin, Archive, Pencil, Ellipsis, Info, SquarePen, Users, X, ListChecks, Check, HelpCircle, Stamp, Clock } from 'lucide-react'
+import { Search, Loader2, MessageSquare, Pin, Archive, Pencil, Ellipsis, Info, SquarePen, SlidersHorizontal, X, ListChecks, Check, HelpCircle, Stamp, Clock } from 'lucide-react'
 import { useSessionStore } from '@/stores/session-store'
 import { useUIStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -40,7 +40,6 @@ import { useTypeAhead } from '@/hooks/use-type-ahead'
 import type { SessionListActivity } from '@/lib/session/session-list-activity'
 import { useSessionListActivityMap } from '@/hooks/use-session-list-activity-map'
 import { loadSessionIdsForActor } from '@/lib/session/session-by-actor'
-import { loadSessionIdsForWorkspace } from '@/lib/session/session-by-workspace'
 import { actorAvatarColor } from '@/lib/actor/actor-color'
 import { useSessionWorkspaceLabels } from '@/hooks/use-session-workspace-labels'
 import { compareSessionListByRecency } from '@/lib/session/session-list-sort'
@@ -289,20 +288,6 @@ export function SessionListColumn({
     return () => { cancelled = true }
   }, [filter, teamIdFromList])
 
-  // Load workspace-session set when filter switches to workspace mode.
-  // Reads the LOCAL libsql cache only — no cloud round-trip.
-  const [workspaceSessionIds, setWorkspaceSessionIds] = React.useState<Set<string> | null>(null)
-  React.useEffect(() => {
-    if (filter.kind !== 'workspace') {
-      setWorkspaceSessionIds(null)
-      return
-    }
-    let cancelled = false
-    void loadSessionIdsForWorkspace(teamIdFromList, { workspaceId: filter.workspaceId, path: filter.path })
-      .then((ids) => { if (!cancelled) setWorkspaceSessionIds(ids) })
-    return () => { cancelled = true }
-  }, [filter, teamIdFromList])
-
   // ⌘K opens search
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -334,13 +319,10 @@ export function SessionListColumn({
     } else if (filter.kind === 'actor') {
       if (!actorSessionIds) return []
       base = base.filter((r) => actorSessionIds.has(r.id))
-    } else if (filter.kind === 'workspace') {
-      if (!workspaceSessionIds) return []
-      base = base.filter((r) => workspaceSessionIds.has(r.id))
     }
 
     return base.sort(compareSessionListByRecency)
-  }, [listRows, pinnedSessionIds, cronSessionIds, showCronSessions, filter, actorSessionIds, workspaceSessionIds])
+  }, [listRows, pinnedSessionIds, cronSessionIds, showCronSessions, filter, actorSessionIds])
 
   const { pinnedRows, regularRows } = React.useMemo(() => {
     if (filter.kind !== 'all') {
@@ -436,7 +418,6 @@ export function SessionListColumn({
     if (filter.kind === 'pinned') return t('sidebar.pinned', 'Pinned')
     if (filter.kind === 'idea') return filter.title
     if (filter.kind === 'actor') return filter.displayName
-    if (filter.kind === 'workspace') return filter.name
     return ''
   })()
 
@@ -505,7 +486,6 @@ export function SessionListColumn({
     filter.kind,
     filter.kind === 'idea' ? filter.ideaId : '',
     filter.kind === 'actor' ? filter.actorId : '',
-    filter.kind === 'workspace' ? filter.workspaceId : '',
   ])
 
   const exitBatchSelect = React.useCallback(() => {
@@ -622,7 +602,10 @@ export function SessionListColumn({
         (p) => p.actorId === currentMemberId || p.actorId === localAgentId,
       )
     const workspaceLabel = sessionWorkspaceLabels.get(row.id)
-    const showWorkspaceSubline = filter.kind !== 'workspace' && !!workspaceLabel
+    // The subline used to be suppressed while the list was already filtered to
+    // one workspace. That filter has no entry point any more, so the label is
+    // never redundant.
+    const showWorkspaceSubline = !!workspaceLabel
     const actionsId = `v2-session-actions-${row.id}`
     const actionBtnClass =
       'grid h-[34px] place-items-center rounded-lg bg-black/[0.045] text-ink-2 transition-colors hover:bg-black/[0.08] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-white/[0.06] dark:hover:bg-white/10'
@@ -1017,9 +1000,9 @@ export function SessionListColumn({
                   size="icon"
                   className="h-7 w-7 text-muted-foreground hover:text-foreground"
                   onClick={() => useUIStore.getState().openNewSessionDialog()}
-                  title={t('chat.newMultiPersonSession', 'Group session')}
+                  title={t('chat.advancedSession', 'Advanced session')}
                 >
-                  <Users className="h-4 w-4" />
+                  <SlidersHorizontal className="h-4 w-4" />
                 </Button>
               ) : null}
             </>
@@ -1143,9 +1126,7 @@ export function SessionListColumn({
           <div className="flex flex-col items-center justify-center py-8 text-center">
             <MessageSquare className="h-8 w-8 text-muted-foreground mb-2" />
             <p className="text-sm text-muted-foreground">
-              {filter.kind === 'workspace'
-                ? t('sidebar.noWorkspaceSessions', 'No sessions in this workspace yet')
-                : t('sidebar.noConversations', 'No conversations')}
+              {t('sidebar.noConversations', 'No conversations')}
             </p>
           </div>
         ) : (

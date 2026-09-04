@@ -531,8 +531,7 @@
       "failedClickToRetry": "发送失败 — 点击重试"
     },
     "newChat": "新聊天",
-    "newChatMoreOptions": "更多新建选项",
-    "newMultiPersonSession": "多人会话",
+    "advancedSession": "高级会话",
     "quickSessionCreateError": "无法创建会话",
     "quickSessionNoAgentHint": "请设置个人默认 Agent，或联系管理员设置团队默认 Agent。",
     "quickSessionNoAgentTitle": "尚未设置默认 Agent",
@@ -834,7 +833,21 @@
       "create": "创建会话",
       "noActorError": "当前团队没有找到成员身份",
       "createError": "创建会话失败",
-      "removeParticipantAria": "移除成员"
+      "removeParticipantAria": "移除成员",
+      "localAgentBadge": "本机",
+      "noTeamTitle": "还没有团队",
+      "noTeamHint": "先创建或加入一个团队，才能发起会话。",
+      "workspaceLabel": "工作目录",
+      "workspaceScope": "仅对本机 Agent 生效",
+      "workspaceNone": "本机还没有工作目录",
+      "workspaceDefaultTag": "默认",
+      "workspaceBrowse": "选择工作目录",
+      "workspaceBrowseAction": "浏览…",
+      "workspaceAddFailed": "添加工作目录失败：{{msg}}",
+      "workspaceSetDefault": "设为默认",
+      "workspaceDefaultWarning": "将改变该 Agent 今后所有会话与定时任务的默认目录",
+      "workspaceDefaultSet": "已设为默认工作目录",
+      "workspaceDefaultFailed": "设置默认工作目录失败：{{msg}}"
     },
     "commandPopover": {
       "prompt": "选择角色、技能或命令",
@@ -1001,10 +1014,10 @@
       "pendingBody": "运行中的会话保持当前配置，运行环境下次启动时自动加载最新配置。",
       "failedGeneric": "无法读取更新后的工作区配置。",
       "dismiss": "知道了"
-    },
-    "selectWorkspace": "选择工作区"
+    }
   },
   "fileExplorer": {
+    "agentNotStarted": "Agent 尚未启动",
     "newFile": "新建文件",
     "newFolder": "新建文件夹",
     "copyPath": "复制路径",
@@ -1047,8 +1060,6 @@
     "confirmDeleteFileDesc": "此操作将永久删除该文件。",
     "confirmDeleteDirDesc": "此操作将永久删除该文件夹及其所有内容。",
     "confirmBatchDeleteDesc": "此操作将永久删除所有选中项。文件夹删除后无法撤销。",
-    "teamLastSyncTooltip": "最后同步：{{time}}",
-    "teamSyncing": "同步中…",
     "duplicateFailed": "创建副本失败",
     "undo": "撤销：{{desc}}"
   },
@@ -1095,16 +1106,6 @@
   },
   "sidebar": {
     "apps": "应用",
-    "newWorkspace": "新建工作区",
-    "workspacesLoading": "正在加载工作区…",
-    "noWorkspaces": "暂无工作区",
-    "noWorkspaceSessions": "该工作区下暂无会话",
-    "workspaceAddFailed": "添加工作区失败：{{msg}}",
-    "switchToWorkspace": "切换到此工作区",
-    "workspaceSwitchFailed": "切换工作区失败：{{msg}}",
-    "workspaceDeleteFailed": "删除工作区失败：{{msg}}",
-    "currentWorkspace": "当前：{{path}}",
-    "defaultWorkspace": "默认工作区",
     "searchSessions": "搜索会话",
     "searchDescription": "搜索并导航到会话",
     "searchPlaceholder": "搜索会话...",
@@ -1155,7 +1156,6 @@
     "localDaemonExpandSheet": "展开菜单",
     "localDaemonCollapseSheet": "收起菜单",
     "localDaemonGroupConnection": "连接",
-    "localDaemonGroupWorkspace": "Workspace",
     "localDaemonGroupDevice": "设备",
     "localDaemonGroupTeam": "团队",
     "localDaemonDaemonSettings": "Daemon 设置",
@@ -1886,6 +1886,10 @@
       "resetIncomplete": "重置未生效：本机仍绑定在团队 {{teamId}} 上。请查看 ~/.amuxd/logs/amuxd.managed.log。"
     },
     "daemonWorkspaces": {
+      "current": "当前",
+      "open": "打开",
+      "opened": "已切换到 {{name}}",
+      "openFailed": "打开工作目录失败：{{msg}}",
       "title": "工作区",
       "description": "管理 Daemon Agent 可使用的 workspace",
       "noTeam": "加入或创建团队后再配置 Daemon workspace。",
@@ -2407,9 +2411,6 @@
       "secretStored": "已配置 · 留空即保持不变"
     },
     "team": {
-      "oss": {
-        "syncNow": "立即同步"
-      },
       "joinedAt": "加入时间",
       "disconnectMigrationRequired": "云端数据库缺少 disable_team_share 迁移。请应用 services/supabase/migrations/20260604120000_disable_team_share.sql 并重新部署 FC。",
       "disconnectSchemaDrift": "Cloud API 架构过旧（缺少 disable_team_share）。请部署最新 FC 与 Supabase 迁移后重试。",

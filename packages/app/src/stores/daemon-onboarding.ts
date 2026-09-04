@@ -178,7 +178,6 @@ type DaemonOnboardingState = {
    * LocalDaemonRow listens and reloads so the panel does not stay empty until
    * a later incidental refresh.
    */
-  workspaceSyncEpoch: number
   /** Create this machine's agent under `name` and finish binding. */
   nameDeviceAgent: (name: string) => Promise<void>
   /** `forceIdentityRebind` re-binds even when the daemon already points at the
@@ -444,7 +443,7 @@ async function ensureHealthy(): Promise<boolean> {
  * side effect after status flipped to ready. That raced the agent bind and
  * never told the sidebar to reload, so WORKSPACE stayed empty until a later
  * incidental refresh. Fix: after bind, POST /v1/workspaces with this machine's
- * agentId (user JWT), bump workspaceSyncEpoch so LocalDaemonRow reloads.
+ * agentId (user JWT).
  *
  * The local daemon mirror is best-effort and needs daemon cloud auth.
  */
@@ -493,11 +492,6 @@ async function ensureDefaultWorkspaceRegistered(teamId: string): Promise<void> {
       console.warn('[daemon-onboarding] set default workspace failed', e)
     }
   }
-
-  // Sidebar can reload as soon as the cloud row exists.
-  useDaemonOnboardingStore.setState((s) => ({
-    workspaceSyncEpoch: s.workspaceSyncEpoch + 1,
-  }))
 
   // Local daemon registry (cron / model catalog). Needs daemon cloud auth.
   // checkCloudSession already ran before us — if it left cloudAuthExpired,
@@ -572,7 +566,6 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
   runStartedAt: null,
   completedAgent: null,
   pendingName: null,
-  workspaceSyncEpoch: 0,
 
   nameDeviceAgent: async (name) => {
     const pending = get().pendingName

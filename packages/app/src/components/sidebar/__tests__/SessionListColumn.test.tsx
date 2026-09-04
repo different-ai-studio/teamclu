@@ -346,12 +346,13 @@ describe('SessionListColumn', () => {
     }
   })
 
-  it('hides workspace subline when filtering by workspace', () => {
-    useUIStore.setState({
-      sidebarFilter: { kind: 'workspace', workspaceId: 'ws1', path: '/p', name: 'copilot-ws-v3' },
-    })
+  // The subline used to be suppressed while the list was filtered to one
+  // workspace. That filter kind is gone — the sidebar list that set it was its
+  // only producer — so the label is never redundant now.
+  it('shows the workspace subline under sessions that have one', () => {
+    useUIStore.setState({ sidebarFilter: { kind: 'all' } })
     render(<SessionListColumn />)
-    expect(screen.queryByTestId('v2-session-row-workspace')).not.toBeInTheDocument()
+    expect(screen.queryAllByTestId('v2-session-row-workspace').length).toBeGreaterThan(0)
   })
 
   it('renders an inline close button when onDismiss is provided', () => {

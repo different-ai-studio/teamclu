@@ -6,7 +6,6 @@ import { ChevronRight, File } from "lucide-react";
 import { toast } from 'sonner';
 import { copyToClipboard, isTauri } from '@/lib/utils';
 import { useWorkspaceStore, type FileNode } from "@/stores/workspace";
-import { useOssSyncStore } from "@/stores/oss-sync";
 import { useTeamConflictsStore } from "@/stores/team-conflicts";
 import { withDefaultExtension } from "@/lib/knowledge/knowledge-file-names";
 import { pruneKnowledgeNoise } from "@/lib/knowledge/knowledge-tree-pruning";
@@ -281,8 +280,6 @@ export function FileTree({
   // is keyed by SYNC KEY now (see `badges` above), not by a workspace-relative
   // path — the same document is reachable through two different absolute paths
   // and only the sync key is the same on both.
-  const teamSyncing = useOssSyncStore(s => s.syncing);
-  const teamLastSyncAt = useOssSyncStore(s => s.lastSyncAt);
 
   const collapseCompacted = useCallback((paths: string[]) => {
     const nextExpanded = new Set(useWorkspaceStore.getState().expandedPaths);
@@ -1045,8 +1042,6 @@ export function FileTree({
     isRenaming: renamingPath === node.path,
     isDragOver: dragOverPath === node.path,
     isTeamCluTeam: node.name === TEAM_REPO_DIR && node.type === "directory" && level === 0,
-    teamSyncing: node.name === TEAM_REPO_DIR && node.type === "directory" && level === 0 ? teamSyncing : undefined,
-    teamLastSyncAt: node.name === TEAM_REPO_DIR && node.type === "directory" && level === 0 ? teamLastSyncAt : undefined,
     // Team knowledge only, and on every surface the document appears on: the
     // Knowledge column and the workspace `team-knowledge` link are two
     // spellings of the same file, and `teamSyncKeyForPath` maps both.

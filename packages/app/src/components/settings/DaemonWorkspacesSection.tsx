@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertCircle, Archive, CheckCircle2, FolderOpen, Loader2, Plus, RefreshCw, Save } from 'lucide-react'
+import { AlertCircle, Archive, ArrowLeftRight, CheckCircle2, FolderOpen, Loader2, Plus, RefreshCw, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -14,6 +14,7 @@ import {
   type DaemonWorkspace,
 } from '@/lib/daemon/daemon-workspaces'
 import { cn } from '@/lib/utils'
+import { workspacePathsMatch } from '@/stores/session-utils'
 import { toast } from 'sonner'
 import { SectionHeader, SettingCard } from './shared'
 
@@ -27,20 +28,24 @@ function WorkspaceCard({
   workspace,
   agentDisplayName,
   isDefault,
+  isCurrent,
   showSetDefault,
   settingDefault,
   saving,
   onSetDefault,
+  onOpen,
   onArchive,
   t,
 }: {
   workspace: DaemonWorkspace
   agentDisplayName: string
   isDefault: boolean
+  isCurrent: boolean
   showSetDefault: boolean
   settingDefault: boolean
   saving: boolean
   onSetDefault?: () => void
+  onOpen?: () => void
   onArchive: () => void
   t: (key: string, fallback: string) => string
 }) {
@@ -56,11 +61,26 @@ function WorkspaceCard({
                 {t('settings.daemonWorkspaces.default', 'Default')}
               </span>
             )}
+            {isCurrent && (
+              <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {t('settings.daemonWorkspaces.current', 'Open')}
+              </span>
+            )}
           </div>
           <p className="mt-1 break-all font-mono text-xs text-foreground">{workspace.path || '-'}</p>
           <p className="mt-1 text-xs text-muted-foreground">{agentDisplayName}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {/* The only remaining way to point the file tree and terminal at a
+              folder by hand. The sidebar's workspace list carried it before;
+              without a replacement a session whose binding cannot be resolved
+              left the user with no way to correct the tree. */}
+          {onOpen && !isCurrent && !!workspace.path && (
+            <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => void onOpen()} disabled={saving}>
+              <ArrowLeftRight className="mr-1 h-3.5 w-3.5" />
+              {t('settings.daemonWorkspaces.open', 'Open')}
+            </Button>
+          )}
           {showSetDefault && onSetDefault && (
             <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => void onSetDefault()} disabled={saving || settingDefault}>
               {settingDefault ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Save className="mr-1 h-3.5 w-3.5" />}
@@ -89,6 +109,13 @@ export function DaemonWorkspacesSection() {
   const [settingDefaultWorkspaceId, setSettingDefaultWorkspaceId] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
 
+
+  const isCurrentWorkspace = React.useCallback(
+    (workspace: DaemonWorkspace) =>
+      !!workspace.path && !!currentWorkspacePath &&
+      workspacePathsMatch(workspace.path, currentWorkspacePath),
+    [currentWorkspacePath],
+  )
 
   const load = React.useCallback(async () => {
     if (!team?.id) return
@@ -224,6 +251,24 @@ export function DaemonWorkspacesSection() {
     }
   }
 
+  // Point the desktop's file tree and terminal at this folder. Everything else
+  // that moves the workspace store does so on its own (startup restore, opening
+  // a session bound elsewhere); this is the manual override.
+  const handleOpenWorkspace = async (workspace: DaemonWorkspace) => {
+    const path = workspace.path?.trim()
+    if (!path) return
+    try {
+      await useWorkspaceStore.getState().setWorkspace(path)
+      toast.success(t('settings.daemonWorkspaces.opened', 'Opened {{name}}', { name: workspace.name }))
+    } catch (err) {
+      toast.error(
+        t('settings.daemonWorkspaces.openFailed', 'Could not open this workspace: {{msg}}', {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      )
+    }
+  }
+
   const handleArchive = async (workspace: DaemonWorkspace, archived: boolean) => {
     setSaving(true)
     setError(null)
@@ -345,9 +390,11 @@ export function DaemonWorkspacesSection() {
                     workspace={defaultWorkspace}
                     agentDisplayName={agentDisplayName}
                     isDefault
+                    isCurrent={isCurrentWorkspace(defaultWorkspace)}
                     showSetDefault={false}
                     settingDefault={false}
                     saving={saving}
+                    onOpen={() => handleOpenWorkspace(defaultWorkspace)}
                     onArchive={() => handleArchive(defaultWorkspace, true)}
                     t={t}
                   />
@@ -368,9 +415,11 @@ export function DaemonWorkspacesSection() {
                         workspace={workspace}
                         agentDisplayName={agentDisplayName}
                         isDefault={false}
+                        isCurrent={isCurrentWorkspace(workspace)}
                         showSetDefault={Boolean(workspaceAgentId)}
                         settingDefault={settingDefaultWorkspaceId === workspace.id}
                         saving={saving}
+                        onOpen={() => handleOpenWorkspace(workspace)}
                         onSetDefault={
                           workspaceAgentId
                             ? () => handleSetDefault(workspaceAgentId, workspace.id, workspace.path ?? '')

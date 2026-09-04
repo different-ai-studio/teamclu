@@ -26,9 +26,11 @@ import {
 import {
   upsertSessionsBatch,
   upsertSessionParticipantsBatch,
+  upsertSessionWorkspacesBatch,
   type SessionRow,
   type SessionParticipantRow,
 } from '@/lib/cache/local-cache'
+import { useCurrentTeamStore } from '@/stores/current-team'
 import { isTauri } from '@/lib/utils'
 import {
   sessionFlowError,
@@ -198,6 +200,75 @@ interface CreateSessionWithFirstMessageArgs {
    * sit there until the user typed something.
    */
   mentionActorIds?: string[]
+  /**
+   * Folder the **local daemon agent** should run this session in, chosen in the
+   * advanced dialog. Ignored unless that agent is among `agentActorIds`:
+   * a cloud workspace row belongs to one agent, so handing its id to a remote
+   * daemon names a row that daemon cannot resolve — it would fall back to its
+   * own onboarded default and run in the wrong directory, silently.
+   */
+  localWorkspace?: { agentId: string; workspaceId: string; path: string } | null
+}
+
+/**
+ * Record the chosen folder as this session's workspace binding, in the local
+ * cache, before anything can start a runtime.
+ *
+ * This is the same row `bindAppWorkspace` writes, and it is read first by
+ * `resolveLiveWorkspaceHint` — ahead of the ambient workspace store, the agent
+ * default and the agent's owned row. Writing it here rather than passing a
+ * hint into a runtime start is what makes the choice durable: this session
+ * does not start its runtimes from the dialog (ChatPanel and the outbox sender
+ * do, later), and a hint that lives only in a function argument would be gone
+ * by the time either of them runs — most visibly when the first send fails and
+ * the outbox retries it.
+ *
+ * Best-effort throughout: a session that cannot be bound falls back to the
+ * agent default, which is the behaviour that existed before the picker.
+ */
+async function bindLocalDaemonSessionWorkspace(
+  sessionId: string,
+  args: CreateSessionWithFirstMessageArgs,
+): Promise<void> {
+  const workspaceId = args.localWorkspace?.workspaceId?.trim()
+  const workspacePath = args.localWorkspace?.path?.trim()
+  // The caller resolved this agent id to show the picker at all. Re-deriving it
+  // here would mean a `get_daemon_http_info` IPC plus an uncached HTTP call to
+  // `/v1/info` in the middle of session creation — latency on every create, and
+  // a null on a momentarily unreachable daemon would discard the folder the
+  // user explicitly chose.
+  const localDaemonActorId = args.localWorkspace?.agentId?.trim()
+  if (!workspaceId || !workspacePath || !localDaemonActorId || !isTauri()) return
+
+  try {
+    if (!args.agentActorIds.some((id) => id.trim() === localDaemonActorId)) return
+
+    const viewerMemberId = useCurrentTeamStore.getState().currentMember?.id?.trim()
+    if (!viewerMemberId) return
+
+    await upsertSessionWorkspacesBatch([
+      {
+        sessionId,
+        teamId: args.teamId,
+        viewerMemberId,
+        agentId: localDaemonActorId,
+        workspaceId,
+        workspacePath,
+        updatedAt: new Date().toISOString(),
+      },
+    ])
+    sessionFlowLog('session_with_first_message.bind_workspace.ok', {
+      sessionId,
+      teamId: args.teamId,
+      workspaceId,
+    })
+  } catch (error) {
+    sessionFlowError('session_with_first_message.bind_workspace.failed', error, {
+      sessionId,
+      teamId: args.teamId,
+      workspaceId,
+    })
+  }
 }
 
 interface CreateSessionWithFirstMessageResult {
@@ -239,6 +310,9 @@ export async function createSessionWithFirstMessage(
     ideaId: args.ideaId ?? null,
     ...(args.appId ? { appId: args.appId } : {}),
   })
+
+  // Before the first message exists, so no runtime can start ahead of it.
+  await bindLocalDaemonSessionWorkspace(sessionId, args)
 
   const messageId = crypto.randomUUID()
   const createdAt = BigInt(Math.floor(Date.now() / 1000))

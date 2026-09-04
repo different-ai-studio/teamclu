@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { SquarePen, Users, List, MoreHorizontal, Settings, Loader2, LifeBuoy } from 'lucide-react'
+import { SquarePen, SlidersHorizontal, List, MoreHorizontal, Settings, Loader2, LifeBuoy } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -93,9 +93,9 @@ export function NarrowChatHeader() {
             size="icon"
             className="h-8 w-8"
             onClick={() => useUIStore.getState().openNewSessionDialog()}
-            title={t('chat.newMultiPersonSession', 'Group session')}
+            title={t('chat.advancedSession', 'Advanced session')}
           >
-            <Users className="h-4 w-4" />
+            <SlidersHorizontal className="h-4 w-4" />
           </Button>
         ) : null}
       </div>
