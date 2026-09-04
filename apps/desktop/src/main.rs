@@ -25,13 +25,54 @@ fn scrub_pii(
     Some(event)
 }
 
+/// `ucar-inc/teamclu-rust` (project 4512025501237248).
+///
+/// The previous DSN pointed at project 4511110362169344, which had been deleted
+/// from the org — desktop crash reports went nowhere for however long that had
+/// been true, and nothing surfaced the loss because a dead DSN fails silently
+/// at ingest rather than erroring in the client.
+const SENTRY_DSN: &str =
+    "https://53fd6d3ad645819bb83e0a9404750690@o60909.ingest.us.sentry.io/4512025501237248";
+
+/// The DSN this build reports to, or `None` to report nowhere.
+///
+/// Debug builds share the shipped project, and the org is on the free tier:
+/// 5,000 errors per *month* with no on-demand budget. On the webview side
+/// `environment:development` was 1,507 of 4,930 events over one billing
+/// period — enough to exhaust the quota and blackhole production reporting for
+/// the rest of it. The same policy applies here so a `pnpm tauri:dev` session
+/// cannot spend the budget that shipped crashes need. `TEAMCLU_SENTRY_DEBUG=1`
+/// opts a debug run back in; it is the counterpart of `VITE_SENTRY_DEBUG` in
+/// `packages/app/src/main.tsx`.
+///
+/// `None` still constructs the client — it just gets no transport, so every
+/// `capture_*` call behaves as it does in production and simply drops. The
+/// `debug_assertions` check is shared with `environment` below so the two
+/// cannot drift.
+fn sentry_dsn() -> Option<&'static str> {
+    if !cfg!(debug_assertions) {
+        return Some(SENTRY_DSN);
+    }
+    match std::env::var("TEAMCLU_SENTRY_DEBUG") {
+        Ok(value) if value == "1" => Some(SENTRY_DSN),
+        _ => None,
+    }
+}
+
 fn main() {
     let _sentry_guard = sentry::init((
-        "https://f7626cc6e80f4561b1673dd027742714@o60909.ingest.us.sentry.io/4511110362169344",
+        sentry_dsn(),
         sentry::ClientOptions {
             release: sentry::release_name!(),
             // Crash reports need a stack and a release, not who was at the
             // keyboard. Default PII includes the OS username and the client IP.
+            //
+            // Sentry's onboarding snippet for a new Rust project ships
+            // `send_default_pii: true`. Do not paste that over this: SEC-4
+            // decided the desktop app does not send identity, and `scrub_pii`
+            // below exists to enforce it even for events an integration builds
+            // on its own. Flipping this is a privacy decision, not a config
+            // detail.
             send_default_pii: false,
             before_send: Some(std::sync::Arc::new(scrub_pii)),
             environment: Some(

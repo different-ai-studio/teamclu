@@ -206,15 +206,66 @@ export function PromptInput({
 
   // Tauri with dragDropEnabled steals HTML5 dataTransfer.files. Attach OS drops
   // that land on the chat input via the native tauri://drag-drop event instead.
+  //
+  // Subscribe on whether a handler exists, not on its identity: the drop handler
+  // below reads `onFilesChangeRef.current`, so a caller that passes a fresh
+  // closure each render would otherwise tear down and re-register three Tauri
+  // listeners on every parent render — which is what turned the teardown race
+  // handled by `track` into the app's largest error group rather than a rarity.
+  const hasFilesChangeHandler = Boolean(onFilesChange)
   React.useEffect(() => {
-    if (!onFilesChange || !isTauri()) return
+    if (!hasFilesChangeHandler || !isTauri()) return
     let cancelled = false
     const unlisteners: Array<() => void> = []
+
+    /**
+     * `unlisten()` is async and nothing awaits it, so a rejection would surface
+     * as an unhandled rejection and be captured as an error — that is how the
+     * double-unlisten TypeError reached Sentry at all instead of being dropped.
+     */
+    const undo = (unlisten: () => void) => {
+      try {
+        void Promise.resolve(unlisten()).catch(() => {
+          // fail-soft: teardown must not break unmount, and a listener the
+          // webview already dropped needs no further cleanup.
+        })
+      } catch {
+        // fail-soft: same, for an unlisten that throws synchronously.
+      }
+    }
+
+    /**
+     * Unlisten everything registered so far, at most once each.
+     *
+     * The cleanup below and the mid-flight `cancelled` checks used to each run
+     * `unlisteners.forEach(...)` over the same array, so unmounting between two
+     * `await listen(...)` calls unlistened the earlier handlers twice. The
+     * second `_unlisten` hands Tauri an eventId it has already unregistered and
+     * `listeners[eventId].handlerId` throws. Draining with `splice` makes a
+     * second drain a no-op.
+     */
+    const drainUnlisteners = () => {
+      for (const unlisten of unlisteners.splice(0)) undo(unlisten)
+    }
+
+    /**
+     * Remember an unlistener, or undo it immediately when teardown already
+     * happened while its `listen` was in flight — pushing onto an array the
+     * cleanup has finished draining would leak the handler for the lifetime of
+     * the window.
+     */
+    const track = (unlisten: () => void) => {
+      if (cancelled) {
+        undo(unlisten)
+        return
+      }
+      unlisteners.push(unlisten)
+    }
 
     void import('@tauri-apps/api/event').then(async ({ listen }) => {
       if (cancelled) return
 
-      unlisteners.push(
+      track(
         await listen<{ paths: string[]; position: { x: number; y: number } }>(
           'tauri://drag-over',
           (event) => {
@@ -222,22 +273,16 @@ export function PromptInput({
           },
         ),
       )
-      if (cancelled) {
-        unlisteners.forEach((fn) => fn())
-        return
-      }
+      if (cancelled) return
 
-      unlisteners.push(
+      track(
         await listen('tauri://drag-leave', () => {
           setIsDragging(false)
         }),
       )
-      if (cancelled) {
-        unlisteners.forEach((fn) => fn())
-        return
-      }
+      if (cancelled) return
 
-      unlisteners.push(
+      track(
         await listen<{ paths: string[]; position: { x: number; y: number } }>(
           'tauri://drag-drop',
           async (event) => {
@@ -279,9 +324,9 @@ export function PromptInput({
 
     return () => {
       cancelled = true
-      unlisteners.forEach((fn) => fn())
+      drainUnlisteners()
     }
-  }, [onFilesChange, dropHitTarget])
+  }, [hasFilesChangeHandler, dropHitTarget])
 
   const handleDrop = (event: React.DragEvent) => {
     event.preventDefault()
