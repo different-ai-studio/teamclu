@@ -2407,9 +2407,6 @@
       "secretStored": "已配置 · 留空即保持不变"
     },
     "team": {
-      "oss": {
-        "syncNow": "立即同步"
-      },
       "joinedAt": "加入时间",
       "disconnectMigrationRequired": "云端数据库缺少 disable_team_share 迁移。请应用 services/supabase/migrations/20260604120000_disable_team_share.sql 并重新部署 FC。",
       "disconnectSchemaDrift": "Cloud API 架构过旧（缺少 disable_team_share）。请部署最新 FC 与 Supabase 迁移后重试。",

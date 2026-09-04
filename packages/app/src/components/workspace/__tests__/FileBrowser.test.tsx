@@ -158,7 +158,7 @@ describe("FileBrowser", () => {
     ossSyncState.teamId = "team-1";
   });
 
-  it("hides built-in OSS sync when the caller already supplies actionIcons", () => {
+  it("still renders caller-supplied action icons", () => {
     render(
       <FileBrowser
         variant="panel"
@@ -167,14 +167,20 @@ describe("FileBrowser", () => {
     );
 
     expect(screen.getByTestId("caller-sync")).toBeTruthy();
-    expect(screen.queryByTestId("filebrowser-oss-sync")).toBeNull();
   });
 
-  it("shows built-in OSS sync for workspace root when no actionIcons are provided", () => {
-    render(<FileBrowser variant="panel" />);
+  // Team sync writes `~/.amuxd/teams/<id>/shared/team-sync/`, not the workspace
+  // tree, so a "sync now" button here fired an action with no visible effect
+  // where it lived. The trigger belongs to the team-share column. Asserted for
+  // both variants because the button used to be rendered in each of them.
+  it.each(["panel", "default"] as const)(
+    "never renders a built-in team-sync button (%s variant)",
+    (variant) => {
+      render(<FileBrowser variant={variant} />);
 
-    expect(screen.getByTestId("filebrowser-oss-sync")).toBeTruthy();
-  });
+      expect(screen.queryByTestId("filebrowser-oss-sync")).toBeNull();
+    },
+  );
 
   it("retries loading custom root ancestors after the global tree becomes available", async () => {
     const rootPath = "/workspace/teamclu-team/knowledge";

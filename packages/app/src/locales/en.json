@@ -2407,9 +2407,6 @@
       "secretStored": "Configured · leave empty to keep"
     },
     "team": {
-      "oss": {
-        "syncNow": "Sync now"
-      },
       "joinedAt": "Joined",
       "disconnectMigrationRequired": "Cloud database is missing the disable_team_share migration. Apply services/supabase/migrations/20260604120000_disable_team_share.sql and redeploy FC.",
       "disconnectSchemaDrift": "Cloud API schema is out of date (disable_team_share). Deploy the latest FC and Supabase migration, then retry.",
