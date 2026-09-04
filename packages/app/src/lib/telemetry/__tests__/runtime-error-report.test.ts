@@ -14,6 +14,7 @@ import {
   __resetRuntimeErrorReportThrottleForTest,
   __resetSentryModuleForTest,
   classifyRuntimeFailureReason,
+  isActiveTurnRefusal,
   isCancelledRuntimeFailure,
   isTransientRuntimeNetworkFailure,
   reportRuntimeEnsureCrash,
@@ -57,6 +58,11 @@ describe('classifyRuntimeFailureReason', () => {
     expect(classifyRuntimeFailureReason('mqtt disconnected')).toBe('mqtt_disconnected')
     expect(classifyRuntimeFailureReason('device offline')).toBe('device_offline')
     expect(classifyRuntimeFailureReason('runtimeStart rejected')).toBe('daemon_rejected')
+    expect(
+      classifyRuntimeFailureReason(
+        'workspace has active turn: e3b1cae9-7db8-4c20-a8d6-0c806a531bde',
+      ),
+    ).toBe('active_turn')
     expect(classifyRuntimeFailureReason('')).toBe('unknown')
     expect(classifyRuntimeFailureReason(undefined)).toBe('unknown')
   })
@@ -127,7 +133,13 @@ describe('reportRuntimeStartFailure', () => {
     })
   })
 
-  it('downgrades expected offline states to warning', async () => {
+  // These four were reported as warnings until 2026-09-04. Level is irrelevant
+  // to Sentry's quota, and together they were 893 of the 1,147 events this
+  // family produced in one billing period — on a plan with 5,000 errors/month
+  // and no on-demand budget, that crowds out the crashes the budget exists for.
+  // They stay in the Diagnostics ring buffer via `logDebug`; what is given up is
+  // the aggregate count.
+  it('does not report an offline device or transport at all', async () => {
     reportRuntimeStartFailure({
       agentActorId: 'agent-1',
       code: 'device_offline',
@@ -140,13 +152,10 @@ describe('reportRuntimeStartFailure', () => {
     })
     await flush()
 
-    expect(mocks.captureMessage).toHaveBeenCalledTimes(2)
-    for (const call of mocks.captureMessage.mock.calls) {
-      expect((call[1] as { level: string }).level).toBe('warning')
-    }
+    expect(mocks.captureMessage).not.toHaveBeenCalled()
   })
 
-  it('downgrades a cancellation that arrives as a plain runtime_rpc_failed', async () => {
+  it('does not report a cancellation that arrives as a plain runtime_rpc_failed', async () => {
     reportRuntimeStartFailure({
       agentActorId: 'agent-1',
       code: 'runtime_rpc_failed',
@@ -154,13 +163,22 @@ describe('reportRuntimeStartFailure', () => {
     })
     await flush()
 
-    expect(mocks.captureMessage).toHaveBeenCalledTimes(1)
-    const [, options] = mocks.captureMessage.mock.calls[0] as [string, Record<string, never>]
-    expect(options).toMatchObject({
-      level: 'warning',
-      fingerprint: ['runtime', 'runtime_start_failure', 'runtime_rpc_failed', 'rpc_disposed'],
-      tags: { runtime_failure_reason_kind: 'rpc_disposed' },
+    expect(mocks.captureMessage).not.toHaveBeenCalled()
+  })
+
+  it('does not report a refusal to interrupt a running turn', async () => {
+    // Not a failure: the daemon declined to reload *because* the runtime is up
+    // and mid-turn. It arrives as a plain `runtime_rpc_failed`, so before
+    // `active_turn` existed it classified as `unknown`, took the default error
+    // level, and was the second largest group in this family.
+    reportRuntimeStartFailure({
+      agentActorId: 'agent-1',
+      code: 'runtime_rpc_failed',
+      reason: 'workspace has active turn: e3b1cae9-7db8-4c20-a8d6-0c806a531bde',
     })
+    await flush()
+
+    expect(mocks.captureMessage).not.toHaveBeenCalled()
   })
 
   it('downgrades a transient Cloud API network failure to warning', async () => {
@@ -186,6 +204,29 @@ describe('reportRuntimeStartFailure', () => {
     })
   })
 
+  it('recognises an active-turn refusal through the exported predicate', () => {
+    expect(
+      isActiveTurnRefusal('workspace has active turn: e3b1cae9-7db8-4c20-a8d6-0c806a531bde'),
+    ).toBe(true)
+    expect(isActiveTurnRefusal('rpc timeout after 20000ms')).toBe(false)
+    expect(isActiveTurnRefusal(undefined)).toBe(false)
+  })
+
+  it('keeps an active-turn batch crash off the error feed', async () => {
+    // `reportRuntimeStartFailure` drops these before capture, but the
+    // ensure-crash path shares `capture` and passes no code — so the level
+    // policy has to hold on the reason alone.
+    reportRuntimeEnsureCrash(
+      new Error('workspace has active turn: e3b1cae9-7db8-4c20-a8d6-0c806a531bde'),
+      { sessionId: 'sess-1', trigger: 'session_runtime_wake' },
+    )
+    await flush()
+
+    expect(mocks.captureException).toHaveBeenCalledTimes(1)
+    const [, options] = mocks.captureException.mock.calls[0] as [unknown, { level: string }]
+    expect(options.level).toBe('warning')
+  })
+
   it('keeps a real rpc failure at error level', async () => {
     reportRuntimeStartFailure({
       agentActorId: 'agent-1',
@@ -196,11 +237,13 @@ describe('reportRuntimeStartFailure', () => {
     expect((mocks.captureMessage.mock.calls[0]?.[1] as { level: string }).level).toBe('error')
   })
 
+  // Uses a genuine failure: the expected states this throttle was written for
+  // no longer reach Sentry at all, so throttling them is no longer observable.
   it('throttles the same (code, agent) within the window but not after it', async () => {
     const failure = {
       agentActorId: 'agent-1',
-      code: 'device_offline' as const,
-      reason: 'device offline',
+      code: 'runtime_rpc_failed' as const,
+      reason: 'rpc timeout after 20000ms',
     }
     reportRuntimeStartFailure(failure)
     reportRuntimeStartFailure(failure)
@@ -214,16 +257,19 @@ describe('reportRuntimeStartFailure', () => {
     expect(mocks.captureMessage).toHaveBeenCalledTimes(2)
   })
 
+  // Per-agent granularity is deliberate: with the expected states filtered out,
+  // what is left are real faults, and "three agents are failing" is different
+  // information from "one is".
   it('does not throttle a different agent with the same code', async () => {
     reportRuntimeStartFailure({
       agentActorId: 'agent-1',
-      code: 'device_offline',
-      reason: 'device offline',
+      code: 'runtime_rpc_failed',
+      reason: 'rpc timeout after 20000ms',
     })
     reportRuntimeStartFailure({
       agentActorId: 'agent-2',
-      code: 'device_offline',
-      reason: 'device offline',
+      code: 'runtime_rpc_failed',
+      reason: 'rpc timeout after 20000ms',
     })
     await flush()
     expect(mocks.captureMessage).toHaveBeenCalledTimes(2)
