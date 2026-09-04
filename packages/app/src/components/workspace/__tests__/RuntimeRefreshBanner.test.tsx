@@ -1,6 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { RuntimeRefreshWorkspaceBanner } from '../RuntimeRefreshBanner'
 import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 
@@ -25,27 +24,20 @@ describe('RuntimeRefreshWorkspaceBanner', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('shows informational pending banner without apply action', async () => {
-    const dismissBanner = vi.fn()
+  it('does not show the informational pending banner', () => {
     useWorkspaceRuntimeRefreshStore.setState({
       refresh: {
         status: 'pending',
-        change_kinds: ['skills', 'mcp'],
+        change_kinds: ['opencode_json'],
         recommended_action: 'none',
         auto_apply_blocked_by_active_runtime: false,
         last_detected_at: '2026-06-03T00:00:00Z',
         last_error: null,
       },
-      dismissBanner,
     })
 
-    render(<RuntimeRefreshWorkspaceBanner />)
-
-    expect(screen.getByTestId('runtime-refresh-workspace-banner')).toBeInTheDocument()
-    expect(screen.getByText(/Updated: skills, MCP/i)).toBeInTheDocument()
-    expect(screen.queryByTestId('runtime-refresh-apply')).not.toBeInTheDocument()
-
-    await userEvent.click(screen.getByTestId('runtime-refresh-dismiss'))
-    expect(dismissBanner).toHaveBeenCalled()
+    const { container } = render(<RuntimeRefreshWorkspaceBanner />)
+    expect(container).toBeEmptyDOMElement()
+    expect(screen.queryByTestId('runtime-refresh-workspace-banner')).not.toBeInTheDocument()
   })
 })
