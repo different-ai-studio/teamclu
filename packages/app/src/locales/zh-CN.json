@@ -525,6 +525,10 @@
   },
   "chat": {
     "diagnoseSession": "诊断此会话",
+    "refreshSkills": "强制刷新 Skills",
+    "refreshSkillsApplied": "Skills 已刷新",
+    "refreshSkillsPending": "当前会话正在运行，Skills 将在结束后生效",
+    "refreshSkillsFailed": "Skills 刷新失败",
     "sendStatus": {
       "sending": "发送中…",
       "delivered": "已送达",
@@ -1599,7 +1603,9 @@
       "showTerminalToggle": "终端开关",
       "showTerminalToggleDesc": "在会话右上角显示终端面板开关。快捷键 Ctrl+` 始终可用，不受此设置影响。",
       "showChangesTab": "文件更改",
-      "showChangesTabDesc": "在会话右上角显示本会话的文件更改入口。仅在有活跃会话时显示。"
+      "showChangesTabDesc": "在会话右上角显示本会话的文件更改入口。仅在有活跃会话时显示。",
+      "showSkillsRefresh": "强制刷新 Skills",
+      "showSkillsRefreshDesc": "在会话右上角显示强制刷新 Skills 的按钮。热更新异常时用来立刻重载当前工作区的 skill 目录。"
     },
     "llm": {
       "cursorTitle": "Cursor 模型",
