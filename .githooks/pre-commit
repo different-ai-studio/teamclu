@@ -41,7 +41,16 @@ if [ -n "$docs" ]; then
 fi
 
 # ── 2. Known scratch directories, even if force-added past .gitignore ────────
-scratch=$(echo "$staged" | grep -E '^(\.playwright-mcp|test-results|playwright-report|screenshots|tmp|\.claude)/' || true)
+# `.claude/` is scratch by default, but `.gitignore` deliberately re-includes
+# four paths under it — settings.json, skills/, agents/, workflows/ — which are
+# checked-in project config rather than tool output. Without this carve-out the
+# hook blocks every edit to a shared skill, which is a normal commit (see
+# 674b5c7a2, and the .gitignore comment explaining the same re-includes). Keep
+# this list in sync with the `!.claude/...` lines there.
+scratch=$(echo "$staged" \
+  | grep -E '^(\.playwright-mcp|test-results|playwright-report|screenshots|tmp|\.claude)/' \
+  | grep -vE '^\.claude/(settings\.json$|skills/|agents/|workflows/)' \
+  || true)
 if [ -n "$scratch" ]; then
   echo "${RED}✗ Tool scratch output is not source:${RESET}"
   echo "$scratch" | sed 's/^/    /'
