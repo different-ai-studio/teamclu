@@ -2209,10 +2209,11 @@ impl RuntimeSupervisor {
         }
     }
 
-    /// Session attach barrier: only an applied Skills refresh may proceed.
+    /// Session attach barrier: apply a pending Skills refresh when idle.
     ///
-    /// `PendingActiveTurn` and dispose/apply errors both refuse the spawn so
-    /// a new session cannot attach to a stale OpenCode instance.
+    /// An active turn must not block a new session: the refresh stays pending
+    /// for the auto-applier (or the next idle attach). Dispose/apply errors
+    /// still refuse the spawn so we never attach to a half-applied instance.
     pub async fn require_skills_refresh_for_attach(
         &self,
         workspace_id: &str,
@@ -2223,9 +2224,7 @@ impl RuntimeSupervisor {
             .await?
         {
             SkillsRefreshApplyStatus::Applied(outcome) => Ok(outcome),
-            SkillsRefreshApplyStatus::PendingActiveTurn => {
-                Err(WorkspaceControlError::ActiveTurn(workspace_id.to_owned()))
-            }
+            SkillsRefreshApplyStatus::PendingActiveTurn => Ok(ApplyOutcome::ReloadRequired),
         }
     }
 }
@@ -3185,7 +3184,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn require_skills_refresh_for_attach_fails_closed_when_busy() {
+    async fn require_skills_refresh_for_attach_defers_when_busy() {
         let dir = tempfile::tempdir().unwrap();
         let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
         let supervisor = RuntimeSupervisor::new(Arc::new(AsyncMutex::new(RuntimeManager::new(
@@ -3212,20 +3211,21 @@ mod tests {
             .await
             .unwrap();
 
-        let err = supervisor
+        let outcome = supervisor
             .require_skills_refresh_for_attach(&workspace_id, dir.path())
             .await
-            .expect_err("busy workspace must refuse attach");
-        assert!(matches!(
-            err,
-            WorkspaceControlError::ActiveTurn(ref id) if id == &workspace_id
-        ));
+            .expect("busy workspace must still attach; skills refresh is deferred");
+        assert!(
+            matches!(outcome, ApplyOutcome::ReloadRequired),
+            "deferred skills stay pending for the next idle apply, got {outcome:?}"
+        );
         let dto = supervisor
             .refresh_coordinator()
             .runtime_refresh_dto(&workspace_id)
             .await;
         assert_eq!(dto.status, "pending");
         assert!(dto.change_kinds.iter().any(|k| k == "skills"));
+        assert!(dto.auto_apply_blocked_by_active_runtime);
     }
 
     #[tokio::test]
