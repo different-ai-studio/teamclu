@@ -21,20 +21,10 @@ import {
   type CurrentDaemonAgent,
   type TeamMemberOption,
 } from '@/lib/daemon/daemon-agent-admin'
-import {
-  encodeWorkspaceId,
-  getCursorAgentSettings,
-  getDaemonLocalAgent,
-  reloadDaemonRuntime,
-  setDaemonLocalAgent,
-  type DaemonLocalAgent,
-} from '@/lib/daemon/daemon-local-client'
+import { encodeWorkspaceId, reloadDaemonRuntime } from '@/lib/daemon/daemon-local-client'
 import { describeEnvReloadOutcome } from '@/lib/agent/env-runtime-reload'
 import { useUIStore } from '@/stores/ui'
-import { useSetupStore } from '@/stores/setup'
-import { ensureLocalDaemonCatalog } from '@/stores/local-daemon-catalog-store'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { ensureAgentsSkillsPaths } from '@/lib/skills/ensure-agents-paths'
 import { useDaemonMqttConnected } from '@/stores/daemon-mqtt-status'
 import { cn, isTauri } from '@/lib/utils'
 import {
@@ -85,11 +75,6 @@ export function DaemonGeneralSection() {
   // Shared with the sidebar status dot — one poll, one value (#522).
   const daemonMqttConnected = useDaemonMqttConnected()
   const [daemonVersion, setDaemonVersion] = React.useState<string | null>(null)
-  // Local agent runtime (`agents.local_agent`): opencode | pi. Switching writes
-  // the daemon config and restarts amuxd so the new backend takes effect.
-  const [localAgent, setLocalAgentState] = React.useState<DaemonLocalAgent | null>(null)
-  const [switchingAgent, setSwitchingAgent] = React.useState(false)
-  const [cursorKeyConfigured, setCursorKeyConfigured] = React.useState<boolean | null>(null)
   // When set, render the existing daemon onboarding wizard as an overlay to
   // re-bind the local daemon to the current team.
   const [rebinding, setRebinding] = React.useState(false)
@@ -128,164 +113,6 @@ export function DaemonGeneralSection() {
   React.useEffect(() => {
     void loadDaemonTeamId()
   }, [loadDaemonTeamId])
-
-  const loadLocalAgent = React.useCallback(async () => {
-    if (!isTauri()) return
-    try {
-      setLocalAgentState(await getDaemonLocalAgent())
-    } catch {
-      // Daemon unreachable / not onboarded — leave unknown, the row hides.
-    }
-  }, [])
-
-  React.useEffect(() => {
-    void loadLocalAgent()
-  }, [loadLocalAgent])
-
-  // Which runtimes are actually installed on this device. The picker writes a
-  // per-team value, so a team can name a runtime this machine does not have —
-  // that combination only failed at spawn time before, as a raw ENOENT.
-  const agentRuntimes = useSetupStore((s) => s.agentRuntimes)
-  const listAgentRuntimes = useSetupStore((s) => s.listAgentRuntimes)
-
-  React.useEffect(() => {
-    void listAgentRuntimes()
-  }, [listAgentRuntimes])
-
-  const runtimeInstalled = React.useCallback(
-    (id: DaemonLocalAgent): boolean | null => {
-      const row = agentRuntimes.find((r) => r.id === id)
-      return row ? row.present : null
-    },
-    [agentRuntimes],
-  )
-
-  /**
-   * The short badge for an unusable runtime. "Not installed" is only the truth
-   * when nothing more specific came back: cursor is ready when node + our
-   * bridge + the SDK + an API key all line up, and pi when node + its own
-   * version + the MCP bridge do — reporting any of those as "not installed"
-   * sent people off to install a CLI that was already there.
-   */
-  const runtimeBlockerLabel = React.useCallback(
-    (id: DaemonLocalAgent): string => {
-      switch (agentRuntimes.find((r) => r.id === id)?.blocker) {
-        case 'api_key':
-          return t('settings.daemonGeneral.runtimeNeedsApiKey', '缺 API Key')
-        case 'node':
-          return t('settings.daemonGeneral.runtimeNeedsNode', '缺 node')
-        case 'node_outdated':
-          return t('settings.daemonGeneral.runtimeNodeOutdated', 'node 版本太低')
-        case 'mcp_sdk':
-          return t('settings.daemonGeneral.runtimeMcpSdkMissing', '缺 MCP 桥')
-        case 'bridge':
-          return t('settings.daemonGeneral.runtimeBridgeMissing', '桥接未就绪')
-        default:
-          return t('settings.daemonGeneral.runtimeNotInstalled', '未安装')
-      }
-    },
-    [agentRuntimes, t],
-  )
-
-  /**
-   * The versions behind the badge: which node we found and which one is needed.
-   * The badge alone ("node 版本太低") is still a hunt on a machine with three
-   * Nodes installed — this names the file we measured.
-   */
-  const runtimeBlockerDetail = React.useCallback(
-    (id: DaemonLocalAgent): string | null => {
-      const row = agentRuntimes.find((r) => r.id === id)
-      if (!row?.blockerRequired) return null
-      return row.blockerFound
-        ? t(
-            'settings.daemonGeneral.runtimeBlockerFound',
-            '找到的是 {{found}}，需要 {{required}} 或更高版本。',
-            { found: row.blockerFound, required: row.blockerRequired },
-          )
-        : t('settings.daemonGeneral.runtimeBlockerNeeds', '需要 {{required}} 或更高版本。', {
-            required: row.blockerRequired,
-          })
-    },
-    [agentRuntimes, t],
-  )
-
-  const selectedRuntimeMissing = localAgent !== null && runtimeInstalled(localAgent) === false
-  const selectedRuntimeBlocker =
-    localAgent !== null ? (agentRuntimes.find((r) => r.id === localAgent)?.blocker ?? null) : null
-
-  React.useEffect(() => {
-    if (!isTauri() || localAgent !== 'cursor') {
-      setCursorKeyConfigured(null)
-      return
-    }
-    void getCursorAgentSettings()
-      .then((s) => setCursorKeyConfigured(s.apiKeyConfigured))
-      .catch(() => setCursorKeyConfigured(null))
-  }, [localAgent])
-
-  // Switch the local runtime: persist `agents.local_agent`, restart amuxd, then
-  // re-poll until the daemon comes back reporting the new runtime. The daemon
-  // mints a fresh HTTP token on restart; daemonFetch re-exchanges it on 401.
-  const handleSwitchLocalAgent = React.useCallback(
-    async (next: DaemonLocalAgent) => {
-      if (next === localAgent || switchingAgent) return
-      setSwitchingAgent(true)
-      setError(null)
-      const previous = localAgent
-      setLocalAgentState(next) // optimistic
-      try {
-        await setDaemonLocalAgent(next)
-        const { invoke } = await import('@tauri-apps/api/core')
-        await invoke('restart_local_daemon')
-        // Poll for the daemon to come back with the new runtime (bounded).
-        let confirmed = false
-        for (let i = 0; i < 20; i++) {
-          await new Promise((r) => setTimeout(r, 500))
-          try {
-            const current = await getDaemonLocalAgent()
-            if (current === next) {
-              confirmed = true
-              break
-            }
-          } catch {
-            // still restarting
-          }
-        }
-        if (!confirmed) {
-          setError(
-            t(
-              'settings.daemonGeneral.switchTimeout',
-              'Switched runtime, but the daemon did not confirm in time. It may still be restarting.',
-            ),
-          )
-        }
-        setLocalAgentState(next)
-        // Warm the new backend's model catalog before the user goes back to the
-        // conversation. The restart above empties the daemon's process pool, so
-        // the next catalog read is a cold probe — and for claude-code that probe
-        // has to start a session to get an answer at all. Doing it here, while
-        // the switch is still on screen, is what keeps the agent pill from
-        // showing "Offline" and then "No model configured" until a restart.
-        //
-        // `force` because the cached entry describes the backend being left.
-        // Fire-and-forget: a failure here costs a slower first pill, not a
-        // failed switch, and the periodic refresh retries anyway.
-        const workspacePath = useWorkspaceStore.getState().workspacePath?.trim()
-        if (workspacePath) {
-          ensureLocalDaemonCatalog(workspacePath, next, { force: true })
-        }
-        // Point Claude / OpenCode skills.paths at ~/.agents/skills for the
-        // newly selected runtime (and refresh workspace configs when open).
-        void ensureAgentsSkillsPaths(workspacePath)
-      } catch (e) {
-        setLocalAgentState(previous) // revert on failure
-        setError(e instanceof Error ? e.message : String(e))
-      } finally {
-        setSwitchingAgent(false)
-      }
-    },
-    [localAgent, switchingAgent, t],
-  )
 
   const teamMismatch = !!daemonTeamId && !!team?.id && daemonTeamId !== team.id
 
@@ -655,94 +482,6 @@ export function DaemonGeneralSection() {
               </div>
 
               <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-6 gap-y-2.5 border-t border-border-soft pt-4 text-[12px]">
-                {/* Local agent runtime picker (`agents.local_agent`). Switching
-                    persists the config and restarts amuxd onto the new backend. */}
-                <dt className="text-muted-foreground">{t('settings.daemonGeneral.runtime', 'Runtime')}</dt>
-                <dd className="flex items-center gap-2">
-                  <Select
-                    value={localAgent ?? undefined}
-                    onValueChange={(v) => void handleSwitchLocalAgent(v as DaemonLocalAgent)}
-                    disabled={switchingAgent || !agent.isOwner || localAgent === null}
-                  >
-                    <SelectTrigger className="h-7 w-[140px] font-mono text-[12px]" data-testid="local-agent-select">
-                      {/* Children override the selected item's own markup, which
-                          would otherwise drag the "not installed" badge into the
-                          trigger and truncate it. The badge belongs in the list;
-                          the warning row below carries it for the selection. */}
-                      <SelectValue placeholder="…">{localAgent}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(['opencode', 'pi', 'cursor', 'claude-code'] as DaemonLocalAgent[]).map((id) => {
-                        const installed = runtimeInstalled(id)
-                        // `installed` no longer folds in cursor's API key, so a
-                        // blocker can outlive it: the runtime is here and
-                        // pickable, and still cannot answer until the key is in.
-                        const blocked = installed === false || !!agentRuntimes.find((r) => r.id === id)?.blocker
-                        return (
-                          <SelectItem key={id} value={id} className="font-mono text-[12px]">
-                            <span className="flex items-center gap-2">
-                              {id}
-                              {blocked && (
-                                <span className="font-sans text-[10.5px] text-muted-foreground">
-                                  {runtimeBlockerLabel(id)}
-                                </span>
-                              )}
-                            </span>
-                          </SelectItem>
-                        )
-                      })}
-                    </SelectContent>
-                  </Select>
-                  {switchingAgent && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
-                </dd>
-                {/* `agents.local_agent` lives in the active team's team.toml, not
-                    daemon.toml — switching teams switches runtimes. Say so here,
-                    since the surrounding card reads as machine-level. */}
-                <dt className="sr-only">{t('settings.daemonGeneral.runtimeScope', 'Runtime scope')}</dt>
-                <dd className="col-span-2 -mt-1 text-[11.5px] leading-relaxed text-faint">
-                  {t(
-                    'settings.daemonGeneral.runtimePerTeamHint',
-                    'The runtime is configured per team — this setting applies to {{team}} only.',
-                    { team: team?.name ?? t('settings.daemonGeneral.runtimeCurrentTeam', 'the current team') },
-                  )}
-                </dd>
-                {selectedRuntimeMissing && (
-                  <>
-                    <dt className="sr-only">{t('settings.daemonGeneral.runtimeMissing', 'Runtime missing')}</dt>
-                    <dd className="col-span-2 flex items-start gap-1.5 text-[11.5px] leading-relaxed text-coral">
-                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      <span>
-                        {selectedRuntimeBlocker
-                          ? [
-                              t(
-                                'settings.daemonGeneral.runtimeBlockedHint',
-                                '{{agent}} 还不能用：{{reason}}。在此之前，这个团队的 agent 无法启动。',
-                                { agent: localAgent, reason: runtimeBlockerLabel(localAgent as DaemonLocalAgent) },
-                              ),
-                              runtimeBlockerDetail(localAgent as DaemonLocalAgent),
-                            ]
-                              .filter(Boolean)
-                              .join(' ')
-                          : t(
-                              'settings.daemonGeneral.runtimeMissingHint',
-                              '{{agent}} is not installed on this machine, so agents in this team cannot start. Pick a runtime that is installed, or install {{agent}} first.',
-                              { agent: localAgent },
-                            )}
-                      </span>
-                    </dd>
-                  </>
-                )}
-                {localAgent === 'cursor' && cursorKeyConfigured === false ? (
-                  <>
-                    <dt className="sr-only">Cursor</dt>
-                    <dd className="col-span-2 text-[11.5px] leading-relaxed text-coral">
-                      {t(
-                        'settings.daemonGeneral.cursorKeyHint',
-                        'Cursor 运行时需在「设置 → LLM」中配置 API Key，无需编辑 daemon.toml。',
-                      )}
-                    </dd>
-                  </>
-                ) : null}
                 <dt className="text-muted-foreground">{t('settings.daemonGeneral.agentId', 'Agent ID')}</dt>
                 <dd className="truncate font-mono text-foreground">{agent.id}</dd>
                 <dt className="text-muted-foreground">{t('settings.daemonGeneral.lastActive', 'Last active')}</dt>

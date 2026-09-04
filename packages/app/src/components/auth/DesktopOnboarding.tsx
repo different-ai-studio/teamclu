@@ -18,7 +18,6 @@ import {
 import { useAppVersion } from "@/lib/config/version";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOnboardingStore } from "@/stores/onboarding";
-import { clearSetupSatisfied } from "@/stores/setup";
 import { LoginScreen } from "./LoginScreen";
 import { useShallow } from "zustand/react/shallow";
 
@@ -180,17 +179,15 @@ function ChooseStep({
   const { override, unconfigured } = readServerSummary();
 
   /**
-   * Run the first-run wizard again — language, runtime, model.
+   * Run the first-run wizard again — the language step; the runtime install
+   * lives in the post-login daemon wizard and re-checks itself every launch.
    *
-   * Reload rather than flipping state in place: AuthGate reads the setup-ok
-   * cache once, at mount (`useState(() => …)`), and half the wizard's inputs
-   * (the setup store's probe, the daemon store) were seeded on the way here.
-   * A reload re-derives all of it from the two things this clears, which is
-   * what makes the re-run identical to a first run.
+   * Reload rather than flipping state in place: half the wizard's inputs (the
+   * daemon store) were seeded on the way here, and a reload re-derives all of
+   * it, which is what makes the re-run identical to a first run.
    */
   const rerunSetup = () => {
     useOnboardingStore.getState().reset();
-    clearSetupSatisfied();
     window.location.reload();
   };
 

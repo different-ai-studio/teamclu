@@ -19,10 +19,19 @@ const h = vi.hoisted(() => ({
   ensureCalls: [] as Array<Record<string, unknown>>,
   // (team, device) → agent, mirroring what the server's unique index guarantees.
   deviceAgents: new Map<string, string>(),
-  // `agents.local_agent` as the daemon reports it, plus every write to it.
-  daemonLocalAgent: 'opencode' as string,
-  localAgentWrites: [] as string[],
+  // What `amuxd doctor` reports for the managed runtime, as the setup store
+  // sees it, plus every `setup_install` the flow ran. Default: all in place.
+  runtimeRows: [] as Array<{ id: string; optional: boolean; present: boolean }>,
+  installCalls: [] as string[],
+  installShouldThrow: false,
 }))
+
+const runtimeRows = (present: boolean) => [
+  { id: 'amuxd', title: 'amuxd', optional: false, present: true, version: '1.0.0' },
+  { id: 'node', title: 'Node.js', optional: false, present, version: present ? '24.20.0' : null },
+  { id: 'pi', title: 'Pi', optional: false, present, version: present ? '0.84.2' : null },
+  { id: 'git', title: 'git', optional: true, present: true, version: '2.50' },
+]
 
 vi.mock('@/lib/utils', () => ({ isTauri: () => h.isTauriVal }))
 vi.mock('@tauri-apps/api/path', () => ({
@@ -109,19 +118,21 @@ vi.mock('@/lib/daemon/daemon-local-client', () => ({
   // these orchestration tests (auto-heal is covered separately).
   fetchDaemonCloudAuthStatus: vi.fn(async () => 'unknown'),
   fetchDaemonDeviceId: vi.fn(async () => h.deviceId),
-  getDaemonLocalAgent: vi.fn(async () => h.daemonLocalAgent),
-  setDaemonLocalAgent: vi.fn(async (agent: string) => {
-    h.daemonLocalAgent = agent
-    h.localAgentWrites.push(agent)
-    return { requiresRestart: true }
-  }),
 }))
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
 vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
   getLocalDaemonActorId: vi.fn(async () => h.localActorId),
 }))
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string, args?: unknown) => {
     h.invokeCalls.push(cmd)
+    if (cmd === 'setup_list_requirements') return h.runtimeRows
+    if (cmd === 'setup_install') {
+      h.installCalls.push((args as { id: string }).id)
+      if (h.installShouldThrow) throw new Error('npm ci boom')
+      h.runtimeRows = runtimeRows(true)
+      return undefined
+    }
     if (cmd === 'get_daemon_team_id') return h.daemonTeam
     if (cmd === 'get_device_hostname') return 'test-host'
     if (cmd === 'daemon_init') {
@@ -141,7 +152,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 
 import { useDaemonOnboardingStore } from '../daemon-onboarding'
-import { useOnboardingStore } from '../onboarding'
+import { useSetupStore } from '../setup'
 
 const reset = () =>
   useDaemonOnboardingStore.setState({
@@ -152,6 +163,12 @@ const reset = () =>
     cloudAuthExpired: false,
     healing: false,
     healError: null,
+    workspaceSyncEpoch: 0,
+    // The step trail is per run; a previous case's trail must not leak in.
+    step: null,
+    completedSteps: [],
+    failedStep: null,
+    runStartedAt: null,
   })
 
 beforeEach(() => {
@@ -167,10 +184,11 @@ beforeEach(() => {
   h.deviceId = 'device-1'
   h.ensureCalls = []
   h.deviceAgents = new Map()
-  h.daemonLocalAgent = 'opencode'
-  h.localAgentWrites = []
+  h.runtimeRows = runtimeRows(true)
+  h.installCalls = []
+  h.installShouldThrow = false
   localStorage.clear()
-  useOnboardingStore.getState().reset()
+  useSetupStore.setState({ requirements: [], loaded: false, installing: null, errors: {}, progress: {}, installRoute: null, probeError: null })
   reset()
   vi.clearAllMocks()
 })
@@ -229,52 +247,65 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(h.invokeCalls).toContain('daemon_restart_managed')
   })
 
-  // The wizard asks which runtime to use before sign-in, when there is no team
-  // to write `agents.local_agent` to. Nothing outside Settings ever wrote that
-  // key, so the answer used to be dropped: picking pi still landed on the
-  // daemon default.
-  // Re-running the wizard on a machine that is already bound is the case most
-  // likely to change the runtime, and it never binds again — so hanging this
-  // off the bind left exactly that case unapplied.
-  it('writes the runtime picked in onboarding without needing a re-bind', async () => {
-    useOnboardingStore.getState().setRuntime('pi')
+  // The managed runtime (#1250): the gate must not open onto a machine that
+  // cannot run an agent, and a machine upgraded from a build that ran another
+  // runtime is exactly a machine with pi missing.
+  it('installs the managed runtime before opening the gate when doctor says it is missing', async () => {
+    h.runtimeRows = runtimeRows(false)
     h.currentTeam = { id: 't1' }
     h.daemonTeam = 't1'
     h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
 
     await useDaemonOnboardingStore.getState().refresh()
 
+    const s = useDaemonOnboardingStore.getState()
+    expect(h.installCalls).toEqual(['pi'])
+    expect(s.status).toBe('ready')
+    expect(s.completedSteps).toContain('install-runtime')
+    expect(s.failedStep).toBeNull()
+  })
+
+  it('does not run the install when the runtime is already in place', async () => {
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+
+    await useDaemonOnboardingStore.getState().refresh()
+
+    expect(h.installCalls).toEqual([])
+    expect(useDaemonOnboardingStore.getState().completedSteps).not.toContain('install-runtime')
     expect(useDaemonOnboardingStore.getState().status).toBe('ready')
-    expect(h.invokeCalls).not.toContain('daemon_init')
-    expect(h.localAgentWrites).toEqual(['pi'])
-    expect(useOnboardingStore.getState().runtime).toBeNull()
   })
 
-  it('writes the runtime picked in onboarding into the team it just bound', async () => {
-    useOnboardingStore.getState().setRuntime('pi')
+  it('stops at install-runtime, by name, when the install fails', async () => {
+    h.runtimeRows = runtimeRows(false)
+    h.installShouldThrow = true
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+
+    await useDaemonOnboardingStore.getState().refresh()
+
+    const s = useDaemonOnboardingStore.getState()
+    expect(s.status).toBe('error')
+    expect(s.failedStep).toBe('install-runtime')
+    expect(s.error).toContain('npm ci boom')
+  })
+
+  it('installs the runtime for a freshly named machine before it is ready', async () => {
+    h.runtimeRows = runtimeRows(false)
     h.currentTeam = { id: 't1' }
     h.daemonTeam = null
     h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
     await useDaemonOnboardingStore.getState().refresh()
+    // The name is asked before anything downloads: the prompt must not wait on
+    // a multi-minute install.
+    expect(h.installCalls).toEqual([])
+
     await useDaemonOnboardingStore.getState().nameDeviceAgent('小助手')
 
-    expect(h.localAgentWrites).toEqual(['pi'])
-    // Restart-required key: the backend is built once, at daemon start.
-    expect(h.invokeCalls.filter((c) => c === 'daemon_restart_managed').length).toBeGreaterThan(1)
-    // One shot — a stale pick must never overrule a later choice in Settings.
-    expect(useOnboardingStore.getState().runtime).toBeNull()
-  })
-
-  it('leaves the runtime alone when the daemon already runs the picked one', async () => {
-    useOnboardingStore.getState().setRuntime('opencode')
-    h.currentTeam = { id: 't1' }
-    h.daemonTeam = null
-    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
-    await useDaemonOnboardingStore.getState().refresh()
-    await useDaemonOnboardingStore.getState().nameDeviceAgent('小助手')
-
-    expect(h.localAgentWrites).toEqual([])
-    expect(useOnboardingStore.getState().runtime).toBeNull()
+    expect(h.installCalls).toEqual(['pi'])
+    expect(useDaemonOnboardingStore.getState().status).toBe('ready')
   })
 
   it('a machine the team already knows binds silently, with no prompt', async () => {

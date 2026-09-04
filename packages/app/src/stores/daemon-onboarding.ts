@@ -8,10 +8,8 @@ import {
   probeDaemonHttp,
   invalidateDaemonConnection,
   fetchDaemonCloudAuthStatus,
-  getDaemonLocalAgent,
-  setDaemonLocalAgent,
 } from '@/lib/daemon/daemon-local-client'
-import { useOnboardingStore } from '@/stores/onboarding'
+import { useSetupStore } from '@/stores/setup'
 import { markStartup } from '@/lib/telemetry/startup-perf'
 import { appScheme } from '@/lib/config/build-config'
 import {
@@ -44,43 +42,63 @@ async function adoptDeviceAgentAsDefault(teamId: string, agentId: string): Promi
 }
 
 /**
- * Write the runtime the user picked in the first-run wizard into the team this
- * machine is bound to.
- *
- * The wizard asks before sign-in, and `agents.local_agent` is team-scoped —
- * there is no team to write to at that point, so the pick waits in
- * localStorage (see `stores/onboarding.ts`) until there is one. Nothing else
- * outside Settings ever wrote that key, so until this existed the wizard asked
- * the question and then dropped the answer: picking pi still landed you on the
- * daemon default, opencode, with a trip to Settings to fix it.
- *
- * Called from the `ready` paths, not from the bind: a machine that is already
- * bound to the current team never binds again, so hanging this off the bind
- * left the pick unapplied for the one case that is most likely to change it —
- * running the wizard a second time on a machine that has been in use. (A fresh
- * bind reaches `ready` in the same pass, so it is still covered.)
- *
- * One shot: the pick is cleared whether or not the write lands. Retrying it on
- * a later rebind would let a months-old wizard answer overrule a runtime the
- * user has since chosen in Settings, and a failure here leaves them exactly
- * where they were — able to switch there themselves.
- *
- * Best-effort, like every other post-bind step: it must not fail the binding.
+ * Is any required row of the managed runtime missing, as the daemon's doctor
+ * last reported it? `amuxd` itself is excluded: it is the bundled sidecar this
+ * very flow is talking to.
  */
-async function applyPendingLocalAgent(): Promise<void> {
-  const { runtime, clearRuntime } = useOnboardingStore.getState()
-  if (!runtime) return
-  clearRuntime()
+function runtimeMissing(): boolean {
+  return useSetupStore
+    .getState()
+    .requirements.some((r) => !r.optional && r.id !== 'amuxd' && !r.present)
+}
+
+/**
+ * Make sure the managed runtime (Node.js + pi + the MCP SDK) is installed
+ * before the gate opens onto the chat UI (#1250).
+ *
+ * Cheap when it is: one `amuxd doctor` through the setup store, no install.
+ * When something is missing — a first run, or a machine upgraded from a build
+ * that ran another runtime — this flips the wizard to 'starting', runs
+ * `amuxd install-pi` under the `install-runtime` step (its progress lines show
+ * beneath the step), and re-checks. Returns false after putting the store in
+ * the error state, so callers just return.
+ *
+ * Runs after the daemon is bound and up rather than before, so a brand-new
+ * machine is asked for its agent's name first and downloads while the user
+ * is not waiting on a prompt.
+ */
+async function ensureRuntimeReady(): Promise<boolean> {
+  const setup = useSetupStore.getState()
+  await setup.listRequirements()
+  if (!useSetupStore.getState().loaded || !runtimeMissing()) return true
+
+  if (useDaemonOnboardingStore.getState().runStartedAt === null) beginRun()
+  useDaemonOnboardingStore.setState({ status: 'starting', loaded: true, busy: true, error: null })
   try {
-    if ((await getDaemonLocalAgent()) === runtime) return
-    await setDaemonLocalAgent(runtime)
-    // `agents.local_agent` is restart-required: the backend is built once, at
-    // daemon start (`runtime::backend::create_backend`).
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('daemon_restart_managed')
-    invalidateDaemonConnection()
+    await runStep('install-runtime', async () => {
+      await useSetupStore.getState().install('pi')
+      const failure = useSetupStore.getState().errors.pi
+      if (failure) throw new Error(failure)
+      await useSetupStore.getState().listRequirements()
+      if (runtimeMissing()) {
+        throw new Error(
+          i18n.t(
+            'settings.daemonOnboarding.runtimeStillMissing',
+            'The runtime was installed but still does not report as ready. See ~/.amuxd/logs/amuxd.managed.log.',
+          ),
+        )
+      }
+    })
+    return true
   } catch (e) {
-    console.warn('[daemon-onboarding] could not apply the runtime picked in onboarding', e)
+    useDaemonOnboardingStore.setState({
+      status: 'error',
+      loaded: true,
+      error: e instanceof Error ? e.message : String(e),
+    })
+    return false
+  } finally {
+    useDaemonOnboardingStore.setState({ busy: false })
   }
 }
 
@@ -110,6 +128,7 @@ type OnboardingStatus = 'unknown' | 'needs-onboard' | 'mismatch' | 'starting' | 
  */
 export type OnboardingStep =
   | 'start-daemon'
+  | 'install-runtime'
   | 'mint-invite'
   | 'init-daemon'
   | 'restart-daemon'
@@ -120,6 +139,7 @@ export type OnboardingStep =
 /** Ordered for display; `register-workspace` is best-effort and not shown. */
 export const ONBOARDING_STEPS: OnboardingStep[] = [
   'start-daemon',
+  'install-runtime',
   'mint-invite',
   'init-daemon',
   'restart-daemon',
@@ -674,20 +694,20 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
     const first = await probeDaemonHttp()
     markStartup('daemon-refresh:end')
     if (first.ok) {
+      // The gate must not open onto a machine that cannot run an agent.
+      if (!(await ensureRuntimeReady())) return
       set({ status: 'ready', loaded: true })
       // Heal the daemon's cloud session before workspace upsert — otherwise
       // `POST /v1/workspaces` fails with 500 while the refresh token is dead.
       await get().checkCloudSession()
       await maybeRegisterDefaultWorkspace(currentTeamId)
-      // Last, because it can restart the daemon and both steps above want the
-      // one that is already up.
-      await applyPendingLocalAgent()
       return
     }
     beginRun()
     set({ status: 'starting', loaded: true, error: null })
     let ok = await ensureHealthy()
     if (!ok) ok = await ensureHealthy()
+    if (ok && !(await ensureRuntimeReady())) return
     set({
       status: ok ? 'ready' : 'error',
       loaded: true,
@@ -701,7 +721,6 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
     if (ok) {
       await get().checkCloudSession()
       await maybeRegisterDefaultWorkspace(currentTeamId)
-      await applyPendingLocalAgent()
     }
   },
 

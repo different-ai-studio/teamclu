@@ -100,21 +100,13 @@ vi.mock("@/lib/config/build-config", () => ({
   extensionTeamOnboarding: extensionPolicyMock,
 }));
 
-vi.mock("@/stores/setup", () => ({
-  useSetupStore: (selector: (s: { loaded: boolean; requiredSatisfied: () => boolean; listRequirements: () => void }) => unknown) =>
-    selector({ loaded: true, requiredSatisfied: () => true, listRequirements: () => {} }),
-  setupPreviouslySatisfied: () => false,
-}));
-
 // These cases exercise everything *after* first-run onboarding, so present a
-// machine that has already been through it. The onboarding gate itself is
+// machine that has already answered the language step. The gate itself is
 // covered in AuthGateOnboarding.test.tsx.
 const onboardingState = {
-  role: "developer" as const,
-  runtime: "opencode" as const,
-  completed: true,
-  setRole: vi.fn(),
-  markCompleted: vi.fn(),
+  languageAck: true,
+  markLanguageAck: vi.fn(),
+  reset: vi.fn(),
 };
 vi.mock("@/stores/onboarding", () => ({
   useOnboardingStore: Object.assign(
@@ -122,9 +114,6 @@ vi.mock("@/stores/onboarding", () => ({
     { getState: () => onboardingState },
   ),
 }));
-
-vi.mock("@/components/onboarding/RoleStep", () => ({ RoleStep: () => <div>role step</div> }));
-vi.mock("@/components/onboarding/SetupStep", () => ({ SetupStep: () => <div>setup step</div> }));
 
 vi.mock("@/stores/daemon-onboarding", () => ({
   useDaemonOnboardingStore: (

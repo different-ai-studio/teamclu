@@ -118,14 +118,8 @@ async function ensureLocalRuntimeForFastPath(
 ): Promise<void> {
   const { runtimeStart } = await import("@/lib/daemon/teamclu-rpc");
   const { AgentType } = await import("@/lib/proto/amux_pb");
-  let agentType = AgentType.OPENCODE;
-  try {
-    const { getDaemonLocalAgent } = await import("@/lib/daemon/daemon-local-client");
-    const { resolveAmuxAgentType } = await import("@/lib/agent/amux-agent-type");
-    agentType = resolveAmuxAgentType(await getDaemonLocalAgent());
-  } catch {
-    // Keep OPENCODE — matches daemon default when config is unavailable.
-  }
+  // pi is the only local runtime (#1247); the daemon reroutes anything else.
+  const agentType = AgentType.PI;
   // Carry a workspace id. This used to send `""`, and the daemon skips its
   // workspace resolver entirely for an empty one — it starts in whatever
   // `worktree` says instead. The slow path that follows ~0.8s later DOES

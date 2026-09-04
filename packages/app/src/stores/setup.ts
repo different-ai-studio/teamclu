@@ -1,45 +1,16 @@
 import { create } from 'zustand'
 import { isTauri } from '@/lib/utils'
 import { markStartup } from '@/lib/telemetry/startup-perf'
-import { appStoragePrefix, localAgent } from '@/lib/config/build-config'
-
-// Cache the last-known "all required deps satisfied" verdict so a returning user
-// (deps already installed) is never gated behind the cold `setup_list_requirements`
-// probe, which spawns `amuxd doctor` and costs ~4s on first launch (macOS
-// Gatekeeper). The probe still runs in the background to refresh this flag; the
-// daemon-onboarding gate remains the real backstop if a dependency is missing.
-const SETUP_OK_KEY = `${appStoragePrefix}-setup-ok`
 
 /**
- * Forget the cached verdict, so the next launch re-runs the wizard instead of
- * skipping it. Used by the "run setup again" entry on the sign-in screen: the
- * gate is `!onboardingDone && (!setupAck || onboardingStarted)`, so clearing
- * the onboarding flags alone leaves this cache holding the door shut.
+ * The managed runtime's install state (#1250): what `amuxd doctor` reports
+ * for the daemon, the managed Node, pi and git, and the progress of an
+ * `amuxd install-pi` run. Consumed by the post-login daemon wizard
+ * (`stores/daemon-onboarding`) and the settings Dependencies page.
+ *
+ * There is deliberately no cached "setup ok" verdict any more: the daemon's
+ * doctor is the truth, and it is cheap now (no runtime `--version` spawns).
  */
-export function clearSetupSatisfied(): void {
-  try {
-    localStorage.removeItem(SETUP_OK_KEY)
-  } catch {
-    // Private mode / disabled storage: nothing was cached to begin with.
-  }
-}
-
-/** True if a prior probe confirmed all required deps were present. Sync, cheap. */
-export function setupPreviouslySatisfied(): boolean {
-  try {
-    return localStorage.getItem(SETUP_OK_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-function persistSetupSatisfied(ok: boolean): void {
-  try {
-    localStorage.setItem(SETUP_OK_KEY, ok ? '1' : '0')
-  } catch {
-    /* private mode / storage disabled — optimistic skip just won't apply */
-  }
-}
 
 /**
  * Why a runtime is not usable, when "not installed" would be misleading.
@@ -167,8 +138,6 @@ function lastLine(text: string): string {
 
 type SetupState = {
   requirements: RequirementStatus[]
-  /** Install status of every selectable runtime — populated by [`listAgentRuntimes`]. */
-  agentRuntimes: RequirementStatus[]
   installing: string | null
   output: Record<string, string[]>
   /** Latest parsed step per requirement id, for the install row's progress bar. */
@@ -185,23 +154,14 @@ type SetupState = {
   loaded: boolean
   /** Set when the requirement probe itself failed, so the UI can say so. */
   probeError: string | null
-  /** Set when the runtime scan failed, so the picker stops pretending to scan. */
-  runtimeScanFailed: boolean
-  /**
-   * `agent` overrides which runtime the requirement list reports on. Onboarding
-   * passes the user's pick (#881). Without it — the background probe that
-   * refreshes the setup-ok cache — the backend counts any installed runtime as
-   * satisfying, so a pi machine is not failed against the build default.
-   */
-  listRequirements: (agent?: string) => Promise<void>
-  listAgentRuntimes: () => Promise<void>
+  listRequirements: () => Promise<void>
   install: (id: string) => Promise<void>
+  /** True when every required row is present. Only meaningful after `loaded`. */
   requiredSatisfied: () => boolean
 }
 
 export const useSetupStore = create<SetupState>((set, get) => ({
   requirements: [],
-  agentRuntimes: [],
   installing: null,
   output: {},
   progress: {},
@@ -209,18 +169,17 @@ export const useSetupStore = create<SetupState>((set, get) => ({
   errors: {},
   loaded: false,
   probeError: null,
-  runtimeScanFailed: false,
 
-  // A required dep blocks continuing only when truly absent (no `version`
-  // detected at all). If it's installed but outdated/upgrade-failed
-  // (`present: false` with a `version`), the wizard still offers the upgrade
-  // but no longer blocks entry — the user already has a working runtime.
+  // `present` is the daemon's own "satisfied": for the managed runtime that
+  // means the pinned version is installed and runnable, not merely that some
+  // version exists — an older pi on the wrong Node is exactly what the wizard
+  // must repair, not wave through.
   requiredSatisfied: () =>
     get()
       .requirements.filter((r) => !r.optional)
-      .every((r) => r.present || r.version != null),
+      .every((r) => r.present),
 
-  listRequirements: async (agent?: string) => {
+  listRequirements: async () => {
     if (!isTauri()) {
       set({ loaded: true })
       return
@@ -228,13 +187,12 @@ export const useSetupStore = create<SetupState>((set, get) => ({
     markStartup('setup-list:start')
     try {
       const { invoke } = await import('@tauri-apps/api/core')
-      const requirements = await invoke<RequirementStatus[]>('setup_list_requirements', {
-        localAgent: agent ?? null,
-      })
+      const requirements = await invoke<RequirementStatus[]>('setup_list_requirements')
       markStartup('setup-list:end')
+      if (!Array.isArray(requirements)) {
+        throw new Error('setup_list_requirements answered without rows')
+      }
       set({ requirements, loaded: true, probeError: null })
-      // Refresh the optimistic-skip cache for the next launch.
-      persistSetupSatisfied(get().requiredSatisfied())
     } catch (e) {
       // `loaded` still flips. Without it the wizard sits on "scanning…" forever
       // — a spinner that has stopped meaning anything is worse than an error,
@@ -242,20 +200,6 @@ export const useSetupStore = create<SetupState>((set, get) => ({
       // session list's never-resetting loader.
       console.error('[SetupStore] requirement probe failed:', e)
       set({ loaded: true, probeError: String(e) })
-    }
-  },
-
-  listAgentRuntimes: async () => {
-    if (!isTauri()) return
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      const agentRuntimes = await invoke<RequirementStatus[]>('setup_list_agent_runtimes')
-      set({ agentRuntimes, runtimeScanFailed: false })
-    } catch (e) {
-      // Distinct from "still scanning": an empty list and a failed probe look
-      // identical to the picker, and only one of them is worth waiting on.
-      console.error('[SetupStore] runtime scan failed:', e)
-      set({ agentRuntimes: [], runtimeScanFailed: true })
     }
   },
 
@@ -281,15 +225,8 @@ export const useSetupStore = create<SetupState>((set, get) => ({
     })
     try {
       await invoke('setup_install', { id })
-      // Re-probe against the runtime just installed, not the build default —
-      // otherwise installing pi refreshes opencode's row and pi still reads
-      // as missing.
-      const probeAgent = id === 'pi' || id === 'opencode' ? id : localAgent
-      const requirements = await invoke<RequirementStatus[]>('setup_list_requirements', {
-        localAgent: probeAgent,
-      })
+      const requirements = await invoke<RequirementStatus[]>('setup_list_requirements')
       set({ requirements })
-      if (id === 'pi' || id === 'opencode') await get().listAgentRuntimes()
     } catch (e) {
       set((s) => ({ errors: { ...s.errors, [id]: String(e) } }))
     } finally {

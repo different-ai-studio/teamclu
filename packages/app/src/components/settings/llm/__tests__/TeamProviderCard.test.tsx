@@ -49,17 +49,15 @@ describe('TeamProviderCard', () => {
 
 describe('team gateway runtime compatibility', () => {
   // Source-scan guard, in the spirit of no-supabase-import.test.ts: the team
-  // tiers reach a session through opencode's `provider.team` or pi's provider
-  // config. cursor and claude-code drive their own vendor accounts and have no
-  // hook for it, so pinning the card in their panes would promise a model those
-  // runtimes cannot serve.
+  // tiers reach a session through pi's provider config, so the card belongs in
+  // the pi pane — the only runtime pane left (#1247) — and nowhere else.
   const settingsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
-  it('is imported by the opencode and pi panes only', () => {
-    const panes = ['LLMSection.tsx', 'PiLLMSection.tsx', 'CursorLLMSection.tsx', 'ClaudeLLMSection.tsx']
+  it('is imported by the pi pane only', () => {
+    const panes = ['PiLLMSection.tsx', 'LLMSectionRouter.tsx']
     const importers = panes.filter((f) =>
       fs.readFileSync(path.join(settingsDir, f), 'utf8').includes('TeamProviderCard'),
     )
-    expect(importers.sort()).toEqual(['LLMSection.tsx', 'PiLLMSection.tsx'])
+    expect(importers.sort()).toEqual(['PiLLMSection.tsx'])
   })
 })

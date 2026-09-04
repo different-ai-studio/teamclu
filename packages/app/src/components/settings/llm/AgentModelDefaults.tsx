@@ -11,7 +11,6 @@ import {
   type DeviceModelOption,
   type DeviceModelsReason,
 } from '@/lib/agent/device-default-models'
-import { getDaemonLocalAgent } from '@/lib/daemon/daemon-local-client'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useCronStore } from '@/stores/cron'
 import { clientMruModels } from '@/stores/client-model-mru'
@@ -96,15 +95,10 @@ export function AgentModelDefaults() {
       }
       setOptions(result.options)
       setReason(result.reason)
-      // The catalog names its own default backend; fall back to the configured
-      // local agent so the store key is stable even when the catalog is empty.
-      const fromCatalog = result.defaultBackend ?? result.options[0]?.backend ?? ''
-      if (fromCatalog) {
-        setBackend(fromCatalog)
-      } else {
-        const agent = await getDaemonLocalAgent().catch(() => null)
-        if (!cancelled && agent) setBackend(agent)
-      }
+      // The catalog names its own default backend; fall back to pi — the only
+      // local runtime (#1247) — so the store key is stable even when the
+      // catalog is empty.
+      setBackend(result.defaultBackend ?? result.options[0]?.backend ?? 'pi')
       if (!cancelled) setLoading(false)
     })()
     return () => {
