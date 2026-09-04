@@ -1106,7 +1106,6 @@
   },
   "sidebar": {
     "apps": "Apps",
-    "noWorkspaceSessions": "No sessions in this workspace yet",
     "searchSessions": "Search Sessions",
     "searchDescription": "Search and navigate to a session",
     "searchPlaceholder": "Search sessions...",
@@ -1887,6 +1886,10 @@
       "resetIncomplete": "Reset did not take effect: this machine is still bound to team {{teamId}}. Check ~/.amuxd/logs/amuxd.managed.log."
     },
     "daemonWorkspaces": {
+      "current": "Open",
+      "open": "Open",
+      "opened": "Opened {{name}}",
+      "openFailed": "Could not open this workspace: {{msg}}",
       "title": "Workspace",
       "description": "Manage workspaces that daemon agents can use",
       "noTeam": "Join or create a team before configuring daemon workspaces.",

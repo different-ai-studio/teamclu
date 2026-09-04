@@ -1106,7 +1106,6 @@
   },
   "sidebar": {
     "apps": "应用",
-    "noWorkspaceSessions": "该工作区下暂无会话",
     "searchSessions": "搜索会话",
     "searchDescription": "搜索并导航到会话",
     "searchPlaceholder": "搜索会话...",
@@ -1887,6 +1886,10 @@
       "resetIncomplete": "重置未生效：本机仍绑定在团队 {{teamId}} 上。请查看 ~/.amuxd/logs/amuxd.managed.log。"
     },
     "daemonWorkspaces": {
+      "current": "当前",
+      "open": "打开",
+      "opened": "已切换到 {{name}}",
+      "openFailed": "打开工作目录失败：{{msg}}",
       "title": "工作区",
       "description": "管理 Daemon Agent 可使用的 workspace",
       "noTeam": "加入或创建团队后再配置 Daemon workspace。",

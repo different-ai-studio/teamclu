@@ -68,8 +68,17 @@ vi.mock('@/stores/current-team', () => ({
     sel({ team: { id: 'team-1' }, currentMember: { id: 'member-1' } }),
 }))
 
+const setWorkspace = vi.hoisted(() => vi.fn(async () => {}))
+const workspaceState = vi.hoisted(() => ({ workspacePath: null as string | null }))
 vi.mock('@/stores/workspace', () => ({
-  useWorkspaceStore: (sel: (s: Record<string, unknown>) => unknown) => sel({ workspacePath: null }),
+  useWorkspaceStore: Object.assign(
+    (sel: (s: Record<string, unknown>) => unknown) => sel(workspaceState),
+    { getState: () => ({ setWorkspace }) },
+  ),
+}))
+
+vi.mock('@/stores/session-utils', () => ({
+  workspacePathsMatch: (a: string, b: string) => a === b,
 }))
 
 vi.mock('@/lib/utils', () => ({
@@ -112,6 +121,9 @@ describe('DaemonWorkspacesSection', () => {
     createDaemonWorkspace.mockClear()
     rpcAddWorkspace.mockClear()
     setAgentDefaultWorkspace.mockClear()
+    setWorkspace.mockClear()
+    listDaemonWorkspaces.mockResolvedValue([])
+    workspaceState.workspacePath = null
   })
 
   it('adding a workspace picks a directory, then calls createDaemonWorkspace only', async () => {
@@ -142,5 +154,56 @@ describe('DaemonWorkspacesSection', () => {
 
     await waitFor(() => expect(dialogOpen).toHaveBeenCalled())
     expect(createDaemonWorkspace).not.toHaveBeenCalled()
+  })
+
+  // The sidebar's workspace list used to be the only way to point the desktop
+  // at a folder by hand. It is gone, so this is the replacement — without it a
+  // session whose workspace binding cannot be resolved leaves the file tree
+  // stuck on "agent has not started" with no way to correct it.
+  it('opening a workspace points the desktop workspace store at its path', async () => {
+    listDaemonWorkspaces.mockResolvedValue([
+      {
+        id: 'ws-a',
+        teamId: 'team-1',
+        agentId: 'agent-1',
+        createdByMemberId: null,
+        name: 'other',
+        path: '/Users/me/other',
+        archived: false,
+        createdAt: '',
+        updatedAt: '',
+      },
+    ] as never)
+
+    render(<DaemonWorkspacesSection />)
+
+    const open = await screen.findByRole('button', { name: 'Open' })
+    fireEvent.click(open)
+
+    await waitFor(() => {
+      expect(setWorkspace).toHaveBeenCalledWith('/Users/me/other')
+    })
+  })
+
+  it('offers no open action for the workspace already open', async () => {
+    workspaceState.workspacePath = '/Users/me/other'
+    listDaemonWorkspaces.mockResolvedValue([
+      {
+        id: 'ws-a',
+        teamId: 'team-1',
+        agentId: 'agent-1',
+        createdByMemberId: null,
+        name: 'other',
+        path: '/Users/me/other',
+        archived: false,
+        createdAt: '',
+        updatedAt: '',
+      },
+    ] as never)
+
+    render(<DaemonWorkspacesSection />)
+
+    await screen.findByText('other')
+    expect(screen.queryByRole('button', { name: 'Open' })).toBeNull()
   })
 })

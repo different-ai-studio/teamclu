@@ -437,10 +437,10 @@ export function LocalDaemonRow({
                 </SheetGroup>
               ) : (
                 <>
-                  {/* Workspaces are listed and managed in Settings ›
-                      Daemon workspaces, and picked per session in the advanced
-                      new-session dialog. This sheet listing them was a third
-                      place to change the same thing. */}
+                  {/* Workspaces are listed, created, archived, defaulted and
+                      opened in Settings › Daemon workspaces, and picked per
+                      session in the advanced new-session dialog. This sheet
+                      listing them was a third place to change the same thing. */}
                   <SheetGroup label={t('sidebar.localDaemonGroupDevice', 'Device')}>
                     <SheetMenuItem
                       icon={<Settings className="h-3.5 w-3.5" />}

@@ -47,7 +47,6 @@ export type SidebarFilter =
    *  It spans every actor kind, external gateway contacts included. */
   | { kind: 'actor'; actorId: string; displayName: string; actorType: 'member' | 'agent' | 'external' }
   | { kind: 'idea'; ideaId: string; title: string }
-  | { kind: 'workspace'; workspaceId: string | null; path: string; name: string }
   | { kind: 'teamShare'; section: TeamShareSection }
 
 export type SettingsSection = 'llm' | 'general' | 'prompt' | 'channels' | 'automation' | 'daemonGeneral' | 'daemonWorkspaces' | 'daemonRuntimes' | 'envVars' | 'skills' | 'roles' | 'rolesSkills' | 'deps' | 'billing'

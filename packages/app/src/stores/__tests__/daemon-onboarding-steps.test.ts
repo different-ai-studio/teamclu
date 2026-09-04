@@ -131,7 +131,6 @@ beforeEach(() => {
     runStartedAt: null,
     completedAgent: null,
     pendingName: null,
-    workspaceSyncEpoch: 0,
   })
 })
 
