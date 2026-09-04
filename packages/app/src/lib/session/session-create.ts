@@ -207,7 +207,7 @@ interface CreateSessionWithFirstMessageArgs {
    * daemon names a row that daemon cannot resolve — it would fall back to its
    * own onboarded default and run in the wrong directory, silently.
    */
-  localWorkspace?: { workspaceId: string; path: string } | null
+  localWorkspace?: { agentId: string; workspaceId: string; path: string } | null
 }
 
 /**
@@ -232,12 +232,15 @@ async function bindLocalDaemonSessionWorkspace(
 ): Promise<void> {
   const workspaceId = args.localWorkspace?.workspaceId?.trim()
   const workspacePath = args.localWorkspace?.path?.trim()
-  if (!workspaceId || !workspacePath || !isTauri()) return
+  // The caller resolved this agent id to show the picker at all. Re-deriving it
+  // here would mean a `get_daemon_http_info` IPC plus an uncached HTTP call to
+  // `/v1/info` in the middle of session creation — latency on every create, and
+  // a null on a momentarily unreachable daemon would discard the folder the
+  // user explicitly chose.
+  const localDaemonActorId = args.localWorkspace?.agentId?.trim()
+  if (!workspaceId || !workspacePath || !localDaemonActorId || !isTauri()) return
 
   try {
-    const { getLocalDaemonActorId } = await import('@/lib/daemon/daemon-agent-admin')
-    const localDaemonActorId = (await getLocalDaemonActorId())?.trim()
-    if (!localDaemonActorId) return
     if (!args.agentActorIds.some((id) => id.trim() === localDaemonActorId)) return
 
     const viewerMemberId = useCurrentTeamStore.getState().currentMember?.id?.trim()

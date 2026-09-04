@@ -24,7 +24,7 @@ import {
   setAgentDefaultWorkspace,
   type DaemonWorkspace,
 } from '@/lib/daemon/daemon-workspaces'
-import { shortenWorkspacePath } from '@/lib/workspace/shorten-path'
+import { shortenWorkspacePath, workspaceNameFromPath } from '@/lib/workspace/shorten-path'
 import { computeInitialSelection } from './new-session-prefill'
 
 type Candidate = {
@@ -33,10 +33,6 @@ type Candidate = {
   display_name: string
 }
 
-function workspaceNameFromPath(path: string): string {
-  const trimmed = path.replace(/\/+$/, '')
-  return trimmed.split('/').pop() || trimmed
-}
 
 export function NewSessionDialog() {
   const { t } = useTranslation()
@@ -144,22 +140,30 @@ export function NewSessionDialog() {
     return row?.default_workspace_id?.trim() ?? ''
   }, [actors, localAgentId])
 
+  // A load started for one (team, agent) must not land after the selection has
+  // moved on: deselecting the local agent clears the list, and a late response
+  // would repopulate it with the old agent's folders.
+  const loadGenerationRef = React.useRef(0)
+
   const loadWorkspaces = React.useCallback(async () => {
     if (!teamId || !localAgentId) return
+    const generation = ++loadGenerationRef.current
     setWorkspacesLoading(true)
     try {
       const rows = await listDaemonWorkspaces(teamId, localAgentId)
+      if (generation !== loadGenerationRef.current) return
       setWorkspaces(rows.filter((w) => !w.archived && !!w.path))
     } catch (e) {
       console.warn('[NewSessionDialog] workspace load failed (non-fatal):', e)
-      setWorkspaces([])
+      if (generation === loadGenerationRef.current) setWorkspaces([])
     } finally {
-      setWorkspacesLoading(false)
+      if (generation === loadGenerationRef.current) setWorkspacesLoading(false)
     }
   }, [teamId, localAgentId])
 
   React.useEffect(() => {
     if (!open || !localAgentPicked) {
+      loadGenerationRef.current += 1
       setWorkspaces([])
       setSelectedWorkspaceId('')
       return
@@ -202,8 +206,25 @@ export function NewSessionDialog() {
         name: workspaceNameFromPath(path),
         path,
       })
-      await loadWorkspaces()
+      // Seat the created row directly rather than waiting for the reload to
+      // produce it. A transient list failure used to empty the picker while
+      // leaving the id selected, so the session was created in the agent's
+      // default folder instead of the one the user had just chosen — silently.
+      // The server also dedupes by (teamId, path), which can return an archived
+      // row that the reload filters out.
+      setWorkspaces((prev) => {
+        const rest = prev.filter((w) => w.id !== created.id)
+        return created.path ? [...rest, { ...created, archived: false }] : rest
+      })
       setSelectedWorkspaceId(created.id)
+      // The viewer context caches cloud-workspace → local-path for 5s, and a
+      // row created inside that window is missing from it. Session workspace
+      // resolution then finds a binding with no local path and reports none.
+      const { invalidateViewerWorkspaceContext } = await import(
+        '@/lib/session/session-viewer-workspace'
+      )
+      invalidateViewerWorkspaceContext(teamId)
+      void loadWorkspaces()
     } catch (e) {
       const { toast } = await import('sonner')
       toast.error(
@@ -298,8 +319,12 @@ export function NewSessionDialog() {
         agentActorIds,
         messageText: trimmed,
         localWorkspace:
-          localAgentPicked && selectedWorkspace?.path
-            ? { workspaceId: selectedWorkspace.id, path: selectedWorkspace.path }
+          localAgentPicked && localAgentId && selectedWorkspace?.path
+            ? {
+                agentId: localAgentId,
+                workspaceId: selectedWorkspace.id,
+                path: selectedWorkspace.path,
+              }
             : null,
       })
       const agentPicks = pickedActors.filter((p) => p.actor_type === 'agent')

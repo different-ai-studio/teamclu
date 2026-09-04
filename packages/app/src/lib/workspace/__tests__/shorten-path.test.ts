@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { shortenWorkspacePath } from '../shorten-path'
+import { shortenWorkspacePath, workspaceNameFromPath } from '../shorten-path'
 
 describe('shortenWorkspacePath', () => {
   it('leaves a path that already fits alone', () => {
@@ -25,5 +25,29 @@ describe('shortenWorkspacePath', () => {
     const out = shortenWorkspacePath('/one/two/three/four/five/six/seven/eight', 20)
     expect(out.length).toBeLessThanOrEqual(20)
     expect(out.endsWith('eight')).toBe(true)
+  })
+
+  // Splitting on '/' alone left Windows paths untouched, so they fell back to
+  // the CSS end-truncation this helper exists to replace.
+  it('shortens Windows paths and keeps their separator', () => {
+    const full = 'C:\\Users\\me\\workspace\\teamclaw-worktrees\\app-website'
+    const out = shortenWorkspacePath(full)
+
+    expect(out).not.toBe(full)
+    expect(out.startsWith('…\\')).toBe(true)
+    expect(out).not.toContain('/')
+    expect(out.endsWith('\\app-website')).toBe(true)
+    expect(out.length).toBeLessThanOrEqual(42)
+  })
+})
+
+describe('workspaceNameFromPath', () => {
+  it('takes the last segment on either separator', () => {
+    expect(workspaceNameFromPath('/tmp/teamclu')).toBe('teamclu')
+    expect(workspaceNameFromPath('C:\\Users\\me\\teamclu')).toBe('teamclu')
+  })
+
+  it('ignores a trailing separator', () => {
+    expect(workspaceNameFromPath('/tmp/teamclu/')).toBe('teamclu')
   })
 })

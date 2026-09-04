@@ -198,7 +198,10 @@ function AppContent() {
   // gate they kept showing the previous session's directory: the workspace
   // store is ambient and only moves when a session resolving to a local path
   // is opened.
-  const { hasLocalAgent: sessionHasLocalAgent } = useSessionLocalWorkspace();
+  const {
+    hasLocalAgent: sessionHasLocalAgent,
+    path: sessionWorkspacePath,
+  } = useSessionLocalWorkspace();
   const showRightWorkspacePanel = isPanelOpen && !leftDockActive && !showAppControlPanel;
   const showRightSidePanel = showRightWorkspacePanel || showAppControlPanel;
   const settingsOpen = currentView === "settings";
@@ -666,8 +669,12 @@ function AppContent() {
                   <AppWindow className="h-4 w-4" />
                 </button>
               )}
-              {capabilities.workspace && workspacePath && showTerminalToggle && sessionHasLocalAgent && (
-                <TerminalToggleButton workspacePath={workspacePath} />
+              {/* `sessionWorkspacePath`, not the ambient `workspacePath`: the
+                  store lags a session switch by a background round trip, and a
+                  PTY opened in that window lands in the previous session's
+                  folder — which a terminal, unlike a tree, then keeps. */}
+              {capabilities.workspace && sessionWorkspacePath && showTerminalToggle && (
+                <TerminalToggleButton workspacePath={sessionWorkspacePath} />
               )}
               {activeSession && hasCurrentSession && (
                 <SessionThreadsHeaderButton sessionId={activeSession.id} />

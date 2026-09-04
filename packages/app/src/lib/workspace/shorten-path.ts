@@ -1,3 +1,18 @@
+/** Windows paths use `\`, POSIX uses `/`; both appear in this app's data. */
+const SEPARATOR = /[\\/]+/
+
+function splitPath(path: string): { segments: string[]; separator: string } {
+  const segments = path.split(SEPARATOR).filter(Boolean)
+  return { segments, separator: path.includes('\\') ? '\\' : '/' }
+}
+
+/** Last path segment, for naming a workspace after the folder the user picked. */
+export function workspaceNameFromPath(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const { segments } = splitPath(trimmed)
+  return segments[segments.length - 1] || trimmed
+}
+
 /**
  * Shorten a filesystem path for display by dropping leading segments.
  *
@@ -14,15 +29,17 @@ export function shortenWorkspacePath(path: string, maxLength = 42): string {
   const trimmed = path.trim()
   if (trimmed.length <= maxLength) return trimmed
 
-  const segments = trimmed.split('/').filter(Boolean)
+  const { segments, separator } = splitPath(trimmed)
   // Grow from the tail while it still fits, but never return fewer than the
   // last segment — a basename longer than maxLength is shown in full rather
   // than cut into something that names nothing.
   let kept = segments.slice(-1)
   for (let i = 2; i <= segments.length; i += 1) {
     const candidate = segments.slice(-i)
-    if (`…/${candidate.join('/')}`.length > maxLength) break
+    if (`…${separator}${candidate.join(separator)}`.length > maxLength) break
     kept = candidate
   }
-  return kept.length === segments.length ? trimmed : `…/${kept.join('/')}`
+  return kept.length === segments.length
+    ? trimmed
+    : `…${separator}${kept.join(separator)}`
 }

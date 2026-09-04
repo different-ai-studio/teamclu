@@ -132,6 +132,10 @@ vi.mock('@/lib/daemon/daemon-workspaces', () => ({
   setAgentDefaultWorkspace: (...args: unknown[]) => mocks.setAgentDefaultWorkspace(...args),
 }))
 
+vi.mock('@/lib/session/session-viewer-workspace', () => ({
+  invalidateViewerWorkspaceContext: vi.fn(),
+}))
+
 vi.mock('@/lib/backend', () => ({
   getBackend: () => ({
     actors: {
@@ -271,7 +275,11 @@ describe('NewSessionDialog', () => {
       await waitFor(() => {
         expect(mocks.createSessionWithFirstMessage).toHaveBeenCalledWith(
           expect.objectContaining({
-            localWorkspace: { workspaceId: 'ws-other', path: '/tmp/other' },
+            localWorkspace: {
+              agentId: 'agent-1',
+              workspaceId: 'ws-other',
+              path: '/tmp/other',
+            },
           }),
         )
       })
