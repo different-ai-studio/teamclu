@@ -340,22 +340,30 @@ jobs:
           echo "Official build config:"
           cat build.config.json
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
       - name: Verify Tauri signing key
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
         run: |
-          npm install --no-save @tauri-apps/cli
-          echo "test" > "$RUNNER_TEMP/test_sign_file"
-          npx @tauri-apps/cli signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$RUNNER_TEMP/test_sign_file"
+          # npm install in the pnpm monorepo root crashes on Windows runners with
+          # "Cannot read properties of null (reading 'edgesOut')". Install the CLI
+          # in an isolated dir instead (see mirror-pi-oss.yml for the same npm bug).
+          SIGN_DIR="${RUNNER_TEMP}/tauri-sign-verify"
+          mkdir -p "$SIGN_DIR"
+          (
+            cd "$SIGN_DIR"
+            npm install --no-save @tauri-apps/cli
+            echo "test" > "$RUNNER_TEMP/test_sign_file"
+            npx @tauri-apps/cli signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$RUNNER_TEMP/test_sign_file"
+          )
           echo "✅ Signing key verified successfully"
           rm -f "$RUNNER_TEMP/test_sign_file" "$RUNNER_TEMP/test_sign_file.sig"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: lts/*
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6.0.10
