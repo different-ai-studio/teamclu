@@ -1655,7 +1655,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_runtime_refuses_when_skills_refresh_is_blocked_by_active_turn() {
+    async fn spawn_runtime_attaches_when_skills_refresh_is_deferred_by_active_turn() {
         let workspace = tempfile::tempdir().unwrap();
         let workspace_id =
             crate::runtime::refresh::refresh_watch::workspace_runtime_id(workspace.path());
@@ -1687,24 +1687,31 @@ mod tests {
                 captured: Arc::new(std::sync::Mutex::new(Vec::new())),
             })),
         );
-        adapter.set_runtime_supervisor(supervisor);
+        adapter.set_runtime_supervisor(supervisor.clone());
 
-        let err = adapter
+        adapter
             .spawn_runtime_in_worktree(
                 Uuid::new_v4(),
                 amux::AgentType::Opencode,
-                Some(workspace_id),
+                Some(workspace_id.clone()),
                 None,
                 None,
                 workspace.path().to_string_lossy().as_ref(),
             )
             .await
-            .expect_err("busy pending skills must refuse spawn");
-        assert_eq!(err.code, ErrorCode::SessionBusy);
-        assert!(
-            attach_captures.lock().unwrap().is_empty(),
-            "fail-closed attach must not start a runtime"
+            .expect("busy workspace must still attach; skills refresh is deferred");
+        assert_eq!(
+            attach_captures.lock().unwrap().len(),
+            1,
+            "deferred skills must not block runtime start"
         );
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "pending");
+        assert!(dto.change_kinds.iter().any(|k| k == "skills"));
+        assert!(dto.auto_apply_blocked_by_active_runtime);
     }
 
     #[tokio::test]
