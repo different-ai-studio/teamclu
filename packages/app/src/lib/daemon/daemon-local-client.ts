@@ -980,9 +980,16 @@ export async function putDaemonSkill(
   return result.ok ? result.data : null
 }
 
-/** Register a Skills refresh without rewriting files. Next idle apply disposes the OpenCode instance. */
-export async function notifyDaemonSkillsChanged(workspaceId: string): Promise<void> {
-  await daemonFetchData<{ ok: boolean }>(
+export interface DaemonSkillsRefreshResult {
+  ok: boolean
+  status: 'applied' | 'pending_active_turn' | string
+}
+
+/** Register a Skills refresh without rewriting files. Idle apply disposes the OpenCode instance. */
+export async function notifyDaemonSkillsChanged(
+  workspaceId: string,
+): Promise<DaemonSkillsRefreshResult> {
+  return daemonFetchData<DaemonSkillsRefreshResult>(
     `/v1/workspaces/${workspaceId}/skills/refresh`,
     { method: 'POST' },
   )

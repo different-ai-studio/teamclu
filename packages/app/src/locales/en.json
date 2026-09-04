@@ -525,6 +525,10 @@
   },
   "chat": {
     "diagnoseSession": "Diagnose this session",
+    "refreshSkills": "Force refresh skills",
+    "refreshSkillsApplied": "Skills refreshed",
+    "refreshSkillsPending": "A turn is running; skills will apply when it ends",
+    "refreshSkillsFailed": "Could not refresh skills",
     "sendStatus": {
       "sending": "Sending…",
       "delivered": "Delivered",
@@ -1599,7 +1603,9 @@
       "showTerminalToggle": "Terminal toggle",
       "showTerminalToggleDesc": "Show the terminal panel toggle in the conversation's top-right. The Ctrl+` shortcut always works regardless of this setting.",
       "showChangesTab": "File changes",
-      "showChangesTabDesc": "Show this session's file-changes entry in the conversation's top-right. Only appears when there is an active session."
+      "showChangesTabDesc": "Show this session's file-changes entry in the conversation's top-right. Only appears when there is an active session.",
+      "showSkillsRefresh": "Force refresh skills",
+      "showSkillsRefreshDesc": "Show a button in the conversation's top-right that reloads this workspace's skill directories. Use it when hot-reload misses a change."
     },
     "llm": {
       "cursorTitle": "Cursor models",
