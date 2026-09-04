@@ -1060,8 +1060,6 @@
     "confirmDeleteFileDesc": "This will permanently delete this file.",
     "confirmDeleteDirDesc": "This will permanently delete this folder and all its contents.",
     "confirmBatchDeleteDesc": "This will permanently delete all selected items. This action cannot be undone for directories.",
-    "teamLastSyncTooltip": "Last sync: {{time}}",
-    "teamSyncing": "Syncing…",
     "duplicateFailed": "Duplicate failed",
     "undo": "Undo: {{desc}}"
   },

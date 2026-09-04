@@ -7,7 +7,6 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useFileChangeBatchListener } from '@/hooks/use-file-change-batch-listener'
 import { useWorkspaceStore, type FileNode } from '@/stores/workspace'
-import { useOssSyncStore } from '@/stores/oss-sync'
 import { ScrollBar } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import {
@@ -97,18 +96,12 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
       (singleRootPath === workspacePath || singleRootPath.startsWith(`${workspacePath}/`))
     )
 
-  // Team-share sync state, kept current for the `teamclu-team` node badge that
-  // `FileTree` renders (last-sync time / "Syncing…").
-  //
-  // This toolbar used to carry a "sync now" button too. It was removed: team
-  // sync writes `~/.amuxd/teams/<id>/shared/team-sync/`, so pressing it from the
-  // workspace tree ran an action whose effect was invisible in the tree it sat
-  // on. The trigger belongs to the team-share column (`KnowledgeSyncFooter`),
-  // which owns it. Only the read-only status survives here.
-  const refreshOssSync = useOssSyncStore((s) => s.refresh)
-  React.useEffect(() => {
-    if (workspacePath) void refreshOssSync(workspacePath)
-  }, [workspacePath, refreshOssSync])
+  // Team sync has no surface here any more — neither the "sync now" button nor
+  // the `teamclu-team` node's status badge. Both described
+  // `~/.amuxd/teams/<id>/shared/team-sync/`, which is not this tree, and the
+  // team-share column (`KnowledgeSyncFooter`) owns both the trigger and the
+  // status where they belong. The `oss_sync_status` IPC that ran on every
+  // workspace change fed only that badge, so it went with it.
 
   // When rootPaths is provided, create virtual root folder nodes for each path.
   // When rootPath is provided, extract its subtree from the global fileTree.
