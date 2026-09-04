@@ -30,10 +30,18 @@ function rowFor(name: string): HTMLElement {
   return row as HTMLElement
 }
 
+/**
+ * pi is the managed runtime and the one row with an in-app updater (#1250);
+ * Node.js is installed with it and repaired through it, so its row carries no
+ * update button of its own.
+ */
 describe('DependenciesSection update affordance', () => {
   beforeEach(() => {
     useDepsStore.setState({
-      dependencies: [dep('opencode', { version: '1.17.0' }), dep('pi', { version: '0.84.0' })],
+      dependencies: [
+        dep('node', { version: '24.20.0', required: true }),
+        dep('pi', { version: '0.84.0', required: true }),
+      ],
       loading: false,
       installing: false,
       currentInstalling: null,
@@ -47,39 +55,33 @@ describe('DependenciesSection update affordance', () => {
     })
   })
 
-  // The regression this exists for: `UpdateButton` read opencode's versions for
-  // every row, so pi could not be listed here without being offered an update
-  // labelled with opencode's version number.
-  it('labels each runtime with its own available version', () => {
+  it('labels pi with its available version', () => {
     useDepsStore.setState({
       versions: {
-        opencode: { installed: '1.17.0', latest: '1.18.5', upToDate: false },
         pi: { installed: '0.84.0', latest: '0.84.2', upToDate: false },
       },
     })
     render(<DependenciesSection />)
 
-    expect(within(rowFor('opencode')).getByRole('button', { name: '更新到 1.18.5' })).toBeTruthy()
     expect(within(rowFor('pi')).getByRole('button', { name: '更新到 0.84.2' })).toBeTruthy()
+    // Node is updated as part of pi, never on its own.
+    expect(within(rowFor('node')).queryByRole('button', { name: /更新/ })).toBeNull()
   })
 
-  it('reports each runtime up to date independently', () => {
+  it('reports pi up to date', () => {
     useDepsStore.setState({
       versions: {
-        opencode: { installed: '1.17.0', latest: '1.18.5', upToDate: false },
         pi: { installed: '0.84.2', latest: '0.84.2', upToDate: true },
       },
     })
     render(<DependenciesSection />)
 
     expect(within(rowFor('pi')).getByText('已是最新')).toBeTruthy()
-    expect(within(rowFor('opencode')).queryByText('已是最新')).toBeNull()
   })
 
   // Reported: Dependencies showed pi 0.84.4 with a green "Up to date" while the
-  // runtime picker refused it as "not installed". pi's own version was fine;
-  // the MCP bridge amuxd installs beside its extension was missing, and the one
-  // button that reinstalls it was the button "Up to date" had replaced.
+  // runtime was unusable — the MCP bridge was missing, and the one button that
+  // reinstalls it was the button "Up to date" had replaced.
   it('offers a repair instead of a green tick when the runtime is current but unusable', () => {
     useDepsStore.setState({
       versions: {
@@ -94,20 +96,18 @@ describe('DependenciesSection update affordance', () => {
     expect(within(row).getByText(/运行时有一部分缺失/)).toBeTruthy()
   })
 
-  // A mirror we could not reach reports `upToDate: null`, and "unknown" must
-  // not be shown as "you're current" — the update stays on offer.
+  // An unanswered doctor reports `upToDate: null`, and "unknown" must not be
+  // shown as "you're current" — the update stays on offer.
   it('keeps offering the update when the available version is unknown', () => {
     useDepsStore.setState({ versions: {} })
     render(<DependenciesSection />)
 
-    for (const name of ['opencode', 'pi']) {
-      const row = within(rowFor(name))
-      expect(row.getByRole('button', { name: '更新' })).toBeTruthy()
-      expect(row.queryByText('已是最新')).toBeNull()
-    }
+    const row = within(rowFor('pi'))
+    expect(row.getByRole('button', { name: '更新' })).toBeTruthy()
+    expect(row.queryByText('已是最新')).toBeNull()
   })
 
-  it('offers an install, not an update, when a runtime is missing', () => {
+  it('offers an install, not an update, when the runtime is missing', () => {
     useDepsStore.setState({
       dependencies: [dep('pi', { installed: false, version: null })],
     })

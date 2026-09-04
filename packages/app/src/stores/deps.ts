@@ -82,7 +82,7 @@ interface DepsState {
   /** Install dependencies serially in priority order */
   installDependencies: (names: string[]) => Promise<void>
 
-  /** Update an already-installed dependency (opencode → `amuxd install-opencode`) */
+  /** Update an already-installed dependency (the managed runtime → `amuxd install-pi`) */
   updateDependency: (name: string) => Promise<void>
 
   /** Reset install state for retry */
@@ -112,9 +112,9 @@ function getMockDependencies(): DependencyInfo[] {
     { name: 'brew', installed: false, version: null, required: false, description: 'Package manager - needed to install other tools on macOS', install_commands: { macos: '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"', windows: '', linux: '' }, affected_features: ['Package Management'], priority: 0 },
     { name: 'git', installed: true, version: '2.43.0', required: false, description: 'Version control - needed for team Git sync', install_commands: { macos: 'xcode-select --install', windows: 'winget install Git.Git', linux: 'sudo apt install -y git' }, affected_features: ['Team Git Sync', 'Version Control'], priority: 1 },
     { name: 'gh', installed: false, version: null, required: false, description: 'GitHub CLI - needed for spec-plan, spec-pr, and issue management', install_commands: { macos: 'brew install gh', windows: 'winget install GitHub.cli', linux: 'sudo apt install -y gh' }, affected_features: ['spec-plan', 'spec-pr', 'GitHub Issues'], priority: 1 },
-    { name: 'node', installed: true, version: '22.1.0', required: false, description: 'Node.js runtime - needed to run some MCP servers (via npx)', install_commands: { macos: 'brew install node', windows: 'winget install OpenJS.NodeJS', linux: 'sudo apt install -y nodejs' }, affected_features: ['MCP Servers (npx-based)'], priority: 1 },
     { name: 'python3', installed: false, version: null, required: false, description: 'Python runtime - needed for uvx-based MCP servers and data analysis', install_commands: { macos: 'brew install python3', windows: 'winget install Python.Python.3', linux: 'sudo apt install -y python3' }, affected_features: ['MCP Servers (uvx-based)', 'Data Analysis'], priority: 1 },
-    { name: 'opencode', installed: true, version: '1.17.7', required: true, description: 'Agent runtime - required to run the local AI agent', install_commands: { macos: 'amuxd install-opencode', windows: 'amuxd install-opencode', linux: 'amuxd install-opencode' }, affected_features: ['Local Agent'], priority: 1 },
+    { name: 'node', installed: true, version: '24.20.0', required: true, description: 'Node.js runtime, installed and managed by the app', install_commands: { macos: '', windows: '', linux: '' }, affected_features: ['Local Agent'], priority: 1 },
+    { name: 'pi', installed: true, version: '0.84.2', required: true, description: 'Agent runtime for the local AI agent, installed and managed by the app', install_commands: { macos: 'amuxd install-pi', windows: 'amuxd install-pi', linux: 'amuxd install-pi' }, affected_features: ['Local Agent'], priority: 1 },
   ]
 }
 
@@ -147,15 +147,7 @@ export const useDepsStore = create<DepsState>((set, get) => ({
     set({ loading: true })
     try {
       const { invoke } = await import('@tauri-apps/api/core')
-      // Which runtime this machine runs decides which one is *required*, and
-      // the daemon owns that answer (`agents.local_agent`). Asking it here
-      // rather than in Rust keeps one implementation of the lookup —
-      // `getDaemonLocalAgent` already falls back to opencode when the daemon
-      // cannot be reached, which is the conservative default the backend uses
-      // for `undefined` too.
-      const { getDaemonLocalAgent } = await import('@/lib/daemon/daemon-local-client')
-      const localAgent = await getDaemonLocalAgent().catch(() => undefined)
-      const result = await invoke<DependencyInfo[]>('check_dependencies', { localAgent })
+      const result = await invoke<DependencyInfo[]>('check_dependencies')
       set({ dependencies: result, checked: true, loading: false })
       return result
     } catch (err) {
@@ -304,13 +296,11 @@ export const useDepsStore = create<DepsState>((set, get) => ({
   checkVersions: async () => {
     if (!isTauri()) return
     const { invoke } = await import('@tauri-apps/api/core')
-    // Independently, not in one command: opencode asks the mirror over the
-    // network and pi runs `amuxd doctor`, so neither is free and a slow one
-    // must not blank the other's row. (`doctor` is offline but not cheap — it
-    // spawns the sidecar, ~4s on a cold first launch.) Unknown is a valid
-    // state; the UI keeps offering the update rather than claiming currency.
+    // pi's answer comes from `amuxd doctor` (offline: the target is pinned in
+    // pi.lock.json). Unknown is a valid state; the UI keeps offering the
+    // update rather than claiming currency.
     await Promise.all(
-      (['opencode', 'pi'] as const).map(async (name) => {
+      (['pi'] as const).map(async (name) => {
         try {
           const result = await invoke<DependencyVersions>(`${name}_versions`)
           set((s) => ({ versions: { ...s.versions, [name]: result } }))

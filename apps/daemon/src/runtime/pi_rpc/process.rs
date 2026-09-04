@@ -8,9 +8,12 @@
 //!   `AgentSession`s; commands and events carry a `sessionId`. This is what
 //!   makes several TeamClu sessions on one worktree run in parallel instead of
 //!   failing with "pi is mid-turn on another session".
-//! - **LegacyRpc**: `pi --mode rpc`, the single-active-session protocol. Used
-//!   when the pi install has no importable npm package (e.g. a Bun single
-//!   binary), or when `[agents.pi] session_host = "rpc"` forces it.
+//! - **LegacyRpc**: `node <pi>/dist/cli.js --mode rpc` (the package's `bin`), the
+//!   single-active-session protocol. Kept as the rollback switch
+//!   (`[agents.pi] session_host = "rpc"`); nothing selects it on its own.
+//!
+//! Both run on the amuxd-managed Node against the amuxd-managed pi package
+//! (`node_install`, `pi_install`): the paths are constants, not lookups.
 //!
 //! Sessions persist under `<state>/pi-sessions/<worktree-hash>/` via
 //! `--session-dir` — keyed by worktree only, NOT by pool key, so a session
@@ -141,8 +144,6 @@ pub(crate) struct PiProcessPool {
     procs: parking_lot::Mutex<HashMap<PoolKey, Arc<PiProcess>>>,
     /// Last spawn env per key — what a crash respawn uses.
     envs: parking_lot::Mutex<HashMap<PoolKey, SpawnEnv>>,
-    /// `[agents.pi].binary` override from daemon config, when configured.
-    binary_override: parking_lot::Mutex<Option<String>>,
     context_service:
         parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
 }
@@ -152,7 +153,6 @@ impl PiProcessPool {
         Self {
             procs: parking_lot::Mutex::new(HashMap::new()),
             envs: parking_lot::Mutex::new(HashMap::new()),
-            binary_override: parking_lot::Mutex::new(None),
             context_service: parking_lot::RwLock::new(None),
         }
     }
@@ -177,24 +177,12 @@ impl PiProcessPool {
         }
     }
 
-    /// Record the configured pi binary (from `AgentLaunchConfig`). The serde
-    /// default `"claude"` and the plain names count as unconfigured.
-    pub(crate) fn set_binary_hint(&self, binary: &str) {
-        if !binary.is_empty() && binary != "claude" && binary != "pi" && binary != "opencode" {
-            *self.binary_override.lock() = Some(binary.to_string());
-        }
-    }
-
     /// Fingerprint of a wanted spawn: binary + resolved mode + env. A live
     /// child whose fingerprint differs is replaced by `ensure`.
     fn spawn_fingerprint(&self, env: &SpawnEnv, launch: &ResolvedLaunch) -> String {
-        let mode = match &launch.mode {
-            LaunchMode::Host { node, package_root } => format!(
-                "host:{}:{}",
-                node.to_string_lossy(),
-                package_root.to_string_lossy()
-            ),
-            LaunchMode::LegacyRpc => "rpc".to_string(),
+        let mode = match launch.mode {
+            LaunchMode::Host => "host",
+            LaunchMode::LegacyRpc => "rpc",
         };
         let remote = env.remote_tools_cmd.clone().unwrap_or_default();
         let servers = env.mcp_servers.clone().unwrap_or_default();
@@ -206,8 +194,9 @@ impl PiProcessPool {
             .collect();
         extra.sort();
         format!(
-            "bin={}\x1fmode={mode}\x1fforce={}\x1fremote={remote}\x1fservers={servers}\x1fextra={}",
-            launch.binary,
+            "node={}\x1fpkg={}\x1fmode={mode}\x1fforce={}\x1fremote={remote}\x1fservers={servers}\x1fextra={}",
+            launch.node.display(),
+            launch.package_root.display(),
             env.force_env_override,
             extra.join("\x1e")
         )
@@ -362,31 +351,20 @@ impl PiProcessPool {
     /// so a config flip (`[agents.pi] session_host`) or a pi upgrade takes
     /// effect on the next respawn without a daemon restart.
     fn resolve_launch(&self) -> ResolvedLaunch {
-        let configured = self.binary_override.lock().clone();
-        let binary = resolve_binary(configured.as_deref());
+        let node = crate::node_install::node_binary();
+        let package_root = crate::pi_install::package_root();
         let mode = match session_host_preference() {
             SessionHostPreference::LegacyRpc => {
                 info!("pi session_host = rpc (configured); using legacy single-session mode");
                 LaunchMode::LegacyRpc
             }
-            SessionHostPreference::Host => match resolve_host_launch(&binary) {
-                Some(host) => LaunchMode::Host {
-                    node: host.node,
-                    package_root: host.package_root,
-                },
-                None => {
-                    // Bun single binary or unreadable install: no npm package
-                    // to import, so the multi-session host cannot run. Fall
-                    // back to the single-session protocol rather than failing.
-                    warn!(
-                        binary = %binary,
-                        "pi npm package root not resolvable; falling back to single-session --mode rpc"
-                    );
-                    LaunchMode::LegacyRpc
-                }
-            },
+            SessionHostPreference::Host => LaunchMode::Host,
         };
-        ResolvedLaunch { binary, mode }
+        ResolvedLaunch {
+            node,
+            package_root,
+            mode,
+        }
     }
 
     fn spawn(
@@ -415,7 +393,7 @@ impl PiProcessPool {
         // missing from the model's list. Say so where it is diagnosable.
         if extension.is_some() && !crate::pi_install::mcp_sdk::satisfied() {
             warn!(
-                dir = %crate::pi_install::mcp_sdk::deps_dir().display(),
+                dir = %crate::pi_install::node_modules_dir().display(),
                 required = %crate::pi_install::required_mcp_sdk_version(),
                 installed = ?crate::pi_install::mcp_sdk::installed_version(),
                 "MCP SDK missing or too old; pi will start with no MCP tools. \
@@ -423,15 +401,15 @@ impl PiProcessPool {
             );
         }
 
-        let (program, mode) = match &launch.mode {
-            LaunchMode::Host { node, package_root } => {
+        let (program, mode) = match launch.mode {
+            LaunchMode::Host => {
                 let host_script = materialize_host_script().map_err(|e| {
                     crate::error::AmuxError::Agent(format!("pi host script materialize: {e}"))
                 })?;
-                let mut cmd = tokio::process::Command::new(node);
+                let mut cmd = tokio::process::Command::new(&launch.node);
                 cmd.arg(&host_script)
                     .arg("--pi-package")
-                    .arg(package_root)
+                    .arg(&launch.package_root)
                     .arg("--cwd")
                     .arg(worktree)
                     .arg("--session-dir")
@@ -442,8 +420,11 @@ impl PiProcessPool {
                 (cmd, PiSessionMode::Host)
             }
             LaunchMode::LegacyRpc => {
-                let mut cmd = tokio::process::Command::new(&launch.binary);
-                cmd.arg("--mode")
+                let mut cmd = tokio::process::Command::new(&launch.node);
+                // `dist/cli.js` is the package's declared `bin` (0.84.2 ships no
+                // `dist/bundle/`).
+                cmd.arg(launch.package_root.join("dist").join("cli.js"))
+                    .arg("--mode")
                     .arg("rpc")
                     .arg("--session-dir")
                     .arg(&session_dir);
@@ -494,14 +475,12 @@ impl PiProcessPool {
         } else {
             cmd.env("TEAMCLU_MCP_TOOL_CACHE_DIR", &tool_cache);
         }
-        // Enriched PATH: node shims (`#!/usr/bin/env node`) and the MCP bridge
-        // children all resolve through the child's own PATH.
+        // PATH led by the managed Node: `#!/usr/bin/env node` shims (npx-run
+        // MCP servers, npm helpers) resolve to the same Node pi runs on, not
+        // to whatever the user's shell would have found.
         cmd.env(
             "PATH",
-            crate::runtime::opencode_http::enriched_spawn_path(
-                std::env::var("PATH").ok().as_deref(),
-                dirs::home_dir().as_deref(),
-            ),
+            crate::runtime::well_known_bin::augmented_path_led_by(launch.node.parent()),
         );
         for (k, v) in env.extra_env.iter() {
             if env.force_env_override || std::env::var_os(k).is_none() {
@@ -514,7 +493,8 @@ impl PiProcessPool {
             .kill_on_drop(true);
 
         info!(
-            binary = %launch.binary,
+            node = %launch.node.display(),
+            package_root = %launch.package_root.display(),
             mode = ?mode,
             worktree,
             session_dir = %session_dir.display(),
@@ -524,10 +504,13 @@ impl PiProcessPool {
             if e.kind() == std::io::ErrorKind::NotFound {
                 crate::error::agent_binary_missing(
                     "pi",
-                    format_args!("pi launcher ({}) not found", launch.binary),
+                    format_args!(
+                        "managed Node.js ({}) not found; run `amuxd install-pi`",
+                        launch.node.display()
+                    ),
                 )
             } else {
-                crate::error::AmuxError::Agent(format!("spawn pi ({}): {e}", launch.binary))
+                crate::error::AmuxError::Agent(format!("spawn pi ({}): {e}", launch.node.display()))
             }
         })?;
 
@@ -585,15 +568,16 @@ impl PiProcessPool {
 }
 
 struct ResolvedLaunch {
-    binary: String,
+    /// The managed Node (`node_install::node_binary`).
+    node: PathBuf,
+    /// pi's npm package root (`pi_install::package_root`).
+    package_root: PathBuf,
     mode: LaunchMode,
 }
 
+#[derive(Clone, Copy, Debug)]
 enum LaunchMode {
-    Host {
-        node: PathBuf,
-        package_root: PathBuf,
-    },
+    Host,
     LegacyRpc,
 }
 
@@ -618,135 +602,6 @@ fn session_host_preference() -> SessionHostPreference {
         Some("rpc") => SessionHostPreference::LegacyRpc,
         _ => SessionHostPreference::Host,
     }
-}
-
-pub(crate) struct HostLaunch {
-    pub(crate) node: PathBuf,
-    pub(crate) package_root: PathBuf,
-}
-
-/// Resolve what the multi-session host needs: a Node binary and the pi npm
-/// package root (the directory whose `dist/index.js` the host imports).
-///
-/// `None` ⇒ this pi install has no importable package (Bun single binary, or a
-/// wrapper script we can't see through) and the caller falls back to legacy
-/// `--mode rpc`.
-pub(crate) fn resolve_host_launch(binary: &str) -> Option<HostLaunch> {
-    let package_root = resolve_pi_package_root(Path::new(binary))?;
-    // The npm shim's own shebang is `#!/usr/bin/env node`, so a working pi
-    // install implies node exists — but a GUI-launched daemon can't rely on
-    // PATH, and "the first node we can find" is not good enough either: the
-    // first one is routinely an abandoned version-manager symlink too old to
-    // run pi. Take the same node `doctor` reported, so what we check and what
-    // we launch are one decision.
-    let node = crate::pi_install::node()
-        .map(|n| n.path)
-        .or_else(|| crate::runtime::well_known_bin::find("node", &[]))
-        .unwrap_or_else(|| PathBuf::from("node"));
-    Some(HostLaunch { node, package_root })
-}
-
-/// Walk from the pi executable (through symlinks) up to the npm package root:
-/// the ancestor holding `package.json` for `@earendil-works/pi-coding-agent`
-/// with a `dist/index.js` to import.
-fn resolve_pi_package_root(binary: &Path) -> Option<PathBuf> {
-    // A bare name ("pi") has no location to walk from; make it absolute first.
-    // Both lookups, because either can be the only one that works: the
-    // well-known dirs cover a GUI-launched daemon with no usable PATH, and the
-    // child PATH covers a pi installed beside a version-managed node
-    // (`~/.n/bin/pi`), which is a directory no fixed list can name. Missing the
-    // second one dropped those installs to the single-session `--mode rpc`
-    // fallback without ever saying so.
-    let name = binary.to_string_lossy();
-    let start = if binary.is_absolute() {
-        binary.to_path_buf()
-    } else {
-        crate::runtime::well_known_bin::find(&name, &[]).or_else(|| {
-            crate::runtime::well_known_bin::find_in_path(
-                &name,
-                crate::pi_install::node()
-                    .as_ref()
-                    .and_then(|n| n.path.parent()),
-            )
-        })?
-    };
-    let resolved = std::fs::canonicalize(&start).ok()?;
-    for dir in resolved.ancestors().skip(1) {
-        // POSIX: the `pi` shim is a symlink *into* the package, so the package
-        // root is one of its ancestors. A package root that isn't pi's (e.g. a
-        // wrapper package) just keeps the walk going.
-        if is_pi_package_root(dir) {
-            return Some(dir.to_path_buf());
-        }
-        // Windows: `pi.cmd` is a standalone batch shim, not a link into the
-        // package, so no ancestor is ever the package root — the package sits
-        // in the npm prefix's `node_modules` beside the shim. Without this,
-        // every Windows install silently fell back to single-session
-        // `--mode rpc`.
-        let beside = dir
-            .join("node_modules")
-            .join("@earendil-works")
-            .join("pi-coding-agent");
-        if is_pi_package_root(&beside) {
-            return Some(beside);
-        }
-    }
-    None
-}
-
-/// Is `dir` the `@earendil-works/pi-coding-agent` package root — i.e. does it
-/// hold the `dist/index.js` the host imports?
-fn is_pi_package_root(dir: &Path) -> bool {
-    if !dir.join("dist").join("index.js").exists() {
-        return false;
-    }
-    std::fs::read_to_string(dir.join("package.json"))
-        .map(|body| body.contains("\"@earendil-works/pi-coding-agent\""))
-        .unwrap_or(false)
-}
-
-/// Resolve the pi binary amuxd should run. Order: explicit daemon config
-/// override → `~/.pi/bin/pi` when present → `pi` on PATH.
-pub(crate) fn resolve_binary(configured: Option<&str>) -> String {
-    resolve_binary_with(
-        configured,
-        default_bin(),
-        &crate::runtime::well_known_bin::search_dirs(),
-    )
-}
-
-/// `~/.pi/bin/pi` — where pi's own installer puts it. Resolved through
-/// `well_known_bin` so Windows probes every executable extension (a pi that
-/// arrived via npm is `pi.cmd`, never `pi.exe`) instead of one guess.
-fn default_bin() -> Option<PathBuf> {
-    let dir = dirs::home_dir()?.join(".pi").join("bin");
-    crate::runtime::well_known_bin::find_with("pi", &[dir], &[])
-}
-
-/// `well_known` is a parameter rather than a call to
-/// `well_known_bin::search_dirs()` so the precedence test below does not depend
-/// on whether the machine running it happens to have pi installed.
-fn resolve_binary_with(
-    configured: Option<&str>,
-    default_bin: Option<PathBuf>,
-    well_known: &[PathBuf],
-) -> String {
-    if let Some(b) = configured {
-        if !b.is_empty() && b != "claude" {
-            return b.to_string();
-        }
-    }
-    if let Some(p) = default_bin {
-        if p.exists() {
-            return p.to_string_lossy().to_string();
-        }
-    }
-    // `~/.pi/bin` is only where pi's own installer puts it; a Homebrew or npm
-    // install lands elsewhere and used to fall through to the bare name, which
-    // a GUI-launched daemon cannot resolve. See runtime::well_known_bin.
-    crate::runtime::well_known_bin::find_with("pi", &[], well_known)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "pi".to_string())
 }
 
 /// Stable (FNV-1a) hash of the canonical worktree path, used to name the
@@ -785,7 +640,7 @@ const TEAMCLU_HOST_MJS: &str = include_str!("../../../assets/pi-host/host.mjs");
 /// layout spec: deleting it costs a re-materialize and re-prompts, nothing
 /// more.
 fn amuxd_pi_dir() -> PathBuf {
-    crate::config::layout::cache_dir().join("pi")
+    crate::pi_install::pi_dir()
 }
 
 /// Where the extension is materialized. Also an npm root: the extension's MCP
@@ -827,12 +682,6 @@ fn materialize(path: PathBuf, content: &str) -> std::io::Result<PathBuf> {
 }
 
 fn materialize_extension() -> std::io::Result<PathBuf> {
-    // The manifest travels with the extension: it is what makes a hand-run
-    // `npm install` in this directory repair a missing SDK, and what pi reads
-    // when the directory is loaded as a package.
-    if let Err(e) = crate::pi_install::mcp_sdk::materialize_package_json() {
-        warn!(error = %e, "pi extension package.json write failed");
-    }
     materialize(extension_path(), TEAMCLU_EXTENSION_TS)
 }
 
@@ -902,117 +751,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_binary_precedence() {
-        assert_eq!(resolve_binary_with(Some("/opt/pi"), None, &[]), "/opt/pi");
-        // serde default "claude" counts as unconfigured
-        assert_eq!(resolve_binary_with(Some("claude"), None, &[]), "pi");
-        assert_eq!(resolve_binary_with(Some(""), None, &[]), "pi");
-        assert_eq!(resolve_binary_with(None, None, &[]), "pi");
-        // existing default bin wins over PATH fallback
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("pi");
-        std::fs::write(&bin, "").unwrap();
-        assert_eq!(
-            resolve_binary_with(None, Some(bin.clone()), &[]),
-            bin.to_string_lossy()
-        );
-        // ...and a well-known-dir hit beats the bare name when ~/.pi/bin has
-        // nothing (Homebrew / npm installs).
-        let brew = tempfile::tempdir().unwrap();
-        let brew_pi = brew.path().join("pi");
-        std::fs::write(&brew_pi, "").unwrap();
-        assert_eq!(
-            resolve_binary_with(None, None, &[brew.path().to_path_buf()]),
-            brew_pi.to_string_lossy()
-        );
-    }
-
-    #[test]
-    fn package_root_resolved_through_symlink() {
-        // Layout mirroring a real npm global install:
-        //   <root>/lib/node_modules/@earendil-works/pi-coding-agent/
-        //     package.json  dist/cli.js  dist/index.js
-        //   <root>/bin/pi -> ../lib/node_modules/.../dist/cli.js
-        let dir = tempfile::tempdir().unwrap();
-        let pkg = dir
-            .path()
-            .join("lib/node_modules/@earendil-works/pi-coding-agent");
-        std::fs::create_dir_all(pkg.join("dist")).unwrap();
-        std::fs::write(
-            pkg.join("package.json"),
-            r#"{"name":"@earendil-works/pi-coding-agent","version":"0.84.2"}"#,
-        )
-        .unwrap();
-        std::fs::write(pkg.join("dist/cli.js"), "").unwrap();
-        std::fs::write(pkg.join("dist/index.js"), "").unwrap();
-        let bin_dir = dir.path().join("bin");
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        let shim = bin_dir.join("pi");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(pkg.join("dist/cli.js"), &shim).unwrap();
-        #[cfg(not(unix))]
-        std::fs::copy(pkg.join("dist/cli.js"), &shim).unwrap();
-
-        #[cfg(unix)]
-        {
-            let root = resolve_pi_package_root(&shim).expect("package root");
-            assert_eq!(
-                std::fs::canonicalize(&root).unwrap(),
-                std::fs::canonicalize(&pkg).unwrap()
-            );
-        }
-    }
-
-    #[test]
-    fn package_root_found_beside_a_windows_style_shim() {
-        // What `npm install -g` produces on Windows:
-        //   %APPDATA%\npm\pi.cmd                     (a batch shim, no symlink)
-        //   %APPDATA%\npm\node_modules\@earendil-works\pi-coding-agent\
-        // Walking ancestors alone never finds the package here.
-        let dir = tempfile::tempdir().unwrap();
-        let pkg = dir
-            .path()
-            .join("node_modules/@earendil-works/pi-coding-agent");
-        std::fs::create_dir_all(pkg.join("dist")).unwrap();
-        std::fs::write(
-            pkg.join("package.json"),
-            r#"{"name":"@earendil-works/pi-coding-agent","version":"0.84.2"}"#,
-        )
-        .unwrap();
-        std::fs::write(pkg.join("dist/index.js"), "").unwrap();
-        let shim = dir.path().join("pi.cmd");
-        std::fs::write(&shim, "@ECHO off\r\n").unwrap();
-
-        let root = resolve_pi_package_root(&shim).expect("package root beside the shim");
-        assert_eq!(
-            std::fs::canonicalize(&root).unwrap(),
-            std::fs::canonicalize(&pkg).unwrap()
-        );
-    }
-
-    #[test]
-    fn package_root_none_for_single_binary() {
-        // A Bun single binary: an executable with no package.json anywhere
-        // above it → no host mode, caller falls back to --mode rpc.
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("pi");
-        std::fs::write(&bin, "#!ELF not really").unwrap();
-        assert!(resolve_pi_package_root(&bin).is_none());
-    }
-
-    #[test]
-    fn package_root_rejects_foreign_package() {
-        // A wrapper package that is not pi must not be mistaken for it.
-        let dir = tempfile::tempdir().unwrap();
-        let pkg = dir.path().join("some-wrapper");
-        std::fs::create_dir_all(pkg.join("dist")).unwrap();
-        std::fs::write(pkg.join("package.json"), r#"{"name":"some-wrapper"}"#).unwrap();
-        std::fs::write(pkg.join("dist/index.js"), "").unwrap();
-        std::fs::write(pkg.join("dist/cli.js"), "").unwrap();
-        assert!(resolve_pi_package_root(&pkg.join("dist/cli.js")).is_none());
-    }
-
-    #[test]
     fn pool_keys_separate_domains_and_revisions() {
         let base = test_pool_key("/w");
         let other_domain = PoolKey {
@@ -1039,7 +777,8 @@ mod tests {
     fn spawn_fingerprint_isolates_env_per_key_shape() {
         let pool = PiProcessPool::new();
         let launch = ResolvedLaunch {
-            binary: "pi".into(),
+            node: PathBuf::from("/managed/node/bin/node"),
+            package_root: PathBuf::from("/managed/pi/node_modules/@earendil-works/pi-coding-agent"),
             mode: LaunchMode::LegacyRpc,
         };
         let a = SpawnEnv {
@@ -1122,7 +861,8 @@ mod tests {
     fn probe_and_attach_fingerprints_diverge_by_construction() {
         let pool = PiProcessPool::new();
         let launch = ResolvedLaunch {
-            binary: "pi".into(),
+            node: PathBuf::from("/managed/node/bin/node"),
+            package_root: PathBuf::from("/managed/pi/node_modules/@earendil-works/pi-coding-agent"),
             mode: LaunchMode::LegacyRpc,
         };
         let extra_env = HashMap::from([("BASE_URL".to_string(), "https://gw".to_string())]);
@@ -1171,9 +911,27 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&fake_pi, std::fs::Permissions::from_mode(0o755)).unwrap();
 
+        // Point the pool at the stand-in the way a developer would: the
+        // `[agents.pi] node` / `package_root` overrides, in legacy rpc mode,
+        // so the fake is spawned as `<node> <root>/dist/cli.js --mode rpc`.
+        let pkg = bin_dir.path().join("pkg");
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        std::fs::write(pkg.join("dist/cli.js"), "").unwrap();
+        let config_path = crate::config::DaemonConfig::default_path();
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                "[actor]\nid = \"d\"\nname = \"m\"\n[mqtt]\nbroker_url = \"tcp://x:1883\"\n\
+                 [agents.pi]\nnode = {:?}\npackage_root = {:?}\nsession_host = \"rpc\"\n",
+                fake_pi.to_string_lossy(),
+                pkg.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
         let worktree = tempfile::tempdir().unwrap();
         let shared = super::Shared::new();
-        shared.pool.set_binary_hint(&fake_pi.to_string_lossy());
         let key = PoolKey {
             domain: IsolationDomainKey::Workspace("ws-1".into()),
             env_revision: ProcessEnvRevision::from_bindings(&HashMap::new()),

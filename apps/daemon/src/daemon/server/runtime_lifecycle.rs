@@ -588,12 +588,7 @@ impl DaemonServer {
                     .sessions
                     .lookup(session_id, &ws_id, agent_type as i32)
                     .is_none();
-            if needs_fork
-                && matches!(
-                    agent_type,
-                    amux::AgentType::Pi | amux::AgentType::Opencode
-                )
-            {
+            if needs_fork && matches!(agent_type, amux::AgentType::Pi | amux::AgentType::Opencode) {
                 let forked = {
                     let agents = self.agents.lock().await;
                     let backend_handle = agents.agent_backend_handle();
@@ -868,7 +863,7 @@ impl DaemonServer {
 
         let requested =
             amux::AgentType::try_from(start.agent_type).unwrap_or(amux::AgentType::ClaudeCode);
-        let at = resolve_requested_agent_type(&self.config, requested);
+        let at = resolve_requested_agent_type(requested);
         if at != requested {
             info!(requested = ?requested, resolved = ?at, "runtimeStart agent_type overridden by daemon config");
         }

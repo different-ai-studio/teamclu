@@ -4,7 +4,6 @@ pub mod config_cmd;
 pub mod cursor_permission_hook;
 pub mod doctor;
 pub mod git_ssh;
-pub mod install_opencode;
 pub mod manage;
 pub mod process;
 pub mod remote_tools_mcp;
@@ -87,18 +86,10 @@ pub enum Commands {
     Config(ConfigArgs),
     /// Manage team-share state for this daemon.
     Team(TeamArgs),
-    /// Report install status of opencode / git / amuxd as JSON.
+    /// Report install status of amuxd / the managed Node / pi / git as JSON.
     Doctor,
-    /// Download and install the opencode binary into ~/.amuxd/bin/opencode.
-    InstallOpencode {
-        /// Re-download the latest release even if opencode is already installed.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Report installed vs newest-available opencode as JSON, for the
-    /// Dependencies UI's "up to date / update available" state.
-    OpencodeVersions,
-    /// Install or upgrade the pi coding agent (npm/bun global install).
+    /// Install or repair the managed pi runtime: the pinned Node.js, then pi
+    /// and the MCP SDK on it (`npm ci` in <amuxd cache>/pi).
     InstallPi {
         /// Reinstall even if the locked version is already present.
         #[arg(long)]

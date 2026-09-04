@@ -3,16 +3,13 @@ import { useAuthStore, type AuthClaimResult } from "@/stores/auth-store";
 import { useCurrentTeamStore, readCachedCurrentTeam } from "@/stores/current-team";
 import { getBackend } from "@/lib/backend";
 import { isTauri, removeStartupSkeleton } from "@/lib/utils";
-import { devSkipDaemonOnboarding, devSkipSetup } from "@/lib/config/dev-onboarding-flags";
+import { devSkipDaemonOnboarding } from "@/lib/config/dev-onboarding-flags";
 import { resolveDefaultDisplayName } from "@/lib/actor/default-display-name";
 import { DesktopOnboarding } from "./DesktopOnboarding";
 import { LoginScreen } from "./LoginScreen";
 import { isLocaleLocked, availableLanguages } from "@/lib/i18n";
 import { LanguageStep } from "@/components/onboarding/LanguageStep";
-import { RoleStep } from "@/components/onboarding/RoleStep";
-import { SetupStep } from "@/components/onboarding/SetupStep";
 import { useOnboardingStore } from "@/stores/onboarding";
-import { useSetupStore, setupPreviouslySatisfied } from "@/stores/setup";
 import { DaemonOnboardingWizard } from "@/components/auth/DaemonOnboardingWizard";
 import { TeamBootstrapErrorScreen } from "@/components/auth/TeamBootstrapErrorScreen";
 import { useDaemonOnboardingStore } from "@/stores/daemon-onboarding";
@@ -87,26 +84,11 @@ export function AuthGate({ children }: AuthGateProps) {
   const bootstrappedUserId = useRef<string | null>(null);
   const savedTeamRestoreUserId = useRef<string | null>(null);
 
-  const setupLoaded = useSetupStore((s) => s.loaded);
-  const listSetup = useSetupStore((s) => s.listRequirements);
-  // Optimistic skip: if a prior launch confirmed all required deps, don't gate
-  // first paint behind the cold `setup_list_requirements` probe (~4s on macOS
-  // first launch — it spawns `amuxd doctor`). The probe still runs in the
-  // background (effect below) to refresh the cache, and the daemon-onboarding
-  // gate is the real backstop if a dependency actually went missing.
-  const [setupAck] = useState(() => devSkipSetup() || setupPreviouslySatisfied());
-
-  // First-run onboarding (#881).
+  // First-run onboarding: the language, asked once before sign-in. Installing
+  // the runtime is the daemon wizard's job (#1250) — it runs after sign-in and
+  // re-checks the daemon's doctor on every launch, so nothing is cached here.
   const onboardingLanguageAck = useOnboardingStore((s) => s.languageAck);
   const markOnboardingLanguageAck = useOnboardingStore((s) => s.markLanguageAck);
-  const onboardingRole = useOnboardingStore((s) => s.role);
-  const onboardingDone = useOnboardingStore((s) => s.completed);
-  const setOnboardingRole = useOnboardingStore((s) => s.setRole);
-  const markOnboardingCompleted = useOnboardingStore((s) => s.markCompleted);
-  // Started-but-unfinished. Whichever screen the user quit on, they come back
-  // to it — and it outranks the `setup-ok` optimistic skip below, which would
-  // otherwise swallow the rest of a flow the user is visibly in the middle of.
-  const onboardingStarted = useOnboardingStore((s) => s.languageAck || s.role !== null);
 
   const daemonStatus = useDaemonOnboardingStore((s) => s.status);
   const daemonLoaded = useDaemonOnboardingStore((s) => s.loaded);
@@ -131,10 +113,6 @@ export function AuthGate({ children }: AuthGateProps) {
   // a ref lets the bootstrap effect await the exact in-flight operation even
   // when React re-runs effects in StrictMode.
   const inviteClaimPromise = useRef<Promise<AuthClaimResult | null> | null>(null);
-
-  useEffect(() => {
-    if (isTauri()) void listSetup();
-  }, [listSetup]);
 
   // Re-evaluate the picker on every login: clear the pick flag + cached list
   // whenever the signed-in user changes.
@@ -450,30 +428,12 @@ export function AuthGate({ children }: AuthGateProps) {
   // would stay empty through auth hydrate / team bootstrap / myTeams and
   // the side panel would flash white for seconds.
 
-  // First-run onboarding (#881), ahead of auth: pick a setup style, then get the
-  // runtime and local dependencies in place. Models are not asked for here —
-  // they are configured in Settings once the app is up.
-  //
-  // Returning users skip all of it: `onboardingDone` is set once the flow
-  // completes, and `setupAck` (the setup-ok cache) covers installs that
-  // predate it.
-  if (isTauri() && !onboardingDone && (!setupAck || onboardingStarted)) {
-    if (!setupLoaded) {
-      return null;
-    }
-    // Language first, alone. Everything below it is written in whichever
-    // language this answers, so it cannot share a screen with them. Skipped
-    // outright on single-locale builds, where there is nothing to ask.
-    if (!onboardingLanguageAck && canChooseLanguage) {
-      removeStartupSkeleton();
-      return <LanguageStep onDone={markOnboardingLanguageAck} />;
-    }
-    if (!onboardingRole) {
-      removeStartupSkeleton();
-      return <RoleStep onDone={setOnboardingRole} />;
-    }
+  // Language first, alone, ahead of auth: everything after it is written in
+  // whichever language this answers. Skipped outright on single-locale builds,
+  // where there is nothing to ask.
+  if (isTauri() && !onboardingLanguageAck && canChooseLanguage) {
     removeStartupSkeleton();
-    return <SetupStep role={onboardingRole} onDone={markOnboardingCompleted} />;
+    return <LanguageStep onDone={markOnboardingLanguageAck} />;
   }
 
   if (isTauri() && loading && authFlow === "invite") {

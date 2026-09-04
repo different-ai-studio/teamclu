@@ -307,12 +307,12 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
-      # The single-agent runtime tests spawn a real `opencode serve`
-      # (apply_start_runtime success paths), so the binary must be on PATH.
-      - name: Install opencode (runtime under test)
-        run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+      # The runtime tests spawn the real pi host (apply_start_runtime success
+      # paths), which runs on the amuxd-managed Node.js. `install-pi` puts the
+      # pinned Node and the `npm ci` tree under ~/.amuxd/cache exactly as a
+      # user's first run does (apps/daemon/src/node_install, pi_install).
+      - name: Install the managed pi runtime (runtime under test)
+        run: cargo run -p amuxd --locked -- install-pi
 
       # `cargo test` below already compiles every test target before running
       # any, so on a green run this adds no work. It exists to make the compile

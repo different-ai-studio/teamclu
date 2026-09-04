@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isChromeExtension } from "@/lib/config/platform";
 import { isTauri } from "@/lib/utils";
-import { localAgent as buildDefaultLocalAgent } from "@/lib/config/build-config";
 import { reportLocalCacheEmptyTeamId } from "@/lib/telemetry/local-cache-error-report";
 
 /**
@@ -22,33 +21,16 @@ function hasTeamId(command: string, teamId: string | null | undefined): teamId i
 
 /**
  * The Rust side only opens opencode's private database to enrich tool-call
- * parts when the message runtime is opencode (PERF-2). It cannot learn the
- * runtime itself without reading daemon state, so we pass the daemon's current
- * local agent along. Cached briefly: switching runtimes restarts the daemon,
- * so a 30 s window is plenty. Falls back to the build default when the daemon
- * is unreachable, which is what the daemon itself would report.
+ * parts when the message runtime is opencode (PERF-2). pi is the only local
+ * runtime now (#1247), so the hint is a constant and that lookup is always
+ * skipped; the parameter stays until #1247 removes the opencode reader.
  */
-const RUNTIME_HINT_TTL_MS = 30_000;
-let runtimeHint: { value: string; at: number } | null = null;
-
 async function currentLocalRuntime(): Promise<string> {
-  const now = Date.now();
-  if (runtimeHint && now - runtimeHint.at < RUNTIME_HINT_TTL_MS) return runtimeHint.value;
-  let value: string = buildDefaultLocalAgent;
-  try {
-    const { getDaemonLocalAgent } = await import("@/lib/daemon/daemon-local-client");
-    value = await getDaemonLocalAgent();
-  } catch {
-    // daemon not reachable yet: keep the build default
-  }
-  runtimeHint = { value, at: now };
-  return value;
+  return "pi";
 }
 
-/** Test-only: forget the cached runtime hint. */
-export function resetLocalRuntimeHintForTests(): void {
-  runtimeHint = null;
-}
+/** Test-only: kept for callers written when the hint was cached. */
+export function resetLocalRuntimeHintForTests(): void {}
 
 // ── team gate ──────────────────────────────────────────────────────────────
 

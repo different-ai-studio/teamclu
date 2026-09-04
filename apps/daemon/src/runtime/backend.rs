@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
-use tracing::warn;
 
 use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
@@ -45,7 +44,9 @@ pub enum AcpCommand {
         permission: PermissionPolicy,
         /// When resuming, fail instead of falling back to a new session.
         forbid_new_session_fallback: bool,
-        /// TeamClu cloud session this attachment belongs to.
+        /// TeamClu cloud session this attachment belongs to. Read by the
+        /// sidecar backends only (#1247).
+        #[allow(dead_code)]
         teamclu_session_id: String,
     },
     /// Drop routing state for a session; the backend process keeps running.
@@ -100,6 +101,8 @@ pub struct AcpStartupMetadata {
 }
 
 impl AcpStartupMetadata {
+    /// opencode host-pool leases only (#1247).
+    #[allow(dead_code)]
     pub(crate) fn with_route_lease(
         mut self,
         route_lease: super::opencode_http::host_pool::RouteLease,
@@ -110,6 +113,10 @@ impl AcpStartupMetadata {
 }
 
 /// Inputs for lazy thread fork at first runtimeStart on a thread session.
+///
+/// Carries what every backend's fork needed; pi reads `fork_leaf_id`, the
+/// rest are the opencode fields (#1247).
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForkSpec {
     pub parent_acp_session_id: String,
@@ -295,11 +302,13 @@ pub trait AgentBackend: Send {
 // ---------------------------------------------------------------------------
 
 /// The opencode serve HTTP backend (`runtime/opencode_http/`) behind the
-/// backend-neutral trait.
+/// backend-neutral trait. Not constructed any more (#1247).
+#[allow(dead_code)]
 pub struct OpencodeHttpBackend {
     host: OpencodeHost,
 }
 
+#[allow(dead_code)]
 impl OpencodeHttpBackend {
     pub fn new() -> Self {
         Self {
@@ -476,91 +485,9 @@ impl AgentBackend for OpencodeHttpBackend {
 // Factory
 // ---------------------------------------------------------------------------
 
-/// The agent type `agents.local_agent` selects, normalized to the backend that
-/// [`create_backend`] will *actually* build.
-///
-/// This is deliberately the only place the config string is interpreted, and
-/// [`create_backend`] dispatches on its result, so "what type are we running"
-/// and "which backend did we build" can never disagree. They used to: this
-/// function's job was previously spread between `create_backend`'s string match
-/// and `RuntimeManager::default_agent_type`'s `launch_configs` probing, and the
-/// two gave different answers for pi, cursor, and two of claude's three aliases.
-///
-/// `codex` maps to opencode on purpose — there is no codex backend module and no
-/// arm to build one, so a codex-configured daemon runs opencode. Reporting
-/// `Codex` here would be a lie the rest of the system then acts on.
-pub fn agent_type_for_local_agent(local_agent: &str) -> amux::AgentType {
-    match local_agent {
-        "pi" => amux::AgentType::Pi,
-        "cursor" => amux::AgentType::Cursor,
-        // All three spellings accepted by `config::runtime_resolution` land on
-        // the claude backend; previously only the bare "claude" did, and the
-        // other two silently ran opencode.
-        "claude" | "claude-code" | "claude_code" => amux::AgentType::ClaudeCode,
-        "opencode" => amux::AgentType::Opencode,
-        other => {
-            warn!(
-                local_agent = other,
-                "unknown or unimplemented agents.local_agent; falling back to opencode"
-            );
-            amux::AgentType::Opencode
-        }
-    }
-}
-
-/// Build the local agent backend selected by daemon config
-/// (`agents.local_agent`; default "opencode").
-pub fn create_backend(local_agent: &str) -> Box<dyn AgentBackend> {
-    match agent_type_for_local_agent(local_agent) {
-        amux::AgentType::Pi => Box::new(super::pi_rpc::PiRpcBackend::new()),
-        amux::AgentType::Cursor => Box::new(super::cursor_sdk::CursorSdkBackend::new()),
-        amux::AgentType::ClaudeCode => Box::new(super::claude_agent::ClaudeAgentBackend::new()),
-        _ => Box::new(OpencodeHttpBackend::new()),
-    }
-}
-
-#[cfg(test)]
-mod agent_type_tests {
-    use super::*;
-
-    #[test]
-    fn every_implemented_backend_maps_to_its_own_agent_type() {
-        assert_eq!(
-            agent_type_for_local_agent("opencode"),
-            amux::AgentType::Opencode
-        );
-        assert_eq!(agent_type_for_local_agent("pi"), amux::AgentType::Pi);
-        assert_eq!(
-            agent_type_for_local_agent("cursor"),
-            amux::AgentType::Cursor
-        );
-    }
-
-    #[test]
-    fn all_three_claude_spellings_reach_the_claude_backend() {
-        // Only the bare "claude" used to match, so `local_agent = "claude-code"`
-        // — a spelling `config::runtime_resolution` accepts — silently built the
-        // opencode backend instead.
-        for name in ["claude", "claude-code", "claude_code"] {
-            assert_eq!(
-                agent_type_for_local_agent(name),
-                amux::AgentType::ClaudeCode,
-                "{name} should select the claude backend"
-            );
-        }
-    }
-
-    #[test]
-    fn codex_and_unknown_names_normalize_to_opencode() {
-        // There is no codex arm in `create_backend`; reporting Codex would name a
-        // runtime that never starts.
-        assert_eq!(
-            agent_type_for_local_agent("codex"),
-            amux::AgentType::Opencode
-        );
-        assert_eq!(
-            agent_type_for_local_agent("typo-here"),
-            amux::AgentType::Opencode
-        );
-    }
+/// Build the local agent backend. pi is the only one (#1247): there is no
+/// `agents.local_agent` to dispatch on any more. The other backend modules are
+/// still compiled while #1247 removes them, but nothing constructs them.
+pub fn create_backend() -> Box<dyn AgentBackend> {
+    Box::new(super::pi_rpc::PiRpcBackend::new())
 }

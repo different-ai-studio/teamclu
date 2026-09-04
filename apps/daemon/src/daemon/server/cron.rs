@@ -195,7 +195,7 @@ impl DaemonServer {
             let agent_type_override = parsed
                 .agent_type
                 .and_then(agent_type_from_name)
-                .map(|requested| resolve_requested_agent_type(&self.config, requested));
+                .map(resolve_requested_agent_type);
 
             let acp_sid = self
                 .create_cron_gateway_session(

@@ -44,17 +44,17 @@ pub(crate) mod runtime_env;
 // Cron-style prompt-await handling (`handle_prompt_await` + the cron session
 // cache) lives in `server/cron.rs` as a child module so it can reach the
 // server's private fields directly.
+mod app_git_credential;
 mod channels;
 mod command_executor;
 mod cron;
+mod knowledge;
 mod messaging;
 mod peers_workspaces;
 mod remote_tools;
 mod rpc;
-mod app_git_credential;
-mod skills_manage;
-mod knowledge;
 mod runtime_lifecycle;
+mod skills_manage;
 use crate::history::EventHistory;
 #[cfg(test)]
 use crate::mqtt::MqttClient;
@@ -689,57 +689,13 @@ impl DaemonServer {
         // (HTTP/local APIs stay up).
         apply_bootstrap_overrides(&backend, &mut config, config_path).await?;
 
-        let mut launch_configs = RuntimeManager::default_launch_configs();
-        if let Some(claude) = config.agents.claude_code.as_ref() {
-            launch_configs.insert(
-                amux::AgentType::ClaudeCode,
-                AgentLaunchConfig::new(
-                    claude.binary.clone(),
-                    claude.default_flags.clone(),
-                    "claude",
-                ),
-            );
-        }
-        if let Some(opencode) = config.agents.opencode.as_ref() {
-            launch_configs.insert(
-                amux::AgentType::Opencode,
-                AgentLaunchConfig::new(
-                    opencode.binary.clone(),
-                    opencode.default_flags.clone(),
-                    "opencode",
-                ),
-            );
-        }
-        if let Some(codex) = config.agents.codex.as_ref() {
-            launch_configs.insert(
-                amux::AgentType::Codex,
-                AgentLaunchConfig::new(codex.binary.clone(), codex.default_flags.clone(), "codex"),
-            );
-        }
-        // pi runs its own per-worktree process (the pi_rpc backend builds that
-        // command itself), so this entry only carries the binary name. Without
-        // it, launch_config_for(Pi) falls back to the ClaudeCode config and the
-        // pi backend would spawn `claude` instead of `pi`. The literal "pi"
-        // lets pi_rpc's resolve_binary find it on PATH / ~/.pi/bin rather than
-        // treating it as an explicit path override; a configured
-        // `[agents.pi].binary` becomes exactly such an override.
-        let pi_binary = config
-            .agents
-            .pi
-            .as_ref()
-            .and_then(|pi| pi.binary.clone())
-            .filter(|b| !b.is_empty())
-            .unwrap_or_else(|| "pi".to_string());
-        launch_configs.insert(
+        // pi is the only runtime (#1247). Its process is built by the pi_rpc
+        // backend from the managed Node + package root (`node_install`,
+        // `pi_install`), so this entry carries nothing but the backend id.
+        let launch_configs = HashMap::from([(
             amux::AgentType::Pi,
-            AgentLaunchConfig::new(pi_binary, Vec::new(), "pi"),
-        );
-        if config.agents.local_agent == "cursor" {
-            launch_configs.insert(
-                amux::AgentType::Cursor,
-                AgentLaunchConfig::new("cursor-bridge", Vec::new(), "cursor"),
-            );
-        }
+            AgentLaunchConfig::new("pi", Vec::new(), "pi"),
+        )]);
 
         // Team-scoped, all three: a member list, a runtime index and an event
         // history all describe one team's work and follow it when it changes.
@@ -759,8 +715,7 @@ impl DaemonServer {
         let history_dir = state_dir.join("history");
         let history = EventHistory::new(&history_dir);
 
-        let agents = Arc::new(AsyncMutex::new(RuntimeManager::with_local_agent(
-            &config.agents.local_agent,
+        let agents = Arc::new(AsyncMutex::new(RuntimeManager::new(
             launch_configs,
             Some(backend.clone()),
         )));
@@ -1144,7 +1099,7 @@ impl DaemonServer {
             let mut meta = crate::http::server::metadata(self.actor_id.clone(), "amuxd");
             // Expose configured backends so the model-catalog endpoint can
             // group models per backend (opencode / pi / cursor / claude-code).
-            meta.configured_agent_types = supported_agent_type_names(&self.config);
+            meta.configured_agent_types = supported_agent_type_names();
             meta.agent_types_advertise = agent_types_advertise.clone();
             meta.mqtt_connected = mqtt_connected_flag.clone();
             meta.mqtt_recovery = Some(self.mqtt_recovery_handle.clone());
@@ -1247,10 +1202,7 @@ impl DaemonServer {
                     // spawn, on this same Arc, before the router accepts
                     // requests. Calling `set_tokens` again here would replace
                     // the GatewayTokenSource and mint a second apiKey.
-                    if let Err(err) = self
-                        .runtime_context
-                        .validate_managed_setup(&self.config.agents.local_agent)
-                    {
+                    if let Err(err) = self.runtime_context.validate_managed_setup() {
                         warn!(
                             error = %err,
                             "runtime context service validation failed; session-scoped MCP tools may fail closed"
@@ -1617,7 +1569,7 @@ impl DaemonServer {
         // sections — do not invent a claude fallback.
         {
             let sb = self.backend.clone();
-            let supported_agent_types = supported_agent_type_names(&self.config);
+            let supported_agent_types = supported_agent_type_names();
             let default_agent_type = default_advertised_agent_type(&supported_agent_types);
             let advertise_status = agent_types_advertise.clone();
             // Advertised unconditionally, including the empty case. "This
@@ -2783,7 +2735,7 @@ impl DaemonServer {
             // One backend is active per actor at a time (ADR-0002), so the
             // restart uses the daemon's own rather than replaying whatever a
             // prior spawn happened to record.
-            let backend = resolve_requested_agent_type(&self.config, amux::AgentType::Unknown);
+            let backend = resolve_requested_agent_type(amux::AgentType::Unknown);
 
             // Workspace comes from the participant row that owns it (ADR-0005).
             // Empty means "resolve at spawn from the agent's default", the same

@@ -9,7 +9,6 @@
   "features": {
     "updater": true
   },
-  "localAgent": "pi",
   "defaults": {
     "theme": "system"
   }

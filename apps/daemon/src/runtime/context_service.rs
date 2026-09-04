@@ -120,7 +120,9 @@ impl RuntimeContextService {
         }
         let backend_kind = backend_kind_for_agent_type(agent_type);
         let mut inner = self.inner.write();
-        inner.registry.clear_generation(backend_kind, host_generation_id);
+        inner
+            .registry
+            .clear_generation(backend_kind, host_generation_id);
         inner
             .tokens
             .revoke_generation(backend_kind, host_generation_id);
@@ -153,9 +155,7 @@ impl RuntimeContextService {
     ) -> HashMap<String, String> {
         let backend_kind = backend_kind_for_agent_type(agent_type);
         let mut inner = self.inner.write();
-        let token = inner
-            .tokens
-            .ensure_token(backend_kind, host_generation_id);
+        let token = inner.tokens.ensure_token(backend_kind, host_generation_id);
         let base_url = inner
             .base_url
             .clone()
@@ -165,7 +165,7 @@ impl RuntimeContextService {
 
     /// Phase 2 startup validation: managed session context must be wired before
     /// accepting agent attachments.
-    pub fn validate_managed_setup(&self, local_agent: &str) -> Result<(), String> {
+    pub fn validate_managed_setup(&self) -> Result<(), String> {
         let inner = self.inner.read();
         if inner.base_url.as_deref().unwrap_or("").trim().is_empty() {
             return Err(
@@ -173,7 +173,6 @@ impl RuntimeContextService {
                     .to_string(),
             );
         }
-        let _ = local_agent;
         Ok(())
     }
 }
@@ -185,8 +184,8 @@ mod tests {
     #[test]
     fn validate_managed_setup_requires_base_url() {
         let service = RuntimeContextService::new();
-        assert!(service.validate_managed_setup("opencode").is_err());
+        assert!(service.validate_managed_setup().is_err());
         service.set_base_url("http://127.0.0.1:13141");
-        assert!(service.validate_managed_setup("opencode").is_ok());
+        assert!(service.validate_managed_setup().is_ok());
     }
 }

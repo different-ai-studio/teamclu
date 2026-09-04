@@ -1,9 +1,12 @@
 # pi Agent 后端：与 opencode 对等的集成设计
 
 > 状态：已实装（2026-07-22 设计；2026-08 多会话 host 落地，见 #991）。
-> `build config` 的 `localAgent` 参数（`"opencode"` | `"pi"`）选 `pi` 时
-> daemon 使用 [pi coding agent](https://github.com/badlogic/pi-mono)
-> （`@earendil-works`）作为本地运行时，能力对等于 opencode serve HTTP 集成。
+> **2026-09-04 起 pi 是唯一的本地运行时**（ADR-0014），没有 `localAgent` /
+> `agents.local_agent` 选择；Node 与 pi 由 amuxd 托管安装（ADR-0015，#1250）：
+> `<amuxd cache>/node/<ver>/` + `<amuxd cache>/pi/`（`npm ci` 树，package root
+> 是常量 `node_modules/@earendil-works/pi-coding-agent`）。下文提到的
+> `~/.pi/bin/pi`、PATH 查找、Bun 单二进制回退都已不适用；host 与 legacy rpc 两种
+> 模式仍如 §1 所述，只是都跑在托管 Node 上。
 
 ## 1. 进程 / 会话模型
 

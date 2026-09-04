@@ -32,6 +32,8 @@ mod http;
 mod mcp_probe;
 #[path = "../src/mqtt/mod.rs"]
 mod mqtt;
+#[path = "../src/node_install/mod.rs"]
+mod node_install;
 #[path = "../src/opencode_install/mod.rs"]
 mod opencode_install;
 #[path = "../src/opencode_settings/mod.rs"]

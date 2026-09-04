@@ -434,66 +434,11 @@ async function daemonFetchNoContent(
   return { ok: true, status: resp.status }
 }
 
-// ─── Local agent runtime (`agents.local_agent` in daemon.toml) ────────────────
-
-/** The local agent runtimes the daemon can drive. */
-/**
- * Local agent runtimes the daemon can actually run — one arm each in
- * `runtime::backend::create_backend`.
- *
- * `codex` is absent on purpose: it has no backend module, so a daemon
- * configured for it runs opencode.
- */
-export type DaemonLocalAgent = 'opencode' | 'pi' | 'cursor' | 'claude-code'
-
 interface DaemonConfigEntry {
   key: string
   value: unknown
   display: string
   secret: boolean
-}
-
-/**
- * Read the daemon's configured local agent runtime. An unset key (older
- * daemon.toml with no `agents.local_agent`) means the "opencode" default.
- */
-export async function getDaemonLocalAgent(): Promise<DaemonLocalAgent> {
-  const result = await daemonFetch<DaemonConfigEntry>('/v1/config/agents.local_agent')
-  if (!result.ok) {
-    // 404 = key absent → daemon default. Anything else: fall back conservatively.
-    return 'opencode'
-  }
-  switch (result.data.value) {
-    case 'pi':
-      return 'pi'
-    case 'cursor':
-      return 'cursor'
-    // The daemon accepts all three spellings (`config::runtime_resolution`), and
-    // since `backend::agent_type_for_local_agent` maps every one of them to the
-    // claude backend, reporting them as opencode — as this used to — mislabels
-    // the runtime and routes the LLM pane to the wrong settings UI.
-    case 'claude':
-    case 'claude-code':
-    case 'claude_code':
-      return 'claude-code'
-    default:
-      return 'opencode'
-  }
-}
-
-/**
- * Switch the daemon's local agent runtime. Writes `agents.local_agent`; the
- * caller must restart the daemon (this key is restart-required) for the new
- * backend to take effect. Returns whether a restart is required (always true
- * for this key, surfaced for symmetry with the daemon response).
- */
-export async function setDaemonLocalAgent(agent: DaemonLocalAgent): Promise<{ requiresRestart: boolean }> {
-  const result = await daemonFetch<{ requiresRestart: boolean }>('/v1/config/agents.local_agent', {
-    method: 'PUT',
-    body: JSON.stringify({ value: agent }),
-  })
-  if (!result.ok) throw new Error(result.error || 'failed to set local agent')
-  return { requiresRestart: result.data.requiresRestart ?? true }
 }
 
 interface DaemonMutateConfigResponse {

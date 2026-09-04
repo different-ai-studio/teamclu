@@ -352,24 +352,16 @@ fn default_transport_kind() -> TransportKind {
     TransportKind::Mqtt
 }
 
+/// `[agents.*]` — machine-level runtime settings.
+///
+/// pi is the only local agent runtime (#1247 / #1250): there is no
+/// `local_agent` selector any more, and `auto_discover` — which probed the host
+/// for an opencode binary — is gone with it. The legacy `claude_code` /
+/// `opencode` / `codex` / `cursor` / `claude` sections are still parsed so an
+/// existing daemon.toml loads, but nothing selects the backends they describe;
+/// they leave with those backends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentsConfig {
-    /// When true (default), amuxd probes the host for agent binaries on start
-    /// and writes missing `[agents.*]` sections to `daemon.toml`.
-    #[serde(default = "default_true")]
-    pub auto_discover: bool,
-    /// Local agent runtime backing this daemon: "opencode" (default), "pi",
-    /// "cursor", "claude-code", or "codex". Seeded from the desktop build config's
-    /// `localAgent` during onboarding. See `daemon::runtime_resolution::
-    /// configured_local_agent` for how this name is resolved to a runnable
-    /// backend — claude-code/codex additionally require their `[agents.*]`
-    /// config section to be present; an unrunnable selection resolves to
-    /// `AgentType::Unknown` rather than silently falling back to opencode.
-    /// Team-scoped (the team decides which runtime its agents run), so it
-    /// lives in `teams/<id>/state/team.toml` and is hydrated from there.
-    /// Never read from or written to daemon.toml.
-    #[serde(skip, default = "default_local_agent")]
-    pub local_agent: String,
     #[serde(default)]
     pub claude_code: Option<AgentBackendConfig>,
     #[serde(default)]
@@ -384,12 +376,24 @@ pub struct AgentsConfig {
     pub pi: Option<PiAgentConfig>,
 }
 
-/// pi backend settings (`agents.local_agent = "pi"`).
+/// `[agents.pi]` — the one runtime's settings.
+///
+/// amuxd manages both the Node and the pi package it runs
+/// (`node_install`, `pi_install`); these are developer overrides, read at
+/// spawn time. They are explicit paths, never searches.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PiAgentConfig {
-    /// Explicit pi binary path. Unset ⇒ discovery (`~/.pi/bin/pi`, then PATH /
-    /// well-known dirs). See `runtime::pi_rpc::process::resolve_binary`.
+    /// Run pi on this `node` instead of the amuxd-managed one.
+    #[serde(default)]
+    pub node: Option<String>,
+    /// Use this pi checkout (the directory holding pi's `package.json` and
+    /// `dist/`) instead of the amuxd-managed install.
+    #[serde(default)]
+    pub package_root: Option<String>,
+    /// Pre-#1250 override of the `pi` executable. Ignored: the daemon no longer
+    /// runs pi through its shim. Kept so an old daemon.toml still parses; a
+    /// warning at boot points at `package_root`.
     #[serde(default)]
     pub binary: Option<String>,
     /// Session process mode: `"host"` (default — one Node host per worktree
@@ -435,15 +439,9 @@ fn default_cursor_model() -> Option<String> {
     Some("composer-2.5".to_string())
 }
 
-fn default_local_agent() -> String {
-    "opencode".to_string()
-}
-
 impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
-            auto_discover: true,
-            local_agent: default_local_agent(),
             claude_code: None,
             opencode: None,
             codex: None,
@@ -881,7 +879,9 @@ mod channels_tests {
     #[test]
     fn agents_pi_section_parses_and_defaults_to_host() {
         // `[agents.pi] session_host = "rpc"` is the multi-session host's
-        // rollback switch; it must survive a daemon.toml round trip.
+        // rollback switch; `node` / `package_root` are the developer overrides
+        // for the managed runtime. All three must survive a daemon.toml round
+        // trip, and the pre-#1250 `binary` must still parse (it is ignored).
         let toml_src = r#"
 [actor]
 id = "d1"
@@ -891,11 +891,15 @@ name = "Mac"
 broker_url = "tcp://localhost:1883"
 
 [agents.pi]
+node = "/opt/node/bin/node"
+package_root = "/src/pi"
 binary = "/opt/custom/pi"
 session_host = "rpc"
 "#;
         let cfg: DaemonConfig = toml::from_str(toml_src).unwrap();
         let pi = cfg.agents.pi.as_ref().expect("[agents.pi] parsed");
+        assert_eq!(pi.node.as_deref(), Some("/opt/node/bin/node"));
+        assert_eq!(pi.package_root.as_deref(), Some("/src/pi"));
         assert_eq!(pi.binary.as_deref(), Some("/opt/custom/pi"));
         assert_eq!(pi.session_host.as_deref(), Some("rpc"));
 

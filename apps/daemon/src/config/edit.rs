@@ -132,20 +132,12 @@ pub fn flatten_config(path: &Path) -> anyhow::Result<Vec<(String, Value)>> {
     let root = read_config(path)?;
     let mut out = Vec::new();
     flatten_pairs(None, &root, &mut out);
-    // The team document, under its public spellings (`agents.local_agent`,
-    // `channels.*`, `team_share.*`). Best-effort: a broken team.toml must not
-    // take the whole settings list down with it.
+    // The team document (`channels.*`, `team_share.*`). Best-effort: a broken
+    // team.toml must not take the whole settings list down with it.
     if let Ok(team_root) = super::team_config::load_value(&crate::config::layout::active_team()) {
         let mut team_pairs = Vec::new();
         flatten_pairs(None, &team_root, &mut team_pairs);
-        for (key, value) in team_pairs {
-            let public = if key == "local_agent" || key.starts_with("local_agent.") {
-                format!("agents.{key}")
-            } else {
-                key
-            };
-            out.push((public, value));
-        }
+        out.extend(team_pairs);
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
@@ -198,14 +190,10 @@ fn doc_for_key(path: &Path, key: &str) -> anyhow::Result<Value> {
     }
 }
 
-/// `agents.local_agent` keeps its public spelling; in team.toml it is a root
-/// key. Non-team keys pass through unchanged.
+/// Team and daemon keys share one spelling; the split is only which document
+/// a key is read from and written to (`is_team_key`).
 fn doc_key(key: &str) -> &str {
-    if super::team_config::is_team_key(key) {
-        super::team_config::rewrite_team_key(key)
-    } else {
-        key
-    }
+    key
 }
 
 /// Parse a CLI-supplied value as TOML, falling back to a bare string.
