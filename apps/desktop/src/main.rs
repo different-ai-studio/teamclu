@@ -25,8 +25,14 @@ fn scrub_pii(
     Some(event)
 }
 
+/// `ucar-inc/teamclu-rust` (project 4512025501237248).
+///
+/// The previous DSN pointed at project 4511110362169344, which had been deleted
+/// from the org — desktop crash reports went nowhere for however long that had
+/// been true, and nothing surfaced the loss because a dead DSN fails silently
+/// at ingest rather than erroring in the client.
 const SENTRY_DSN: &str =
-    "https://f7626cc6e80f4561b1673dd027742714@o60909.ingest.us.sentry.io/4511110362169344";
+    "https://53fd6d3ad645819bb83e0a9404750690@o60909.ingest.us.sentry.io/4512025501237248";
 
 /// The DSN this build reports to, or `None` to report nowhere.
 ///
@@ -60,6 +66,13 @@ fn main() {
             release: sentry::release_name!(),
             // Crash reports need a stack and a release, not who was at the
             // keyboard. Default PII includes the OS username and the client IP.
+            //
+            // Sentry's onboarding snippet for a new Rust project ships
+            // `send_default_pii: true`. Do not paste that over this: SEC-4
+            // decided the desktop app does not send identity, and `scrub_pii`
+            // below exists to enforce it even for events an integration builds
+            // on its own. Flipping this is a privacy decision, not a config
+            // detail.
             send_default_pii: false,
             before_send: Some(std::sync::Arc::new(scrub_pii)),
             environment: Some(
