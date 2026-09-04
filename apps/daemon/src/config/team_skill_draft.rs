@@ -28,6 +28,8 @@ use super::managed_skill_writer::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EffectiveSkillSource {
+    /// Legacy: drafts no longer target the cache.
+    #[allow(dead_code)]
     HostedAgent,
     Member,
 }
@@ -41,19 +43,16 @@ impl EffectiveSkillSource {
     }
 }
 
-/// Resolve the pack directory OpenCode actually loads for one team slug.
+/// The working copy OpenCode and the Skills list must use: `~/.agents/skills`.
 ///
-/// Hosted-agent projection wins when present — same ordering as
-/// `team_skill_roots` and the desktop `effective_team_skill_dir`.
+/// `cloud/skills` is a remote snapshot cache. Drafts, inspect, and publish
+/// never write it.
 pub fn effective_team_skill_dir(
     team_id: &str,
     slug: &str,
     home: &Path,
 ) -> (PathBuf, EffectiveSkillSource) {
-    let hosted = team_cloud_skills_dir(team_id).join(slug);
-    if hosted.is_dir() {
-        return (hosted, EffectiveSkillSource::HostedAgent);
-    }
+    let _ = team_id;
     (
         home.join(".agents/skills").join(slug),
         EffectiveSkillSource::Member,
@@ -459,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_path_prefers_hosted_projection() {
+    fn effective_path_is_always_the_member_working_copy() {
         let home = tempfile::tempdir().unwrap();
         let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
         let team = "team-a";
@@ -473,8 +472,8 @@ mod tests {
         );
 
         let (path, source) = effective_team_skill_dir(team, slug, home.path());
-        assert_eq!(source, EffectiveSkillSource::HostedAgent);
-        assert_eq!(path, hosted);
+        assert_eq!(source, EffectiveSkillSource::Member);
+        assert_eq!(path, member);
     }
 
     #[test]

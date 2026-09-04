@@ -1,41 +1,9 @@
 //! Materialises the team skills a shared agent is supposed to have.
 //!
-//! Design: `docs/architecture/team-skills-registry.md` §8.1 / §8.2.
-//!
-//! An admin installing a skill onto a `visibility='team'` agent writes a server
-//! record and nothing else — their machine is not the machine that runs the
-//! agent. This is the other half: the daemon that *does* host the agent pulls
-//! the set it should have and makes the disk match.
-//!
-//! # Why a full diff and not an event feed
-//!
-//! Notifications get lost, daemons go offline, and an install can land while
-//! this process is not running at all. Anything that applies deltas drifts, and
-//! drift here means an agent quietly executing a version of a team procedure
-//! the team has retired. Recomputing the whole set costs a directory listing
-//! and cannot drift by construction; a lost notification only means the change
-//! lands on the next tick instead of immediately.
-//!
-//! # Why not `~/.agents/skills`
-//!
-//! That directory is the *desktop's* install root, and on a desktop machine the
-//! desktop is simultaneously reconciling it against the signed-in **member's**
-//! install set. This daemon reconciles against the **agent's** set. Two owners,
-//! one directory, and both remove packs that are not in their own desired set —
-//! they would delete each other's skills on alternating ticks, forever.
-//!
-//! So the daemon gets its own root under `~/.amuxd/teams/<id>/cloud/skills`,
-//! a sibling of the team MCP and env caches and outside every git worktree, and
-//! that root is added to [`crate::config::team_skill_roots`] so OpenCode and the
-//! Claude symlink bridge still see the packs.
-//!
-//! # No dirty protection here
-//!
-//! The desktop refuses to overwrite a pack a member edited locally. This does
-//! the opposite and overwrites unconditionally. Nobody on the host machine has
-//! standing to veto a team-level decision about a shared agent, and there is no
-//! one to ask — the admin who made the change is elsewhere and the daemon has
-//! no UI. The server record is the desired state, full stop (§4).
+//! `cloud/skills` is a **remote snapshot cache**: pull the registry zip, keep
+//! it for dirty comparison. The working copy OpenCode loads is
+//! `~/.agents/skills`. Cache updates overwrite unconditionally. Working-copy
+//! updates skip a dirty pack so a local draft is not clobbered.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -185,19 +153,10 @@ impl TeamSkillReconciler {
         for row in rows.iter().filter(|r| r.installed) {
             let want = desired_version(row);
             let target = root.join(&row.slug);
-            // A pack whose recorded version we cannot read is reinstalled
-            // rather than trusted: one redundant download beats leaving content
-            // of unknown provenance in front of an agent.
+            // The cache is a remote snapshot: always match the server, even if
+            // something mutated the files. Dirty protection belongs on the
+            // working copy (`~/.agents/skills`), not here.
             if on_disk.get(&row.slug).copied() != Some(want) {
-                if is_dirty_pack(&target) {
-                    tracing::info!(
-                        team_id,
-                        slug = %row.slug,
-                        want,
-                        "team skill auto-follow held back by local draft"
-                    );
-                    continue;
-                }
                 match self.install(team_id, root, row, want).await {
                     Ok(()) => {
                         outcome.installed += 1;
@@ -209,6 +168,7 @@ impl TeamSkillReconciler {
                     }
                 }
             }
+            sync_working_copy_from_cache(team_id, &row.slug, &target);
 
             // Report the version actually on disk back to the server. Auto-follow
             // moves packs on its own, so nothing else ever advances
@@ -240,21 +200,13 @@ impl TeamSkillReconciler {
                 continue;
             }
             let dir = root.join(slug);
-            if is_dirty_pack(&dir) {
-                match archive_removed_pack(team_id, &dir, slug) {
-                    Ok(()) => outcome.removed += 1,
-                    Err(e) => {
-                        tracing::warn!(team_id, slug = %slug, error = %e, "team skill archive failed");
-                    }
-                }
-                continue;
-            }
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => outcome.removed += 1,
                 Err(e) => {
                     tracing::warn!(team_id, slug = %slug, error = %e, "team skill removal failed");
                 }
             }
+            remove_working_copy_if_ours(team_id, slug);
         }
 
         outcome
@@ -543,6 +495,72 @@ fn merge_refresh_targets(
 
 /// Which packs are in this root, and at what version, from each pack's own
 /// `origin.json`.
+fn working_copy_dir(slug: &str) -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".agents").join("skills").join(slug))
+}
+
+/// Mirror the cache into `~/.agents/skills` when that working copy is not a
+/// local draft. Personal / foreign packs are left alone.
+fn sync_working_copy_from_cache(team_id: &str, slug: &str, cache: &Path) {
+    if !cache.is_dir() {
+        return;
+    }
+    let Some(work) = working_copy_dir(slug) else {
+        return;
+    };
+    if work.is_dir() {
+        if is_dirty_pack(&work) {
+            return;
+        }
+        match read_origin(&work) {
+            Some(origin)
+                if origin.registry != SOURCE_TEAM
+                    || origin
+                        .team_id
+                        .as_deref()
+                        .is_some_and(|have| have != team_id) =>
+            {
+                return;
+            }
+            None => return,
+            Some(_) => {}
+        }
+    }
+    if let Err(e) = commit_staged_pack(&work, cache) {
+        tracing::warn!(
+            team_id,
+            slug,
+            error = %e,
+            "failed to sync team skill working copy from cache"
+        );
+    }
+}
+
+fn remove_working_copy_if_ours(team_id: &str, slug: &str) {
+    let Some(work) = working_copy_dir(slug) else {
+        return;
+    };
+    if !work.is_dir() {
+        return;
+    }
+    let Some(origin) = read_origin(&work) else {
+        return;
+    };
+    if origin.registry != SOURCE_TEAM || origin.team_id.as_deref().is_some_and(|have| have != team_id)
+    {
+        return;
+    }
+    if is_dirty_pack(&work) {
+        if let Err(e) = archive_removed_pack(team_id, &work, slug) {
+            tracing::warn!(team_id, slug, error = %e, "team skill working-copy archive failed");
+        }
+        return;
+    }
+    if let Err(e) = std::fs::remove_dir_all(&work) {
+        tracing::warn!(team_id, slug, error = %e, "team skill working-copy removal failed");
+    }
+}
+
 fn installed_versions(root: &Path) -> HashMap<String, i64> {
     let mut out = HashMap::new();
     let Ok(entries) = std::fs::read_dir(root) else {

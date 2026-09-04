@@ -158,8 +158,8 @@ pub struct TeamSkillInspectResult {
     /// its own right: the publish path measures the whole directory, so these
     /// ship with the next version.
     pub added: Vec<String>,
-    /// `hosted-agent` when this is the daemon projection OpenCode ranks first;
-    /// `member` for `~/.agents/skills`.
+    /// `member` for the working copy at `~/.agents/skills`. `hosted-agent` is
+    /// legacy: the cloud cache is no longer inspect's target.
     pub source: String,
 }
 

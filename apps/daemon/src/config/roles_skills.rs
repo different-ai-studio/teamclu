@@ -297,25 +297,11 @@ fn remap_team_skill_path(workspace_path: &Path, path: PathBuf, team_id: &str) ->
 /// Code, and an empty list makes the bridge prune every team symlink it had.
 pub fn team_skill_roots(workspace_path: &Path) -> Vec<PathBuf> {
     let mut roots = collect_team_skill_paths(workspace_path);
-    // The daemon's own install root, for skills an admin assigned to this
-    // hosted agent. Separate from `~/.agents/skills` because that one belongs
-    // to the desktop's member-side reconcile — see `runtime::team_skills` for
-    // why sharing it would make the two loops delete each other's packs.
-    //
-    // Ordered *before* `~/.agents/skills`, and that ordering is the whole
-    // point: consumers resolve a slug collision by taking the first root that
-    // has it. On a machine that both hosts a shared agent and is signed in as a
-    // member, the same slug exists twice — once at the version an admin
-    // assigned to the agent, once at whatever the member happens to have,
-    // possibly edited and held back by a conflict. Putting the member's copy
-    // first would let a private edit decide what a team agent executes, which
-    // is exactly the veto the agent-side reconcile refuses to grant.
-    if let Some(team_id) = onboarded_team_id() {
-        let agent_dir = crate::runtime::team_skills::team_cloud_skills_dir(&team_id);
-        if agent_dir.is_dir() && !roots.contains(&agent_dir) {
-            roots.push(agent_dir);
-        }
-    }
+    // Hosted `cloud/skills` is a remote snapshot cache, not a runtime root.
+    // OpenCode loads `~/.agents/skills` only; putting the cache on
+    // `skills.paths` made the agent (and the Skills list) prefer it over the
+    // working copy, so drafts landed in a directory the next reconcile could
+    // overwrite.
     if let Some(home) = dirs::home_dir() {
         let registry_dir = home.join(".agents/skills");
         if registry_dir.is_dir() && !roots.contains(&registry_dir) {

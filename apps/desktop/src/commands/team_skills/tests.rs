@@ -91,7 +91,7 @@ fn write_installed_skill(path: &std::path::Path, team_id: &str, version: i64) {
 }
 
 #[test]
-fn effective_copy_prefers_the_active_hosted_agent_projection() {
+fn effective_copy_is_always_the_member_working_copy() {
     let home = tempfile::tempdir().expect("tempdir");
     let _home = crate::test_home::HomeGuard::set(home.path());
     set_active_team("team-a");
@@ -101,12 +101,12 @@ fn effective_copy_prefers_the_active_hosted_agent_projection() {
     write_installed_skill(&hosted, "team-a", 2);
 
     let (resolved, source) = effective_team_skill_dir("say-hello", Some("team-a")).unwrap();
-    assert_eq!(resolved, hosted);
-    assert_eq!(source, EffectiveSkillSource::HostedAgent);
+    assert_eq!(resolved, member);
+    assert_eq!(source, EffectiveSkillSource::Member);
 }
 
 #[test]
-fn inspection_and_rebaseline_use_the_same_hosted_copy() {
+fn inspect_ignores_hosted_cache_edits_and_tracks_the_working_copy() {
     let home = tempfile::tempdir().expect("tempdir");
     let _home = crate::test_home::HomeGuard::set(home.path());
     set_active_team("team-a");
@@ -120,18 +120,29 @@ fn inspection_and_rebaseline_use_the_same_hosted_copy() {
     )
     .unwrap();
 
-    let before = inspect_team_skill("say-hello".into(), Some(2), Some("team-a".into()), None)
-        .expect("inspect hosted edit");
-    assert_eq!(before.state, "dirty");
-    assert_eq!(before.source, "hosted-agent");
-    assert_eq!(before.modified, vec!["SKILL.md"]);
+    let hosted_only = inspect_team_skill("say-hello".into(), Some(2), Some("team-a".into()), None)
+        .expect("inspect after hosted-only edit");
+    assert_eq!(hosted_only.state, "clean");
+    assert_eq!(hosted_only.source, "member");
+    assert!(hosted_only.modified.is_empty());
+
+    std::fs::write(
+        member.join("SKILL.md"),
+        "---\nname: say-hello\n---\nhello, bertrand\n",
+    )
+    .unwrap();
+    let local_edit = inspect_team_skill("say-hello".into(), Some(2), Some("team-a".into()), None)
+        .expect("inspect after working-copy edit");
+    assert_eq!(local_edit.state, "dirty");
+    assert_eq!(local_edit.source, "member");
+    assert_eq!(local_edit.modified, vec!["SKILL.md"]);
 
     let result = team_skill_rebaseline_blocking(rebaseline_request("say-hello", 3))
-        .expect("rebaseline hosted edit");
-    assert_eq!(std::path::PathBuf::from(result.path), hosted);
-    assert_eq!(read_origin(&hosted).unwrap().installed_version, "3");
-    assert_eq!(installed_state(&hosted), DirtyState::Clean);
-    assert_eq!(read_origin(&member).unwrap().installed_version, "2");
+        .expect("rebaseline working copy");
+    assert_eq!(std::path::PathBuf::from(result.path), member);
+    assert_eq!(read_origin(&member).unwrap().installed_version, "3");
+    assert_eq!(installed_state(&member), DirtyState::Clean);
+    assert_eq!(read_origin(&hosted).unwrap().installed_version, "2");
 }
 
 /// A workspace `opencode.json` carrying a decision about `deploy-check`.

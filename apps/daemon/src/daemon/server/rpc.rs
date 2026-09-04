@@ -38,7 +38,9 @@ async fn skill_inventory(
         .team_skills(team_id)
         .await
         .map_err(|e| e.to_string())?;
-    let root = crate::runtime::team_skills::team_cloud_skills_dir(team_id);
+    let root = dirs::home_dir()
+        .map(|home| home.join(".agents").join("skills"))
+        .unwrap_or_else(|| crate::runtime::team_skills::team_cloud_skills_dir(team_id));
     let mut items = Vec::new();
     let claimed = claimed_slugs(&desired);
     for row in desired.into_iter().filter(|row| row.installed) {
