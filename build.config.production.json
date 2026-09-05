@@ -7,7 +7,6 @@
     "shortName": "teamclu",
     "updater": {
       "endpoints": [
-        "__OSS_BASE_URL__/releases/latest.json",
         "https://github.com/different-ai-studio/teamclu/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFEMDg3REY5MEI2RDAyMzMKUldRekFtMEwrWDBJSFhTdHYvbStkclEvTEVRNFlpZExxSHNTSTA2V2ZHS0xPUEZ4WnF5d2RxQ0gK"
