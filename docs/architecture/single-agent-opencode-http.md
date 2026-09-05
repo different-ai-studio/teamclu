@@ -1,5 +1,7 @@
 # 单 Agent 化：官方 opencode + HTTP 集成迁移方案
 
+> **已废弃（2026-09）.** 本地 runtime 已迁移至 pi-only（ADR-0014）。本文档保留作历史参考；现行架构见 `docs/architecture/pi-agent-backend.md`。
+
 > 状态：设计稿（2026-07-22）。决策背景：放弃多 agent（claude/codex/opencode over
 > Zed ACP）兼容，仅保留**官方 sst/opencode**（不再维护 fork），amuxd 通过
 > `opencode serve` HTTP API 驱动。附带一项客户端传输层合并改造（本机直连优先）。

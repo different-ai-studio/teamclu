@@ -294,16 +294,39 @@ pub fn cleanup_runtime_artifacts() {
     let _ = fs::remove_file(DaemonConfig::http_port_path());
 }
 
-/// Kill leftover `opencode serve` process group (and best-effort MCP) so a
-/// prior crashed/hard-killed daemon cannot block the next start.
-pub fn reap_managed_agent_trees(
-) -> crate::runtime::opencode_http::process_registry::ReapReport {
-    let report = crate::runtime::opencode_http::process_registry::ServeProcessRegistry::default()
-        .reap_all();
+/// Best-effort cleanup report for managed agent process trees left by a prior
+/// daemon instance. Pi-only: no registry; legacy opencode pgid files may still
+/// be reaped for compatibility.
+#[derive(Default, Debug)]
+pub struct ManagedProcessReapReport {
+    pub reaped: Vec<String>,
+    pub stale_or_reused: Vec<String>,
+    pub survivors: Vec<ManagedProcessSurvivor>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagedProcessSurvivor {
+    pub generation_id: String,
+    pub pgid: u32,
+}
+
+impl ManagedProcessReapReport {
+    pub fn registered_count(&self) -> usize {
+        0
+    }
+
+    pub fn has_survivors(&self) -> bool {
+        !self.survivors.is_empty()
+    }
+}
+
+/// Kill leftover managed agent process groups (legacy opencode pgid files and
+/// best-effort MCP) so a prior crashed/hard-killed daemon cannot block start.
+pub fn reap_managed_agent_trees() -> ManagedProcessReapReport {
+    let mut report = ManagedProcessReapReport::default();
     #[cfg(unix)]
     {
-        // Read compatibility for the pre-registry single-PGID file. New serve
-        // generations only write opencode-pgids.json.
+        // Read compatibility for the pre-registry single-PGID file.
         reap_opencode_pgid_file();
         reap_remote_tools_mcp_best_effort();
     }
@@ -338,10 +361,7 @@ fn finalize_stop() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn log_managed_process_cleanup(
-    phase: &str,
-    report: &crate::runtime::opencode_http::process_registry::ReapReport,
-) {
+fn log_managed_process_cleanup(phase: &str, report: &ManagedProcessReapReport) {
     println!(
         "managed_process_cleanup phase={phase} registered={} reaped={} stale={} survivors={}",
         report.registered_count(),
@@ -351,9 +371,7 @@ fn log_managed_process_cleanup(
     );
 }
 
-fn managed_process_survivor_error(
-    report: &crate::runtime::opencode_http::process_registry::ReapReport,
-) -> anyhow::Error {
+fn managed_process_survivor_error(report: &ManagedProcessReapReport) -> anyhow::Error {
     let home = teamclu_runtime_env::amuxd_home_from_env();
     let details: Vec<String> = report
         .survivors
@@ -361,7 +379,7 @@ fn managed_process_survivor_error(
         .map(|group| format!("generation={} pgid={}", group.generation_id, group.pgid))
         .collect();
     anyhow::anyhow!(
-        "managed opencode process groups still alive after cleanup at {}: {}. \
+        "managed agent process groups still alive after cleanup at {}: {}. \
          Stop them manually or investigate why SIGKILL did not terminate the group.",
         home.display(),
         details.join(", "),
@@ -632,254 +650,6 @@ fn request_graceful_stop(pid: i32) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::opencode_http::process_registry::{
-        test_clear_survivor_pgids, test_mark_survivor_pgid, ServeProcessRegistry,
-    };
-
-    struct SurvivorGuard;
-
-    impl Drop for SurvivorGuard {
-        fn drop(&mut self) {
-            test_clear_survivor_pgids();
-        }
-    }
-
-    #[cfg(unix)]
-    fn spawn_fake_opencode_serve(
-        home: &std::path::Path,
-    ) -> (std::process::Child, u32) {
-        use std::os::unix::fs::PermissionsExt;
-        use std::os::unix::process::CommandExt;
-
-        let binary = home.join("opencode");
-        std::fs::write(&binary, "#!/bin/sh\nsleep 30\n").unwrap();
-        let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&binary, permissions).unwrap();
-        let mut child = std::process::Command::new(&binary)
-            .arg("serve")
-            .process_group(0)
-            .spawn()
-            .unwrap();
-        let pgid = child.id();
-        // Do not hand back a fake the reaper cannot recognise yet: between
-        // `fork` and `execve` the child's `/proc/<pid>/cmdline` is empty, and a
-        // reap in that window reports `StaleOrReused` instead of `Reaped`. The
-        // deadline is a stuck-process guard, not a latency estimate — this
-        // normally settles in well under a millisecond.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while std::time::Instant::now() < deadline
-            && !crate::runtime::opencode_http::process_registry::test_group_is_verifiable(pgid)
-        {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        (child, pgid)
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn daemon_start_preparation_reaps_a_leftover_registered_group() {
-        use std::os::unix::process::CommandExt;
-
-        let _home_guard = crate::config::global_team_store::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous_home = std::env::var_os("HOME");
-        let home = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", home.path()) };
-
-        let (mut child, pgid) = spawn_fake_opencode_serve(home.path());
-        ServeProcessRegistry::default()
-            .register("previous-daemon", pgid)
-            .unwrap();
-        prepare_daemon_start().expect("start preparation should succeed after cleanup");
-
-        let _ = child.wait();
-
-        assert!(
-            !process_group_alive(i32::try_from(pgid).unwrap()),
-            "start preparation must reap the previous daemon's serve group"
-        );
-        assert!(
-            ServeProcessRegistry::default().snapshot().is_empty(),
-            "reaped groups must be removed from the registry"
-        );
-
-        match previous_home {
-            Some(home) => unsafe { std::env::set_var("HOME", home) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn stop_without_pidfile_still_reaps_registered_groups() {
-        let _home_guard = crate::config::global_team_store::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous_home = std::env::var_os("HOME");
-        let home = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", home.path()) };
-
-        let pid_path = DaemonConfig::pid_path();
-        let _ = fs::remove_file(&pid_path);
-        let (mut child, pgid) = spawn_fake_opencode_serve(home.path());
-        ServeProcessRegistry::default()
-            .register("orphan", pgid)
-            .unwrap();
-
-        run_stop().expect("stop without pidfile should succeed when cleanup succeeds");
-
-        let _ = child.wait();
-        assert!(
-            ServeProcessRegistry::default().snapshot().is_empty(),
-            "stop must reap registry entries even without a pidfile"
-        );
-
-        match previous_home {
-            Some(home) => unsafe { std::env::set_var("HOME", home) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn stop_with_stale_pidfile_still_reaps_registered_groups() {
-        let _home_guard = crate::config::global_team_store::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous_home = std::env::var_os("HOME");
-        let home = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", home.path()) };
-
-        let pid_path = DaemonConfig::pid_path();
-        if let Some(parent) = pid_path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(&pid_path, "999999").unwrap();
-        let (mut child, pgid) = spawn_fake_opencode_serve(home.path());
-        ServeProcessRegistry::default()
-            .register("orphan", pgid)
-            .unwrap();
-
-        run_stop().expect("stop with stale pidfile should succeed when cleanup succeeds");
-
-        let _ = child.wait();
-        assert!(
-            ServeProcessRegistry::default().snapshot().is_empty(),
-            "stop must reap registry entries when pidfile is stale"
-        );
-
-        match previous_home {
-            Some(home) => unsafe { std::env::set_var("HOME", home) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn branded_amuxd_home_only_reaps_that_registry() {
-        let _home_guard = crate::config::global_team_store::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous_home = std::env::var_os("HOME");
-        let previous_amuxd_home = std::env::var_os(teamclu_runtime_env::AMUXD_HOME_ENV);
-        let home = tempfile::tempdir().unwrap();
-        let branded = home.path().join(".amuxd-copilot361");
-        unsafe { std::env::set_var("HOME", home.path()) };
-        unsafe { std::env::set_var(teamclu_runtime_env::AMUXD_HOME_ENV, &branded) };
-
-        let (mut child, pgid) = spawn_fake_opencode_serve(home.path());
-        ServeProcessRegistry::default()
-            .register("branded", pgid)
-            .unwrap();
-
-        let report = reap_managed_agent_trees();
-        let _ = child.wait();
-
-        assert_eq!(report.reaped.len(), 1);
-        assert_eq!(report.reaped[0].generation_id, "branded");
-        assert!(ServeProcessRegistry::default().snapshot().is_empty());
-        assert!(branded.join("opencode-pgids.json").exists());
-
-        match previous_amuxd_home {
-            Some(path) => unsafe { std::env::set_var(teamclu_runtime_env::AMUXD_HOME_ENV, path) },
-            None => unsafe { std::env::remove_var(teamclu_runtime_env::AMUXD_HOME_ENV) },
-        }
-        match previous_home {
-            Some(home) => unsafe { std::env::set_var("HOME", home) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn start_refuses_when_survivors_remain() {
-        let _guard = SurvivorGuard;
-        let _home_guard = crate::config::global_team_store::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous_home = std::env::var_os("HOME");
-        let home = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", home.path()) };
-
-        let (mut child, pgid) = spawn_fake_opencode_serve(home.path());
-        ServeProcessRegistry::default()
-            .register("stubborn", pgid)
-            .unwrap();
-        test_mark_survivor_pgid(pgid);
-
-        let error = prepare_daemon_start().expect_err("start must fail when survivors remain");
-        assert!(
-            error.to_string().contains("managed opencode process groups still alive"),
-            "unexpected error: {error}"
-        );
-        assert_eq!(
-            ServeProcessRegistry::default().snapshot().get("stubborn"),
-            Some(&pgid)
-        );
-        let _ = child.kill();
-        let _ = child.wait();
-
-        match previous_home {
-            Some(home) => unsafe { std::env::set_var("HOME", home) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn stop_returns_error_when_survivors_remain() {
-        let _guard = SurvivorGuard;
-        let _home_guard = crate::config::global_team_store::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous_home = std::env::var_os("HOME");
-        let home = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", home.path()) };
-
-        let pid_path = DaemonConfig::pid_path();
-        let _ = fs::remove_file(&pid_path);
-        let (mut child, pgid) = spawn_fake_opencode_serve(home.path());
-        ServeProcessRegistry::default()
-            .register("stubborn", pgid)
-            .unwrap();
-        test_mark_survivor_pgid(pgid);
-
-        let error = run_stop().expect_err("stop must fail when survivors remain");
-        assert!(
-            error.to_string().contains("managed opencode process groups still alive"),
-            "unexpected error: {error}"
-        );
-
-        let _ = child.kill();
-        let _ = child.wait();
-
-        match previous_home {
-            Some(home) => unsafe { std::env::set_var("HOME", home) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-    }
 
     #[test]
     fn daemon_lock_is_exclusive_until_guard_is_dropped() {

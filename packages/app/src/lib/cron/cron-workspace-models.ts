@@ -72,18 +72,8 @@ export interface CronModelGroup {
   models: CronModelOption[]
 }
 
-function cronBackendFromAgentType(agentType: AgentType): string {
-  switch (agentType) {
-    case AgentType.CLAUDE_CODE:
-      return 'claude'
-    case AgentType.PI:
-      return 'pi'
-    case AgentType.CURSOR:
-      return 'cursor'
-    case AgentType.OPENCODE:
-    default:
-      return 'opencode'
-  }
+function cronBackendFromAgentType(_agentType: AgentType): string {
+  return 'pi'
 }
 
 function uniqueRuntimeEntries(): RuntimeStateEntry[] {
@@ -145,7 +135,7 @@ async function modelsFromCatalogFallback(
   const catalog = await getDaemonModelCatalog(encodeWorkspaceId(workspacePath))
   if (catalog === null) return null
 
-  const backendId = preferBackend ?? catalog.automation_default_backend ?? 'opencode'
+  const backendId = preferBackend ?? catalog.automation_default_backend ?? 'pi'
   const slice = catalog.backends.find((b) => b.backend === backendId)
   if (!slice || slice.models.length === 0) {
     return { groups: [], automationDefaultBackend: catalog.automation_default_backend }

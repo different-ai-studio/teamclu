@@ -479,15 +479,6 @@ impl DaemonServer {
                                         &handle.acp_session_id,
                                         leaf.as_deref(),
                                     );
-                            } else if handle.agent_type == amux::AgentType::Opencode {
-                                let message_id = backend
-                                    .completed_turn_opencode_message_id(&handle.acp_session_id);
-                                metadata_json =
-                                    crate::runtime::backend_session_metadata::stamp_opencode_backend_session_metadata(
-                                        &metadata_json,
-                                        &handle.acp_session_id,
-                                        message_id.as_deref(),
-                                    );
                             }
                         }
                     }

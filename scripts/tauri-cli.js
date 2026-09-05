@@ -6,17 +6,12 @@ const path = require("path");
 const { createRustBuildEnv } = require("./rust-build-env");
 const { ensureTeamcluIntrospectSidecar } = require("./ensure-introspect-sidecar");
 const { ensureAmuxdSidecar } = require("./ensure-amuxd-sidecar");
-const {
-  ensureAgentBridgeBundles,
-  extractTargetFromArgv,
-} = require("./ensure-agent-bridge-bundles");
 const { applyDevSkipFlags } = require("./lib/dev-flags");
 const { platform } = process;
 
 let args = process.argv.slice(2);
 const isWindows = platform === "win32";
 const sub = args[0];
-const bridgeTarget = extractTargetFromArgv(args);
 
 // On Windows, dev/build must use --no-default-features to avoid wmi/windows-core conflict (p2p/iroh).
 // Strip any --features p2p so the broken dependency is not pulled in.
@@ -43,10 +38,6 @@ const env = createRustBuildEnv(process.env, __dirname);
 args = applyDevSkipFlags(args, env);
 ensureTeamcluIntrospectSidecar(env, { logPrefix: "[tauri-cli]" });
 ensureAmuxdSidecar(env, { logPrefix: "[tauri-cli]" });
-ensureAgentBridgeBundles(env, {
-  logPrefix: "[tauri-cli]",
-  target: bridgeTarget,
-});
 
 const desktopDir = path.resolve(__dirname, "..", "apps", "desktop");
 const child = spawn("pnpm", ["exec", "tauri", ...args], {

@@ -10,15 +10,9 @@ import {
   Star,
   LifeBuoy,
 } from 'lucide-react'
-import {
-  ClaudeMark,
-  CursorMark,
-  OpencodeMark,
-  PiAgentMark,
-} from '@/components/icons/agent-brand-icons'
+import { PiAgentMark } from '@/components/icons/agent-brand-icons'
 import { toast } from 'sonner'
 import type { ActorRow } from '@/stores/actor-directory-store'
-import { amuxAgentTypeFromBackend } from '@/lib/agent/amux-agent-type'
 import { useUIStore } from '@/stores/ui'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
@@ -78,32 +72,19 @@ function RuntimeStatusDot({
  * ever populate `agent_types` (what the daemon actually advertises), so that
  * array is the primary signal and `default_agent_type` is just a tie-breaker.
  */
-function resolveActorAgentType(actor: Pick<ActorRow, 'default_agent_type' | 'agent_types'>) {
-  return (
-    amuxAgentTypeFromBackend(actor.default_agent_type) ??
-    actor.agent_types?.map((t) => amuxAgentTypeFromBackend(t)).find((t): t is NonNullable<typeof t> => !!t) ??
-    null
-  )
+function resolveActorAgentType(_actor: Pick<ActorRow, 'default_agent_type' | 'agent_types'>) {
+  return 'pi' as const
 }
 
 /**
- * Distinguishes the local agent's runtime at a glance in the sidebar avatar —
- * each backend gets its own mark instead of a generic bot icon.
+ * Local agent runtime mark — pi is the only backend.
  */
 function AgentTypeIcon({ agentType }: { agentType?: string | null }) {
   const className = 'h-4 w-4'
-  switch (agentType) {
-    case 'claude-code':
-      return <ClaudeMark className={className} />
-    case 'opencode':
-      return <OpencodeMark className={className} />
-    case 'cursor':
-      return <CursorMark className={className} />
-    case 'pi':
-      return <PiAgentMark className={className} />
-    default:
-      return <Bot className={className} strokeWidth={2} />
+  if (agentType === 'pi') {
+    return <PiAgentMark className={className} />
   }
+  return <Bot className={className} strokeWidth={2} />
 }
 
 /**

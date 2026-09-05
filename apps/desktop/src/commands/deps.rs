@@ -230,10 +230,8 @@ fn requires_brew(name: &str) -> bool {
 
 /// Installed vs available version of one dependency, for the Dependencies UI.
 ///
-/// Shared by opencode and pi even though "available" means different things:
-/// opencode's comes off the mirror manifest (a moving target, network), pi's is
-/// the minimum `pi.lock.json` pins (fixed, offline). The UI only needs "is
-/// there something to update to", which both answer.
+/// Shared by pi even though "available" means the pinned `pi.lock.json`
+/// minimum (fixed, offline). The UI only needs "is there something to update to".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DependencyVersions {

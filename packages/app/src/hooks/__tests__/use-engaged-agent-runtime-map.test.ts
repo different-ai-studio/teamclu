@@ -55,7 +55,7 @@ describe('useEngagedAgentRuntimeMap', () => {
     )
 
     expect(result.current.agentToRuntimeId.get('a-1')).toBe('displayed-session')
-    expect(result.current.agentToBackendType.get('a-1')).toBe('opencode')
+    expect(result.current.agentToBackendType.get('a-1')).toBe('pi')
   })
 
   it('does not leak another session\'s attachment', () => {

@@ -1,11 +1,8 @@
 //! Backend-neutral local agent runtime abstraction.
 //!
-//! `RuntimeManager` talks to a local agent runtime (today: the global
-//! `opencode serve` HTTP backend in `runtime/opencode_http/`; future: the pi
-//! RPC backend, see `docs/architecture/pi-agent-backend.md`) exclusively
-//! through the [`AgentBackend`] trait. The per-session channel types
-//! ([`AcpCommand`], [`AcpStartupMetadata`], and `AcpEventFrame` in
-//! `runtime/acp_event_frame.rs`) are shared across backends and therefore
+//! `RuntimeManager` talks to the pi RPC backend exclusively through the
+//! [`AgentBackend`] trait. Shared channel types ([`AcpCommand`],
+//! [`AcpStartupMetadata`], and `AcpEventFrame` in `runtime/acp_event_frame.rs`)
 //! live here rather than inside a specific backend module.
 
 use std::collections::HashMap;
@@ -20,7 +17,6 @@ use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 use crate::runtime::permission_policy::PermissionPolicy;
 
 use super::manager::AgentLaunchConfig;
-use super::opencode_http::OpencodeHost;
 
 // ---------------------------------------------------------------------------
 // Shared channel types (backend-neutral)
@@ -44,8 +40,7 @@ pub enum AcpCommand {
         permission: PermissionPolicy,
         /// When resuming, fail instead of falling back to a new session.
         forbid_new_session_fallback: bool,
-        /// TeamClu cloud session this attachment belongs to. Read by the
-        /// sidecar backends only (#1247).
+        /// TeamClu cloud session this attachment belongs to.
         #[allow(dead_code)]
         teamclu_session_id: String,
     },
@@ -97,25 +92,9 @@ pub struct AcpStartupMetadata {
     pub initial_model: Option<String>,
     pub acp_session_id: String,
     pub host_generation_id: String,
-    pub(crate) route_lease: Option<super::opencode_http::host_pool::RouteLease>,
-}
-
-impl AcpStartupMetadata {
-    /// opencode host-pool leases only (#1247).
-    #[allow(dead_code)]
-    pub(crate) fn with_route_lease(
-        mut self,
-        route_lease: super::opencode_http::host_pool::RouteLease,
-    ) -> Self {
-        self.route_lease = Some(route_lease);
-        self
-    }
 }
 
 /// Inputs for lazy thread fork at first runtimeStart on a thread session.
-///
-/// Carries what every backend's fork needed; pi reads `fork_leaf_id`, the
-/// rest are the opencode fields (#1247).
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForkSpec {
@@ -124,8 +103,6 @@ pub struct ForkSpec {
     pub root_message_id: String,
     pub worktree: String,
     pub fork_leaf_id: Option<String>,
-    /// opencode `messageID` (`^msg…`) for `POST /session/{id}/fork`.
-    pub fork_opencode_message_id: Option<String>,
     pub isolation_domain: IsolationDomainKey,
     pub process_env_revision: ProcessEnvRevision,
     pub extra_env: HashMap<String, String>,
@@ -137,10 +114,6 @@ pub struct ForkSpec {
 // ---------------------------------------------------------------------------
 
 /// Local agent runtime backend surface consumed by `RuntimeManager`.
-///
-/// Mirrors the historical `OpencodeHost` API one-to-one so the opencode HTTP
-/// backend is a zero-behavior-change adaptation; a future pi RPC backend
-/// implements the same surface.
 #[async_trait]
 pub trait AgentBackend: Send {
     /// Bind a TeamClu runtime to a backend session (create or resume).
@@ -201,23 +174,12 @@ pub trait AgentBackend: Send {
     /// pick up provider auth/config changes. Returns the number removed.
     fn evict_agent_types(&mut self, agent_types: &[amux::AgentType]) -> usize;
 
-    fn invalidate_workspace_host(&mut self, _domain: &IsolationDomainKey) -> bool {
-        self.evict_agent_types(&[amux::AgentType::Opencode]) > 0
-    }
+    fn invalidate_workspace_host(&mut self, domain: &IsolationDomainKey) -> bool;
 
-    fn invalidate_all_workspace_hosts(&mut self) -> usize {
-        self.evict_agent_types(&[amux::AgentType::Opencode])
-    }
+    fn invalidate_all_workspace_hosts(&mut self) -> usize;
 
     /// Permanently retire backend processes and background tasks during daemon exit.
-    async fn shutdown_for_exit(&mut self) -> usize {
-        self.evict_agent_types(&[
-            amux::AgentType::Opencode,
-            amux::AgentType::Pi,
-            amux::AgentType::Cursor,
-            amux::AgentType::ClaudeCode,
-        ])
-    }
+    async fn shutdown_for_exit(&mut self) -> usize;
 
     /// Number of live backend processes.
     fn host_count(&self) -> usize;
@@ -242,17 +204,6 @@ pub trait AgentBackend: Send {
     /// pi provider auth — the settings pane's `/login`, `/logout`, catalog
     /// refresh and custom-provider edits, forwarded to a pi host as one
     /// `auth_*` command.
-    ///
-    /// Device-wide, not session-scoped: pi keeps one `auth.json` and one
-    /// `models.json` per device, so this needs *a* host but no session, the
-    /// same way `model_catalog` does. `workspace_path` only says which worktree
-    /// to bring a host up in when none is live.
-    ///
-    /// The default is an error, deliberately, and not a silent empty success:
-    /// no other backend has this surface — opencode configures providers
-    /// through `opencode.json` and its own serve API, cursor and claude-code
-    /// drive vendor accounts — so a caller reaching here has the wrong runtime
-    /// and needs to be told.
     async fn pi_auth_request(
         &mut self,
         workspace_path: &Path,
@@ -264,12 +215,6 @@ pub trait AgentBackend: Send {
         ))
     }
 
-    fn opencode_host_pool(
-        &self,
-    ) -> Option<std::sync::Arc<super::opencode_http::host_pool::OpenCodeHostPool>> {
-        None
-    }
-
     fn attach_context_service(
         &mut self,
         _service: std::sync::Arc<super::context_service::RuntimeContextService>,
@@ -277,8 +222,6 @@ pub trait AgentBackend: Send {
     }
 
     /// Fork a backend session at an anchor message (thread lazy attach).
-    /// Pi implements via `createBranchedSession`; other backends may override
-    /// or return an error until implemented.
     async fn fork_session_at(&mut self, spec: ForkSpec) -> crate::error::Result<String> {
         let _ = spec;
         Err(crate::error::AmuxError::Agent(
@@ -290,204 +233,9 @@ pub trait AgentBackend: Send {
     fn completed_turn_leaf_id(&self, _acp_session_id: &str) -> Option<String> {
         None
     }
-
-    /// Latest opencode assistant `messageID` after a completed turn (thread fork anchor).
-    fn completed_turn_opencode_message_id(&self, _acp_session_id: &str) -> Option<String> {
-        None
-    }
 }
 
-// ---------------------------------------------------------------------------
-// OpencodeHttpBackend — thin adapter over the existing OpencodeHost
-// ---------------------------------------------------------------------------
-
-/// The opencode serve HTTP backend (`runtime/opencode_http/`) behind the
-/// backend-neutral trait. Not constructed any more (#1247).
-#[allow(dead_code)]
-pub struct OpencodeHttpBackend {
-    host: OpencodeHost,
-}
-
-#[allow(dead_code)]
-impl OpencodeHttpBackend {
-    pub fn new() -> Self {
-        Self {
-            host: OpencodeHost::new(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_with_host(host: OpencodeHost) -> Self {
-        Self { host }
-    }
-
-    pub fn attach_context_service(
-        &mut self,
-        service: std::sync::Arc<super::context_service::RuntimeContextService>,
-    ) {
-        self.host.attach_context_service(service);
-    }
-}
-
-impl Default for OpencodeHttpBackend {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl AgentBackend for OpencodeHttpBackend {
-    fn attach_context_service(
-        &mut self,
-        service: std::sync::Arc<super::context_service::RuntimeContextService>,
-    ) {
-        self.host.attach_context_service(service);
-    }
-
-    async fn attach_session(
-        &mut self,
-        agent_type: amux::AgentType,
-        launch: &AgentLaunchConfig,
-        isolation_domain: IsolationDomainKey,
-        process_env_revision: ProcessEnvRevision,
-        extra_env: HashMap<String, String>,
-        force_env_override: bool,
-        worktree: String,
-        resume_acp_session_id: Option<String>,
-        mcp_config_path: Option<PathBuf>,
-        initial_model_override: Option<String>,
-        model_mru: Vec<String>,
-        initial_prompt: String,
-        event_tx: mpsc::Sender<AcpEventFrame>,
-        permission: PermissionPolicy,
-        forbid_new_session_fallback: bool,
-        teamclu_session_id: String,
-    ) -> crate::error::Result<(mpsc::Sender<AcpCommand>, AcpStartupMetadata)> {
-        self.host
-            .attach_session(
-                agent_type,
-                launch,
-                isolation_domain,
-                process_env_revision,
-                extra_env,
-                force_env_override,
-                worktree,
-                resume_acp_session_id,
-                mcp_config_path,
-                initial_model_override,
-                model_mru,
-                initial_prompt,
-                event_tx,
-                permission,
-                forbid_new_session_fallback,
-                teamclu_session_id,
-            )
-            .await
-    }
-
-    async fn prewarm(&mut self, launch_configs: &HashMap<amux::AgentType, AgentLaunchConfig>) {
-        self.host.prewarm(launch_configs).await;
-    }
-
-    async fn prewarm_with_env(
-        &mut self,
-        launch_configs: &HashMap<amux::AgentType, AgentLaunchConfig>,
-        extra_env: HashMap<String, String>,
-        force_env_override: bool,
-        worktree: Option<&str>,
-    ) {
-        self.host
-            .prewarm_with_env(launch_configs, extra_env, force_env_override, worktree)
-            .await;
-    }
-
-    async fn prewarm_workspace(
-        &mut self,
-        launch_configs: &HashMap<amux::AgentType, AgentLaunchConfig>,
-        isolation_domain: IsolationDomainKey,
-        process_env_revision: ProcessEnvRevision,
-        extra_env: HashMap<String, String>,
-        force_env_override: bool,
-        worktree: &str,
-    ) {
-        self.host
-            .prewarm_workspace(
-                launch_configs,
-                isolation_domain,
-                process_env_revision,
-                extra_env,
-                force_env_override,
-                worktree,
-            )
-            .await;
-    }
-
-    fn evict_agent_types(&mut self, agent_types: &[amux::AgentType]) -> usize {
-        self.host.evict_agent_types(agent_types)
-    }
-
-    fn invalidate_workspace_host(&mut self, domain: &IsolationDomainKey) -> bool {
-        self.host.invalidate_workspace_host(domain)
-    }
-
-    fn invalidate_all_workspace_hosts(&mut self) -> usize {
-        self.host.invalidate_all_workspace_hosts()
-    }
-
-    async fn shutdown_for_exit(&mut self) -> usize {
-        self.host.shutdown_for_exit().await
-    }
-
-    fn host_count(&self) -> usize {
-        self.host.host_count()
-    }
-
-    async fn model_catalog(
-        &mut self,
-        workspace_path: &Path,
-    ) -> crate::error::Result<Vec<amux::ModelInfo>> {
-        self.host.model_catalog(workspace_path).await
-    }
-
-    async fn model_catalog_for_context(
-        &mut self,
-        workspace_path: &Path,
-        isolation_domain: IsolationDomainKey,
-        process_env_revision: ProcessEnvRevision,
-        extra_env: HashMap<String, String>,
-    ) -> crate::error::Result<Vec<amux::ModelInfo>> {
-        self.host
-            .model_catalog_for_context(
-                workspace_path,
-                isolation_domain,
-                process_env_revision,
-                extra_env,
-            )
-            .await
-    }
-
-    fn opencode_host_pool(
-        &self,
-    ) -> Option<std::sync::Arc<super::opencode_http::host_pool::OpenCodeHostPool>> {
-        Some(self.host.pool())
-    }
-
-    async fn fork_session_at(&mut self, spec: ForkSpec) -> crate::error::Result<String> {
-        self.host.fork_session_at(spec).await
-    }
-
-    fn completed_turn_opencode_message_id(&self, acp_session_id: &str) -> Option<String> {
-        self.host.completed_turn_opencode_message_id(acp_session_id)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Factory
-// ---------------------------------------------------------------------------
-
-/// Build the local agent backend. pi is the only one (#1247): there is no
-/// `agents.local_agent` to dispatch on any more. The other backend modules are
-/// still compiled while #1247 removes them, but nothing constructs them.
+/// Build the local agent backend. pi is the only runtime (#1247).
 pub fn create_backend() -> Box<dyn AgentBackend> {
     Box::new(super::pi_rpc::PiRpcBackend::new())
 }

@@ -9,7 +9,7 @@
 
 use serde::Serialize;
 
-use crate::opencode_install::{parse_semver, version_ge};
+use teamclu_runtime_env::version::{parse_semver, version_ge};
 use crate::process_util::CommandNoWindow;
 
 #[derive(Debug, Serialize)]

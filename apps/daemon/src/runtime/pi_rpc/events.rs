@@ -228,7 +228,7 @@ pub(super) async fn close_turn(shared: &Arc<Shared>, session_id: &str) {
         }
     };
     if let Some((event_tx, reply_to)) = closed {
-        let ev = crate::runtime::opencode_http::translate::status_change(
+        let ev = crate::runtime::acp_translate::status_change(
             amux::AgentStatus::Active,
             amux::AgentStatus::Idle,
         );

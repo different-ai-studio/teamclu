@@ -13,8 +13,6 @@ import {
   getDaemonProviders,
   getDeviceProviders,
   getDaemonDeviceProviderAuthMethods,
-  postDaemonDeviceProviderOAuthAuthorize,
-  postDaemonDeviceProviderOAuthCallback,
   reloadDaemonRuntime,
   type DaemonProviderInfo,
 } from '@/lib/daemon/daemon-local-client'
@@ -130,7 +128,7 @@ function splitRuntimeModelId(agentType: AgentType, runtimeModelId: string): [str
     case AgentType.CLAUDE_CODE:
       return ['claude-code', trimmed]
     default:
-      return ['opencode', trimmed]
+      return ['pi', trimmed]
   }
 }
 
@@ -140,13 +138,6 @@ function runtimeModelsToConfigured(disconnectedIds: Set<string>): ConfiguredProv
 
   for (const entry of entries) {
     const agentType = entry.info.agentType
-    if (
-      agentType !== AgentType.OPENCODE &&
-      agentType !== AgentType.PI &&
-      agentType !== AgentType.CURSOR &&
-      agentType !== AgentType.CLAUDE_CODE
-    )
-      continue
 
     for (const runtimeModel of entry.info.availableModels) {
       const modelRef = runtimeModel.id?.trim()
@@ -372,12 +363,6 @@ interface ProviderState {
 
   // Actions
   refreshAuthMethods: () => Promise<void>
-  connectProviderOAuth: (providerId: string, methodIndex: number) => Promise<
-    { status: 'pending'; url: string; instructions: string; methodType: 'auto' | 'code' } |
-    { status: 'success' } |
-    { status: 'error'; message: string }
-  >
-  completeOAuthCallback: (providerId: string, methodIndex: number, code?: string) => Promise<boolean>
   refreshProviders: () => Promise<void>
   refreshConfiguredProviders: () => Promise<void>
   refreshCustomProviderIds: (workspacePath: string) => Promise<void>
@@ -420,40 +405,6 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
       console.error('Failed to load auth methods from daemon:', err)
     }
     set({ authMethods: fallbackProviderAuthMethods() })
-  },
-
-  connectProviderOAuth: async (providerId, methodIndex) => {
-    const result = await postDaemonDeviceProviderOAuthAuthorize(providerId, methodIndex)
-    if (!result.ok) {
-      toast.error('OAuth login failed', { description: result.message })
-      return { status: 'error' as const, message: result.message }
-    }
-    return {
-      status: 'pending' as const,
-      url: result.url,
-      instructions: result.instructions,
-      methodType: result.method,
-    }
-  },
-
-  completeOAuthCallback: async (providerId, methodIndex, code) => {
-    const result = await postDaemonDeviceProviderOAuthCallback(providerId, methodIndex, code)
-    if (!result.ok) {
-      toast.error('OAuth login failed', { description: result.message })
-      return false
-    }
-    set((state) => {
-      const newDisconnected = new Set(state._disconnectedIds)
-      newDisconnected.delete(providerId)
-      return { _disconnectedIds: newDisconnected }
-    })
-    // Only a live workspace has a runtime to reload — same as connectProvider.
-    const workspacePath = useWorkspaceStore.getState().workspacePath
-    if (workspacePath) {
-      await reloadRuntimeAfterProviderChange(workspacePath)
-    }
-    await Promise.all([get().refreshProviders(), get().refreshConfiguredProviders()])
-    return true
   },
 
   refreshProviders: async () => {

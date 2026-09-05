@@ -35,7 +35,7 @@ use crate::runtime::acp_event_frame::AcpEventFrame;
 use crate::runtime::backend::{AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec};
 use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 use crate::runtime::manager::AgentLaunchConfig;
-use crate::runtime::opencode_http::translate::status_change;
+use crate::runtime::acp_translate::status_change;
 use crate::runtime::permission_policy::PermissionPolicy;
 
 pub mod auth;
@@ -616,11 +616,6 @@ async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMeta
         // Fresh per child spawn, so "same worktree, respawned process" is
         // observable — the pi analogue of an opencode host generation.
         host_generation_id: proc.generation_id.clone(),
-        // N/A for pi: `RouteLease` is a counted reservation inside the
-        // opencode host pool's drain-then-stop lifecycle. The pi pool has no
-        // draining — eviction is kill + lazy respawn, and dead children are
-        // dropped by `get()` — so there is no reservation to hold.
-        route_lease: None,
     })
 }
 
@@ -1562,6 +1557,10 @@ impl AgentBackend for PiRpcBackend {
     }
 
     fn invalidate_all_workspace_hosts(&mut self) -> usize {
+        self.shared.pool.kill_all()
+    }
+
+    async fn shutdown_for_exit(&mut self) -> usize {
         self.shared.pool.kill_all()
     }
 

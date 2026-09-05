@@ -16,9 +16,8 @@ pub async fn default_daemon_workspace_path() -> Option<String> {
     crate::commands::daemon_http::fetch_daemon_default_workspace_path().await
 }
 
-/// Load valid model refs from the daemon's model-catalog API (single-agent
-/// mode: the OpenCode catalog, live serve list when reachable, else the
-/// daemon's static opencode fallback table).
+/// Load valid model refs from the daemon's model-catalog API (pi-only: live
+/// catalog when reachable, else the daemon's persisted fallback table).
 pub async fn list_workspace_model_keys(workspace_path: &str) -> HashSet<String> {
     crate::commands::daemon_http::fetch_workspace_model_catalog_keys(workspace_path)
         .await
@@ -62,8 +61,8 @@ mod tests {
     #[test]
     fn resolve_rejects_stale_model() {
         let mut available = HashSet::new();
-        // Daemon's opencode fallback default (see amuxd runtime/models.rs).
-        available.insert("opencode/deepseek-v4-flash-free".into());
+        // Daemon pi catalog fallback example.
+        available.insert("pi/deepseek-v4-flash-free".into());
         let out = resolve_cron_model_override(&available, Some("/ws"), Some("scnet/MiniMax-M2.5"));
         assert!(out.is_none());
     }

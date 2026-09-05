@@ -103,8 +103,8 @@ describe("resolveRuntimeStateEntryForAgent", () => {
     expect(resolveRuntimeIdForAgent("a-1", {}, "rt-from-db")).toBe("rt-from-db");
   });
 
-  it("derives backend type from runtime agent type", () => {
-    expect(backendTypeFromRuntimeEntry(entry("a", "a"), null)).toBe("opencode");
+  it("derives backend type as pi for any live runtime entry", () => {
+    expect(backendTypeFromRuntimeEntry(entry("a", "a"), null)).toBe("pi");
   });
 });
 

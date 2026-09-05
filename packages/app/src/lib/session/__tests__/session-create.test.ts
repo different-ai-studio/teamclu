@@ -173,7 +173,7 @@ describe('startAgentRuntimesAsync', () => {
         targetActorId: 'agent-1',
         workspaceId: 'ws-opencode',
         worktree: '',
-        agentType: AgentType.OPENCODE,
+        agentType: AgentType.PI,
       }),
     )
   })
@@ -195,7 +195,7 @@ describe('startAgentRuntimesAsync', () => {
         targetActorId: 'agent-2',
         workspaceId: '',
         worktree: '',
-        agentType: AgentType.OPENCODE,
+        agentType: AgentType.PI,
       }),
     )
   })
@@ -217,14 +217,12 @@ describe('startAgentRuntimesAsync', () => {
         targetActorId: 'agent-daemon',
         workspaceId: '',
         worktree: '',
-        agentType: AgentType.OPENCODE,
+        agentType: AgentType.PI,
       }),
     )
   })
 
-  it('prefers actor.default_agent_type over prior runtime backend_type', async () => {
-    // Prior runtime was opencode, but the operator has since set the agent's
-    // default_agent_type to cursor — the next spawn should respect that.
+  it('always starts pi even when actor default_agent_type is cursor', async () => {
     mockTables({
       actors: [{ id: 'agent-3', agent_types: ['claude', 'cursor'], default_agent_type: 'cursor' }],
     })
@@ -239,7 +237,7 @@ describe('startAgentRuntimesAsync', () => {
     expect(mockRuntimeStart).toHaveBeenCalledWith(
       expect.objectContaining({
         targetActorId: 'agent-3',
-        agentType: AgentType.CURSOR,
+        agentType: AgentType.PI,
       }),
     )
   })
@@ -345,7 +343,7 @@ describe('startAgentRuntimesAsync', () => {
       expect.objectContaining({
         targetActorId: 'agent-7',
         workspaceId: 'ws-created',
-        agentType: AgentType.OPENCODE,
+        agentType: AgentType.PI,
       }),
     )
   })
@@ -373,7 +371,7 @@ describe('startAgentRuntimesAsync', () => {
         targetActorId: 'agent-8',
         workspaceId: 'ws-this-session',
         worktree: '',
-        agentType: AgentType.OPENCODE,
+        agentType: AgentType.PI,
       }),
     )
   })

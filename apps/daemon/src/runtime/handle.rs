@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 use super::acp_event_frame::AcpEventFrame;
-use super::adapter::AcpCommand;
+use super::backend::AcpCommand;
 use super::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 use super::instruction_delivery::InstructionDelivery;
 use crate::proto::amux;
@@ -41,8 +41,6 @@ pub struct RuntimeHandle {
     pub process_env_revision: ProcessEnvRevision,
     /// OpenCode host generation that owns this attachment's routing state.
     pub host_generation_id: String,
-    /// Reserved pool route released only after detach cleanup acknowledges.
-    pub(crate) route_lease: Option<super::opencode_http::host_pool::RouteLease>,
     pub branch: String,
     pub status: amux::AgentStatus,
     pub current_prompt: String,
@@ -140,7 +138,6 @@ impl RuntimeHandle {
                 &std::collections::HashMap::new(),
             ),
             host_generation_id: String::new(),
-            route_lease: None,
             branch: String::new(),
             status: amux::AgentStatus::Starting,
             current_prompt: String::new(),
@@ -340,7 +337,6 @@ impl RuntimeHandle {
                 }
             }
         }
-        self.route_lease.take();
     }
 
     /// Drain pending_silent into a single `[Context: …]` prefix string.
@@ -421,7 +417,6 @@ impl RuntimeHandle {
                 &std::collections::HashMap::new(),
             ),
             host_generation_id: String::new(),
-            route_lease: None,
             branch: String::new(),
             status: crate::proto::amux::AgentStatus::Starting,
             current_prompt: String::new(),
@@ -460,17 +455,10 @@ mod tests {
     #[tokio::test]
     async fn shutdown_waits_for_detach_acknowledgement() {
         let mut handle = RuntimeHandle::test_dummy();
-        let generation = super::super::opencode_http::host_pool::HostGeneration::test_for_routing(
-            "gen-a",
-            IsolationDomainKey::Workspace("ws-a".to_string()),
-            ProcessEnvRevision::from_bindings(&std::collections::HashMap::new()),
-        );
-        handle.host_generation_id = generation.generation_id.clone();
-        handle.route_lease = Some(generation.test_route_lease());
+        handle.host_generation_id = "gen-a".into();
         let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
         handle.cmd_tx = Some(cmd_tx);
         handle.acp_session_id = "session-a".to_string();
-        assert_eq!(generation.route_count(), 1);
         let backend = tokio::spawn(async move {
             let AcpCommand::DetachSession {
                 acp_session_id,
@@ -487,7 +475,6 @@ mod tests {
         let started = std::time::Instant::now();
         handle.shutdown().await;
         assert!(started.elapsed() >= std::time::Duration::from_millis(20));
-        assert_eq!(generation.route_count(), 0);
         backend.await.unwrap();
     }
 

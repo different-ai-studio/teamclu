@@ -302,6 +302,10 @@ pub fn set_repo_ssh_command(dir: &Path, app_id: &str) -> anyhow::Result<()> {
 ///
 /// Expects repo-local identity to already be set (see [`set_repo_user_identity`]).
 pub fn commit_if_needed(dir: &Path, message: &str) -> anyhow::Result<bool> {
+    let staged = run_git(dir, None, &["diff", "--cached", "--quiet"])?;
+    if staged.status.success() {
+        return Ok(false);
+    }
     let out = run_git(dir, None, &["commit", "-m", message])?;
     if out.status.success() {
         return Ok(true);
@@ -315,6 +319,7 @@ pub fn commit_if_needed(dir: &Path, message: &str) -> anyhow::Result<bool> {
         s.contains("nothing to commit")
             || s.contains("nothing added to commit")
             || s.contains("no changes added to commit")
+            || s.contains("无文件要提交")
     });
     if nothing_to_commit {
         return Ok(false);
@@ -757,15 +762,17 @@ mod tests {
         // git says "nothing added to commit" on STDOUT and leaves stderr empty;
         // reading stderr alone turned a reseed of an unchanged app into an error.
         let tmp = tempfile::tempdir().unwrap();
-        if local_origin(tmp.path()).is_none() {
+        let Some(bare) = local_origin(tmp.path()) else {
             eprintln!("git not usable; skipping");
             return;
-        }
+        };
         let work = tmp.path().join("app");
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("README.md"), b"seed").unwrap();
+        let url = bare.to_string_lossy().to_string();
         init_if_needed(&work).unwrap();
         ensure_test_identity(&work);
+        set_remote_test(&work, &url).unwrap();
         add_all(&work).unwrap();
         assert!(commit_if_needed(&work, "seed").unwrap());
         assert!(!commit_if_needed(&work, "seed again").unwrap());

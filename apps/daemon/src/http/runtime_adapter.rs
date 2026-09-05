@@ -34,7 +34,7 @@ use crate::proto::amux;
 // it breaks every test target that compiles this file.
 #[cfg(test)]
 use crate::runtime::acp_event_frame::AcpEventFrame;
-use crate::runtime::adapter::{runtime_envelopes_from_acp_event, RuntimeEnvelope};
+use crate::runtime::acp_envelope::{runtime_envelopes_from_acp_event, RuntimeEnvelope};
 use crate::runtime::supervisor::prepare_workspace;
 use crate::runtime::RuntimeManager;
 

@@ -379,7 +379,7 @@
     "trayTitle": "最小化到托盘",
     "trayDesc": "隐藏窗口；本地 Agent 继续运行，可接跨设备消息与定时任务。",
     "quitTitle": "退出并停止 Agent",
-    "quitDesc": "关闭窗口并停止 amuxd / opencode。适合彻底下班。",
+    "quitDesc": "关闭窗口并停止 amuxd。适合彻底下班。",
     "remember": "记住我的选择（可在设置里改）",
     "confirm": "确定",
     "panelTitle": "本地 Agent"
@@ -683,8 +683,8 @@
         "defaultAction": "更新",
         "nextStartStorage": "已保存至 ~/.agents/skills。新的 OpenCode 与 Pi 运行时将在下次启动时生效。",
         "nextStartClaude": "Claude Code 也将在下次启动时加载此技能。",
-        "claudeLocalOverride": "Claude Code 将继续使用工作区内 .claude/skills 下的同名本地副本。",
-        "claudeBridgeReconcileFailed": "Claude Code 桥接未完成；Claude 可能在下次启动时无法发现此技能。",
+        "claudeLocalOverride": "本地技能副本将继续使用工作区内 .claude/skills 下的同名文件。",
+        "claudeBridgeReconcileFailed": "技能桥接未完成；agent 可能在下次启动时无法发现此技能。",
         "skillRefreshFailed": "技能已保存，但 TeamClu 清单刷新未完成。请重试发现或刷新选择器，请勿重复创建。"
       },
       "roleSkill": {
@@ -2383,7 +2383,7 @@
         "blockerRefreshDeferredActiveTurn": "当前 turn 进行中，refresh 已延迟 — turn 结束后重试或手动重载",
         "blockerActiveRuntimes": "本 workspace 有 {{count}} 个活跃 runtime — env 在 spawn 时注入，重载后请新开 session",
         "blockerTurnInProgress": "当前有 turn 正在运行 — 请等待结束后再重载 runtime",
-        "blockerOpencodeServeNoCachedEnv": "opencode serve 在运行但未缓存 session env — 请重载 runtime 以便下次 spawn 合并个人变量",
+        "blockerOpencodeServeNoCachedEnv": "本地 agent 未缓存 session env — 请重载 runtime 以便下次 spawn 合并个人变量",
         "blockerHostEnvShadowed": "宿主机环境覆盖了个人变量: {{keys}} — 请在启动 amuxd 的 shell 中 unset，或在 TeamClu 中改用不同 key",
         "blockerHostGenerationStarting": "当前 workspace 的运行时世代正在启动{{detail}}",
         "blockerHostCapacityWaiting": "新 session 正在等待本机运行时容量{{detail}}",

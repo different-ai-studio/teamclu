@@ -211,7 +211,6 @@ mod tests {
             crate::http::runtime_adapter::StubRuntimeAdapter::new(8),
             None,
             None,
-            None,
             crate::sync::dispatch::SyncDispatcher::new(
                 crate::sync::secret_store::SecretStore::new(),
                 None,

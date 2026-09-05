@@ -176,7 +176,6 @@ async fn test_app_with_runtime_adapter() -> TestApp {
         runtime,
         None,
         None,
-        None,
         test_sync_dispatcher(),
         None,
         None,

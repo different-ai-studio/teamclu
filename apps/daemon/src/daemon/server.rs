@@ -367,12 +367,6 @@ pub(crate) enum SockCommand {
         payload: serde_json::Value,
         reply_tx: oneshot::Sender<String>,
     },
-    /// Cursor `preToolUse` approval from `amuxd cursor-permission-hook`. The
-    /// handler blocks on a human, so it must never run inline on this loop.
-    CursorPermission {
-        payload: serde_json::Value,
-        reply_tx: oneshot::Sender<String>,
-    },
     /// Drive one ACP turn to completion for a cron-style logical session.
     /// `payload` is the raw JSON envelope; `handle_prompt_await` parses it
     /// and runs the turn against the local primary agent. `reply_tx`
@@ -1107,19 +1101,7 @@ impl DaemonServer {
             // The HTTP workspace runtime endpoints share this supervisor's
             // refresh coordinator for status + apply-intent semantics.
             let execution_context_assembler = Arc::new(self.execution_context_assembler());
-            let opencode_host_pool = {
-                let manager = self.agents.lock().await;
-                manager.opencode_host_pool().await
-            };
-            let runtime_supervisor = if let Some(pool) = opencode_host_pool.clone() {
-                crate::runtime::RuntimeSupervisor::new_with_workspace_services(
-                    self.agents.clone(),
-                    pool,
-                    execution_context_assembler.clone(),
-                )
-            } else {
-                crate::runtime::RuntimeSupervisor::new(self.agents.clone())
-            };
+            let runtime_supervisor = crate::runtime::RuntimeSupervisor::new(self.agents.clone());
             supervisor_for_prewarm = Some(runtime_supervisor.clone());
             // Capability refresh is deferred to the next runtime start; do not
             // auto-reload running workspaces on pending coordinator state.
@@ -1156,14 +1138,6 @@ impl DaemonServer {
             > = Some(std::sync::Arc::new(
                 crate::config::OpenCodeCompatStore::new(),
             ));
-            let opencode_settings = opencode_host_pool.map(|pool| {
-                std::sync::Arc::new(
-                    crate::opencode_settings::OpenCodeSettingsService::with_host_pool(
-                        pool,
-                        execution_context_assembler,
-                    ),
-                )
-            });
             let session_prompt = Some(Arc::new(
                 crate::runtime::session_prompt::SessionPromptService::new(
                     self.agents.clone(),
@@ -1176,7 +1150,6 @@ impl DaemonServer {
                 runtime,
                 workspace_control,
                 Some(runtime_supervisor),
-                opencode_settings,
                 self.sync_dispatcher.clone(),
                 Some(register_workspace_tx),
                 Some(self.backend.clone()),
@@ -1449,13 +1422,6 @@ impl DaemonServer {
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tick.tick().await;
-                    let host_pool = {
-                        let guard = mgr.lock().await;
-                        guard.opencode_host_pool().await
-                    };
-                    if let Some(pool) = host_pool {
-                        pool.evict_idle(std::time::Instant::now()).await;
-                    }
                     let mut guard = mgr.lock().await;
                     let _idle = guard.evict_idle(threshold).await;
                     let _over = guard.evict_over_capacity(max_attachments).await;
@@ -1988,17 +1954,6 @@ impl DaemonServer {
                             Some(SockCommand::Knowledge { payload, reply_tx }) => {
                                 knowledge::spawn_knowledge(payload, reply_tx);
                             }
-                            Some(SockCommand::CursorPermission { payload, reply_tx }) => {
-                                tokio::spawn(async move {
-                                    let result =
-                                        crate::runtime::cursor_sdk::permission::handle(&payload)
-                                            .await;
-                                    let _ = reply_tx.send(
-                                        serde_json::json!({ "ok": true, "result": result })
-                                            .to_string(),
-                                    );
-                                });
-                            }
                             Some(SockCommand::LocalRpc { payload, reply_tx }) => {
                                 let reply = self.dispatch_local_rpc(&payload).await;
                                 let _ = reply_tx.send(reply);
@@ -2446,17 +2401,6 @@ impl DaemonServer {
                             }
                             Some(SockCommand::Knowledge { payload, reply_tx }) => {
                                 knowledge::spawn_knowledge(payload, reply_tx);
-                            }
-                            Some(SockCommand::CursorPermission { payload, reply_tx }) => {
-                                tokio::spawn(async move {
-                                    let result =
-                                        crate::runtime::cursor_sdk::permission::handle(&payload)
-                                            .await;
-                                    let _ = reply_tx.send(
-                                        serde_json::json!({ "ok": true, "result": result })
-                                            .to_string(),
-                                    );
-                                });
                             }
                             Some(SockCommand::LocalRpc { payload, reply_tx }) => {
                                 let reply = self.dispatch_local_rpc(&payload).await;
@@ -3020,32 +2964,6 @@ where
                                 }
                                 Err(_) => {
                                     warn!("amuxd.sock: knowledge reply dropped");
-                                }
-                            }
-                        } else if cmd == "cursor-permission" {
-                            let (reply_tx, reply_rx) = oneshot::channel();
-                            if tx
-                                .send(SockCommand::CursorPermission {
-                                    payload: v,
-                                    reply_tx,
-                                })
-                                .await
-                                .is_err()
-                            {
-                                return;
-                            }
-                            match reply_rx.await {
-                                Ok(body) => {
-                                    let mut stream = reader.into_inner();
-                                    if let Err(e) = stream.write_all(body.as_bytes()).await {
-                                        warn!("amuxd.sock: cursor-permission write failed: {e}");
-                                        return;
-                                    }
-                                    let _ = stream.write_all(b"\n").await;
-                                    let _ = stream.shutdown().await;
-                                }
-                                Err(_) => {
-                                    warn!("amuxd.sock: cursor-permission reply dropped");
                                 }
                             }
                         } else if cmd == "prompt-await" {

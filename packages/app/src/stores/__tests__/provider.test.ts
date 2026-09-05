@@ -3,8 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   getDaemonProviders: vi.fn(),
   getDaemonDeviceProviderAuthMethods: vi.fn(),
-  postDaemonDeviceProviderOAuthAuthorize: vi.fn(),
-  postDaemonDeviceProviderOAuthCallback: vi.fn(),
   reloadDaemonRuntime: vi.fn(),
   workspacePath: '/workspace/demo',
   runtimeById: {} as Record<string, any>,
@@ -46,8 +44,6 @@ vi.mock('@/lib/daemon/daemon-local-client', () => ({
   encodeWorkspaceId: (path: string) => path,
   getDaemonProviders: mocks.getDaemonProviders,
   getDaemonDeviceProviderAuthMethods: mocks.getDaemonDeviceProviderAuthMethods,
-  postDaemonDeviceProviderOAuthAuthorize: mocks.postDaemonDeviceProviderOAuthAuthorize,
-  postDaemonDeviceProviderOAuthCallback: mocks.postDaemonDeviceProviderOAuthCallback,
   reloadDaemonRuntime: mocks.reloadDaemonRuntime,
   putDaemonProviderAuth: vi.fn(),
   deleteDaemonProviderAuth: daemonMocks.deleteDaemonProviderAuth,
@@ -73,8 +69,6 @@ describe('provider store initAll', () => {
     mocks.runtimeById = {}
     mocks.getDaemonProviders.mockReset()
     mocks.getDaemonDeviceProviderAuthMethods.mockReset()
-    mocks.postDaemonDeviceProviderOAuthAuthorize.mockReset()
-    mocks.postDaemonDeviceProviderOAuthCallback.mockReset()
     mocks.reloadDaemonRuntime.mockReset()
     mocks.reloadDaemonRuntime.mockResolvedValue('applied_live')
     mocks.getDaemonProviders.mockResolvedValue(null)
@@ -137,78 +131,6 @@ describe('provider store initAll', () => {
     expect(useProviderStore.getState().authMethods.openai).toEqual([
       { type: 'oauth', label: 'Browser login' },
     ])
-  })
-
-  it('returns pending OAuth state from daemon authorize response', async () => {
-    mocks.postDaemonDeviceProviderOAuthAuthorize.mockResolvedValue({
-      ok: true,
-      url: 'https://auth.example.test/openai',
-      method: 'code',
-      instructions: 'Paste code',
-    })
-
-    const { useProviderStore } = await import('../provider')
-    const result = await useProviderStore.getState().connectProviderOAuth('openai', 0)
-
-    expect(result).toEqual({
-      status: 'pending',
-      url: 'https://auth.example.test/openai',
-      instructions: 'Paste code',
-      methodType: 'code',
-    })
-  })
-
-  it('connects via OAuth even with no workspace selected', async () => {
-    mocks.workspacePath = null as unknown as string
-    mocks.postDaemonDeviceProviderOAuthAuthorize.mockResolvedValue({
-      ok: true,
-      url: 'https://auth.example.test/openai',
-      method: 'code',
-      instructions: 'Paste code',
-    })
-
-    const { useProviderStore } = await import('../provider')
-    const result = await useProviderStore.getState().connectProviderOAuth('openai', 0)
-
-    expect(result.status).toBe('pending')
-    expect(mocks.postDaemonDeviceProviderOAuthAuthorize).toHaveBeenCalledWith('openai', 0)
-  })
-
-  it('surfaces daemon error when OAuth authorize fails', async () => {
-    mocks.postDaemonDeviceProviderOAuthAuthorize.mockResolvedValue({
-      ok: false,
-      status: 503,
-      code: 'runtime_unavailable',
-      message: 'opencode serve unavailable',
-    })
-
-    const { useProviderStore } = await import('../provider')
-    const result = await useProviderStore.getState().connectProviderOAuth('openai', 0)
-
-    expect(result.status).toBe('error')
-    expect(result).toMatchObject({ message: 'opencode serve unavailable' })
-  })
-
-  it('reloads runtime after successful OAuth callback', async () => {
-    mocks.postDaemonDeviceProviderOAuthCallback.mockResolvedValue({ ok: true })
-    mocks.reloadDaemonRuntime.mockResolvedValue('reload_required')
-
-    const { useProviderStore } = await import('../provider')
-    const ok = await useProviderStore.getState().completeOAuthCallback('openai', 0, 'code-123')
-
-    expect(ok).toBe(true)
-    expect(mocks.reloadDaemonRuntime).toHaveBeenCalledWith('/workspace/demo')
-  })
-
-  it('completes OAuth callback with no workspace, skipping the runtime reload', async () => {
-    mocks.workspacePath = null as unknown as string
-    mocks.postDaemonDeviceProviderOAuthCallback.mockResolvedValue({ ok: true })
-
-    const { useProviderStore } = await import('../provider')
-    const ok = await useProviderStore.getState().completeOAuthCallback('openai', 0, 'code-123')
-
-    expect(ok).toBe(true)
-    expect(mocks.reloadDaemonRuntime).not.toHaveBeenCalled()
   })
 
   it('disconnects via daemon without OpenCode sidecar', async () => {

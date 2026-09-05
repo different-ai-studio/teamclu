@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 
 use super::{required_mcp_sdk_version, version_of_manifest};
-use crate::opencode_install::version_ge;
+use teamclu_runtime_env::version::version_ge;
 
 pub(crate) const NPM_PKG: &str = "@modelcontextprotocol/sdk";
 

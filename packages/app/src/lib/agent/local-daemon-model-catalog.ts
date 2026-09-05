@@ -36,26 +36,9 @@ import { sessionFlowLog } from '@/lib/session/session-flow-log'
  * agents are unaffected — loopback HTTP only reaches this device's daemon.
  */
 
-/** Backend id (`ModelCatalog.backends[].backend`) for a client backend type. */
-function catalogBackendId(backendType: string | null | undefined): string | null {
-  switch (backendType) {
-    case 'opencode':
-      return 'opencode'
-    case 'pi':
-      return 'pi'
-    case 'cursor':
-      return 'cursor'
-    // The group id is the daemon's *wire* name for the type
-    // (`runtime_resolution::agent_type_name`), which is "claude-code" — not the
-    // `AgentLaunchConfig.backend_type` spelling ("claude"). Both are accepted
-    // server-side, so match on the wire name here.
-    case 'claude-code':
-    case 'claude':
-    case 'claude_code':
-      return 'claude-code'
-    default:
-      return null
-  }
+/** Backend id (`ModelCatalog.backends[].backend`) — pi-only locally. */
+function catalogBackendId(_backendType: string | null | undefined): string | null {
+  return 'pi'
 }
 
 /**

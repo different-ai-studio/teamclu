@@ -53,9 +53,6 @@ jobs:
       - name: Run agent bridge tests
         run: >-
           node --test
-          apps/daemon/claude-bridge/src/transcript-repair.test.mjs
-          apps/daemon/claude-bridge/src/mcp-schema-sanitize.test.mjs
-          apps/daemon/cursor-bridge/src/auth-retry.test.mjs
           apps/daemon/shared/session-context-client.test.mjs
           apps/daemon/shared/session-context-plugin-install.test.mjs
           apps/daemon/assets/pi-extension/session-context.test.mjs
@@ -128,13 +125,6 @@ jobs:
           mkdir -p apps/desktop/binaries
           touch apps/desktop/binaries/teamclu-introspect-x86_64-unknown-linux-gnu
           touch apps/desktop/binaries/amuxd-x86_64-unknown-linux-gnu
-          # `resources` in tauri.conf.json globs binaries/{cursor,claude}-bridge/**/*.
-          # The whole binaries/ dir is gitignored, so on a fresh checkout those
-          # globs resolve to nothing and tauri-build fails the build script —
-          # before clippy ever runs. A glob needs a file, not just the directory.
-          mkdir -p apps/desktop/binaries/cursor-bridge apps/desktop/binaries/claude-bridge
-          touch apps/desktop/binaries/cursor-bridge/.keep
-          touch apps/desktop/binaries/claude-bridge/.keep
 
       # rust-toolchain.toml is the single source of truth for the compiler
       # version: rustup reads it in every checkout and every job. The
@@ -404,12 +394,6 @@ jobs:
           mkdir -p apps/desktop/binaries
           touch apps/desktop/binaries/teamclu-introspect-x86_64-pc-windows-msvc.exe
           touch apps/desktop/binaries/amuxd-x86_64-pc-windows-msvc.exe
-          # See rust-check: `resources` globs binaries/{cursor,claude}-bridge/**/*
-          # and all of binaries/ is gitignored, so the globs need a real file
-          # or tauri-build fails before any crate compiles.
-          mkdir -p apps/desktop/binaries/cursor-bridge apps/desktop/binaries/claude-bridge
-          touch apps/desktop/binaries/cursor-bridge/.keep
-          touch apps/desktop/binaries/claude-bridge/.keep
 
       # Compile gate only, and the only one this crate's Windows code gets:
       # rust-check runs on ubuntu and daemon-windows covers only amuxd, so

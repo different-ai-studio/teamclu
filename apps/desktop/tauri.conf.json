@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "TeamClu Dev",
+  "productName": "TeamClu",
   "version": "0.4.1-beta.43",
   "identifier": "com.teamclu.app",
   "build": {
@@ -14,7 +14,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "TeamClu Dev",
+        "title": "TeamClu",
         "width": 1200,
         "height": 800,
         "minWidth": 800,
@@ -82,9 +82,6 @@
       "binaries/teamclu-introspect",
       "binaries/amuxd"
     ],
-    "resources": [
-      "binaries/cursor-bridge/**/*",
-      "binaries/claude-bridge/**/*"
-    ]
+    "resources": []
   }
 }

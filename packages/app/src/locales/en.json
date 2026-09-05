@@ -379,7 +379,7 @@
     "trayTitle": "Minimize to tray",
     "trayDesc": "Hide the window; the local agent keeps running for cross-device messages and cron jobs.",
     "quitTitle": "Quit and stop agent",
-    "quitDesc": "Close the window and stop amuxd / opencode. Use this when you are done for the day.",
+    "quitDesc": "Close the window and stop amuxd. Use this when you are done for the day.",
     "remember": "Remember my choice (change anytime in Settings)",
     "confirm": "Confirm",
     "panelTitle": "Local Agent"
@@ -683,8 +683,8 @@
         "defaultAction": "update",
         "nextStartStorage": "Saved to ~/.agents/skills. New OpenCode and Pi runtimes will pick it up on their next start.",
         "nextStartClaude": "Claude Code will also load this skill on its next start.",
-        "claudeLocalOverride": "Claude Code will keep using the workspace-local .claude/skills copy for this slug.",
-        "claudeBridgeReconcileFailed": "Claude Code bridge setup did not complete; Claude may not discover this skill on the next start.",
+        "claudeLocalOverride": "The workspace-local .claude/skills copy for this slug will continue to be used.",
+        "claudeBridgeReconcileFailed": "Skill bridge setup did not complete; the agent may not discover this skill on the next start.",
         "skillRefreshFailed": "The skill was saved, but TeamClu inventory refresh did not complete. Retry discovery or refresh the picker — do not create it again."
       },
       "roleSkill": {
@@ -2383,7 +2383,7 @@
         "blockerRefreshDeferredActiveTurn": "Refresh deferred while a turn is in progress — retry after it finishes or reload manually",
         "blockerActiveRuntimes": "{{count}} active runtime(s) in this workspace — env is injected at spawn; start a new session after reload",
         "blockerTurnInProgress": "A turn is currently running — wait for it to finish, then reload runtime",
-        "blockerOpencodeServeNoCachedEnv": "opencode serve is running but has no cached session env — reload runtime so the next spawn merges personal vars",
+        "blockerOpencodeServeNoCachedEnv": "Local agent has no cached session env — reload runtime so the next spawn merges personal vars",
         "blockerHostEnvShadowed": "Host OS environment overrides personal vars for: {{keys}} — unset them in the shell that launched amuxd, or rename the TeamClu key",
         "blockerHostGenerationStarting": "Workspace runtime generation is starting{{detail}}",
         "blockerHostCapacityWaiting": "New sessions are waiting for local runtime capacity{{detail}}",

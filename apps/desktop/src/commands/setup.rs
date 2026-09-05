@@ -20,10 +20,10 @@ pub struct RequirementStatus {
     pub version: Option<String>,
     /// What is missing, when we can say something better than "not installed".
     ///
-    /// Set by cursor and pi, whose doctor `satisfied` is an AND of several
-    /// unrelated conditions — an API key, a Node version, an npm package
-    /// installed beside the extension. `present` deliberately leaves cursor's
-    /// key out (see [`runtime_installed`]), so this is set even on a runtime
+    /// Set by pi, whose doctor `satisfied` is an AND of several unrelated
+    /// conditions — Node version and the MCP SDK installed beside the
+    /// extension. `present` deliberately leaves partial installs visible, so
+    /// this is set even on a runtime
     /// that *is* installed — "here, but not usable yet, and this is why".
     /// `None` means the plain "not installed" reading is correct.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,7 +95,7 @@ fn locate_bundled_sidecar(base_name: &str) -> Option<PathBuf> {
 /// because a cold first launch asks three times inside the same second
 /// (`AuthGate`'s background probe, plus the setup screen's runtime scan and
 /// requirement probe), and every one of those spawns the sidecar, which in turn
-/// spawns `opencode`/`git`/`node`/`pi`/`claude --version`. On Windows each of
+/// spawns `git`/`node`/`pi --version`. On Windows each of
 /// those is a `.cmd` shim through `cmd.exe` under a real-time virus scanner, so
 /// the duplicate runs are most of what "scanning for runtimes" spends.
 const DOCTOR_CACHE_TTL: Duration = Duration::from_secs(3);

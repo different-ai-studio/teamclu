@@ -35,6 +35,14 @@ vi.mock('@/components/panel/IdeasView', () => ({
 vi.mock('@/components/panel/ActorsView', () => ({
   ActorsView: () => <div data-testid="actors-list-column" />,
 }))
+vi.mock('@/components/sidebar/ShortcutsListColumn', () => ({
+  ShortcutsListColumn: () => (
+    <div data-testid="shortcuts-list-column">
+      <span>Shortcuts</span>
+      <span>Docs</span>
+    </div>
+  ),
+}))
 
 vi.mock('@/stores/tabs', () => ({
   selectActiveTab: () => null,
@@ -118,7 +126,7 @@ describe('SidebarSecondColumn', () => {
   it('renders shortcuts when the shortcuts filter is active', async () => {
     useUIStore.setState({ sidebarFilter: { kind: 'shortcuts' } })
     renderWithSidebar()
-    expect(await screen.findByText('Shortcuts')).toBeInTheDocument()
+    expect(await screen.findByTestId('shortcuts-list-column')).toBeInTheDocument()
     expect(screen.getByText('Docs')).toBeInTheDocument()
     expect(screen.queryByTestId('session-list-column')).not.toBeInTheDocument()
   })

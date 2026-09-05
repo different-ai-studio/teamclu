@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::opencode_install::version_ge;
+use teamclu_runtime_env::version::version_ge;
 use crate::process_util::CommandNoWindow;
 
 #[derive(Debug, Deserialize)]

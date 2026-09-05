@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::proto::amux;
 
-use crate::runtime::opencode_http::translate::truncate_tool_summary;
+use crate::runtime::acp_translate::truncate_tool_summary;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BlockKind {

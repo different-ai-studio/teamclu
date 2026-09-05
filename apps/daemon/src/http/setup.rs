@@ -183,7 +183,6 @@ mod tests {
             super::super::runtime_adapter::StubRuntimeAdapter::new(16),
             None,
             None,
-            None,
             crate::sync::dispatch::SyncDispatcher::new(
                 crate::sync::secret_store::SecretStore::new(),
                 None,

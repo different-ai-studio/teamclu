@@ -597,14 +597,6 @@ type DaemonProviderAuthMethod = {
 
 type DaemonProviderAuthMethods = Record<string, DaemonProviderAuthMethod[]>
 
-type DaemonOAuthAuthorizeResult =
-  | { ok: true; url: string; method: 'auto' | 'code'; instructions: string }
-  | { ok: false; status: number; code?: string; message: string }
-
-type DaemonOAuthCallbackResult =
-  | { ok: true; outcome: DaemonApplyOutcome }
-  | { ok: false; status: number; code?: string; message: string }
-
 function problemDetailFromErrorBody(error: string): { code?: string; detail: string } {
   try {
     const parsed = JSON.parse(error) as { code?: string; detail?: string }
@@ -617,72 +609,9 @@ function problemDetailFromErrorBody(error: string): { code?: string; detail: str
   }
 }
 
-/**
- * Device-level provider OAuth (#742's reasoning, extended to OAuth): OAuth
- * state lives under the user's global OpenCode paths, not a workspace, so
- * connect must not require a project directory to already be resolved.
- */
 export async function getDaemonDeviceProviderAuthMethods(): Promise<DaemonProviderAuthMethods | null> {
   const result = await daemonFetch<DaemonProviderAuthMethods>(`/v1/providers/auth-methods`)
   return result.ok ? result.data : null
-}
-
-export async function postDaemonDeviceProviderOAuthAuthorize(
-  providerId: string,
-  methodIndex: number,
-  inputs?: Record<string, string>,
-): Promise<DaemonOAuthAuthorizeResult> {
-  const result = await daemonFetch<{
-    url: string
-    method: string
-    instructions: string
-  }>(`/v1/providers/${encodeURIComponent(providerId)}/oauth/authorize`, {
-    method: 'POST',
-    body: JSON.stringify({ method_index: methodIndex, inputs: inputs ?? {} }),
-  })
-  if (result.ok) {
-    const method =
-      result.data.method === 'auto' || result.data.method === 'code'
-        ? result.data.method
-        : 'code'
-    return {
-      ok: true,
-      url: result.data.url,
-      method,
-      instructions: result.data.instructions,
-    }
-  }
-  const problem = problemDetailFromErrorBody(result.error)
-  return {
-    ok: false,
-    status: result.status,
-    code: problem.code,
-    message: problem.detail,
-  }
-}
-
-export async function postDaemonDeviceProviderOAuthCallback(
-  providerId: string,
-  methodIndex: number,
-  code?: string,
-): Promise<DaemonOAuthCallbackResult> {
-  const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
-    `/v1/providers/${encodeURIComponent(providerId)}/oauth/callback`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ method_index: methodIndex, code: code ?? null }),
-    },
-  )
-  if (result.ok) {
-    return { ok: true, outcome: result.data.outcome }
-  }
-  const problem = problemDetailFromErrorBody(result.error)
-  return {
-    ok: false,
-    status: result.status,
-    code: problem.code,
-    message: problem.detail,
-  }
 }
 
 /** Mirrors Rust `workspaces::CatalogModel`. `ref` is `"<providerSegment>/<modelId>"`. */
