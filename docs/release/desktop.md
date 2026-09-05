@@ -132,7 +132,7 @@ curl -fsSL https://teamclu.ucar.cc/install-mac-cn.sh | bash
 | `DEVICE_JWT_SECRET` | 设备 JWT |
 | `APPLE_CERTIFICATE` + 相关 | macOS 代码签名（缺失则 ad-hoc，用户需 `xattr`） |
 | `OSS_*` | 国内 CDN 镜像（**teamclu 仓库必须配置**，否则 OSS 端点不会更新） |
-| `UPDATER_GITHUB_TOKEN` | macOS job 写 GitHub Release |
+| `UPDATER_GITHUB_TOKEN` | macOS / Windows job bake 进自定义 updater（GitHub 兜底模式） |
 
 生产配置结构参考 `build.config.example.json`。
 

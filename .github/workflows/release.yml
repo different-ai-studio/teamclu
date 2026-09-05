@@ -497,6 +497,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Bake into the custom Rust updater (option_env!). Without this,
+          # Windows falls into GitHub API mode with an empty token and fails
+          # check_update with "Updater token not configured".
+          UPDATER_GITHUB_TOKEN: ${{ secrets.UPDATER_GITHUB_TOKEN }}
           DEVICE_JWT_SECRET: ${{ secrets.DEVICE_JWT_SECRET }}
         with:
           tagName: ${{ github.ref_name }}
