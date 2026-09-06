@@ -53,6 +53,35 @@ function runtimeMissing(): boolean {
 }
 
 /**
+ * The daemon that answered `amuxd doctor` is older than this app and does not
+ * report the managed runtime's rows at all.
+ *
+ * Worth a message of its own because every other reading of this state is a
+ * lie: the rows come back `present: false`, the install "succeeds" (there is
+ * nothing for it to do), the re-check still says missing, and the wizard ends
+ * on "the runtime was installed but does not report as ready" — pointing at a
+ * runtime that was fine and a log that says nothing about it.
+ *
+ * Reachable in a dev checkout, where `scripts/ensure-amuxd-sidecar.js` stages
+ * the sidecar once at `pnpm tauri:dev` launch while the Rust host is rebuilt on
+ * every source change. A shipped bundle always carries a matching pair.
+ */
+function staleDaemonMessage(): string | null {
+  const row = useSetupStore.getState().requirements.find((r) => r.blocker === 'daemon_outdated')
+  if (!row) return null
+  return row.blockerFound && row.blockerRequired
+    ? i18n.t(
+        'settings.daemonOnboarding.daemonOutdated',
+        'The local daemon (amuxd {{found}}) is older than this app ({{required}}) and cannot report whether the runtime is ready. Reinstall the app — or, in a dev checkout, restart `pnpm tauri:dev` so the bundled daemon is rebuilt.',
+        { found: row.blockerFound, required: row.blockerRequired },
+      )
+    : i18n.t(
+        'settings.daemonOnboarding.daemonOutdatedUnknownVersion',
+        'The local daemon is older than this app and cannot report whether the runtime is ready. Reinstall the app — or, in a dev checkout, restart `pnpm tauri:dev` so the bundled daemon is rebuilt.',
+      )
+}
+
+/**
  * Make sure the managed runtime (Node.js + pi + the MCP SDK) is installed
  * before the gate opens onto the chat UI (#1250).
  *
@@ -76,6 +105,13 @@ async function ensureRuntimeReady(): Promise<boolean> {
   useDaemonOnboardingStore.setState({ status: 'starting', loaded: true, busy: true, error: null })
   try {
     await runStep('install-runtime', async () => {
+      // Before the install, not after: on a stale daemon it would download
+      // nothing, report success, and leave the rows exactly as they are.
+      const stale = staleDaemonMessage()
+      if (stale) {
+        useDaemonOnboardingStore.setState({ daemonOutdated: true })
+        throw new Error(stale)
+      }
       await useSetupStore.getState().install('pi')
       const failure = useSetupStore.getState().errors.pi
       if (failure) throw new Error(failure)
@@ -178,6 +214,11 @@ type DaemonOnboardingState = {
   /** Which step owns `error`. Lets the failure screen name it and offer the
    * recovery that actually fits, instead of a bare Retry. */
   failedStep: OnboardingStep | null
+  /** `install-runtime` failed because the daemon is too old to report the
+   * runtime, not because a download broke. Kept apart from `failedStep`
+   * because the two want opposite advice: the step's own recovery copy sends
+   * the user at their network, which here is the one thing that is fine. */
+  daemonOutdated: boolean
   /** Epoch ms the current run began. The store keeps only the timestamp — a
    * ticking counter here would re-render every subscriber once a second. */
   runStartedAt: number | null
@@ -235,6 +276,7 @@ function beginRun(): void {
     step: null,
     completedSteps: [],
     failedStep: null,
+    daemonOutdated: false,
     runStartedAt: Date.now(),
   })
 }
@@ -583,6 +625,7 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
   step: null,
   completedSteps: [],
   failedStep: null,
+  daemonOutdated: false,
   runStartedAt: null,
   completedAgent: null,
   pendingName: null,

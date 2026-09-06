@@ -162,6 +162,7 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
     step,
     completedSteps,
     failedStep,
+    daemonOutdated,
     runStartedAt,
     completedAgent,
     pendingName,
@@ -170,7 +171,7 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
     forceReset,
     autoHealCloudSession,
   } = useDaemonOnboardingStore(
-    useShallow((s) => ({ status: s.status, busy: s.busy, error: s.error, step: s.step, completedSteps: s.completedSteps, failedStep: s.failedStep, runStartedAt: s.runStartedAt, completedAgent: s.completedAgent, pendingName: s.pendingName, nameDeviceAgent: s.nameDeviceAgent, refresh: s.refresh, forceReset: s.forceReset, autoHealCloudSession: s.autoHealCloudSession })),
+    useShallow((s) => ({ status: s.status, busy: s.busy, error: s.error, step: s.step, completedSteps: s.completedSteps, failedStep: s.failedStep, daemonOutdated: s.daemonOutdated, runStartedAt: s.runStartedAt, completedAgent: s.completedAgent, pendingName: s.pendingName, nameDeviceAgent: s.nameDeviceAgent, refresh: s.refresh, forceReset: s.forceReset, autoHealCloudSession: s.autoHealCloudSession })),
   )
   const elapsed = useElapsedSeconds(runStartedAt)
   const [name, setName] = React.useState('')
@@ -320,12 +321,21 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
             : t('settings.daemonOnboarding.errorTitle', "Can't set up this machine's agent")
         }
         subtitle={
-          failedStep
-            ? t(`settings.daemonOnboarding.recovery.${failedStep}`, '')
-            : t(
-                'settings.daemonOnboarding.errorSubtitle',
-                'Nothing was left half-configured — retrying is safe.',
+          // A stale daemon fails `install-runtime`, but that step's recovery
+          // copy is about downloads and networks — the two things that are not
+          // wrong here. Retrying against the same binary cannot help either, so
+          // say what does.
+          daemonOutdated
+            ? t(
+                'settings.daemonOnboarding.recovery.daemon-outdated',
+                'The daemon on this machine is older than the app and cannot report the runtime. Restarting the app with a matching daemon is the fix — a retry against the same one will not help.',
               )
+            : failedStep
+              ? t(`settings.daemonOnboarding.recovery.${failedStep}`, '')
+              : t(
+                  'settings.daemonOnboarding.errorSubtitle',
+                  'Nothing was left half-configured — retrying is safe.',
+                )
         }
       >
         {failedStep && (

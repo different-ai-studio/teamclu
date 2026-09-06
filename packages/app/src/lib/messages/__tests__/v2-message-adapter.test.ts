@@ -822,6 +822,54 @@ describe("adaptTeamcluMessages", () => {
     expect(result?.[0]?.parts ?? []).toEqual([]);
   });
 
+  it("maps failed AGENT_REPLY metadata to turnStatus and hides agent-facing body", () => {
+    const result = adaptTeamcluMessages([
+      tmsg({
+        kind: MessageKind.AGENT_REPLY,
+        content:
+          "[Turn failed] The model provider returned an error before this turn produced an answer.",
+        turnId: "t-failed",
+        metadataJson: JSON.stringify({ turn_status: "failed" }),
+        replyToMessageId: "user-failed",
+      }),
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result?.[0]?.turnStatus).toBe("failed");
+    // The English notice is context for the model, never shown to the user.
+    expect(result?.[0]?.content).toBe("");
+    expect(result?.[0]?.parts ?? []).toEqual([]);
+  });
+
+  it("keeps generated prose on a failed AGENT_REPLY and still marks it failed", () => {
+    const prose = "I got as far as reading the config…";
+    const result = adaptTeamcluMessages([
+      tmsg({
+        kind: MessageKind.AGENT_REPLY,
+        content: prose,
+        turnId: "t-failed-prose",
+        metadataJson: JSON.stringify({ turn_status: "failed" }),
+      }),
+    ]);
+    expect(result?.[0]?.turnStatus).toBe("failed");
+    expect(result?.[0]?.content).toBe(prose);
+  });
+
+  it("does not read a failed turn as a completed one", () => {
+    // Regression: a provider failure used to arrive as the no_final_reply
+    // notice, whose text tells the model the turn completed successfully.
+    const result = adaptTeamcluMessages([
+      tmsg({
+        kind: MessageKind.AGENT_REPLY,
+        content:
+          "[Turn failed] The model provider returned an error before this turn produced an answer.",
+        turnId: "t-failed-legacy",
+      }),
+    ]);
+    // Recognised from the body alone, with no metadata at all.
+    expect(result?.[0]?.turnStatus).toBe("failed");
+    expect(result?.[0]?.content).toBe("");
+  });
+
   it("keeps generated prose on interrupted AGENT_REPLY and sets turnStatus", () => {
     const prose = "暮色从城市的边缘慢慢漫上来……";
     const result = adaptTeamcluMessages([

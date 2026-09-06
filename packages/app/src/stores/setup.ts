@@ -22,8 +22,20 @@ import { markStartup } from '@/lib/telemetry/startup-perf'
  * `node` and `node_outdated` are separate because the fix is: "there is no Node
  * here" sends the user to install one, while "the Node we can see is 20.20.2"
  * sends them to a version manager they already have.
+ *
+ * `daemon_outdated` is the odd one: it is not about the runtime at all. The
+ * daemon that answered is older than this app and does not report the managed
+ * rows, so "not installed" is not a reading it ever took. Nothing an install
+ * does can clear it — see `daemon_predates_managed_runtime` in
+ * `apps/desktop/src/commands/setup.rs`.
  */
-export type RuntimeBlocker = 'api_key' | 'node' | 'node_outdated' | 'bridge' | 'mcp_sdk'
+export type RuntimeBlocker =
+  | 'api_key'
+  | 'node'
+  | 'node_outdated'
+  | 'bridge'
+  | 'mcp_sdk'
+  | 'daemon_outdated'
 
 export type RequirementStatus = {
   id: string
