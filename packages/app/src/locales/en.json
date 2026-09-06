@@ -905,6 +905,11 @@
       "statusLabel": "no final reply",
       "description": "No additional written reply was produced."
     },
+    "turnFailed": {
+      "failedTitle": "Turn failed",
+      "statusLabel": "provider error",
+      "description": "The model provider errored out before a reply was produced. The work was not completed."
+    },
     "unsupportedNativeSkill": {
       "failedTitle": "Skill not created",
       "statusLabel": "unsupported directory",

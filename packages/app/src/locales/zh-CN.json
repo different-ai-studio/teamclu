@@ -905,6 +905,11 @@
       "statusLabel": "no final reply",
       "description": "没有额外的文字回复。"
     },
+    "turnFailed": {
+      "failedTitle": "本轮失败",
+      "statusLabel": "provider error",
+      "description": "模型服务在产出回复前报错，本轮工作没有完成。"
+    },
     "unsupportedNativeSkill": {
       "failedTitle": "技能未创建",
       "statusLabel": "unsupported directory",

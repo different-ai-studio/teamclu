@@ -115,6 +115,7 @@ export const ChatMessage = React.memo(function ChatMessage({
   const isUser = message.role === "user";
   const isInterruptedTurn = !isUser && message.turnStatus === "interrupted";
   const isNoFinalReplyTurn = !isUser && message.turnStatus === "no_final_reply";
+  const isFailedTurn = !isUser && message.turnStatus === "failed";
   const isUnsupportedNativeSkillTurn =
     !isUser && message.turnStatus === "skill_created_in_unsupported_directory";
   const [copied, setCopied] = React.useState(false);
@@ -634,6 +635,33 @@ export const ChatMessage = React.memo(function ChatMessage({
             {t(
               "chat.noFinalReply.description",
               "No additional written reply was produced.",
+            )}
+          </p>
+        </div>
+      ) : null}
+
+      {/* Daemon failed AGENT_REPLY — the provider errored out mid-turn. The
+          thread-level SessionErrorAlert carries the provider's own words; this
+          strip marks the turn itself so the reply is not read as an answer. */}
+      {isFailedTurn ? (
+        <div
+          className="mt-1 flex max-w-[520px] flex-wrap items-baseline gap-x-2 gap-y-1 pl-1 text-[12.5px] leading-[1.5] text-ink-2"
+          data-testid="turn-failed"
+        >
+          <span
+            className="inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-[1px] bg-amber-500/80"
+            aria-hidden
+          />
+          <span className="font-semibold">
+            {t("chat.turnFailed.failedTitle", "Turn failed")}
+          </span>
+          <span className="font-mono text-[11px] text-faint">
+            · {t("chat.turnFailed.statusLabel", "provider error")}
+          </span>
+          <p className="mt-0.5 w-full text-[12.5px] leading-[1.55] text-muted-foreground">
+            {t(
+              "chat.turnFailed.description",
+              "The model provider errored out before a reply was produced. The work was not completed.",
             )}
           </p>
         </div>
