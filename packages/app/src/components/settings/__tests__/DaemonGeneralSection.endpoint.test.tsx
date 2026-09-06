@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 const mockReloadDaemonRuntime = vi.hoisted(() => vi.fn())
+const mockGetDaemonHttpEndpoint = vi.hoisted(() => vi.fn())
+const mockOpenDaemonSetupConsole = vi.hoisted(() => vi.fn())
 const mockEncodeWorkspaceId = vi.hoisted(() => vi.fn((path: string) => `id:${path}`))
 const mockInvoke = vi.hoisted(() => vi.fn())
 
@@ -91,8 +93,8 @@ vi.mock('@/lib/daemon/daemon-local-client', () => ({
   getCursorAgentSettings: vi.fn(async () => ({ apiKeyConfigured: false })),
   reloadDaemonRuntime: (...args: unknown[]) => mockReloadDaemonRuntime(...args),
   encodeWorkspaceId: (path: string) => mockEncodeWorkspaceId(path),
-  getDaemonHttpEndpoint: vi.fn(async () => null),
-  openDaemonSetupConsole: vi.fn(async () => true),
+  getDaemonHttpEndpoint: (...args: unknown[]) => mockGetDaemonHttpEndpoint(...args),
+  openDaemonSetupConsole: (...args: unknown[]) => mockOpenDaemonSetupConsole(...args),
 }))
 
 vi.mock('@/stores/local-daemon-catalog-store', () => ({
@@ -194,65 +196,68 @@ vi.mock('@/components/ui/alert-dialog', () => ({
   ),
 }))
 
-describe('DaemonGeneralSection force reload', () => {
+describe('DaemonGeneralSection daemon endpoint', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockReloadDaemonRuntime.mockResolvedValue('restart_required')
-    mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === 'get_daemon_team_id') return 'team-1'
-      return null
+    mockGetDaemonHttpEndpoint.mockResolvedValue({
+      baseUrl: 'http://127.0.0.1:60243',
+      port: 60243,
     })
+    mockOpenDaemonSetupConsole.mockResolvedValue(true)
+    mockInvoke.mockResolvedValue(null)
   })
 
-  it('shows force-reload control and reloads only after confirm', async () => {
+  // amuxd binds `127.0.0.1:0`, so before this the only ways to learn the port
+  // were `amuxd setup` in a terminal or reading ~/.amuxd/run/amuxd.http.port.
+  it('shows the address and the port the daemon actually bound', async () => {
     const { DaemonGeneralSection } = await import('../DaemonGeneralSection')
     render(<DaemonGeneralSection />)
 
-    const openBtn = await screen.findByTestId('daemon-force-reload-runtime')
-    fireEvent.click(openBtn)
-
-    expect(await screen.findByTestId('force-reload-dialog')).toBeTruthy()
-    expect(mockReloadDaemonRuntime).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByTestId('daemon-force-reload-confirm'))
-
-    await waitFor(() => {
-      expect(mockReloadDaemonRuntime).toHaveBeenCalledWith('id:/workspace')
-    })
-  })
-
-  it('does not reload when confirm dialog is cancelled', async () => {
-    const { DaemonGeneralSection } = await import('../DaemonGeneralSection')
-    render(<DaemonGeneralSection />)
-
-    fireEvent.click(await screen.findByTestId('daemon-force-reload-runtime'))
-    expect(await screen.findByTestId('force-reload-dialog')).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: /Cancel|取消/i }))
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('force-reload-dialog')).toBeNull()
-    })
-    expect(mockReloadDaemonRuntime).not.toHaveBeenCalled()
-  })
-
-  it('coalesces repeated confirm clicks while reload is in flight', async () => {
-    let resolveReload: ((value: string) => void) | undefined
-    mockReloadDaemonRuntime.mockImplementation(
-      () => new Promise<string>((resolve) => { resolveReload = resolve }),
+    expect(await screen.findByTestId('daemon-endpoint-url')).toHaveTextContent(
+      'http://127.0.0.1:60243',
     )
+    expect(screen.getByTestId('daemon-endpoint-port')).toHaveTextContent('60243')
+  })
+
+  it('opens the web config without the token passing through the component', async () => {
     const { DaemonGeneralSection } = await import('../DaemonGeneralSection')
     render(<DaemonGeneralSection />)
 
-    fireEvent.click(await screen.findByTestId('daemon-force-reload-runtime'))
-    const confirm = await screen.findByTestId('daemon-force-reload-confirm')
-    fireEvent.click(confirm)
-    fireEvent.click(confirm)
+    fireEvent.click(await screen.findByTestId('daemon-open-web-config'))
 
-    expect(mockReloadDaemonRuntime).toHaveBeenCalledTimes(1)
-    resolveReload?.('restart_required')
-    await waitFor(() => {
-      expect(screen.queryByTestId('force-reload-dialog')).toBeNull()
+    await waitFor(() => expect(mockOpenDaemonSetupConsole).toHaveBeenCalledTimes(1))
+    // No argument: the URL and its root token are built inside the client, so
+    // there is nothing here to render, copy or log.
+    expect(mockOpenDaemonSetupConsole).toHaveBeenCalledWith()
+  })
+
+  it('says the daemon is down rather than showing an empty address', async () => {
+    mockGetDaemonHttpEndpoint.mockResolvedValue(null)
+    const { DaemonGeneralSection } = await import('../DaemonGeneralSection')
+    render(<DaemonGeneralSection />)
+
+    await waitFor(() => expect(mockGetDaemonHttpEndpoint).toHaveBeenCalled())
+    expect(screen.queryByTestId('daemon-endpoint-url')).toBeNull()
+    expect(
+      screen.getByText('The local daemon is not running, so it has no port yet.'),
+    ).toBeInTheDocument()
+  })
+
+  it('re-reads the endpoint on Refresh, because a restart moves the port', async () => {
+    const { DaemonGeneralSection } = await import('../DaemonGeneralSection')
+    render(<DaemonGeneralSection />)
+    await waitFor(() => expect(mockGetDaemonHttpEndpoint).toHaveBeenCalled())
+    const before = mockGetDaemonHttpEndpoint.mock.calls.length
+
+    mockGetDaemonHttpEndpoint.mockResolvedValue({
+      baseUrl: 'http://127.0.0.1:51111',
+      port: 51111,
     })
+    fireEvent.click(screen.getByText('Refresh'))
+
+    await waitFor(() =>
+      expect(mockGetDaemonHttpEndpoint.mock.calls.length).toBeGreaterThan(before),
+    )
+    expect(await screen.findByTestId('daemon-endpoint-port')).toHaveTextContent('51111')
   })
 })

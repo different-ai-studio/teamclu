@@ -12,7 +12,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { normalizeDaemonEnvActivationDiagnostics } from '@/lib/diagnostics/env-diagnostics'
 import { useAuthStore } from '@/stores/auth-store'
-import { isTauri } from '@/lib/utils'
+import { isTauri, openExternalUrl } from '@/lib/utils'
 import { textToBase64Url } from '@/lib/base64'
 
 // ─── Workspace ID encoding ────────────────────────────────────────────────────
@@ -190,6 +190,56 @@ export async function probeDaemonHttp(): Promise<DaemonHttpProbe> {
 export async function isDaemonHttpAvailable(): Promise<boolean> {
   const probe = await probeDaemonHttp()
   return probe.ok
+}
+
+export interface DaemonHttpEndpoint {
+  /** e.g. `http://127.0.0.1:60243`. */
+  baseUrl: string
+  /** The bound loopback port, or null when `baseUrl` carries none. */
+  port: number | null
+}
+
+/**
+ * Where the local daemon is listening, for display.
+ *
+ * Deliberately without the root token that sits beside it in the same IPC
+ * answer: this feeds a settings row, and a token on screen is a token in a
+ * screenshot. The port is worth showing because it is not knowable otherwise —
+ * amuxd binds `127.0.0.1:0`, so it is different on every restart and only
+ * recorded in `~/.amuxd/run/amuxd.http.port`.
+ */
+export async function getDaemonHttpEndpoint(): Promise<DaemonHttpEndpoint | null> {
+  if (!isTauri()) return null
+  const info = await readDaemonHttpInfo()
+  if (!info?.base_url) return null
+  let port: number | null = null
+  try {
+    const parsed = Number(new URL(info.base_url).port)
+    port = Number.isInteger(parsed) && parsed > 0 ? parsed : null
+  } catch {
+    // A base_url we cannot parse still displays fine; only the port is lost.
+  }
+  return { baseUrl: info.base_url, port }
+}
+
+/**
+ * Open amuxd's web config console (`/v1/setup`) in the system browser.
+ *
+ * The URL `amuxd setup` prints, built here rather than returned so the root
+ * token goes straight from the IPC answer to the browser — never into a React
+ * tree, a clipboard, or a log line. The token rides in the query string, which
+ * is safe on loopback and nowhere else: the page's first act is to trade it
+ * for a scoped session token.
+ *
+ * False means the daemon is not running (no port/token files to read).
+ */
+export async function openDaemonSetupConsole(): Promise<boolean> {
+  if (!isTauri()) return false
+  const info = await readDaemonHttpInfo()
+  if (!info?.base_url || !info.root_token) return false
+  const url = `${info.base_url}/v1/setup?access_token=${encodeURIComponent(info.root_token)}`
+  await openExternalUrl(url)
+  return true
 }
 
 // 'ok'      — daemon's cloud session refreshes normally.
