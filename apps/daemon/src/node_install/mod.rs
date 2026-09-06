@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::opencode_install::version_ge;
+use teamclu_runtime_env::version::version_ge;
 use crate::pi_install::{download_bytes, progress, progress_route, sha256_hex};
 use crate::process_util::CommandNoWindow;
 

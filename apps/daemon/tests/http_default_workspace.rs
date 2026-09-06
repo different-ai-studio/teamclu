@@ -51,7 +51,6 @@ async fn test_app(backend: Arc<dyn Backend>, scopes: &[&str]) -> (TestApp, tempf
         runtime,
         None,
         None,
-        None,
         test_sync_dispatcher(),
         None,
         Some(backend),

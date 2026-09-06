@@ -7,7 +7,6 @@ use uuid::Uuid;
 
 use super::agent_runtime_state::PerAgentRuntimeState;
 use super::backend::{create_backend, AcpCommand, AcpStartupMetadata, AgentBackend};
-use super::builtin_commands::builtin_commands;
 use super::execution_context::{ExecutionContext, IsolationDomainKey, ProcessEnvRevision};
 use super::handle::RuntimeHandle;
 use super::refresh::RuntimeRefreshCoordinator;
@@ -70,9 +69,6 @@ pub struct SpawnRuntimeEnv {
     pub env_team_id: Option<String>,
     /// When true, all keys in `extra_env` override the ACP host process environment.
     pub force_env_override: bool,
-    /// Original `opencode.json` before MCP placeholder resolve; restored when the
-    /// last runtime on this worktree stops.
-    pub opencode_json_original: Option<String>,
     /// Gateway sessions auto-allow tool permissions and use gateway MCP wiring.
     /// Remote-tools collab runtimes may also carry an MCP config but must stay
     /// `is_gateway = false` so permission + MCP repair paths behave correctly.
@@ -105,46 +101,17 @@ pub struct CheckedOutTurn {
     pub event_rx: mpsc::Receiver<AcpEventFrame>,
 }
 
-/// Translate a legacy gateway-facing short model name ("sonnet", "opus",
-/// "haiku") to a full model id. Returns `None` for unknown short names so
-/// callers can fall through to passing the input verbatim (supports full ids
-/// like "claude-sonnet-4-6" without a separate validation branch).
-pub fn model_id_for_short_name(short: &str) -> Option<String> {
-    match short {
-        "sonnet" => Some("claude-sonnet-4-6".to_string()),
-        "opus" => Some("claude-opus-4-7".to_string()),
-        "haiku" => Some("claude-haiku-4-5".to_string()),
-        _ => None,
-    }
-}
 
-/// Resolve the initial ACP model id to apply for a gateway/cron session,
-/// given the backend that will actually run and the caller's
-/// `(provider, model)` override.
+/// Resolve the initial pi model id for a gateway/cron session from the
+/// caller's `(provider, model)` override.
 ///
-/// The ACP model-id shape differs per backend, so the `provider` segment must
-/// be handled differently:
-///
-/// - **Claude Code**: model ids are bare (e.g. `claude-sonnet-4-6`). Short
-///   names (`sonnet`/`opus`/`haiku`) map to full ids; `provider` is irrelevant
-///   because the claude-code binary is anthropic-only.
-/// - **OpenCode / Codex**: the ACP model id is itself `provider/model`
-///   (e.g. `scnet/MiniMax-M2.5`), so we re-join the segments. The previous
-///   behavior passed only the bare `model`, producing an id the agent could
-///   not match — it silently fell back to its default model. Re-joining fixes
-///   that. When `provider` is empty we pass `model` through unchanged.
-pub fn resolve_initial_model(agent_type: amux::AgentType, provider: &str, model: &str) -> String {
-    match agent_type {
-        amux::AgentType::ClaudeCode => {
-            model_id_for_short_name(model).unwrap_or_else(|| model.to_string())
-        }
-        _ => {
-            if provider.is_empty() {
-                model.to_string()
-            } else {
-                format!("{provider}/{model}")
-            }
-        }
+/// Pi expects `provider/model` when a provider is present; otherwise the model
+/// string is passed through unchanged (already a full catalog id).
+pub fn resolve_initial_model(_agent_type: amux::AgentType, provider: &str, model: &str) -> String {
+    if provider.is_empty() {
+        model.to_string()
+    } else {
+        format!("{provider}/{model}")
     }
 }
 
@@ -162,8 +129,6 @@ pub struct RuntimeManager {
     /// "is this key present" says nothing about what was configured. See
     /// [`Self::default_agent_type`].
     default_agent_type: amux::AgentType,
-    /// Per-worktree MCP resolve snapshots; restored when the last agent on the worktree stops.
-    opencode_snapshots: HashMap<String, opencode_snapshot::WorktreeOpencodeSnapshot>,
     /// Daemon-side mirror of per-agent ACP state (current model + last-announced
     /// slash commands) used to populate `RuntimeInfo`. See `agent_runtime_state`.
     agent_state: PerAgentRuntimeState,
@@ -200,8 +165,6 @@ pub struct RuntimeManager {
 // Permission-response routing lives in `manager/permission.rs` as a child
 // module so it can reach the private `agents` map directly.
 mod permission;
-// OpenCode opencode.json snapshot/restore lives in `manager/opencode_snapshot.rs`.
-mod opencode_snapshot;
 // Read-only agent lookups (by session_id / runtime key / acp session uuid).
 mod lookup;
 // Workspace-scoped runtime queries (active handles / stop-all for a workspace).
@@ -239,13 +202,6 @@ impl RuntimeManager {
             .attach_context_service(Arc::clone(service));
     }
 
-    /// Shared OpenCode host pool used by chat and workspace services.
-    pub async fn opencode_host_pool(
-        &self,
-    ) -> Option<Arc<crate::runtime::opencode_http::host_pool::OpenCodeHostPool>> {
-        self.agent_backend.lock().await.opencode_host_pool()
-    }
-
     pub fn agent_backend_handle(&self) -> Arc<AsyncMutex<Box<dyn AgentBackend>>> {
         Arc::clone(&self.agent_backend)
     }
@@ -272,7 +228,6 @@ impl RuntimeManager {
             // pi is the only runtime (#1247); `daemon::runtime_resolution` says
             // the same, but `runtime/` must not reach into `daemon/`.
             default_agent_type: amux::AgentType::Pi,
-            opencode_snapshots: HashMap::new(),
             agent_state: PerAgentRuntimeState::new(),
             model_catalog: DeviceModelCatalog::load(&model_catalog_path),
             model_catalog_path,
@@ -321,22 +276,18 @@ impl RuntimeManager {
     }
 
     pub fn launch_config_for(&self, agent_type: amux::AgentType) -> AgentLaunchConfig {
+        let agent_type = super::local_agent::resolve_local_agent_type(agent_type);
         if let Some(cfg) = self.launch_configs.get(&agent_type).cloned() {
             return cfg;
         }
-        // Every AgentType we can be asked to resolve must have its own entry in
-        // `launch_configs` (populated in daemon/server.rs). Silently falling back
-        // to ClaudeCode's binary here previously caused pi to spawn the `claude`
-        // binary when its own entry was momentarily missing — so a missing entry
-        // is now a loud bug signal, not a quiet substitution.
         tracing::error!(
             ?agent_type,
-            "no launch_configs entry for this agent type; falling back to claude-code config — this is a bug, add the missing entry in daemon/server.rs"
+            "no launch_configs entry for pi; falling back to default pi config"
         );
         self.launch_configs
-            .get(&amux::AgentType::ClaudeCode)
+            .get(&amux::AgentType::Pi)
             .cloned()
-            .unwrap_or_else(|| AgentLaunchConfig::new("claude", Vec::new(), "claude"))
+            .unwrap_or_else(|| AgentLaunchConfig::new("pi", Vec::new(), "pi"))
     }
 
     /// Pre-warm shared ACP hosts so the first `runtimeStart` only pays for
@@ -529,7 +480,7 @@ impl RuntimeManager {
     }
 
     fn uses_deferred_initial_prompt(agent_type: amux::AgentType) -> bool {
-        matches!(agent_type, amux::AgentType::Opencode | amux::AgentType::Pi)
+        matches!(agent_type, amux::AgentType::Pi)
     }
 
     fn validate_managed_session_metadata(
@@ -674,8 +625,7 @@ impl RuntimeManager {
     /// Variant of `start_runtime` that pins the initial ACP model. Used by
     /// `create_gateway_session_with_model` to honour a per-session
     /// `set_model` override the gateway recorded before the first prompt.
-    /// `initial_model_override` is a full model id (e.g. "claude-sonnet-4-6"),
-    /// not a short name — callers map short names via `model_id_for_short_name`.
+    /// `initial_model_override` is a full pi model id (e.g. `anthropic/claude-sonnet-4-6`).
     /// `mcp_config_path`, when `Some`, is forwarded as `--mcp-config <path>`
     /// to the spawned claude-code so it can call amuxd's `send` tool.
     #[allow(clippy::too_many_arguments)]
@@ -723,11 +673,9 @@ impl RuntimeManager {
             resolved_env,
             env_team_id,
             force_env_override,
-            opencode_json_original,
             is_gateway,
             permission: _,
         } = runtime_env;
-        self.register_opencode_snapshot(&worktree, opencode_json_original, &extra_env);
         let mut handle = RuntimeHandle::new(
             agent_id.clone(),
             agent_type,
@@ -789,8 +737,6 @@ impl RuntimeManager {
 
         handle.cmd_tx = Some(cmd_tx);
         handle.host_generation_id = startup.host_generation_id.clone();
-        handle.route_lease = startup.route_lease.take();
-
         self.agents.insert(agent_id.clone(), handle);
         self.mark_actor_state_dirty();
         self.aggregators
@@ -897,11 +843,9 @@ impl RuntimeManager {
             resolved_env,
             env_team_id,
             force_env_override,
-            opencode_json_original,
             is_gateway,
             permission: _,
         } = runtime_env;
-        self.register_opencode_snapshot(&worktree, opencode_json_original, &extra_env);
 
         let mut handle = RuntimeHandle::new(
             session_id.to_string(),
@@ -959,7 +903,6 @@ impl RuntimeManager {
 
         handle.cmd_tx = Some(cmd_tx);
         handle.host_generation_id = startup.host_generation_id.clone();
-        handle.route_lease = startup.route_lease.take();
         handle.current_prompt = prompt.to_string();
         // No static fallback: models come only from the live serve catalog
         // captured at attach time. Empty until the runtime advertises them.
@@ -1000,7 +943,6 @@ impl RuntimeManager {
                     &handle.acp_session_id,
                 );
             }
-            self.release_opencode_snapshot(&handle.worktree);
             handle.status = amux::AgentStatus::Stopped;
             handle.shutdown().await;
             // Best-effort cleanup of legacy ambient stamp files left from pre-Phase-2
@@ -1633,7 +1575,7 @@ impl RuntimeManager {
     /// Built-ins for the active backend — the same list every worktree carried,
     /// since it never depended on the directory.
     pub fn actor_available_commands(&self) -> Vec<amux::AcpAvailableCommand> {
-        builtin_commands(self.default_agent_type())
+        Vec::new()
     }
 
     pub fn to_proto_agent_list(&self) -> amux::AgentList {
@@ -1731,12 +1673,10 @@ impl RuntimeManager {
 
     /// Variant of `create_gateway_session` that honours a per-session model
     /// override. The gateway's `AmuxdAgentHandle` resolves the override from
-    /// its `model_override` map and passes it as `(provider, model)`. We
-    /// translate the short name ("sonnet"/"opus"/"haiku") into the full ACP
-    /// model id ("claude-sonnet-4-6", …) via `model_id_for_short_name`
-    /// before threading through to the adapter. `provider` is currently
-    /// unused (claude-code adapter == anthropic) but kept on the signature
-    /// for future multi-provider routing.
+    /// its `model_override` map and passes it as `(provider, model)`; pi
+    /// receives `provider/model` via [`resolve_initial_model`].
+    ///
+    /// `agent_type_override` is ignored (ADR-0014): the daemon always runs pi.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_gateway_session_with_model(
         &mut self,
@@ -1747,11 +1687,7 @@ impl RuntimeManager {
         model_override: Option<(String, String)>,
         remote_session_id: Option<&str>,
         context: ExecutionContext,
-        // Backend to run on. `None` falls back to `default_agent_type` (the
-        // gateway path and "auto" cron selection); cron jobs that pin a backend
-        // pass `Some(..)` so a job created for Claude does not run on OpenCode
-        // just because OpenCode is the daemon default.
-        agent_type_override: Option<amux::AgentType>,
+        _agent_type_override: Option<amux::AgentType>,
         // Runtime environment for the spawn. Gateway callers assemble the team
         // env (secrets, `tc_api_key`, `provider.team`) so a gateway-first cold
         // start does not launch the shared `opencode serve` without any
@@ -1790,12 +1726,8 @@ impl RuntimeManager {
             scratch
         };
 
-        // Resolve the initial model against the backend that will actually
-        // run this session. For OpenCode/Codex the ACP model id is
-        // `provider/model`, so the override's provider segment must be
-        // preserved — dropping it (the previous behavior) made the agent
-        // silently fall back to its default model.
-        let agent_type = agent_type_override.unwrap_or_else(|| self.default_agent_type());
+        // Resolve the initial model for pi (`provider/model` when both are set).
+        let agent_type = self.default_agent_type();
         let initial_model: Option<String> = model_override
             .as_ref()
             .map(|(provider, model)| resolve_initial_model(agent_type, provider, model));
@@ -2240,6 +2172,12 @@ mod tests {
         fn evict_agent_types(&mut self, _t: &[amux::AgentType]) -> usize {
             0
         }
+        fn invalidate_workspace_host(&mut self, _domain: &IsolationDomainKey) -> bool {
+            false
+        }
+        fn invalidate_all_workspace_hosts(&mut self) -> usize {
+            0
+        }
         async fn shutdown_for_exit(&mut self) -> usize {
             self.shutdown_called
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -2310,65 +2248,40 @@ mod tests {
     }
 
     #[test]
-    fn resolve_initial_model_claude_maps_short_name() {
+    fn resolve_initial_model_joins_provider_for_pi() {
         assert_eq!(
-            resolve_initial_model(amux::AgentType::ClaudeCode, "anthropic", "sonnet"),
-            "claude-sonnet-4-6"
+            resolve_initial_model(amux::AgentType::Pi, "anthropic", "claude-sonnet-4-6"),
+            "anthropic/claude-sonnet-4-6"
         );
-        assert_eq!(
-            resolve_initial_model(amux::AgentType::ClaudeCode, "", "opus"),
-            "claude-opus-4-7"
-        );
-    }
-
-    #[test]
-    fn resolve_initial_model_claude_passes_full_id_unchanged() {
-        // A full claude id is not a known short name; it must pass through and
-        // the provider segment must be ignored (the binary is anthropic-only).
-        assert_eq!(
-            resolve_initial_model(
-                amux::AgentType::ClaudeCode,
-                "anthropic",
-                "claude-sonnet-4-6"
-            ),
-            "claude-sonnet-4-6"
-        );
-    }
-
-    #[test]
-    fn resolve_initial_model_opencode_rejoins_provider() {
-        // Regression: OpenCode ACP model ids are `provider/model`. Dropping the
-        // provider made set_session_model miss and fall back to the default.
         assert_eq!(
             resolve_initial_model(amux::AgentType::Opencode, "scnet", "MiniMax-M2.5"),
             "scnet/MiniMax-M2.5"
         );
         assert_eq!(
-            resolve_initial_model(amux::AgentType::Codex, "openai", "gpt-5.5"),
+            resolve_initial_model(amux::AgentType::ClaudeCode, "openai", "gpt-5.5"),
             "openai/gpt-5.5"
         );
     }
 
     #[test]
-    fn resolve_initial_model_opencode_empty_provider_passes_model_through() {
+    fn resolve_initial_model_empty_provider_passes_model_through() {
         assert_eq!(
-            resolve_initial_model(amux::AgentType::Opencode, "", "MiniMax-M2.5"),
+            resolve_initial_model(amux::AgentType::Pi, "", "MiniMax-M2.5"),
             "MiniMax-M2.5"
+        );
+        assert_eq!(
+            resolve_initial_model(amux::AgentType::ClaudeCode, "", "sonnet"),
+            "sonnet"
         );
     }
 
     #[test]
-    fn launch_config_for_opencode_uses_registered_backend() {
-        let mut configs = RuntimeManager::test_launch_configs();
-        configs.insert(
-            amux::AgentType::Opencode,
-            AgentLaunchConfig::new("opencode", vec!["acp".to_string()], "opencode"),
-        );
-        let mgr = RuntimeManager::new(configs, None);
+    fn launch_config_for_legacy_name_resolves_to_pi_backend() {
+        let mgr = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
 
         assert_eq!(
             mgr.launch_config_for(amux::AgentType::Opencode),
-            AgentLaunchConfig::new("opencode", vec!["acp".to_string()], "opencode")
+            mgr.launch_config_for(amux::AgentType::Pi)
         );
     }
 
@@ -3534,7 +3447,6 @@ mod tests {
             initial_model: None,
             acp_session_id: "backend-a".into(),
             host_generation_id: "gen-1".into(),
-            route_lease: None,
         };
 
         let service_bg = Arc::clone(&service);
@@ -3543,7 +3455,7 @@ mod tests {
                 panic!("expected Prompt command");
             };
             let token = service_bg
-                .env_for_generation(amux::AgentType::Opencode, "gen-1")
+                .env_for_generation(amux::AgentType::Pi, "gen-1")
                 .get(TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV)
                 .cloned()
                 .expect("token");
@@ -3553,7 +3465,7 @@ mod tests {
                     &ResolveRuntimeContextRequest {
                         backend_session_id: "backend-a".into(),
                         host_generation_id: "gen-1".into(),
-                        backend_kind: "opencode".into(),
+                        backend_kind: "pi".into(),
                     },
                 )
                 .expect("registry must be bound before prompt runs");
@@ -3561,7 +3473,7 @@ mod tests {
         });
 
         mgr.finalize_attached_session(
-            amux::AgentType::Opencode,
+            amux::AgentType::Pi,
             &startup,
             "teamclu-a",
             "runtime-a",
@@ -3588,7 +3500,6 @@ mod tests {
             initial_model: None,
             acp_session_id: "backend-a".into(),
             host_generation_id: String::new(),
-            route_lease: None,
         };
 
         let drain = tokio::spawn(async move {
@@ -3611,7 +3522,7 @@ mod tests {
 
         let err = mgr
             .finalize_attached_session(
-                amux::AgentType::Opencode,
+                amux::AgentType::Pi,
                 &startup,
                 "teamclu-a",
                 "runtime-a",

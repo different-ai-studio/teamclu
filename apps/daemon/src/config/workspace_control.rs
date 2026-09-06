@@ -236,7 +236,7 @@ pub struct EnvActivationDiagnostics {
     pub workspace_has_active_turn: bool,
     pub refresh: RuntimeRefreshDto,
     /// Workspace-scoped OpenCode host generation and capacity state.
-    pub host_pool: crate::runtime::opencode_http::host_pool::DomainHostStats,
+    pub host_pool: crate::runtime::host_pool_stats::DomainHostStats,
     /// Personal keys shadowed by the host OS env at opencode serve spawn.
     pub host_env_shadowed_keys: Vec<String>,
     /// Fingerprint most recently resolved/requested for this workspace.

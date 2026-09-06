@@ -1,9 +1,10 @@
-//! Bridge team-shared skills into `<workspace>/.claude/skills/` for Claude Code.
+//! Bridge team-shared skills into `<workspace>/.claude/skills/` for local agents.
 //!
-//! OpenCode reads `teamclu-team/skills` via `opencode.json`; the Claude Agent SDK
-//! only discovers skills under `.claude/skills/` (with `settingSources` including
-//! `project`). We materialize per-skill symlinks so team skills are visible without
-//! touching the team-share layout.
+//! The `.claude/skills` path is brand-independent (see `config/roles_skills`).
+//! OpenCode-era layout read `teamclu-team/skills` via `opencode.json`; pi and
+//! other runtimes discover skills under `.claude/skills/`. We materialize
+//! per-skill symlinks so team skills are visible without touching the team-share
+//! layout.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

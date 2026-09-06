@@ -34,7 +34,7 @@ use crate::proto::amux;
 // it breaks every test target that compiles this file.
 #[cfg(test)]
 use crate::runtime::acp_event_frame::AcpEventFrame;
-use crate::runtime::adapter::{runtime_envelopes_from_acp_event, RuntimeEnvelope};
+use crate::runtime::acp_envelope::{runtime_envelopes_from_acp_event, RuntimeEnvelope};
 use crate::runtime::supervisor::prepare_workspace;
 use crate::runtime::RuntimeManager;
 
@@ -1025,7 +1025,7 @@ impl RuntimeManagerAdapter {
         let (event_tx, _event_rx) = broadcast::channel::<SessionEvent>(256);
         let snapshot = SessionSnapshot {
             session_id,
-            agent_type: params.agent_type.clone(),
+            agent_type: crate::runtime::local_agent_type_name().to_string(),
             runtime_id: runtime_id.clone(),
             workspace_id: params.workspace_id.clone(),
             current_model: params.model.clone(),
@@ -1090,14 +1090,18 @@ fn parse_agent_type(agent_type: &str) -> Result<amux::AgentType, HttpError> {
         "cursor" => Ok(amux::AgentType::Cursor),
         "claude" | "claude_code" | "claude-code" => Ok(amux::AgentType::ClaudeCode),
         // Kept for back-compat with callers that still send it. There is no codex
-        // backend, so `resolve_requested_agent_type` reroutes it to whatever this
-        // daemon actually runs.
+        // backend; see `resolve_local_agent_type`.
         "codex" => Ok(amux::AgentType::Codex),
         other => Err(HttpError::new(
             super::errors::ErrorCode::BadRequest,
             format!("unsupported agent_type: {other}"),
         )),
     }
+}
+
+/// Parse the wire name, then coerce to the runtime this daemon actually runs.
+fn parse_and_normalize_agent_type(agent_type: &str) -> Result<amux::AgentType, HttpError> {
+    Ok(crate::runtime::resolve_local_agent_type(parse_agent_type(agent_type)?))
 }
 
 fn translate_runtime_event(seq: u64, session_id: Uuid, event: RuntimeEnvelope) -> SessionEvent {
@@ -1162,7 +1166,7 @@ impl RuntimeAdapter for RuntimeManagerAdapter {
         params: CreateSessionParams,
     ) -> Result<SessionSnapshot, HttpError> {
         let session_id = Uuid::new_v4();
-        let agent_type = parse_agent_type(&params.agent_type)?;
+        let agent_type = parse_and_normalize_agent_type(&params.agent_type)?;
         let runtime_id = self
             .spawn_runtime(
                 session_id,
@@ -1363,7 +1367,7 @@ impl RuntimeAdapter for RuntimeManagerAdapter {
                 .get(&session_id)
                 .ok_or_else(|| HttpError::session_not_found(&session_id.to_string()))?;
             (
-                parse_agent_type(&session.snapshot.agent_type)?,
+                parse_and_normalize_agent_type(&session.snapshot.agent_type)?,
                 session.workspace_id.clone(),
                 session.snapshot.current_model.clone(),
                 session.runtime_id.clone(),
@@ -2073,6 +2077,18 @@ mod tests {
                 "{name} should parse"
             );
         }
+    }
+
+    #[test]
+    fn parse_and_normalize_agent_type_reroutes_legacy_names_to_pi() {
+        assert_eq!(
+            parse_and_normalize_agent_type("opencode").unwrap(),
+            amux::AgentType::Pi
+        );
+        assert_eq!(
+            parse_and_normalize_agent_type("pi").unwrap(),
+            amux::AgentType::Pi
+        );
     }
 
     #[test]

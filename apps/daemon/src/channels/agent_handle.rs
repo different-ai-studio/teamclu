@@ -501,10 +501,7 @@ impl AmuxdAgentHandle {
         // Consult per-session override so the spawn picks up the desired
         // model. Stored as (provider, model); both fields are forwarded to
         // `create_gateway_session_with_model`, which calls `resolve_initial_model`
-        // to build the correct model id per backend:
-        //   - ClaudeCode: maps short names (sonnet→claude-sonnet-4-6), drops provider
-        //   - OpenCode (and similar provider/model backends): rejoins as
-        //     "provider/model"
+        // to build the pi model id (`provider/model` when both are set).
         // Chat's own `/model` first, then the gateway-wide setting. Falling
         // through to `None` means an unpinned spawn, which used to resolve
         // against the device MRU — the implicit behaviour ADR-0007 removes.
@@ -515,7 +512,7 @@ impl AmuxdAgentHandle {
                 .cloned()
                 .or_else(|| self.gateway_model.clone())
         };
-        let (workspace_dir, agent_type) = self.resolve_spawn_target(session, &binding).await?;
+        let (workspace_dir, _agent_type) = self.resolve_spawn_target(session, &binding).await?;
         let context = self
             .assemble_execution_context(workspace_dir.as_deref())
             .await?;
@@ -529,29 +526,26 @@ impl AmuxdAgentHandle {
                 model_arg,
                 remote_session_id.as_deref(),
                 context,
-                agent_type,
+                None,
             )
             .await
             .map_err(|e| AgentError::Create(e.to_string()))?
         };
 
-        // Durable persona for ClaudeCode: write CLAUDE.local.md into the
-        // bot's workspace. Non-fatal; the preamble already delivered it.
-        if matches!(agent_type, Some(amux::AgentType::ClaudeCode) | None) {
-            if let (Some(ws), Some(bot_id)) =
-                (workspace_dir.as_deref(), bot_id_from_binding(&binding))
-            {
-                let bot_prompt = {
-                    let configs = self.bot_configs.lock().await;
-                    configs.get(bot_id).and_then(|c| c.system_prompt.clone())
-                };
-                if let Some(prompt) = bot_prompt.as_deref() {
-                    if let Err(e) = super::bot_prompt_file::write_bot_instruction_file(
-                        std::path::Path::new(ws),
-                        prompt,
-                    ) {
-                        tracing::warn!(bot_id, error = %e, "write CLAUDE.local.md failed");
-                    }
+        // Durable persona: write CLAUDE.local.md into the bot's workspace.
+        // Non-fatal; the preamble already delivered it.
+        if let (Some(ws), Some(bot_id)) = (workspace_dir.as_deref(), bot_id_from_binding(&binding))
+        {
+            let bot_prompt = {
+                let configs = self.bot_configs.lock().await;
+                configs.get(bot_id).and_then(|c| c.system_prompt.clone())
+            };
+            if let Some(prompt) = bot_prompt.as_deref() {
+                if let Err(e) = super::bot_prompt_file::write_bot_instruction_file(
+                    std::path::Path::new(ws),
+                    prompt,
+                ) {
+                    tracing::warn!(bot_id, error = %e, "write CLAUDE.local.md failed");
                 }
             }
         }
@@ -1200,30 +1194,6 @@ impl AgentHandle for AmuxdAgentHandle {
                 vec![]
             }
         };
-
-        // Resolve agent type: daemon default → ClaudeCode fallback.
-        let agent_type = self.default_agent_type;
-
-        // ── 2. Agent built-in commands ──
-        // Step 1 above is dead weight now: `AvailableCommandsUpdate` has no
-        // producer under the opencode HTTP runtime, so it always yields an
-        // empty list and everything real comes from here. Shared with the
-        // actor-state retain so both surfaces advertise the same set.
-        for cmd in crate::runtime::builtin_commands::builtin_commands(
-            agent_type.unwrap_or(amux::AgentType::ClaudeCode),
-        ) {
-            if !result.iter().any(|c| c.name == cmd.name) {
-                result.push(AgentCommand {
-                    name: cmd.name,
-                    description: cmd.description,
-                    input_hint: if cmd.input_hint.is_empty() {
-                        None
-                    } else {
-                        Some(cmd.input_hint)
-                    },
-                });
-            }
-        }
 
         Ok(result)
     }
@@ -2213,9 +2183,8 @@ pub(crate) mod tests {
 
     /// Verify `set_model` stores `(provider, model)` as a tuple so the
     /// lazy-spawn in `resolve_or_spawn` forwards BOTH to
-    /// `create_gateway_session_with_model`.  The provider must be preserved
-    /// because `resolve_initial_model` needs it to reconstruct the full
-    /// `provider/model` id for backends that use that form (e.g. OpenCode).
+    /// `create_gateway_session_with_model`. `resolve_initial_model` rejoins
+    /// them as `provider/model` for pi.
     #[tokio::test]
     async fn set_model_stores_provider_and_model_tuple() {
         let handle = make_handle();

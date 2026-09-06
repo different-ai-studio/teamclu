@@ -171,20 +171,9 @@ pub fn build(state: HttpState) -> Router {
             post(workspaces::put_device_provider_auth)
                 .delete(workspaces::delete_device_provider_auth),
         )
-        // Device-level OAuth (same #742 reasoning as above): OAuth state
-        // lives under the user's global OpenCode paths, not a workspace, so
-        // connect should not require one to already exist and resolve.
         .route(
             "/v1/providers/auth-methods",
             get(workspaces::get_device_provider_auth_methods),
-        )
-        .route(
-            "/v1/providers/:provider_id/oauth/authorize",
-            post(workspaces::post_device_provider_oauth_authorize),
-        )
-        .route(
-            "/v1/providers/:provider_id/oauth/callback",
-            post(workspaces::post_device_provider_oauth_callback),
         )
         // pi provider auth — pi's `/login`, `/logout` and `models.json` custom
         // providers. Device-level for the same reason as `/v1/providers` above
@@ -229,14 +218,6 @@ pub fn build(state: HttpState) -> Router {
         .route(
             "/v1/workspaces/:id/provider-auth-methods",
             get(workspaces::get_provider_auth_methods),
-        )
-        .route(
-            "/v1/workspaces/:id/providers/:provider_id/oauth/authorize",
-            post(workspaces::post_provider_oauth_authorize),
-        )
-        .route(
-            "/v1/workspaces/:id/providers/:provider_id/oauth/callback",
-            post(workspaces::post_provider_oauth_callback),
         )
         .route(
             "/v1/workspaces/:id/model-catalog",

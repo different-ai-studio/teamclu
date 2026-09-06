@@ -13,25 +13,11 @@
 
 use crate::proto::amux;
 
-/// The one runtime this daemon runs.
-pub(crate) const LOCAL_AGENT: amux::AgentType = amux::AgentType::Pi;
-
-/// The public name of [`LOCAL_AGENT`], as the cloud `agents.agent_types` row
-/// and the model-catalog grouping spell it.
-pub(crate) const LOCAL_AGENT_NAME: &str = "pi";
+pub(crate) use crate::runtime::{LOCAL_AGENT, LOCAL_AGENT_NAME};
 
 /// Resolve a requested type to the runtime this daemon runs.
-///
-/// Anything other than pi (or Unknown, which means "you pick") is rerouted
-/// with a warning rather than refused — see the module docs.
 pub(crate) fn resolve_requested_agent_type(requested: amux::AgentType) -> amux::AgentType {
-    if requested != LOCAL_AGENT && requested != amux::AgentType::Unknown {
-        tracing::warn!(
-            requested = ?requested,
-            "requested a backend this daemon no longer runs; rerouting to pi"
-        );
-    }
-    LOCAL_AGENT
+    crate::runtime::resolve_local_agent_type(requested)
 }
 
 pub(crate) fn runtime_start_initial_model_override(

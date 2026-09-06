@@ -942,7 +942,7 @@ pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlEr
     ensure_inherent_skills_in_dir(&inherent_skills_dir()?)?;
     // Claude bridge only: may soft-skip on Windows without symlink privilege
     // (see `ensure_claude_team_skills`). Failure there must not block OpenCode.
-    crate::runtime::claude_skills::ensure_claude_team_skills(workspace_path)?;
+    crate::runtime::skills_bridge::ensure_claude_team_skills(workspace_path)?;
 
     if let Ok(Some(result)) =
         teamclu_runtime_env::opencode_db::maybe_migrate_legacy_opencode_db(workspace_path)
@@ -1012,45 +1012,7 @@ fn backend_launchable(agent_type: amux::AgentType, cfg: &AgentLaunchConfig) -> b
             crate::pi_install::installed_version().is_some()
                 && crate::node_install::node_binary().exists()
         }
-        amux::AgentType::Cursor => {
-            let cmd = crate::runtime::cursor_sdk::process::default_bridge_command();
-            let node_ok = cmd
-                .first()
-                .map(|bin| {
-                    binary_available(&AgentLaunchConfig::new(bin.clone(), Vec::new(), "cursor"))
-                })
-                .unwrap_or(false);
-            node_ok && crate::runtime::cursor_sdk::process::default_bridge_main().exists()
-        }
         _ => binary_available(cfg),
-    }
-}
-
-pub async fn prewarm_workspace_domains(
-    pool: Arc<crate::runtime::opencode_http::host_pool::OpenCodeHostPool>,
-    workspaces: Vec<(String, std::collections::HashMap<String, String>)>,
-) {
-    use crate::runtime::opencode_http::host_pool::PrewarmOutcome;
-
-    for (workspace_id, env) in workspaces {
-        let domain =
-            crate::runtime::execution_context::IsolationDomainKey::Workspace(workspace_id.clone());
-        let revision = crate::runtime::execution_context::ProcessEnvRevision::from_bindings(&env);
-        match pool.try_prewarm(domain, revision, env).await {
-            Ok(PrewarmOutcome::Reused(_) | PrewarmOutcome::Started(_)) => {}
-            Ok(
-                PrewarmOutcome::SkippedCapacity
-                | PrewarmOutcome::SkippedDemandQueued
-                | PrewarmOutcome::SkippedDraining,
-            ) => {
-                info!(workspace_id, "workspace host prewarm skipped");
-                break;
-            }
-            Err(error) => {
-                warn!(workspace_id, %error, "workspace host prewarm failed");
-                break;
-            }
-        }
     }
 }
 
@@ -1134,8 +1096,6 @@ impl std::fmt::Display for PiAuthError {
 pub struct RuntimeSupervisor {
     agents: Arc<AsyncMutex<RuntimeManager>>,
     refresh: Arc<RuntimeRefreshCoordinator>,
-    host_pool: Option<Arc<crate::runtime::opencode_http::host_pool::OpenCodeHostPool>>,
-    context_resolver: Option<Arc<dyn crate::opencode_settings::WorkspaceSettingsContextResolver>>,
     /// When set, `reload_workspace` reports each provider-host evict as
     /// `(workspace_id, workspace_path)` so the daemon can re-prewarm the
     /// evicted hosts off the critical path. Without this, the first session
@@ -1151,37 +1111,6 @@ impl RuntimeSupervisor {
         Arc::new(Self {
             agents,
             refresh: RuntimeRefreshCoordinator::new(),
-            host_pool: None,
-            context_resolver: None,
-            prewarm_notify: parking_lot::Mutex::new(None),
-            refresh_apply_locks: parking_lot::Mutex::new(HashMap::new()),
-        })
-    }
-
-    pub fn new_with_host_pool(
-        agents: Arc<AsyncMutex<RuntimeManager>>,
-        host_pool: Arc<crate::runtime::opencode_http::host_pool::OpenCodeHostPool>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            agents,
-            refresh: RuntimeRefreshCoordinator::new(),
-            host_pool: Some(host_pool),
-            context_resolver: None,
-            prewarm_notify: parking_lot::Mutex::new(None),
-            refresh_apply_locks: parking_lot::Mutex::new(HashMap::new()),
-        })
-    }
-
-    pub fn new_with_workspace_services(
-        agents: Arc<AsyncMutex<RuntimeManager>>,
-        host_pool: Arc<crate::runtime::opencode_http::host_pool::OpenCodeHostPool>,
-        context_resolver: Arc<dyn crate::opencode_settings::WorkspaceSettingsContextResolver>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            agents,
-            refresh: RuntimeRefreshCoordinator::new(),
-            host_pool: Some(host_pool),
-            context_resolver: Some(context_resolver),
             prewarm_notify: parking_lot::Mutex::new(None),
             refresh_apply_locks: parking_lot::Mutex::new(HashMap::new()),
         })
@@ -1192,45 +1121,25 @@ impl RuntimeSupervisor {
         workspace_id: &str,
         workspace_path: &Path,
     ) -> usize {
-        let Some(pool) = self.host_pool.as_ref() else {
-            // No pooled opencode host, but the active backend may still key
-            // children by isolation domain (pi does): route the refresh
-            // through the backend trait so a workspace env/config change
-            // respawns that workspace's child instead of leaking the old env
-            // into it — while other workspaces' children keep running.
-            let mut agents = self.agents.lock().await;
-            let stopped = agents
-                .stop_idle_runtimes_for_workspace(&workspace_path.to_string_lossy(), workspace_id)
-                .await;
-            agents.request_workspace_host_refresh(workspace_id).await;
-            return stopped;
-        };
-        let stopped = self
-            .agents
-            .lock()
-            .await
+        let mut agents = self.agents.lock().await;
+        let stopped = agents
             .stop_idle_runtimes_for_workspace(&workspace_path.to_string_lossy(), workspace_id)
             .await;
-        pool.invalidate_domain(
-            &crate::runtime::execution_context::IsolationDomainKey::Workspace(
-                workspace_id.to_string(),
-            ),
-        );
+        agents.request_workspace_host_refresh(workspace_id).await;
         if stopped > 0 {
             info!(
                 workspace_id,
                 workspace = %workspace_path.display(),
                 stopped,
-                "detached idle workspace runtimes before pooled host refresh"
+                "detached idle workspace runtimes before workspace host refresh"
             );
         }
         stopped
     }
 
-    pub fn request_all_workspace_host_refreshes(&self) -> usize {
-        self.host_pool
-            .as_ref()
-            .map_or(0, |pool| pool.invalidate_all_domains())
+    pub async fn request_all_workspace_host_refreshes(&self) -> usize {
+        let mut agents = self.agents.lock().await;
+        agents.request_all_workspace_host_refreshes().await
     }
 
     /// Install the channel that receives `(workspace_id, path)` whenever a
@@ -1283,15 +1192,6 @@ impl RuntimeSupervisor {
         &self,
         workspace_path: &Path,
     ) -> Result<Vec<amux::ModelInfo>, String> {
-        let context = match self.context_resolver.as_ref() {
-            Some(resolver) => Some(
-                resolver
-                    .resolve_settings_context(workspace_path)
-                    .await
-                    .map_err(|error| format!("workspace catalog context: {error}"))?,
-            ),
-            None => None,
-        };
         let mut manager = self.agents.lock().await;
         let agent_type = manager.default_agent_type();
         let launch = manager.launch_config_for(agent_type);
@@ -1301,17 +1201,10 @@ impl RuntimeSupervisor {
                 backend_label(agent_type)
             ));
         }
-        if let Some(context) = context {
-            manager
-                .probe_catalog_models_with_context(context)
-                .await
-                .map_err(|e| e.to_string())
-        } else {
-            manager
-                .probe_catalog_models(workspace_path)
-                .await
-                .map_err(|e| e.to_string())
-        }
+        manager
+            .probe_catalog_models(workspace_path)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Forward one pi `auth_*` command (see `pi_rpc::auth`).
@@ -1431,15 +1324,7 @@ impl RuntimeSupervisor {
             crate::team_shared_env::load_team_env_for_workspace_detailed(workspace_path, team_id);
 
         let workspace_path_str = workspace_path.to_string_lossy();
-        let (
-            active_runtime_count,
-            workspace_has_active_turn,
-            opencode_serve_running,
-            cached_env_count,
-            served_env_keys,
-            active_env_fingerprint,
-            active_snapshot,
-        ) = {
+        let (active_runtime_count, workspace_has_active_turn, active_snapshot) = {
             let manager = self.agents.lock().await;
             let active_runtime_count = manager
                 .active_handles_for_workspace(&workspace_path_str, workspace_id)
@@ -1449,32 +1334,16 @@ impl RuntimeSupervisor {
             let active_snapshot = manager
                 .workspace_env_snapshot(&workspace_path_str, workspace_id)
                 .map(|(snapshot, _)| snapshot);
-            let domain = crate::runtime::execution_context::IsolationDomainKey::Workspace(
-                workspace_id.to_string(),
-            );
-            let serve_stats = self
-                .host_pool
-                .as_ref()
-                .and_then(|pool| pool.current_generation(&domain))
-                .map(|generation| {
-                    (
-                        generation.serve.is_running(),
-                        generation.serve.cached_env_key_count(),
-                        generation.serve.cached_env_keys(),
-                        generation.serve.active_env_fingerprint(),
-                    )
-                })
-                .unwrap_or((false, 0, Vec::new(), None));
             (
                 active_runtime_count,
                 workspace_has_active_turn,
-                serve_stats.0,
-                serve_stats.1,
-                serve_stats.2,
-                serve_stats.3,
                 active_snapshot,
             )
         };
+        let opencode_serve_running = false;
+        let cached_env_count = 0;
+        let served_env_keys: Vec<String> = Vec::new();
+        let active_env_fingerprint: Option<String> = None;
         let active_handle_env_fingerprint = active_snapshot
             .as_ref()
             .map(|snapshot| snapshot.fingerprint.clone());
@@ -1745,17 +1614,7 @@ impl RuntimeSupervisor {
             active_runtime_count,
             workspace_has_active_turn,
             refresh,
-            host_pool: self
-                .host_pool
-                .as_ref()
-                .map(|pool| {
-                    pool.stats_for(
-                        &crate::runtime::execution_context::IsolationDomainKey::Workspace(
-                            workspace_id.to_string(),
-                        ),
-                    )
-                })
-                .unwrap_or_default(),
+            host_pool: crate::runtime::host_pool_stats::DomainHostStats::default(),
             host_env_shadowed_keys,
             resolved_env_fingerprint,
             override_keys,
@@ -1798,37 +1657,22 @@ impl RuntimeSupervisor {
         );
         prepare_workspace(workspace_path)?;
 
-        let stopped = if let Some(pool) = self.host_pool.as_ref() {
-            if evict_provider_hosts {
-                self.request_workspace_host_refresh(workspace_id, workspace_path)
-                    .await
-            } else {
-                // Skills/MCP/opencode.json-class changes don't need a
-                // serve-process restart, but opencode memoizes config and
-                // skills per directory instance inside the long-running serve
-                // process — a freshly created session on the same directory
-                // keeps reading the stale cache. Dropping that cached instance
-                // (not the process) is what makes the next session re-read the
-                // files `prepare_workspace` just rewrote.
-                pool.dispose_workspace_instance(&workspace_path.to_string_lossy())
-                    .await
-                    .map_err(|e| {
-                        WorkspaceControlError::Io(format!(
-                            "dispose opencode instance for workspace: {e}"
-                        ))
-                    })?;
-                0
-            }
+        let stopped = if evict_provider_hosts {
+            self.request_workspace_host_refresh(workspace_id, workspace_path)
+                .await
         } else {
             let mut manager = self.agents.lock().await;
-            let stopped = manager
+            manager
                 .stop_runtimes_for_workspace(&workspace_path_str, workspace_id)
-                .await;
-            if evict_provider_hosts {
-                manager.evict_acp_hosts_after_provider_auth_change().await;
-            }
-            stopped
+                .await
         };
+        if evict_provider_hosts {
+            self.agents
+                .lock()
+                .await
+                .evict_acp_hosts_after_provider_auth_change()
+                .await;
+        }
 
         // Re-prewarm the just-evicted hosts in the background so the next
         // session doesn't pay the full cold start. Best-effort: dropped when no
@@ -2350,332 +2194,19 @@ mod inherent_mcp_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
-    use crate::runtime::opencode_http::host_pool::{
-        GenerationFactory, HostGeneration, OpenCodeHostPool,
-    };
-    use crate::runtime::opencode_http::process_registry::ServeProcessRegistry;
-    use crate::runtime::opencode_http::supervisor::{ServeSupervisor, ShutdownOutcome};
+    use crate::config::global_team_store::TEST_HOME_LOCK;
     use crate::runtime::refresh::{self, refresh_watch};
-    use async_trait::async_trait;
-    use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct ServiceFactory {
-        starts: AtomicUsize,
-    }
-
-    #[async_trait]
-    impl GenerationFactory for ServiceFactory {
-        async fn start(
-            &self,
-            generation_id: String,
-            _domain: IsolationDomainKey,
-            revision: ProcessEnvRevision,
-            env: HashMap<String, String>,
-        ) -> Result<Arc<ServeSupervisor>, String> {
-            self.starts.fetch_add(1, Ordering::SeqCst);
-            Ok(Arc::new(ServeSupervisor::new(
-                generation_id,
-                Arc::new(ServeProcessRegistry::new(
-                    tempfile::tempdir().unwrap().keep().join("pgids.json"),
-                )),
-                env,
-                revision,
-            )))
-        }
-
-        fn stop(&self, _generation: &HostGeneration) -> ShutdownOutcome {
-            ShutdownOutcome::Stopped
-        }
-    }
-
-    fn service_pool() -> (Arc<OpenCodeHostPool>, Arc<ServiceFactory>) {
-        let factory = Arc::new(ServiceFactory {
-            starts: AtomicUsize::new(0),
-        });
-        (OpenCodeHostPool::new(factory.clone()), factory)
-    }
-
-    async fn seed_domain(
-        pool: &Arc<OpenCodeHostPool>,
-        workspace_id: &str,
-        env_value: &str,
-    ) -> (
-        ProcessEnvRevision,
-        crate::runtime::opencode_http::host_pool::HostLease,
-    ) {
-        let env = HashMap::from([("SENTINEL".to_string(), env_value.to_string())]);
-        let revision = ProcessEnvRevision::from_bindings(&env);
-        let lease = pool
-            .acquire(
-                IsolationDomainKey::Workspace(workspace_id.to_string()),
-                revision.clone(),
-                env,
-                std::time::Instant::now() + std::time::Duration::from_secs(1),
-            )
-            .await
-            .unwrap();
-        (revision, lease)
-    }
-
-    #[tokio::test]
-    async fn workspace_provider_refresh_rolls_only_selected_domain() {
-        let (pool, factory) = service_pool();
-        let (revision_a, lease_a) = seed_domain(&pool, "ws-a", "a").await;
-        let (revision_b, lease_b) = seed_domain(&pool, "ws-b", "b").await;
-        let manager = Arc::new(AsyncMutex::new(RuntimeManager::new(
-            RuntimeManager::default_launch_configs(),
-            None,
-        )));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(manager, pool.clone());
-
-        supervisor
-            .request_workspace_host_refresh("ws-a", Path::new("/tmp/ws-a"))
-            .await;
-        let replacement_a = pool
-            .acquire(
-                IsolationDomainKey::Workspace("ws-a".into()),
-                revision_a,
-                HashMap::from([("SENTINEL".into(), "a".into())]),
-                std::time::Instant::now() + std::time::Duration::from_secs(1),
-            )
-            .await
-            .unwrap();
-        let reused_b = pool
-            .acquire(
-                IsolationDomainKey::Workspace("ws-b".into()),
-                revision_b,
-                HashMap::from([("SENTINEL".into(), "b".into())]),
-                std::time::Instant::now() + std::time::Duration::from_secs(1),
-            )
-            .await
-            .unwrap();
-
-        assert_ne!(
-            replacement_a.generation.generation_id,
-            lease_a.generation.generation_id
-        );
-        assert_eq!(
-            reused_b.generation.generation_id,
-            lease_b.generation.generation_id
-        );
-        assert_eq!(factory.starts.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn device_provider_auth_rolls_every_domain_without_killing_active_routes() {
-        let (pool, factory) = service_pool();
-        let (revision_a, lease_a) = seed_domain(&pool, "ws-a", "a").await;
-        let (revision_b, lease_b) = seed_domain(&pool, "ws-b", "b").await;
-        let manager = Arc::new(AsyncMutex::new(RuntimeManager::new(
-            RuntimeManager::default_launch_configs(),
-            None,
-        )));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(manager, pool.clone());
-
-        assert_eq!(supervisor.request_all_workspace_host_refreshes(), 2);
-        let replacement_a = pool
-            .acquire(
-                IsolationDomainKey::Workspace("ws-a".into()),
-                revision_a,
-                HashMap::from([("SENTINEL".into(), "a".into())]),
-                std::time::Instant::now() + std::time::Duration::from_secs(1),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            lease_a.generation.lifecycle(),
-            crate::runtime::opencode_http::host_pool::HostLifecycle::Draining
-        );
-        drop(lease_a);
-        let replacement_b = pool
-            .acquire(
-                IsolationDomainKey::Workspace("ws-b".into()),
-                revision_b,
-                HashMap::from([("SENTINEL".into(), "b".into())]),
-                std::time::Instant::now() + std::time::Duration::from_secs(1),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(factory.starts.load(Ordering::SeqCst), 4);
-        assert_eq!(
-            lease_b.generation.lifecycle(),
-            crate::runtime::opencode_http::host_pool::HostLifecycle::Draining
-        );
-        assert_eq!(replacement_a.generation.route_count(), 1);
-        assert_eq!(replacement_b.generation.route_count(), 1);
-    }
-
-    #[tokio::test]
-    async fn provider_refresh_does_not_stop_active_workspace_routes() {
-        let (pool, _factory) = service_pool();
-        let workspace_a = tempfile::tempdir().unwrap();
-        let workspace_b = tempfile::tempdir().unwrap();
-        let path_a = workspace_a.path().to_string_lossy().into_owned();
-        let path_b = workspace_b.path().to_string_lossy().into_owned();
-        let manager = Arc::new(AsyncMutex::new(RuntimeManager::new(
-            RuntimeManager::default_launch_configs(),
-            None,
-        )));
-        {
-            let mut manager = manager.lock().await;
-            manager.add_test_workspace_runtime("rt-a", &path_a, "ws-a", amux::AgentStatus::Active);
-            manager.add_test_workspace_runtime("rt-b", &path_b, "ws-b", amux::AgentStatus::Active);
-        }
-        let supervisor = RuntimeSupervisor::new_with_host_pool(manager.clone(), pool);
-
-        let err = supervisor
-            .reload_workspace("ws-a", workspace_a.path(), true)
-            .await
-            .expect_err("reload must reject while workspace has an active turn");
-        assert!(matches!(
-            err,
-            WorkspaceControlError::ActiveTurn(ref id) if id == "ws-a"
-        ));
-
-        let manager = manager.lock().await;
-        let ids = manager.agent_ids();
-        assert!(ids.iter().any(|id| id == "rt-a"));
-        assert!(ids.iter().any(|id| id == "rt-b"));
-    }
-
-    #[tokio::test]
-    async fn pooled_refresh_detaches_idle_route_before_starting_replacement() {
-        let (pool, factory) = service_pool();
-        let workspace = tempfile::tempdir().unwrap();
-        let workspace_id = "ws-idle";
-        let workspace_path = workspace.path().to_string_lossy().into_owned();
-        let (revision, lease) = seed_domain(&pool, workspace_id, "before").await;
-        let old_generation = Arc::clone(&lease.generation);
-        let (generation, route_lease) = lease.into_route_parts();
-        let manager = Arc::new(AsyncMutex::new(RuntimeManager::new(
-            RuntimeManager::default_launch_configs(),
-            None,
-        )));
-        {
-            let mut manager = manager.lock().await;
-            manager.add_test_workspace_runtime(
-                "rt-idle",
-                &workspace_path,
-                workspace_id,
-                amux::AgentStatus::Idle,
-            );
-            let handle = manager.get_handle_mut("rt-idle").unwrap();
-            handle.host_generation_id = generation.generation_id.clone();
-            handle.route_lease = Some(route_lease);
-        }
-        let supervisor = RuntimeSupervisor::new_with_host_pool(manager.clone(), pool.clone());
-
-        let outcome = supervisor
-            .reload_workspace(workspace_id, workspace.path(), true)
-            .await
-            .unwrap();
-        assert!(matches!(outcome, ApplyOutcome::RestartRequired));
-        assert!(manager.lock().await.agent_ids().is_empty());
-
-        let replacement = pool
-            .acquire(
-                IsolationDomainKey::Workspace(workspace_id.into()),
-                revision,
-                HashMap::from([("SENTINEL".into(), "before".into())]),
-                std::time::Instant::now() + std::time::Duration::from_secs(1),
-            )
-            .await
-            .unwrap();
-
-        assert_ne!(
-            replacement.generation.generation_id,
-            old_generation.generation_id
-        );
-        assert_eq!(factory.starts.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            pool.stats_for(&IsolationDomainKey::Workspace(workspace_id.into()))
-                .draining_generations,
-            0,
-            "the detached idle route must not leave a draining generation"
-        );
-    }
-
-    #[tokio::test]
-    async fn diagnostics_report_workspace_domain_generation_state() {
-        let (pool, _factory) = service_pool();
-        let (revision_a, old) = seed_domain(&pool, "ws-a", "old").await;
-        pool.invalidate_domain(&IsolationDomainKey::Workspace("ws-a".into()));
-        let replacement = pool
-            .acquire(
-                IsolationDomainKey::Workspace("ws-a".into()),
-                revision_a,
-                HashMap::from([("SENTINEL".into(), "old".into())]),
-                std::time::Instant::now() + std::time::Duration::from_secs(1),
-            )
-            .await
-            .unwrap();
-
-        let workspace = tempfile::tempdir().unwrap();
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool,
-        );
-        let diagnostics = supervisor
-            .env_activation_diagnostics("ws-a", workspace.path(), None)
-            .await;
-        let stats = diagnostics.host_pool;
-        assert_eq!(
-            stats.current_generation,
-            Some(replacement.generation.generation_id.clone())
-        );
-        assert_eq!(stats.current_routes, 1);
-        assert_eq!(stats.draining_generations, 1);
-        assert_eq!(stats.draining_routes, 1);
-        assert!(stats.current_revision.is_some());
-        assert!(stats.requested_revision.is_some());
-        drop(old);
-    }
-
-    #[tokio::test]
-    async fn startup_prewarm_keeps_two_workspace_currents() {
-        let (pool, factory) = service_pool();
-        prewarm_workspace_domains(
-            pool.clone(),
-            vec![
-                (
-                    "ws-default".into(),
-                    HashMap::from([("W".into(), "default".into())]),
-                ),
-                (
-                    "ws-second".into(),
-                    HashMap::from([("W".into(), "second".into())]),
-                ),
-                (
-                    "ws-third".into(),
-                    HashMap::from([("W".into(), "third".into())]),
-                ),
-            ],
-        )
-        .await;
-
-        assert_eq!(factory.starts.load(Ordering::SeqCst), 2);
-        assert!(pool
-            .stats_for(&IsolationDomainKey::Workspace("ws-default".into()))
-            .current_generation
-            .is_some());
-        assert!(pool
-            .stats_for(&IsolationDomainKey::Workspace("ws-second".into()))
-            .current_generation
-            .is_some());
-        assert!(pool
-            .stats_for(&IsolationDomainKey::Workspace("ws-third".into()))
-            .current_generation
-            .is_none());
+    fn isolated_home() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+        let lock = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        (lock, home)
     }
 
     #[tokio::test]
     async fn apply_refresh_clears_pending_despite_internal_writes() {
+        let _lock = isolated_home().0;
         let dir = tempfile::tempdir().unwrap();
         let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
         let supervisor = RuntimeSupervisor::new(Arc::new(AsyncMutex::new(RuntimeManager::new(
@@ -2706,43 +2237,6 @@ mod tests {
         assert_eq!(dto.status, "clean", "pending should clear after apply");
     }
 
-    #[tokio::test]
-    async fn skills_refresh_auto_applies_when_workspace_is_idle() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            crate::runtime::test_support::test_host_pool(),
-        );
-
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::FilesystemWatch,
-            )
-            .await
-            .unwrap();
-
-        let applied = supervisor.auto_apply_pending_refreshes().await;
-
-        assert_eq!(
-            applied, 1,
-            "a skills-only change is cheap and safe: it should auto-apply"
-        );
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "clean");
-        assert!(!dto.auto_apply_blocked_by_active_runtime);
-        assert_eq!(dto.recommended_action, "none");
-    }
 
     #[tokio::test]
     async fn reload_workspace_rejects_active_turn() {
@@ -2874,319 +2368,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skills_refresh_auto_applies_after_workspace_becomes_idle() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            crate::runtime::test_support::test_host_pool(),
-        );
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.add_test_workspace_runtime(
-                "rt-busy",
-                &dir.path().to_string_lossy(),
-                &workspace_id,
-                amux::AgentStatus::Active,
-            );
-        }
-
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::FilesystemWatch,
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            supervisor.auto_apply_pending_refreshes().await,
-            0,
-            "an active turn defers the apply"
-        );
-
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.set_test_runtime_status("rt-busy", amux::AgentStatus::Idle);
-        }
-
-        let applied = supervisor.auto_apply_pending_refreshes().await;
-
-        assert_eq!(applied, 1, "once idle, the pending skills change applies");
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "clean");
-        assert_eq!(dto.recommended_action, "none");
-    }
-
-    /// Factory whose serve supervisors answer HTTP through a mock server, so
-    /// dispose calls are observable without a real opencode process.
-    struct BaseUrlFactory {
-        base_url: String,
-    }
-
-    #[async_trait]
-    impl GenerationFactory for BaseUrlFactory {
-        async fn start(
-            &self,
-            generation_id: String,
-            _domain: IsolationDomainKey,
-            revision: ProcessEnvRevision,
-            _env: HashMap<String, String>,
-        ) -> Result<Arc<ServeSupervisor>, String> {
-            Ok(Arc::new(ServeSupervisor::test_with_base_url(
-                generation_id,
-                revision,
-                self.base_url.clone(),
-            )))
-        }
-
-        fn stop(&self, _generation: &HostGeneration) -> ShutdownOutcome {
-            ShutdownOutcome::Stopped
-        }
-    }
-
-    #[tokio::test]
-    async fn skills_auto_apply_disposes_workspace_instance_through_pool() {
-        use wiremock::matchers::{method, path, query_param};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let directory = dir.path().to_string_lossy().into_owned();
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .and(query_param("directory", directory))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        // A live host generation is serving this workspace.
-        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
-
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::UiMutation,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "clean");
-        // The mock's `expect(1)` verifies on server drop that the dispose
-        // request actually reached the serve process.
-    }
-
-    #[tokio::test]
-    async fn apply_pending_skills_refresh_disposes_when_idle() {
-        use wiremock::matchers::{method, path, query_param};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let directory = dir.path().to_string_lossy().into_owned();
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .and(query_param("directory", directory))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
-
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::UiMutation,
-            )
-            .await
-            .unwrap();
-
-        let status = supervisor
-            .apply_pending_skills_refresh(&workspace_id, dir.path())
-            .await
-            .expect("apply");
-        assert!(matches!(
-            status,
-            SkillsRefreshApplyStatus::Applied(ApplyOutcome::ReloadRequired)
-        ));
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "clean");
-        assert!(!dto.auto_apply_blocked_by_active_runtime);
-    }
-
-    #[tokio::test]
-    async fn apply_pending_skills_refresh_stays_pending_when_busy() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.add_test_workspace_runtime(
-                "rt-busy",
-                &dir.path().to_string_lossy(),
-                &workspace_id,
-                amux::AgentStatus::Active,
-            );
-        }
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::UiMutation,
-            )
-            .await
-            .unwrap();
-
-        let status = supervisor
-            .apply_pending_skills_refresh(&workspace_id, dir.path())
-            .await
-            .expect("pending");
-        assert!(matches!(
-            status,
-            SkillsRefreshApplyStatus::PendingActiveTurn
-        ));
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "pending");
-        assert!(dto.auto_apply_blocked_by_active_runtime);
-        assert!(dto.change_kinds.iter().any(|k| k == "skills"));
-    }
-
-    #[tokio::test]
-    async fn apply_pending_skills_refresh_clears_only_skills_when_mixed() {
-        use wiremock::matchers::{method, path, query_param};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let directory = dir.path().to_string_lossy().into_owned();
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .and(query_param("directory", directory))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
-
-        for kind in [
-            refresh::RefreshChangeKind::Skills,
-            refresh::RefreshChangeKind::Mcp,
-            refresh::RefreshChangeKind::EnvVars,
-        ] {
-            supervisor
-                .refresh_coordinator()
-                .record_change(
-                    &workspace_id,
-                    dir.path(),
-                    kind,
-                    refresh::RefreshSource::UiMutation,
-                )
-                .await
-                .unwrap();
-        }
-
-        let status = supervisor
-            .apply_pending_skills_refresh(&workspace_id, dir.path())
-            .await
-            .expect("apply skills from mixed pending");
-        assert!(matches!(
-            status,
-            SkillsRefreshApplyStatus::Applied(ApplyOutcome::ReloadRequired)
-        ));
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "pending");
-        assert!(!dto.change_kinds.iter().any(|k| k == "skills"));
-        assert!(dto.change_kinds.contains(&"mcp".to_string()));
-        assert!(dto.change_kinds.contains(&"env_vars".to_string()));
-    }
-
-    #[tokio::test]
     async fn require_skills_refresh_for_attach_defers_when_busy() {
         let dir = tempfile::tempdir().unwrap();
         let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
@@ -3232,416 +2413,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn require_skills_refresh_for_attach_fails_when_dispose_errors() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::UiMutation,
-            )
-            .await
-            .unwrap();
-
-        let err = supervisor
-            .require_skills_refresh_for_attach(&workspace_id, dir.path())
-            .await
-            .expect_err("dispose failure must refuse attach");
-        assert!(matches!(err, WorkspaceControlError::Io(_)));
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "pending");
-        assert!(dto.change_kinds.iter().any(|k| k == "skills"));
-    }
-
-    #[tokio::test]
-    async fn apply_pending_skills_refresh_applies_after_turn_ends() {
-        use wiremock::matchers::{method, path, query_param};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let directory = dir.path().to_string_lossy().into_owned();
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .and(query_param("directory", directory))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.add_test_workspace_runtime(
-                "rt-busy",
-                &dir.path().to_string_lossy(),
-                &workspace_id,
-                amux::AgentStatus::Active,
-            );
-        }
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::UiMutation,
-            )
-            .await
-            .unwrap();
-        let busy = supervisor
-            .apply_pending_skills_refresh(&workspace_id, dir.path())
-            .await
-            .expect("busy");
-        assert!(matches!(busy, SkillsRefreshApplyStatus::PendingActiveTurn));
-
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.set_test_runtime_status("rt-busy", amux::AgentStatus::Idle);
-        }
-
-        // New session attach (or the auto-applier) must consume the pending
-        // Skills refresh before reusing the cached instance.
-        let idle = supervisor
-            .apply_pending_skills_refresh(&workspace_id, dir.path())
-            .await
-            .expect("idle apply");
-        assert!(matches!(
-            idle,
-            SkillsRefreshApplyStatus::Applied(ApplyOutcome::ReloadRequired)
-        ));
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "clean");
-    }
-
-    #[tokio::test]
-    async fn auto_applier_disposes_after_active_turn_ends() {
-        use wiremock::matchers::{method, path, query_param};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let directory = dir.path().to_string_lossy().into_owned();
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .and(query_param("directory", directory))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.add_test_workspace_runtime(
-                "rt-busy",
-                &dir.path().to_string_lossy(),
-                &workspace_id,
-                amux::AgentStatus::Active,
-            );
-        }
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::UiMutation,
-            )
-            .await
-            .unwrap();
-        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 0);
-
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.set_test_runtime_status("rt-busy", amux::AgentStatus::Idle);
-        }
-        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "clean");
-    }
-
-    #[tokio::test]
-    async fn team_skill_reconcile_cold_stays_pending_without_dispose() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
-
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::TeamSkillReconcile,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 0);
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "pending");
-        assert!(dto.change_kinds.iter().any(|kind| kind == "skills"));
-    }
-
-    #[tokio::test]
-    async fn team_skill_reconcile_warm_idle_auto_applies_dispose() {
-        use wiremock::matchers::{method, path, query_param};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let directory = dir.path().to_string_lossy().into_owned();
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .and(query_param("directory", directory))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.add_test_workspace_runtime(
-                "rt-idle",
-                &dir.path().to_string_lossy(),
-                &workspace_id,
-                amux::AgentStatus::Idle,
-            );
-        }
-
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::TeamSkillReconcile,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "clean");
-    }
-
-    #[tokio::test]
-    async fn team_skill_reconcile_active_stays_pending_until_idle() {
-        use wiremock::matchers::{method, path, query_param};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let directory = dir.path().to_string_lossy().into_owned();
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .and(query_param("directory", directory))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.add_test_workspace_runtime(
-                "rt-busy",
-                &dir.path().to_string_lossy(),
-                &workspace_id,
-                amux::AgentStatus::Active,
-            );
-        }
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::TeamSkillReconcile,
-            )
-            .await
-            .unwrap();
-        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 0);
-
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.set_test_runtime_status("rt-busy", amux::AgentStatus::Idle);
-        }
-        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "clean");
-    }
-
-    #[tokio::test]
-    async fn repeated_team_skill_records_merge_to_one_apply() {
-        use wiremock::matchers::{method, path, query_param};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let directory = dir.path().to_string_lossy().into_owned();
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .and(query_param("directory", directory))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        let (_revision, _lease) = seed_domain(&pool, &workspace_id, "v1").await;
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.add_test_workspace_runtime(
-                "rt-idle",
-                &dir.path().to_string_lossy(),
-                &workspace_id,
-                amux::AgentStatus::Idle,
-            );
-        }
-        for _ in 0..10 {
-            supervisor
-                .refresh_coordinator()
-                .record_change(
-                    &workspace_id,
-                    dir.path(),
-                    refresh::RefreshChangeKind::Skills,
-                    refresh::RefreshSource::TeamSkillReconcile,
-                )
-                .await
-                .unwrap();
-        }
-
-        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "clean");
-    }
-
-    #[tokio::test]
     async fn auto_apply_applies_at_most_one_workspace_per_tick() {
+        let _lock = isolated_home().0;
         let dir_a = tempfile::tempdir().unwrap();
         let dir_b = tempfile::tempdir().unwrap();
         let workspace_a = refresh_watch::workspace_runtime_id(dir_a.path());
@@ -3688,91 +2461,6 @@ mod tests {
         assert_eq!(pending, 1, "the other workspace stays pending");
     }
 
-    #[tokio::test]
-    async fn ui_mutation_priority_over_team_skill_reconcile() {
-        use wiremock::matchers::{method, path, query_param};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        let ui_dir = tempfile::tempdir().unwrap();
-        let team_dir = tempfile::tempdir().unwrap();
-        let ui_workspace = refresh_watch::workspace_runtime_id(ui_dir.path());
-        let team_workspace = refresh_watch::workspace_runtime_id(team_dir.path());
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .and(query_param(
-                "directory",
-                ui_dir.path().to_string_lossy().into_owned(),
-            ))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/instance/dispose"))
-            .and(query_param(
-                "directory",
-                team_dir.path().to_string_lossy().into_owned(),
-            ))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let pool = OpenCodeHostPool::new(Arc::new(BaseUrlFactory {
-            base_url: server.uri(),
-        }));
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        let (_revision, _ui_lease) = seed_domain(&pool, &ui_workspace, "ui").await;
-        {
-            let mut manager = supervisor.agents.lock().await;
-            manager.add_test_workspace_runtime(
-                "rt-idle",
-                &team_dir.path().to_string_lossy(),
-                &team_workspace,
-                amux::AgentStatus::Idle,
-            );
-        }
-
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &team_workspace,
-                team_dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::TeamSkillReconcile,
-            )
-            .await
-            .unwrap();
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &ui_workspace,
-                ui_dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::UiMutation,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 1);
-        let ui_dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&ui_workspace)
-            .await;
-        let team_dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&team_workspace)
-            .await;
-        assert_eq!(ui_dto.status, "clean");
-        assert_eq!(team_dto.status, "pending");
-    }
 
     #[tokio::test]
     async fn skills_plus_env_refresh_is_not_auto_applicable() {
@@ -3838,46 +2526,6 @@ mod tests {
             .runtime_refresh_dto(&workspace_id)
             .await;
         assert_eq!(dto.status, "pending");
-        assert_eq!(dto.recommended_action, "none");
-
-        handle.abort();
-    }
-
-    #[tokio::test]
-    async fn auto_applier_loop_applies_idle_skills_refresh() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            crate::runtime::test_support::test_host_pool(),
-        );
-        let handle = supervisor
-            .clone()
-            .start_refresh_auto_applier_with_interval(std::time::Duration::from_millis(20));
-
-        supervisor
-            .refresh_coordinator()
-            .record_change(
-                &workspace_id,
-                dir.path(),
-                refresh::RefreshChangeKind::Skills,
-                refresh::RefreshSource::FilesystemWatch,
-            )
-            .await
-            .unwrap();
-
-        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(
-            dto.status, "clean",
-            "a skills-only change auto-applies on the first idle tick"
-        );
         assert_eq!(dto.recommended_action, "none");
 
         handle.abort();

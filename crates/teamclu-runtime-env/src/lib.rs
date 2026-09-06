@@ -146,7 +146,7 @@ pub fn assemble_runtime_env(
     let sync = resolve_workspace_runtime_config(
         workspace,
         &resolved_env.bindings,
-        SecretResolveScope::FullConfig,
+        SecretResolveScope::SkipWorkspaceResolve,
     )?;
     Ok(RuntimeEnvBundle {
         extra_env: resolved_env.bindings.clone(),

@@ -24,8 +24,6 @@ use crate::config::workspace_control::{
     RolesSkillsStateDto, RuntimeStatus, UpsertRoleRequest, UpsertSkillRequest,
     WorkspaceControlError, WorkspaceControlStore,
 };
-use crate::opencode_settings::LiveProviderCatalog;
-use crate::opencode_settings::OpenCodeSettingsError;
 use crate::proto::amux;
 use crate::runtime::refresh::{RefreshChangeKind, RefreshSource};
 use crate::runtime::supervisor::SkillsRefreshApplyStatus;
@@ -58,30 +56,6 @@ fn map_control_err(e: WorkspaceControlError) -> HttpError {
             ErrorCode::SessionBusy,
             format!("workspace {id} has an active agent turn"),
         ),
-    }
-}
-
-fn resolve_opencode_settings(
-    state: &HttpState,
-) -> Result<&Arc<crate::opencode_settings::OpenCodeSettingsService>, HttpError> {
-    state
-        .opencode_settings
-        .as_ref()
-        .ok_or_else(|| HttpError::runtime_unavailable("opencode settings service not configured"))
-}
-
-fn map_settings_err(e: OpenCodeSettingsError) -> HttpError {
-    match e {
-        OpenCodeSettingsError::OpencodeBinaryMissing(_)
-        | OpenCodeSettingsError::SpawnFailed(_)
-        | OpenCodeSettingsError::StartTimeout => HttpError::runtime_unavailable(e.to_string()),
-        OpenCodeSettingsError::Api { status, detail } if (400..500).contains(&status) => {
-            HttpError::validation(format!("opencode: {detail}"))
-        }
-        OpenCodeSettingsError::Api { status, detail } => {
-            HttpError::internal(format!("opencode settings api {status}: {detail}"))
-        }
-        OpenCodeSettingsError::Http(msg) => HttpError::internal(msg),
     }
 }
 
@@ -285,22 +259,9 @@ pub async fn get_providers(
     // Without that step, an admin's model-list change would only reach this member
     // at their next runtime spawn — app restarts included.
     reconcile_team_provider(&state).await;
-    let mut providers = store
+    let providers = store
         .get_providers(&workspace_id)
         .map_err(map_control_err)?;
-    if let Some(settings) = state.opencode_settings.as_ref() {
-        if let Ok(wpath) = workspace_path_or_404(&workspace_id).await {
-            if let Ok(catalog) = settings.provider_catalog(&wpath).await {
-                merge_live_provider_catalog(&mut providers, &catalog);
-            } else if let Ok(connected) = settings.connected_provider_ids(&wpath).await {
-                for provider in &mut providers {
-                    if connected.iter().any(|id| id == &provider.id) {
-                        provider.authenticated = true;
-                    }
-                }
-            }
-        }
-    }
     Ok(Json(providers))
 }
 
@@ -327,41 +288,7 @@ async fn reconcile_team_provider(state: &HttpState) {
     let after = std::fs::read(config_path).ok();
     if before != after {
         if let Some(supervisor) = state.runtime_supervisor.as_ref() {
-            supervisor.request_all_workspace_host_refreshes();
-        }
-    }
-}
-
-fn merge_live_provider_catalog(providers: &mut Vec<ProviderInfo>, catalog: &LiveProviderCatalog) {
-    for connected_id in &catalog.connected {
-        if let Some(live) = catalog.providers.get(connected_id) {
-            if let Some(existing) = providers.iter_mut().find(|p| p.id == *connected_id) {
-                existing.authenticated = true;
-                if existing.models.is_empty() {
-                    existing.models = live.model_ids.clone();
-                }
-                if existing.display_name == existing.id {
-                    existing.display_name = live.display_name.clone();
-                }
-            } else {
-                providers.push(ProviderInfo {
-                    id: live.id.clone(),
-                    display_name: live.display_name.clone(),
-                    authenticated: true,
-                    base_url: None,
-                    models: live.model_ids.clone(),
-                });
-            }
-        } else if let Some(existing) = providers.iter_mut().find(|p| p.id == *connected_id) {
-            existing.authenticated = true;
-        } else {
-            providers.push(ProviderInfo {
-                id: connected_id.clone(),
-                display_name: connected_id.clone(),
-                authenticated: true,
-                base_url: None,
-                models: Vec::new(),
-            });
+            supervisor.request_all_workspace_host_refreshes().await;
         }
     }
 }
@@ -396,7 +323,7 @@ pub async fn put_device_provider_auth(
     let outcome = crate::config::workspace_control::put_device_provider_auth(&provider_id, body)
         .map_err(map_control_err)?;
     if let Some(supervisor) = state.runtime_supervisor.as_ref() {
-        supervisor.request_all_workspace_host_refreshes();
+        supervisor.request_all_workspace_host_refreshes().await;
     }
     Ok((StatusCode::OK, apply_ok(outcome)))
 }
@@ -411,7 +338,7 @@ pub async fn delete_device_provider_auth(
     let outcome = crate::config::workspace_control::delete_device_provider_auth(&provider_id)
         .map_err(map_control_err)?;
     if let Some(supervisor) = state.runtime_supervisor.as_ref() {
-        supervisor.request_all_workspace_host_refreshes();
+        supervisor.request_all_workspace_host_refreshes().await;
     }
     Ok((StatusCode::OK, apply_ok(outcome)))
 }
@@ -436,9 +363,6 @@ pub async fn put_provider_auth(
 }
 
 /// `GET /v1/workspaces/:id/provider-auth-methods`
-///
-/// Auth methods per provider: live OpenCode `GET /provider/auth` merged with
-/// built-in OAuth fallbacks when the settings server is unavailable.
 pub async fn get_provider_auth_methods(
     principal: Principal,
     State(state): State<HttpState>,
@@ -446,164 +370,17 @@ pub async fn get_provider_auth_methods(
 ) -> Result<Json<ProviderAuthMethodsResponse>, HttpError> {
     require_scope(&principal, "workspace:read")?;
     let _store = resolve_store(&state)?;
-    let wpath = workspace_path_or_404(&workspace_id).await?;
-    if let Some(settings) = state.opencode_settings.as_ref() {
-        match settings.provider_auth_methods(&wpath).await {
-            Ok(methods) => return Ok(Json(methods)),
-            Err(
-                e @ (OpenCodeSettingsError::OpencodeBinaryMissing(_)
-                | OpenCodeSettingsError::SpawnFailed(_)
-                | OpenCodeSettingsError::StartTimeout),
-            ) => {
-                tracing::warn!(error = %e, "opencode settings unavailable; using builtin auth catalog");
-            }
-            Err(e) => return Err(map_settings_err(e)),
-        }
-    }
+    let _wpath = workspace_path_or_404(&workspace_id).await?;
     Ok(Json(builtin_provider_auth_methods()))
 }
 
 /// `GET /v1/providers/auth-methods`
-///
-/// Device-level counterpart of [`get_provider_auth_methods`] — no workspace,
-/// same live-merge-with-builtin-fallback behavior. Lets provider connect (OAuth
-/// or API key) work before any project directory has been resolved, same as
-/// the device-level API-key routes (#742).
 pub async fn get_device_provider_auth_methods(
     principal: Principal,
-    State(state): State<HttpState>,
+    State(_state): State<HttpState>,
 ) -> Result<Json<ProviderAuthMethodsResponse>, HttpError> {
     require_scope(&principal, "workspace:read")?;
-    if let Some(settings) = state.opencode_settings.as_ref() {
-        match settings.device_provider_auth_methods().await {
-            Ok(methods) => return Ok(Json(methods)),
-            Err(
-                e @ (OpenCodeSettingsError::OpencodeBinaryMissing(_)
-                | OpenCodeSettingsError::SpawnFailed(_)
-                | OpenCodeSettingsError::StartTimeout),
-            ) => {
-                tracing::warn!(error = %e, "opencode settings unavailable; using builtin auth catalog");
-            }
-            Err(e) => return Err(map_settings_err(e)),
-        }
-    }
     Ok(Json(builtin_provider_auth_methods()))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ProviderOAuthAuthorizeRequest {
-    #[serde(default)]
-    pub method_index: u32,
-    #[serde(default)]
-    pub inputs: HashMap<String, String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ProviderOAuthAuthorizeResponse {
-    pub url: String,
-    pub method: String,
-    pub instructions: String,
-}
-
-/// `POST /v1/workspaces/:id/providers/:provider_id/oauth/authorize`
-pub async fn post_provider_oauth_authorize(
-    principal: Principal,
-    State(state): State<HttpState>,
-    Path((workspace_id, provider_id)): Path<(String, String)>,
-    Json(body): Json<ProviderOAuthAuthorizeRequest>,
-) -> Result<Json<ProviderOAuthAuthorizeResponse>, HttpError> {
-    require_scope(&principal, "workspace:write")?;
-    let _store = resolve_store(&state)?;
-    let settings = resolve_opencode_settings(&state)?;
-    let wpath = workspace_path_or_404(&workspace_id).await?;
-    let result = settings
-        .oauth_authorize(&wpath, &provider_id, body.method_index, &body.inputs)
-        .await
-        .map_err(map_settings_err)?;
-    Ok(Json(ProviderOAuthAuthorizeResponse {
-        url: result.url,
-        method: result.method,
-        instructions: result.instructions,
-    }))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ProviderOAuthCallbackRequest {
-    #[serde(default)]
-    pub method_index: u32,
-    pub code: Option<String>,
-}
-
-/// `POST /v1/workspaces/:id/providers/:provider_id/oauth/callback`
-pub async fn post_provider_oauth_callback(
-    principal: Principal,
-    State(state): State<HttpState>,
-    Path((workspace_id, provider_id)): Path<(String, String)>,
-    Json(body): Json<ProviderOAuthCallbackRequest>,
-) -> Result<Json<ApplyResponse>, HttpError> {
-    require_scope(&principal, "workspace:write")?;
-    let _store = resolve_store(&state)?;
-    let settings = resolve_opencode_settings(&state)?;
-    let wpath = workspace_path_or_404(&workspace_id).await?;
-    settings
-        .oauth_callback(
-            &wpath,
-            &provider_id,
-            body.method_index,
-            body.code.as_deref(),
-        )
-        .await
-        .map_err(map_settings_err)?;
-    let outcome = reload_runtime_after_provider_auth(&state, &workspace_id, &wpath).await;
-    Ok(apply_ok(outcome))
-}
-
-/// `POST /v1/providers/:provider_id/oauth/authorize`
-///
-/// Device-level counterpart of [`post_provider_oauth_authorize`] — no
-/// workspace. See [`get_device_provider_auth_methods`] for why.
-pub async fn post_device_provider_oauth_authorize(
-    principal: Principal,
-    State(state): State<HttpState>,
-    Path(provider_id): Path<String>,
-    Json(body): Json<ProviderOAuthAuthorizeRequest>,
-) -> Result<Json<ProviderOAuthAuthorizeResponse>, HttpError> {
-    require_scope(&principal, "workspace:write")?;
-    let settings = resolve_opencode_settings(&state)?;
-    let result = settings
-        .device_oauth_authorize(&provider_id, body.method_index, &body.inputs)
-        .await
-        .map_err(map_settings_err)?;
-    Ok(Json(ProviderOAuthAuthorizeResponse {
-        url: result.url,
-        method: result.method,
-        instructions: result.instructions,
-    }))
-}
-
-/// `POST /v1/providers/:provider_id/oauth/callback`
-///
-/// Device-level counterpart of [`post_provider_oauth_callback`]. There is no
-/// specific workspace runtime to reload here (same reasoning as
-/// `put_device_provider_auth`), but any already-running workspace hosts need
-/// to pick up the newly written credentials, so this still requests a host
-/// refresh across them.
-pub async fn post_device_provider_oauth_callback(
-    principal: Principal,
-    State(state): State<HttpState>,
-    Path(provider_id): Path<String>,
-    Json(body): Json<ProviderOAuthCallbackRequest>,
-) -> Result<Json<ApplyResponse>, HttpError> {
-    require_scope(&principal, "workspace:write")?;
-    let settings = resolve_opencode_settings(&state)?;
-    settings
-        .device_oauth_callback(&provider_id, body.method_index, body.code.as_deref())
-        .await
-        .map_err(map_settings_err)?;
-    if let Some(supervisor) = state.runtime_supervisor.as_ref() {
-        supervisor.request_all_workspace_host_refreshes();
-    }
-    Ok(apply_ok(ApplyOutcome::RestartRequired))
 }
 
 /// `DELETE /v1/workspaces/:id/providers/:provider_id/auth`
@@ -614,17 +391,6 @@ pub async fn delete_provider_auth(
 ) -> Result<(StatusCode, Json<ApplyResponse>), HttpError> {
     require_scope(&principal, "workspace:write")?;
     let store = resolve_store(&state)?;
-    if let Some(settings) = state.opencode_settings.as_ref() {
-        if let Ok(wpath) = workspace_path_or_404(&workspace_id).await {
-            if let Err(e) = settings.remove_provider_auth(&wpath, &provider_id).await {
-                tracing::warn!(
-                    provider_id = %provider_id,
-                    error = %e,
-                    "opencode remove auth failed; continuing with workspace store delete"
-                );
-            }
-        }
-    }
     let _file_outcome = store
         .delete_provider_auth(&workspace_id, &provider_id)
         .map_err(map_control_err)?;

@@ -42,18 +42,11 @@ describe('fetchLocalDaemonCatalog model groups', () => {
     getDaemonModelCatalog.mockReset()
   })
 
-  it('returns the group for each implemented backend', async () => {
-    // All four backends must resolve over HTTP; cursor and claude used to get no
-    // group at all from this endpoint.
-    for (const [backendType, groupId] of [
-      ['opencode', 'opencode'],
-      ['pi', 'pi'],
-      ['cursor', 'cursor'],
-      ['claude-code', 'claude-code'],
-    ] as const) {
-      getDaemonModelCatalog.mockResolvedValueOnce(catalog(groupId, ['prov/a', 'prov/b']))
+  it('resolves the pi catalog group for any legacy backend label', async () => {
+    for (const backendType of ['opencode', 'pi', 'cursor', 'claude-code', 'claude', 'claude_code']) {
+      getDaemonModelCatalog.mockResolvedValueOnce(catalog('pi', ['prov/a', 'prov/b']))
       const models = await modelsFor('/w1', backendType)
-      expect(models, `${backendType} should resolve models`).toHaveLength(2)
+      expect(models, `${backendType} should resolve pi models`).toHaveLength(2)
       expect(models?.[0].id).toBe('prov/a')
       expect(models?.[0].providerName).toBe('prov')
     }
@@ -69,11 +62,9 @@ describe('fetchLocalDaemonCatalog model groups', () => {
     expect(models?.map((model) => model.providerName)).toEqual(['deepseek', 'kimi-coding'])
   })
 
-  it('maps every claude spelling onto the daemon "claude-code" wire name', async () => {
-    // The group id is `agent_type_name(ClaudeCode)` = "claude-code", not the
-    // launch-config `backend_type` spelling "claude".
+  it('maps legacy claude spellings onto the pi catalog slice', async () => {
     for (const spelling of ['claude', 'claude_code', 'claude-code']) {
-      getDaemonModelCatalog.mockResolvedValueOnce(catalog('claude-code', ['anthropic/opus']))
+      getDaemonModelCatalog.mockResolvedValueOnce(catalog('pi', ['anthropic/opus']))
       const models = await modelsFor('/w1', spelling)
       expect(models, `${spelling} should resolve`).toHaveLength(1)
     }
@@ -91,21 +82,25 @@ describe('fetchLocalDaemonCatalog model groups', () => {
     getDaemonModelCatalog.mockResolvedValueOnce(null)
     expect(await modelsFor('/w1', 'opencode')).toBeNull()
 
-    getDaemonModelCatalog.mockResolvedValueOnce(catalog('opencode', []))
+    getDaemonModelCatalog.mockResolvedValueOnce(catalog('pi', []))
     expect(await modelsFor('/w1', 'opencode')).toBeNull()
 
     expect(await modelsFor('   ', 'opencode')).toBeNull()
   })
 
-  it('does not guess when several groups are offered and none matches', async () => {
+  it('returns null when the pi slice is missing from a multi-backend catalog', async () => {
     getDaemonModelCatalog.mockResolvedValueOnce({
-      automation_default_backend: 'pi',
+      automation_default_backend: 'cursor',
       backends: [
-        { backend: 'pi', label: 'Pi', models: [{ ref: 'pi/x', model_id: 'x', display_name: 'x' }] },
         {
           backend: 'cursor',
           label: 'Cursor',
           models: [{ ref: 'cursor/y', model_id: 'y', display_name: 'y' }],
+        },
+        {
+          backend: 'opencode',
+          label: 'OpenCode',
+          models: [{ ref: 'opencode/x', model_id: 'x', display_name: 'x' }],
         },
       ],
     })
@@ -124,27 +119,25 @@ describe('fetchLocalDaemonCatalog', () => {
     getDaemonModelCatalog.mockResolvedValueOnce(null)
     expect(await fetchLocalDaemonCatalog('/w1', 'opencode')).toEqual({ status: 'unknown' })
 
-    getDaemonModelCatalog.mockResolvedValueOnce(catalog('opencode', []))
+    getDaemonModelCatalog.mockResolvedValueOnce(catalog('pi', []))
     expect(await fetchLocalDaemonCatalog('/w1', 'opencode')).toEqual({
       status: 'empty',
-      backend: 'opencode',
+      backend: 'pi',
     })
   })
 
-  it('treats an ambiguous multi-group reply as unknown, never as empty', async () => {
-    // Several groups and none matches is "we cannot tell", not "nothing is
-    // configured" — reporting empty here would wrongly blame the user's setup.
+  it('reports unknown when the pi slice is absent from a multi-group catalog', async () => {
     getDaemonModelCatalog.mockResolvedValueOnce({
-      automation_default_backend: 'pi',
+      automation_default_backend: 'cursor',
       backends: [
-        { backend: 'pi', label: 'Pi', models: [] },
         { backend: 'cursor', label: 'Cursor', models: [] },
+        { backend: 'opencode', label: 'OpenCode', models: [] },
       ],
     })
     expect(await fetchLocalDaemonCatalog('/w1', 'opencode')).toEqual({ status: 'unknown' })
   })
 
-  it('takes the daemon automation default when the caller names no backend', async () => {
+  it('selects the pi slice when the caller names no backend', async () => {
     getDaemonModelCatalog.mockResolvedValueOnce({
       automation_default_backend: 'cursor',
       backends: [
@@ -158,7 +151,7 @@ describe('fetchLocalDaemonCatalog', () => {
     })
     const outcome = await fetchLocalDaemonCatalog('/w1')
     expect(outcome.status).toBe('models')
-    expect(outcome.status === 'models' && outcome.backend).toBe('cursor')
+    expect(outcome.status === 'models' && outcome.backend).toBe('pi')
   })
 
 
@@ -271,7 +264,7 @@ describe('seedLocalDaemonModelsInBackground', () => {
       }),
     )
     getDaemonModelCatalog.mockResolvedValue(
-      catalog('opencode', ['prov/http']),
+      catalog('pi', ['prov/http']),
     )
 
     seedLocalDaemonModelsInBackground({

@@ -3,18 +3,14 @@
 
 #[path = "../../src/backend/mod.rs"]
 mod backend;
-#[path = "../../src/claude_install/mod.rs"]
-mod claude_install;
 #[path = "../../src/config/mod.rs"]
 mod config;
-#[path = "../../src/cursor_install/mod.rs"]
-mod cursor_install;
 // `http::server` reports this machine's id on /v1/info; an integration test's
 // crate root only has the modules it declares here.
 #[path = "../../src/device_id.rs"]
 mod device_id;
-// Streaming download helper shared by `opencode_install` and `pi_install`;
-// an integration-test crate root only has the modules it declares here.
+// Streaming download helper shared by runtime installers; integration-test
+// crate roots only have the modules they declare here.
 #[path = "../../src/download_progress.rs"]
 mod download_progress;
 #[path = "../../src/error.rs"]
@@ -27,10 +23,6 @@ mod mcp_probe;
 mod mqtt;
 #[path = "../../src/node_install/mod.rs"]
 mod node_install;
-#[path = "../../src/opencode_install/mod.rs"]
-mod opencode_install;
-#[path = "../../src/opencode_settings/mod.rs"]
-mod opencode_settings;
 #[path = "../../src/pi_install/mod.rs"]
 mod pi_install;
 // Spawning helper introduced by #1045. Only the bin crate root declared it, so

@@ -136,8 +136,6 @@ pub struct HttpState {
     pub runtime_refresh: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
     pub refresh_watch_registry:
         Option<Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
-    /// Loopback `opencode serve` pool for provider OAuth (settings only).
-    pub opencode_settings: Option<Arc<crate::opencode_settings::OpenCodeSettingsService>>,
     /// Daemon-owned team sync dispatcher (drives `/v1/team/sync*`).
     pub sync_dispatcher: crate::sync::dispatch::SyncDispatcher,
     /// Bridge to the daemon actor loop for `POST /v1/workspaces`. `None` when
@@ -203,7 +201,6 @@ impl HttpState {
         runtime: Arc<dyn RuntimeAdapter>,
         workspace_control: Option<Arc<dyn WorkspaceControlStore>>,
         runtime_supervisor: Option<Arc<crate::runtime::RuntimeSupervisor>>,
-        opencode_settings: Option<Arc<crate::opencode_settings::OpenCodeSettingsService>>,
         sync_dispatcher: crate::sync::dispatch::SyncDispatcher,
         register_workspace_tx: Option<RegisterWorkspaceTx>,
     ) -> Self {
@@ -227,7 +224,6 @@ impl HttpState {
             runtime_supervisor,
             runtime_refresh,
             refresh_watch_registry: None,
-            opencode_settings,
             sync_dispatcher,
             register_workspace_tx,
             backend: None,

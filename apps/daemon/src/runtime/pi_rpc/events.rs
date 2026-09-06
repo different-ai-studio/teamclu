@@ -257,7 +257,7 @@ pub(super) async fn close_turn(shared: &Arc<Shared>, session_id: &str) {
                 .send(AcpEventFrame::new(session_id, ev).with_reply_to(reply_to.clone()))
                 .await;
         }
-        let ev = crate::runtime::opencode_http::translate::status_change(
+        let ev = crate::runtime::acp_translate::status_change(
             amux::AgentStatus::Active,
             amux::AgentStatus::Idle,
         );

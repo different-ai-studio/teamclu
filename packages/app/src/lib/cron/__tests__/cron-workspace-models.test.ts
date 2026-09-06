@@ -89,7 +89,7 @@ describe('modelsFromLiveRuntime', () => {
 
     const groups = modelsFromLiveRuntime('/Users/me/ws')
     expect(groups).toHaveLength(1)
-    expect(groups[0].backend).toBe('opencode')
+    expect(groups[0].backend).toBe('pi')
     expect(groups[0].models.map((m) => m.ref)).toEqual(['team/default', 'team/pro'])
     expect(findRuntimeForWorkspace('/Users/me/ws')?.info.runtimeId).toBe('rt-new')
   })

@@ -9,19 +9,11 @@
 mod backend;
 #[path = "../src/config/mod.rs"]
 mod config;
-// Not used directly by this test — `opencode_install` names
-// `crate::cursor_install::CursorStatus` and `crate::claude_install::ClaudeStatus`
-// in its doctor report, and an integration test's crate root only has the
-// modules it declares here.
-#[path = "../src/claude_install/mod.rs"]
-mod claude_install;
-#[path = "../src/cursor_install/mod.rs"]
-mod cursor_install;
 // Same reason: `http::server` names `crate::device_id` for /v1/info.
 #[path = "../src/device_id.rs"]
 mod device_id;
-// Streaming download helper shared by `opencode_install` and `pi_install`;
-// an integration-test crate root only has the modules it declares here.
+// Streaming download helper shared by runtime installers; integration-test
+// crate roots only have the modules they declare here.
 #[path = "../src/download_progress.rs"]
 mod download_progress;
 #[path = "../src/error.rs"]
@@ -34,10 +26,6 @@ mod mcp_probe;
 mod mqtt;
 #[path = "../src/node_install/mod.rs"]
 mod node_install;
-#[path = "../src/opencode_install/mod.rs"]
-mod opencode_install;
-#[path = "../src/opencode_settings/mod.rs"]
-mod opencode_settings;
 #[path = "../src/pi_install/mod.rs"]
 mod pi_install;
 #[path = "../src/process_util.rs"]
@@ -56,7 +44,7 @@ mod sync;
 mod team_link;
 #[path = "../src/team_shared_env.rs"]
 mod team_shared_env;
-// Same reason as `claude_install` above: the modules declared here carry
+// Same reason as `device_id` above: the modules declared here carry
 // `#[cfg(test)]` blocks that an integration-test crate compiles, and those name
 // `crate::test_brand_env` — which resolves against this root, not the bin's.
 #[path = "../src/test_brand_env.rs"]
@@ -104,7 +92,6 @@ async fn test_app_inner(backend: Option<Arc<dyn Backend>>) -> (TestApp, tempfile
         cfg,
         http::server::metadata("actor".into(), "test"),
         runtime,
-        None,
         None,
         None,
         dispatcher,

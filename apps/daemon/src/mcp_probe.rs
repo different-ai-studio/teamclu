@@ -33,7 +33,7 @@ fn resolve_spawn_program(program: &str) -> String {
     if program.contains('/') {
         return program;
     }
-    let path = crate::runtime::adapter::enriched_spawn_path(
+    let path = crate::runtime::spawn_path::enriched_spawn_path(
         std::env::var("PATH").ok().as_deref(),
         dirs::home_dir().as_deref(),
     );
@@ -150,7 +150,7 @@ pub async fn probe_local_stdio(
     let home = dirs::home_dir();
     cmd.env(
         "PATH",
-        crate::runtime::adapter::enriched_spawn_path(
+        crate::runtime::spawn_path::enriched_spawn_path(
             std::env::var("PATH").ok().as_deref(),
             home.as_deref(),
         ),
