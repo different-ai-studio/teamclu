@@ -553,9 +553,8 @@ fn ensure_extended_inherent_config(
     //   to have; in a workspace without one it silently pointed at nothing.
     // - `<home>/.agents/skills` is the same directory for every workspace.
     //
-    // Both now go into the active team's global config as absolute paths, which
-    // `sync_opencode_generated` copies wholesale into `OPENCODE_CONFIG`. Stale
-    // workspace copies are dropped so the relative form cannot outrank them.
+    // Both now go into the active team's global config as absolute paths.
+    // Stale workspace copies are dropped so the relative form cannot outrank them.
     {
         let dropped = obj
             .get_mut("skills")

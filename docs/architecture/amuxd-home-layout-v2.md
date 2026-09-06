@@ -114,7 +114,10 @@ daemon.toml  device-id  mcp.json  teams/  run/  logs/  cache/
             ├── secret.key             # 本团队主密钥，0600
             ├── secrets.enc            # 团队密钥 + channels 凭证
             ├── cloud-token            # 0600，注入为 TC_ACCESS_TOKEN_FILE
-            ├── opencode.json          # 当前团队的 OpenCode provider 配置，注入为 OPENCODE_CONFIG
+            ├── opencode.json          # 团队 provider 配置（managed LLM 物化）
+            ├── cloud/
+            │   ├── mcp.json           # 本机已 Install 的团队 MCP（Cursor mcpServers）
+            │   └── _secrets/          # 团队 env 密文缓存
             ├── members.toml           # 成员 / pending invite 缓存
             ├── runtimes.toml          # 本机 runtime 索引（§4.4）
             ├── cursor-permissions.json
@@ -207,9 +210,8 @@ Cursor `mcpServers` 形状——Cursor 形状没地方放 `enabled`（playwright
 而这个形状每个消费者本来就已经在为工作区配置解析了。
 
 消费者与团队 MCP 完全对称：`config::team_mcp::load_merged_mcp`（设置页的合并视图
-与 MCP 面板的清单）、`runtime/sidecar/mcp.rs`（cursor）、
-`runtime::team_cloud_config::sync_opencode_generated`（opencode，经 `OPENCODE_CONFIG`）、
-`runtime/pi_rpc`（pi，经 `TEAMCLU_MCP_SERVERS`）。
+与 MCP 面板的清单）、`runtime/pi_rpc`（pi，经 `TEAMCLU_MCP_SERVERS`，spawn 时 merge
+device + `state/cloud/mcp.json` + workspace）。
 合并顺序：设备 → 团队 → 工作区，后者覆盖前者。
 
 放在根目录而不是 `teams/<id>/state/` 或 `cache/`：它描述的是**这台机器**的工具
