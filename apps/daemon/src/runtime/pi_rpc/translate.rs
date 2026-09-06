@@ -27,12 +27,42 @@ pub struct TranslateState {
     emitted: HashMap<(BlockKind, i64), usize>,
     /// toolCallId → toolName (for kind mapping on results, debugging).
     tool_names: HashMap<String, String>,
+    /// A failed run's error, held until the run actually ends.
+    ///
+    /// pi's `AgentSession` retries a transient failure by re-running the whole
+    /// agent run — on by default, 3 attempts — and every attempt emits its own
+    /// failed `message_end`. Reporting at `message_end` would leave a durable
+    /// error banner per attempt even when the retry then succeeds, so the
+    /// error waits for `agent_end` to say whether it is the run's outcome
+    /// (see `events::will_retry`) and is flushed by `events::close_turn`.
+    pending_turn_error: Option<(String, String)>,
 }
 
 impl TranslateState {
     /// Reset per-turn block progress (called on `agent_start`).
     pub fn reset_turn(&mut self) {
         self.emitted.clear();
+        // Belt-and-braces: a new run means the previous one was settled (its
+        // error flushed or discarded). Never let one leak into the next turn.
+        self.pending_turn_error = None;
+    }
+
+    /// Hold a failed run's error until the run is known not to be retried.
+    fn stash_turn_error(&mut self, message: &str, details: String) {
+        self.pending_turn_error = Some((message.to_string(), details));
+    }
+
+    /// Take the held error — the run is over and pi is not retrying it.
+    pub fn take_turn_error(&mut self) -> Option<amux::AcpEvent> {
+        self.pending_turn_error
+            .take()
+            .map(|(message, details)| error_event(&message, details))
+    }
+
+    /// Drop the held error: pi is re-running this agent run, so the attempt's
+    /// failure is not the turn's outcome.
+    pub fn discard_turn_error(&mut self) {
+        self.pending_turn_error = None;
     }
 }
 
@@ -283,12 +313,18 @@ pub fn translate_event(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
             {
-                "error" => vec![error_event(
-                    PROVIDER_ERROR_MESSAGE,
-                    // No invented detail when pi gives none: the frontend
-                    // renders the localized message alone.
-                    details.unwrap_or_default(),
-                )],
+                // Held, not emitted: pi may still retry this run. No invented
+                // detail when pi gives none — the frontend renders the
+                // localized message alone.
+                "error" => {
+                    state.stash_turn_error(PROVIDER_ERROR_MESSAGE, details.unwrap_or_default());
+                    vec![]
+                }
+                // Emitted straight away: an abort is never retried (pi-ai's
+                // `retryAssistantCall` returns it terminally, and
+                // `_isRetryableError` only ever looks at `stopReason ==
+                // "error"`), and a cancelled turn may not get an `agent_end`
+                // at all — holding it could mean never reporting it.
                 "aborted" => vec![error_event(
                     ABORTED_ERROR_MESSAGE,
                     details.unwrap_or_else(|| ABORTED_ERROR_DETAILS.to_string()),
@@ -709,19 +745,48 @@ mod tests {
         "errorMessage":"400 {\"type\":\"error\",\"error\":{\"message\":\"You're out of extra usage.\"}}"
     }}"#;
 
-    #[test]
-    fn failed_turn_becomes_provider_error() {
-        let mut s = TranslateState::default();
-        let e = ev(&mut s, FAILED_MESSAGE_END);
-        match e[0].event.as_ref().unwrap() {
-            amux::acp_event::Event::Error(err) => {
-                // Frontend maps this exact message to a ProviderError banner.
-                assert_eq!(err.message, PROVIDER_ERROR_MESSAGE);
-                // The provider's own words must survive into the banner.
-                assert!(err.details.contains("out of extra usage"), "{err:?}");
-            }
+    fn held_error(state: &mut TranslateState) -> amux::AcpError {
+        match state
+            .take_turn_error()
+            .expect("a failure was held")
+            .event
+            .unwrap()
+        {
+            amux::acp_event::Event::Error(err) => err,
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn failed_turn_is_held_as_a_provider_error() {
+        let mut s = TranslateState::default();
+        // Held rather than emitted: pi may still retry this run.
+        assert!(ev(&mut s, FAILED_MESSAGE_END).is_empty());
+        let err = held_error(&mut s);
+        // Frontend maps this exact message to a ProviderError banner.
+        assert_eq!(err.message, PROVIDER_ERROR_MESSAGE);
+        // The provider's own words must survive into the banner.
+        assert!(err.details.contains("out of extra usage"), "{err:?}");
+        // Taken once and once only — never re-reported on a later close.
+        assert!(s.take_turn_error().is_none());
+    }
+
+    #[test]
+    fn a_retried_attempts_failure_can_be_discarded() {
+        let mut s = TranslateState::default();
+        ev(&mut s, FAILED_MESSAGE_END);
+        s.discard_turn_error();
+        assert!(s.take_turn_error().is_none());
+    }
+
+    #[test]
+    fn a_failure_never_leaks_into_the_next_turn() {
+        let mut s = TranslateState::default();
+        ev(&mut s, FAILED_MESSAGE_END);
+        // agent_start resets the turn; a stale failure must not surface as the
+        // next turn's outcome.
+        s.reset_turn();
+        assert!(s.take_turn_error().is_none());
     }
 
     #[test]
@@ -796,12 +861,17 @@ mod tests {
     #[test]
     fn turn_end_does_not_double_report_the_failure() {
         // pi's agent loop emits turn_end with the *same* failed message right
-        // after message_end. Only message_end may translate, or every provider
+        // after message_end. Only message_end may record it, or every provider
         // failure reaches the client twice.
         let mut s = TranslateState::default();
-        assert_eq!(ev(&mut s, FAILED_MESSAGE_END).len(), 1);
+        assert!(ev(&mut s, FAILED_MESSAGE_END).is_empty());
         let turn_end = FAILED_MESSAGE_END.replacen("message_end", "turn_end", 1);
         assert!(ev(&mut s, &turn_end).is_empty());
+        assert!(
+            s.take_turn_error().is_some(),
+            "exactly one failure recorded"
+        );
+        assert!(s.take_turn_error().is_none());
     }
 
     #[test]
