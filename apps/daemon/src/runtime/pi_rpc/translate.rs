@@ -2,9 +2,10 @@
 //!
 //! Pure, per-session stateful translation of pi `--mode rpc` events
 //! (`message_update` with `assistantMessageEvent` deltas, tool execution
-//! lifecycle, extension errors) into the same `AcpEvent` vocabulary the
-//! opencode HTTP backend emits (`runtime/opencode_http/translate.rs`), so
-//! gateway / MQTT / frontend / iOS consumers see no difference.
+//! lifecycle, turn stop reasons, extension errors) into the same `AcpEvent`
+//! vocabulary the opencode HTTP backend emits
+//! (`runtime/opencode_http/translate.rs`), so gateway / MQTT / frontend / iOS
+//! consumers see no difference.
 
 use std::collections::HashMap;
 
@@ -45,6 +46,37 @@ fn text_event(kind: BlockKind, text: String) -> amux::AcpEvent {
     };
     amux::AcpEvent {
         event: Some(event),
+        model: String::new(),
+    }
+}
+
+/// `AcpError.message` for a turn whose model call failed outright.
+///
+/// The exact string is a contract with two consumers: `turn_aggregator`'s
+/// `is_turn_abort_error` must *not* match it (a provider failure is not a user
+/// interrupt), and the frontend's `classifyAgentTurnErrorName` maps it to
+/// `ProviderError` — a durable, localized banner. Editing it silently
+/// downgrades the UI to a generic untranslated error, so keep it in sync with
+/// `packages/app/src/lib/agent/agent-turn-error.ts`.
+pub(crate) const PROVIDER_ERROR_MESSAGE: &str = "model provider error";
+
+/// `AcpError.message` / `.details` for a turn the model stopped before
+/// finishing — the user pressed stop, or a model switch cancelled the run.
+///
+/// Matched by `turn_aggregator::is_turn_abort_error` (→ a durable
+/// `turn_status:"interrupted"` AGENT_REPLY) and by the frontend's
+/// `isAgentTurnAbortError` (→ the interrupt strip on the message, and
+/// deliberately *no* error banner). Same name/details pair opencode's abort
+/// produces, so both runtimes render an interrupt identically.
+pub(crate) const ABORTED_ERROR_MESSAGE: &str = "MessageAbortedError";
+pub(crate) const ABORTED_ERROR_DETAILS: &str = "Aborted";
+
+fn error_event(message: &str, details: String) -> amux::AcpEvent {
+    amux::AcpEvent {
+        event: Some(amux::acp_event::Event::Error(amux::AcpError {
+            message: message.to_string(),
+            details,
+        })),
         model: String::new(),
     }
 }
@@ -144,11 +176,11 @@ fn delta_or_end(
 /// Translate one pi RPC stdout event into zero or more `amux::AcpEvent`s.
 ///
 /// Handled here: `message_update` (text/thinking deltas + ends),
-/// `tool_execution_start` / `tool_execution_end`, `extension_error`.
-/// Lifecycle events (`agent_start`, `turn_end`, `agent_settled`,
-/// `extension_ui_request`) are handled by the event router (`events.rs`), not
-/// this pure layer. `tool_execution_update` partial results are dropped (the
-/// final `tool_execution_end` carries the full result).
+/// `tool_execution_start` / `tool_execution_end`, `message_end` (turn stop
+/// reason), `extension_error`. Lifecycle events (`agent_start`, `turn_end`,
+/// `agent_settled`, `extension_ui_request`) are handled by the event router
+/// (`events.rs`), not this pure layer. `tool_execution_update` partial results
+/// are dropped (the final `tool_execution_end` carries the full result).
 pub fn translate_event(
     state: &mut TranslateState,
     event: &serde_json::Value,
@@ -221,13 +253,51 @@ pub fn translate_event(
                 .map(json_value_to_string)
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| event.to_string());
-            vec![amux::AcpEvent {
-                event: Some(amux::acp_event::Event::Error(amux::AcpError {
-                    message: "pi extension error".to_string(),
-                    details,
-                })),
-                model: String::new(),
-            }]
+            vec![error_event("pi extension error", details)]
+        }
+        // pi reports a failed or cancelled model call as the turn's *final*
+        // assistant message — `stopReason` "error" / "aborted" plus
+        // `errorMessage` (documented on `AgentEvent` in pi-agent-core).
+        // Nothing else in the stream carries it, so without this arm the run
+        // ends on a bare `agent_end` and the client renders a finished turn
+        // with no reply and no reason at all.
+        //
+        // `turn_end` deliberately stays unhandled: pi's agent loop emits it
+        // with the *same* message immediately after this `message_end`, so
+        // translating both would double-report every failure.
+        "message_end" => {
+            let Some(message) = event.get("message") else {
+                return vec![];
+            };
+            // `message_end` also fires for user prompts, steering messages and
+            // tool results; only an assistant message carries a stop reason.
+            if message.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+                return vec![];
+            }
+            let details = message
+                .get("errorMessage")
+                .map(json_value_to_string)
+                .filter(|s| !s.is_empty());
+            match message
+                .get("stopReason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+            {
+                "error" => vec![error_event(
+                    PROVIDER_ERROR_MESSAGE,
+                    // No invented detail when pi gives none: the frontend
+                    // renders the localized message alone.
+                    details.unwrap_or_default(),
+                )],
+                "aborted" => vec![error_event(
+                    ABORTED_ERROR_MESSAGE,
+                    details.unwrap_or_else(|| ABORTED_ERROR_DETAILS.to_string()),
+                )],
+                // Every ordinary ending ("stop", "toolUse", "length", …). The
+                // reply text itself already streamed via `message_update`, so
+                // re-emitting anything here would duplicate it.
+                _ => vec![],
+            }
         }
         _ => vec![],
     }
@@ -630,6 +700,108 @@ mod tests {
         assert!(ev(&mut s, r#"{"type":"turn_end"}"#).is_empty());
         assert!(ev(&mut s, r#"{"type":"agent_settled"}"#).is_empty());
         assert!(ev(&mut s, r#"{"type":"auto_retry_start","attempt":1}"#).is_empty());
+    }
+
+    /// The shape pi produced for an out-of-quota Anthropic call: a final
+    /// assistant message carrying the provider's raw 400 body.
+    const FAILED_MESSAGE_END: &str = r#"{"type":"message_end","message":{
+        "role":"assistant","content":[],"stopReason":"error",
+        "errorMessage":"400 {\"type\":\"error\",\"error\":{\"message\":\"You're out of extra usage.\"}}"
+    }}"#;
+
+    #[test]
+    fn failed_turn_becomes_provider_error() {
+        let mut s = TranslateState::default();
+        let e = ev(&mut s, FAILED_MESSAGE_END);
+        match e[0].event.as_ref().unwrap() {
+            amux::acp_event::Event::Error(err) => {
+                // Frontend maps this exact message to a ProviderError banner.
+                assert_eq!(err.message, PROVIDER_ERROR_MESSAGE);
+                // The provider's own words must survive into the banner.
+                assert!(err.details.contains("out of extra usage"), "{err:?}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aborted_turn_becomes_interrupt_not_failure() {
+        let mut s = TranslateState::default();
+        let e = ev(
+            &mut s,
+            r#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"aborted","errorMessage":"Request was aborted"}}"#,
+        );
+        match e[0].event.as_ref().unwrap() {
+            amux::acp_event::Event::Error(err) => {
+                // Both the daemon's turn_aggregator and the frontend key the
+                // interrupt rendering off this name.
+                assert_eq!(err.message, ABORTED_ERROR_MESSAGE);
+                assert_eq!(err.details, "Request was aborted");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aborted_turn_without_detail_still_names_the_abort() {
+        let mut s = TranslateState::default();
+        let e = ev(
+            &mut s,
+            r#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"aborted"}}"#,
+        );
+        match e[0].event.as_ref().unwrap() {
+            amux::acp_event::Event::Error(err) => {
+                assert_eq!(err.message, ABORTED_ERROR_MESSAGE);
+                assert_eq!(err.details, ABORTED_ERROR_DETAILS);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn successful_message_end_emits_nothing() {
+        let mut s = TranslateState::default();
+        // Reply text already streamed through message_update; re-emitting the
+        // message here would duplicate the whole answer.
+        assert!(ev(
+            &mut s,
+            r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}}"#,
+        )
+        .is_empty());
+        assert!(ev(
+            &mut s,
+            r#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"toolUse"}}"#,
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn non_assistant_message_end_emits_nothing() {
+        let mut s = TranslateState::default();
+        // pi emits message_end for the user prompt and for every tool result
+        // too; neither carries a turn stop reason.
+        assert!(ev(
+            &mut s,
+            r#"{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#,
+        )
+        .is_empty());
+        assert!(ev(
+            &mut s,
+            r#"{"type":"message_end","message":{"role":"toolResult","toolCallId":"call_1","isError":true}}"#,
+        )
+        .is_empty());
+        assert!(ev(&mut s, r#"{"type":"message_end"}"#).is_empty());
+    }
+
+    #[test]
+    fn turn_end_does_not_double_report_the_failure() {
+        // pi's agent loop emits turn_end with the *same* failed message right
+        // after message_end. Only message_end may translate, or every provider
+        // failure reaches the client twice.
+        let mut s = TranslateState::default();
+        assert_eq!(ev(&mut s, FAILED_MESSAGE_END).len(), 1);
+        let turn_end = FAILED_MESSAGE_END.replacen("message_end", "turn_end", 1);
+        assert!(ev(&mut s, &turn_end).is_empty());
     }
 
     #[test]

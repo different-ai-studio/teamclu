@@ -351,6 +351,22 @@ mod tests {
     use super::*;
     use crate::proto::amux;
 
+    /// The pi runtime picks its `AcpError.message` strings so that an aborted
+    /// turn routes to the interrupt rendering and a provider failure does not.
+    /// Both live on the same `is_turn_abort_error` predicate, so pin the pair
+    /// here — renaming either constant in isolation silently swaps how a
+    /// failed turn is shown to the user.
+    #[test]
+    fn pi_turn_stop_reasons_route_to_the_intended_rendering() {
+        use crate::runtime::pi_rpc::translate::{ABORTED_ERROR_MESSAGE, PROVIDER_ERROR_MESSAGE};
+        let err = |message: &str| amux::AcpError {
+            message: message.to_string(),
+            details: String::new(),
+        };
+        assert!(is_turn_abort_error(&err(ABORTED_ERROR_MESSAGE)));
+        assert!(!is_turn_abort_error(&err(PROVIDER_ERROR_MESSAGE)));
+    }
+
     fn thinking_chunk(text: &str) -> amux::AcpEvent {
         amux::AcpEvent {
             event: Some(amux::acp_event::Event::Thinking(amux::AcpThinking {
