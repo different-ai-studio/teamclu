@@ -9,48 +9,27 @@ const {
   installSidecarIfChanged,
 } = require("./lib/install-sidecar-atomic");
 const { sidecarTargetDir } = require("./lib/sidecar-target-dir");
-
-const VERSION_PROBE_TIMEOUT_MS = 5_000;
-
-function readCargoPackageVersion(manifestPath) {
-  const raw = fs.readFileSync(manifestPath, "utf8");
-  const match = raw.match(/^\s*version\s*=\s*"([^"]+)"/m);
-  return match ? match[1] : null;
-}
-
-function parseVersionFromOutput(output) {
-  const match = String(output ?? "").match(/\b(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/);
-  return match ? match[1] : null;
-}
+const {
+  mtimePair,
+  newestMtimeMs,
+  parseVersionFromOutput,
+  readCargoPackageVersion,
+  readExecutableVersion,
+  shouldRebuildSidecar,
+  VERSION_PROBE_TIMEOUT_MS,
+} = require("./lib/sidecar-staleness");
 
 /**
- * Probe `--version` with a hard timeout. A corrupted / in-place-overwritten
- * Mach-O on macOS can hang forever in UE without this.
+ * Everything the daemon binary is built from: its own crate, the workspace
+ * crates it depends on by path, and the lockfile that pins the rest. A staged
+ * sidecar older than any of these was built from something else.
  */
-function readExecutableVersion(executable, env) {
-  if (!fs.existsSync(executable)) {
-    return null;
-  }
-  const result = spawnSync(executable, ["--version"], {
-    encoding: "utf8",
-    env,
-    timeout: VERSION_PROBE_TIMEOUT_MS,
-    killSignal: "SIGKILL",
-  });
-  if (result.error || result.status !== 0) {
-    return null;
-  }
-  return parseVersionFromOutput(`${result.stdout}\n${result.stderr}`);
-}
-
-function shouldRebuildSidecar({ exists, expectedVersion, existingVersion }) {
-  if (!exists) {
-    return true;
-  }
-  if (!expectedVersion || !existingVersion) {
-    return true;
-  }
-  return expectedVersion !== existingVersion;
+function daemonSourceRoots(repoRoot) {
+  return [
+    path.join(repoRoot, "apps/daemon"),
+    path.join(repoRoot, "crates"),
+    path.join(repoRoot, "Cargo.lock"),
+  ];
 }
 
 /**
@@ -92,17 +71,32 @@ function ensureAmuxdSidecar(env, opts) {
   // Force must skip the probe: a corrupted dest hangs forever even with a
   // timeout if the kernel parks the probe in UE before the timer fires.
   const existingVersion = force ? null : readExecutableVersion(dest, env);
+  const mtimes = mtimePair({
+    dest,
+    exists,
+    force,
+    sourceRoots: daemonSourceRoots(repoRoot),
+  });
   if (
     !force &&
-    !shouldRebuildSidecar({ exists, expectedVersion, existingVersion })
+    !shouldRebuildSidecar({
+      exists,
+      expectedVersion,
+      existingVersion,
+      ...mtimes,
+    })
   ) {
     return;
   }
   if (force) {
     console.log(`${logPrefix} Forcing amuxd sidecar rebuild...`);
-  } else if (exists) {
+  } else if (exists && existingVersion !== expectedVersion) {
     console.log(
       `${logPrefix} Rebuilding amuxd sidecar (${existingVersion ?? "unknown"} -> ${expectedVersion ?? "unknown"})...`,
+    );
+  } else if (exists) {
+    console.log(
+      `${logPrefix} Rebuilding amuxd sidecar (daemon sources changed since it was staged)...`,
     );
   }
   console.log(`${logPrefix} Building amuxd sidecar...`);
@@ -125,8 +119,10 @@ function ensureAmuxdSidecar(env, opts) {
 }
 
 module.exports = {
+  daemonSourceRoots,
   ensureAmuxdSidecar,
   installSidecarAtomic, // re-export for callers/tests
+  newestMtimeMs,
   parseVersionFromOutput,
   readCargoPackageVersion,
   readExecutableVersion,

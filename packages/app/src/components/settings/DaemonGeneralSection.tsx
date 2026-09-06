@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertCircle, AlertTriangle, Bot, Loader2, RefreshCw, RotateCcw, Save, Trash2, UserPlus } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Bot, Copy, ExternalLink, Loader2, RefreshCw, RotateCcw, Save, Trash2, UserPlus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -21,7 +21,13 @@ import {
   type CurrentDaemonAgent,
   type TeamMemberOption,
 } from '@/lib/daemon/daemon-agent-admin'
-import { encodeWorkspaceId, reloadDaemonRuntime } from '@/lib/daemon/daemon-local-client'
+import {
+  encodeWorkspaceId,
+  getDaemonHttpEndpoint,
+  openDaemonSetupConsole,
+  reloadDaemonRuntime,
+  type DaemonHttpEndpoint,
+} from '@/lib/daemon/daemon-local-client'
 import { describeEnvReloadOutcome } from '@/lib/agent/env-runtime-reload'
 import { useUIStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -75,6 +81,9 @@ export function DaemonGeneralSection() {
   // Shared with the sidebar status dot — one poll, one value (#522).
   const daemonMqttConnected = useDaemonMqttConnected()
   const [daemonVersion, setDaemonVersion] = React.useState<string | null>(null)
+  // Where the local daemon is listening. Re-read on every Refresh because the
+  // port is ephemeral: amuxd binds `127.0.0.1:0`, so a restart moves it.
+  const [endpoint, setEndpoint] = React.useState<DaemonHttpEndpoint | null>(null)
   // When set, render the existing daemon onboarding wizard as an overlay to
   // re-bind the local daemon to the current team.
   const [rebinding, setRebinding] = React.useState(false)
@@ -116,7 +125,19 @@ export function DaemonGeneralSection() {
 
   const teamMismatch = !!daemonTeamId && !!team?.id && daemonTeamId !== team.id
 
+  const loadEndpoint = React.useCallback(async () => {
+    setEndpoint(await getDaemonHttpEndpoint())
+  }, [])
+
+  React.useEffect(() => {
+    void loadEndpoint()
+  }, [loadEndpoint])
+
   const load = React.useCallback(async () => {
+    // Ahead of the team guard: the daemon has an address whether or not this
+    // app has a team selected, and that is exactly when someone goes looking
+    // for the web console.
+    void loadEndpoint()
     if (!team?.id) return
     setLoading(true)
     setError(null)
@@ -138,7 +159,7 @@ export function DaemonGeneralSection() {
     } finally {
       setLoading(false)
     }
-  }, [team?.id, clearDaemonGeneralPrompt])
+  }, [team?.id, clearDaemonGeneralPrompt, loadEndpoint])
 
   React.useEffect(() => {
     void load()
@@ -586,6 +607,91 @@ export function DaemonGeneralSection() {
             </div>
           </SettingCard>
         </>
+      )}
+
+      {/* Outside the agent branch on purpose: the daemon has an address before
+          it has an agent, and "where is the local service" is the question a
+          machine that has not finished onboarding most needs answered. */}
+      {isTauri() && (
+        <SettingCard>
+          <div className="space-y-4">
+            <div>
+              <p className="text-[13px] font-semibold">
+                {t('settings.daemonGeneral.endpointTitle', 'Local daemon service')}
+              </p>
+              <p className="mt-0.5 text-[12px] text-muted-foreground">
+                {t(
+                  'settings.daemonGeneral.endpointDesc',
+                  'Where amuxd listens on this machine. The system assigns the port, so it changes every time the daemon restarts.',
+                )}
+              </p>
+            </div>
+
+            {endpoint ? (
+              <>
+                <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-6 gap-y-2.5 text-[12px]">
+                  <dt className="text-muted-foreground">
+                    {t('settings.daemonGeneral.endpointAddress', 'Address')}
+                  </dt>
+                  <dd className="flex min-w-0 items-center gap-2">
+                    <span className="truncate font-mono text-foreground" data-testid="daemon-endpoint-url">
+                      {endpoint.baseUrl}
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0 gap-1 px-1.5 text-[11px] text-muted-foreground"
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(endpoint.baseUrl)
+                        toast.success(t('settings.daemonGeneral.endpointCopied', 'Address copied'))
+                      }}
+                    >
+                      <Copy className="h-3 w-3" />
+                      {t('common.copy', 'Copy')}
+                    </Button>
+                  </dd>
+                  <dt className="text-muted-foreground">
+                    {t('settings.daemonGeneral.endpointPort', 'Port')}
+                  </dt>
+                  <dd className="font-mono text-ink-2" data-testid="daemon-endpoint-port">
+                    {endpoint.port ?? '—'}
+                  </dd>
+                </dl>
+
+                <div className="border-t border-border-soft pt-4">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 gap-1.5"
+                    data-testid="daemon-open-web-config"
+                    onClick={async () => {
+                      // The console needs the daemon root token, which stays
+                      // inside the client module — this only learns whether it
+                      // had one to use.
+                      if (!(await openDaemonSetupConsole())) {
+                        toast.error(
+                          t('settings.daemonGeneral.endpointOpenFailed', 'Could not reach the local daemon.'),
+                        )
+                      }
+                    }}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    {t('settings.daemonGeneral.endpointOpen', 'Open web config')}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <p className="text-[12px] text-muted-foreground">
+                {t(
+                  'settings.daemonGeneral.endpointUnavailable',
+                  'The local daemon is not running, so it has no port yet.',
+                )}
+              </p>
+            )}
+          </div>
+        </SettingCard>
       )}
 
       {isTauri() && workspacePath?.trim() && (

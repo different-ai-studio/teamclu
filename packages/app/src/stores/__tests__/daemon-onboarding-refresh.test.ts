@@ -168,6 +168,7 @@ const reset = () =>
     step: null,
     completedSteps: [],
     failedStep: null,
+    daemonOutdated: false,
     runStartedAt: null,
   })
 
@@ -275,6 +276,32 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(h.installCalls).toEqual([])
     expect(useDaemonOnboardingStore.getState().completedSteps).not.toContain('install-runtime')
     expect(useDaemonOnboardingStore.getState().status).toBe('ready')
+  })
+
+  // A daemon older than the app reports no managed rows at all, so they come
+  // back `present: false` and read exactly like a machine that needs an
+  // install. Running one changes nothing and the re-check still says missing —
+  // which is how this used to end on "installed but does not report as ready",
+  // pointing at a runtime that was fine.
+  it('names the stale daemon instead of installing a runtime that is already there', async () => {
+    h.runtimeRows = runtimeRows(false).map((r) =>
+      r.id === 'node' || r.id === 'pi'
+        ? { ...r, blocker: 'daemon_outdated', blockerFound: '0.4.1-beta.40', blockerRequired: '0.4.1-beta.44' }
+        : r,
+    )
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+
+    await useDaemonOnboardingStore.getState().refresh()
+
+    const s = useDaemonOnboardingStore.getState()
+    expect(h.installCalls).toEqual([])
+    expect(s.status).toBe('error')
+    expect(s.failedStep).toBe('install-runtime')
+    expect(s.daemonOutdated).toBe(true)
+    expect(s.error).toContain('0.4.1-beta.40')
+    expect(s.error).toContain('0.4.1-beta.44')
   })
 
   it('stops at install-runtime, by name, when the install fails', async () => {

@@ -21,6 +21,7 @@
 //! - AgentReply: `""` normally; special turn endings use non-empty
 //!   agent-facing English content plus:
 //!   - `{"turn_status":"interrupted"}` — user abort
+//!   - `{"turn_status":"failed"}` — the model provider errored out
 //!   - `{"turn_status":"no_final_reply"}` — Idle with no final prose
 //!     (frontends hide the English notice and render a localized strip)
 //!   - `{"turn_status":"skill_created_in_unsupported_directory", ...}` —
@@ -58,6 +59,24 @@ Do not invent a summary, continue earlier narration, or re-run work unless \
 the user explicitly asks.";
 
 const NO_FINAL_REPLY_METADATA_JSON: &str = r#"{"turn_status":"no_final_reply"}"#;
+
+/// Durable AGENT_REPLY body when the turn ends because the model provider
+/// failed — an `AcpError` that is not a user abort.
+///
+/// English for the same reason as the notices above. Frontends hide it when
+/// `metadata.turn_status == "failed"` and render a localized strip.
+///
+/// It exists because a failed turn must not enter history as a finished one:
+/// before this, a provider failure fell through to the `no_final_reply`
+/// notice, whose text tells the model to "treat the turn as successfully
+/// completed" — so an out-of-quota turn was recorded as a completed one and
+/// fed back as context on the next turn.
+pub const FAILED_AGENT_REPLY_CONTENT: &str = "\
+[Turn failed] The model provider returned an error before this turn produced \
+an answer. The work was not completed. Do not treat it as done and do not \
+invent a summary; if it still matters, the user can retry or switch models.";
+
+const FAILED_REPLY_METADATA_JSON: &str = r#"{"turn_status":"failed"}"#;
 
 fn is_turn_abort_error(err: &amux::AcpError) -> bool {
     let message = err.message.to_ascii_lowercase();
@@ -159,6 +178,11 @@ pub struct TurnAggregator {
     turn_had_reply: bool,
     /// True when an ACP Error for user abort arrived before Active→Idle.
     turn_was_interrupted: bool,
+    /// True when a non-abort ACP Error (a provider failure) arrived before
+    /// Active→Idle. Kept separate from `turn_was_interrupted` because the two
+    /// carry opposite meanings to the model: one is "the user stopped you",
+    /// the other is "the call failed".
+    turn_failed: bool,
 }
 
 impl TurnAggregator {
@@ -209,12 +233,16 @@ impl TurnAggregator {
                 });
             }
             Some(amux::acp_event::Event::Error(err)) => {
-                // Abort arrives before Active→Idle. Remember it so turn end
-                // can emit a durable interrupted AGENT_REPLY (catchup + UI).
+                // Both kinds arrive before Active→Idle. Remember which one so
+                // turn end can emit the matching durable AGENT_REPLY (catchup
+                // + UI); marking activity guarantees the turn produces a row
+                // even when nothing else was streamed.
+                self.ensure_turn_started();
+                self.turn_had_activity = true;
                 if is_turn_abort_error(err) {
-                    self.ensure_turn_started();
                     self.turn_was_interrupted = true;
-                    self.turn_had_activity = true;
+                } else {
+                    self.turn_failed = true;
                 }
             }
             Some(amux::acp_event::Event::StatusChange(sc)) => {
@@ -229,6 +257,7 @@ impl TurnAggregator {
                     self.turn_had_activity = false;
                     self.turn_had_reply = false;
                     self.turn_was_interrupted = false;
+                    self.turn_failed = false;
                     self.ensure_turn_started();
                 }
                 // Active -> Idle is the canonical "turn ended" signal.
@@ -236,21 +265,34 @@ impl TurnAggregator {
                 // turn allocates a fresh id.
                 if sc.old_status == active && sc.new_status == idle {
                     self.flush_thinking_into(&mut out);
-                    if self.turn_was_interrupted && self.turn_had_activity {
+                    let ended_badly = self.turn_was_interrupted || self.turn_failed;
+                    if ended_badly && self.turn_had_activity {
                         // Single durable AGENT_REPLY: keep any unflushed prose in
                         // content (user must see what was generated). Only fall
-                        // back to the English interrupt notice when there is no
-                        // visible text — still stamp turn_status for UI routing.
+                        // back to the English notice when there is no visible
+                        // text — still stamp turn_status for UI routing.
+                        //
+                        // An interrupt outranks a failure: if the user stopped
+                        // the turn, that is the outcome they need to see, even
+                        // when a provider error also landed on the way out.
+                        let (notice, metadata) = if self.turn_was_interrupted {
+                            (
+                                INTERRUPTED_AGENT_REPLY_CONTENT,
+                                INTERRUPTED_REPLY_METADATA_JSON,
+                            )
+                        } else {
+                            (FAILED_AGENT_REPLY_CONTENT, FAILED_REPLY_METADATA_JSON)
+                        };
                         let prose = std::mem::take(&mut self.reply_buf);
                         let content = if prose.trim().is_empty() {
-                            INTERRUPTED_AGENT_REPLY_CONTENT.to_string()
+                            notice.to_string()
                         } else {
                             prose
                         };
                         out.push(EmittedMessage {
                             kind: MessageKind::AgentReply,
                             content,
-                            metadata_json: INTERRUPTED_REPLY_METADATA_JSON.to_string(),
+                            metadata_json: metadata.to_string(),
                             turn_id: self.current_turn_id.clone().unwrap_or_default(),
                             cloud_persist: true,
                         });
@@ -276,6 +318,7 @@ impl TurnAggregator {
                     self.turn_had_activity = false;
                     self.turn_had_reply = false;
                     self.turn_was_interrupted = false;
+                    self.turn_failed = false;
                     self.current_turn_id = None;
                 }
             }
@@ -350,6 +393,22 @@ impl TurnAggregator {
 mod tests {
     use super::*;
     use crate::proto::amux;
+
+    /// The pi runtime picks its `AcpError.message` strings so that an aborted
+    /// turn routes to the interrupt rendering and a provider failure does not.
+    /// Both live on the same `is_turn_abort_error` predicate, so pin the pair
+    /// here — renaming either constant in isolation silently swaps how a
+    /// failed turn is shown to the user.
+    #[test]
+    fn pi_turn_stop_reasons_route_to_the_intended_rendering() {
+        use crate::runtime::pi_rpc::translate::{ABORTED_ERROR_MESSAGE, PROVIDER_ERROR_MESSAGE};
+        let err = |message: &str| amux::AcpError {
+            message: message.to_string(),
+            details: String::new(),
+        };
+        assert!(is_turn_abort_error(&err(ABORTED_ERROR_MESSAGE)));
+        assert!(!is_turn_abort_error(&err(PROVIDER_ERROR_MESSAGE)));
+    }
 
     fn thinking_chunk(text: &str) -> amux::AcpEvent {
         amux::AcpEvent {
@@ -447,6 +506,117 @@ mod tests {
             })),
             model: String::new(),
         }
+    }
+
+    fn provider_error() -> amux::AcpEvent {
+        amux::AcpEvent {
+            event: Some(amux::acp_event::Event::Error(amux::AcpError {
+                message: "model provider error".into(),
+                details: "400 You're out of extra usage.".into(),
+            })),
+            model: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_failed_turn_is_not_recorded_as_a_completed_one() {
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        // The provider failed before any prose: the only thing this turn
+        // produced is the error itself.
+        assert!(agg.ingest(&provider_error()).is_empty());
+
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].kind, MessageKind::AgentReply);
+        assert_eq!(emitted[0].content, FAILED_AGENT_REPLY_CONTENT);
+        assert!(emitted[0]
+            .metadata_json
+            .contains("\"turn_status\":\"failed\""));
+        // The whole point: it must not claim the turn completed successfully,
+        // because this row becomes the model's context on the next turn.
+        assert_ne!(emitted[0].content, NO_FINAL_REPLY_AGENT_CONTENT);
+        assert!(!emitted[0].metadata_json.contains("no_final_reply"));
+        assert!(TurnAggregator::cloud_persistent(&emitted[0]));
+    }
+
+    #[test]
+    fn a_failed_turn_with_partial_prose_keeps_what_was_generated() {
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        agg.ingest(&output_chunk("half an ans"));
+        agg.ingest(&provider_error());
+
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted.len(), 1);
+        // The user must still see the text the model did produce, while the
+        // status marks the turn as failed.
+        assert_eq!(emitted[0].content, "half an ans");
+        assert!(emitted[0]
+            .metadata_json
+            .contains("\"turn_status\":\"failed\""));
+    }
+
+    #[test]
+    fn a_user_interrupt_outranks_a_provider_failure() {
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        agg.ingest(&provider_error());
+        agg.ingest(&abort_error());
+
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted.len(), 1);
+        // What the user did outranks what the provider did: they pressed stop.
+        assert_eq!(emitted[0].content, INTERRUPTED_AGENT_REPLY_CONTENT);
+        assert!(emitted[0]
+            .metadata_json
+            .contains("\"turn_status\":\"interrupted\""));
+    }
+
+    #[test]
+    fn a_failure_does_not_leak_into_the_next_turn() {
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        agg.ingest(&provider_error());
+        agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+
+        // A fresh turn that succeeds must not inherit the previous failure.
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        agg.ingest(&output_chunk("all good"));
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].content, "all good");
+        assert_eq!(emitted[0].metadata_json, "");
     }
 
     #[test]

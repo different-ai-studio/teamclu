@@ -56,6 +56,7 @@ function adaptTeamcluMessageToSdk(m: TeamcluMessage): SdkMessage {
   const interrupted = isInterruptedReply(m);
   const noFinalReply = isNoFinalReply(m);
   const unsupportedNativeSkill = isUnsupportedNativeSkillReply(m);
+  const failed = isFailedReply(m);
   const nativeSkillViolations = unsupportedNativeSkill
     ? parseNativeSkillViolations(m)
     : undefined;
@@ -74,11 +75,13 @@ function adaptTeamcluMessageToSdk(m: TeamcluMessage): SdkMessage {
     turnId,
     turnStatus: interrupted
       ? "interrupted"
-      : noFinalReply
-        ? "no_final_reply"
-        : unsupportedNativeSkill
-          ? "skill_created_in_unsupported_directory"
-          : undefined,
+      : unsupportedNativeSkill
+        ? "skill_created_in_unsupported_directory"
+        : failed
+          ? "failed"
+          : noFinalReply
+            ? "no_final_reply"
+            : undefined,
     nativeSkillViolations,
     parts: displayContent
       ? [
@@ -116,6 +119,11 @@ function isUnsupportedNativeSkillReply(m: TeamcluMessage): boolean {
   return parseMetadata(m).turn_status === "skill_created_in_unsupported_directory";
 }
 
+function isFailedReply(m: TeamcluMessage): boolean {
+  if (parseMetadata(m).turn_status === "failed") return true;
+  return isAgentFacingFailedNotice(m.content ?? "");
+}
+
 function parseNativeSkillViolations(
   m: TeamcluMessage,
 ): { slug: string; root: string; path?: string }[] {
@@ -144,13 +152,18 @@ function isAgentFacingUnsupportedNativeSkillNotice(content: string): boolean {
   return content.trimStart().startsWith("[Skill created in unsupported directory]");
 }
 
+function isAgentFacingFailedNotice(content: string): boolean {
+  return content.trimStart().startsWith("[Turn failed]");
+}
+
 /** User-visible body for an AGENT_REPLY (hide agent-facing status notices). */
 function displayContentForReply(m: TeamcluMessage): string {
   const raw = m.content ?? "";
   if (
     isAgentFacingInterruptNotice(raw) ||
     isAgentFacingNoFinalReplyNotice(raw) ||
-    isAgentFacingUnsupportedNativeSkillNotice(raw)
+    isAgentFacingUnsupportedNativeSkillNotice(raw) ||
+    isAgentFacingFailedNotice(raw)
   ) {
     return "";
   }
@@ -161,6 +174,7 @@ function turnStatusFromReplies(
   replies: TeamcluMessage[],
 ):
   | "interrupted"
+  | "failed"
   | "no_final_reply"
   | "skill_created_in_unsupported_directory"
   | undefined {
@@ -168,6 +182,9 @@ function turnStatusFromReplies(
   if (replies.some(isUnsupportedNativeSkillReply)) {
     return "skill_created_in_unsupported_directory";
   }
+  // A failure outranks "no final reply": both describe a turn that produced
+  // no prose, but only one of them says the work did not happen.
+  if (replies.some(isFailedReply)) return "failed";
   if (replies.some(isNoFinalReply)) return "no_final_reply";
   return undefined;
 }
