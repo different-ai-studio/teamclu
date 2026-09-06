@@ -3,8 +3,8 @@
 //!
 //! Team `provider.team` rows are materialized through
 //! [`teamclu_runtime_env::sync_global_team_provider`]:
-//! - **Spawn** — [`teamclu_runtime_env::assemble_runtime_env`] with
-//!   [`teamclu_runtime_env::SecretResolveScope::FullConfig`]
+//! - **Spawn** — [`teamclu_runtime_env::assemble_runtime_env`] (team provider +
+//!   env bindings; workspace `opencode.json` is not resolved on disk)
 //! - **Provider reads** — [`ManagedLlmResolver::reconcile_global`]
 //!
 //! Before reconcile existed, `provider.team` was written only at spawn time, so an

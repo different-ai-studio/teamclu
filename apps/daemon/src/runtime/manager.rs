@@ -69,9 +69,6 @@ pub struct SpawnRuntimeEnv {
     pub env_team_id: Option<String>,
     /// When true, all keys in `extra_env` override the ACP host process environment.
     pub force_env_override: bool,
-    /// Original `opencode.json` before MCP placeholder resolve; restored when the
-    /// last runtime on this worktree stops.
-    pub opencode_json_original: Option<String>,
     /// Gateway sessions auto-allow tool permissions and use gateway MCP wiring.
     /// Remote-tools collab runtimes may also carry an MCP config but must stay
     /// `is_gateway = false` so permission + MCP repair paths behave correctly.
@@ -680,11 +677,9 @@ impl RuntimeManager {
             resolved_env,
             env_team_id,
             force_env_override,
-            opencode_json_original,
             is_gateway,
             permission: _,
         } = runtime_env;
-        let _ = opencode_json_original;
         let mut handle = RuntimeHandle::new(
             agent_id.clone(),
             agent_type,
@@ -852,11 +847,9 @@ impl RuntimeManager {
             resolved_env,
             env_team_id,
             force_env_override,
-            opencode_json_original,
             is_gateway,
             permission: _,
         } = runtime_env;
-        let _ = opencode_json_original;
 
         let mut handle = RuntimeHandle::new(
             session_id.to_string(),

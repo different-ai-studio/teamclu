@@ -14,11 +14,15 @@ use crate::team_provider::{self, ManagedLlmState};
 /// is materialized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretResolveScope {
-    /// Spawn: substitute every `${KEY}` present in `secrets` (MCP env, provider
-    /// apiKey, etc.) and install the runtime overlay.
+    /// Spawn (legacy OpenCode): substitute every `${KEY}` present in `secrets`
+    /// (MCP env, provider apiKey, etc.) and install the runtime overlay.
     FullConfig,
     /// Reconcile: only resolve `provider.*.options.apiKey` — leave MCP placeholders.
     ProviderApiKeysOnly,
+    /// Pi-only spawn: strip legacy workspace `provider.team` only. Do not write
+    /// resolved secrets into workspace `opencode.json` — pi reads env bindings,
+    /// not that file, and there is no restore path after snapshot removal.
+    SkipWorkspaceResolve,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -87,6 +91,7 @@ pub fn resolve_workspace_runtime_config(
             mcp_resolve::resolve_provider_api_keys_on_disk(workspace, secrets)?;
             None
         }
+        SecretResolveScope::SkipWorkspaceResolve => None,
     };
     Ok(TeamProviderSyncResult {
         opencode_json_original,
