@@ -276,22 +276,18 @@ impl RuntimeManager {
     }
 
     pub fn launch_config_for(&self, agent_type: amux::AgentType) -> AgentLaunchConfig {
+        let agent_type = super::local_agent::resolve_local_agent_type(agent_type);
         if let Some(cfg) = self.launch_configs.get(&agent_type).cloned() {
             return cfg;
         }
-        // Every AgentType we can be asked to resolve must have its own entry in
-        // `launch_configs` (populated in daemon/server.rs). Silently falling back
-        // to ClaudeCode's binary here previously caused pi to spawn the `claude`
-        // binary when its own entry was momentarily missing — so a missing entry
-        // is now a loud bug signal, not a quiet substitution.
         tracing::error!(
             ?agent_type,
-            "no launch_configs entry for this agent type; falling back to claude-code config — this is a bug, add the missing entry in daemon/server.rs"
+            "no launch_configs entry for pi; falling back to default pi config"
         );
         self.launch_configs
-            .get(&amux::AgentType::ClaudeCode)
+            .get(&amux::AgentType::Pi)
             .cloned()
-            .unwrap_or_else(|| AgentLaunchConfig::new("claude", Vec::new(), "claude"))
+            .unwrap_or_else(|| AgentLaunchConfig::new("pi", Vec::new(), "pi"))
     }
 
     /// Pre-warm shared ACP hosts so the first `runtimeStart` only pays for
@@ -2280,17 +2276,12 @@ mod tests {
     }
 
     #[test]
-    fn launch_config_for_opencode_uses_registered_backend() {
-        let mut configs = RuntimeManager::test_launch_configs();
-        configs.insert(
-            amux::AgentType::Opencode,
-            AgentLaunchConfig::new("opencode", vec!["acp".to_string()], "opencode"),
-        );
-        let mgr = RuntimeManager::new(configs, None);
+    fn launch_config_for_legacy_name_resolves_to_pi_backend() {
+        let mgr = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
 
         assert_eq!(
             mgr.launch_config_for(amux::AgentType::Opencode),
-            AgentLaunchConfig::new("opencode", vec!["acp".to_string()], "opencode")
+            mgr.launch_config_for(amux::AgentType::Pi)
         );
     }
 

@@ -16,6 +16,7 @@ pub mod env_assembly;
 pub mod gateway_token;
 mod handle;
 mod instruction_delivery;
+pub mod local_agent;
 pub mod managed_llm;
 mod manager;
 mod native_skill_fallback_guard;
@@ -47,6 +48,7 @@ pub use handle::{InjectedContextItem, PendingMessage, RuntimeHandle};
 pub use instruction_delivery::{
     resolve_instruction_delivery, skips_buffered_inject, InstructionDelivery,
 };
+pub use local_agent::{local_agent_type_name, resolve_local_agent_type, LOCAL_AGENT, LOCAL_AGENT_NAME};
 pub use manager::{
     is_gateway_workspace_id, restore_gateway_shape_for_resume, AgentLaunchConfig, CheckedOutTurn,
     RuntimeManager, SpawnRuntimeEnv, WorkspaceOccupancy,
