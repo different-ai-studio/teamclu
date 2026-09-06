@@ -1702,9 +1702,12 @@
         "init-daemon": "凭证没能写入。重置可以清掉写了一半的状态。",
         "restart-daemon": "本地服务没能重启。重置可以清掉写了一半的状态。",
         "await-daemon": "服务起来了但一直没响应，看看 ~/.amuxd/logs/amuxd.managed.log。",
-        "cloud-auth": "这台机器没能通过服务器验证。"
+        "cloud-auth": "这台机器没能通过服务器验证。",
+        "daemon-outdated": "本机的 daemon 比应用旧，报不出运行时状态。要换一个版本匹配的 daemon 重启应用——对着同一个二进制重试不会有任何变化。"
       },
       "runtimeStillMissing": "运行时已安装，但仍未报告就绪。查看 ~/.amuxd/logs/amuxd.managed.log。",
+      "daemonOutdated": "本机 daemon（amuxd {{found}}）比这个应用（{{required}}）旧，报不出运行时是否就绪。请重装应用；开发环境下重启 `pnpm tauri:dev` 即可重新构建随包的 daemon。",
+      "daemonOutdatedUnknownVersion": "本机 daemon 比这个应用旧，报不出运行时是否就绪。请重装应用；开发环境下重启 `pnpm tauri:dev` 即可重新构建随包的 daemon。",
       "probing": "正在检测哪个下载源最快…",
       "routeLine": "正在从{{route}}下载",
       "routeOfficial": "官方源",

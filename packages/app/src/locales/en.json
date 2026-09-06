@@ -1702,9 +1702,12 @@
         "init-daemon": "Credentials could not be written. A reset clears any half-written state.",
         "restart-daemon": "The local service would not restart. A reset clears any half-written state.",
         "await-daemon": "The service started but never answered. See ~/.amuxd/logs/amuxd.managed.log.",
-        "cloud-auth": "This machine could not verify with the server."
+        "cloud-auth": "This machine could not verify with the server.",
+        "daemon-outdated": "The daemon on this machine is older than the app and cannot report the runtime. Restarting the app with a matching daemon is the fix — a retry against the same one will not help."
       },
       "runtimeStillMissing": "The runtime was installed but still does not report as ready. See ~/.amuxd/logs/amuxd.managed.log.",
+      "daemonOutdated": "The local daemon (amuxd {{found}}) is older than this app ({{required}}) and cannot report whether the runtime is ready. Reinstall the app — or, in a dev checkout, restart `pnpm tauri:dev` so the bundled daemon is rebuilt.",
+      "daemonOutdatedUnknownVersion": "The local daemon is older than this app and cannot report whether the runtime is ready. Reinstall the app — or, in a dev checkout, restart `pnpm tauri:dev` so the bundled daemon is rebuilt.",
       "probing": "Checking which download source is fastest…",
       "routeLine": "Downloading from {{route}}",
       "routeOfficial": "the official source",

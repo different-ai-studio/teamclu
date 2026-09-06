@@ -155,6 +155,42 @@ async fn run_doctor<R: Runtime>(app: &AppHandle<R>) -> Option<serde_json::Value>
     serde_json::from_str(buf.trim()).ok()
 }
 
+/// `blocker` value meaning "the daemon that answered is older than this app,
+/// so it cannot report this row at all". Not a runtime problem: nothing the
+/// install could do would clear it.
+pub(crate) const BLOCKER_DAEMON_OUTDATED: &str = "daemon_outdated";
+
+/// Is this doctor report from a daemon that predates the managed runtime?
+///
+/// `amuxd doctor` has answered with a top-level `node` row since #1250. A
+/// report without one is not "Node is missing" — it is a daemon that cannot
+/// answer the question, and reading the two the same way is what let the wizard
+/// install a runtime that was already there and then call it "installed but not
+/// ready" forever.
+///
+/// This is a real state in a dev checkout, not a hypothetical: the sidecar is
+/// staged once, when `pnpm tauri:dev` starts (`scripts/ensure-amuxd-sidecar.js`
+/// via `scripts/tauri-cli.js`), while the Rust host is rebuilt by the watcher on
+/// every source change — so a checkout that moves forward under a live session
+/// leaves a new app talking to the daemon it launched with. A shipped bundle
+/// always carries a matching pair.
+fn daemon_predates_managed_runtime(doctor: &serde_json::Value) -> bool {
+    !doctor["node"].is_object()
+}
+
+/// The `(blocker, found, required)` triple for a managed row the daemon is too
+/// old to report. Both managed rows carry the same one: the subject is the
+/// daemon, and naming pi's Node here would be inventing a reading nobody took.
+fn stale_daemon_blocker(
+    daemon_version: Option<String>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    (
+        Some(BLOCKER_DAEMON_OUTDATED.to_string()),
+        daemon_version,
+        Some(env!("CARGO_PKG_VERSION").to_string()),
+    )
+}
+
 /// The first-run wizard's rows: the bundled daemon, the amuxd-managed Node,
 /// the managed pi runtime, and git (optional). All from one `amuxd doctor`.
 ///
@@ -200,13 +236,30 @@ pub async fn setup_list_requirements<R: Runtime>(
         })
     });
 
+    // Whether the answer came from a daemon too old to give one. `bundledVersion`
+    // is the responding sidecar's own version — every daemon that has ever
+    // shipped reports it, including the ones this catches.
+    let stale_daemon = doctor.as_ref().is_some_and(daemon_predates_managed_runtime);
+    let daemon_version = text(&amuxd, "bundledVersion");
+
+    let (node_blocker, node_found, node_required) = if stale_daemon {
+        stale_daemon_blocker(daemon_version.clone())
+    } else {
+        (None, None, text(&node, "requiredVersion"))
+    };
+
     // pi's `satisfied` folds in Node and the MCP SDK; the blocker names which
     // half is missing so the wizard's progress copy can be specific.
-    let pi_blocker = pi.as_ref().and_then(pi_blocker);
-    let (pi_found, pi_required) = pi
-        .as_ref()
-        .map(|n| pi_blocker_detail(pi_blocker.as_deref(), n))
-        .unwrap_or((None, None));
+    let (pi_blocker, pi_found, pi_required) = if stale_daemon {
+        stale_daemon_blocker(daemon_version)
+    } else {
+        let blocker = pi.as_ref().and_then(pi_blocker);
+        let (found, required) = pi
+            .as_ref()
+            .map(|n| pi_blocker_detail(blocker.as_deref(), n))
+            .unwrap_or((None, None));
+        (blocker, found, required)
+    };
 
     Ok(vec![
         RequirementStatus {
@@ -225,9 +278,9 @@ pub async fn setup_list_requirements<R: Runtime>(
             optional: false,
             present: flag(&node, "satisfied"),
             version: text(&node, "version"),
-            blocker: None,
-            blocker_found: None,
-            blocker_required: text(&node, "requiredVersion"),
+            blocker: node_blocker,
+            blocker_found: node_found,
+            blocker_required: node_required,
         },
         RequirementStatus {
             id: "pi".into(),
@@ -535,6 +588,43 @@ mod tests {
     #[test]
     fn a_ready_pi_has_no_blocker() {
         assert_eq!(pi_blocker(&pi_doctor(true, true, true)), None);
+    }
+
+    #[test]
+    fn a_doctor_with_no_node_row_reads_as_a_daemon_too_old_to_answer() {
+        // The pre-#1250 report: it knows about opencode and a `pi` it calls
+        // satisfied, and has no top-level `node` row at all. Read as "Node is
+        // missing" this sends the wizard into install → still missing → "the
+        // runtime was installed but does not report as ready", forever.
+        let old = serde_json::json!({
+            "amuxd": { "present": true, "bundledVersion": "0.4.1-beta.40", "satisfied": true },
+            "opencode": { "present": true, "version": "1.18.18", "satisfied": true },
+            "pi": pi_doctor(true, true, true),
+            "git": { "present": true },
+        });
+        assert!(daemon_predates_managed_runtime(&old));
+
+        let (blocker, found, required) = stale_daemon_blocker(Some("0.4.1-beta.40".into()));
+        assert_eq!(blocker.as_deref(), Some("daemon_outdated"));
+        assert_eq!(found.as_deref(), Some("0.4.1-beta.40"));
+        assert_eq!(
+            required.as_deref(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "required is the app's version — what the daemon has to match",
+        );
+    }
+
+    #[test]
+    fn a_current_doctor_is_not_read_as_stale() {
+        let current = serde_json::json!({
+            "amuxd": { "present": true, "bundledVersion": env!("CARGO_PKG_VERSION") },
+            "node": { "present": false, "satisfied": false, "requiredVersion": "24.20.0" },
+            "pi": pi_doctor(true, true, true),
+            "git": { "present": true },
+        });
+        // `node` is there and says "not installed" — that is a runtime the
+        // install can actually fix, and it must not be blamed on the daemon.
+        assert!(!daemon_predates_managed_runtime(&current));
     }
 
     #[test]
