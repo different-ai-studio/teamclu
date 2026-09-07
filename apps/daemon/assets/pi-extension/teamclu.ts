@@ -75,11 +75,22 @@ type TeamcluExtensionUIContext = {
     options: string[],
     opts?: { timeout?: number; signal?: AbortSignal },
   ): Promise<string | undefined>;
+  setTitle?(title: string): void;
 };
 type ExtensionContext = {
   ui: TeamcluExtensionUIContext;
+  model?: unknown;
+  modelRegistry?: {
+    complete?(
+      model: unknown,
+      context: { messages: Array<{ role: string; content: string }> },
+      options?: Record<string, unknown>,
+    ): Promise<unknown>;
+  };
 };
 type ExtensionAPI = {
+  getSessionName?(): string | undefined;
+  setSessionName?(name: string, source?: string): void;
   on(
     event: "tool_call",
     handler: (
@@ -90,7 +101,7 @@ type ExtensionAPI = {
   on(
     event: "before_agent_start",
     handler: (
-      event: { systemPrompt?: string },
+      event: { systemPrompt?: string; prompt?: string },
       ctx: ExtensionContext,
     ) => Promise<{ systemPrompt?: string } | undefined>,
   ): void;
@@ -1201,6 +1212,253 @@ function registerQuestionTool(pi: ExtensionAPI, ownTools: Set<string>): void {
 }
 
 // ---------------------------------------------------------------------------
+// Auto session title (LLM from the first real prompt)
+// ---------------------------------------------------------------------------
+// Fire-and-forget on `before_agent_start`: capture model / setTitle while
+// ctx is active, then `complete()` without awaiting so the first turn is
+// not blocked. Title `complete()` does not pass `sessionId`, so it does
+// not share the agent Codex websocket. Uses the session's current model
+// + auth. Thinking is disabled from that model's `reasoning` /
+// `thinkingLevelMap`. amuxd turns `setTitle` into `session_title` and
+// adopts it over the frontend first-message title.
+
+const SESSION_TITLE_MAX_LEN = 80;
+const SESSION_TITLE_MAX_INPUT = 2000;
+const SESSION_TITLE_MAX_TOKENS = 256;
+const SESSION_TITLE_TIMEOUT_MS = 15_000;
+
+/** Prefix line from TeamClu `buildStructuredMentionLines`. */
+const AGENT_MENTION_LINE_RE = /^\[Mentioned agents:[^\]]*\]$/i;
+const HUMAN_MENTION_ONLY_LINE_RE =
+  /^\[Mentioned:[^\]]*\|instruction:[^\]]*\]$/i;
+const INLINE_HUMAN_MENTION_RE =
+  /\[Mentioned:[^\]]*\|instruction:[^\]]*\]/gi;
+
+const titleAttemptedSessionIds = new Set<string>();
+
+type SessionTitleJob = {
+  prompt: string;
+  model: unknown;
+  registry: ExtensionContext["modelRegistry"];
+  setTitle?: (title: string) => void;
+  setSessionName?: (name: string, source?: string) => void;
+  getSessionName?: () => string | undefined;
+};
+
+function stripMentionsForSessionTitle(content: string): string {
+  return content
+    .split(/\n+/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return "";
+      if (AGENT_MENTION_LINE_RE.test(trimmed)) return "";
+      if (HUMAN_MENTION_ONLY_LINE_RE.test(trimmed)) return "";
+      return trimmed.replace(INLINE_HUMAN_MENTION_RE, "").replace(/\s+/g, " ").trim();
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function shouldSkipTitlePrompt(prompt: string): boolean {
+  const body = stripMentionsForSessionTitle(prompt).trim();
+  if (!body) return true;
+  return body.startsWith("/") || body.startsWith("!") || body.startsWith("$");
+}
+
+/**
+ * amuxd prefixes the user text with `[TeamClu Instructions …]` / silent
+ * `[Context — …][End context]` wrappers. `event.prompt` is that whole blob;
+ * the LLM must see only the user tail.
+ */
+const TITLE_FOLLOW_MARKER = "Reply only to the user prompt that follows.]";
+const TITLE_END_CONTEXT_MARKER = "[End context]";
+
+function userPromptForTitle(raw: string): string {
+  let text = raw;
+  const endCtx = text.lastIndexOf(TITLE_END_CONTEXT_MARKER);
+  if (endCtx >= 0) {
+    text = text.slice(endCtx + TITLE_END_CONTEXT_MARKER.length);
+  }
+  const follow = text.lastIndexOf(TITLE_FOLLOW_MARKER);
+  if (follow >= 0) {
+    text = text.slice(follow + TITLE_FOLLOW_MARKER.length);
+  }
+  const lines = text.split("\n");
+  let i = 0;
+  while (i < lines.length && !lines[i].trim()) i += 1;
+  while (i < lines.length && /^\[[^\]]+\] /.test(lines[i])) i += 1;
+  while (i < lines.length && !lines[i].trim()) i += 1;
+  return lines.slice(i).join("\n").trim();
+}
+
+function looksLikeMachineTitle(title: string): boolean {
+  const t = title.trim();
+  if (!t) return true;
+  return (
+    t.includes("TeamClu Instructions") ||
+    t.startsWith("[Context —") ||
+    t.startsWith("[End context]")
+  );
+}
+
+function sanitizeGeneratedTitle(raw: string): string {
+  let title = raw.trim().replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, "");
+  title = (title.split("\n")[0] || title).trim();
+  title = title.replace(/[。.\s]+$/g, "").trim();
+  title = title.slice(0, SESSION_TITLE_MAX_LEN);
+  return looksLikeMachineTitle(title) ? "" : title;
+}
+
+function assistantMessageText(message: {
+  stopReason?: string;
+  errorMessage?: string;
+  content?: Array<{ type?: string; text?: string }>;
+} | null | undefined): string {
+  if (!message) return "";
+  if (message.stopReason === "error" || message.stopReason === "aborted") return "";
+  const parts = Array.isArray(message.content) ? message.content : [];
+  return parts
+    .filter((b) => b && b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text as string)
+    .join("")
+    .trim();
+}
+
+function describeTitleResponse(message: {
+  stopReason?: string;
+  errorMessage?: string;
+  content?: Array<{ type?: string }>;
+} | null | undefined): string {
+  const types = Array.isArray(message?.content)
+    ? message.content.map((b) => b?.type ?? "?").join(",")
+    : "";
+  return `stopReason=${message?.stopReason ?? "missing"} error=${message?.errorMessage ?? ""} types=${types}`;
+}
+
+type TitleLlmCtx = {
+  model?: unknown;
+  modelRegistry?: ExtensionContext["modelRegistry"];
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Options for `modelRegistry.complete` — derived from the session model. */
+function titleCompleteOptions(model: unknown): Record<string, unknown> {
+  const options: Record<string, unknown> = {
+    maxTokens: SESSION_TITLE_MAX_TOKENS,
+    timeoutMs: SESSION_TITLE_TIMEOUT_MS,
+  };
+  if (!isRecord(model) || model.reasoning !== true) return options;
+  const map = isRecord(model.thinkingLevelMap) ? model.thinkingLevelMap : undefined;
+  // `off: null` means this model cannot disable thinking.
+  if (map?.off === null) return options;
+  options.reasoning = "off";
+  // `complete()` uses provider.stream(), which often reads reasoningEffort
+  // instead of `reasoning`. Use the model's mapped off value when present.
+  if (map) {
+    options.reasoningEffort = typeof map.off === "string" && map.off ? map.off : "none";
+  }
+  return options;
+}
+
+async function llmSessionTitle(ctx: TitleLlmCtx, prompt: string): Promise<string> {
+  const model = ctx.model;
+  const registry = ctx.modelRegistry;
+  const complete = registry?.complete;
+  if (!model || typeof complete !== "function") {
+    console.error("[teamclu] session title LLM skipped: no model or modelRegistry.complete");
+    return "";
+  }
+
+  const user = [
+    "Write a short session title for this user request.",
+    "Maximum 8 words or 40 characters. Match the user's language.",
+    "Reply with ONLY the title, no quotes.",
+    "",
+    "User request:",
+    prompt.slice(0, SESSION_TITLE_MAX_INPUT),
+  ].join("\n");
+
+  const response = (await complete.call(
+    registry,
+    model,
+    { messages: [{ role: "user", content: user }] },
+    titleCompleteOptions(model),
+  )) as {
+    stopReason?: string;
+    errorMessage?: string;
+    content?: Array<{ type?: string; text?: string }>;
+  };
+  const text = assistantMessageText(response);
+  if (!text) {
+    console.error(`[teamclu] session title LLM empty: ${describeTitleResponse(response)}`);
+  }
+  return text;
+}
+
+function startSessionTitle(
+  pi: ExtensionAPI,
+  event: { prompt?: string },
+  ctx: ExtensionContext,
+): void {
+  const sessionId = backendSessionIdFromContext(ctx);
+  if (!sessionId) return;
+  if (titleAttemptedSessionIds.has(sessionId)) return;
+  if (String(pi.getSessionName?.() ?? "").trim()) return;
+
+  const prompt = userPromptForTitle(String(event.prompt ?? ""));
+  if (shouldSkipTitlePrompt(prompt)) return;
+
+  let ui: TeamcluExtensionUIContext;
+  let model: unknown;
+  let registry: ExtensionContext["modelRegistry"];
+  try {
+    ui = ctx.ui;
+    model = ctx.model;
+    registry = ctx.modelRegistry;
+  } catch (e) {
+    console.error(`[teamclu] session title capture failed: ${e}`);
+    return;
+  }
+
+  titleAttemptedSessionIds.add(sessionId);
+  void applySessionTitle({
+    prompt,
+    model,
+    registry,
+    setTitle: ui.setTitle?.bind(ui),
+    setSessionName: pi.setSessionName?.bind(pi),
+    getSessionName: () => pi.getSessionName?.(),
+  });
+}
+
+async function applySessionTitle(job: SessionTitleJob): Promise<void> {
+  let title = "";
+  try {
+    title = sanitizeGeneratedTitle(
+      await llmSessionTitle({ model: job.model, modelRegistry: job.registry }, job.prompt),
+    );
+  } catch (e) {
+    console.error(`[teamclu] session title LLM failed: ${e}`);
+  }
+  if (!title) return;
+  if (String(job.getSessionName?.() ?? "").trim()) return;
+
+  try {
+    job.setSessionName?.(title);
+  } catch (e) {
+    console.error(`[teamclu] setSessionName failed: ${e}`);
+  }
+  try {
+    job.setTitle?.(title);
+  } catch (e) {
+    console.error(`[teamclu] setTitle failed: ${e}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
 
@@ -1225,6 +1483,7 @@ export default async function (pi: ExtensionAPI) {
 
   // -- Permission gate -------------------------------------------------------
   pi.on("before_agent_start", async (event, ctx) => {
+    startSessionTitle(pi, event, ctx);
     const backendSessionId = backendSessionIdFromContext(ctx);
     if (!backendSessionId) return undefined;
     const append = await fetchSessionPromptAppend(backendSessionId);

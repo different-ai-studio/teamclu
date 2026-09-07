@@ -455,6 +455,19 @@ pub fn parse_question_payload(title: &str) -> Option<serde_json::Value> {
         .filter(|v| v.is_object())
 }
 
+/// Internal `session_title` raw event the daemon already adopts
+/// (`maybe_adopt_generated_session_title`). Payload is UTF-8 title bytes,
+/// matching the opencode-era wire shape.
+pub fn session_title_event(title: &str) -> amux::AcpEvent {
+    amux::AcpEvent {
+        event: Some(amux::acp_event::Event::Raw(amux::AcpRawJson {
+            method: "session_title".to_string(),
+            json_payload: title.as_bytes().to_vec(),
+        })),
+        model: String::new(),
+    }
+}
+
 /// Build the `question_asked` raw event clients already render for opencode's
 /// question tool: `{id, questions, tool: {callID}}`. `request_id` is the
 /// extension_ui_request id — the same id `AnswerQuestion` sends back, which is
@@ -1012,6 +1025,18 @@ mod tests {
                 assert_eq!(body["id"], "ui_1");
                 assert_eq!(body["tool"]["callID"], "call_3");
                 assert_eq!(body["questions"][0]["question"], "Q?");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_title_event_is_raw_utf8_payload() {
+        let ev = session_title_event("深圳美食推荐");
+        match ev.event.as_ref().unwrap() {
+            amux::acp_event::Event::Raw(raw) => {
+                assert_eq!(raw.method, "session_title");
+                assert_eq!(String::from_utf8_lossy(&raw.json_payload), "深圳美食推荐");
             }
             other => panic!("unexpected: {other:?}"),
         }
