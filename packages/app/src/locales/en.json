@@ -169,6 +169,7 @@
     "skillPublishLoadingDraft": "Reading draft metadata…",
     "skillPublishDraftMetadataFailed": "Could not read draft metadata: {{msg}}",
     "skillPublishDraftDiff": "differs from registry",
+    "skillPublishSummaryClipped": "Shortened to 200 characters so it can be published.",
     "skillDraftRecoveryTitle": "Recent draft recoveries",
     "skillDraftRecoveryBody": "Discarded drafts are kept for 7 days. Restore one to pick up where you left off.",
     "skillDraftRecoveryRestore": "Restore draft",

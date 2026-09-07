@@ -5,6 +5,11 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { type TeamSkillItem, type TeamSkillDraftMetadata } from '@/stores/team-share-browser'
 import { TEAM_SKILL_CATEGORIES, type TeamSkillCategory } from '@/lib/backend/cloud-api/team-skills'
+import {
+  TEAM_SKILL_SUMMARY_MAX,
+  clipTeamSkillSummary,
+  hydrateTeamSkillPublishFields,
+} from '@/lib/skills/team-skill-summary'
 import { ModalShell } from './ModalShell'
 
 export function PublishVersionSheet({
@@ -47,20 +52,28 @@ export function PublishVersionSheet({
   const [whenToUse, setWhenToUse] = React.useState(item.whenToUse ?? '')
   const [whenNotToUse, setWhenNotToUse] = React.useState(item.whenNotToUse ?? '')
   const [requiresText, setRequiresText] = React.useState((item.requires ?? []).join(', '))
+  const [summaryWasClipped, setSummaryWasClipped] = React.useState(false)
   const [metadataLoading, setMetadataLoading] = React.useState(false)
   const [metadataReady, setMetadataReady] = React.useState(false)
   const [metadataError, setMetadataError] = React.useState<string | null>(null)
 
   React.useEffect(() => {
     if (!open) return
+    const initial = hydrateTeamSkillPublishFields({
+      draftSummary: item.summary,
+      draftWhenToUse: item.whenToUse,
+      registrySummary: item.summary,
+      registryWhenToUse: item.whenToUse,
+    })
     setChangelog('')
-    setSummary(item.summary ?? '')
+    setSummary(initial.summary)
+    setSummaryWasClipped(initial.summaryWasClipped)
     setCategory(
       (TEAM_SKILL_CATEGORIES.includes(item.category as TeamSkillCategory)
         ? item.category
         : 'general') as TeamSkillCategory,
     )
-    setWhenToUse(item.whenToUse ?? '')
+    setWhenToUse(initial.whenToUse)
     setWhenNotToUse(item.whenNotToUse ?? '')
     setRequiresText((item.requires ?? []).join(', '))
     setMetadataLoading(true)
@@ -68,14 +81,21 @@ export function PublishVersionSheet({
     setMetadataError(null)
     void onLoadDraftMetadata()
       .then((draft) => {
-        if (typeof draft.summary === 'string') setSummary(draft.summary)
+        const hydrated = hydrateTeamSkillPublishFields({
+          draftSummary: typeof draft.summary === 'string' ? draft.summary : item.summary,
+          draftWhenToUse: typeof draft.whenToUse === 'string' ? draft.whenToUse : item.whenToUse,
+          registrySummary: item.summary,
+          registryWhenToUse: item.whenToUse,
+        })
+        setSummary(hydrated.summary)
+        setWhenToUse(hydrated.whenToUse)
+        setSummaryWasClipped(hydrated.summaryWasClipped)
         if (
           typeof draft.category === 'string' &&
           TEAM_SKILL_CATEGORIES.includes(draft.category as TeamSkillCategory)
         ) {
           setCategory(draft.category as TeamSkillCategory)
         }
-        if (typeof draft.whenToUse === 'string') setWhenToUse(draft.whenToUse)
         if (typeof draft.whenNotToUse === 'string') setWhenNotToUse(draft.whenNotToUse)
         if (draft.requires !== undefined) setRequiresText((draft.requires ?? []).join(', '))
         setMetadataReady(true)
@@ -139,6 +159,7 @@ export function PublishVersionSheet({
             disabled={
               !changelog.trim() ||
               !summary.trim() ||
+              summary.trim().length > TEAM_SKILL_SUMMARY_MAX ||
               busy ||
               metadataLoading ||
               !metadataReady ||
@@ -147,7 +168,7 @@ export function PublishVersionSheet({
             onClick={() =>
               void onSubmit({
                 changelog: changelog.trim(),
-                summary: summary.trim(),
+                summary: clipTeamSkillSummary(summary),
                 category,
                 whenToUse: whenToUse.trim(),
                 whenNotToUse: whenNotToUse.trim(),
@@ -215,9 +236,28 @@ export function PublishVersionSheet({
       <label className="block space-y-1">
         <span className={label}>
           {t('teamShare.skillShareSummary', 'Summary')}
+          <span className="ml-2 font-mono font-normal normal-case tracking-normal">
+            {summary.length}/{TEAM_SKILL_SUMMARY_MAX}
+          </span>
           {metaHint(summary, item.summary)}
         </span>
-        <input value={summary} onChange={(e) => setSummary(e.target.value)} maxLength={200} className={field} />
+        <input
+          value={summary}
+          onChange={(e) => {
+            setSummary(e.target.value)
+            setSummaryWasClipped(false)
+          }}
+          maxLength={TEAM_SKILL_SUMMARY_MAX}
+          className={field}
+        />
+        {summaryWasClipped && (
+          <p className="text-[12px] leading-relaxed text-muted-foreground">
+            {t(
+              'teamShare.skillPublishSummaryClipped',
+              'Shortened to 200 characters so it can be published.',
+            )}
+          </p>
+        )}
       </label>
       <label className="block space-y-1">
         <span className={label}>
