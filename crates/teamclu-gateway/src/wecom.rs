@@ -930,18 +930,18 @@ pub(crate) fn normalize_callback(
 
 /// WeCom as a transport driver.
 ///
-/// Holds only what rendering needs: the shared websocket sink (set on connect),
-/// the config (for `bot_id`, which is part of the binding), and the pacers for
-/// in-flight streaming replies.
+/// Holds a clone of the gateway this driver was built from (shared sink,
+/// upload, pending-response map) plus the pacers for in-flight streaming
+/// replies. Media and proactive sends go through that clone — not the
+/// process-global `ACTIVE_GATEWAY` holder, which a channel-reload can
+/// clear while this driver is still connected.
 ///
 /// The pacer map is why `update` cannot be stateless: WeCom throttles card
 /// updates, and the gap is measured from the previous frame of *that* reply.
 /// Rebuilding a pacer per update would reset the clock and burst straight
 /// through the limit.
 pub struct WeComDriver {
-    #[allow(dead_code)]
-    config: Arc<RwLock<WeComConfig>>,
-    shared_ws_sink: Arc<RwLock<Option<WsSink>>>,
+    gateway: WeComGateway,
     pacers: tokio::sync::Mutex<std::collections::HashMap<String, InFlightReply>>,
 }
 
@@ -959,23 +959,40 @@ struct InFlightReply {
 }
 
 impl WeComDriver {
-    pub fn new(
-        config: Arc<RwLock<WeComConfig>>,
-        shared_ws_sink: Arc<RwLock<Option<WsSink>>>,
-    ) -> Self {
+    pub fn new(gateway: WeComGateway) -> Self {
         Self {
-            config,
-            shared_ws_sink,
+            gateway,
             pacers: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
     async fn sink(&self) -> Result<WsSink, driver::DriverError> {
-        self.shared_ws_sink
+        self.gateway
+            .shared_ws_sink
             .read()
             .await
             .clone()
             .ok_or_else(|| driver::DriverError::Transport("WeCom is not connected".into()))
+    }
+
+    async fn send_media(
+        &self,
+        chatid: &str,
+        chat_type: u32,
+        data: &[u8],
+        filename: &str,
+        media_type: &str,
+    ) -> Result<(), driver::DriverError> {
+        let sink = self.sink().await?;
+        let media_id = self
+            .gateway
+            .upload_media(data, filename, media_type, &sink)
+            .await
+            .map_err(driver::DriverError::Transport)?;
+        self.gateway
+            .send_media_to_chat(chatid, chat_type, &media_id, media_type)
+            .await
+            .map_err(driver::DriverError::Transport)
     }
 
     /// `(chatid, chat_type)` for the media APIs, which address chats by number
@@ -1048,15 +1065,14 @@ impl driver::ChannelDriver for WeComDriver {
             let path = att.local_path.as_deref().unwrap_or_default();
             let bytes = std::fs::read(path)
                 .map_err(|e| driver::DriverError::Transport(format!("read {path}: {e}")))?;
-            upload_and_send_media(
+            self.send_media(
                 chatid,
                 chat_type,
                 &bytes,
                 &att.filename,
                 media_type_for(&att.mime),
             )
-            .await
-            .map_err(driver::DriverError::Transport)?;
+            .await?;
         }
 
         // Files with no text of their own: the caption already went out with
@@ -1071,7 +1087,8 @@ impl driver::ChannelDriver for WeComDriver {
             // Nothing to answer: this is proactive, which WeCom does through a
             // different command entirely.
             let (chatid, chat_type) = Self::chat_target(to);
-            send_proactive_message(chatid, chat_type, &msg.text)
+            self.gateway
+                .send_chat_message(chatid, chat_type, &msg.text)
                 .await
                 .map_err(driver::DriverError::Transport)?;
             return Ok(driver::DeliveryId(format!("proactive:{chatid}")));
@@ -1082,7 +1099,8 @@ impl driver::ChannelDriver for WeComDriver {
         // A finished one-shot reply (a command answer, an error). Sent as
         // markdown so a reply containing a list or a code block renders as one.
         if !msg.text.trim().is_empty() {
-            send_proactive_message(chatid, chat_type, &msg.text)
+            self.gateway
+                .send_chat_message(chatid, chat_type, &msg.text)
                 .await
                 .map_err(driver::DriverError::Transport)?;
             return Ok(driver::DeliveryId(format!("markdown:{chatid}")));
@@ -1162,7 +1180,8 @@ impl driver::ChannelDriver for WeComDriver {
         if text.trim().is_empty() {
             return Ok(());
         }
-        send_proactive_message(&chatid, chat_type, text)
+        self.gateway
+            .send_chat_message(&chatid, chat_type, text)
             .await
             .map_err(driver::DriverError::Transport)
     }
@@ -1330,7 +1349,7 @@ impl WeComGateway {
     /// replies through. Shares the config and websocket sink rather than
     /// copying them, so a reconnect is visible to both.
     pub fn as_driver(&self) -> WeComDriver {
-        WeComDriver::new(self.config.clone(), self.shared_ws_sink.clone())
+        WeComDriver::new(self.clone())
     }
 
     pub fn workspace_path(&self) -> &str {
