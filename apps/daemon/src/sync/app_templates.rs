@@ -116,6 +116,27 @@ fn write_dir(dir: &Dir<'_>, dest: &Path, vars: &TemplateVars<'_>) -> anyhow::Res
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_template_ignores_the_daemon_runtime_files() {
+        // The deploy commits the workdir, so a template that does not ignore
+        // these seeds an app whose first deploy pushes machine-local state into
+        // its own repo. The list lives in `app_git`; this is the drift guard.
+        for app_type in [AppType::StaticWeb, AppType::Slides, AppType::DataApp] {
+            let gitignore = app_type
+                .dir()
+                .get_file(".gitignore")
+                .unwrap_or_else(|| panic!("{app_type:?} template has no .gitignore"))
+                .contents_utf8()
+                .expect("utf-8 .gitignore");
+            for entry in crate::sync::app_git::runtime_exclude_entries("teamclu") {
+                assert!(
+                    gitignore.lines().any(|line| line.trim() == entry),
+                    "{app_type:?} template does not ignore {entry}"
+                );
+            }
+        }
+    }
+
     use super::*;
 
     #[test]
