@@ -19,8 +19,8 @@ use super::types::TeamSkillInstallResult;
 use super::types::TeamSkillPackResult;
 use super::types::TeamSkillRebaselineRequest;
 use crate::commands::clawhub::{
-    extract_zip_to_dir, global_skills_dir, now_millis, read_lockfile, validate_slug, write_lockfile,
-    LockfileEntry, SOURCE_TEAM,
+    extract_zip_to_dir, global_skills_dir, now_millis, read_lockfile, validate_slug,
+    write_lockfile, LockfileEntry, SOURCE_TEAM,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
