@@ -1,10 +1,10 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  AppWindow,
   Loader2,
   MessageSquare,
   Plus,
+  X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
@@ -16,6 +16,7 @@ import { useAppsStore } from '@/stores/apps-store'
 import { useSessionSelectionStore } from '@/stores/session-selection-store'
 import { getBackend } from '@/lib/backend'
 import { createAppSessionShell, openAppSession } from '@/lib/apps/app-session'
+import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { formatRelativeTime } from '@/lib/ui/date-format'
 import type { AppRow, AppSessionRow } from '@/lib/backend/types'
 
@@ -51,17 +52,20 @@ function SessionRow({
   )
 }
 
-export function AppSessionsColumn() {
+/**
+ * Level two of column two's Apps section: one app's sessions.
+ *
+ * The app is a prop, not a store read — `AppsColumn` already had to resolve it
+ * to decide between this and the list, and passing it down is what makes "no
+ * app" unrepresentable here instead of a second empty state to keep in sync.
+ */
+export function AppSessionsColumn({ app }: { app: AppRow }) {
   const { t } = useTranslation()
   const { state: sidebarState } = useSidebar()
   const sidebarCollapsed = sidebarState === 'collapsed'
-
-  const selectedAppId = useAppsStore((s) => s.selectedAppId)
-  const items = useAppsStore((s) => s.items)
-  const app = React.useMemo(
-    () => (selectedAppId ? items.find((a) => a.id === selectedAppId) ?? null : null),
-    [items, selectedAppId],
-  )
+  const selectApp = useAppsStore((s) => s.selectApp)
+  // The same glyph this app carries in the list one level up.
+  const TypeIcon = appTypeIcon(app.type)
 
   const activeSessionId = useSessionSelectionStore((s) => s.activeSessionId)
   const [sessions, setSessions] = React.useState<AppSessionRow[]>([])
@@ -69,10 +73,6 @@ export function AppSessionsColumn() {
   const [creating, setCreating] = React.useState(false)
 
   React.useEffect(() => {
-    if (!app) {
-      setSessions([])
-      return
-    }
     let cancelled = false
     setLoading(true)
     void getBackend()
@@ -91,7 +91,7 @@ export function AppSessionsColumn() {
     return () => {
       cancelled = true
     }
-  }, [app?.id])
+  }, [app.id])
 
   const openSession = React.useCallback(
     async (targetApp: AppRow, sessionId: string) => {
@@ -107,7 +107,7 @@ export function AppSessionsColumn() {
   )
 
   const handleCreateSession = React.useCallback(async () => {
-    if (!app || creating) return
+    if (creating) return
     setCreating(true)
     try {
       const sessionId = await createAppSessionShell(app)
@@ -133,28 +133,6 @@ export function AppSessionsColumn() {
     }
   }, [app, creating])
 
-  if (!app) {
-    return (
-      <div className="flex h-full min-w-0 flex-col border-r border-border bg-background">
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3" data-tauri-drag-region>
-          {sidebarCollapsed && (
-            <div className="flex shrink-0 items-center gap-1">
-              <TrafficLights />
-              <SidebarCollapseToggle />
-            </div>
-          )}
-          <AppWindow className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <div className="truncate text-[15px] font-bold tracking-tight text-foreground">
-            {t('apps.sessionsTitle', '应用会话')}
-          </div>
-        </div>
-        <div className="flex flex-1 items-center justify-center px-6 text-center text-[13px] text-muted-foreground">
-          {t('apps.selectAppHint', '在左侧选择一个应用以查看会话')}
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div className="flex h-full min-w-0 flex-col border-r border-border bg-background">
       <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3" data-tauri-drag-region>
@@ -165,7 +143,7 @@ export function AppSessionsColumn() {
           </div>
         )}
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          <AppWindow className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <TypeIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="truncate text-[15px] font-bold tracking-tight text-foreground">
             {app.name}
             <span className="font-mono text-[11px] font-normal text-faint"> · {sessions.length}</span>
@@ -181,6 +159,19 @@ export function AppSessionsColumn() {
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-selected/40 hover:text-foreground disabled:opacity-40"
           >
             {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          </button>
+          {/* Clearing the selection is the whole of "back": this column renders
+              the list again the moment there is no app. It leaves the open
+              session alone — the chat in column three keeps running, and the
+              app's control panel still resolves through that session. */}
+          <button
+            type="button"
+            onClick={() => selectApp(null)}
+            title={t('apps.backToList', '返回应用列表')}
+            aria-label={t('apps.backToList', '返回应用列表')}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-selected/40 hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
           </button>
         </div>
       </div>

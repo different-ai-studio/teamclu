@@ -11,7 +11,7 @@ import { PaneLoading } from '@/components/ui/pane-loading'
 // on first switch.
 const ShortcutsListColumn = lazyNamed(() => import('./ShortcutsListColumn'), 'ShortcutsListColumn')
 const TeamShareListColumn = lazyNamed(() => import('./TeamShareListColumn'), 'TeamShareListColumn')
-const AppSessionsColumn = lazyNamed(() => import('./AppSessionsColumn'), 'AppSessionsColumn')
+const AppsColumn = lazyNamed(() => import('./AppsColumn'), 'AppsColumn')
 const ActorsView = lazyNamed(() => import('@/components/panel/ActorsView'), 'ActorsView')
 const IdeasView = lazyNamed(() => import('@/components/panel/IdeasView'), 'IdeasView')
 
@@ -37,7 +37,7 @@ function resolveLazyColumn({
   if (!embedMode && filter.kind === 'ideas') return <IdeasView />
   // A filter persisted from a build that had Apps on must not render the column
   // in one that has it off. teamShare needs no such gate — it ships everywhere.
-  if (filter.kind === 'apps' && appsEnabled) return <AppSessionsColumn />
+  if (filter.kind === 'apps' && appsEnabled) return <AppsColumn />
   if (filter.kind === 'actors') return <ActorsView />
   if (filter.kind === 'teamShare') return <TeamShareListColumn section={filter.section} />
   return null

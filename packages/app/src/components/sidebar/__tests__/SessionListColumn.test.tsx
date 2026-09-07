@@ -6,6 +6,7 @@ import { useUIStore } from '@/stores/ui'
 import { useSessionListStore } from '@/stores/session-list-store'
 import { useSessionStore } from '@/stores/session-store'
 import { useCronStore } from '@/stores/cron'
+import { useAppsStore } from '@/stores/apps-store'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { appShortName } from '@/lib/config/build-config'
 
@@ -39,10 +40,6 @@ vi.mock('@/components/app-sidebar', () => ({
 
 vi.mock('@/components/ui/traffic-lights', () => ({
   TrafficLights: () => null,
-}))
-
-vi.mock('@/hooks/use-session-workspace-labels', () => ({
-  useSessionWorkspaceLabels: () => new Map([['s1', 'copilot-ws-v3']]),
 }))
 
 const createQuickSession = vi.fn()
@@ -79,6 +76,7 @@ const mkSessionRow = (over: Partial<{
   idea_id: string | null
   has_unread: boolean
   last_message_at: string | null
+  app_id: string | null
 }>) => ({
   id: 's1',
   title: 't',
@@ -90,6 +88,10 @@ const mkSessionRow = (over: Partial<{
   has_unread: false,
   ...over,
 })
+
+/** Only the fields the app subline reads; the rest of AppRow is irrelevant here. */
+const mkAppRow = (id: string, name: string) =>
+  ({ id, name, type: 'static_web' }) as never
 
 const mkRow = (over: Partial<{ id: string; title: string; ideaId: string | null; lastMessageAt: string | null }> = {}) => ({
   id: over.id ?? 's1',
@@ -130,6 +132,7 @@ describe('SessionListColumn', () => {
       cronSessionIds: new Set<string>(),
       showCronSessions: false,
     })
+    useAppsStore.setState({ items: [] })
     useSessionListStore.setState({
       rows: [
         mkSessionRow({ id: 's1', title: 'Alpha', idea_id: null, has_unread: true }),
@@ -316,9 +319,33 @@ describe('SessionListColumn', () => {
     loadFirstPage.mockRestore()
   })
 
-  it('shows workspace subline under session title in non-workspace filters', () => {
+  it('names the app under a session that belongs to one', () => {
+    // What this slot held before was a workspace label, which for an app
+    // session resolved to a raw cloud workspace uuid — the app's checkout is
+    // daemon-owned, so it is never a workspace registered on this machine.
+    useAppsStore.setState({ items: [mkAppRow('app-1', 'teamclu 官网')] })
+    useSessionListStore.setState({
+      rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1' })],
+    })
     render(<SessionListColumn />)
-    expect(screen.getByTestId('v2-session-row-workspace')).toHaveTextContent('copilot-ws-v3')
+    expect(screen.getByTestId('v2-session-row-app')).toHaveTextContent('teamclu 官网')
+  })
+
+  it('says nothing under an ordinary session', () => {
+    useAppsStore.setState({ items: [mkAppRow('app-1', 'teamclu 官网')] })
+    render(<SessionListColumn />)
+    expect(screen.queryByTestId('v2-session-row-app')).not.toBeInTheDocument()
+  })
+
+  it('draws nothing when the app list has not arrived', () => {
+    // The rail's Apps entry loads it; with Apps off for the build it never
+    // does, and an id we cannot name is worth less than silence.
+    useAppsStore.setState({ items: [] })
+    useSessionListStore.setState({
+      rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1' })],
+    })
+    render(<SessionListColumn />)
+    expect(screen.queryByTestId('v2-session-row-app')).not.toBeInTheDocument()
   })
 
   it('windows the list (virtualizes) when there are many sessions', () => {
@@ -344,15 +371,6 @@ describe('SessionListColumn', () => {
     for (const li of container.querySelectorAll('[data-testid="v2-session-list-virtual"] li')) {
       expect(li).toHaveClass('list-none')
     }
-  })
-
-  // The subline used to be suppressed while the list was filtered to one
-  // workspace. That filter kind is gone — the sidebar list that set it was its
-  // only producer — so the label is never redundant now.
-  it('shows the workspace subline under sessions that have one', () => {
-    useUIStore.setState({ sidebarFilter: { kind: 'all' } })
-    render(<SessionListColumn />)
-    expect(screen.queryAllByTestId('v2-session-row-workspace').length).toBeGreaterThan(0)
   })
 
   it('renders an inline close button when onDismiss is provided', () => {

@@ -230,21 +230,3 @@ export async function resolveSessionWorkspaceForViewer(
 
   return pickBestViewerSessionPath(bindings, viewer);
 }
-
-/** Best workspace label for a session from viewer-scoped cache rows. */
-export function pickSessionWorkspaceLabel(
-  rows: SessionWorkspaceRow[],
-  sessionId: string,
-  viewer: ViewerWorkspaceContext,
-): string | null {
-  const bindings = bindingsFromCacheRows(rows, viewer, sessionId);
-  const path = pickBestViewerSessionPath(bindings, viewer);
-  if (path) {
-    const trimmed = path.replace(/\/+$/, "");
-    return trimmed.split("/").pop() || trimmed;
-  }
-  const newest = bindings.sort((a, b) =>
-    b.updatedAt.localeCompare(a.updatedAt),
-  )[0];
-  return newest?.cloudWorkspaceId ?? null;
-}

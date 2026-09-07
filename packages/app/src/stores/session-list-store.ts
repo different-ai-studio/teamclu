@@ -89,6 +89,14 @@ export interface SessionListEntry {
   mode: "solo" | "collab" | "control";
   idea_id: string | null;
   has_unread: boolean;
+  /**
+   * The app this session was created from, or null.
+   *
+   * Server-only: the libsql cache does not mirror it, so a row painted from
+   * cache on a cold start carries null until the server page lands. The app
+   * subline simply appears a beat later; nothing else reads this.
+   */
+  app_id?: string | null;
   /** How the session was created: 'user' | 'cron' | 'gateway'. */
   source?: string | null;
   /** For source='cron', the cron job id that created it. */
@@ -107,6 +115,7 @@ function mapCacheToEntry(r: SessionRow): SessionListEntry {
     mode: (r.mode as SessionListEntry["mode"]) ?? "solo",
     idea_id: r.ideaId ?? null,
     has_unread: false,
+    app_id: null,
     source: r.source ?? null,
     cron_job_id: r.cronJobId ?? null,
     created_at: r.createdAt ?? null,

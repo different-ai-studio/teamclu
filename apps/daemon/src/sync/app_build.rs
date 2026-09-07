@@ -23,6 +23,14 @@ pub const ERR_LOCKFILE_MISMATCH: &str =
 pub const ERR_INSTALL_TIMEOUT: &str = "pnpm install timed out after 10 minutes";
 pub const ERR_BUILD_TIMEOUT: &str = "pnpm build timed out after 10 minutes";
 
+/// Cap on the command output carried in a failure message.
+///
+/// Uncapped it was the whole of a failing `pnpm build`'s log, in an HTTP 500
+/// body and the desktop console. The tail is the useful end: pnpm's `ERR_PNPM_*`
+/// line is the whole of a failed install, and a build tool's own error is the
+/// last thing it prints before it gives up.
+const MAX_FAILURE_OUTPUT: usize = 2000;
+
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const BUILD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Align with Phase 1 FC code-package budget documented in the Gitea design spec.
@@ -68,16 +76,46 @@ fn output_dir_has_files(dir: &Path) -> bool {
         .any(|e| e.path().is_file())
 }
 
-fn map_pnpm_stderr(cmd: &str, args: &[&str], stderr: &str) -> String {
-    let lower = stderr.to_ascii_lowercase();
+/// Last `max` bytes of `text`, cut on a char boundary and marked when cut.
+fn tail(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut start = text.len() - max;
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &text[start..])
+}
+
+/// The failure message for a pnpm command, from **both** of its streams.
+///
+/// pnpm writes its `ERR_PNPM_*` diagnostics to stdout, not stderr. Reading only
+/// stderr made a failed command report whatever happened to be on stderr as the
+/// cause — on a machine whose `~/.npmrc` interpolates an unset variable, that is
+/// a `${NODE_AUTH_TOKEN}` warning, reported verbatim as the reason a deploy
+/// failed while `ERR_PNPM_NO_PKG_MANIFEST` on stdout was thrown away.
+fn map_pnpm_failure(cmd: &str, args: &[&str], stdout: &str, stderr: &str) -> String {
+    let combined = [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let lower = combined.to_ascii_lowercase();
+    // pnpm's own error marker, not the bare word: a normal install prints
+    // "Lockfile is up to date, resolution step is skipped", so matching
+    // "lockfile" now that stdout is in scope would call every other failure a
+    // stale lockfile.
     if args.contains(&"--frozen-lockfile")
-        && (lower.contains("frozen-lockfile")
-            || lower.contains("lockfile")
-            || lower.contains("pnpm-lock.yaml"))
+        && (lower.contains("err_pnpm_outdated_lockfile") || lower.contains("cannot install with"))
     {
         return ERR_LOCKFILE_MISMATCH.to_string();
     }
-    format!("{cmd} {:?} failed: {}", args, stderr.trim())
+    format!(
+        "{cmd} {:?} failed: {}",
+        args,
+        tail(&combined, MAX_FAILURE_OUTPUT)
+    )
 }
 
 fn run_with_timeout(
@@ -140,7 +178,12 @@ fn run_with_timeout(
                 stderr: join(stderr_reader),
             };
             if !out.status.success() {
-                let msg = map_pnpm_stderr(cmd, args, &String::from_utf8_lossy(&out.stderr));
+                let msg = map_pnpm_failure(
+                    cmd,
+                    args,
+                    &String::from_utf8_lossy(&out.stdout),
+                    &String::from_utf8_lossy(&out.stderr),
+                );
                 anyhow::bail!("{msg}");
             }
             return Ok(out);
@@ -286,13 +329,60 @@ mod tests {
     }
 
     #[test]
-    fn map_pnpm_stderr_detects_frozen_lockfile() {
-        let msg = map_pnpm_stderr(
+    fn map_pnpm_failure_detects_frozen_lockfile() {
+        // On stdout, which is where pnpm actually puts it.
+        let msg = map_pnpm_failure(
             "pnpm",
             &["install", "--frozen-lockfile"],
             "ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with frozen-lockfile",
+            "",
         );
         assert_eq!(msg, ERR_LOCKFILE_MISMATCH);
+    }
+
+    #[test]
+    fn map_pnpm_failure_reports_what_pnpm_wrote_on_stdout() {
+        // The failure this was written for: a deploy of an app whose workdir
+        // has no package.json reported the `.npmrc` warning as the reason,
+        // because the reason itself was on the stream nobody read.
+        let msg = map_pnpm_failure(
+            "pnpm",
+            &["install", "--frozen-lockfile"],
+            " ERR_PNPM_NO_PKG_MANIFEST  No package.json found in /apps/app-1",
+            " WARN  Issue while reading \"/home/me/.npmrc\". Failed to replace env in config: ${NODE_AUTH_TOKEN}",
+        );
+        assert!(
+            msg.contains("ERR_PNPM_NO_PKG_MANIFEST"),
+            "the actual cause must survive: {msg}"
+        );
+        assert_ne!(msg, ERR_LOCKFILE_MISMATCH);
+    }
+
+    #[test]
+    fn a_healthy_lockfile_line_is_not_a_mismatch() {
+        // `pnpm install` says this on the way to succeeding at resolution, so
+        // matching the bare word "lockfile" against stdout would report every
+        // later failure as a stale lockfile.
+        let msg = map_pnpm_failure(
+            "pnpm",
+            &["install", "--frozen-lockfile"],
+            "Lockfile is up to date, resolution step is skipped\nERR_PNPM_FETCH_404  GET https://registry/x: Not Found",
+            "",
+        );
+        assert_ne!(msg, ERR_LOCKFILE_MISMATCH);
+        assert!(msg.contains("ERR_PNPM_FETCH_404"), "{msg}");
+    }
+
+    #[test]
+    fn a_long_log_is_carried_by_its_tail() {
+        let noise = "a".repeat(MAX_FAILURE_OUTPUT * 2);
+        let msg = map_pnpm_failure("pnpm", &["build"], &format!("{noise}\nthe real error"), "");
+        assert!(msg.contains("the real error"), "tail must survive");
+        assert!(
+            msg.len() < MAX_FAILURE_OUTPUT + 200,
+            "message must stay bounded: {}",
+            msg.len()
+        );
     }
 
     #[test]
