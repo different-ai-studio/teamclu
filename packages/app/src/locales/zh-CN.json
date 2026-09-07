@@ -1123,6 +1123,7 @@
     "localDaemonAutomation": "自动化",
     "localDaemonAutomationAria": "打开自动化任务",
     "localDaemonRetrying": "正在重试…",
+    "localDaemonTokensThisMonth": "本月消耗 {{tokens}} tokens",
     "ideas": "想法"
   },
   "errors": {
