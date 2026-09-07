@@ -869,6 +869,15 @@ describe("mapDeployErrorReason", () => {
       .toContain("上传链接");
   });
 
+  it("says an app has no code, not what pnpm called it", async () => {
+    // The daemon maps ERR_PNPM_NO_PKG_MANIFEST to this marker. What reached the
+    // user before was the raw pnpm line — accurate, and no help at all.
+    const { mapDeployErrorReason } = await import("./apps-store");
+    const raw = "app build failed: the app's folder has no package.json to build";
+    expect(mapDeployErrorReason(raw)).toContain("还没有代码");
+    expect(mapDeployErrorReason(raw)).not.toContain("package.json to build");
+  });
+
   it("does not read the workdir path as a dead daemon", async () => {
     // Daemon errors quote `~/.amuxd/teams/<team>/apps/<app>`. Matching the bare
     // substring "amuxd" reported every one of them as "the daemon is not

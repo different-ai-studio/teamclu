@@ -18,6 +18,10 @@ pub fn oss_object_key(app_id: &str) -> String {
 /// English messages the HTTP layer maps to user-facing copy.
 pub const ERR_OUTPUT_MISSING: &str = "build output missing in .output/";
 pub const ERR_ARTIFACT_TOO_LARGE: &str = "artifact exceeds 50 MiB limit";
+/// The app has no code to build. `pnpm install` reports it as
+/// `ERR_PNPM_NO_PKG_MANIFEST`, which is accurate and says nothing a user can
+/// act on; the desktop turns this marker into the two things they can do.
+pub const ERR_NO_PACKAGE_JSON: &str = "the app's folder has no package.json to build";
 pub const ERR_LOCKFILE_MISMATCH: &str =
     "lockfile out of sync with package.json; commit updated pnpm-lock.yaml";
 pub const ERR_INSTALL_TIMEOUT: &str = "pnpm install timed out after 10 minutes";
@@ -110,6 +114,12 @@ fn map_pnpm_failure(cmd: &str, args: &[&str], stdout: &str, stderr: &str) -> Str
         && (lower.contains("err_pnpm_outdated_lockfile") || lower.contains("cannot install with"))
     {
         return ERR_LOCKFILE_MISMATCH.to_string();
+    }
+    // An empty workdir is the failure a user is most likely to hit and least
+    // likely to diagnose: nothing about "no package.json found in
+    // /Users/…/apps/<uuid>" says the app was never given any code.
+    if lower.contains("err_pnpm_no_pkg_manifest") {
+        return ERR_NO_PACKAGE_JSON.to_string();
     }
     format!(
         "{cmd} {:?} failed: {}",
@@ -382,18 +392,30 @@ mod tests {
     }
 
     #[test]
-    fn map_pnpm_failure_reports_what_pnpm_wrote_on_stdout() {
-        // The failure this was written for: a deploy of an app whose workdir
-        // has no package.json reported the `.npmrc` warning as the reason,
-        // because the reason itself was on the stream nobody read.
+    fn map_pnpm_failure_names_an_app_with_no_code() {
         let msg = map_pnpm_failure(
             "pnpm",
             &["install", "--frozen-lockfile"],
             " ERR_PNPM_NO_PKG_MANIFEST  No package.json found in /apps/app-1",
+            "",
+        );
+        assert_eq!(msg, ERR_NO_PACKAGE_JSON);
+    }
+
+    #[test]
+    fn map_pnpm_failure_reports_what_pnpm_wrote_on_stdout() {
+        // The shape of the failure this was written for: the reason is on
+        // stdout and stderr holds an unrelated warning, so reading stderr alone
+        // reported the warning as the cause. A code with no friendly mapping of
+        // its own, so what is being checked is that the raw cause survives.
+        let msg = map_pnpm_failure(
+            "pnpm",
+            &["install", "--frozen-lockfile"],
+            " ERR_PNPM_FETCH_404  GET https://registry/x: Not Found",
             " WARN  Issue while reading \"/home/me/.npmrc\". Failed to replace env in config: ${NODE_AUTH_TOKEN}",
         );
         assert!(
-            msg.contains("ERR_PNPM_NO_PKG_MANIFEST"),
+            msg.contains("ERR_PNPM_FETCH_404"),
             "the actual cause must survive: {msg}"
         );
         assert_ne!(msg, ERR_LOCKFILE_MISMATCH);
