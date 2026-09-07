@@ -173,8 +173,8 @@ impl DaemonServer {
 
     /// Adopt an agent-generated session title. Daemon LLM titles win over
     /// placeholders and the frontend first-message auto-title. Cron-minted
-    /// titles (`Cron: …`) are the one exception — those are daemon-authored
-    /// already and must not be rewritten by the first job prompt.
+    /// titles (`Cron: …` / `Cron job`) must not be rewritten. A missing local
+    /// cache row is treated as unknown — do not adopt.
     async fn maybe_adopt_generated_session_title(&mut self, session_id: &str, title: &str) {
         let title = title.trim();
         if session_id.is_empty() || title.is_empty() {
@@ -1243,17 +1243,21 @@ impl DaemonServer {
 }
 
 /// Daemon LLM titles overwrite placeholders *and* the frontend first-message
-/// auto-title. The only title we refuse to clobber is a Cron-minted one.
+/// auto-title. Refuse Cron-minted titles and an empty/unknown current title
+/// (cache miss — cron sessions often never land in the local store).
 pub(crate) fn should_adopt_generated_session_title(current: &str, new_title: &str) -> bool {
     let current = current.trim();
     let new_title = new_title.trim();
-    if new_title.is_empty() || current == new_title {
+    if current.is_empty() || new_title.is_empty() || current == new_title {
         return false;
     }
     if new_title.contains("TeamClu Instructions") || new_title.starts_with("[Context —") {
         return false;
     }
-    !current.starts_with("Cron:")
+    if current.starts_with("Cron:") || current.eq_ignore_ascii_case("Cron job") {
+        return false;
+    }
+    true
 }
 
 /// Whether `title` looks like a client-minted default rather than something a
@@ -1325,7 +1329,7 @@ mod default_title_tests {
             "深圳美食推荐"
         ));
         assert!(should_adopt_generated_session_title("New chat", "Standup"));
-        assert!(should_adopt_generated_session_title("", "Standup"));
+        assert!(!should_adopt_generated_session_title("", "Standup"));
         assert!(!should_adopt_generated_session_title(
             "深圳美食推荐",
             "深圳美食推荐"
@@ -1335,6 +1339,7 @@ mod default_title_tests {
             "Cron: nightly-sync",
             "Launch Plan"
         ));
+        assert!(!should_adopt_generated_session_title("Cron job", "Launch Plan"));
         assert!(!should_adopt_generated_session_title(
             "帮我查一下深圳美食",
             "[TeamClu Instructions — follow for all replies in this session. Do not acknowled"

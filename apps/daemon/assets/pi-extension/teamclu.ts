@@ -1265,6 +1265,13 @@ function shouldSkipTitlePrompt(prompt: string): boolean {
   return body.startsWith("/") || body.startsWith("!") || body.startsWith("$");
 }
 
+/** Cron job prompts — they already have a daemon-minted `Cron:` title. */
+const CRON_REPLY_TOKEN_MARKER = "[SYSTEM] Reply token for this run:";
+
+function isCronJobPrompt(raw: string): boolean {
+  return raw.includes(CRON_REPLY_TOKEN_MARKER);
+}
+
 /**
  * amuxd prefixes the user text with `[TeamClu Instructions …]` / silent
  * `[Context — …][End context]` wrappers. `event.prompt` is that whole blob;
@@ -1408,7 +1415,9 @@ function startSessionTitle(
   if (titleAttemptedSessionIds.has(sessionId)) return;
   if (String(pi.getSessionName?.() ?? "").trim()) return;
 
-  const prompt = userPromptForTitle(String(event.prompt ?? ""));
+  const raw = String(event.prompt ?? "");
+  if (isCronJobPrompt(raw)) return;
+  const prompt = userPromptForTitle(raw);
   if (shouldSkipTitlePrompt(prompt)) return;
 
   let ui: TeamcluExtensionUIContext;

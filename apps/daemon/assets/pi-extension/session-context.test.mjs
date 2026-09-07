@@ -283,6 +283,12 @@ function shouldSkipTitlePrompt(prompt) {
   return body.startsWith("/") || body.startsWith("!") || body.startsWith("$");
 }
 
+const CRON_REPLY_TOKEN_MARKER = "[SYSTEM] Reply token for this run:";
+
+function isCronJobPrompt(raw) {
+  return raw.includes(CRON_REPLY_TOKEN_MARKER);
+}
+
 const TITLE_FOLLOW_MARKER = "Reply only to the user prompt that follows.]";
 const TITLE_END_CONTEXT_MARKER = "[End context]";
 
@@ -389,7 +395,9 @@ async function maybeGenerateSessionTitle(pi, event, ctx, deps = {}) {
   if (attempted.has(sessionId)) return;
   if (String(pi.getSessionName?.() ?? "").trim()) return;
 
-  const prompt = userPromptForTitle(String(event.prompt ?? ""));
+  const raw = String(event.prompt ?? "");
+  if (isCronJobPrompt(raw)) return;
+  const prompt = userPromptForTitle(raw);
   if (shouldSkipTitlePrompt(prompt)) return;
 
   attempted.add(sessionId);
@@ -433,6 +441,43 @@ test("session title skips slash commands and empty prompts", () => {
   assert.equal(shouldSkipTitlePrompt("!ls"), true);
   assert.equal(shouldSkipTitlePrompt("$ echo hi"), true);
   assert.equal(shouldSkipTitlePrompt("帮我查一下深圳美食"), false);
+});
+
+test("session title treats cron run tokens as cron, not chat tokens", () => {
+  assert.equal(
+    isCronJobPrompt(
+      "[SYSTEM] Reply token for this run: tok\nPass it as `reply_token`\n\nnightly sync",
+    ),
+    true,
+  );
+  assert.equal(
+    isCronJobPrompt("[SYSTEM] Reply token for this chat: tok\nhello"),
+    false,
+  );
+});
+
+test("session title does not run for cron job prompts", async () => {
+  let llmCalled = false;
+  const attempted = new Set();
+  const pi = { getSessionName: () => "", setSessionName() {} };
+  const ctx = { ui: { sessionId: "pi:/tmp/cron.json", setTitle() {} } };
+  await maybeGenerateSessionTitle(
+    pi,
+    {
+      prompt:
+        "[SYSTEM] Reply token for this run: tok\nPass it as `reply_token`\n\nnightly sync",
+    },
+    ctx,
+    {
+      attempted,
+      llmTitle: async () => {
+        llmCalled = true;
+        return "Nope";
+      },
+    },
+  );
+  assert.equal(llmCalled, false);
+  assert.equal(attempted.size, 0);
 });
 
 test("session title strips TeamClu instruction wrappers to the user text", () => {
