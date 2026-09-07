@@ -963,6 +963,14 @@ export async function seedDaemonApp(
   appType: string,
   gitRemoteUrl?: string | null,
   deployKeyPem?: string | null,
+  /**
+   * Publish the app's directory as it already is, with no starter template.
+   *
+   * For an app created from a folder the user picked: the daemon owns the
+   * decision of what to commit there, and writing a template over their files
+   * is the one thing that must not happen.
+   */
+  adoptExisting?: boolean,
 ): Promise<SeedAppResult> {
   try {
     const result = await daemonFetch<{ status: string; workdir?: string }>('/v1/apps/seed', {
@@ -974,6 +982,7 @@ export async function seedDaemonApp(
         appType,
         ...(gitRemoteUrl?.trim() ? { gitRemoteUrl: gitRemoteUrl.trim() } : {}),
         ...(deployKeyPem?.trim() ? { deployKeyPem: deployKeyPem.trim() } : {}),
+        ...(adoptExisting ? { adoptExisting: true } : {}),
         ...resolveSeedGitUserIdentity(),
       }),
     })

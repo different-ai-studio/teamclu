@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   daemonLocalAppIds: vi.fn(),
   buildDaemonApp: vi.fn(),
   bindAppWorkdir: vi.fn(),
+  bindDaemonAppWorkdir: vi.fn(),
   getDaemonEnvActivationDiagnostics: vi.fn(),
   toastError: vi.fn(),
   workdirExists: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock("@/lib/daemon/daemon-local-client", () => ({
   daemonAppWorkdir: mocks.daemonAppWorkdir,
   daemonLocalAppIds: mocks.daemonLocalAppIds,
   buildDaemonApp: mocks.buildDaemonApp,
+  bindDaemonAppWorkdir: mocks.bindDaemonAppWorkdir,
   getDaemonEnvActivationDiagnostics: mocks.getDaemonEnvActivationDiagnostics,
 }));
 
@@ -188,7 +190,48 @@ describe("apps-store", () => {
       type: "slides",
       visibility: "team",
     });
-    expect(mocks.seedDaemonApp).toHaveBeenCalledWith("app-4", "team-1", "Slides", "slides", null, null);
+    // The trailing `false` is "write the starter template" — the normal path.
+    expect(mocks.seedDaemonApp).toHaveBeenCalledWith(
+      "app-4", "team-1", "Slides", "slides", null, null, false,
+    );
+  });
+
+  it("adopting a folder binds it before the seed, and seeds no template", async () => {
+    // Order is the whole of it: the seed resolves the app's workdir from this
+    // binding, so binding afterwards would publish an empty default directory
+    // and leave the folder the user picked unattached.
+    const calls: string[] = [];
+    mocks.bindDaemonAppWorkdir.mockImplementationOnce(async () => {
+      calls.push("bind");
+      return { workdir: "/home/me/mine", gitRemoteUrl: null };
+    });
+    mocks.seedDaemonApp.mockImplementationOnce(async () => {
+      calls.push("seed");
+      return { outcome: "seeded", workdir: "/home/me/mine", error: null };
+    });
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({ id: "app-9", name: "Mine", type: "imported", provisionStatus: "repo_created" }),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().create({
+      teamId: "team-1",
+      name: "Mine",
+      type: "imported",
+      visibility: "personal",
+      adoptLocalDir: "/home/me/mine",
+    });
+
+    expect(calls).toEqual(["bind", "seed"]);
+    expect(mocks.bindDaemonAppWorkdir).toHaveBeenCalledWith("app-9", "team-1", "/home/me/mine");
+    // `adoptLocalDir` is the desktop's own field: the cloud API never sees it.
+    expect(mocks.createApp).toHaveBeenCalledWith(
+      expect.not.objectContaining({ adoptLocalDir: expect.anything() }),
+    );
+    // The 7th argument is `adoptExisting`: publish the folder, write no
+    // template over it.
+    const seedArgs = mocks.seedDaemonApp.mock.calls.at(-1);
+    expect(seedArgs?.slice(0, 4)).toEqual(["app-9", "team-1", "Mine", "imported"]);
+    expect(seedArgs?.[6]).toBe(true);
   });
 
   it("create: seeded → PATCH ready", async () => {
@@ -204,7 +247,7 @@ describe("apps-store", () => {
       type: "fullstack_tanstack_postgres",
       visibility: "team",
     });
-    expect(mocks.seedDaemonApp).toHaveBeenCalledWith("app-1", "team-1", "App", "fullstack_tanstack_postgres", null, null);
+    expect(mocks.seedDaemonApp).toHaveBeenCalledWith("app-1", "team-1", "App", "fullstack_tanstack_postgres", null, null, false);
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
 
@@ -252,7 +295,7 @@ describe("apps-store", () => {
       teamId: "team-1",
     });
     await useAppsStore.getState().reseed("app-1");
-    expect(mocks.seedDaemonApp).toHaveBeenCalledWith("app-1", "team-1", "App", "fullstack_tanstack_postgres", "https://g/x.git", null);
+    expect(mocks.seedDaemonApp).toHaveBeenCalledWith("app-1", "team-1", "App", "fullstack_tanstack_postgres", "https://g/x.git", null, false);
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
 
@@ -287,6 +330,7 @@ describe("apps-store", () => {
       "fullstack_tanstack_postgres",
       "git@gitea:team/app-1.git",
       gitCred.privateKeyPem,
+      false,
     );
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
@@ -306,7 +350,7 @@ describe("apps-store", () => {
       gitRemoteUrl: "git@github.com:owner/repo.git",
     });
     expect(mocks.seedDaemonApp).toHaveBeenCalledWith(
-      "app-1", "team-1", "App", "fullstack_tanstack_postgres", "git@github.com:owner/repo.git", null,
+      "app-1", "team-1", "App", "fullstack_tanstack_postgres", "git@github.com:owner/repo.git", null, false,
     );
   });
 
@@ -335,6 +379,7 @@ describe("apps-store", () => {
       "fullstack_tanstack_postgres",
       "git@gitea:team/app-1.git",
       gitCred.privateKeyPem,
+      false,
     );
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
