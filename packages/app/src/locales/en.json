@@ -1123,6 +1123,7 @@
     "localDaemonAutomation": "Automation",
     "localDaemonAutomationAria": "Open automation tasks",
     "localDaemonRetrying": "Retrying…",
+    "localDaemonTokensThisMonth": "{{tokens}} tokens this month",
     "ideas": "Ideas"
   },
   "errors": {
