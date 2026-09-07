@@ -494,6 +494,11 @@ pub struct BuildAppBody {
 #[serde(rename_all = "camelCase")]
 pub struct BuildAppResponse {
     pub status: &'static str,
+    /// The commit that was actually built, when the daemon published work the
+    /// caller did not know about. Absent when it built the sha it was given —
+    /// the caller then finalizes with its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_commit_sha: Option<String>,
 }
 
 /// `POST /v1/apps/build` — build the app (`pnpm build` + zip `.output`) and
@@ -548,7 +553,7 @@ pub async fn build_app(
         )));
     }
 
-    let bytes = tokio::task::spawn_blocking(move || {
+    let built = tokio::task::spawn_blocking(move || {
         let git_ctx = use_git.then(|| crate::sync::app_build::BuildGitContext {
             app_id: &app_id,
             commit_sha: &git_commit_sha,
@@ -563,7 +568,7 @@ pub async fn build_app(
 
     let resp = reqwest::Client::new()
         .put(&presigned_put)
-        .body(bytes)
+        .body(built.bytes)
         .send()
         .await
         .map_err(|e| HttpError::internal(format!("upload PUT failed: {e}")))?;
@@ -579,7 +584,10 @@ pub async fn build_app(
         )));
     }
 
-    Ok(Json(BuildAppResponse { status: "built" }))
+    Ok(Json(BuildAppResponse {
+        status: "built",
+        git_commit_sha: built.git_commit_sha,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -908,6 +916,7 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
     let msg = format!("{err}");
     let validation_markers = [
         crate::sync::app_git::ERR_DIRTY,
+        crate::sync::app_git::ERR_PUSH_REJECTED,
         crate::sync::app_git::ERR_SHA_NOT_ON_REMOTE,
         crate::sync::app_git::ERR_INVALID_SHA,
         crate::sync::app_build::ERR_OUTPUT_MISSING,
@@ -1194,7 +1203,7 @@ mod tests {
 
     #[test]
     fn map_build_error_marks_known_validation_failures() {
-        let err = map_build_error(anyhow::anyhow!(crate::sync::app_git::ERR_DIRTY));
+        let err = map_build_error(anyhow::anyhow!(crate::sync::app_git::ERR_PUSH_REJECTED));
         assert!(matches!(err.code, ErrorCode::ValidationFailed));
         let err = map_build_error(anyhow::anyhow!("mystery failure"));
         assert!(matches!(err.code, ErrorCode::Internal));

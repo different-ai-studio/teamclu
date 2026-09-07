@@ -1364,6 +1364,7 @@
     "deleted": "应用已删除",
     "deployErrorReason": {
       "uncommitted": "工作区有未提交或未推送的改动，请先 commit 并 push 后再部署。",
+      "pushRejected": "仓库里有本机没有的提交。请先拉取并解决冲突，然后重新部署。",
       "installTimeout": "依赖安装超时（10 分钟），请检查网络或 lockfile 后重试。",
       "buildTimeout": "构建超时（10 分钟），请检查构建脚本后重试。",
       "artifactTooLarge": "构建产物超过 50 MiB 上限，请精简输出后重试。",

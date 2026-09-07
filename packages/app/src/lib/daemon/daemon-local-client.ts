@@ -1008,6 +1008,15 @@ export interface BuildAppResult {
   outcome: BuildAppOutcome
   /** Why it failed, for the toast. Null unless the outcome is `failed`. */
   error: string | null
+  /**
+   * The commit the daemon actually built, when it differs from the one we
+   * asked for.
+   *
+   * A deploy publishes whatever the agent left uncommitted, which moves HEAD
+   * past the sha we read off Gitea before starting. Finalizing with the old
+   * one would record a commit that is not what is now running.
+   */
+  gitCommitSha: string | null
 }
 
 /**
@@ -1203,7 +1212,7 @@ export async function buildDaemonApp(
   input: BuildDaemonAppInput,
 ): Promise<BuildAppResult> {
   try {
-    const result = await daemonFetch<{ status: string }>('/v1/apps/build', {
+    const result = await daemonFetch<{ status: string; gitCommitSha?: string }>('/v1/apps/build', {
       method: 'POST',
       body: JSON.stringify({
         appId,
@@ -1214,16 +1223,22 @@ export async function buildDaemonApp(
         presignedPut: input.presignedPut.trim(),
       }),
     })
-    if (result.ok) return { outcome: "built", error: null }
+    if (result.ok) {
+      return {
+        outcome: "built",
+        error: null,
+        gitCommitSha: result.data?.gitCommitSha?.trim() || null,
+      }
+    }
     if (result.status === 0) {
       console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return { outcome: "unreachable", error: null }
+      return { outcome: "unreachable", error: null, gitCommitSha: null }
     }
     console.warn('[daemon-local-client] app build failed:', result.error)
-    return { outcome: "failed", error: result.error ?? null }
+    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null }
   } catch (err) {
     console.warn('[daemon-local-client] app build unavailable:', err)
-    return { outcome: "unreachable", error: null }
+    return { outcome: "unreachable", error: null, gitCommitSha: null }
   }
 }
 
