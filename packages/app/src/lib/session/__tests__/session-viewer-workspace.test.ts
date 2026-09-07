@@ -17,7 +17,6 @@ import {
   bindingsFromCacheRows,
   isViewerAgent,
   pickBestViewerSessionPath,
-  pickSessionWorkspaceLabel,
   resolveLocalPathForCloudWorkspace,
   resolveSessionWorkspaceForViewer,
 } from "@/lib/session/session-viewer-workspace";
@@ -109,27 +108,6 @@ describe("pickBestViewerSessionPath", () => {
       makeCtx({ localDaemonAgentId: null, ownedAgentIds: new Set(["agent-owned"]) }),
     );
     expect(path).toBe("/Users/b/new");
-  });
-});
-
-describe("pickSessionWorkspaceLabel", () => {
-  it("returns basename when a local path is adoptable", () => {
-    const label = pickSessionWorkspaceLabel(
-      [
-        {
-          sessionId: "s1",
-          teamId: "teamA",
-          viewerMemberId: "member-b",
-          agentId: "agent-local",
-          workspaceId: "ws-b",
-          workspacePath: "/Users/b/my-proj",
-          updatedAt: "2026-06-01T00:00:00Z",
-        },
-      ],
-      "s1",
-      makeCtx(),
-    );
-    expect(label).toBe("my-proj");
   });
 });
 

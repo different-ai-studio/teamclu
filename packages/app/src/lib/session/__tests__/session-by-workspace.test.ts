@@ -3,17 +3,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const { loadSessionWorkspacesForTeam } = vi.hoisted(() => ({
   loadSessionWorkspacesForTeam: vi.fn(),
 }));
-const { loadViewerWorkspaceContext, pickSessionWorkspaceLabel, resolveSessionWorkspaceForViewer } =
+const { loadViewerWorkspaceContext, resolveSessionWorkspaceForViewer } =
   vi.hoisted(() => ({
     loadViewerWorkspaceContext: vi.fn(),
-    pickSessionWorkspaceLabel: vi.fn(),
     resolveSessionWorkspaceForViewer: vi.fn(),
   }));
 
 vi.mock("@/lib/cache/local-cache", () => ({ loadSessionWorkspacesForTeam }));
 vi.mock("@/lib/session/session-viewer-workspace", () => ({
   loadViewerWorkspaceContext,
-  pickSessionWorkspaceLabel,
   resolveSessionWorkspaceForViewer,
 }));
 
@@ -31,7 +29,6 @@ vi.mock("@/stores/workspace", () => ({
 
 import {
   loadSessionIdsForWorkspace,
-  loadSessionWorkspaceLabelsForTeam,
   resolveSessionWorkspacePath,
   sessionBelongsToWorkspace,
   switchToSessionWorkspaceIfNeeded,
@@ -107,35 +104,6 @@ describe("loadSessionIdsForWorkspace", () => {
     });
     expect(ids.size).toBe(0);
     expect(loadSessionWorkspacesForTeam).not.toHaveBeenCalled();
-  });
-});
-
-describe("loadSessionWorkspaceLabelsForTeam", () => {
-  beforeEach(() => {
-    loadSessionWorkspacesForTeam.mockReset();
-    loadViewerWorkspaceContext.mockReset();
-    pickSessionWorkspaceLabel.mockReset();
-    loadViewerWorkspaceContext.mockResolvedValue(viewerCtx);
-  });
-
-  it("builds labels via viewer-scoped picker", async () => {
-    const rows = [
-      {
-        sessionId: "s1",
-        teamId: "teamA",
-        viewerMemberId: "member-a",
-        agentId: "agent-local",
-        workspacePath: "/Users/me/copilot-ws-v3",
-        workspaceId: "ws1",
-        updatedAt: "2026-06-01T00:00:00Z",
-      },
-    ];
-    loadSessionWorkspacesForTeam.mockResolvedValue(rows);
-    pickSessionWorkspaceLabel.mockReturnValue("copilot-ws-v3");
-
-    const labels = await loadSessionWorkspaceLabelsForTeam("teamA");
-    expect(pickSessionWorkspaceLabel).toHaveBeenCalledWith(rows, "s1", viewerCtx);
-    expect(labels.get("s1")).toBe("copilot-ws-v3");
   });
 });
 
