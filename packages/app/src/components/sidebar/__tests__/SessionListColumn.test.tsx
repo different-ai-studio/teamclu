@@ -327,9 +327,9 @@ describe('SessionListColumn', () => {
   })
 
   it('names the app under a session that belongs to one', () => {
-    // What this slot held before was a workspace label, which for an app
-    // session resolved to a raw cloud workspace uuid — the app's checkout is
-    // daemon-owned, so it is never a workspace registered on this machine.
+    // What this slot held before was a workspace label — the workspace
+    // directory's basename — and an app's checkout is `…/apps/<appId>`, so for
+    // an app session it rendered the app's own uuid.
     useAppsStore.setState({ items: [mkAppRow('app-1', 'teamclu 官网')] })
     useSessionListStore.setState({
       rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1' })],

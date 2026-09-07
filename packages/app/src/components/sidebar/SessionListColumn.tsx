@@ -634,10 +634,12 @@ export function SessionListColumn({
     /**
      * The app this session belongs to, if any.
      *
-     * This slot used to hold a workspace label, which for an app session was a
-     * raw cloud workspace uuid: the app's checkout is daemon-owned, so it is
-     * never a workspace registered on this machine, and the label fell through
-     * to printing the id. Nothing about a session is better said by a uuid.
+     * This slot used to hold a workspace label, and for an app session that was
+     * always a uuid. The label is the workspace directory's basename, and an
+     * app's checkout is `<amuxd home>/teams/<team>/apps/<appId>` — so the
+     * basename is the app's own id. (The label's other branch, for a workspace
+     * this machine has not registered, returns the cloud workspace id: also a
+     * uuid.) Nothing about a session is better said by one.
      */
     const rowApp = row.appId ? appsById.get(row.appId) ?? null : null
     const actionsId = `v2-session-actions-${row.id}`

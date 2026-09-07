@@ -109,8 +109,8 @@ test("listSessions maps current actor session rpc rows", async () => {
 test("listSessions carries the app a session belongs to", async () => {
   // `amux.sessions.app_id` reached the list RPC in 20260907000000. It is what
   // lets a client tell an app's session from any other; before it, the sidebar
-  // had only the workspace label, which for an app's daemon-owned checkout was
-  // a raw workspace uuid.
+  // had only the workspace label — that directory's basename, which for an
+  // app's checkout is the app's own uuid.
   const repo = createRepo(fakeSupabase({
     rpcData: {
       list_current_actor_sessions: [{

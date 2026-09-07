@@ -2,9 +2,9 @@
 --
 -- `amux.sessions.app_id` has existed since the apps module landed, but nothing
 -- read it back: the sidebar could not tell an app's session from any other, and
--- the only signal it had — the workspace label — printed a raw cloud workspace
--- uuid whenever the app's daemon-owned checkout was not a workspace registered
--- on this machine, which for an app is always.
+-- the only signal it had — the workspace label — is that directory's basename,
+-- which for an app's checkout (`teams/<team>/apps/<appId>`) is the app's own
+-- uuid.
 --
 -- Appended to RETURNS TABLE, so the argument signature (and therefore the
 -- REVOKE/GRANT below and pgTAP's has_function assertion in 016) is unchanged.
