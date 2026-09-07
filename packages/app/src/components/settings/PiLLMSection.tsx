@@ -30,6 +30,7 @@ import {
   type PiProviderList,
 } from '@/lib/daemon/daemon-pi-auth'
 import { encodeWorkspaceId } from '@/lib/daemon/daemon-local-client'
+import { ensureLocalDaemonCatalog } from '@/stores/local-daemon-catalog-store'
 import { SectionHeader, SettingCard } from './shared'
 import { TeamProviderCard } from './llm/TeamProviderCard'
 import { PiLoginDialog } from './llm/PiLoginDialog'
@@ -115,6 +116,16 @@ export function PiLLMSection() {
     void load()
   }, [load])
 
+  // Every action below changes the catalog this device can run, and the
+  // new-session pill reads it from `useLocalDaemonCatalogStore`, whose 'ready'
+  // entries sit for five minutes before a natural re-probe. Without forcing it
+  // here, an LLM added on this pane stays invisible to new chats until that
+  // window expires (the daemon-side fan-out fixes the live children; this
+  // fixes the client cache).
+  const invalidateLocalCatalog = React.useCallback(() => {
+    if (workspacePath) ensureLocalDaemonCatalog(workspacePath, undefined, { force: true })
+  }, [workspacePath])
+
   const handleRefresh = React.useCallback(async () => {
     setRefreshing(true)
     try {
@@ -124,8 +135,9 @@ export function PiLLMSection() {
       // that fails still leaves the cached models usable.
     }
     await load()
+    invalidateLocalCatalog()
     setRefreshing(false)
-  }, [load, workspaceId])
+  }, [load, workspaceId, invalidateLocalCatalog])
 
   const handleLogout = React.useCallback(
     async (provider: PiProvider) => {
@@ -134,13 +146,14 @@ export function PiLLMSection() {
       try {
         await logoutPiProvider(provider.id, workspaceId)
         await load()
+        invalidateLocalCatalog()
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
       } finally {
         setBusyProvider(null)
       }
     },
-    [load, workspaceId],
+    [load, workspaceId, invalidateLocalCatalog],
   )
 
   const handleDeleteCustom = React.useCallback(
@@ -150,13 +163,14 @@ export function PiLLMSection() {
       try {
         await deletePiCustomProvider(providerId, workspaceId)
         await load()
+        invalidateLocalCatalog()
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
       } finally {
         setBusyProvider(null)
       }
     },
-    [load, workspaceId],
+    [load, workspaceId, invalidateLocalCatalog],
   )
 
   const providers = data?.providers ?? []
@@ -412,7 +426,10 @@ export function PiLLMSection() {
           authType={login.authType}
           workspaceId={workspaceId}
           onClose={() => setLogin(null)}
-          onFinished={() => void load()}
+          onFinished={() => {
+            void load()
+            invalidateLocalCatalog()
+          }}
         />
       )}
 
@@ -426,6 +443,7 @@ export function PiLLMSection() {
           onSave={async (id, provider) => {
             await putPiCustomProvider(id, provider, workspaceId)
             await load()
+            invalidateLocalCatalog()
           }}
         />
       )}

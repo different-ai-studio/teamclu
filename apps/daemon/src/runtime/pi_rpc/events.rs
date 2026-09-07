@@ -364,7 +364,7 @@ async fn try_backfill(
     Ok(())
 }
 
-/// Tell every *other* live child to reload the provider a login just unlocked.
+/// Tell every *other* live child to reload the providers that just changed.
 ///
 /// Logins run on their own child (see `pi_auth_request`), and each child holds
 /// its own `ModelRuntime`. Without this, a provider signed in from the settings
@@ -372,12 +372,22 @@ async fn try_backfill(
 /// respawned — which is exactly the property reusing a session's child used to
 /// buy, and the reason it is safe to stop doing that.
 ///
+/// Also used after a `models.json` write (custom provider added/edited/
+/// deleted) and after an explicit `auth_refresh`: those change the same
+/// device-wide catalog every child serves, and pi reports them as a plain
+/// command response rather than a host event, so `auth_login_end` cannot
+/// cover them.
+///
 /// Detached rather than awaited: this reader task is the only thing draining
 /// that child's stdout, and `auth_refresh` waits on a network catalog fetch.
 /// Awaiting it here would stall every event from the child that just answered.
 /// Best-effort by design — a child that fails to refresh still picks the
 /// credential up from `auth.json` the next time it starts.
-fn broadcast_auth_refresh(shared: &Arc<Shared>, origin: &PiClient, event: &serde_json::Value) {
+pub(crate) fn broadcast_auth_refresh(
+    shared: &Arc<Shared>,
+    origin: &PiClient,
+    event: &serde_json::Value,
+) {
     let provider_id = event
         .get("providerId")
         .and_then(|v| v.as_str())
