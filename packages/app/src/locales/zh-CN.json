@@ -2626,7 +2626,7 @@
         "brokenTitle": "缺少 SKILL.md 的文件夹",
         "tipsTitle": "常见修复方式",
         "tipRefresh": "点击刷新，从磁盘重新加载技能列表。",
-        "tipRestart": "新增或修改技能后重启 OpenCode。",
+        "tipRestart": "新增或修改技能后重启本地 agent。",
         "tipPaths": "确认 teamclu.json / opencode.json 中的 skills.paths 指向存在的目录。",
         "tipDaemon": "如果守护进程清单缺失，确认 amuxd 正在运行。"
       },
@@ -2658,7 +2658,7 @@
       "noMatchingSkills": "没有匹配的技能",
       "noMatchingSkillsHint": "试试其他搜索词",
       "configChanged": "技能权限已更改",
-      "restartToApply": "重启 OpenCode 以应用新的技能权限配置。",
+      "restartToApply": "重启本地 agent 以应用新的技能权限配置。",
       "inherent": "内置",
       "inherentSkills": "内置技能",
       "managedByTeamClu": "由 TeamClu 管理",

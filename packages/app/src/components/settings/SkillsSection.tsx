@@ -850,7 +850,7 @@ ${skillContent.trim()}`
                 {t('settings.skills.configChanged', 'Skill Permission Changed')}
               </p>
               <p className="text-[13px] text-amber-700 dark:text-amber-300 mt-1">
-                {t('settings.skills.restartToApply', 'Restart OpenCode to apply the new skill permission configuration.')}
+                {t('settings.skills.restartToApply', 'Restart the local agent to apply the new skill permission configuration.')}
               </p>
               {restartError && (
                 <p className="text-[13px] text-red-600 dark:text-red-400 mt-2">

@@ -2626,7 +2626,7 @@
         "brokenTitle": "Folders missing SKILL.md",
         "tipsTitle": "Common fixes",
         "tipRefresh": "Click Refresh to reload the skills list from disk.",
-        "tipRestart": "Restart OpenCode after adding or editing skills.",
+        "tipRestart": "Restart the local agent after adding or editing skills.",
         "tipPaths": "Verify teamclu.json / opencode.json skills.paths point to existing directories.",
         "tipDaemon": "Ensure amuxd is running if daemon inventory is missing."
       },
@@ -2658,7 +2658,7 @@
       "noMatchingSkills": "No matching skills",
       "noMatchingSkillsHint": "Try a different search term",
       "configChanged": "Skill Permission Changed",
-      "restartToApply": "Restart OpenCode to apply the new skill permission configuration.",
+      "restartToApply": "Restart the local agent to apply the new skill permission configuration.",
       "inherent": "Built-in",
       "inherentSkills": "Built-in Skills",
       "managedByTeamClu": "Managed by TeamClu",

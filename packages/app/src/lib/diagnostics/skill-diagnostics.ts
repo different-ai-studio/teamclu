@@ -201,7 +201,7 @@ export async function runSkillsDiagnostics(workspacePath: string): Promise<Skill
           label: 'Runtime refresh',
           status: 'fail',
           detail: runtimeRefreshError ?? refresh.status,
-          hint: 'Runtime refresh failed. Restart OpenCode from this page or Diagnostics.',
+          hint: 'Runtime refresh failed. Restart the local agent from this page or Diagnostics.',
         })
       } else if (runtimeSkillsPending) {
         checks.push({
