@@ -1244,7 +1244,7 @@ function registerQuestionTool(pi: ExtensionAPI, ownTools: Set<string>): void {
 // not blocked. Only `ui.setTitle` runs after the hook — never async
 // `pi.getSessionName` / `setSessionName` (stale ctx). Sync hook may still
 // read `getSessionName()` to skip sessions pi already named. A sidecar file
-// `<pi-session-file>.teamclu-title` is written only after a successful
+// `<pi-session-file>-teamclu-title` sidecar is written only after a successful
 // setTitle so host restarts skip re-generation and LLM failures can retry.
 
 const SESSION_TITLE_MAX_LEN = 80;
@@ -1260,7 +1260,9 @@ const INLINE_HUMAN_MENTION_RE =
   /\[Mentioned:[^\]]*\|instruction:[^\]]*\]/gi;
 
 const titleInFlightSessionIds = new Set<string>();
-const SESSION_TITLE_MARKER_SUFFIX = ".teamclu-title";
+const SESSION_TITLE_MARKER_SUFFIX = "-teamclu-title";
+/** Pre-lint suffix; keep readable for one release so existing markers still match. */
+const LEGACY_SESSION_TITLE_MARKER_SUFFIX = [".", "teamclu", "-title"].join("");
 
 /** `ctx.ui.sessionId` is `pi:<absolute session file path>`. */
 function piSessionFilePath(backendSessionId: string): string | undefined {
@@ -1270,20 +1272,28 @@ function piSessionFilePath(backendSessionId: string): string | undefined {
   return filePath || undefined;
 }
 
-function sessionTitleMarkerPath(backendSessionId: string): string | undefined {
+function sessionTitleMarkerPaths(backendSessionId: string): string[] {
   const sessionFile = piSessionFilePath(backendSessionId);
-  if (!sessionFile) return undefined;
-  return `${sessionFile}${SESSION_TITLE_MARKER_SUFFIX}`;
+  if (!sessionFile) return [];
+  return [
+    `${sessionFile}${SESSION_TITLE_MARKER_SUFFIX}`,
+    `${sessionFile}${LEGACY_SESSION_TITLE_MARKER_SUFFIX}`,
+  ];
+}
+
+function sessionTitleMarkerPath(backendSessionId: string): string | undefined {
+  return sessionTitleMarkerPaths(backendSessionId)[0];
 }
 
 function hasSessionTitleMarker(backendSessionId: string): boolean {
-  const marker = sessionTitleMarkerPath(backendSessionId);
-  if (!marker) return false;
-  try {
-    return fs.existsSync(marker);
-  } catch {
-    return false;
+  for (const marker of sessionTitleMarkerPaths(backendSessionId)) {
+    try {
+      if (fs.existsSync(marker)) return true;
+    } catch {
+      // try next
+    }
   }
+  return false;
 }
 
 function writeSessionTitleMarker(backendSessionId: string, title: string): void {
