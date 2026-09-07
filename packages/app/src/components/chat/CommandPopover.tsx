@@ -16,8 +16,6 @@ import { shouldReloadPickerFromDaemonRefresh } from '@/components/chat/command-p
 import { useWorkspaceStore } from '@/stores/workspace'
 import { attachmentsForSession, useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { isTauri } from '@/lib/utils'
-import { encodeWorkspaceId, getDaemonPermissions } from '@/lib/daemon/daemon-local-client'
-import { resolveSkillPermission, type SkillPermissionMap } from '@/lib/daemon/teamclu-config'
 import { loadAllRoles, loadRolesSkillsWorkspaceState } from '@/lib/roles/loader'
 
 interface CommandPopoverProps {
@@ -33,7 +31,6 @@ interface SkillEntry {
   invocationName: string
   description: string
   path: string
-  permissionKey: string
 }
 
 interface RoleEntry {
@@ -91,25 +88,8 @@ async function scanAvailableSkills(workspacePath: string): Promise<SkillEntry[]>
       invocationName: skill.invocationName ?? skill.filename,
       description: skill.description?.trim() || '',
       path: skill.filename,
-      permissionKey: skill.invocationName ?? skill.filename,
     }))
     .sort((a, b) => a.name.localeCompare(b.name))
-}
-
-async function loadSkillPermissionsForSession(
-  workspacePath: string,
-): Promise<SkillPermissionMap> {
-  if (isTauri()) {
-    try {
-      const perms = await getDaemonPermissions(encodeWorkspaceId(workspacePath))
-      if (perms) {
-        return perms
-      }
-    } catch (error) {
-      console.warn('[CommandPopover] daemon permissions unavailable, using empty allow map:', error)
-    }
-  }
-  return {}
 }
 
 async function scanAvailableRoles(workspacePath: string): Promise<RoleEntry[]> {
@@ -262,15 +242,8 @@ export function CommandPopover({
           })
         : Promise.resolve([])
 
-      const permissionsPromise = workspacePath
-        ? loadSkillPermissionsForSession(workspacePath).catch(error => {
-            console.error('[CommandPopover] Failed to load skill permissions:', error)
-            return {}
-          })
-        : Promise.resolve({})
-      
-      Promise.all([commandsPromise, skillsPromise, rolesPromise, permissionsPromise])
-        .then(([cmds, skls, loadedRoles, permissions]) => {
+      Promise.all([commandsPromise, skillsPromise, rolesPromise])
+        .then(([cmds, skls, loadedRoles]) => {
           console.info('[CommandPopover] picker sources loaded', {
             activeSessionId,
             daemonCommandCount: cmds.length,
@@ -278,23 +251,13 @@ export function CommandPopover({
             localSkillCount: skls.length,
             localSkillInvocations: skls.map((skill) => skill.invocationName),
             roleCount: loadedRoles.length,
-            permissionKeyCount: Object.keys(permissions).length,
           })
-          const deniedSkillNames = new Set(
-            skls
-              .filter((skill) => resolveSkillPermission(skill.permissionKey, permissions).permission === 'deny')
-              .map((skill) => skill.name)
-          )
-
-          const allowedFrontendSkills = skls.filter(
-            (skill) => resolveSkillPermission(skill.permissionKey, permissions).permission !== 'deny'
-          )
 
           const skillByInvocation = new Map(
-            allowedFrontendSkills.map((skill) => [skill.invocationName, skill]),
+            skls.map((skill) => [skill.invocationName, skill]),
           )
           const skillByFilename = new Map(
-            allowedFrontendSkills.map((skill) => [skill.path, skill]),
+            skls.map((skill) => [skill.path, skill]),
           )
 
           const runtimeSkills: SkillEntry[] = []
@@ -304,7 +267,6 @@ export function CommandPopover({
           for (const cmd of cmds) {
             const matchedSkill = skillByInvocation.get(cmd.name) ?? skillByFilename.get(cmd.name)
             if (matchedSkill) {
-              if (deniedSkillNames.has(matchedSkill.name)) continue
               const dedupeKey = matchedSkill.invocationName || matchedSkill.name
               if (runtimeSkillKeys.has(dedupeKey)) continue
               runtimeSkillKeys.add(dedupeKey)
@@ -320,9 +282,7 @@ export function CommandPopover({
                 invocationName: cmd.name,
                 description: cmd.description ?? '',
                 path: '',
-                permissionKey: cmd.name,
               }
-              if (resolveSkillPermission(daemonSkill.permissionKey, permissions).permission === 'deny') continue
               console.info('[CommandPopover] classified daemon command as namespaced skill', {
                 commandName: cmd.name,
               })
@@ -334,10 +294,9 @@ export function CommandPopover({
               runtimeCommands.push(cmd)
             }
           }
-          
-          // Merge frontend-scanned skills with runtime-advertised skills.
+
           const skillInvocationSet = new Set(runtimeSkills.map((skill) => skill.invocationName))
-          const uniqueFrontendSkills = allowedFrontendSkills.filter(
+          const uniqueFrontendSkills = skls.filter(
             (skill) => !skillInvocationSet.has(skill.invocationName),
           )
           

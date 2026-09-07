@@ -3,7 +3,7 @@
 //! Design: docs/architecture/team-skills-registry.md
 //!
 //! Deliberately thin. The package pipeline (zip extract with traversal
-//! guarding, `.clawhub/origin.json`, the lockfile, the `permission.skill`
+//! guarding, `.clawhub/origin.json`, the lockfile, and the shared
 //! entry) already exists for ClawHub, so this reuses it wholesale rather than
 //! growing a second one — the only genuinely new steps are talking to the
 //! Cloud API instead of the public registry, and writing the structured

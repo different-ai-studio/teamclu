@@ -4,12 +4,10 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 const t = (k: string, d?: string) => d ?? k
 
-const { workspaceState, mockLoadAllSkills, mockInvoke, mockPutDaemonPermissions, mockGetDaemonPermissions } = vi.hoisted(() => ({
+const { workspaceState, mockLoadAllSkills, mockInvoke } = vi.hoisted(() => ({
   workspaceState: { workspacePath: null as string | null },
   mockLoadAllSkills: vi.fn(async () => ({ skills: [], overrides: [] })),
   mockInvoke: vi.fn(),
-  mockPutDaemonPermissions: vi.fn(),
-  mockGetDaemonPermissions: vi.fn(),
 }))
 const { mockLoadRolesSkillsWorkspaceState } = vi.hoisted(() => ({
   mockLoadRolesSkillsWorkspaceState: vi.fn(async () => ({
@@ -39,12 +37,6 @@ vi.mock('@/lib/utils', () => ({ cn: (...a: string[]) => a.join(' '), isTauri: ()
 vi.mock('@tauri-apps/plugin-fs', () => ({
   exists: vi.fn(async () => true),
   mkdir: vi.fn(async () => undefined),
-}))
-vi.mock('@/lib/opencode/config', () => ({
-  readSkillPermissions: vi.fn(async () => ({})),
-  writeSkillPermission: vi.fn(),
-  removeSkillPermission: vi.fn(),
-  resolveSkillPermission: vi.fn(() => ({ permission: 'allow', isExact: false })),
 }))
 vi.mock('@/lib/skills/loader', () => ({
   loadAllSkills: mockLoadAllSkills,
@@ -81,9 +73,6 @@ vi.mock('../SkillsDiagnosticsDialog', () => ({
 }))
 vi.mock('@/lib/daemon/daemon-local-client', () => ({
   encodeWorkspaceId: (path: string) => path,
-  getDaemonPermissions: mockGetDaemonPermissions,
-  putDaemonPermissions: mockPutDaemonPermissions,
-  reloadDaemonRuntime: vi.fn(),
   deleteDaemonSkill: vi.fn(),
 }))
 import { SkillsSection } from '../SkillsSection'
@@ -107,10 +96,6 @@ describe('SkillsSection', () => {
       },
     })
     mockInvoke.mockReset()
-    mockGetDaemonPermissions.mockReset()
-    mockGetDaemonPermissions.mockResolvedValue({ '*': 'ask' })
-    mockPutDaemonPermissions.mockReset()
-    mockPutDaemonPermissions.mockResolvedValue(null)
     mockInvoke.mockImplementation(async (method: string) => {
       if (method === 'clawhub_list_installed') return { skills: {} }
       if (method === 'clawhub_explore') return { items: [], nextCursor: null }
@@ -315,44 +300,5 @@ describe('SkillsSection', () => {
     await waitFor(() => {
       expect(screen.getByTestId('marketplace-content')).toBeTruthy()
     })
-  })
-
-  it('does not claim a permission write succeeded when the daemon is down', async () => {
-    workspaceState.workspacePath = '/workspace/project'
-    mockPutDaemonPermissions.mockResolvedValue(null)
-
-    render(<SkillsSection />)
-
-    expect(await screen.findByText('Default Permission')).toBeTruthy()
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Ask' }).className).toMatch(/bg-accent/)
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
-
-    expect(await screen.findByText('Could not save permission. Is the daemon running?')).toBeTruthy()
-    expect(mockPutDaemonPermissions).toHaveBeenCalled()
-    // Local state stays on the last loaded value (ask), not the clicked allow.
-    const allow = screen.getByRole('button', { name: 'Allow' })
-    const ask = screen.getByRole('button', { name: 'Ask' })
-    expect(ask.className.split(' ')).toContain('bg-accent')
-    expect(allow.className.split(' ')).not.toContain('bg-accent')
-  })
-
-  it('updates local permission state only after the daemon accepts the write', async () => {
-    workspaceState.workspacePath = '/workspace/project'
-    mockPutDaemonPermissions.mockResolvedValue({ restartRequired: false })
-
-    render(<SkillsSection />)
-
-    expect(await screen.findByText('Default Permission')).toBeTruthy()
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Ask' }).className).toMatch(/bg-accent/)
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Allow' }).className).toMatch(/bg-accent/)
-    })
-    expect(screen.queryByText('Could not save permission. Is the daemon running?')).toBeNull()
   })
 })

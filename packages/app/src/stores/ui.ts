@@ -50,7 +50,7 @@ export type SidebarFilter =
   | { kind: 'teamShare'; section: TeamShareSection }
 
 export type SettingsSection = 'llm' | 'general' | 'prompt' | 'channels' | 'automation' | 'daemonGeneral' | 'daemonWorkspaces' | 'daemonRuntimes' | 'envVars' | 'skills' | 'roles' | 'rolesSkills' | 'deps' | 'billing'
-  | 'tokenUsage' | 'privacy' | 'permissions' | 'leaderboard' | 'shortcuts' | 'cache' | 'diagnostics'
+  | 'tokenUsage' | 'privacy' | 'leaderboard' | 'shortcuts' | 'cache' | 'diagnostics'
   | 'knowledgeAcl'
 
 /** Context passed when opening Agent settings from a blocked quick-new-chat action. */

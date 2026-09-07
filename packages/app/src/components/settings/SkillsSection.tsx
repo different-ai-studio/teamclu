@@ -18,9 +18,6 @@ import {
   Upload,
   Search,
   Shield,
-  ShieldCheck,
-  ShieldQuestion,
-  ShieldX,
   Lock,
   Store,
   Users,
@@ -31,9 +28,6 @@ import { invoke } from '@tauri-apps/api/core'
 import { SKILLS_CHANGED_EVENT } from '@/lib/skills/changed-event';
 import {
   encodeWorkspaceId,
-  getDaemonPermissions,
-  putDaemonPermissions,
-  reloadDaemonRuntime,
   deleteDaemonSkill,
 } from '@/lib/daemon/daemon-local-client'
 import { cn } from '@/lib/utils'
@@ -43,13 +37,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -58,8 +45,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { SettingCard, SectionHeader } from './shared'
-import type { SkillPermission, SkillPermissionMap } from '@/lib/opencode/config'
-import { resolveSkillPermission } from '@/lib/opencode/config'
 import type { SkillSource } from '@/lib/skills/types'
 import { INHERENT_SKILL_NAMES } from '@/lib/skills/types'
 import { useEffectiveWorkspacePath } from '@/lib/workspace/effective-workspace'
@@ -90,21 +75,11 @@ interface SkillsSectionProps {
   onSharedSearchQueryChange?: (value: string) => void
 }
 
-type RestartOptions = {
-  preserveChangeFlag?: boolean
-}
-
 const EMPTY_ROLE_USAGE_BY_SKILL: Record<string, string[]> = {}
 const SKILL_DELETE_EXIT_DURATION_MS = 180
 
 function getSkillListKey(skill: Pick<Skill, 'filename' | 'dirPath' | 'source' | 'isRoleSkill'>): string {
   return `${skill.dirPath ?? ''}::${skill.filename}::${skill.source ?? 'unknown'}::${skill.isRoleSkill ? 'role' : 'normal'}`
-}
-
-const PERMISSION_META: Record<SkillPermission, { icon: typeof ShieldCheck; colorClass: string }> = {
-  allow: { icon: ShieldCheck, colorClass: 'text-emerald-600 dark:text-emerald-400' },
-  ask: { icon: ShieldQuestion, colorClass: 'text-amber-600 dark:text-amber-400' },
-  deny: { icon: ShieldX, colorClass: 'text-red-600 dark:text-red-400' },
 }
 
 type SkillsTab = 'installed' | 'marketplace'
@@ -135,10 +110,6 @@ export const SkillsSection = React.memo(function SkillsSection({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false)
   const [skillToDelete, setSkillToDelete] = React.useState<Skill | null>(null)
   const [searchQuery, setSearchQuery] = React.useState('')
-  const [skillPermissions, setSkillPermissions] = React.useState<SkillPermissionMap>({})
-  const [hasChanges, setHasChanges] = React.useState(false)
-  const [isRestarting, setIsRestarting] = React.useState(false)
-  const [restartError, setRestartError] = React.useState<string | null>(null)
   const [isViewMode, setIsViewMode] = React.useState(false)
   const [importZipPath, setImportZipPath] = React.useState<string | null>(null)
   const [importZipLabel, setImportZipLabel] = React.useState<string | null>(null)
@@ -148,7 +119,6 @@ export const SkillsSection = React.memo(function SkillsSection({
   const installedTabRef = React.useRef<HTMLButtonElement>(null)
   const marketplaceTabRef = React.useRef<HTMLButtonElement>(null)
 
-  const defaultPermission: SkillPermission = skillPermissions['*'] ?? 'allow'
   const effectiveSearchQuery = embeddedConsole ? (sharedSearchQuery ?? '') : searchQuery
 
   const switchTab = React.useCallback((nextTab: SkillsTab) => {
@@ -210,17 +180,6 @@ export const SkillsSection = React.memo(function SkillsSection({
     )
   }, [effectiveSearchQuery, skills])
 
-  const loadPermissions = React.useCallback(async () => {
-    if (!workspacePath) return
-    try {
-      const wid = encodeWorkspaceId(workspacePath)
-      const perms = await getDaemonPermissions(wid)
-      if (perms !== null) setSkillPermissions(perms as SkillPermissionMap)
-    } catch (err) {
-      console.error('[SkillsSection] Failed to load permissions:', err)
-    }
-  }, [workspacePath])
-
   const loadSkills = React.useCallback(async () => {
     if (!workspacePath) return
 
@@ -229,10 +188,7 @@ export const SkillsSection = React.memo(function SkillsSection({
 
     try {
       const { loadRolesSkillsWorkspaceState } = await import('@/lib/roles/loader')
-      const [workspaceState] = await Promise.all([
-        loadRolesSkillsWorkspaceState(workspacePath),
-        loadPermissions(),
-      ])
+      const workspaceState = await loadRolesSkillsWorkspaceState(workspacePath)
 
       setSkills(workspaceState.skills.map((skill) => ({
         filename: skill.filename,
@@ -250,7 +206,7 @@ export const SkillsSection = React.memo(function SkillsSection({
     } finally {
       setIsLoading(false)
     }
-  }, [embeddedConsole, loadPermissions, workspacePath])
+  }, [embeddedConsole, workspacePath])
 
   React.useEffect(() => {
     loadSkills()
@@ -287,18 +243,6 @@ export const SkillsSection = React.memo(function SkillsSection({
       window.removeEventListener(SKILLS_CHANGED_EVENT, onSkillsChanged)
     }
   }, [loadSkills])
-
-  const restartOpenCodeInstance = React.useCallback(
-    async (options?: RestartOptions) => {
-      if (!workspacePath) return
-      const wid = encodeWorkspaceId(workspacePath)
-      await reloadDaemonRuntime(wid)
-      if (!options?.preserveChangeFlag) {
-        setHasChanges(false)
-      }
-    },
-    [workspacePath]
-  )
 
   // Skills file watching is disabled - users can manually refresh if needed
 
@@ -528,72 +472,6 @@ ${skillContent.trim()}`
       </p>
     </div>
   )
-
-  const handleDefaultPermissionChange = async (value: SkillPermission) => {
-    if (!workspacePath) return
-    try {
-      const wid = encodeWorkspaceId(workspacePath)
-      const updated: SkillPermissionMap = { ...skillPermissions, '*': value }
-      const saved = await putDaemonPermissions(wid, updated)
-      if (saved === null) {
-        throw new Error(
-          t(
-            'settings.skills.permissionSaveFailed',
-            'Could not save permission. Is the daemon running?',
-          ),
-        )
-      }
-      setSkillPermissions(updated)
-      setHasChanges(true)
-      setError(null)
-    } catch (err) {
-      console.error('[SkillsSection] Failed to update default permission:', err)
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  const handleSkillPermissionChange = async (skillName: string, value: string) => {
-    if (!workspacePath) return
-    try {
-      const wid = encodeWorkspaceId(workspacePath)
-      let updated: SkillPermissionMap
-      if (value === '__inherited__') {
-        updated = { ...skillPermissions }
-        delete updated[skillName]
-      } else {
-        updated = { ...skillPermissions, [skillName]: value as SkillPermission }
-      }
-      const saved = await putDaemonPermissions(wid, updated)
-      if (saved === null) {
-        throw new Error(
-          t(
-            'settings.skills.permissionSaveFailed',
-            'Could not save permission. Is the daemon running?',
-          ),
-        )
-      }
-      setSkillPermissions(updated)
-      setHasChanges(true)
-      setError(null)
-    } catch (err) {
-      console.error('[SkillsSection] Failed to update skill permission:', err)
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  const handleRestartOpenCode = async () => {
-    if (!workspacePath) return
-    setIsRestarting(true)
-    setRestartError(null)
-    try {
-      await restartOpenCodeInstance()
-    } catch (err) {
-      console.error('[SkillsSection] Failed to restart OpenCode:', err)
-      setRestartError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setIsRestarting(false)
-    }
-  }
 
   if (!workspacePath) {
     return (
@@ -841,88 +719,11 @@ ${skillContent.trim()}`
           aria-labelledby="installed-tab"
         >
 
-      {!embeddedConsole && hasChanges && (
-        <SettingCard className="bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/30 dark:to-orange-950/30 border-amber-200 dark:border-amber-800">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5" />
-            <div className="flex-1">
-              <p className="font-medium text-amber-900 dark:text-amber-100">
-                {t('settings.skills.configChanged', 'Skill Permission Changed')}
-              </p>
-              <p className="text-[13px] text-amber-700 dark:text-amber-300 mt-1">
-                {t('settings.skills.restartToApply', 'Restart the local agent to apply the new skill permission configuration.')}
-              </p>
-              {restartError && (
-                <p className="text-[13px] text-red-600 dark:text-red-400 mt-2">
-                  {t('common.error', 'Error')}: {restartError}
-                </p>
-              )}
-            </div>
-            <Button
-              size="sm"
-              onClick={handleRestartOpenCode}
-              disabled={isRestarting || !workspacePath}
-              className="gap-2"
-            >
-              {isRestarting ? (
-                <>
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  {t('common.restarting', 'Restarting...')}
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="h-3 w-3" />
-                  {t('common.restart', 'Restart')}
-                </>
-              )}
-            </Button>
-          </div>
-        </SettingCard>
-      )}
-
       {error && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-[13px] text-destructive">
           {error}
         </div>
       )}
-
-      {!embeddedConsole ? (
-      <SettingCard>
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 flex-1 min-w-0">
-            <Shield className="h-5 w-5 text-muted-foreground shrink-0" />
-            <div className="min-w-0">
-              <p className="text-[13px] font-medium">{t('settings.skills.defaultPermission', 'Default Permission')}</p>
-              <p className="text-xs text-muted-foreground">{t('settings.skills.defaultPermissionHint', 'Controls the wildcard (*) rule for all skills without a specific override')}</p>
-            </div>
-          </div>
-          <div className="flex items-center rounded-lg border border-input overflow-hidden shrink-0">
-            {(['allow', 'ask', 'deny'] as const).map((perm) => {
-              const meta = PERMISSION_META[perm]
-              const Icon = meta.icon
-              const isActive = defaultPermission === perm
-              return (
-                <button
-                  key={perm}
-                  onClick={() => handleDefaultPermissionChange(perm)}
-                  className={cn(
-                    "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors",
-                    isActive
-                      ? cn("bg-accent", meta.colorClass)
-                      : "text-muted-foreground hover:bg-accent/50"
-                  )}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  {perm === 'allow' ? t('settings.skills.permAllow', 'Allow') :
-                   perm === 'ask' ? t('settings.skills.permAsk', 'Ask') :
-                   t('settings.skills.permDeny', 'Deny')}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-      </SettingCard>
-      ) : null}
 
       {/* Skills list */}
       <div className="space-y-3">
@@ -969,10 +770,6 @@ ${skillContent.trim()}`
 
             const renderSkillCard = (skill: Skill) => {
               const skillKey = getSkillListKey(skill)
-              const permissionKey = skill.invocationName || skill.filename
-              const resolved = resolveSkillPermission(permissionKey, skillPermissions)
-              const hasExplicitOverride = resolved.isExact
-              const permColor = PERMISSION_META[resolved.permission].colorClass
               const isBuiltin = INHERENT_SKILL_NAMES.has(skill.filename)
               const linkedRoles = skill.linkedRoles ?? []
               const isExiting = exitingSkillKeys.has(skillKey)
@@ -1052,45 +849,6 @@ ${skillContent.trim()}`
                           </div>
                         </div>
                         <div className={cn("flex items-center gap-2 shrink-0", embeddedConsole && "absolute right-4 top-2.5 z-10 h-[36px] items-end pb-0.5")}>
-                          {!embeddedConsole ? (
-                            <Select
-                              value={hasExplicitOverride ? resolved.permission : '__inherited__'}
-                              onValueChange={(v) => handleSkillPermissionChange(skill.filename, v)}
-                            >
-                              <SelectTrigger className={cn("h-8 w-[140px] text-xs gap-1", permColor)}>
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="__inherited__">
-                                  <span className="flex items-center gap-1.5">
-                                    <Shield className="h-3.5 w-3.5 text-muted-foreground" />
-                                    {t('settings.skills.permInherited', 'Default')}
-                                    <span className="text-muted-foreground">
-                                      ({skillPermissions['*'] ?? 'allow'})
-                                    </span>
-                                  </span>
-                                </SelectItem>
-                                <SelectItem value="allow">
-                                  <span className="flex items-center gap-1.5">
-                                    <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-                                    {t('settings.skills.permAllow', 'Allow')}
-                                  </span>
-                                </SelectItem>
-                                <SelectItem value="ask">
-                                  <span className="flex items-center gap-1.5">
-                                    <ShieldQuestion className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-                                    {t('settings.skills.permAsk', 'Ask')}
-                                  </span>
-                                </SelectItem>
-                                <SelectItem value="deny">
-                                  <span className="flex items-center gap-1.5">
-                                    <ShieldX className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
-                                    {t('settings.skills.permDeny', 'Deny')}
-                                  </span>
-                                </SelectItem>
-                              </SelectContent>
-                            </Select>
-                          ) : null}
                           {isBuiltin ? (
                             <>
                               <div

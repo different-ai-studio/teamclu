@@ -597,21 +597,6 @@ interface DaemonProviderAuthRequest {
   models?: Array<{ model_id: string; model_name?: string }>
 }
 
-/** Skill-name → 'allow' | 'deny' | 'ask' */
-export type DaemonPermissionMap = Record<string, 'allow' | 'deny' | 'ask'>
-
-interface DaemonPermissionConfig {
-  skills: DaemonPermissionMap
-  tools: DaemonPermissionMap
-}
-
-export interface DaemonAllowlistRule {
-  project_id: string
-  permission: string
-  pattern: string
-  decision: 'allow' | 'deny'
-}
-
 export type DaemonApplyOutcome = 'applied_live' | 'reload_required' | 'restart_required'
 
 // ─── Providers ────────────────────────────────────────────────────────────────
@@ -768,68 +753,6 @@ export async function deleteDaemonProviderAuth(
   return result.ok ? result.data.outcome : null
 }
 
-// ─── Permissions ──────────────────────────────────────────────────────────────
-
-/**
- * Fetch the full workspace permission config (skill + tool defaults).
- */
-async function getDaemonPermissionConfig(
-  workspaceId: string,
-): Promise<DaemonPermissionConfig | null> {
-  const result = await daemonFetch<DaemonPermissionConfig>(
-    `/v1/workspaces/${workspaceId}/permissions`,
-  )
-  if (!result.ok) return null
-  return {
-    skills: result.data.skills ?? {},
-    tools: result.data.tools ?? {},
-  }
-}
-
-/**
- * Fetch the workspace permission map.
- * Returns a flat `{ bash: 'ask', read: 'allow', ... }` object for skill keys only.
- */
-export async function getDaemonPermissions(
-  workspaceId: string,
-): Promise<DaemonPermissionMap | null> {
-  const config = await getDaemonPermissionConfig(workspaceId)
-  return config?.skills ?? null
-}
-
-/** Tool-level permission defaults (e.g. `bash`, `read`) outside the skill map. */
-export async function getDaemonToolPermissions(
-  workspaceId: string,
-): Promise<DaemonPermissionMap | null> {
-  const config = await getDaemonPermissionConfig(workspaceId)
-  return config?.tools ?? null
-}
-
-/**
- * Replace the workspace skill permission map.
- * Pass `tools` to merge tool-level defaults; omitted/empty tools are left unchanged.
- */
-export async function putDaemonPermissions(
-  workspaceId: string,
-  permissions: DaemonPermissionMap,
-  tools?: DaemonPermissionMap,
-): Promise<DaemonApplyOutcome | null> {
-  const body: DaemonPermissionConfig = { skills: permissions, tools: tools ?? {} }
-  const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
-    `/v1/workspaces/${workspaceId}/permissions`,
-    { method: 'PUT', body: JSON.stringify(body) },
-  )
-  return result.ok ? result.data.outcome : null
-}
-
-/** Merge tool-level permission defaults without replacing skill permissions. */
-export async function putDaemonToolPermissions(
-  workspaceId: string,
-  tools: DaemonPermissionMap,
-): Promise<DaemonApplyOutcome | null> {
-  return putDaemonPermissions(workspaceId, {}, tools)
-}
-
 // ─── Roles & skills ───────────────────────────────────────────────────────────
 
 /** Mirrors `RolesSkillsWorkspaceState` from lib/roles/types.ts (camelCase from daemon). */
@@ -951,28 +874,6 @@ export async function deleteDaemonRole(
   const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
     `/v1/workspaces/${workspaceId}/roles/${encodeURIComponent(slug)}${query}`,
     { method: 'DELETE' },
-  )
-  return result.ok ? result.data.outcome : null
-}
-
-// ─── Allowlist ────────────────────────────────────────────────────────────────
-
-export async function getDaemonAllowlist(
-  workspaceId: string,
-): Promise<DaemonAllowlistRule[] | null> {
-  const result = await daemonFetch<DaemonAllowlistRule[]>(
-    `/v1/workspaces/${workspaceId}/permission-allowlist`,
-  )
-  return result.ok ? result.data : null
-}
-
-export async function putDaemonAllowlist(
-  workspaceId: string,
-  rules: DaemonAllowlistRule[],
-): Promise<DaemonApplyOutcome | null> {
-  const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
-    `/v1/workspaces/${workspaceId}/permission-allowlist`,
-    { method: 'PUT', body: JSON.stringify(rules) },
   )
   return result.ok ? result.data.outcome : null
 }

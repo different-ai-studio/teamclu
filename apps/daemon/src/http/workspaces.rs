@@ -1,9 +1,9 @@
 //! `/v1/workspaces/:id/*` route handlers for workspace control-plane APIs.
 //!
 //! These handlers own the HTTP surface for all workspace-scoped settings:
-//! providers, permissions, allowlist, and runtime status. They delegate
+//! providers, MCP, and runtime status. They delegate
 //! all reads/writes to `HttpState::workspace_control` so they never touch
-//! `opencode.json` or the allowlist file directly.
+//! `opencode.json` directly.
 //!
 //! When `workspace_control` is `None` (no store configured) every handler
 //! returns 404 with code `not_found`. This lets focused session/runtime
@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use crate::config::provider_auth::{builtin_provider_auth_methods, ProviderAuthMethodsResponse};
 use crate::config::workspace_control::{
-    decode_workspace_path, AllowlistRule, ApplyOutcome, EnvActivationDiagnostics, ManagedSkillDto,
-    McpServerConfig, PermissionConfig, ProviderAuthRequest, ProviderInfo, RoleRecordDto,
+    decode_workspace_path, ApplyOutcome, EnvActivationDiagnostics, ManagedSkillDto,
+    McpServerConfig, ProviderAuthRequest, ProviderInfo, RoleRecordDto,
     RolesSkillsStateDto, RuntimeStatus, UpsertRoleRequest, UpsertSkillRequest,
     WorkspaceControlError, WorkspaceControlStore,
 };
@@ -638,68 +638,6 @@ pub async fn get_model_catalog(
     }
 
     Ok(Json(catalog))
-}
-
-// ── Permission handlers ───────────────────────────────────────────────────────
-
-/// `GET /v1/workspaces/:id/permissions`
-pub async fn get_permissions(
-    principal: Principal,
-    State(state): State<HttpState>,
-    Path(workspace_id): Path<String>,
-) -> Result<Json<PermissionConfig>, HttpError> {
-    require_scope(&principal, "workspace:read")?;
-    let store = resolve_store(&state)?;
-    let config = store
-        .get_permissions(&workspace_id)
-        .map_err(map_control_err)?;
-    Ok(Json(config))
-}
-
-/// `PUT /v1/workspaces/:id/permissions`
-pub async fn put_permissions(
-    principal: Principal,
-    State(state): State<HttpState>,
-    Path(workspace_id): Path<String>,
-    Json(body): Json<PermissionConfig>,
-) -> Result<Json<ApplyResponse>, HttpError> {
-    require_scope(&principal, "workspace:write")?;
-    let store = resolve_store(&state)?;
-    let outcome = store
-        .put_permissions(&workspace_id, body)
-        .map_err(map_control_err)?;
-    Ok(apply_ok(outcome))
-}
-
-// ── Allowlist handlers ────────────────────────────────────────────────────────
-
-/// `GET /v1/workspaces/:id/permission-allowlist`
-pub async fn get_allowlist(
-    principal: Principal,
-    State(state): State<HttpState>,
-    Path(workspace_id): Path<String>,
-) -> Result<Json<Vec<AllowlistRule>>, HttpError> {
-    require_scope(&principal, "workspace:read")?;
-    let store = resolve_store(&state)?;
-    let rules = store
-        .get_allowlist(&workspace_id)
-        .map_err(map_control_err)?;
-    Ok(Json(rules))
-}
-
-/// `PUT /v1/workspaces/:id/permission-allowlist`
-pub async fn put_allowlist(
-    principal: Principal,
-    State(state): State<HttpState>,
-    Path(workspace_id): Path<String>,
-    Json(body): Json<Vec<AllowlistRule>>,
-) -> Result<Json<ApplyResponse>, HttpError> {
-    require_scope(&principal, "workspace:write")?;
-    let store = resolve_store(&state)?;
-    let outcome = store
-        .put_allowlist(&workspace_id, body)
-        .map_err(map_control_err)?;
-    Ok(apply_ok(outcome))
 }
 
 // ── MCP handlers ─────────────────────────────────────────────────────────────

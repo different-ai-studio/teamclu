@@ -19,8 +19,8 @@ use super::types::TeamSkillInstallResult;
 use super::types::TeamSkillPackResult;
 use super::types::TeamSkillRebaselineRequest;
 use crate::commands::clawhub::{
-    clear_skill_permission, extract_zip_to_dir, global_skills_dir, now_millis, read_lockfile,
-    set_skill_permission_ask, validate_slug, write_lockfile, LockfileEntry, SOURCE_TEAM,
+    extract_zip_to_dir, global_skills_dir, now_millis, read_lockfile, validate_slug, write_lockfile,
+    LockfileEntry, SOURCE_TEAM,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -160,7 +160,6 @@ fn team_skill_install_blocking(
             },
         );
         write_lockfile(ws, &lock)?;
-        set_skill_permission_ask(ws, &slug);
     }
 
     Ok(TeamSkillInstallResult {
@@ -209,15 +208,6 @@ pub(super) fn team_skill_uninstall_blocking(
         let mut lock = read_lockfile(ws);
         lock.skills.remove(&slug);
         write_lockfile(ws, &lock)?;
-        // The permission entry is keyed by slug, and slugs get reused: a team
-        // can delete a skill and publish different content under the same name.
-        // Left behind, the old decision governs the new pack — `install` only
-        // writes `ask` when the key is absent, so nothing resets it.
-        //
-        // Same workspace-shaped limitation as the lockfile above, for the same
-        // reason: packs are global, both of these are per-workspace, and this
-        // command is handed one path. Other workspaces keep their entry.
-        clear_skill_permission(ws, &slug);
     }
 
     Ok(format!("Uninstalled {}", slug))
@@ -404,7 +394,6 @@ pub async fn team_skill_install_from_dir(
                 },
             );
             write_lockfile(ws, &lock)?;
-            set_skill_permission_ask(ws, &slug);
         }
 
         Ok(TeamSkillInstallResult {
@@ -490,7 +479,6 @@ pub(super) fn team_skill_rebaseline_blocking(
             },
         );
         write_lockfile(ws, &lock)?;
-        set_skill_permission_ask(ws, &slug);
     }
 
     Ok(TeamSkillInstallResult {

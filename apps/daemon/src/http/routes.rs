@@ -224,14 +224,6 @@ pub fn build(state: HttpState) -> Router {
             get(workspaces::get_model_catalog),
         )
         .route(
-            "/v1/workspaces/:id/permissions",
-            get(workspaces::get_permissions).put(workspaces::put_permissions),
-        )
-        .route(
-            "/v1/workspaces/:id/permission-allowlist",
-            get(workspaces::get_allowlist).put(workspaces::put_allowlist),
-        )
-        .route(
             "/v1/workspaces/:id/mcp",
             get(workspaces::get_mcp).put(workspaces::put_mcp),
         )
