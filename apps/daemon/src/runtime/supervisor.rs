@@ -30,14 +30,6 @@ const MAX_AUTO_SKILL_REFRESHES_PER_TICK: usize = 1;
 /// a server that no longer exists, and under pi a failed bridge spawn used to
 /// take the whole runtime down.
 const LEGACY_MCP_NAMES: &[&str] = &["teamclaw-introspect", "amuxd-send"];
-const INSTRUCTION_PLUGIN_TEMPLATE: &str = include_str!(
-    "../../../../packages/app/src/lib/opencode/templates/teamclu-instruction-plugin.mjs.txt"
-);
-const SESSION_CONTEXT_PLUGIN_TEMPLATE: &str = include_str!(
-    "../../../../packages/app/src/lib/opencode/templates/teamclu-session-context-plugin.mjs.txt"
-);
-const SESSION_CONTEXT_CLIENT_TEMPLATE: &str =
-    include_str!("../../shared/session-context-client.mjs");
 
 use crate::config::workspace_control::{
     ApplyOutcome, EnvActivationBlocker, EnvActivationDiagnostics, RuntimeStatus,
@@ -201,67 +193,6 @@ fn mutate_inherent_mcp(
     Ok(changed)
 }
 
-fn mutate_instruction_plugin(
-    config: &mut serde_json::Value,
-) -> Result<bool, WorkspaceControlError> {
-    use crate::runtime::workspace_runtime::INSTRUCTION_PLUGIN_CONFIG_ENTRY;
-
-    let obj = config.as_object_mut().ok_or_else(|| {
-        WorkspaceControlError::Parse("opencode.json root is not an object".into())
-    })?;
-
-    if obj.get("$schema").is_none() {
-        obj.insert(
-            "$schema".to_string(),
-            serde_json::json!("https://opencode.ai/config.json"),
-        );
-    }
-
-    let plugins = obj.entry("plugin").or_insert_with(|| serde_json::json!([]));
-    let plugin_list = plugins.as_array_mut().ok_or_else(|| {
-        WorkspaceControlError::Parse("opencode.json plugin field is not an array".into())
-    })?;
-
-    let already_registered = plugin_list.iter().any(|entry| {
-        entry
-            .as_str()
-            .map(|value| value.contains("teamclu-instruction"))
-            .unwrap_or(false)
-    });
-    if already_registered {
-        return Ok(false);
-    }
-    plugin_list.push(serde_json::json!(INSTRUCTION_PLUGIN_CONFIG_ENTRY));
-    Ok(true)
-}
-
-fn mutate_session_context_plugin(
-    config: &mut serde_json::Value,
-) -> Result<bool, WorkspaceControlError> {
-    use crate::runtime::workspace_runtime::SESSION_CONTEXT_PLUGIN_CONFIG_ENTRY;
-
-    let obj = config.as_object_mut().ok_or_else(|| {
-        WorkspaceControlError::Parse("opencode.json root is not an object".into())
-    })?;
-
-    let plugins = obj.entry("plugin").or_insert_with(|| serde_json::json!([]));
-    let plugin_list = plugins.as_array_mut().ok_or_else(|| {
-        WorkspaceControlError::Parse("opencode.json plugin field is not an array".into())
-    })?;
-
-    let already_registered = plugin_list.iter().any(|entry| {
-        entry
-            .as_str()
-            .map(|value| value.contains("teamclu-session-context"))
-            .unwrap_or(false)
-    });
-    if already_registered {
-        return Ok(false);
-    }
-    plugin_list.push(serde_json::json!(SESSION_CONTEXT_PLUGIN_CONFIG_ENTRY));
-    Ok(true)
-}
-
 /// One read-modify-write for prepare/reload paths.
 pub fn materialize_opencode_for_prepare(
     workspace_path: &Path,
@@ -271,8 +202,6 @@ pub fn materialize_opencode_for_prepare(
         let mut changed = false;
         changed |= mutate_default_permissions(config).map_err(ws_to_store_err)?;
         changed |= mutate_inherent_mcp(workspace_path, config).map_err(ws_to_store_err)?;
-        changed |= mutate_instruction_plugin(config).map_err(ws_to_store_err)?;
-        changed |= mutate_session_context_plugin(config).map_err(ws_to_store_err)?;
         Ok(changed)
     })
     .map_err(map_store_err)?;
@@ -553,9 +482,8 @@ fn ensure_extended_inherent_config(
     //   to have; in a workspace without one it silently pointed at nothing.
     // - `<home>/.agents/skills` is the same directory for every workspace.
     //
-    // Both now go into the active team's global config as absolute paths, which
-    // `sync_opencode_generated` copies wholesale into `OPENCODE_CONFIG`. Stale
-    // workspace copies are dropped so the relative form cannot outrank them.
+    // Both now go into the active team's global config as absolute paths.
+    // Stale workspace copies are dropped so the relative form cannot outrank them.
     {
         let dropped = obj
             .get_mut("skills")
@@ -804,88 +732,6 @@ fn ensure_inherent_skills_in_dir(skills_dir: &Path) -> Result<(), WorkspaceContr
     Ok(())
 }
 
-fn render_instruction_plugin_template() -> String {
-    let brand = teamclu_runtime_env::brand_short_name_from_env();
-    INSTRUCTION_PLUGIN_TEMPLATE
-        .replace(
-            "__WORKSPACE_META_DIR__",
-            &teamclu_runtime_env::workspace_meta_dir_name(&brand),
-        )
-        .replace(
-            "__WORKSPACE_CONFIG_FILE__",
-            &teamclu_runtime_env::workspace_config_file_name(&brand),
-        )
-}
-
-fn install_instruction_plugin_file(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
-    use crate::runtime::workspace_runtime::INSTRUCTION_PLUGIN_REL;
-
-    let plugin_path = workspace_path.join(INSTRUCTION_PLUGIN_REL);
-    if let Some(parent) = plugin_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-    }
-
-    let rendered = render_instruction_plugin_template();
-    let should_write = match std::fs::read_to_string(&plugin_path) {
-        Ok(existing) => existing != rendered,
-        Err(_) => true,
-    };
-    if should_write {
-        std::fs::write(&plugin_path, rendered)
-            .map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-    }
-    Ok(())
-}
-
-fn install_session_context_plugin_file(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
-    use crate::runtime::workspace_runtime::{
-        SESSION_CONTEXT_CLIENT_REL, SESSION_CONTEXT_PLUGIN_REL,
-    };
-
-    let plugin_path = workspace_path.join(SESSION_CONTEXT_PLUGIN_REL);
-    let client_path = workspace_path.join(SESSION_CONTEXT_CLIENT_REL);
-    if let Some(parent) = plugin_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-    }
-
-    let write_if_changed = |path: &Path, template: &str| -> Result<(), WorkspaceControlError> {
-        let should_write = match std::fs::read_to_string(path) {
-            Ok(existing) => existing != template,
-            Err(_) => true,
-        };
-        if should_write {
-            std::fs::write(path, template).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-        }
-        Ok(())
-    };
-
-    write_if_changed(&client_path, SESSION_CONTEXT_CLIENT_TEMPLATE)?;
-    write_if_changed(&plugin_path, SESSION_CONTEXT_PLUGIN_TEMPLATE)?;
-    Ok(())
-}
-
-/// Install the TeamClu session-context OpenCode plugin and register it in `opencode.json`.
-pub fn ensure_session_context_plugin(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
-    install_session_context_plugin_file(workspace_path)?;
-
-    teamclu_runtime_env::opencode_config::OpencodeConfigStore::apply(workspace_path, |config| {
-        mutate_session_context_plugin(config).map_err(ws_to_store_err)
-    })
-    .map_err(map_store_err)?;
-    Ok(())
-}
-
-/// Install the TeamClu instruction OpenCode plugin and register it in `opencode.json`.
-pub fn ensure_instruction_plugin(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
-    install_instruction_plugin_file(workspace_path)?;
-
-    teamclu_runtime_env::opencode_config::OpencodeConfigStore::apply(workspace_path, |config| {
-        mutate_instruction_plugin(config).map_err(ws_to_store_err)
-    })
-    .map_err(map_store_err)?;
-    Ok(())
-}
-
 /// Rebuild `<workspace>/team-knowledge` on every workspace init, so a stale,
 /// dangling or missing link never survives one.
 ///
@@ -925,7 +771,7 @@ fn ensure_workspace_knowledge_link(workspace_path: &Path) {
     );
 }
 
-/// Prepare a workspace directory for OpenCode/ACP agent use.
+/// Prepare a workspace directory for pi agent use.
 pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
     if !workspace_path.is_dir() {
         return Err(WorkspaceControlError::WorkspaceNotFound(
@@ -935,22 +781,12 @@ pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlEr
 
     ensure_workspace_knowledge_link(workspace_path);
 
-    install_instruction_plugin_file(workspace_path)?;
-    install_session_context_plugin_file(workspace_path)?;
     crate::config::materialize_policy_file(workspace_path)?;
     materialize_opencode_for_prepare(workspace_path)?;
     ensure_inherent_skills_in_dir(&inherent_skills_dir()?)?;
     // Claude bridge only: may soft-skip on Windows without symlink privilege
-    // (see `ensure_claude_team_skills`). Failure there must not block OpenCode.
+    // (see `ensure_claude_team_skills`). Failure there must not block pi prep.
     crate::runtime::skills_bridge::ensure_claude_team_skills(workspace_path)?;
-
-    if let Ok(Some(result)) =
-        teamclu_runtime_env::opencode_db::maybe_migrate_legacy_opencode_db(workspace_path)
-    {
-        if result.migrated {
-            tracing::info!(workspace = %workspace_path.display(), "migrated legacy isolated OpenCode DB to global");
-        }
-    }
 
     info!(workspace = %workspace_path.display(), "workspace runtime prepared");
     Ok(())
@@ -2651,83 +2487,6 @@ mod tests {
             .path()
             .join(".copilot361/skills/create-role/SKILL.md")
             .exists());
-    }
-
-    #[test]
-    fn ensure_instruction_plugin_creates_file_and_registers() {
-        let dir = tempfile::tempdir().unwrap();
-        ensure_instruction_plugin(dir.path()).unwrap();
-
-        let plugin_path = dir
-            .path()
-            .join(crate::runtime::workspace_runtime::INSTRUCTION_PLUGIN_REL);
-        assert!(plugin_path.is_file());
-        assert!(std::fs::read_to_string(plugin_path)
-            .unwrap()
-            .contains("experimental.chat.system.transform"));
-
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
-        )
-        .unwrap();
-        let plugins = cfg["plugin"].as_array().unwrap();
-        assert!(plugins.iter().any(|entry| {
-            entry
-                .as_str()
-                .map(|value| value.contains("teamclu-instruction"))
-                .unwrap_or(false)
-        }));
-        assert!(crate::runtime::instruction_plugin_installed(dir.path()));
-    }
-
-    #[test]
-    fn ensure_session_context_plugin_creates_file_and_registers() {
-        let dir = tempfile::tempdir().unwrap();
-        ensure_session_context_plugin(dir.path()).unwrap();
-
-        let plugin_path = dir
-            .path()
-            .join(crate::runtime::workspace_runtime::SESSION_CONTEXT_PLUGIN_REL);
-        let client_path = dir
-            .path()
-            .join(crate::runtime::workspace_runtime::SESSION_CONTEXT_CLIENT_REL);
-        assert!(plugin_path.is_file());
-        assert!(client_path.is_file());
-        assert!(std::fs::read_to_string(plugin_path)
-            .unwrap()
-            .contains("teamclu-session-context-client.mjs"));
-        assert!(std::fs::read_to_string(client_path)
-            .unwrap()
-            .contains("normalizeSessionScopedToolName"));
-
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
-        )
-        .unwrap();
-        let plugins = cfg["plugin"].as_array().unwrap();
-        assert!(plugins.iter().any(|entry| {
-            entry
-                .as_str()
-                .map(|value| value.contains("teamclu-session-context"))
-                .unwrap_or(false)
-        }));
-    }
-
-    #[test]
-    fn instruction_plugin_white_label_reads_brand_policy_path() {
-        let _guard = crate::test_brand_env::BrandEnvGuard::set("copilot361");
-        let dir = tempfile::tempdir().unwrap();
-        ensure_instruction_plugin(dir.path()).unwrap();
-
-        let plugin = std::fs::read_to_string(
-            dir.path()
-                .join(crate::runtime::workspace_runtime::INSTRUCTION_PLUGIN_REL),
-        )
-        .unwrap();
-        assert!(plugin.contains(".copilot361"));
-        assert!(plugin.contains("skill-creation-policy.txt"));
-        assert!(!plugin.contains("__WORKSPACE_META_DIR__"));
-        assert!(!plugin.contains(r#"".teamclu", "instructions", "skill-creation-policy.txt""#));
     }
 
     #[test]

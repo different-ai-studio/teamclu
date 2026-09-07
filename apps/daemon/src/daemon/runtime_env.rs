@@ -136,8 +136,8 @@ mod execution_context_tests {
 
     #[tokio::test]
     async fn configured_team_fallback_keeps_workspace_context_revisions_equal() {
-        // The two `assemble` calls below are compared field by field, and one of
-        // those fields — `OPENCODE_CONFIG` — is derived from the amuxd home.
+        // The two `assemble` calls below are compared field by field, including
+        // paths derived from the amuxd home (provider config, team cloud cache).
         // Every test that *moves* `HOME` / `AMUXD_HOME` already serializes on
         // `TEST_HOME_LOCK`, but a reader that does not join them can still have
         // one moved out from under it between its two reads, and then the two

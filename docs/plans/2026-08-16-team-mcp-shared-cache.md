@@ -1,10 +1,14 @@
 # Team MCP 公共清单 Implementation Plan
 
+> **Superseded (ADR-0014, pi-only):** `mcp.opencode.generated.json` and
+> `OPENCODE_CONFIG` injection were removed — Pi reads `state/cloud/mcp.json`
+> directly. The SSOT and install flow below remain accurate.
+
 > **For agentic workers:** 按本文件实现。禁止扩 scope。用户要求禁止过度设计。
 
-**Goal:** Install 只给人记账；已装记录落到本机一份 Cursor 形状的公共清单；四个 runtime 都读这一份；不再把团队 MCP 写入 workspace `opencode.json`。OpenCode 用 `POST /instance/dispose` 热加载，不杀全局 serve。
+**Goal:** Install 只给人记账；已装记录落到本机一份 Cursor 形状的公共清单；runtime 都读这一份；不再把团队 MCP 写入 workspace `opencode.json`。
 
-**Architecture:** SSOT 是 `~/.amuxd/teams/<teamId>/cloud/mcp.json`，形状为 Cloud 已有的 `{ "mcpServers": { ... } }`（Cursor）。Daemon 用 daemon actor 拉 `/config` 经常是空的（无 FC 改 actor）——空结果不得覆盖已有缓存；全卸装靠桌面 PUT `{}`。桌面 Install/Uninstall/update/delete 后把当前已装列表 PUT 进这份文件。OpenCode 读不了 Cursor 形状：同目录 `mcp.opencode.generated.json` **仅**给 `OPENCODE_CONFIG`（其它 runtime 禁止读它）。`OPENCODE_CONFIG` 是进程环境，spawn **始终**指向 generated（没有就先写 `{ "mcp": {} }`）；PUT 只更新文件再 `POST /instance/dispose`，dispose 换不了 env。
+**Architecture:** SSOT 是 `~/.amuxd/teams/<teamId>/state/cloud/mcp.json`，形状为 Cloud 已有的 `{ "mcpServers": { ... } }`（Cursor）。Daemon 用 daemon actor 拉 `/config` 经常是空的（无 FC 改 actor）——空结果不得覆盖已有缓存；全卸装靠 reconcile 返回 `{}`。~~OpenCode 读不了 Cursor 形状：同目录 `mcp.opencode.generated.json` **仅**给 `OPENCODE_CONFIG`~~（已删除，见 ADR-0014）。
 
 **Tech Stack:** amuxd HTTP、desktop `team-share-browser`、现有 `sidecar/mcp.rs` / `team_cloud_config.rs`。
 

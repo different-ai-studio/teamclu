@@ -11,7 +11,6 @@ const mocks = vi.hoisted(() => ({
   runtimeStates: {} as Record<string, unknown>,
   loadRolesSkillsWorkspaceState: vi.fn(),
   loadAllRoles: vi.fn(),
-  getDaemonPermissions: vi.fn(),
   getDaemonRuntime: vi.fn(),
 }))
 
@@ -64,7 +63,6 @@ vi.mock('@/lib/daemon/daemon-local-client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/daemon/daemon-local-client')>()
   return {
     ...actual,
-    getDaemonPermissions: (...args: unknown[]) => mocks.getDaemonPermissions(...args),
     getDaemonRuntime: (...args: unknown[]) => mocks.getDaemonRuntime(...args),
   }
 })
@@ -72,10 +70,6 @@ vi.mock('@/lib/daemon/daemon-local-client', async (importOriginal) => {
 vi.mock('@/lib/roles/loader', () => ({
   loadRolesSkillsWorkspaceState: (...args: unknown[]) => mocks.loadRolesSkillsWorkspaceState(...args),
   loadAllRoles: (...args: unknown[]) => mocks.loadAllRoles(...args),
-}))
-
-vi.mock('@/lib/daemon/teamclu-config', () => ({
-  resolveSkillPermission: () => ({ permission: 'allow', isExact: false }),
 }))
 
 describe('CommandPopover', () => {
@@ -107,7 +101,6 @@ describe('CommandPopover', () => {
       metrics: { rolesCount: 0, skillsCount: 0, linkedSkillsCount: 0, unlinkedSkillsCount: 0 },
     })
     mocks.loadAllRoles.mockResolvedValue([])
-    mocks.getDaemonPermissions.mockResolvedValue({})
   })
 
   it('shows daemon-advertised skills for the active session', async () => {
