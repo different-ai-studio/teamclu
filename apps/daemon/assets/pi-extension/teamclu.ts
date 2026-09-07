@@ -79,6 +79,7 @@ type TeamcluExtensionUIContext = {
 };
 type ExtensionContext = {
   ui: TeamcluExtensionUIContext;
+  /** Current model; pi sets `.provider` (e.g. `"anthropic"`). */
   model?: unknown;
   modelRegistry?: {
     complete?(
@@ -122,6 +123,29 @@ type ExtensionAPI = {
   }): void;
   registerProvider(id: string, config: Record<string, unknown>): void;
 };
+
+// ---------------------------------------------------------------------------
+// Anthropic OAuth system prompt (teamclu#1260)
+// ---------------------------------------------------------------------------
+
+/** pi's default prompt embeds a self-documentation index under "Pi documentation …".
+ *  Anthropic's OAuth subscription discriminator rejects that block as non–Claude Code
+ *  usage. TeamClu users never need it; strip for the native anthropic provider only. */
+const PI_SELF_DOCUMENTATION_BLOCK =
+  /\n\nPi documentation[\s\S]*?(?=\n\n<project_context>|\nCurrent working directory:)/;
+
+function stripPiSelfDocumentation(prompt: string): string {
+  return prompt.replace(PI_SELF_DOCUMENTATION_BLOCK, "");
+}
+
+function shouldStripPiSelfDocumentation(ctx?: ExtensionContext): boolean {
+  const model = ctx?.model;
+  return (
+    !!model &&
+    typeof model === "object" &&
+    (model as { provider?: unknown }).provider === "anthropic"
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Session context injection (concurrent session deeplink correctness)
@@ -1493,12 +1517,21 @@ export default async function (pi: ExtensionAPI) {
   // -- Permission gate -------------------------------------------------------
   pi.on("before_agent_start", async (event, ctx) => {
     startSessionTitle(pi, event, ctx);
+
+    const original = String(event.systemPrompt ?? "").trim();
+    let base = original;
+    if (shouldStripPiSelfDocumentation(ctx)) {
+      base = stripPiSelfDocumentation(base);
+    }
+
     const backendSessionId = backendSessionIdFromContext(ctx);
-    if (!backendSessionId) return undefined;
-    const append = await fetchSessionPromptAppend(backendSessionId);
-    if (!append) return undefined;
-    const base = String(event.systemPrompt ?? "").trim();
-    const systemPrompt = base ? `${base}\n\n${append}` : append;
+    const append = backendSessionId
+      ? await fetchSessionPromptAppend(backendSessionId)
+      : undefined;
+
+    if (base === original && !append) return undefined;
+
+    const systemPrompt = append ? (base ? `${base}\n\n${append}` : append) : base;
     return { systemPrompt };
   });
 

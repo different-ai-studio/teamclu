@@ -135,30 +135,63 @@ function sessionPromptCacheKey(backendSessionId, generationId) {
   return `${gen}:${sessionId}`;
 }
 
-/** Mirrors session prompt cache + before_agent_start append in teamclu.ts */
-async function appendSystemPromptForTurn(event, ctx, deps = {}) {
-  const cache = deps.cache ?? new Map();
-  const backendSessionId = backendSessionIdFromContext(ctx);
-  if (!backendSessionId) return undefined;
+/** Mirrors pi self-doc strip + session prompt cache + before_agent_start in teamclu.ts */
+const PI_SELF_DOCUMENTATION_BLOCK =
+  /\n\nPi documentation[\s\S]*?(?=\n\n<project_context>|\nCurrent working directory:)/;
 
-  const cacheKey = sessionPromptCacheKey(
-    backendSessionId,
-    deps.generationId ?? "gen-test",
-  );
-  let append = cacheKey ? cache.get(cacheKey) : undefined;
-  if (!append) {
-    const fetchPrompt = deps.fetchPrompt;
-    if (!fetchPrompt) return undefined;
-    const fetched = await fetchPrompt(backendSessionId);
-    if (!fetched?.append) return undefined;
-    append = fetched.append;
-    if (cacheKey && fetched.rosterResolved === true) {
-      cache.set(cacheKey, append);
+function stripPiSelfDocumentation(prompt) {
+  return prompt.replace(PI_SELF_DOCUMENTATION_BLOCK, "");
+}
+
+function shouldStripPiSelfDocumentation(ctx) {
+  return ctx?.model?.provider === "anthropic";
+}
+
+const SAMPLE_PI_PROMPT = `You are an expert coding assistant operating inside pi.
+
+Available tools:
+- read: Read files
+
+Guidelines:
+- Be concise
+
+Pi documentation (read only when the user asks about pi itself):
+- When asked about: extensions (docs/extensions.md), themes (docs/themes.md)
+Current working directory: /tmp`;
+
+async function appendSystemPromptForTurn(event, ctx, deps = {}) {
+  const original = String(event?.systemPrompt ?? "").trim();
+  let base = original;
+  if (shouldStripPiSelfDocumentation(ctx)) {
+    base = stripPiSelfDocumentation(base);
+  }
+
+  const backendSessionId = backendSessionIdFromContext(ctx);
+  let append;
+  if (backendSessionId) {
+    const cache = deps.cache ?? new Map();
+    const cacheKey = sessionPromptCacheKey(
+      backendSessionId,
+      deps.generationId ?? "gen-test",
+    );
+    append = cacheKey ? cache.get(cacheKey) : undefined;
+    if (!append) {
+      const fetchPrompt = deps.fetchPrompt;
+      if (fetchPrompt) {
+        const fetched = await fetchPrompt(backendSessionId);
+        if (fetched?.append) {
+          append = fetched.append;
+          if (cacheKey && fetched.rosterResolved === true) {
+            cache.set(cacheKey, append);
+          }
+        }
+      }
     }
   }
 
-  const base = String(event?.systemPrompt ?? "").trim();
-  const systemPrompt = base ? `${base}\n\n${append}` : append;
+  if (base === original && !append) return undefined;
+
+  const systemPrompt = append ? (base ? `${base}\n\n${append}` : append) : base;
   return { systemPrompt };
 }
 
@@ -758,4 +791,40 @@ test("session title skips when pi already has a session name", async () => {
     },
   });
   assert.equal(llmCalled, false);
+});
+
+test("before_agent_start strips pi self-documentation for anthropic provider", async () => {
+  const result = await appendSystemPromptForTurn(
+    { systemPrompt: SAMPLE_PI_PROMPT },
+    { ui: makeUiContext("pi:/tmp/a.json"), model: { provider: "anthropic", id: "claude-sonnet-4-5" } },
+  );
+  assert.ok(result);
+  assert.match(result.systemPrompt, /Available tools:/);
+  assert.match(result.systemPrompt, /Current working directory: \/tmp/);
+  assert.doesNotMatch(result.systemPrompt, /Pi documentation/);
+  assert.doesNotMatch(result.systemPrompt, /When asked about:/);
+});
+
+test("before_agent_start leaves prompt unchanged for non-anthropic providers", async () => {
+  const result = await appendSystemPromptForTurn(
+    { systemPrompt: SAMPLE_PI_PROMPT },
+    { ui: makeUiContext("pi:/tmp/a.json"), model: { provider: "deepseek", id: "deepseek-chat" } },
+  );
+  assert.equal(result, undefined);
+});
+
+test("before_agent_start strips pi docs and appends session context for anthropic", async () => {
+  const result = await appendSystemPromptForTurn(
+    { systemPrompt: SAMPLE_PI_PROMPT },
+    { ui: makeUiContext("pi:/tmp/session-a.json"), model: { provider: "anthropic", id: "claude-haiku-4-5" } },
+    {
+      fetchPrompt: async (id) => ({
+        append: `[Ctx]\nbackend=${id}`,
+        rosterResolved: true,
+      }),
+    },
+  );
+  assert.match(result.systemPrompt, /Available tools:/);
+  assert.doesNotMatch(result.systemPrompt, /Pi documentation/);
+  assert.match(result.systemPrompt, /\[Ctx\]\nbackend=pi:\/tmp\/session-a.json/);
 });
