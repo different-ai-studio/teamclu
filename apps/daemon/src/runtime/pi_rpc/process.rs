@@ -624,6 +624,9 @@ const TEAMCLU_EXTENSION_TS: &str = include_str!("../../../assets/pi-extension/te
 
 /// The TeamClu multi-session host, embedded and materialized the same way.
 const TEAMCLU_HOST_MJS: &str = include_str!("../../../assets/pi-host/host.mjs");
+/// Sibling of `host.mjs` — imported at runtime; must land in the same directory.
+const TEAMCLU_HOST_GUARD_MJS: &str =
+    include_str!("../../../assets/pi-host/shared-runtime-guard.mjs");
 
 /// `cache/pi/` — machine-level pi runtime files (the materialized extension,
 /// host script, and per-worktree permission grants). Under `cache/` per the
@@ -676,7 +679,19 @@ fn materialize_extension() -> std::io::Result<PathBuf> {
 }
 
 fn materialize_host_script() -> std::io::Result<PathBuf> {
-    materialize(host_script_path(), TEAMCLU_HOST_MJS)
+    let path = host_script_path();
+    materialize(path.clone(), TEAMCLU_HOST_MJS)?;
+    let guard = path
+        .parent()
+        .map(|dir| dir.join("shared-runtime-guard.mjs"))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "pi host script path has no parent directory",
+            )
+        })?;
+    materialize(guard, TEAMCLU_HOST_GUARD_MJS)?;
+    Ok(path)
 }
 
 /// Per-worktree permission rules file read by the TeamClu pi extension

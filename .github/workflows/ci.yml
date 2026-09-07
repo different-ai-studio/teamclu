@@ -56,6 +56,7 @@ jobs:
           apps/daemon/shared/session-context-client.test.mjs
           apps/daemon/shared/session-context-plugin-install.test.mjs
           apps/daemon/assets/pi-extension/session-context.test.mjs
+          apps/daemon/assets/pi-host/shared-runtime-guard.test.mjs
 
       # The scripts above are scoped to @teamclu/app, so the Expo app was
       # outside every gate until now. See apps/expo/CI.md for what is and is

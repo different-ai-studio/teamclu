@@ -2,8 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 /** Mirrors `backendSessionIdFromContext` in teamclu.ts */
+function isStaleExtensionCtxError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes("extension ctx is stale after session replacement or reload");
+}
+
 function backendSessionIdFromContext(ctx) {
-  return ctx?.ui?.sessionId?.trim() || undefined;
+  try {
+    return ctx?.ui?.sessionId?.trim() || undefined;
+  } catch (error) {
+    if (isStaleExtensionCtxError(error)) return undefined;
+    throw error;
+  }
 }
 
 /** Mirrors PI MCP proxy injection gate in teamclu.ts */
@@ -248,6 +258,41 @@ test("before_agent_start skips when ctx.ui.sessionId is missing", async () => {
       fetchPrompt: async () => {
         called = true;
         return "x";
+      },
+    },
+  );
+  assert.equal(result, undefined);
+  assert.equal(called, false);
+});
+
+test("stale ctx.ui after sibling session dispose fails open without throwing", () => {
+  const stale = {
+    get ui() {
+      throw new Error(
+        "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().",
+      );
+    },
+  };
+  assert.equal(backendSessionIdFromContext(stale), undefined);
+  assert.equal(isStaleExtensionCtxError(new Error("session_context_unavailable")), false);
+});
+
+test("before_agent_start swallows stale ctx instead of surfacing pi extension error", async () => {
+  const stale = {
+    get ui() {
+      throw new Error(
+        "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession().",
+      );
+    },
+  };
+  let called = false;
+  const result = await appendSystemPromptForTurn(
+    { systemPrompt: "base" },
+    stale,
+    {
+      fetchPrompt: async () => {
+        called = true;
+        return { append: "should not inject", rosterResolved: true };
       },
     },
   );

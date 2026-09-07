@@ -41,6 +41,12 @@
  * TeamClu extension uses them, and stock `pi --mode rpc` has the same
  * last-bind-wins behaviour across `switch_session`, so this is not a regression.
  *
+ * Pi 0.84+ also invalidates that *shared* runtime from `AgentSession.dispose()`.
+ * Closing one session (LRU `close_session` included) would otherwise make
+ * `pi.registerTool` throw "extension ctx is stale" on every remaining session.
+ * `shieldSharedRuntimeFromSessionDispose` keeps the poison on the closed
+ * runner only while siblings are still live.
+ *
  * ## Protocol
  *
  * Commands (stdin, one JSON object per line):
@@ -96,6 +102,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
+import { shieldSharedRuntimeFromSessionDispose } from "./shared-runtime-guard.mjs";
 
 const PROTOCOL_VERSION = 1;
 
@@ -379,6 +386,14 @@ function makeUiContext(sessionId) {
 async function adoptSession(sessionManager) {
   const { session } = await pi.createAgentSessionFromServices({ services, sessionManager });
   const sessionId = sessionIdFor(session);
+
+  // Pi dispose() invalidates the ExtensionRuntime the runner was built with.
+  // Every session in this process shares one ResourceLoader / runtime, so a
+  // close_session (LRU eviction included) would otherwise mark `pi` stale for
+  // every remaining session — the "extension ctx is stale after session
+  // replacement or reload" toast on the next turn. Read `sessions.size` at
+  // invalidate-time: closeSession deletes the victim before dispose().
+  shieldSharedRuntimeFromSessionDispose(session.extensionRunner, () => sessions.size);
 
   await session.bindExtensions({
     uiContext: makeUiContext(sessionId),

@@ -137,8 +137,20 @@ function isSessionScopedTool(name: string): boolean {
   return SESSION_SCOPED_TOOLS.has(normalizeSessionScopedToolName(name));
 }
 
+function isStaleExtensionCtxError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes("extension ctx is stale after session replacement or reload");
+}
+
 function backendSessionIdFromContext(ctx?: ExtensionContext): string | undefined {
-  return ctx?.ui?.sessionId?.trim() || undefined;
+  try {
+    return ctx?.ui?.sessionId?.trim() || undefined;
+  } catch (error) {
+    // Shared-runtime poison from a sibling session's dispose (pi 0.84+).
+    // Fail open: skip session-id injection rather than toast every turn.
+    if (isStaleExtensionCtxError(error)) return undefined;
+    throw error;
+  }
 }
 
 async function resolveTeamcluSessionId(backendSessionId: string): Promise<string> {
@@ -1028,40 +1040,48 @@ function registerBridgeTools(
   for (const tool of entry.tools) {
     const name = registeredName(label, tool.name);
     ownTools.add(name);
-    pi.registerTool({
-      name,
-      label: name,
-      description: tool.description ?? `TeamClu MCP tool ${tool.name} (${label})`,
-      // MCP inputSchema is plain JSON Schema; pi's TypeBox parameters are
-      // JSON Schema objects at runtime, so pass it through directly.
-      parameters: tool.inputSchema ?? { type: "object", properties: {} },
-      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-        // A server can drop a tool at runtime (`tools/list_changed`). pi has no
-        // unregister, so the registration outlives the tool: answer honestly
-        // instead of calling a name the server no longer knows.
-        if (!entry.tools.some((t) => t.name === tool.name)) {
-          return {
-            content: [{ type: "text" as const, text: `MCP tool ${tool.name} is no longer offered by ${label}.` }],
-            isError: true,
-          };
-        }
-        let callParams = params ?? {};
-        try {
-          callParams = await injectSessionIdForTool(
-            tool.name,
-            callParams,
-            backendSessionIdFromContext(ctx),
-          );
-        } catch {
-          return sessionContextUnavailableResult();
-        }
-        // On a cached start the connection may still be opening; this is the
-        // only place that waits for it, and only when a tool is actually used.
-        const bridge = await entry.ready;
-        const result = await bridge.callTool(tool.name, callParams, signal);
-        return { content: toPiContent(result), isError: result?.isError === true };
-      },
-    });
+    try {
+      pi.registerTool({
+        name,
+        label: name,
+        description: tool.description ?? `TeamClu MCP tool ${tool.name} (${label})`,
+        // MCP inputSchema is plain JSON Schema; pi's TypeBox parameters are
+        // JSON Schema objects at runtime, so pass it through directly.
+        parameters: tool.inputSchema ?? { type: "object", properties: {} },
+        async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+          // A server can drop a tool at runtime (`tools/list_changed`). pi has no
+          // unregister, so the registration outlives the tool: answer honestly
+          // instead of calling a name the server no longer knows.
+          if (!entry.tools.some((t) => t.name === tool.name)) {
+            return {
+              content: [{ type: "text" as const, text: `MCP tool ${tool.name} is no longer offered by ${label}.` }],
+              isError: true,
+            };
+          }
+          let callParams = params ?? {};
+          try {
+            callParams = await injectSessionIdForTool(
+              tool.name,
+              callParams,
+              backendSessionIdFromContext(ctx),
+            );
+          } catch {
+            return sessionContextUnavailableResult();
+          }
+          // On a cached start the connection may still be opening; this is the
+          // only place that waits for it, and only when a tool is actually used.
+          const bridge = await entry.ready;
+          const result = await bridge.callTool(tool.name, callParams, signal);
+          return { content: toPiContent(result), isError: result?.isError === true };
+        },
+      });
+    } catch (error) {
+      if (isStaleExtensionCtxError(error)) {
+        console.error(`[teamclu] MCP ${label}: skip registerTool on stale extension ctx (${name})`);
+        continue;
+      }
+      throw error;
+    }
   }
 }
 
@@ -1106,7 +1126,8 @@ function questionOptionLabels(q: QuestionSpec): string[] {
 
 function registerQuestionTool(pi: ExtensionAPI, ownTools: Set<string>): void {
   ownTools.add("question");
-  pi.registerTool({
+  try {
+    pi.registerTool({
     name: "question",
     label: "Question",
     description:
@@ -1170,7 +1191,18 @@ function registerQuestionTool(pi: ExtensionAPI, ownTools: Set<string>): void {
       // Flattened labels keep the dialog renderable by a plain select UI; the
       // TeamClu host reads the marker payload instead.
       const flatLabels = questionOptionLabels(questions[0] ?? {});
-      const value = await ctx.ui.select(`${QUESTION_MARKER}${payload}`, flatLabels, { signal });
+      let value: string | undefined;
+      try {
+        value = await ctx.ui.select(`${QUESTION_MARKER}${payload}`, flatLabels, { signal });
+      } catch (error) {
+        if (isStaleExtensionCtxError(error)) {
+          return {
+            content: [{ type: "text", text: "Question UI unavailable in this run mode." }],
+            isError: true,
+          };
+        }
+        throw error;
+      }
       if (value === undefined) {
         return {
           content: [{ type: "text", text: "The user dismissed the question without answering." }],
@@ -1198,6 +1230,13 @@ function registerQuestionTool(pi: ExtensionAPI, ownTools: Set<string>): void {
       return { content: [{ type: "text", text: lines.join("\n") }] };
     },
   });
+  } catch (error) {
+    if (isStaleExtensionCtxError(error)) {
+      console.error("[teamclu] skip question tool on stale extension ctx");
+      return;
+    }
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1250,7 +1289,15 @@ export default async function (pi: ExtensionAPI) {
     const argsJson = (JSON.stringify(event.input ?? {}, null, 2) ?? "{}").slice(0, 2000);
     const message = `${argsJson}\n\nteamclu.always-pattern=${pattern}`;
 
-    const confirmed = await ctx.ui.confirm(title, message);
+    let confirmed: boolean;
+    try {
+      confirmed = await ctx.ui.confirm(title, message);
+    } catch (error) {
+      if (isStaleExtensionCtxError(error)) {
+        return { block: true, reason: "Denied by TeamClu permission gate" };
+      }
+      throw error;
+    }
     if (!confirmed) {
       return { block: true, reason: "Denied by TeamClu permission gate" };
     }
