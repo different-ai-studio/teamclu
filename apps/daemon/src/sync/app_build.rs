@@ -245,6 +245,13 @@ pub fn prepare_git_build(
     app_git::set_remote_origin(workdir, git.remote_url, Some(&ssh))?;
     app_git::fetch_origin(workdir, Some(&ssh))?;
 
+    // Before anything is staged: the deploy commits the workdir now, and the
+    // daemon's own runtime files sit in it untracked. Best-effort — a checkout
+    // we cannot write an exclude file into should still deploy.
+    if let Err(e) = app_git::ensure_runtime_excludes(workdir) {
+        tracing::warn!(app_id = git.app_id, error = %e, "could not write .git/info/exclude");
+    }
+
     // Whatever the agent left behind gets committed and pushed rather than
     // refused. When that happens HEAD is already the commit to build, and
     // checking out the caller's older sha would ship without it.
