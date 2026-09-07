@@ -797,16 +797,17 @@ async function handleCommand(command) {
         return fail(id, "fork_session", "forkLeafId is required");
       }
       const parentManager = pi.SessionManager.open(command.parentSessionPath, sessionDir);
-      const branchedManager = parentManager.createBranchedSession(command.forkLeafId);
-      const newPath = branchedManager.getSessionFile();
+      // pi 0.84.x: createBranchedSession returns the new jsonl path, not a SessionManager.
+      const newPath = parentManager.createBranchedSession(command.forkLeafId);
       if (!newPath) {
         return fail(id, "fork_session", "createBranchedSession returned no session file");
       }
+      const branchedManager = pi.SessionManager.open(newPath, sessionDir);
       const sessionId = `pi:${newPath}`;
       return ok(id, "fork_session", {
         sessionId,
         sessionFile: newPath,
-        leafId: branchedManager.getLeafId() ?? undefined,
+        leafId: branchedManager.getLeafId() ?? command.forkLeafId ?? undefined,
       });
     }
 
