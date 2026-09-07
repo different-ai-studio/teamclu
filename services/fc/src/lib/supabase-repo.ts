@@ -47,7 +47,16 @@ import {
   readEnvelope as readTeamEnvEnvelope,
 } from "./validation/team-env-secrets.js";
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
-import { appOssObjectName, deployUnavailable, parseOptionalGitCommitSha, parseDeployToken, assertDeployAllowed, checkDeployInProgress, needsDatabase } from "./provisioning/app-deploy.js";
+import {
+  appOssObjectName,
+  assertDeployAllowed,
+  checkDeployInProgress,
+  deployUnavailable,
+  needsDatabase,
+  parseAppRuntimeSpec,
+  parseDeployToken,
+  parseOptionalGitCommitSha,
+} from "./provisioning/app-deploy.js";
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
 import { giteaUnavailable, GITEA_AUTH_KIND } from "./provisioning/gitea.js";
@@ -3433,7 +3442,10 @@ export function createSupabaseBusinessRepository(options) {
       }
     },
 
-    async finalizeDeploy(appId: string, input: { gitCommitSha?: string; deployToken: string }) {
+    async finalizeDeploy(
+      appId: string,
+      input: { gitCommitSha?: string; deployToken: string; runtime?: unknown },
+    ) {
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
       const deployToken = parseDeployToken(input?.deployToken);
       // Visibility gate. RLS on amux.apps returns nothing when the app is not
@@ -3486,6 +3498,9 @@ export function createSupabaseBusinessRepository(options) {
           fcFunctionName: existing.fc_function_name,
           ossObjectName: appOssObjectName(appId),
           platformOAuthEnv,
+          // What the daemon read out of the app's own declaration. Absent for a
+          // client that predates it, which is the contract every app had before.
+          runtime: parseAppRuntimeSpec(input?.runtime),
         });
         const { data: row, error: updErr } = await supabase
           .from("apps")

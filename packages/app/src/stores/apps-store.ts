@@ -660,6 +660,10 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       const builtSha = build.gitCommitSha ?? gitCommitSha;
       const finalized = await getBackend().apps.finalizeDeploy(appId, {
         ...(builtSha ? { gitCommitSha: builtSha } : {}),
+        // How the app says it starts. The control plane used to assume one
+        // answer for every app; this is the app's own, read off its
+        // declaration by the daemon that just built it.
+        ...(build.runtime ? { runtime: build.runtime } : {}),
         deployToken: started.deployToken,
       });
       // The merged row carries `authModePendingRedeploy` straight from the

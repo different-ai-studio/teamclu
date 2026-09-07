@@ -512,6 +512,10 @@ pub struct BuildAppBody {
 #[serde(rename_all = "camelCase")]
 pub struct BuildAppResponse {
     pub status: &'static str,
+    /// What the app declared about how it is built and run. Always present —
+    /// an app with no declaration reports the built-in contract, so the control
+    /// plane never has to know whether the file existed.
+    pub manifest: crate::sync::app_build::AppRuntimeManifest,
     /// The commit that was actually built, when the daemon published work the
     /// caller did not know about. Absent when it built the sha it was given —
     /// the caller then finalizes with its own.
@@ -605,6 +609,7 @@ pub async fn build_app(
     Ok(Json(BuildAppResponse {
         status: "built",
         git_commit_sha: built.git_commit_sha,
+        manifest: built.manifest,
     }))
 }
 

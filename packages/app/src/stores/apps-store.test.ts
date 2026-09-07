@@ -88,7 +88,8 @@ const buildResult = (
   outcome: "built" | "failed" | "unreachable",
   error: string | null = null,
   gitCommitSha: string | null = null,
-) => ({ outcome, error, gitCommitSha });
+  runtime: { runtime: string; entry: string; port: number } | null = null,
+) => ({ outcome, error, gitCommitSha, runtime });
 
 const gitCred = {
   remoteUrl: "git@gitea:team/app-1.git",
@@ -706,6 +707,30 @@ describe("apps-store deploy", () => {
       gitCommitSha: "def4567890123",
       deployToken: "tok-1",
     });
+  });
+
+  it("finalizes with how the app says it starts", async () => {
+    // The control plane assumed one answer for every app (node,
+    // server/index.mjs, 9000). An app that builds elsewhere deployed a function
+    // that could not boot, and nothing said so until the instance failed.
+    mocks.deployApp.mockResolvedValueOnce({
+      ...readyApp(),
+      fcStatus: "awaiting_build",
+      presignedPut: "https://oss/put?sig=x",
+      deployToken: "tok-1",
+      gitCommitSha: "abc1234567890",
+    });
+    mocks.buildDaemonApp.mockResolvedValueOnce(
+      buildResult("built", null, null, { runtime: "node", entry: "index.js", port: 8080 }),
+    );
+    mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp(), fcStatus: "live" });
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().deploy("app-1");
+
+    expect(mocks.finalizeDeploy).toHaveBeenCalledWith(
+      "app-1",
+      expect.objectContaining({ runtime: { runtime: "node", entry: "index.js", port: 8080 } }),
+    );
   });
 
   it("authMode=none prompts for public deploy confirmation", async () => {
