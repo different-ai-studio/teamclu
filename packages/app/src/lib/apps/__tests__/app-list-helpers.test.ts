@@ -133,6 +133,17 @@ describe('firstPromptForApp', () => {
     expect(firstPromptForApp(app('X', 'data_app'))).toContain('数据表')
   })
 
+  test('an imported project is read, not built to a template', () => {
+    // An imported repo (and a folder adopted from disk) has no AGENTS.md —
+    // that file comes from a starter template — so pointing the agent at it
+    // would send it looking for something that is not there.
+    const prompt = firstPromptForApp(app('saas-mono', 'imported'))
+    expect(prompt).toContain('saas-mono')
+    expect(prompt).toContain('先把代码读一遍')
+    expect(prompt).toContain('下一步的计划')
+    expect(prompt).not.toContain('AGENTS.md')
+  })
+
   test('a legacy type gets the data-app prompt', () => {
     expect(firstPromptForApp(app('X', 'fullstack_tanstack_postgres'))).toContain('数据表')
     expect(firstPromptForApp(app('X', ''))).toContain('数据表')
