@@ -171,8 +171,10 @@ impl DaemonServer {
         }
     }
 
-    /// Adopt an agent-generated session title, but only over a default one.
-    /// A user-set title ("人工自己设定") must never be overwritten.
+    /// Adopt an agent-generated session title. Daemon LLM titles win over
+    /// placeholders and the frontend first-message auto-title. Cron-minted
+    /// titles (`Cron: …` / `Cron job`) must not be rewritten. A missing local
+    /// cache row is treated as unknown — do not adopt.
     async fn maybe_adopt_generated_session_title(&mut self, session_id: &str, title: &str) {
         let title = title.trim();
         if session_id.is_empty() || title.is_empty() {
@@ -184,14 +186,14 @@ impl DaemonServer {
             .and_then(|tc| tc.sessions.find_by_id(session_id))
             .map(|s| s.title.trim().to_string())
             .unwrap_or_default();
-        if current == title || !is_default_session_title(&current) {
+        if !should_adopt_generated_session_title(&current, title) {
             return;
         }
         tracing::info!(
             session_id,
             old_title = %current,
             new_title = %title,
-            "adopting opencode-generated session title"
+            "adopting agent-generated session title"
         );
         if let Err(e) = self.backend.update_session_title(session_id, title).await {
             tracing::warn!(session_id, error = %e, "session title update failed");
@@ -471,8 +473,7 @@ impl DaemonServer {
                             let backend_handle = agents.agent_backend_handle();
                             let mut backend = backend_handle.lock().await;
                             if handle.acp_session_id.starts_with("pi:") {
-                                let leaf = backend
-                                    .completed_turn_leaf_id(&handle.acp_session_id);
+                                let leaf = backend.completed_turn_leaf_id(&handle.acp_session_id);
                                 metadata_json =
                                     crate::runtime::backend_session_metadata::stamp_pi_backend_session_metadata(
                                         &metadata_json,
@@ -1241,10 +1242,29 @@ impl DaemonServer {
     }
 }
 
+/// Daemon LLM titles overwrite placeholders *and* the frontend first-message
+/// auto-title. Refuse Cron-minted titles and an empty/unknown current title
+/// (cache miss — cron sessions often never land in the local store).
+pub(crate) fn should_adopt_generated_session_title(current: &str, new_title: &str) -> bool {
+    let current = current.trim();
+    let new_title = new_title.trim();
+    if current.is_empty() || new_title.is_empty() || current == new_title {
+        return false;
+    }
+    if new_title.contains("TeamClu Instructions") || new_title.starts_with("[Context —") {
+        return false;
+    }
+    if current.starts_with("Cron:") || current.eq_ignore_ascii_case("Cron job") {
+        return false;
+    }
+    true
+}
+
 /// Whether `title` looks like a client-minted default rather than something a
 /// person typed. Defaults are `<agent name> (HH:MM)` (desktop new-chat),
 /// `Session <id>` and `New session…` placeholders. An unknown/empty title is
 /// NOT treated as default — when in doubt, never overwrite.
+#[cfg(test)]
 pub(crate) fn is_default_session_title(title: &str) -> bool {
     let title = title.trim();
     if title.is_empty() {
@@ -1295,6 +1315,35 @@ mod default_title_tests {
         assert!(!is_default_session_title("Cron: Test"));
         assert!(!is_default_session_title("发布计划 (v2)"));
         assert!(!is_default_session_title("standup (today)"));
+    }
+
+    #[test]
+    fn llm_title_overwrites_first_message_and_placeholders() {
+        use super::should_adopt_generated_session_title;
+        assert!(should_adopt_generated_session_title(
+            "Mac-mini-8 (10:50)",
+            "Launch Plan"
+        ));
+        assert!(should_adopt_generated_session_title(
+            "帮我查一下深圳美食",
+            "深圳美食推荐"
+        ));
+        assert!(should_adopt_generated_session_title("New chat", "Standup"));
+        assert!(!should_adopt_generated_session_title("", "Standup"));
+        assert!(!should_adopt_generated_session_title(
+            "深圳美食推荐",
+            "深圳美食推荐"
+        ));
+        assert!(!should_adopt_generated_session_title("Launch Plan", ""));
+        assert!(!should_adopt_generated_session_title(
+            "Cron: nightly-sync",
+            "Launch Plan"
+        ));
+        assert!(!should_adopt_generated_session_title("Cron job", "Launch Plan"));
+        assert!(!should_adopt_generated_session_title(
+            "帮我查一下深圳美食",
+            "[TeamClu Instructions — follow for all replies in this session. Do not acknowled"
+        ));
     }
 }
 

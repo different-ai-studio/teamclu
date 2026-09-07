@@ -534,6 +534,32 @@ async fn handle_ui_request(
                 .send(AcpEventFrame::new(session_id, ev).with_reply_to(reply_to))
                 .await;
         }
+        "setTitle" => {
+            let title = event
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if title.is_empty() {
+                return;
+            }
+            let Some(session_id) = event_session(shared, key, event) else {
+                debug!(worktree = %key.worktree, "pi setTitle with no session dropped");
+                return;
+            };
+            let (event_tx, reply_to) = {
+                let routes = shared.routes.lock();
+                let Some(route) = routes.get(&session_id) else {
+                    return;
+                };
+                (route.event_tx.clone(), route.turn_reply_to.clone())
+            };
+            let ev = translate::session_title_event(title);
+            crate::runtime::agent_trace::log_acp_event(&session_id, &ev);
+            let _ = event_tx
+                .send(AcpEventFrame::new(session_id, ev).with_reply_to(reply_to))
+                .await;
+        }
         // Other dialog methods block until answered — cancel them.
         "input" | "editor" => {
             warn!(worktree = %key.worktree, method, "unsupported pi dialog method; cancelling");
@@ -712,6 +738,32 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn set_title_becomes_session_title_event() {
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let (route, mut rx) = test_route(key.clone(), "/s/a.jsonl");
+        shared.routes.lock().insert("pi:/s/a.jsonl".into(), route);
+        let client = test_client();
+
+        let ev = serde_json::json!({
+            "type": "extension_ui_request", "id": "ui_title", "sessionId": "pi:/s/a.jsonl",
+            "method": "setTitle", "title": "深圳美食推荐"
+        });
+        handle_event(&shared, &key, &client, &ev).await;
+
+        let frame = rx.try_recv().expect("session_title forwarded");
+        match frame.event.event.as_ref().unwrap() {
+            amux::acp_event::Event::Raw(raw) => {
+                assert_eq!(raw.method, "session_title");
+                assert_eq!(String::from_utf8_lossy(&raw.json_payload), "深圳美食推荐");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "setTitle is fire-and-forget");
     }
 
     /// Drive a failed `message_end` into a live turn and hand back the route's

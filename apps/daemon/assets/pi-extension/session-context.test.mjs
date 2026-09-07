@@ -254,3 +254,508 @@ test("before_agent_start skips when ctx.ui.sessionId is missing", async () => {
   assert.equal(result, undefined);
   assert.equal(called, false);
 });
+
+/** Mirrors session-title helpers in teamclu.ts */
+const SESSION_TITLE_MAX_LEN = 80;
+const AGENT_MENTION_LINE_RE = /^\[Mentioned agents:[^\]]*\]$/i;
+const HUMAN_MENTION_ONLY_LINE_RE =
+  /^\[Mentioned:[^\]]*\|instruction:[^\]]*\]$/i;
+const INLINE_HUMAN_MENTION_RE =
+  /\[Mentioned:[^\]]*\|instruction:[^\]]*\]/gi;
+
+function stripMentionsForSessionTitle(content) {
+  return content
+    .split(/\n+/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return "";
+      if (AGENT_MENTION_LINE_RE.test(trimmed)) return "";
+      if (HUMAN_MENTION_ONLY_LINE_RE.test(trimmed)) return "";
+      return trimmed.replace(INLINE_HUMAN_MENTION_RE, "").replace(/\s+/g, " ").trim();
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function shouldSkipTitlePrompt(prompt) {
+  const body = stripMentionsForSessionTitle(prompt).trim();
+  if (!body) return true;
+  return body.startsWith("/") || body.startsWith("!") || body.startsWith("$");
+}
+
+const CRON_REPLY_TOKEN_MARKER = "[SYSTEM] Reply token for this run:";
+
+function isCronJobPrompt(raw) {
+  return raw.includes(CRON_REPLY_TOKEN_MARKER);
+}
+
+const TITLE_FOLLOW_MARKER = "Reply only to the user prompt that follows.]";
+const TITLE_END_CONTEXT_MARKER = "[End context]";
+
+function userPromptForTitle(raw) {
+  let text = raw;
+  const endCtx = text.lastIndexOf(TITLE_END_CONTEXT_MARKER);
+  if (endCtx >= 0) {
+    text = text.slice(endCtx + TITLE_END_CONTEXT_MARKER.length);
+  }
+  const follow = text.lastIndexOf(TITLE_FOLLOW_MARKER);
+  if (follow >= 0) {
+    text = text.slice(follow + TITLE_FOLLOW_MARKER.length);
+  }
+  const lines = text.split("\n");
+  let i = 0;
+  while (i < lines.length && !lines[i].trim()) i += 1;
+  while (i < lines.length && /^\[[^\]]+\] /.test(lines[i])) i += 1;
+  while (i < lines.length && !lines[i].trim()) i += 1;
+  return lines.slice(i).join("\n").trim();
+}
+
+function looksLikeMachineTitle(title) {
+  const t = title.trim();
+  if (!t) return true;
+  return (
+    t.includes("TeamClu Instructions") ||
+    t.startsWith("[Context —") ||
+    t.startsWith("[End context]")
+  );
+}
+
+function sanitizeGeneratedTitle(raw) {
+  let title = raw.trim().replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, "");
+  title = (title.split("\n")[0] || title).trim();
+  title = title.replace(/[。.\s]+$/g, "").trim();
+  title = title.slice(0, SESSION_TITLE_MAX_LEN);
+  return looksLikeMachineTitle(title) ? "" : title;
+}
+
+function assistantMessageText(message) {
+  if (!message) return "";
+  if (message.stopReason === "error" || message.stopReason === "aborted") return "";
+  const parts = Array.isArray(message.content) ? message.content : [];
+  return parts
+    .filter((b) => b && b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text)
+    .join("")
+    .trim();
+}
+
+function describeTitleResponse(message) {
+  const types = Array.isArray(message?.content)
+    ? message.content.map((b) => b?.type ?? "?").join(",")
+    : "";
+  return `stopReason=${message?.stopReason ?? "missing"} error=${message?.errorMessage ?? ""} types=${types}`;
+}
+
+function titleCompleteOptions(model) {
+  const options = {
+    maxTokens: 256,
+    timeoutMs: 15_000,
+  };
+  if (!model || typeof model !== "object" || model.reasoning !== true) return options;
+  const map = model.thinkingLevelMap && typeof model.thinkingLevelMap === "object"
+    ? model.thinkingLevelMap
+    : undefined;
+  if (map?.off === null) return options;
+  options.reasoning = "off";
+  if (map) {
+    options.reasoningEffort = typeof map.off === "string" && map.off ? map.off : "none";
+  }
+  return options;
+}
+
+/** Mirrors teamclu.ts llmSessionTitle — uses ctx.modelRegistry.complete, not pi-ai. */
+async function llmSessionTitle(ctx, prompt) {
+  const model = ctx.model;
+  const registry = ctx.modelRegistry;
+  const complete = registry?.complete;
+  if (!model || typeof complete !== "function") return "";
+  const user = [
+    "Write a short session title for this user request.",
+    "Maximum 8 words or 40 characters. Match the user's language.",
+    "Reply with ONLY the title, no quotes.",
+    "",
+    "User request:",
+    prompt.slice(0, 2000),
+  ].join("\n");
+  const response = await complete.call(
+    registry,
+    model,
+    { messages: [{ role: "user", content: user }] },
+    titleCompleteOptions(model),
+  );
+  const text = assistantMessageText(response);
+  if (!text) describeTitleResponse(response);
+  return text;
+}
+
+async function maybeGenerateSessionTitle(pi, event, ctx, deps = {}) {
+  const sessionId = backendSessionIdFromContext(ctx);
+  if (!sessionId) return;
+  const attempted = deps.attempted ?? new Set();
+  if (attempted.has(sessionId)) return;
+  if (String(pi.getSessionName?.() ?? "").trim()) return;
+
+  const raw = String(event.prompt ?? "");
+  if (isCronJobPrompt(raw)) return;
+  const prompt = userPromptForTitle(raw);
+  if (shouldSkipTitlePrompt(prompt)) return;
+
+  attempted.add(sessionId);
+  const ui = ctx.ui;
+  const job = {
+    prompt,
+    model: ctx.model,
+    registry: ctx.modelRegistry,
+    setTitle: ui.setTitle?.bind(ui),
+    setSessionName: pi.setSessionName?.bind(pi),
+    getSessionName: () => pi.getSessionName?.(),
+    llmTitle: deps.llmTitle,
+  };
+
+  const apply = async () => {
+    let title = "";
+    try {
+      title = sanitizeGeneratedTitle(
+        await (job.llmTitle?.({ model: job.model, modelRegistry: job.registry }, job.prompt) ?? ""),
+      );
+    } catch {
+      title = "";
+    }
+    if (!title) return;
+    if (String(job.getSessionName?.() ?? "").trim()) return;
+    job.setSessionName?.(title);
+    job.setTitle?.(title);
+  };
+
+  if (deps.fireAndForget) {
+    deps.pending?.push(apply());
+    return;
+  }
+  await apply();
+}
+
+test("session title skips slash commands and empty prompts", () => {
+  assert.equal(shouldSkipTitlePrompt(""), true);
+  assert.equal(shouldSkipTitlePrompt("   "), true);
+  assert.equal(shouldSkipTitlePrompt("/compact"), true);
+  assert.equal(shouldSkipTitlePrompt("!ls"), true);
+  assert.equal(shouldSkipTitlePrompt("$ echo hi"), true);
+  assert.equal(shouldSkipTitlePrompt("帮我查一下深圳美食"), false);
+});
+
+test("session title treats cron run tokens as cron, not chat tokens", () => {
+  assert.equal(
+    isCronJobPrompt(
+      "[SYSTEM] Reply token for this run: tok\nPass it as `reply_token`\n\nnightly sync",
+    ),
+    true,
+  );
+  assert.equal(
+    isCronJobPrompt("[SYSTEM] Reply token for this chat: tok\nhello"),
+    false,
+  );
+});
+
+test("session title does not run for cron job prompts", async () => {
+  let llmCalled = false;
+  const attempted = new Set();
+  const pi = { getSessionName: () => "", setSessionName() {} };
+  const ctx = { ui: { sessionId: "pi:/tmp/cron.json", setTitle() {} } };
+  await maybeGenerateSessionTitle(
+    pi,
+    {
+      prompt:
+        "[SYSTEM] Reply token for this run: tok\nPass it as `reply_token`\n\nnightly sync",
+    },
+    ctx,
+    {
+      attempted,
+      llmTitle: async () => {
+        llmCalled = true;
+        return "Nope";
+      },
+    },
+  );
+  assert.equal(llmCalled, false);
+  assert.equal(attempted.size, 0);
+});
+
+test("session title strips TeamClu instruction wrappers to the user text", () => {
+  const wrapped = [
+    "[TeamClu Instructions — follow for all replies in this session. Do not acknowledge separately. Reply only to the user prompt that follows.]",
+    "[system] 请使用中文回答",
+    "",
+    "帮我查一下深圳美食",
+  ].join("\n");
+  assert.equal(userPromptForTitle(wrapped), "帮我查一下深圳美食");
+});
+
+test("session title strips silent context wrappers", () => {
+  const wrapped = [
+    "[Context — messages received in this session while you were not mentioned. Read for context but do not reply to them. Reply only to the user prompt that follows.]",
+    "Ann: earlier note",
+    "[End context]",
+    "",
+    "real question",
+  ].join("\n");
+  assert.equal(userPromptForTitle(wrapped), "real question");
+});
+
+test("session title sends unwrapped user text to the LLM", async () => {
+  const seen = [];
+  const named = [];
+  const pi = { getSessionName: () => "", setSessionName: (name) => named.push(name) };
+  const ctx = { ui: { sessionId: "pi:/tmp/wrap.json", setTitle() {} } };
+  const wrapped = [
+    "[TeamClu Instructions — follow for all replies in this session. Do not acknowledge separately. Reply only to the user prompt that follows.]",
+    "[system] 请使用中文回答",
+    "",
+    "帮我查一下深圳美食",
+  ].join("\n");
+  await maybeGenerateSessionTitle(pi, { prompt: wrapped }, ctx, {
+    llmTitle: async (_ctx, prompt) => {
+      seen.push(prompt);
+      return "深圳美食推荐";
+    },
+  });
+  assert.deepEqual(seen, ["帮我查一下深圳美食"]);
+  assert.deepEqual(named, ["深圳美食推荐"]);
+});
+
+test("session title sanitizes model output", () => {
+  assert.equal(sanitizeGeneratedTitle('"深圳美食推荐"'), "深圳美食推荐");
+  assert.equal(sanitizeGeneratedTitle("Launch Plan.\nextra"), "Launch Plan");
+  assert.equal(sanitizeGeneratedTitle(""), "");
+  assert.equal(
+    sanitizeGeneratedTitle(
+      "[TeamClu Instructions — follow for all replies in this session. Do not acknowled",
+    ),
+    "",
+  );
+});
+
+test("session title LLM uses modelRegistry.complete with the session model", async () => {
+  const calls = [];
+  const ctx = {
+    model: {
+      id: "gpt-5.6-luna",
+      provider: "openai-codex",
+      reasoning: true,
+      thinkingLevelMap: { xhigh: "xhigh", minimal: "low" },
+    },
+    modelRegistry: {
+      complete: async function complete(model, context, options) {
+        calls.push({ thisArg: this, model, context, options });
+        return {
+          stopReason: "stop",
+          content: [{ type: "text", text: "深圳美食" }],
+        };
+      },
+    },
+  };
+  const text = await llmSessionTitle(ctx, "帮我查一下深圳美食");
+  assert.equal(text, "深圳美食");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].thisArg, ctx.modelRegistry);
+  assert.equal(calls[0].model.provider, "openai-codex");
+  assert.match(calls[0].context.messages[0].content, /帮我查一下深圳美食/);
+  assert.equal(calls[0].options.reasoning, "off");
+  assert.equal(calls[0].options.reasoningEffort, "none");
+  assert.equal(calls[0].options.reasoningSummary, undefined);
+  assert.equal(calls[0].options.maxTokens, 256);
+});
+
+test("session title LLM omits thinking options for non-reasoning models", async () => {
+  const calls = [];
+  await llmSessionTitle(
+    {
+      model: { id: "gpt-4.1", provider: "openai", reasoning: false },
+      modelRegistry: {
+        complete: async function complete(_model, _context, options) {
+          calls.push(options);
+          return { stopReason: "stop", content: [{ type: "text", text: "ok" }] };
+        },
+      },
+    },
+    "hello",
+  );
+  assert.equal(calls[0].maxTokens, 256);
+  assert.equal(calls[0].reasoning, undefined);
+  assert.equal(calls[0].reasoningEffort, undefined);
+});
+
+test("session title LLM skips disable when the model forbids off", async () => {
+  const calls = [];
+  await llmSessionTitle(
+    {
+      model: {
+        id: "claude-sonnet",
+        provider: "anthropic",
+        reasoning: true,
+        thinkingLevelMap: { off: null, high: "high" },
+      },
+      modelRegistry: {
+        complete: async function complete(_model, _context, options) {
+          calls.push(options);
+          return { stopReason: "stop", content: [{ type: "text", text: "ok" }] };
+        },
+      },
+    },
+    "hello",
+  );
+  assert.equal(calls[0].reasoning, undefined);
+  assert.equal(calls[0].reasoningEffort, undefined);
+});
+
+test("session title LLM uses the model's mapped off effort", async () => {
+  const calls = [];
+  await llmSessionTitle(
+    {
+      model: {
+        id: "gpt-5.4",
+        provider: "openai-codex",
+        reasoning: true,
+        thinkingLevelMap: { off: "none", minimal: "low" },
+      },
+      modelRegistry: {
+        complete: async function complete(_model, _context, options) {
+          calls.push(options);
+          return { stopReason: "stop", content: [{ type: "text", text: "ok" }] };
+        },
+      },
+    },
+    "hello",
+  );
+  assert.equal(calls[0].reasoning, "off");
+  assert.equal(calls[0].reasoningEffort, "none");
+});
+
+test("session title LLM returns empty for thinking-only responses", async () => {
+  const text = await llmSessionTitle(
+    {
+      model: { id: "gpt-5.6-luna", provider: "openai-codex" },
+      modelRegistry: {
+        complete: async () => ({
+          stopReason: "length",
+          errorMessage: "",
+          content: [{ type: "thinking" }],
+        }),
+      },
+    },
+    "你有哪些能力？",
+  );
+  assert.equal(text, "");
+});
+
+test("session title LLM returns empty without modelRegistry.complete", async () => {
+  assert.equal(await llmSessionTitle({ model: { provider: "openai-codex" } }, "hello"), "");
+  assert.equal(await llmSessionTitle({ modelRegistry: { complete: async () => "x" } }, "hello"), "");
+});
+
+test("session title ignores errored assistant messages", () => {
+  assert.equal(
+    assistantMessageText({
+      stopReason: "error",
+      content: [{ type: "text", text: "nope" }],
+    }),
+    "",
+  );
+  assert.equal(
+    assistantMessageText({
+      stopReason: "stop",
+      content: [{ type: "thinking", thinking: "..." }],
+    }),
+    "",
+  );
+  assert.equal(
+    assistantMessageText({
+      stopReason: "stop",
+      content: [{ type: "text", text: "深圳美食推荐" }],
+    }),
+    "深圳美食推荐",
+  );
+});
+
+test("session title fire-and-forget does not wait for the LLM", async () => {
+  const named = [];
+  let release;
+  const llmTitle = () =>
+    new Promise((resolve) => {
+      release = resolve;
+    });
+  const pending = [];
+  const pi = {
+    getSessionName: () => "",
+    setSessionName: (name) => named.push(name),
+  };
+  const ctx = { ui: { sessionId: "pi:/tmp/defer.json", setTitle() {} } };
+  await maybeGenerateSessionTitle(pi, { prompt: "帮我查一下深圳美食" }, ctx, {
+    fireAndForget: true,
+    pending,
+    llmTitle,
+  });
+  assert.deepEqual(named, []);
+  release("Deferred Title");
+  await Promise.all(pending);
+  assert.deepEqual(named, ["Deferred Title"]);
+});
+
+test("session title uses LLM result and setTitle", async () => {
+  const named = [];
+  const titles = [];
+  const pi = {
+    getSessionName: () => "",
+    setSessionName: (name) => named.push(name),
+  };
+  const ctx = {
+    ui: {
+      sessionId: "pi:/tmp/a.json",
+      setTitle: (title) => titles.push(title),
+    },
+  };
+  await maybeGenerateSessionTitle(pi, { prompt: "帮我写一份发布计划" }, ctx, {
+    llmTitle: async () => '"Launch Plan"',
+  });
+  assert.deepEqual(named, ["Launch Plan"]);
+  assert.deepEqual(titles, ["Launch Plan"]);
+});
+
+test("session title does not set a title when LLM returns nothing", async () => {
+  const named = [];
+  const pi = { getSessionName: () => "", setSessionName: (name) => named.push(name) };
+  const ctx = { ui: { sessionId: "pi:/tmp/b.json", setTitle() {} } };
+  await maybeGenerateSessionTitle(pi, { prompt: "帮我查一下深圳美食" }, ctx, {
+    llmTitle: async () => "",
+  });
+  assert.deepEqual(named, []);
+});
+
+test("session title does not run twice for the same session", async () => {
+  let calls = 0;
+  const attempted = new Set();
+  const pi = { getSessionName: () => "", setSessionName() {} };
+  const ctx = { ui: { sessionId: "pi:/tmp/c.json", setTitle() {} } };
+  const deps = {
+    attempted,
+    llmTitle: async () => {
+      calls += 1;
+      return "Once";
+    },
+  };
+  await maybeGenerateSessionTitle(pi, { prompt: "hello" }, ctx, deps);
+  await maybeGenerateSessionTitle(pi, { prompt: "hello again" }, ctx, deps);
+  assert.equal(calls, 1);
+});
+
+test("session title skips when pi already has a session name", async () => {
+  let llmCalled = false;
+  const pi = { getSessionName: () => "Already Named", setSessionName() {} };
+  const ctx = { ui: { sessionId: "pi:/tmp/d.json", setTitle() {} } };
+  await maybeGenerateSessionTitle(pi, { prompt: "hello" }, ctx, {
+    llmTitle: async () => {
+      llmCalled = true;
+      return "Nope";
+    },
+  });
+  assert.equal(llmCalled, false);
+});
