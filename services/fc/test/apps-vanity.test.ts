@@ -48,6 +48,45 @@ test("the label carries an id suffix because slugs are only unique per team", ()
   assert.equal(appPublicUrl("website", APP_ID, env), `https://website-18e4ecad.${DOMAIN}`);
 });
 
+test("a non-ascii slug becomes a legal hostname instead of a failed deploy", () => {
+  // `slugify` keeps CJK on purpose (it is what stops every Chinese-named app
+  // in a team collapsing to `app`), so the slug routinely is not ASCII. The
+  // label built from it went to Alibaba FC as a custom domain name and was
+  // rejected — three of seventeen apps on the live deployment have such a
+  // slug, two of them stuck in deploy_error.
+  const label = appPublicLabel("teamclu-官网", APP_ID);
+  assert.equal(label, "xn--teamclu--18e4ecad-nx65apz36b");
+  assert.match(label!, /^[a-z0-9-]+$/, "a DNS label is ASCII letters, digits and hyphens");
+  assert.equal(
+    appPublicUrl("teamclu-官网", APP_ID, env),
+    `https://xn--teamclu--18e4ecad-nx65apz36b.${DOMAIN}`,
+  );
+});
+
+test("the id prefix survives the encoding, so the host still routes", () => {
+  // The prefix ends up INSIDE the punycode, with no readable `-18e4ecad` to
+  // split on. Parsing has to decode before it splits, or every app this fixes
+  // would deploy to a hostname that then resolves to nothing.
+  const label = appPublicLabel("teamclu-官网", APP_ID);
+  assert.deepEqual(parseAppPublicHost(`${label}.${DOMAIN}`, env), {
+    slug: "teamclu-官网",
+    idPrefix: "18e4ecad",
+  });
+});
+
+test("a label too long for DNS gets no vanity host at all", () => {
+  // Fail closed: 63 bytes is the hard limit, and a hostname no certificate can
+  // cover is worse than falling back to the app's FC trigger URL.
+  //
+  // 60 characters, not 40: punycode compresses a repeated character hard
+  // (40 of them still encode to 58 bytes), and `domainToASCII` enforces no
+  // length limit of its own — the check here is the only thing standing
+  // between a very long name and an illegal hostname.
+  const long = "验".repeat(60);
+  assert.equal(appPublicLabel(long, APP_ID), null);
+  assert.equal(appPublicUrl(long, APP_ID, env), null);
+});
+
 test("no apps domain means no public URL at all", () => {
   assert.equal(appPublicUrl("website", APP_ID, {} as NodeJS.ProcessEnv), null);
   assert.equal(parseAppPublicHost(`website-18e4ecad.${DOMAIN}`, {} as NodeJS.ProcessEnv), null);
