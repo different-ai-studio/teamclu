@@ -33,9 +33,11 @@ export const TEAM_SHARED_PROVIDER_ID = 'team'
  * Deliberately NOT sourced from the cloud team config: that made every member's
  * model menu depend on a round-trip that could come back stale or empty, for a
  * list that has not changed in the product's lifetime.
+ *
+ * The id is also the display name. These used to carry translated labels
+ * (标准 / 高级 / 旗舰) shown in place of the id, which made the tier a user picks
+ * unrecognizable as the tier named in billing, usage reports and support
+ * threads — all of which speak `default` / `pro` / `max`. A tier is an
+ * identifier, not prose, so it is not translated.
  */
-export const TEAM_MODEL_TIERS: ReadonlyArray<{ id: string; labelKey: string; label: string }> = [
-  { id: 'default', labelKey: 'settings.llm.teamTier.default', label: '标准' },
-  { id: 'pro', labelKey: 'settings.llm.teamTier.pro', label: '高级' },
-  { id: 'max', labelKey: 'settings.llm.teamTier.max', label: '旗舰' },
-]
+export const TEAM_MODEL_TIERS: ReadonlyArray<string> = ['default', 'pro', 'max']
