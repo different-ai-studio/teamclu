@@ -922,6 +922,7 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
         crate::sync::app_build::ERR_OUTPUT_MISSING,
         crate::sync::app_build::ERR_ARTIFACT_TOO_LARGE,
         crate::sync::app_build::ERR_LOCKFILE_MISMATCH,
+        crate::sync::app_build::ERR_NO_PACKAGE_JSON,
         crate::sync::app_build::ERR_INSTALL_TIMEOUT,
         crate::sync::app_build::ERR_BUILD_TIMEOUT,
         "git repo URL",
