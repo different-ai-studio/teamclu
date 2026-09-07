@@ -954,6 +954,85 @@ export function createSupabaseBusinessRepository(options) {
       };
     },
 
+    // ── team credits ────────────────────────────────────────────────────────
+    // Every read and write goes through the AI gateway rather than these tables
+    // directly: it is the ledger's only writer (design §4.9.1), and routing reads
+    // the same way keeps period boundaries and shapes identical on both sides of
+    // the billing screen.
+    //
+    // Permission split per §12.6: balance and usage are visible to every member
+    // — an exhausted wallet stops their work, so they must be able to see why —
+    // while the ledger and every mutation are owner-only.
+    //
+    // These are restored, not new. They were adjacent to the LiteLLM block that
+    // `feat(fc)!: remove LiteLLM token-usage reporting` deleted, and went with
+    // it, leaving `routes/team-credits.ts` calling eight methods no repository
+    // implemented: every credits and quota endpoint answered
+    // `ctx.repository.<method> is not a function`. Both that file and this one
+    // kept importing `aiGateway` without using it, which is what the deletion
+    // left behind.
+    async getTeamCredits(teamId: string) {
+      await requireCallerTeamMember(teamId);
+      const [summary, usage] = await Promise.all([
+        aiGateway.creditsSummary(teamId),
+        aiGateway.usage(teamId, { range: "month" }),
+      ]);
+      return {
+        teamId,
+        balanceCredits: summary.balanceCredits ?? 0,
+        period: { range: usage.range, startUtc: usage.startUtc, endUtc: usage.endUtc },
+        usedCredits: usage.summary?.credits ?? 0,
+      };
+    },
+    async getCreditUsage(teamId: string, opts: { range?: string; date?: string } = {}) {
+      await requireCallerTeamMember(teamId);
+      return aiGateway.usage(teamId, opts);
+    },
+    async getCreditLedger(teamId: string, opts: { limit?: number } = {}) {
+      await requireCallerTeamOwner(teamId);
+      return aiGateway.ledger(teamId, opts.limit);
+    },
+    async topUpCredits(teamId: string, input: any) {
+      await requireCallerTeamOwner(teamId);
+      const amount = Number(input?.amountCredits);
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        throw new ApiError(400, "invalid_request", "amountCredits must be a positive integer");
+      }
+      // Required rather than generated here: an idempotency key the server
+      // invents is a new key on every retry, which defeats the point.
+      if (!input?.idempotencyKey) {
+        throw new ApiError(400, "invalid_request", "idempotencyKey is required");
+      }
+      return aiGateway.topUp(teamId, {
+        amountCredits: amount,
+        kind: input.kind ?? "top_up",
+        idempotencyKey: input.idempotencyKey,
+        note: input.note ?? null,
+      });
+    },
+    async listCreditPackages(teamId: string) {
+      await requireCallerTeamMember(teamId);
+      // Resolves to the `./stripe.js` import, not to this method: a property of
+      // an object literal is not in scope inside its own body.
+      return { items: await listCreditPackages() };
+    },
+    async createCreditCheckoutSession(teamId: string, input: any) {
+      await requireCallerTeamOwner(teamId);
+      const priceId = String(input?.priceId ?? "").trim();
+      if (!priceId) {
+        throw new ApiError(400, "invalid_request", "priceId is required");
+      }
+      return createCheckoutSession({ teamId, priceId });
+    },
+    async getMemberQuotas(teamId: string) {
+      await requireCallerTeamMember(teamId);
+      return aiGateway.quotas(teamId);
+    },
+    async setMemberQuotas(teamId: string, input: any) {
+      await requireCallerTeamOwner(teamId);
+      return aiGateway.setQuotas(teamId, input ?? {});
+    },
+
     async listTeamActors(teamId, { kind = null, limit = 500 } = {}) {
       let query = supabase
         .from("actor_directory")
