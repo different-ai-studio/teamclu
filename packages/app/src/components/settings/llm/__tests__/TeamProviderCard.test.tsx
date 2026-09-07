@@ -31,9 +31,11 @@ describe('TeamProviderCard', () => {
     for (const id of ['default', 'pro', 'max']) {
       expect(screen.getByText(id)).toBeTruthy()
     }
-    expect(screen.getByText('标准')).toBeTruthy()
-    expect(screen.getByText('高级')).toBeTruthy()
-    expect(screen.getByText('旗舰')).toBeTruthy()
+    // The tier id is the display name — never a translated label, so that the
+    // tier picked here is the tier named in billing and usage reports.
+    for (const label of ['标准', '高级', '旗舰']) {
+      expect(screen.queryByText(label)).toBeNull()
+    }
 
     // The whole point of the card: the team's plan is the credential, so there
     // is no control here that could take it away.

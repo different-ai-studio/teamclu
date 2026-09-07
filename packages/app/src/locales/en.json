@@ -1568,11 +1568,6 @@
       "teamProviderName": "Team Model",
       "teamProviderPinned": "Built-in",
       "teamProviderDesc": "Provided and billed by your team — nothing to configure",
-      "teamTier": {
-        "default": "Standard",
-        "pro": "Advanced",
-        "max": "Flagship"
-      },
       "availableModels": "Available Models"
     },
     "piLlm": {

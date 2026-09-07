@@ -291,8 +291,8 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&global).unwrap();
         let models = parsed["provider"]["team"]["models"].as_object().unwrap();
         assert_eq!(models.len(), 3, "exactly the three tiers");
-        for (id, label) in crate::team_provider::TEAM_MODEL_TIERS {
-            assert_eq!(models[id]["name"].as_str(), Some(label), "tier {id}");
+        for id in crate::team_provider::TEAM_MODEL_TIERS {
+            assert_eq!(models[id]["name"].as_str(), Some(id), "tier {id}");
         }
         assert!(
             !models.contains_key("model-a"),

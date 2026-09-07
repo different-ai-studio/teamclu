@@ -17,8 +17,13 @@ use crate::DEFAULT_TEAM_REPO_DIR;
 /// Sourcing this list from the cloud instead (which is what it used to do) made
 /// every member's model menu depend on a network round-trip that could return
 /// stale or empty, for a list that has not changed in the product's lifetime.
-pub const TEAM_MODEL_TIERS: [(&str, &str); 3] =
-    [("default", "标准"), ("pro", "高级"), ("max", "旗舰")];
+///
+/// The id is also the display name. These used to carry Chinese labels
+/// (标准 / 高级 / 旗舰) that were shown instead of the id, which made the tier a
+/// user picks in the model menu unrecognizable as the tier named in billing,
+/// usage reports and support threads — all of which speak `default` / `pro` /
+/// `max`. A tier is an identifier, not prose, so it is not translated.
+pub const TEAM_MODEL_TIERS: [&str; 3] = ["default", "pro", "max"];
 
 /// The base URL a RUNTIME should call, which is not the one the daemon calls.
 ///
@@ -132,11 +137,11 @@ pub fn mutate_team_provider(
         ManagedLlmState::Enabled(provider) => {
             // Pinned, not read from `provider.models` (see TEAM_MODEL_TIERS).
             let mut models_out = serde_json::Map::new();
-            for (id, label) in TEAM_MODEL_TIERS {
+            for id in TEAM_MODEL_TIERS {
                 models_out.insert(
                     id.to_string(),
                     serde_json::json!({
-                        "name": label,
+                        "name": id,
                         "limit": { "context": 256000, "output": 16000 }
                     }),
                 );
@@ -423,8 +428,8 @@ mod tests {
 
         let models = config["provider"]["team"]["models"].as_object().unwrap();
         assert_eq!(models.len(), 3);
-        for (id, label) in TEAM_MODEL_TIERS {
-            assert_eq!(models[id]["name"].as_str(), Some(label), "tier {id}");
+        for id in TEAM_MODEL_TIERS {
+            assert_eq!(models[id]["name"].as_str(), Some(id), "tier {id}");
         }
         assert!(
             !models.contains_key("some-cloud-model"),

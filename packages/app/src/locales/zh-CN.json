@@ -1568,11 +1568,6 @@
       "teamProviderName": "团队模型",
       "teamProviderPinned": "内置",
       "teamProviderDesc": "由团队统一提供并计费，无需配置",
-      "teamTier": {
-        "default": "标准",
-        "pro": "高级",
-        "max": "旗舰"
-      },
       "availableModels": "可用模型"
     },
     "piLlm": {
