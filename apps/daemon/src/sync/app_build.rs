@@ -217,13 +217,23 @@ fn kill_process_tree(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-/// Prepare the workdir for a deploy build: fetch, clean tree, checkout `sha`.
+/// Message on the commit a deploy makes for work the agent left uncommitted.
+const DEPLOY_COMMIT_MESSAGE: &str = "chore(app): publish workdir for deploy";
+
+/// Prepare the workdir for a deploy build: fetch, publish pending work,
+/// checkout what is to be built.
 ///
-/// The fetch runs **before** the clean/pushed gate on purpose. That gate
-/// compares HEAD against remote-tracking refs, and refs left over from the
-/// previous deploy report a commit that was pushed minutes ago as unpushed
+/// The fetch runs **before** anything reads ahead/behind state on purpose. That
+/// state compares HEAD against remote-tracking refs, and refs left over from
+/// the previous deploy report a commit that was pushed minutes ago as unpushed
 /// local work — every deploy after the first one was refused as dirty.
-pub fn prepare_git_build(workdir: &Path, git: &BuildGitContext<'_>) -> anyhow::Result<()> {
+///
+/// Returns the sha to build when publishing moved HEAD past the one the caller
+/// asked for, and `None` when the caller's sha is what got checked out.
+pub fn prepare_git_build(
+    workdir: &Path,
+    git: &BuildGitContext<'_>,
+) -> anyhow::Result<Option<String>> {
     app_git::init_if_needed(workdir)?;
     // Re-stamped on every deploy so the shim path survives an amuxd upgrade
     // that moves the binary. Cheap, idempotent, and the only self-healing this
@@ -234,20 +244,41 @@ pub fn prepare_git_build(workdir: &Path, git: &BuildGitContext<'_>) -> anyhow::R
     let ssh = SshEnv::from_deploy_key_pem(git.deploy_key_pem)?;
     app_git::set_remote_origin(workdir, git.remote_url, Some(&ssh))?;
     app_git::fetch_origin(workdir, Some(&ssh))?;
-    app_git::ensure_clean_and_pushed(workdir)?;
-    app_git::checkout_fetched_sha(workdir, git.commit_sha)
+
+    // Whatever the agent left behind gets committed and pushed rather than
+    // refused. When that happens HEAD is already the commit to build, and
+    // checking out the caller's older sha would ship without it.
+    if let Some(published) =
+        app_git::publish_pending_work(workdir, Some(&ssh), DEPLOY_COMMIT_MESSAGE)?
+    {
+        return Ok(Some(published));
+    }
+
+    app_git::checkout_fetched_sha(workdir, git.commit_sha)?;
+    Ok(None)
+}
+
+/// A finished build: the artifact, and the commit it was made from.
+pub struct BuildOutput {
+    pub bytes: Vec<u8>,
+    /// Set only when the deploy published pending work and so built a commit
+    /// the caller did not know about. The caller must finalize with this one:
+    /// recording the sha it started with would name a commit that is not what
+    /// is now running.
+    pub git_commit_sha: Option<String>,
 }
 
 /// Run `pnpm install` then `pnpm build` in `workdir`, then zip the `.output` dir.
 ///
-/// When `git` is present the workdir must be clean, fetched, and checked out
-/// at `git.commit_sha` before building (see [`prepare_git_build`]).
+/// When `git` is present the workdir is fetched, published and checked out
+/// first (see [`prepare_git_build`]).
 pub fn build_artifact(
     workdir: &Path,
     git: Option<&BuildGitContext<'_>>,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<BuildOutput> {
+    let mut git_commit_sha = None;
     if let Some(ctx) = git {
-        prepare_git_build(workdir, ctx)?;
+        git_commit_sha = prepare_git_build(workdir, ctx)?;
     }
     run_with_timeout(
         "pnpm",
@@ -276,7 +307,10 @@ pub fn build_artifact(
     if bytes.len() > MAX_ARTIFACT_BYTES {
         anyhow::bail!("{ERR_ARTIFACT_TOO_LARGE}");
     }
-    Ok(bytes)
+    Ok(BuildOutput {
+        bytes,
+        git_commit_sha,
+    })
 }
 
 #[cfg(test)]

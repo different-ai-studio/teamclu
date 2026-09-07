@@ -85,7 +85,8 @@ const seedResult = (
 const buildResult = (
   outcome: "built" | "failed" | "unreachable",
   error: string | null = null,
-) => ({ outcome, error });
+  gitCommitSha: string | null = null,
+) => ({ outcome, error, gitCommitSha });
 
 const gitCred = {
   remoteUrl: "git@gitea:team/app-1.git",
@@ -629,6 +630,37 @@ describe("apps-store deploy", () => {
       fcEndpoint: "https://x.fcapp.run",
     });
     expect(useAppsStore.getState().deployingIds).toEqual([]);
+  });
+
+  it("finalizes with the commit the daemon built, not the one we asked for", async () => {
+    // A deploy publishes whatever the agent left uncommitted, so HEAD moves
+    // past the sha read off Gitea before any of this started. Recording that
+    // one would name a commit the running function was not built from.
+    mocks.deployApp.mockResolvedValueOnce({
+      ...readyApp(),
+      fcStatus: "awaiting_build",
+      presignedPut: "https://oss/put?sig=x",
+      deployToken: "tok-1",
+      gitCommitSha: "abc1234567890",
+    });
+    mocks.buildDaemonApp.mockResolvedValueOnce(
+      buildResult("built", null, "def4567890123"),
+    );
+    mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp(), fcStatus: "live" });
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().deploy("app-1");
+
+    // The build still ASKED for the sha we resolved — publishing is the
+    // daemon's decision, made once it sees the workdir.
+    expect(mocks.buildDaemonApp).toHaveBeenCalledWith(
+      "app-1",
+      "team-1",
+      expect.objectContaining({ gitCommitSha: "abc1234567890" }),
+    );
+    expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
+      gitCommitSha: "def4567890123",
+      deployToken: "tok-1",
+    });
   });
 
   it("authMode=none prompts for public deploy confirmation", async () => {

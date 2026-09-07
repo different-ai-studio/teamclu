@@ -1364,6 +1364,7 @@
     "deleted": "App deleted",
     "deployErrorReason": {
       "uncommitted": "The workspace has uncommitted or unpushed changes. Commit and push, then deploy.",
+      "pushRejected": "The repo has commits this machine does not. Pull and resolve them, then deploy again.",
       "installTimeout": "Dependency install timed out after 10 minutes. Check the network or the lockfile, then retry.",
       "buildTimeout": "Build timed out after 10 minutes. Check the build script, then retry.",
       "artifactTooLarge": "Build output is over the 50 MiB limit. Trim it, then retry.",
