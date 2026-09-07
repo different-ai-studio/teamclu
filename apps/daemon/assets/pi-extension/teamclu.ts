@@ -79,6 +79,7 @@ type TeamcluExtensionUIContext = {
 };
 type ExtensionContext = {
   ui: TeamcluExtensionUIContext;
+  /** Current model; pi sets `.provider` (e.g. `"anthropic"`). */
   model?: unknown;
   modelRegistry?: {
     complete?(
@@ -122,6 +123,30 @@ type ExtensionAPI = {
   }): void;
   registerProvider(id: string, config: Record<string, unknown>): void;
 };
+
+// ---------------------------------------------------------------------------
+// Anthropic OAuth system prompt (teamclu#1260)
+// ---------------------------------------------------------------------------
+
+/** pi's default prompt embeds a self-documentation index under "Pi documentation …".
+ *  Anthropic's OAuth subscription discriminator rejects that block as non–Claude Code
+ *  usage. TeamClu users never need it; strip for the native anthropic provider only.
+ *  Stop before project_context, skills (`formatSkillsForPrompt`), or cwd — pi 0.84.2 order. */
+const PI_SELF_DOCUMENTATION_BLOCK =
+  /\n\nPi documentation[\s\S]*?(?=\n\n<project_context>|\n\nThe following skills provide|\nCurrent working directory:)/;
+
+function stripPiSelfDocumentation(prompt: string): string {
+  return prompt.replace(PI_SELF_DOCUMENTATION_BLOCK, "");
+}
+
+function shouldStripPiSelfDocumentation(ctx?: ExtensionContext): boolean {
+  const model = ctx?.model;
+  return (
+    !!model &&
+    typeof model === "object" &&
+    (model as { provider?: unknown }).provider === "anthropic"
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Session context injection (concurrent session deeplink correctness)
@@ -1216,11 +1241,11 @@ function registerQuestionTool(pi: ExtensionAPI, ownTools: Set<string>): void {
 // ---------------------------------------------------------------------------
 // Fire-and-forget on `before_agent_start`: capture model / setTitle while
 // ctx is active, then `complete()` without awaiting so the first turn is
-// not blocked. Title `complete()` does not pass `sessionId`, so it does
-// not share the agent Codex websocket. Uses the session's current model
-// + auth. Thinking is disabled from that model's `reasoning` /
-// `thinkingLevelMap`. amuxd turns `setTitle` into `session_title` and
-// adopts it over the frontend first-message title.
+// not blocked. Only `ui.setTitle` runs after the hook — never async
+// `pi.getSessionName` / `setSessionName` (stale ctx). Sync hook may still
+// read `getSessionName()` to skip sessions pi already named. A sidecar file
+// `<pi-session-file>-teamclu-title` sidecar is written only after a successful
+// setTitle so host restarts skip re-generation and LLM failures can retry.
 
 const SESSION_TITLE_MAX_LEN = 80;
 const SESSION_TITLE_MAX_INPUT = 2000;
@@ -1234,15 +1259,61 @@ const HUMAN_MENTION_ONLY_LINE_RE =
 const INLINE_HUMAN_MENTION_RE =
   /\[Mentioned:[^\]]*\|instruction:[^\]]*\]/gi;
 
-const titleAttemptedSessionIds = new Set<string>();
+const titleInFlightSessionIds = new Set<string>();
+const SESSION_TITLE_MARKER_SUFFIX = "-teamclu-title";
+/** Pre-lint suffix; keep readable for one release so existing markers still match. */
+const LEGACY_SESSION_TITLE_MARKER_SUFFIX = [".", "teamclu", "-title"].join("");
+
+/** `ctx.ui.sessionId` is `pi:<absolute session file path>`. */
+function piSessionFilePath(backendSessionId: string): string | undefined {
+  const id = backendSessionId.trim();
+  if (!id.startsWith("pi:")) return undefined;
+  const filePath = id.slice(3).trim();
+  return filePath || undefined;
+}
+
+function sessionTitleMarkerPaths(backendSessionId: string): string[] {
+  const sessionFile = piSessionFilePath(backendSessionId);
+  if (!sessionFile) return [];
+  return [
+    `${sessionFile}${SESSION_TITLE_MARKER_SUFFIX}`,
+    `${sessionFile}${LEGACY_SESSION_TITLE_MARKER_SUFFIX}`,
+  ];
+}
+
+function sessionTitleMarkerPath(backendSessionId: string): string | undefined {
+  return sessionTitleMarkerPaths(backendSessionId)[0];
+}
+
+function hasSessionTitleMarker(backendSessionId: string): boolean {
+  for (const marker of sessionTitleMarkerPaths(backendSessionId)) {
+    try {
+      if (fs.existsSync(marker)) return true;
+    } catch {
+      // try next
+    }
+  }
+  return false;
+}
+
+function writeSessionTitleMarker(backendSessionId: string, title: string): void {
+  const marker = sessionTitleMarkerPath(backendSessionId);
+  if (!marker) return;
+  try {
+    fs.writeFileSync(marker, JSON.stringify({ title, at: Date.now() }), "utf8");
+  } catch (e) {
+    console.error(`[teamclu] session title marker write failed: ${e}`);
+  }
+}
 
 type SessionTitleJob = {
+  backendSessionId: string;
   prompt: string;
   model: unknown;
   registry: ExtensionContext["modelRegistry"];
   setTitle?: (title: string) => void;
-  setSessionName?: (name: string, source?: string) => void;
-  getSessionName?: () => string | undefined;
+  /** Snapshot from sync `getSessionName()` in the hook — do not re-read pi async. */
+  hadSessionNameAtStart: boolean;
 };
 
 function stripMentionsForSessionTitle(content: string): string {
@@ -1412,7 +1483,8 @@ function startSessionTitle(
 ): void {
   const sessionId = backendSessionIdFromContext(ctx);
   if (!sessionId) return;
-  if (titleAttemptedSessionIds.has(sessionId)) return;
+  if (hasSessionTitleMarker(sessionId)) return;
+  if (titleInFlightSessionIds.has(sessionId)) return;
   if (String(pi.getSessionName?.() ?? "").trim()) return;
 
   const raw = String(event.prompt ?? "");
@@ -1432,14 +1504,16 @@ function startSessionTitle(
     return;
   }
 
-  titleAttemptedSessionIds.add(sessionId);
+  titleInFlightSessionIds.add(sessionId);
   void applySessionTitle({
+    backendSessionId: sessionId,
     prompt,
     model,
     registry,
     setTitle: ui.setTitle?.bind(ui),
-    setSessionName: pi.setSessionName?.bind(pi),
-    getSessionName: () => pi.getSessionName?.(),
+    hadSessionNameAtStart: false,
+  }).finally(() => {
+    titleInFlightSessionIds.delete(sessionId);
   });
 }
 
@@ -1452,16 +1526,11 @@ async function applySessionTitle(job: SessionTitleJob): Promise<void> {
   } catch (e) {
     console.error(`[teamclu] session title LLM failed: ${e}`);
   }
-  if (!title) return;
-  if (String(job.getSessionName?.() ?? "").trim()) return;
+  if (!title || job.hadSessionNameAtStart) return;
 
   try {
-    job.setSessionName?.(title);
-  } catch (e) {
-    console.error(`[teamclu] setSessionName failed: ${e}`);
-  }
-  try {
     job.setTitle?.(title);
+    writeSessionTitleMarker(job.backendSessionId, title);
   } catch (e) {
     console.error(`[teamclu] setTitle failed: ${e}`);
   }
@@ -1493,12 +1562,21 @@ export default async function (pi: ExtensionAPI) {
   // -- Permission gate -------------------------------------------------------
   pi.on("before_agent_start", async (event, ctx) => {
     startSessionTitle(pi, event, ctx);
+
+    const original = String(event.systemPrompt ?? "").trim();
+    let base = original;
+    if (shouldStripPiSelfDocumentation(ctx)) {
+      base = stripPiSelfDocumentation(base);
+    }
+
     const backendSessionId = backendSessionIdFromContext(ctx);
-    if (!backendSessionId) return undefined;
-    const append = await fetchSessionPromptAppend(backendSessionId);
-    if (!append) return undefined;
-    const base = String(event.systemPrompt ?? "").trim();
-    const systemPrompt = base ? `${base}\n\n${append}` : append;
+    const append = backendSessionId
+      ? await fetchSessionPromptAppend(backendSessionId)
+      : undefined;
+
+    if (base === original && !append) return undefined;
+
+    const systemPrompt = append ? (base ? `${base}\n\n${append}` : append) : base;
     return { systemPrompt };
   });
 

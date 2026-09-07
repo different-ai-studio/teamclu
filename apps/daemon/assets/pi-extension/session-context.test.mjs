@@ -135,30 +135,68 @@ function sessionPromptCacheKey(backendSessionId, generationId) {
   return `${gen}:${sessionId}`;
 }
 
-/** Mirrors session prompt cache + before_agent_start append in teamclu.ts */
-async function appendSystemPromptForTurn(event, ctx, deps = {}) {
-  const cache = deps.cache ?? new Map();
-  const backendSessionId = backendSessionIdFromContext(ctx);
-  if (!backendSessionId) return undefined;
+/** Mirrors pi self-doc strip + session prompt cache + before_agent_start in teamclu.ts */
+const PI_SELF_DOCUMENTATION_BLOCK =
+  /\n\nPi documentation[\s\S]*?(?=\n\n<project_context>|\n\nThe following skills provide|\nCurrent working directory:)/;
 
-  const cacheKey = sessionPromptCacheKey(
-    backendSessionId,
-    deps.generationId ?? "gen-test",
+function stripPiSelfDocumentation(prompt) {
+  return prompt.replace(PI_SELF_DOCUMENTATION_BLOCK, "");
+}
+
+function shouldStripPiSelfDocumentation(ctx) {
+  const model = ctx?.model;
+  return (
+    !!model &&
+    typeof model === "object" &&
+    model.provider === "anthropic"
   );
-  let append = cacheKey ? cache.get(cacheKey) : undefined;
-  if (!append) {
-    const fetchPrompt = deps.fetchPrompt;
-    if (!fetchPrompt) return undefined;
-    const fetched = await fetchPrompt(backendSessionId);
-    if (!fetched?.append) return undefined;
-    append = fetched.append;
-    if (cacheKey && fetched.rosterResolved === true) {
-      cache.set(cacheKey, append);
+}
+
+const SAMPLE_PI_PROMPT = `You are an expert coding assistant operating inside pi.
+
+Available tools:
+- read: Read files
+
+Guidelines:
+- Be concise
+
+Pi documentation (read only when the user asks about pi itself):
+- When asked about: extensions (docs/extensions.md), themes (docs/themes.md)
+Current working directory: /tmp`;
+
+async function appendSystemPromptForTurn(event, ctx, deps = {}) {
+  const original = String(event?.systemPrompt ?? "").trim();
+  let base = original;
+  if (shouldStripPiSelfDocumentation(ctx)) {
+    base = stripPiSelfDocumentation(base);
+  }
+
+  const backendSessionId = backendSessionIdFromContext(ctx);
+  let append;
+  if (backendSessionId) {
+    const cache = deps.cache ?? new Map();
+    const cacheKey = sessionPromptCacheKey(
+      backendSessionId,
+      deps.generationId ?? "gen-test",
+    );
+    append = cacheKey ? cache.get(cacheKey) : undefined;
+    if (!append) {
+      const fetchPrompt = deps.fetchPrompt;
+      if (fetchPrompt) {
+        const fetched = await fetchPrompt(backendSessionId);
+        if (fetched?.append) {
+          append = fetched.append;
+          if (cacheKey && fetched.rosterResolved === true) {
+            cache.set(cacheKey, append);
+          }
+        }
+      }
     }
   }
 
-  const base = String(event?.systemPrompt ?? "").trim();
-  const systemPrompt = base ? `${base}\n\n${append}` : append;
+  if (base === original && !append) return undefined;
+
+  const systemPrompt = append ? (base ? `${base}\n\n${append}` : append) : base;
   return { systemPrompt };
 }
 
@@ -391,8 +429,12 @@ async function llmSessionTitle(ctx, prompt) {
 async function maybeGenerateSessionTitle(pi, event, ctx, deps = {}) {
   const sessionId = backendSessionIdFromContext(ctx);
   if (!sessionId) return;
-  const attempted = deps.attempted ?? new Set();
-  if (attempted.has(sessionId)) return;
+  const titleMarkers = deps.titleMarkers ?? new Map();
+  const hasMarker = deps.hasTitleMarker ?? ((id) => titleMarkers.has(id));
+  const writeMarker = deps.writeTitleMarker ?? ((id, title) => titleMarkers.set(id, title));
+  const inFlight = deps.inFlight ?? new Set();
+  if (hasMarker(sessionId)) return;
+  if (inFlight.has(sessionId)) return;
   if (String(pi.getSessionName?.() ?? "").trim()) return;
 
   const raw = String(event.prompt ?? "");
@@ -400,31 +442,33 @@ async function maybeGenerateSessionTitle(pi, event, ctx, deps = {}) {
   const prompt = userPromptForTitle(raw);
   if (shouldSkipTitlePrompt(prompt)) return;
 
-  attempted.add(sessionId);
+  inFlight.add(sessionId);
   const ui = ctx.ui;
   const job = {
     prompt,
     model: ctx.model,
     registry: ctx.modelRegistry,
     setTitle: ui.setTitle?.bind(ui),
-    setSessionName: pi.setSessionName?.bind(pi),
-    getSessionName: () => pi.getSessionName?.(),
+    hadSessionNameAtStart: false,
     llmTitle: deps.llmTitle,
   };
 
   const apply = async () => {
-    let title = "";
     try {
-      title = sanitizeGeneratedTitle(
-        await (job.llmTitle?.({ model: job.model, modelRegistry: job.registry }, job.prompt) ?? ""),
-      );
-    } catch {
-      title = "";
+      let title = "";
+      try {
+        title = sanitizeGeneratedTitle(
+          await (job.llmTitle?.({ model: job.model, modelRegistry: job.registry }, job.prompt) ?? ""),
+        );
+      } catch {
+        title = "";
+      }
+      if (!title || job.hadSessionNameAtStart) return;
+      job.setTitle?.(title);
+      writeMarker(sessionId, title);
+    } finally {
+      inFlight.delete(sessionId);
     }
-    if (!title) return;
-    if (String(job.getSessionName?.() ?? "").trim()) return;
-    job.setSessionName?.(title);
-    job.setTitle?.(title);
   };
 
   if (deps.fireAndForget) {
@@ -458,8 +502,8 @@ test("session title treats cron run tokens as cron, not chat tokens", () => {
 
 test("session title does not run for cron job prompts", async () => {
   let llmCalled = false;
-  const attempted = new Set();
-  const pi = { getSessionName: () => "", setSessionName() {} };
+  const titleMarkers = new Map();
+  const pi = { getSessionName: () => "" };
   const ctx = { ui: { sessionId: "pi:/tmp/cron.json", setTitle() {} } };
   await maybeGenerateSessionTitle(
     pi,
@@ -469,7 +513,7 @@ test("session title does not run for cron job prompts", async () => {
     },
     ctx,
     {
-      attempted,
+      titleMarkers,
       llmTitle: async () => {
         llmCalled = true;
         return "Nope";
@@ -477,7 +521,7 @@ test("session title does not run for cron job prompts", async () => {
     },
   );
   assert.equal(llmCalled, false);
-  assert.equal(attempted.size, 0);
+  assert.equal(titleMarkers.size, 0);
 });
 
 test("session title strips TeamClu instruction wrappers to the user text", () => {
@@ -503,9 +547,14 @@ test("session title strips silent context wrappers", () => {
 
 test("session title sends unwrapped user text to the LLM", async () => {
   const seen = [];
-  const named = [];
-  const pi = { getSessionName: () => "", setSessionName: (name) => named.push(name) };
-  const ctx = { ui: { sessionId: "pi:/tmp/wrap.json", setTitle() {} } };
+  const titles = [];
+  const pi = { getSessionName: () => "" };
+  const ctx = {
+    ui: {
+      sessionId: "pi:/tmp/wrap.json",
+      setTitle: (title) => titles.push(title),
+    },
+  };
   const wrapped = [
     "[TeamClu Instructions — follow for all replies in this session. Do not acknowledge separately. Reply only to the user prompt that follows.]",
     "[system] 请使用中文回答",
@@ -519,7 +568,7 @@ test("session title sends unwrapped user text to the LLM", async () => {
     },
   });
   assert.deepEqual(seen, ["帮我查一下深圳美食"]);
-  assert.deepEqual(named, ["深圳美食推荐"]);
+  assert.deepEqual(titles, ["深圳美食推荐"]);
 });
 
 test("session title sanitizes model output", () => {
@@ -677,36 +726,34 @@ test("session title ignores errored assistant messages", () => {
 });
 
 test("session title fire-and-forget does not wait for the LLM", async () => {
-  const named = [];
+  const titles = [];
   let release;
   const llmTitle = () =>
     new Promise((resolve) => {
       release = resolve;
     });
   const pending = [];
-  const pi = {
-    getSessionName: () => "",
-    setSessionName: (name) => named.push(name),
+  const pi = { getSessionName: () => "" };
+  const ctx = {
+    ui: {
+      sessionId: "pi:/tmp/defer.json",
+      setTitle: (title) => titles.push(title),
+    },
   };
-  const ctx = { ui: { sessionId: "pi:/tmp/defer.json", setTitle() {} } };
   await maybeGenerateSessionTitle(pi, { prompt: "帮我查一下深圳美食" }, ctx, {
     fireAndForget: true,
     pending,
     llmTitle,
   });
-  assert.deepEqual(named, []);
+  assert.deepEqual(titles, []);
   release("Deferred Title");
   await Promise.all(pending);
-  assert.deepEqual(named, ["Deferred Title"]);
+  assert.deepEqual(titles, ["Deferred Title"]);
 });
 
 test("session title uses LLM result and setTitle", async () => {
-  const named = [];
   const titles = [];
-  const pi = {
-    getSessionName: () => "",
-    setSessionName: (name) => named.push(name),
-  };
+  const pi = { getSessionName: () => "" };
   const ctx = {
     ui: {
       sessionId: "pi:/tmp/a.json",
@@ -716,27 +763,31 @@ test("session title uses LLM result and setTitle", async () => {
   await maybeGenerateSessionTitle(pi, { prompt: "帮我写一份发布计划" }, ctx, {
     llmTitle: async () => '"Launch Plan"',
   });
-  assert.deepEqual(named, ["Launch Plan"]);
   assert.deepEqual(titles, ["Launch Plan"]);
 });
 
 test("session title does not set a title when LLM returns nothing", async () => {
-  const named = [];
-  const pi = { getSessionName: () => "", setSessionName: (name) => named.push(name) };
-  const ctx = { ui: { sessionId: "pi:/tmp/b.json", setTitle() {} } };
+  const titles = [];
+  const pi = { getSessionName: () => "" };
+  const ctx = {
+    ui: {
+      sessionId: "pi:/tmp/b.json",
+      setTitle: (title) => titles.push(title),
+    },
+  };
   await maybeGenerateSessionTitle(pi, { prompt: "帮我查一下深圳美食" }, ctx, {
     llmTitle: async () => "",
   });
-  assert.deepEqual(named, []);
+  assert.deepEqual(titles, []);
 });
 
 test("session title does not run twice for the same session", async () => {
   let calls = 0;
-  const attempted = new Set();
-  const pi = { getSessionName: () => "", setSessionName() {} };
+  const titleMarkers = new Map();
+  const pi = { getSessionName: () => "" };
   const ctx = { ui: { sessionId: "pi:/tmp/c.json", setTitle() {} } };
   const deps = {
-    attempted,
+    titleMarkers,
     llmTitle: async () => {
       calls += 1;
       return "Once";
@@ -745,6 +796,7 @@ test("session title does not run twice for the same session", async () => {
   await maybeGenerateSessionTitle(pi, { prompt: "hello" }, ctx, deps);
   await maybeGenerateSessionTitle(pi, { prompt: "hello again" }, ctx, deps);
   assert.equal(calls, 1);
+  assert.equal(titleMarkers.get("pi:/tmp/c.json"), "Once");
 });
 
 test("session title skips when pi already has a session name", async () => {
@@ -758,4 +810,109 @@ test("session title skips when pi already has a session name", async () => {
     },
   });
   assert.equal(llmCalled, false);
+});
+
+test("before_agent_start strips pi self-documentation for anthropic provider", async () => {
+  const result = await appendSystemPromptForTurn(
+    { systemPrompt: SAMPLE_PI_PROMPT },
+    { ui: makeUiContext("pi:/tmp/a.json"), model: { provider: "anthropic", id: "claude-sonnet-4-5" } },
+  );
+  assert.ok(result);
+  assert.match(result.systemPrompt, /Available tools:/);
+  assert.match(result.systemPrompt, /Current working directory: \/tmp/);
+  assert.doesNotMatch(result.systemPrompt, /Pi documentation/);
+  assert.doesNotMatch(result.systemPrompt, /When asked about:/);
+});
+
+test("before_agent_start leaves prompt unchanged for non-anthropic providers", async () => {
+  const result = await appendSystemPromptForTurn(
+    { systemPrompt: SAMPLE_PI_PROMPT },
+    { ui: makeUiContext("pi:/tmp/a.json"), model: { provider: "deepseek", id: "deepseek-chat" } },
+  );
+  assert.equal(result, undefined);
+});
+
+test("before_agent_start strips pi docs and appends session context for anthropic", async () => {
+  const result = await appendSystemPromptForTurn(
+    { systemPrompt: SAMPLE_PI_PROMPT },
+    { ui: makeUiContext("pi:/tmp/session-a.json"), model: { provider: "anthropic", id: "claude-haiku-4-5" } },
+    {
+      fetchPrompt: async (id) => ({
+        append: `[Ctx]\nbackend=${id}`,
+        rosterResolved: true,
+      }),
+    },
+  );
+  assert.match(result.systemPrompt, /Available tools:/);
+  assert.doesNotMatch(result.systemPrompt, /Pi documentation/);
+  assert.match(result.systemPrompt, /\[Ctx\]\nbackend=pi:\/tmp\/session-a.json/);
+});
+
+test("before_agent_start strips pi docs but keeps skills when no project_context", async () => {
+  const promptWithSkills = [
+    "You are an expert coding assistant operating inside pi.",
+    "",
+    "Available tools:",
+    "- read: Read files",
+    "",
+    "Guidelines:",
+    "- Be concise",
+    "",
+    "Pi documentation (read only when the user asks about pi itself):",
+    "- When asked about: extensions (docs/extensions.md)",
+    "",
+    "The following skills provide specialized instructions for specific tasks.",
+    "Use the read tool to load a skill's file when the task matches its description.",
+    "",
+    "<available_skills>",
+    "  <skill>",
+    "    <name>deploy</name>",
+    "    <description>Deploy apps</description>",
+    "  </skill>",
+    "</available_skills>",
+    "Current working directory: /tmp",
+  ].join("\n");
+
+  const result = await appendSystemPromptForTurn(
+    { systemPrompt: promptWithSkills },
+    { ui: makeUiContext("pi:/tmp/a.json"), model: { provider: "anthropic", id: "claude-sonnet-4-5" } },
+  );
+  assert.ok(result);
+  assert.doesNotMatch(result.systemPrompt, /Pi documentation/);
+  assert.match(result.systemPrompt, /The following skills provide/);
+  assert.match(result.systemPrompt, /<available_skills>/);
+  assert.match(result.systemPrompt, /Current working directory: \/tmp/);
+});
+
+test("before_agent_start strips pi docs but keeps project_context", async () => {
+  const promptWithContext = [
+    "You are an expert coding assistant operating inside pi.",
+    "",
+    "Guidelines:",
+    "- Be concise",
+    "",
+    "Pi documentation (read only when the user asks about pi itself):",
+    "- When asked about: extensions (docs/extensions.md)",
+    "",
+    "<project_context>",
+    "",
+    "Project-specific instructions and guidelines:",
+    "",
+    '<project_instructions path="AGENTS.md">',
+    "Use TypeScript strict mode.",
+    "</project_instructions>",
+    "",
+    "</project_context>",
+    "Current working directory: /tmp",
+  ].join("\n");
+
+  const result = await appendSystemPromptForTurn(
+    { systemPrompt: promptWithContext },
+    { ui: makeUiContext("pi:/tmp/a.json"), model: { provider: "anthropic", id: "claude-sonnet-4-5" } },
+  );
+  assert.ok(result);
+  assert.doesNotMatch(result.systemPrompt, /Pi documentation/);
+  assert.match(result.systemPrompt, /<project_context>/);
+  assert.match(result.systemPrompt, /Use TypeScript strict mode/);
+  assert.match(result.systemPrompt, /Current working directory: \/tmp/);
 });
