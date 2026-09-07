@@ -71,6 +71,14 @@ function AppName({ app }: { app: AppRow }) {
 }
 
 const ROW = 'flex w-full items-center gap-3 rounded-[9px] px-3 py-2 text-left'
+/**
+ * Fixed, so the meta column lands on one line across both groups.
+ *
+ * Sized to the download button, which is the widest thing that goes in it; a
+ * row whose trailing slot is a 16px chevron would otherwise pull its meta 50px
+ * further right than the row above it.
+ */
+const TRAILING = 'flex w-[68px] shrink-0 items-center justify-end'
 
 /** A row for an app that is already here — clicking it opens it in column two. */
 function LocalRow({ app, creator }: { app: AppRow; creator: string | null }) {
@@ -84,7 +92,9 @@ function LocalRow({ app, creator }: { app: AppRow; creator: string | null }) {
       <TypeMark app={app} />
       <AppName app={app} />
       <AppMeta app={app} creator={creator} />
-      <ChevronRight className="h-4 w-4 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+      <span className={TRAILING}>
+        <ChevronRight className="h-4 w-4 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+      </span>
     </button>
   )
 }
@@ -100,6 +110,7 @@ function PendingRow({ app, creator }: { app: AppRow; creator: string | null }) {
       <TypeMark app={app} />
       <AppName app={app} />
       <AppMeta app={app} creator={creator} />
+      <span className={TRAILING} />
     </div>
   )
 }
@@ -122,19 +133,21 @@ function RemoteRow({
       <TypeMark app={app} />
       <AppName app={app} />
       <AppMeta app={app} creator={creator} />
-      <Button
-        variant="ghost"
-        onClick={onDownload}
-        disabled={busy}
-        className="h-7 shrink-0 gap-1.5 rounded-[7px] px-2.5 text-[12px]"
-      >
-        {busy ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : (
-          <Download className="h-3.5 w-3.5" />
-        )}
-        {t('apps.libraryDownload', '下载')}
-      </Button>
+      <span className={TRAILING}>
+        <Button
+          variant="ghost"
+          onClick={onDownload}
+          disabled={busy}
+          className="h-7 gap-1.5 rounded-[7px] px-2 text-[12px]"
+        >
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Download className="h-3.5 w-3.5" />
+          )}
+          {t('apps.libraryDownload', '下载')}
+        </Button>
+      </span>
     </div>
   )
 }
