@@ -1527,6 +1527,8 @@
       "closeWindowTray": "Minimize to tray (keep agent)",
       "closeWindowQuit": "Quit and stop agent",
       "closeWindowError": "Could not update close preference",
+      "autoUpdate": "Automatic updates",
+      "autoUpdateDesc": "Check for updates in the background on startup and every few hours. You can still check manually from the settings footer.",
       "notifications": "Notifications",
       "notificationsDesc": "Receive desktop notifications",
       "mqttBroker": "MQTT broker",
