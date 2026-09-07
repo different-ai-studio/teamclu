@@ -9,7 +9,7 @@ import {
   decodeTeamShareTarget,
   decodeVersionHistoryTarget,
 } from "@/lib/tabs/teamshare-target"
-import { decodeAppDataTarget } from "@/lib/tabs/app-tabs"
+import { decodeAppDataTarget, isAppLibraryTarget } from "@/lib/tabs/app-tabs"
 
 // Every native tab body is a large, rarely opened subtree (team share, apps,
 // knowledge versioning). They load on first render so the tab bar itself
@@ -37,6 +37,10 @@ const TeamShareTabContent = lazyNamed(
 const AppDataTabContent = lazyNamed(
   () => import("@/components/apps/AppDataTabContent"),
   "AppDataTabContent",
+)
+const AppLibraryView = lazyNamed(
+  () => import("@/components/apps/AppLibraryView"),
+  "AppLibraryView",
 )
 
 interface NativeContentProps {
@@ -74,6 +78,8 @@ function resolveNativeBody(target: string) {
 
   const appData = decodeAppDataTarget(target)
   if (appData) return <AppDataTabContent target={target} />
+
+  if (isAppLibraryTarget(target)) return <AppLibraryView />
 
   const conflictPath = decodeKnowledgeConflictTarget(target)
   if (conflictPath) return <KnowledgeConflictResolver path={conflictPath} />

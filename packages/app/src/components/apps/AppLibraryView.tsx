@@ -1,17 +1,10 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { AppWindow, Check, Download, Loader2, Plus, Search } from 'lucide-react'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { cn } from '@/lib/utils'
 import { useAppsStore } from '@/stores/apps-store'
+import { useCurrentTeamStore } from '@/stores/current-team'
 import { useActorDirectory } from '@/stores/actor-directory-store'
 import { resolveAppType } from '@/lib/apps/app-types'
 import { appGitKind } from '@/lib/apps/app-list-helpers'
@@ -20,19 +13,16 @@ import type { AppRow } from '@/lib/backend/types'
 
 /**
  * Every app the caller can see — their own and the team's — with the one action
- * the sidebar cannot offer: bringing a copy onto this machine.
+ * column two cannot offer: bringing a copy onto this machine.
  *
- * The sidebar lists only what is already here, which is what makes this dialog
+ * Column two lists only what is already here, which is what makes this view
  * necessary: without it a team app nobody had downloaded would be invisible and
- * unreachable. Creating lives here too, for the same reason — the two things
- * that put an app in the sidebar belong in the same place.
+ * unreachable. It lives in the main column rather than in a dialog because
+ * downloading from it changes that column-two list, and watching a row move
+ * from "download" to "已在本机" next to the list it lands in is the point.
+ * Creating lives here too, for the same reason — the two things that put an app
+ * in column two belong in the same place.
  */
-interface AppLibraryDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  teamId: string
-}
-
 function AppLibraryRow({
   app,
   local,
@@ -96,8 +86,9 @@ function AppLibraryRow({
   )
 }
 
-export function AppLibraryDialog({ open, onOpenChange, teamId }: AppLibraryDialogProps) {
+export function AppLibraryView() {
   const { t } = useTranslation()
+  const teamId = useCurrentTeamStore((s) => s.team?.id ?? '')
   const items = useAppsStore((s) => s.items)
   const loading = useAppsStore((s) => s.loading)
   const localAppIds = useAppsStore((s) => s.localAppIds)
@@ -115,14 +106,13 @@ export function AppLibraryDialog({ open, onOpenChange, teamId }: AppLibraryDialo
     return byId
   }, [actors])
 
-  // Both halves are refreshed on open: the cloud list can have gained a
-  // teammate's app, and the local set can have changed on disk while the dialog
-  // was closed.
+  // Both halves are refreshed when the tab opens: the cloud list can have
+  // gained a teammate's app, and the local set can have changed on disk.
   React.useEffect(() => {
-    if (!open || !teamId) return
+    if (!teamId) return
     void load(teamId, { force: true })
     void refreshLocalApps(teamId)
-  }, [open, teamId, load, refreshLocalApps])
+  }, [teamId, load, refreshLocalApps])
 
   const localSet = React.useMemo(() => new Set(localAppIds ?? []), [localAppIds])
 
@@ -156,84 +146,70 @@ export function AppLibraryDialog({ open, onOpenChange, teamId }: AppLibraryDialo
   )
 
   return (
-    <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="flex h-[min(520px,calc(100vh-10rem))] w-[min(880px,calc(100vw-4rem))] max-w-none flex-col overflow-hidden border-border bg-background p-0 shadow-xl">
-          <DialogHeader className="border-b border-border-soft bg-paper px-5 py-4">
-            <div className="flex items-center gap-3 pr-8">
-              <DialogTitle className="flex-1 text-[15px] font-bold text-foreground">
-                {t('apps.libraryTitle', '所有应用')}
-              </DialogTitle>
-              <Button
-                onClick={() => setCreateOpen(true)}
-                disabled={!teamId}
-                className="h-8 gap-1.5 rounded-[9px] bg-coral px-3 text-[12.5px] text-white hover:bg-coral/90"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                {t('apps.create', '新建')}
-              </Button>
-            </div>
-            <DialogDescription className="sr-only">
-              {t('apps.libraryDescription', '本人与团队的全部应用，可下载到本机。')}
-            </DialogDescription>
-          </DialogHeader>
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <div className="border-b border-border-soft bg-paper px-5 py-4">
+        <div className="flex items-center gap-3">
+          <h2 className="flex-1 text-[15px] font-bold text-foreground">
+            {t('apps.libraryTitle', '所有应用')}
+          </h2>
+          <Button
+            onClick={() => setCreateOpen(true)}
+            disabled={!teamId}
+            className="h-8 gap-1.5 rounded-[9px] bg-coral px-3 text-[12.5px] text-white hover:bg-coral/90"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {t('apps.create', '新建')}
+          </Button>
+        </div>
+        <p className="mt-1 text-[12px] text-muted-foreground">
+          {t('apps.libraryDescription', '本人与团队的全部应用，可下载到本机。')}
+        </p>
+      </div>
 
-          <div className="border-b border-border-soft px-5 py-2.5">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder={t('apps.librarySearch', '搜索应用')}
-                aria-label={t('apps.librarySearch', '搜索应用')}
-                className="h-8 pl-8 text-[13px]"
-              />
-            </div>
-          </div>
+      <div className="border-b border-border-soft px-5 py-2.5">
+        <div className="relative max-w-md">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('apps.librarySearch', '搜索应用')}
+            aria-label={t('apps.librarySearch', '搜索应用')}
+            className="h-8 pl-8 text-[13px]"
+          />
+        </div>
+      </div>
 
-          <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-5 py-4">
-            {loading && items.length === 0 ? (
-              <div className="flex items-center justify-center gap-2 py-8 text-[12.5px] text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                {t('common.loading', 'Loading…')}
-              </div>
-            ) : items.length === 0 ? (
-              <div className="px-1 py-8 text-center text-[12.5px] text-faint">
-                {t('apps.empty', '还没有内容')}
-              </div>
-            ) : visible.length === 0 ? (
-              // Distinct from the empty state: "you have no apps" and "none of
-              // your apps match this" call for different next moves.
-              <div className="px-1 py-8 text-center text-[12.5px] text-faint">
-                {t('apps.libraryNoMatch', '没有匹配的应用')}
-              </div>
-            ) : (
-              visible.map((app) => (
-                <AppLibraryRow
-                  key={app.id}
-                  app={app}
-                  local={localSet.has(app.id)}
-                  busy={downloading === app.id}
-                  creator={creatorFor(app)}
-                  onDownload={() => void handleDownload(app)}
-                />
-              ))
-            )}
+      <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-5 py-4">
+        {loading && items.length === 0 ? (
+          <div className="flex items-center justify-center gap-2 py-8 text-[12.5px] text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            {t('common.loading', 'Loading…')}
           </div>
-
-          <div className={cn('border-t border-border-soft bg-paper px-5 py-3 text-right')}>
-            <Button
-              variant="ghost"
-              onClick={() => onOpenChange(false)}
-              className="h-9 rounded-[9px]"
-            >
-              {t('common.close', '关闭')}
-            </Button>
+        ) : items.length === 0 ? (
+          <div className="px-1 py-8 text-center text-[12.5px] text-faint">
+            {t('apps.empty', '还没有内容')}
           </div>
-        </DialogContent>
-      </Dialog>
+        ) : visible.length === 0 ? (
+          // Distinct from the empty state: "you have no apps" and "none of
+          // your apps match this" call for different next moves.
+          <div className="px-1 py-8 text-center text-[12.5px] text-faint">
+            {t('apps.libraryNoMatch', '没有匹配的应用')}
+          </div>
+        ) : (
+          visible.map((app) => (
+            <AppLibraryRow
+              key={app.id}
+              app={app}
+              local={localSet.has(app.id)}
+              busy={downloading === app.id}
+              creator={creatorFor(app)}
+              onDownload={() => void handleDownload(app)}
+            />
+          ))
+        )}
+      </div>
 
       <CreateAppDialog open={createOpen} onOpenChange={setCreateOpen} teamId={teamId} />
-    </>
+    </div>
   )
 }

@@ -39,3 +39,27 @@ export function openAppPreview(app: AppRow): void {
     label: app.name,
   })
 }
+
+const APP_LIBRARY_TARGET = 'app-library'
+
+export function isAppLibraryTarget(target: string): boolean {
+  return target === APP_LIBRARY_TARGET
+}
+
+/**
+ * Every app the team has, in the main column.
+ *
+ * A tab rather than a dialog: it is a browsing surface next to the column-two
+ * list of what is already here, and downloading from it changes that list —
+ * both need to be on screen at the same time.
+ *
+ * The label is passed in because this module has no translator; there is one
+ * caller and it has one.
+ */
+export function openAppLibrary(label: string): void {
+  useTabsStore.getState().openTab({
+    type: 'native',
+    target: APP_LIBRARY_TARGET,
+    label,
+  })
+}
