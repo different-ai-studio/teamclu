@@ -239,5 +239,4 @@ mod tests {
             spawn_json["provider"]["team"]["models"]
         );
     }
-
 }

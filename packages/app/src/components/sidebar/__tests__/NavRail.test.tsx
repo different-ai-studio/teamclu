@@ -114,8 +114,9 @@ describe('NavRail', () => {
   })
 
   it('puts 应用 last in 更多, after the 密钥保险箱 row', () => {
-    // It is the only row there that unfolds into a list of its own, so above
-    // the others it would shove them down every time it opened.
+    // Pinned here for muscle memory. The row used to unfold an app list, which
+    // is why it went last; the list moved to column two but the position is
+    // deliberately unchanged.
     render(<NavRail />)
     expandMore()
     const vault = screen.getByRole('button', { name: /密钥保险箱|Secret Vault/ })

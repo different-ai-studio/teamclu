@@ -43,7 +43,10 @@ describe("notifyRuntimeStartFailures", () => {
     );
     await flush();
 
-    // Still reported — the startup race stays measurable, just as a warning.
+    // The reporter is still *called*: this layer hands every failure to it and
+    // the reporter decides what reaches Sentry (since 2026-09-04 a cancellation
+    // reaches nothing). Asserting the call keeps the two decisions separable —
+    // "should the user be told" here, "is it worth an event" there.
     expect(mocks.reportRuntimeStartFailure).toHaveBeenCalledTimes(1);
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
@@ -57,9 +60,31 @@ describe("notifyRuntimeStartFailures", () => {
     );
     await flush();
 
-    // The persistent agent status already shows offline. Keep the failure in
-    // telemetry for diagnosis without duplicating it as a transient toast.
+    // The persistent agent status already shows offline, so no toast. The
+    // reporter is handed it and drops it internally — see the note above.
     expect(mocks.reportRuntimeStartFailure).toHaveBeenCalledTimes(1);
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it("does not toast a refusal to interrupt a running turn", async () => {
+    const { notifyRuntimeStartFailures } = await import("@/lib/teamclu/ensure-agent-runtime");
+
+    notifyRuntimeStartFailures(
+      [
+        {
+          agentActorId: "agent-1",
+          code: "runtime_rpc_failed",
+          reason: "workspace has active turn: e3b1cae9-7db8-4c20-a8d6-0c806a531bde",
+        },
+      ],
+      { trigger: "session_runtime_wake" },
+    );
+    await flush();
+
+    // The runtime is up and working; the daemon declined a reload rather than
+    // interrupt it. Before this filter, `failureDescription` fell through to the
+    // raw reason, so the user got "未启动" over an English daemon string with a
+    // UUID in it — for a session that was running normally.
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
 

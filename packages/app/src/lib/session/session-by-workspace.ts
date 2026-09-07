@@ -1,7 +1,6 @@
 import { loadSessionWorkspacesForTeam, type SessionWorkspaceRow } from "@/lib/cache/local-cache";
 import {
   loadViewerWorkspaceContext,
-  pickSessionWorkspaceLabel,
   resolveSessionWorkspaceForViewer,
 } from "@/lib/session/session-viewer-workspace";
 import { workspacePathsMatch } from "@/stores/session-utils";
@@ -49,23 +48,6 @@ export async function switchToSessionWorkspaceIfNeeded(
   if (currentPath && workspacePathsMatch(currentPath, targetPath)) return;
 
   await useWorkspaceStore.getState().setWorkspace(targetPath);
-}
-
-/** sessionId → short workspace label (folder basename) for the current viewer. */
-export async function loadSessionWorkspaceLabelsForTeam(
-  teamId: string,
-): Promise<Map<string, string>> {
-  const viewer = await loadViewerWorkspaceContext(teamId);
-  if (!viewer.memberId) return new Map();
-
-  const rows = await loadSessionWorkspacesForTeam(teamId, viewer.memberId);
-  const labels = new Map<string, string>();
-  const sessionIds = new Set(rows.map((row) => row.sessionId));
-  for (const sessionId of sessionIds) {
-    const label = pickSessionWorkspaceLabel(rows, sessionId, viewer);
-    if (label) labels.set(sessionId, label);
-  }
-  return labels;
 }
 
 /**

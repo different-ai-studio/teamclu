@@ -1,22 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { CreateAppDialog, isValidGitRemoteUrl } from '../CreateAppDialog'
+import { CreateAppView, isValidGitRemoteUrl } from '../CreateAppView'
+import { useCurrentTeamStore } from '@/stores/current-team'
 
 const t = (_k: string, fallback?: string) => fallback ?? _k
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t }),
-}))
-
-// Mock the Dialog wrapper so the test never mounts Radix FocusScope/portal —
-// mirrors IdeaDetailDialog.test.tsx and sidesteps any jsdom focus loop entirely.
-vi.mock('@/components/ui/dialog', () => ({
-  Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) =>
-    open ? <div>{children}</div> : null,
-  DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
-  DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
 }))
 
 // The name field is selected by role, not by placeholder copy: `t` is mocked
@@ -28,11 +18,17 @@ const refreshLocalAppsMock = vi.fn()
 const inspectDirMock = vi.fn()
 const bindWorkdirMock = vi.fn()
 const pickDirMock = vi.fn()
+const closeCreateAppMock = vi.fn()
 
 vi.mock('@/stores/apps-store', () => ({
   useAppsStore: {
     getState: () => ({ create: createMock, refreshLocalApps: refreshLocalAppsMock }),
   },
+}))
+
+// The form lives in a tab now, so "close" is closing that tab.
+vi.mock('@/lib/tabs/app-tabs', () => ({
+  closeCreateApp: () => closeCreateAppMock(),
 }))
 
 vi.mock('@/lib/daemon/daemon-local-client', () => ({
@@ -58,6 +54,8 @@ beforeEach(() => {
   bindWorkdirMock.mockReset()
   bindWorkdirMock.mockResolvedValue({ workdir: '/repo', gitRemoteUrl: null })
   pickDirMock.mockReset()
+  closeCreateAppMock.mockReset()
+  useCurrentTeamStore.setState({ team: { id: 'team-1' } as never })
 })
 
 /** The name input — the source-specific fields appear once a source is chosen. */
@@ -72,10 +70,9 @@ const chooseRemoteSource = () =>
 const chooseLocalSource = () =>
   fireEvent.click(screen.getByRole('radio', { name: /用本机已有的目录/ }))
 
-describe('CreateAppDialog', () => {
+describe('CreateAppView', () => {
   it('submits trimmed name + literal type + default visibility, then closes', async () => {
-    const onOpenChange = vi.fn()
-    render(<CreateAppDialog open onOpenChange={onOpenChange} teamId="team-1" />)
+    render(<CreateAppView />)
 
     fireEvent.change(nameField(), { target: { value: '  My app  ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
@@ -98,17 +95,23 @@ describe('CreateAppDialog', () => {
       // a template over it.
       localOnly: false,
     })
-    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(closeCreateAppMock).toHaveBeenCalledTimes(1))
   })
 
   it('submit is disabled with an empty name', () => {
-    render(<CreateAppDialog open onOpenChange={vi.fn()} teamId="team-1" />)
+    render(<CreateAppView />)
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled()
+  })
+
+  it('submit is disabled without a team', () => {
+    useCurrentTeamStore.setState({ team: null as never })
+    render(<CreateAppView />)
+    fireEvent.change(nameField(), { target: { value: 'My app' } })
     expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled()
   })
 
   it('submits team visibility when the team radio is selected', async () => {
-    const onOpenChange = vi.fn()
-    render(<CreateAppDialog open onOpenChange={onOpenChange} teamId="team-1" />)
+    render(<CreateAppView />)
 
     fireEvent.change(nameField(), { target: { value: 'Shared app' } })
     fireEvent.click(screen.getByDisplayValue('team'))
@@ -120,20 +123,26 @@ describe('CreateAppDialog', () => {
     )
   })
 
-  it('keeps the dialog open and shows an error when create fails', async () => {
+  it('keeps the form open and shows an error when create fails', async () => {
     createMock.mockRejectedValueOnce(new Error('boom'))
-    const onOpenChange = vi.fn()
-    render(<CreateAppDialog open onOpenChange={onOpenChange} teamId="team-1" />)
+    render(<CreateAppView />)
 
     fireEvent.change(nameField(), { target: { value: 'My app' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
     await waitFor(() => expect(screen.getByText(/boom/)).toBeInTheDocument())
-    expect(onOpenChange).not.toHaveBeenCalled()
+    expect(closeCreateAppMock).not.toHaveBeenCalled()
+  })
+
+  it('cancel closes the tab without creating anything', () => {
+    render(<CreateAppView />)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(closeCreateAppMock).toHaveBeenCalledTimes(1)
+    expect(createMock).not.toHaveBeenCalled()
   })
 
   it('passes an optional repo URL through, trimmed', async () => {
-    render(<CreateAppDialog open onOpenChange={vi.fn()} teamId="team-1" />)
+    render(<CreateAppView />)
 
     fireEvent.change(nameField(), { target: { value: 'Imported' } })
     chooseRemoteSource()
@@ -149,7 +158,7 @@ describe('CreateAppDialog', () => {
   })
 
   it('blocks submit on a repo URL git would not clone', async () => {
-    render(<CreateAppDialog open onOpenChange={vi.fn()} teamId="team-1" />)
+    render(<CreateAppView />)
 
     fireEvent.change(nameField(), { target: { value: 'Imported' } })
     chooseRemoteSource()
@@ -175,7 +184,7 @@ describe('CreateAppDialog', () => {
     // pointing nowhere and no obvious sign of why.
     pickDirMock.mockResolvedValue('/not/a/repo')
     inspectDirMock.mockResolvedValue({ isGitRepo: false, gitRemoteUrl: null })
-    render(<CreateAppDialog open onOpenChange={vi.fn()} teamId="team-1" />)
+    render(<CreateAppView />)
 
     fireEvent.change(nameField(), { target: { value: 'Mine' } })
     chooseLocalSource()
@@ -193,7 +202,7 @@ describe('CreateAppDialog', () => {
       isGitRepo: true,
       gitRemoteUrl: 'git@github.com:me/project.git',
     })
-    render(<CreateAppDialog open onOpenChange={vi.fn()} teamId="team-1" />)
+    render(<CreateAppView />)
 
     fireEvent.change(nameField(), { target: { value: 'Mine' } })
     chooseLocalSource()

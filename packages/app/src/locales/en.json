@@ -327,8 +327,6 @@
     "edit": "Edit",
     "undo": "Undo",
     "close": "Close",
-    "collapse": "Collapse",
-    "expand": "Expand",
     "back": "Back",
     "offline": "Offline",
     "done": "Done",
@@ -1123,6 +1121,7 @@
     "localDaemonAutomation": "Automation",
     "localDaemonAutomationAria": "Open automation tasks",
     "localDaemonRetrying": "Retrying…",
+    "localDaemonTokensThisMonth": "{{tokens}} tokens this month",
     "ideas": "Ideas"
   },
   "errors": {
@@ -1207,9 +1206,8 @@
   },
   "apps": {
     "empty": "Nothing here yet",
-    "sessionsTitle": "App sessions",
-    "selectAppHint": "Pick an app on the left to see its sessions",
     "newSession": "New session",
+    "backToList": "Back to app list",
     "noSessions": "This app has no sessions yet",
     "ready": "Ready",
     "error": "Failed",
@@ -1261,12 +1259,12 @@
     "libraryDescription": "Every app of yours and your team's. Download one to work on it here.",
     "libraryDownload": "Download",
     "libraryDownloaded": "On this machine",
+    "libraryNotHere": "Not on this machine",
     "gitHosted": "Hosted repo",
     "gitRemote": "External repo",
     "gitLocal": "This machine only",
     "librarySearch": "Search apps",
     "libraryNoMatch": "No apps match",
-    "libraryUnknownCreator": "Unknown",
     "repoLabel": "Repository URL (optional)",
     "repoPlaceholder": "https://github.com/owner/repo.git",
     "repoHint": "Fill this in and the repo is cloned as the app's code, with no template written.",
@@ -1567,11 +1565,6 @@
       "teamProviderName": "Team Model",
       "teamProviderPinned": "Built-in",
       "teamProviderDesc": "Provided and billed by your team — nothing to configure",
-      "teamTier": {
-        "default": "Standard",
-        "pro": "Advanced",
-        "max": "Flagship"
-      },
       "availableModels": "Available Models"
     },
     "piLlm": {

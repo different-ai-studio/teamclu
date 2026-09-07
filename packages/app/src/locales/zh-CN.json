@@ -327,8 +327,6 @@
     "edit": "编辑",
     "undo": "撤销",
     "close": "关闭",
-    "collapse": "收起",
-    "expand": "展开",
     "back": "返回",
     "offline": "离线",
     "done": "完成",
@@ -1123,6 +1121,7 @@
     "localDaemonAutomation": "自动化",
     "localDaemonAutomationAria": "打开自动化任务",
     "localDaemonRetrying": "正在重试…",
+    "localDaemonTokensThisMonth": "本月消耗 {{tokens}} tokens",
     "ideas": "想法"
   },
   "errors": {
@@ -1207,9 +1206,8 @@
   },
   "apps": {
     "empty": "还没有内容",
-    "sessionsTitle": "应用会话",
-    "selectAppHint": "在左侧选择一个应用以查看会话",
     "newSession": "新建会话",
+    "backToList": "返回应用列表",
     "noSessions": "此应用还没有会话",
     "ready": "就绪",
     "error": "创建失败",
@@ -1261,12 +1259,12 @@
     "libraryDescription": "本人与团队的全部应用，可下载到本机。",
     "libraryDownload": "下载",
     "libraryDownloaded": "已在本机",
+    "libraryNotHere": "未在本机",
     "gitHosted": "托管仓库",
     "gitRemote": "外部仓库",
     "gitLocal": "仅本机",
     "librarySearch": "搜索应用",
     "libraryNoMatch": "没有匹配的应用",
-    "libraryUnknownCreator": "未知创建人",
     "repoLabel": "仓库地址（选填）",
     "repoPlaceholder": "https://github.com/owner/repo.git",
     "repoHint": "填了就把这个仓库克隆下来当作应用的代码，不再写入模板。",
@@ -1567,11 +1565,6 @@
       "teamProviderName": "团队模型",
       "teamProviderPinned": "内置",
       "teamProviderDesc": "由团队统一提供并计费，无需配置",
-      "teamTier": {
-        "default": "标准",
-        "pro": "高级",
-        "max": "旗舰"
-      },
       "availableModels": "可用模型"
     },
     "piLlm": {

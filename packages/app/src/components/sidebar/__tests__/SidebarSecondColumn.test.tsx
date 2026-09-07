@@ -19,8 +19,8 @@ vi.mock('../SessionListColumn', () => ({
   SessionListColumn: () => <div data-testid="session-list-column" />,
 }))
 
-vi.mock('../AppSessionsColumn', () => ({
-  AppSessionsColumn: () => <div data-testid="app-sessions-column" />,
+vi.mock('../AppsColumn', () => ({
+  AppsColumn: () => <div data-testid="apps-column" />,
 }))
 
 vi.mock('@/lib/config/remote-features', () => ({
@@ -155,10 +155,11 @@ describe('SidebarSecondColumn', () => {
     expect(screen.getAllByTestId('session-list-column').length).toBeGreaterThan(0)
   })
 
-  it('renders AppSessionsColumn for apps filter (not the app list)', async () => {
+  it('renders the apps column for the apps filter', async () => {
+    // Which of its two levels shows is AppsColumn's business, not this one's.
     useUIStore.setState({ sidebarFilter: { kind: 'apps' } })
     renderWithSidebar()
-    expect(await screen.findByTestId('app-sessions-column')).toBeInTheDocument()
+    expect(await screen.findByTestId('apps-column')).toBeInTheDocument()
     expect(screen.queryByTestId('session-list-column')).not.toBeInTheDocument()
   })
 })

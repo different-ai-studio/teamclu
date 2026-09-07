@@ -80,12 +80,11 @@ export function TeamProviderCard({ className }: { className?: string }) {
           </p>
           {TEAM_MODEL_TIERS.map((tier) => (
             <div
-              key={tier.id}
+              key={tier}
               className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] hover:bg-muted/50"
             >
               <Zap className="h-3.5 w-3.5 text-muted-foreground" />
-              <span>{t(tier.labelKey, tier.label)}</span>
-              <span className="ml-auto font-mono text-xs text-muted-foreground">{tier.id}</span>
+              <span className="font-mono">{tier}</span>
             </div>
           ))}
         </div>

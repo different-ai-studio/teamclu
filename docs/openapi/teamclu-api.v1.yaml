@@ -7055,6 +7055,15 @@ components:
             - "null"
         hasUnread:
           type: boolean
+        appId:
+          description: >-
+            The app this session belongs to, when it was created from one
+            (`amux.sessions.app_id`). Served by the list RPC as of
+            20260907000000; `null` both for ordinary sessions and for a
+            database that predates that migration.
+          type:
+            - string
+            - "null"
         source:
           description: >-
             How the session was created. 'user' for normal sessions, 'cron' for

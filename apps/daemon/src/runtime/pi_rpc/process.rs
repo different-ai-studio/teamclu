@@ -500,19 +500,9 @@ impl PiProcessPool {
             session_dir = %session_dir.display(),
             "spawning pi child"
         );
-        let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                crate::error::agent_binary_missing(
-                    "pi",
-                    format_args!(
-                        "managed Node.js ({}) not found; run `amuxd install-pi`",
-                        launch.node.display()
-                    ),
-                )
-            } else {
-                crate::error::AmuxError::Agent(format!("spawn pi ({}): {e}", launch.node.display()))
-            }
-        })?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| spawn_failure(&e, worktree, &launch.node))?;
 
         let stdin = child
             .stdin
@@ -744,6 +734,36 @@ pub(crate) fn test_pool_key(worktree: &str) -> PoolKey {
         env_revision: ProcessEnvRevision::from_bindings(&HashMap::new()),
         worktree: worktree.to_string(),
     }
+}
+
+/// Name what is actually missing when spawning pi fails.
+///
+/// `Command::spawn` reports a missing program *and* a missing `current_dir` as
+/// the same `NotFound`. The worktree is the one that goes missing in practice:
+/// a workspace row stores an absolute path from whichever machine created it,
+/// so a teammate's app points somewhere that does not exist here. Blaming the
+/// binary sent people to `amuxd install-pi` for a Node.js that was present the
+/// whole time, which is a dead end — so check the cwd before the binary.
+fn spawn_failure(
+    err: &std::io::Error,
+    worktree: &str,
+    node: &std::path::Path,
+) -> crate::error::AmuxError {
+    if err.kind() != std::io::ErrorKind::NotFound {
+        return crate::error::AmuxError::Agent(format!("spawn pi ({}): {err}", node.display()));
+    }
+    if !std::path::Path::new(worktree).is_dir() {
+        return crate::error::AmuxError::Agent(format!(
+            "pi worktree does not exist on this machine: {worktree}"
+        ));
+    }
+    crate::error::agent_binary_missing(
+        "pi",
+        format_args!(
+            "managed Node.js ({}) not found; run `amuxd install-pi`",
+            node.display()
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -1000,5 +1020,53 @@ mod tests {
 
         in_flight.abort();
         shared.pool.kill_all();
+    }
+
+    /// The misdiagnosis this guards: a teammate's workspace path does not
+    /// exist here, `spawn` reports `NotFound` for the *cwd*, and the daemon
+    /// used to blame the binary — sending people to `amuxd install-pi` for a
+    /// Node.js that was sitting right there.
+    #[test]
+    fn a_missing_worktree_is_not_blamed_on_node() {
+        let err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let msg = spawn_failure(
+            &err,
+            "/Users/someone-else/.amuxd/teams/t/apps/a",
+            std::path::Path::new("/usr/local/bin/node"),
+        )
+        .to_string();
+        assert!(msg.contains("worktree does not exist"), "{msg}");
+        // The whole point: do not send anyone to reinstall a working runtime.
+        assert!(!msg.contains("install-pi"), "{msg}");
+        assert!(!msg.contains("Node.js"), "{msg}");
+    }
+
+    #[test]
+    fn a_genuinely_missing_binary_still_names_the_binary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let msg = spawn_failure(
+            &err,
+            &dir.path().to_string_lossy(),
+            std::path::Path::new("/nope/node"),
+        )
+        .to_string();
+        // `agent_binary_missing(pi)` is a wire contract the desktop matches on.
+        assert!(msg.contains("agent_binary_missing(pi)"), "{msg}");
+        assert!(msg.contains("install-pi"), "{msg}");
+    }
+
+    #[test]
+    fn other_spawn_errors_pass_through_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let msg = spawn_failure(
+            &err,
+            &dir.path().to_string_lossy(),
+            std::path::Path::new("/x/node"),
+        )
+        .to_string();
+        assert!(msg.contains("spawn pi"), "{msg}");
+        assert!(!msg.contains("worktree does not exist"), "{msg}");
     }
 }

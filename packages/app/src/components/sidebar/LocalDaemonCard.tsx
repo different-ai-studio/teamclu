@@ -6,6 +6,7 @@ import { LocalDaemonRow } from '@/components/sidebar/LocalDaemonRow'
 import { getLocalDaemonAgent } from '@/lib/daemon/daemon-agent-admin'
 import { getKnownLocalDaemonActorId, noteLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
 import { useLocalDaemonRuntimeStatus } from '@/hooks/use-local-daemon-http-status'
+import { useLocalDaemonTokenUsage } from '@/hooks/use-local-daemon-token-usage'
 import { cn } from '@/lib/utils'
 import { ActorDetailDialog } from '@/components/sidebar/ActorDetailDialog'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
@@ -56,6 +57,7 @@ export function LocalDaemonCard() {
     !!localDaemonActor,
   )
   const daemonMqttDisconnected = runtimeStatus === 'daemonMqttDisconnected'
+  const tokenUsage = useLocalDaemonTokenUsage(teamId, localDaemonActor?.id ?? null)
 
   const handleCopyName = async (actor: ActorRow) => {
     try {
@@ -93,6 +95,7 @@ export function LocalDaemonCard() {
           actor={localDaemonActor}
           runtimeStatus={runtimeStatus}
           isDefault={localDaemonActor.id === defaultAgentId}
+          tokenUsage={tokenUsage}
           onViewDetail={setDetailFor}
           onCopyName={handleCopyName}
           onCopyId={handleCopyId}
