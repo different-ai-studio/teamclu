@@ -42,6 +42,7 @@ import { useSessionListActivityMap } from '@/hooks/use-session-list-activity-map
 import { loadSessionIdsForActor } from '@/lib/session/session-by-actor'
 import { actorAvatarColor } from '@/lib/actor/actor-color'
 import { useAppsStore } from '@/stores/apps-store'
+import { useFeatures } from '@/lib/config/remote-features'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { compareSessionListByRecency } from '@/lib/session/session-list-sort'
 import { buildSessionListGlassLayoutKey } from '@/lib/ui/session-list-glass-layout-key'
@@ -274,15 +275,30 @@ export function SessionListColumn({
   /**
    * Apps by id, for the subline on a session that belongs to one.
    *
-   * The rail's Apps entry is what loads this list, so it is already here by the
-   * time the sidebar paints; when Apps is off for the build it stays empty and
-   * no session gets a subline, which is right.
+   * Loaded here rather than relied on from elsewhere. The rail's Apps entry
+   * loads the same list, but it lives inside the 更多 group, which starts
+   * collapsed — so on a fresh launch nothing had mounted it and every app
+   * session rendered with no subline until the user happened to open that
+   * group. Verified against the running app: 0 sublines collapsed, 9 the
+   * moment it was expanded.
    */
+  const appsEnabled = useFeatures().apps
   const appItems = useAppsStore((s) => s.items)
+  const loadApps = useAppsStore((s) => s.load)
   const appsById = React.useMemo(
     () => new Map(appItems.map((app) => [app.id, app])),
     [appItems],
   )
+  // Only when a row actually claims an app: a team with no app sessions makes
+  // no request, and the store no-ops once the team's list is in.
+  const hasAppSessions = React.useMemo(
+    () => listRows.some((row) => !!row.app_id),
+    [listRows],
+  )
+  React.useEffect(() => {
+    if (!appsEnabled || !hasAppSessions || !teamIdFromList) return
+    void loadApps(teamIdFromList)
+  }, [appsEnabled, hasAppSessions, teamIdFromList, loadApps])
   React.useEffect(() => {
     initPinnedSessionIds(teamIdFromList || null)
   }, [initPinnedSessionIds, teamIdFromList])
@@ -618,10 +634,12 @@ export function SessionListColumn({
     /**
      * The app this session belongs to, if any.
      *
-     * This slot used to hold a workspace label, which for an app session was a
-     * raw cloud workspace uuid: the app's checkout is daemon-owned, so it is
-     * never a workspace registered on this machine, and the label fell through
-     * to printing the id. Nothing about a session is better said by a uuid.
+     * This slot used to hold a workspace label, and for an app session that was
+     * always a uuid. The label is the workspace directory's basename, and an
+     * app's checkout is `<amuxd home>/teams/<team>/apps/<appId>` — so the
+     * basename is the app's own id. (The label's other branch, for a workspace
+     * this machine has not registered, returns the cloud workspace id: also a
+     * uuid.) Nothing about a session is better said by one.
      */
     const rowApp = row.appId ? appsById.get(row.appId) ?? null : null
     const actionsId = `v2-session-actions-${row.id}`
