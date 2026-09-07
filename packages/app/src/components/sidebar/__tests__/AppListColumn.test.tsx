@@ -20,11 +20,6 @@ vi.mock('@/components/ui/sidebar', () => ({
 vi.mock('@/components/app-sidebar', () => ({ SidebarCollapseToggle: () => null }))
 vi.mock('@/components/ui/traffic-lights', () => ({ TrafficLights: () => null }))
 
-vi.mock('@/components/apps/CreateAppDialog', () => ({
-  CreateAppDialog: ({ open }: { open: boolean }) =>
-    open ? <div data-testid="create-app-dialog" /> : null,
-}))
-
 const mkApp = (id: string, name: string, over: Partial<AppRow> = {}): AppRow => ({
   id,
   teamId: 'team-1',
@@ -84,12 +79,30 @@ describe('AppListColumn', () => {
     expect(useAppsStore.getState().selectedAppId).toBe('app-1')
   })
 
-  it('+ creates an app here', async () => {
+  it('+ opens the create form in column three, not a modal', () => {
     render(<AppListColumn />)
-    expect(screen.queryByTestId('create-app-dialog')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '新建' }))
-    // The dialog's chunk is lazy-loaded on first open.
-    expect(await screen.findByTestId('create-app-dialog')).toBeInTheDocument()
+    const tabs = useTabsStore.getState().tabs
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0]).toMatchObject({ type: 'native', target: 'app-create' })
+  })
+
+  it('gives each app type its own glyph', () => {
+    // Eleven identical marks down the left edge said nothing about eleven
+    // different apps. The class is lucide's own, one per icon.
+    useAppsStore.setState({
+      items: [
+        mkApp('a', 'Site', { type: 'static_web' }),
+        mkApp('b', 'Deck', { type: 'slides' }),
+        mkApp('c', 'Data', { type: 'data_app' }),
+        mkApp('d', 'Repo', { type: 'imported' }),
+      ],
+      localAppIds: null,
+    })
+    const { container } = render(<AppListColumn />)
+    for (const icon of ['globe', 'presentation', 'database', 'folder-git-2']) {
+      expect(container.querySelector(`svg.lucide-${icon}`), icon).not.toBeNull()
+    }
   })
 
   it('the library opens in column three, not over this column', () => {

@@ -3,18 +3,14 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { AppLibraryView } from '../AppLibraryView'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
+import { useTabsStore } from '@/stores/tabs'
+import { useUIStore } from '@/stores/ui'
 import type { AppRow } from '@/lib/backend/types'
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: string) => fallback ?? _key,
   }),
-}))
-
-// A probe rather than `() => null`: one test needs to see that 新建 opened it.
-vi.mock('@/components/apps/CreateAppDialog', () => ({
-  CreateAppDialog: ({ open }: { open: boolean }) =>
-    open ? <div data-testid="create-app-dialog" /> : null,
 }))
 
 // Real one would reach the cache and the network on mount.
@@ -60,6 +56,8 @@ describe('AppLibraryView', () => {
     refreshLocalApps.mockResolvedValue(undefined)
     download.mockResolvedValue(undefined)
     useCurrentTeamStore.setState({ team: { id: 'team-1' } as never })
+    useTabsStore.setState({ tabs: [], activeTabId: null })
+    useUIStore.setState({ sidebarFilter: { kind: 'all' } })
     useAppsStore.setState({
       items: [
         mkApp('app-1', 'Mine'),
@@ -67,6 +65,7 @@ describe('AppLibraryView', () => {
       ],
       loading: false,
       localAppIds: ['app-1'],
+      selectedAppId: null,
       load,
       refreshLocalApps,
       download,
@@ -81,13 +80,25 @@ describe('AppLibraryView', () => {
     expect(screen.getByText('Teamed')).toBeInTheDocument()
   })
 
-  it('an app already on this machine offers no download', () => {
+  it('groups by presence, with the ones that are not here first', () => {
+    // Said once per group rather than once per row: the tick used to run down
+    // eight of nine rows, which is the state that needs no marking at all.
     render(<AppLibraryView />)
-    // Counted rather than probed through the DOM around a row: with app-1
-    // local and app-2 not, exactly one download control may exist. A structural
-    // lookup would just as happily find nothing for the wrong reason.
-    expect(screen.getByText('已在本机')).toBeInTheDocument()
+    const away = screen.getByText('未在本机')
+    const here = screen.getByText('已在本机')
+    expect(away.compareDocumentPosition(here) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // With app-1 local and app-2 not, exactly one download control may exist.
     expect(screen.getAllByRole('button', { name: /下载/ })).toHaveLength(1)
+  })
+
+  it('groups nothing while the daemon has not answered', () => {
+    // `null` is "unknown", not "none". Split on it and every app the user
+    // already has would be offered for download.
+    useAppsStore.setState({ localAppIds: null })
+    render(<AppLibraryView />)
+    expect(screen.queryByText('未在本机')).not.toBeInTheDocument()
+    expect(screen.queryByText('已在本机')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /下载/ })).not.toBeInTheDocument()
   })
 
   it('downloading an app that is not here calls through with that app', async () => {
@@ -95,6 +106,13 @@ describe('AppLibraryView', () => {
     fireEvent.click(screen.getByRole('button', { name: /下载/ }))
     await waitFor(() => expect(download).toHaveBeenCalledTimes(1))
     expect(download).toHaveBeenCalledWith(expect.objectContaining({ id: 'app-2' }))
+  })
+
+  it('an app that is here opens in column two', () => {
+    render(<AppLibraryView />)
+    fireEvent.click(screen.getByRole('button', { name: /Mine/ }))
+    expect(useAppsStore.getState().selectedAppId).toBe('app-1')
+    expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'apps' })
   })
 
   it('refreshes both the cloud list and the local set when opened', async () => {
@@ -113,11 +131,12 @@ describe('AppLibraryView', () => {
     expect(refreshLocalApps).not.toHaveBeenCalled()
   })
 
-  it('新建 opens the create dialog from here, not from column two', () => {
+  it('新建 opens the create form in column three, not a modal', () => {
     render(<AppLibraryView />)
-    expect(screen.queryByTestId('create-app-dialog')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /新建/ }))
-    expect(screen.getByTestId('create-app-dialog')).toBeInTheDocument()
+    const tabs = useTabsStore.getState().tabs
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0]).toMatchObject({ type: 'native', target: 'app-create' })
   })
 
   it('only the row being downloaded goes busy', async () => {
@@ -146,9 +165,10 @@ describe('AppLibraryView', () => {
     await waitFor(() => expect(buttons[0]).toBeEnabled())
   })
 
-  it('names the creator, the type and where the code lives', () => {
+  it('names the creator and where the code lives', () => {
     // Where the code lives is the load-bearing one: it says whether the row can
-    // be downloaded at all.
+    // be downloaded at all. Visibility left the meta line — it is a chip next
+    // to the name now, and only on the exception.
     useAppsStore.setState({
       items: [
         mkApp('app-1', 'Hosted', { gitAuthKind: 'gitea_deploy_key', gitRemoteUrl: 'ssh://git@g/x.git' }),
@@ -159,15 +179,23 @@ describe('AppLibraryView', () => {
     })
     render(<AppLibraryView />)
 
-    expect(screen.getByText(/海港 · 静态网页 · 托管仓库/)).toBeInTheDocument()
-    expect(screen.getByText(/Weigan · 静态网页 · 外部仓库/)).toBeInTheDocument()
-    expect(screen.getByText(/海港 · 静态网页 · 仅本机/)).toBeInTheDocument()
+    expect(screen.getByText('托管仓库')).toBeInTheDocument()
+    expect(screen.getByText('外部仓库')).toBeInTheDocument()
+    expect(screen.getByText('仅本机')).toBeInTheDocument()
+    expect(screen.getByText('Weigan')).toBeInTheDocument()
   })
 
-  it('falls back when the creator is not in the directory', () => {
+  it('marks team apps and says nothing about personal ones', () => {
+    render(<AppLibraryView />)
+    expect(screen.getAllByText('Team')).toHaveLength(1)
+    expect(screen.queryByText('Personal')).not.toBeInTheDocument()
+  })
+
+  it('renders nothing for a creator who is not in the directory', () => {
     useAppsStore.setState({ items: [mkApp('app-9', 'Orphan', { createdByActorId: 'gone' })] })
     render(<AppLibraryView />)
-    expect(screen.getByText(/未知创建人/)).toBeInTheDocument()
+    expect(screen.getByText('Orphan')).toBeInTheDocument()
+    expect(screen.queryByText('海港')).not.toBeInTheDocument()
   })
 
   it('search narrows by name', () => {

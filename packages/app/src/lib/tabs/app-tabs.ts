@@ -63,3 +63,31 @@ export function openAppLibrary(label: string): void {
     label,
   })
 }
+
+const APP_CREATE_TARGET = 'app-create'
+
+export function isAppCreateTarget(target: string): boolean {
+  return target === APP_CREATE_TARGET
+}
+
+/**
+ * The create form, in the main column.
+ *
+ * It was a modal, which is the wrong shape for it: picking a local directory
+ * opens a native file dialog on top of it, and the thing being described — an
+ * app that will appear in column two — is exactly what the modal covered up.
+ */
+export function openCreateApp(label: string): void {
+  useTabsStore.getState().openTab({
+    type: 'native',
+    target: APP_CREATE_TARGET,
+    label,
+  })
+}
+
+/** Closes the create tab from inside it — cancelling, or a finished create. */
+export function closeCreateApp(): void {
+  useTabsStore
+    .getState()
+    .closeWhere((tab) => tab.type === 'native' && tab.target === APP_CREATE_TARGET)
+}

@@ -1,7 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  AppWindow,
   Loader2,
   MessageSquare,
   Plus,
@@ -17,6 +16,7 @@ import { useAppsStore } from '@/stores/apps-store'
 import { useSessionSelectionStore } from '@/stores/session-selection-store'
 import { getBackend } from '@/lib/backend'
 import { createAppSessionShell, openAppSession } from '@/lib/apps/app-session'
+import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { formatRelativeTime } from '@/lib/ui/date-format'
 import type { AppRow, AppSessionRow } from '@/lib/backend/types'
 
@@ -64,6 +64,8 @@ export function AppSessionsColumn({ app }: { app: AppRow }) {
   const { state: sidebarState } = useSidebar()
   const sidebarCollapsed = sidebarState === 'collapsed'
   const selectApp = useAppsStore((s) => s.selectApp)
+  // The same glyph this app carries in the list one level up.
+  const TypeIcon = appTypeIcon(app.type)
 
   const activeSessionId = useSessionSelectionStore((s) => s.activeSessionId)
   const [sessions, setSessions] = React.useState<AppSessionRow[]>([])
@@ -141,7 +143,7 @@ export function AppSessionsColumn({ app }: { app: AppRow }) {
           </div>
         )}
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          <AppWindow className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <TypeIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="truncate text-[15px] font-bold tracking-tight text-foreground">
             {app.name}
             <span className="font-mono text-[11px] font-normal text-faint"> · {sessions.length}</span>

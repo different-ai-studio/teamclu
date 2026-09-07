@@ -7,23 +7,18 @@ import { TrafficLights } from '@/components/ui/traffic-lights'
 import { useSidebar } from '@/components/ui/sidebar'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { lazyNamed } from '@/lib/lazy-component'
-import { useEverTrue } from '@/hooks/use-ever-true'
-import { openAppLibrary } from '@/lib/tabs/app-tabs'
+import { openAppLibrary, openCreateApp } from '@/lib/tabs/app-tabs'
 import { resolveAppType } from '@/lib/apps/app-types'
+import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appStatusMeta, showsPublicBadge } from '@/lib/apps/app-list-helpers'
 import type { AppRow } from '@/lib/backend/types'
-
-const CreateAppDialog = lazyNamed(
-  () => import('@/components/apps/CreateAppDialog'),
-  'CreateAppDialog',
-)
 
 function AppRowButton({ app, onSelect }: { app: AppRow; onSelect: () => void }) {
   const { t } = useTranslation()
   const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
   const meta = appStatusMeta(app, deploying)
   const typeMeta = resolveAppType(app.type)
+  const TypeIcon = appTypeIcon(app.type)
   const publicLive = showsPublicBadge(app)
 
   return (
@@ -32,11 +27,14 @@ function AppRowButton({ app, onSelect }: { app: AppRow; onSelect: () => void }) 
       onClick={onSelect}
       className="group flex w-full items-center gap-3 border-l-2 border-transparent py-2.5 pl-4 pr-3 text-left transition-colors hover:bg-selected/40"
     >
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-coral/10 text-coral">
+      {/* One glyph per type, on a quiet disc. Eleven identical coral marks
+          down the left edge said nothing about eleven different apps, and
+          spent the palette's whole coral budget saying it. */}
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-panel text-muted-foreground">
         {deploying ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
-          <AppWindow className="h-3.5 w-3.5" />
+          <TypeIcon className="h-[15px] w-[15px]" />
         )}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -90,10 +88,8 @@ export function AppListColumn() {
   const refreshLocalApps = useAppsStore((s) => s.refreshLocalApps)
   const selectApp = useAppsStore((s) => s.selectApp)
 
-  const [createOpen, setCreateOpen] = React.useState(false)
-  // Loads the create dialog's chunk on first open; stays mounted after so its
-  // close animation and form state behave as with a permanent mount.
-  const mountCreateDialog = useEverTrue(createOpen)
+  const createLabel = t('apps.createTitle', '新建')
+  const libraryLabel = t('apps.libraryTitle', '所有应用')
 
   // The cloud list is loaded by the nav row (always mounted); only the local
   // half can have changed on disk while this column was closed.
@@ -138,7 +134,7 @@ export function AppListColumn() {
         <div className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
-            onClick={() => setCreateOpen(true)}
+            onClick={() => openCreateApp(createLabel)}
             disabled={!teamId}
             title={t('apps.create', '新建')}
             aria-label={t('apps.create', '新建')}
@@ -148,10 +144,10 @@ export function AppListColumn() {
           </button>
           <button
             type="button"
-            onClick={() => openAppLibrary(t('apps.libraryTitle', '所有应用'))}
+            onClick={() => openAppLibrary(libraryLabel)}
             disabled={!teamId}
-            title={t('apps.libraryTitle', '所有应用')}
-            aria-label={t('apps.libraryTitle', '所有应用')}
+            title={libraryLabel}
+            aria-label={libraryLabel}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-selected/40 hover:text-foreground disabled:opacity-40"
           >
             <LayoutGrid className="h-4 w-4" />
@@ -176,7 +172,7 @@ export function AppListColumn() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setCreateOpen(true)}
+                onClick={() => openCreateApp(createLabel)}
                 disabled={!teamId}
                 className="rounded-[8px] bg-coral px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-coral/90 disabled:opacity-40"
               >
@@ -184,7 +180,7 @@ export function AppListColumn() {
               </button>
               <button
                 type="button"
-                onClick={() => openAppLibrary(t('apps.libraryTitle', '所有应用'))}
+                onClick={() => openAppLibrary(libraryLabel)}
                 disabled={!teamId}
                 className="rounded-[8px] border border-border px-3 py-1.5 text-[13px] text-foreground hover:bg-selected/40 disabled:opacity-40"
               >
@@ -198,12 +194,6 @@ export function AppListColumn() {
           ))
         )}
       </div>
-
-      {mountCreateDialog ? (
-        <React.Suspense fallback={null}>
-          <CreateAppDialog open={createOpen} onOpenChange={setCreateOpen} teamId={teamId} />
-        </React.Suspense>
-      ) : null}
     </div>
   )
 }
