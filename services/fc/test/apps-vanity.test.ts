@@ -617,6 +617,8 @@ test("a hostname that is not an app still 404s instead of redirecting", async ()
     assert.equal(res.status, 404);
     assert.equal(res.headers.get("location"), null);
   });
+});
+
 // --- custom domains (批次 4) -------------------------------------------------
 
 /**
