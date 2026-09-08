@@ -1,6 +1,7 @@
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
+import { ApiError } from "../http-utils.js";
 
 type FcClientInstance = InstanceType<typeof FcClient.default>;
 
@@ -100,7 +101,12 @@ export interface FcOpsConfig {
   /** When set, every app function create/update joins this VPC. */
   vpc?: AppsFcVpcConfig;
 }
-export interface EnsureFunctionArgs { ossObjectName: string; env: Record<string, string>; }
+export interface EnsureFunctionArgs {
+  ossObjectName: string;
+  env: Record<string, string>;
+  /** What the app declared about how it is started. Absent → the built-in Node contract. */
+  runtime?: AppRuntimeSpec;
+}
 
 function functionNetworkInput(vpc: AppsFcVpcConfig | undefined) {
   if (!vpc) return { internetAccess: true };
@@ -133,6 +139,41 @@ function functionNetworkInput(vpc: AppsFcVpcConfig | undefined) {
  * its Node runtime underneath it.
  */
 export const NODE_BIN = "/opt/nodejs20/bin/node";
+
+/** The runtimes this deployment can actually start, and what starts them. */
+const RUNTIME_BINARIES: Record<string, string> = { node: NODE_BIN };
+
+/** An app's declared start contract, already validated against RUNTIME_BINARIES. */
+export interface AppRuntimeSpec { runtime: string; entry: string; port: number }
+
+export function isSupportedRuntime(runtime: string): boolean {
+  return Object.hasOwn(RUNTIME_BINARIES, runtime);
+}
+
+export const SUPPORTED_RUNTIMES = Object.keys(RUNTIME_BINARIES);
+
+/**
+ * The start command, from what the app declared or from the contract every app
+ * had before declarations existed.
+ *
+ * The interpreter comes from a table, never from the app: the runtime image
+ * ships no interpreter at all, so a binary reaches the instance only if a
+ * matching layer was attached. An app naming `python3` would start a function
+ * that cannot boot, and the failure would surface as an opaque instance error.
+ */
+function startCommand(spec: AppRuntimeSpec | undefined) {
+  const resolved: AppRuntimeSpec = spec ?? { runtime: "node", entry: "server/index.mjs", port: 9000 };
+  const bin = RUNTIME_BINARIES[resolved.runtime];
+  if (!bin) {
+    throw new ApiError(
+      400,
+      "unsupported_runtime",
+      `runtime "${resolved.runtime}" is not available on this deployment (have: ${SUPPORTED_RUNTIMES.join(", ")})`,
+    );
+  }
+  return new $fc.CustomRuntimeConfig({ command: [bin], args: [resolved.entry], port: resolved.port });
+}
+
 export function nodejsLayerArn(region: string): string {
   return `acs:fc:${region}:official:layers/Nodejs20/versions/3`;
 }
@@ -164,14 +205,11 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
             role: cfg.role,
             environmentVariables: args.env,
             layers: [nodejsLayerArn(cfg.region)],
-            customRuntimeConfig: new $fc.CustomRuntimeConfig({
-              // The daemon zips the CONTENTS of the build's `.output` directory
-              // (app_build.rs `zip_dir(workdir.join(".output"))`), so the server
-              // entry sits at `server/index.mjs` inside the artifact — a
-              // `.output/` prefix here points at a path that is never unpacked
-              // and the function never boots.
-              command: [NODE_BIN], args: ["server/index.mjs"], port: 9000,
-            }),
+            // The daemon zips the CONTENTS of the build's output directory, so
+            // the entry is relative to that directory — a `.output/` prefix
+            // here points at a path that is never unpacked and the function
+            // never boots.
+            customRuntimeConfig: startCommand(args.runtime),
             code: codeLocation(args.ossObjectName),
             ...functionNetworkInput(cfg.vpc),
           }),
@@ -194,9 +232,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         body: new $fc.UpdateFunctionInput({
           environmentVariables: args.env,
           layers: [nodejsLayerArn(cfg.region)],
-          customRuntimeConfig: new $fc.CustomRuntimeConfig({
-            command: [NODE_BIN], args: ["server/index.mjs"], port: 9000,
-          }),
+          customRuntimeConfig: startCommand(args.runtime),
           code: codeLocation(args.ossObjectName),
           ...functionNetworkInput(cfg.vpc),
         }),

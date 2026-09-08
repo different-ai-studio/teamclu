@@ -6,7 +6,12 @@ import {
   readAppsAppUrl,
   resolveAppConnectionString,
 } from "./app-postgres.js";
-import { readAppsFcVpcConfig } from "./fc-client.js";
+import {
+  isSupportedRuntime,
+  readAppsFcVpcConfig,
+  SUPPORTED_RUNTIMES,
+  type AppRuntimeSpec,
+} from "./fc-client.js";
 import { appPublicUrl } from "../apps-public-host.js";
 import { ApiError } from "../http-utils.js";
 
@@ -38,6 +43,47 @@ export function parseOptionalGitCommitSha(raw: unknown): string | null {
   if (raw === undefined || raw === null) return null;
   if (typeof raw === "string" && !raw.trim()) return null;
   return parseGitCommitSha(raw);
+}
+
+/**
+ * Validate what the daemon reported the app declared about starting itself.
+ *
+ * Rejected rather than defaulted when a field is present but wrong: a bad entry
+ * path or port produces a function that cannot boot, and an opaque instance
+ * failure minutes later is a much worse answer than a 400 here. Absent means
+ * the contract every app had before declarations existed.
+ *
+ * Note this `runtime` is the interpreter family (`node`), NOT `apps.runtime`
+ * (`node` vs `container`) — different column, different question.
+ */
+export function parseAppRuntimeSpec(raw: unknown): AppRuntimeSpec | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object") {
+    throw new ApiError(400, "validation_failed", "runtime must be an object");
+  }
+  const r = raw as Record<string, unknown>;
+  const runtime = typeof r.runtime === "string" ? r.runtime.trim() : "";
+  const entry = typeof r.entry === "string" ? r.entry.trim() : "";
+  const port = typeof r.port === "number" ? r.port : Number.NaN;
+  if (!runtime || !entry) {
+    throw new ApiError(400, "validation_failed", "runtime.runtime and runtime.entry are required");
+  }
+  if (!isSupportedRuntime(runtime)) {
+    throw new ApiError(
+      400,
+      "unsupported_runtime",
+      `runtime "${runtime}" is not available on this deployment (have: ${SUPPORTED_RUNTIMES.join(", ")})`,
+    );
+  }
+  // An absolute or climbing path escapes the unpacked artifact, and the entry
+  // is joined against it by the runtime, not by us.
+  if (entry.startsWith("/") || entry.split("/").includes("..")) {
+    throw new ApiError(400, "validation_failed", "runtime.entry must be a path inside the artifact");
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new ApiError(400, "validation_failed", "runtime.port must be a TCP port");
+  }
+  return { runtime, entry, port };
 }
 
 export function parseDeployToken(raw: unknown): string {
@@ -200,7 +246,10 @@ export interface FinalizeDeps {
   /** Optional override of {@link provisionAppPostgres} for tests. */
   provisionDb?: typeof provisionAppPostgres;
   fcOps: {
-    ensureFunction: (name: string, a: { ossObjectName: string; env: Record<string, string> }) => Promise<void>;
+    ensureFunction: (
+      name: string,
+      a: { ossObjectName: string; env: Record<string, string>; runtime?: AppRuntimeSpec },
+    ) => Promise<void>;
     ensureHttpTrigger: (name: string) => Promise<string>;
     /** Absent on a deployment that has no route domain configured. */
     ensureCustomDomain?: (functionName: string, domainName: string) => Promise<string>;
@@ -220,6 +269,11 @@ export interface FinalizeInput {
   ossObjectName: string;
   /** Injected by the repo when auth_mode=platform (§6.5). No service role. */
   platformOAuthEnv?: Record<string, string>;
+  /**
+   * What the app declared about how it starts, reported by the daemon that
+   * built it. Absent → the contract every app had before declarations existed.
+   */
+  runtime?: AppRuntimeSpec;
 }
 
 /**
@@ -278,6 +332,7 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
   await deps.fcOps.ensureFunction(input.fcFunctionName, {
     ossObjectName: input.ossObjectName,
     env,
+    runtime: input.runtime,
   });
   // The trigger URL is still created: it is what the function is reachable on
   // before a custom domain exists, and the only address a deployment without a

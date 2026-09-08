@@ -472,6 +472,7 @@ pub fn run() {
             commands::open_with_default_app,
             commands::open_in_terminal,
             commands::system_appearance::get_system_accent_color,
+            commands::system_share::system_share_text,
             commands::window::open_local_agent_panel_window,
             commands::window::register_window_workspace,
             fs_scope::allow_fs_scope_dirs,

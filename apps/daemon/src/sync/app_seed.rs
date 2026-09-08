@@ -21,6 +21,23 @@ pub struct SeedGitPush<'a> {
     pub git_user_email: Option<&'a str>,
 }
 
+/// What a directory adopted as an app repo gets ignored by default.
+///
+/// Only written when the directory has no `.gitignore` of its own, and only on
+/// the path that is about to commit the whole tree. The user picked a folder to
+/// build an app in, not to publish their dependency tree or their secrets to a
+/// forge — and a first commit is not something they can take back.
+const ADOPT_GITIGNORE: &str = "\
+node_modules/
+dist/
+.output/
+.nitro/
+.vinxi/
+.DS_Store
+.env
+.env.*
+";
+
 /// Outcome of seeding — `git_commit_sha` is set when a push succeeded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeedOutcome {
@@ -60,6 +77,61 @@ pub fn seed_app_repo(
     })
 }
 
+/// Publish a directory the user already had as this app's repo.
+///
+/// The other half of "pick a local folder": no starter template is written, so
+/// whatever is in the directory is what the app is. Three shapes, and the
+/// difference between them is what a user would expect us NOT to touch:
+///
+/// - **Not a repo** — `git init`, a default `.gitignore` if there is none, then
+///   commit and push. There is no history to respect and nothing to lose.
+/// - **A repo with commits** — set `origin` and push the history that is
+///   already there. Uncommitted work stays uncommitted: adopting a folder is
+///   not a licence to commit whatever the user had open in it.
+/// - **A repo with no commits** — treated as the first case. An unborn HEAD is
+///   nothing to push.
+pub fn adopt_app_repo(workdir: &Path, push: &SeedGitPush<'_>) -> anyhow::Result<SeedOutcome> {
+    std::fs::create_dir_all(workdir)?;
+    let commit_worktree = adopt_commits_worktree(workdir);
+    if commit_worktree {
+        write_default_gitignore(workdir)?;
+    }
+    let sha = app_git::adopt_commit_push(
+        workdir,
+        push.app_id,
+        push.remote_url,
+        push.deploy_key_pem,
+        "Adopt existing directory as app",
+        push.git_user_name,
+        push.git_user_email,
+        commit_worktree,
+    )?;
+    Ok(SeedOutcome {
+        git_commit_sha: Some(sha),
+    })
+}
+
+/// Whether adopting this directory should commit its working tree.
+///
+/// Only when there is no history to publish instead. A repo with commits gets
+/// its history pushed and its uncommitted work left alone; a plain folder (or a
+/// `git init` nobody ever committed in) has nothing to push, so its contents
+/// are the first commit.
+fn adopt_commits_worktree(workdir: &Path) -> bool {
+    !app_git::has_commits(workdir)
+}
+
+/// Never overwrites: a directory that already declares what it ignores has
+/// already answered this question.
+fn write_default_gitignore(workdir: &Path) -> anyhow::Result<()> {
+    let path = workdir.join(".gitignore");
+    if path.exists() {
+        return Ok(());
+    }
+    std::fs::write(&path, ADOPT_GITIGNORE)
+        .map_err(|e| anyhow::anyhow!("could not write .gitignore: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,6 +143,70 @@ mod tests {
             app_name: "Demo",
             app_type,
         }
+    }
+
+    #[test]
+    fn a_plain_folder_is_committed_whole_and_a_repo_is_not() {
+        // The one decision adopting makes about the user's files. A folder they
+        // picked has nothing to publish but its contents; a repo they already
+        // work in has history, and committing whatever they had open would be a
+        // surprise nobody asked for.
+        let tmp = tempfile::tempdir().unwrap();
+
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(
+            adopt_commits_worktree(&plain),
+            "a plain folder is the commit"
+        );
+
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        if app_git::init_if_needed(&repo).is_err() {
+            eprintln!("git not usable; skipping");
+            return;
+        }
+        // `git init` with nothing committed: an unborn HEAD is not history.
+        assert!(adopt_commits_worktree(&repo), "no commits is not a history");
+
+        std::fs::write(repo.join("README.md"), b"theirs").unwrap();
+        app_git::set_repo_user_identity(&repo, None, None).unwrap();
+        app_git::add_all(&repo).unwrap();
+        app_git::commit_if_needed(&repo, "their own commit").unwrap();
+        assert!(
+            !adopt_commits_worktree(&repo),
+            "a repo with commits publishes its history, not the worktree"
+        );
+    }
+
+    #[test]
+    fn a_folder_with_no_gitignore_gets_one_before_its_first_commit() {
+        // That first commit goes to a forge and cannot be taken back, and the
+        // folder the user picked is as likely to hold node_modules and a .env
+        // as it is to hold the app.
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("mine");
+        std::fs::create_dir_all(&work).unwrap();
+
+        write_default_gitignore(&work).unwrap();
+        let written = std::fs::read_to_string(work.join(".gitignore")).unwrap();
+        for entry in ["node_modules/", ".env", "dist/", ".output/"] {
+            assert!(written.contains(entry), "missing {entry} in {written}");
+        }
+    }
+
+    #[test]
+    fn a_gitignore_the_folder_already_had_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("mine");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join(".gitignore"), "theirs/\n").unwrap();
+
+        write_default_gitignore(&work).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(work.join(".gitignore")).unwrap(),
+            "theirs/\n"
+        );
     }
 
     #[test]

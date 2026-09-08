@@ -90,6 +90,7 @@ export function CreateAppView() {
   const [gitRemoteUrl, setGitRemoteUrl] = React.useState('')
   const [localDir, setLocalDir] = React.useState('')
   const [localOrigin, setLocalOrigin] = React.useState<string | null>(null)
+  const [localIsRepo, setLocalIsRepo] = React.useState(false)
   const [picking, setPicking] = React.useState(false)
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -130,12 +131,12 @@ export function CreateAppView() {
         setError(t('apps.sourceLocalDaemonOffline', '本机 amuxd 未连接，无法检查这个目录。'))
         return
       }
-      if (!probe.isGitRepo) {
-        setError(t('apps.sourceLocalNotGit', '这个目录不是 git 仓库。'))
-        return
-      }
+      // Not a git repo is no longer a refusal. A folder someone points at is
+      // as often "the thing I have been working on" as it is a checkout, and
+      // the app can host it: see `adoptLocalDir`.
       setLocalDir(selected)
-      setLocalOrigin(probe.gitRemoteUrl)
+      setLocalIsRepo(probe.isGitRepo)
+      setLocalOrigin(probe.isGitRepo ? probe.gitRemoteUrl : null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -152,20 +153,25 @@ export function CreateAppView() {
       // them out of `needsDatabase`, which treats every unknown type as a data
       // app and would demand a Postgres schema on their first deploy.
       const importing = source !== 'new'
+      // A picked folder with a remote of its own is recorded and left alone.
+      // Without one — not a repo, or a repo nobody pushed — there is nothing to
+      // record, so the app gets a Gitea repo and the folder is published into
+      // it. Either way no template is written over the user's files.
+      const adopting = source === 'local' && !localOrigin
       const app = await useAppsStore.getState().create({
         teamId,
         name: trimmed,
         type: importing ? IMPORTED_APP_TYPE.id : appType,
         visibility,
         // Both import paths record where the code came from. For a local
-        // checkout that is its own `origin`, which may legitimately be absent.
+        // checkout that is its own `origin`.
         gitRemoteUrl: source === 'remote' ? trimmedRepo : source === 'local' ? localOrigin : null,
-        // A local checkout is already on disk: provision nothing, clone
-        // nothing, and above all write no template over the user's files.
-        localOnly: source === 'local',
+        // Provision nothing only when there is already a remote to deploy from.
+        localOnly: source === 'local' && !adopting,
+        adoptLocalDir: adopting ? localDir : null,
       })
 
-      if (source === 'local') {
+      if (source === 'local' && !adopting) {
         await bindDaemonAppWorkdir(app.id, teamId, localDir)
         await useAppsStore.getState().refreshLocalApps(teamId)
       }
@@ -315,11 +321,25 @@ export function CreateAppView() {
                 </span>
               </Button>
               <span className="text-[11.5px] text-faint">
+                {/*
+                  Three states, and the difference matters before they commit to
+                  it: an existing remote is recorded, no remote means we make one
+                  and push their files to it, and that second one is not
+                  something to discover afterwards.
+                */}
                 {localOrigin
                   ? t('apps.sourceLocalOrigin', '远端：{{url}}', { url: localOrigin })
-                  : localDir
-                    ? t('apps.sourceLocalNoOrigin', '这个仓库还没有远端，应用会先只留在本机。')
-                    : t('apps.sourceLocalHint', '目录留在原地，不会被移动或覆盖。')}
+                  : !localDir
+                    ? t('apps.sourceLocalHint', '目录留在原地，不会被移动或覆盖。')
+                    : localIsRepo
+                      ? t(
+                          'apps.sourceLocalWillHostRepo',
+                          '这个仓库还没有远端，我们会建一个并把现有提交推上去。未提交的改动不会被提交。',
+                        )
+                      : t(
+                          'apps.sourceLocalWillInit',
+                          '这个目录还不是 git 仓库，我们会初始化一个、写一份 .gitignore（node_modules、.env 等）后把内容推上去。',
+                        )}
               </span>
             </div>
           )}
