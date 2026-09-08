@@ -15,6 +15,15 @@ fn latency_probe_enabled() -> bool {
         .get_or_init(|| std::env::var("AMUX_LATENCY_PROBE").is_ok_and(|v| v == "1" || v == "true"))
 }
 
+fn is_active_to_idle(event: &amux::AcpEvent) -> bool {
+    matches!(
+        event.event.as_ref(),
+        Some(amux::acp_event::Event::StatusChange(sc))
+            if sc.old_status == amux::AgentStatus::Active as i32
+                && sc.new_status == amux::AgentStatus::Idle as i32
+    )
+}
+
 impl DaemonServer {
     /// Build merged agent list: active agents + historical (non-active) sessions.
     /// Now only used by `publish_all_agent_states` to iterate startup/reconnect state.
@@ -337,29 +346,21 @@ impl DaemonServer {
             }
         }
 
-        // Update agent status if this is a status change event
+        // Update agent status if this is a status change event.
+        // Active→Idle is deferred until ingest + persist below: marking Idle
+        // first lets a skills refresh detach the runtime and drop the
+        // turn-final AGENT_REPLY before it reaches cloud `messages`.
+        let defer_idle = is_active_to_idle(&acp_event);
         if let Some(amux::acp_event::Event::StatusChange(ref sc)) = acp_event.event {
-            let became_idle = sc.old_status == amux::AgentStatus::Active as i32
-                && sc.new_status == amux::AgentStatus::Idle as i32;
-            {
-                let mut agents = self.agents.lock().await;
-                if let Some(handle) = agents.get_handle_mut(agent_id) {
-                    handle.status = amux::AgentStatus::try_from(sc.new_status)
-                        .unwrap_or(amux::AgentStatus::Unknown);
+            if !defer_idle {
+                {
+                    let mut agents = self.agents.lock().await;
+                    if let Some(handle) = agents.get_handle_mut(agent_id) {
+                        handle.status = amux::AgentStatus::try_from(sc.new_status)
+                            .unwrap_or(amux::AgentStatus::Unknown);
+                    }
                 }
-            }
-            self.publish_runtime_state_by_id(agent_id).await;
-            if became_idle {
-                self.remote_tool_turn_contexts
-                    .lock()
-                    .await
-                    .clear_runtime(agent_id);
-                self.flush_pending_remote_tools_mcp_refresh(agent_id).await;
-                // No `learn_session_model` here any more. It existed to give a
-                // fresh install's device MRU a first entry by asking the backend
-                // what an unpinned start had settled on — and ADR-0007 removes
-                // both the MRU and unpinned starts, since every entry point now
-                // pins a model when it is created.
+                self.publish_runtime_state_by_id(agent_id).await;
             }
 
             // Status transitions used to upsert `agent_runtimes` here. The
@@ -386,7 +387,7 @@ impl DaemonServer {
         // emitted messages (cloud `messages.sequence`). The envelope
         // append below uses the same value, keeping a 1:1 link between an
         // ACP event boundary and the messages that flowed from it.
-        let (mut emitted, turn_id, seq, reply_to_message_id, clear_reply_to) = {
+        let (emitted, turn_id, seq, reply_to_message_id) = {
             let mut agents = self.agents.lock().await;
             let seq = agents
                 .get_handle_mut(agent_id)
@@ -396,12 +397,6 @@ impl DaemonServer {
                 .get_handle(agent_id)
                 .and_then(|h| h.pending_reply_to_message_id.clone())
                 .unwrap_or_default();
-            let clear_reply_to = matches!(
-                acp_event.event.as_ref(),
-                Some(amux::acp_event::Event::StatusChange(sc))
-                    if sc.old_status == amux::AgentStatus::Active as i32
-                        && sc.new_status == amux::AgentStatus::Idle as i32
-            );
             let turn_id_before = agents
                 .aggregator(agent_id)
                 .and_then(|a| a.current_turn_id())
@@ -441,8 +436,9 @@ impl DaemonServer {
                 crate::runtime::apply_violations_to_emitted(&mut emitted, &violations, &tid);
             }
             let turn_id = turn_id_before.unwrap_or_default();
-            (emitted, turn_id, seq, reply_to_message_id, clear_reply_to)
+            (emitted, turn_id, seq, reply_to_message_id)
         };
+        let mut persist_failed = false;
         if !collab_sessions.is_empty() && !emitted.is_empty() {
             if let Some(tc) = self.teamclu.as_ref() {
                 let actor_id = self.actor_id.clone();
@@ -501,6 +497,9 @@ impl DaemonServer {
                             )
                             .await;
                         cloud_ok = cloud_ok && ok;
+                        if persist && !ok {
+                            persist_failed = true;
+                        }
                     }
                     // Harden cursor when a turn ends as interrupted: send_prompt
                     // may have returned Err and skipped persist_runtime_cursor.
@@ -513,9 +512,26 @@ impl DaemonServer {
                 }
             }
         }
-        if clear_reply_to {
-            if let Some(handle) = self.agents.lock().await.get_handle_mut(agent_id) {
-                handle.pending_reply_to_message_id = None;
+        if defer_idle {
+            if persist_failed {
+                tracing::warn!(
+                    agent_id,
+                    "turn-final AGENT_REPLY persist failed; keeping runtime Active"
+                );
+            } else {
+                {
+                    let mut agents = self.agents.lock().await;
+                    if let Some(handle) = agents.get_handle_mut(agent_id) {
+                        handle.status = amux::AgentStatus::Idle;
+                        handle.pending_reply_to_message_id = None;
+                    }
+                }
+                self.publish_runtime_state_by_id(agent_id).await;
+                self.remote_tool_turn_contexts
+                    .lock()
+                    .await
+                    .clear_runtime(agent_id);
+                self.flush_pending_remote_tools_mcp_refresh(agent_id).await;
             }
         }
 

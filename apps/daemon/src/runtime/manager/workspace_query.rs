@@ -9,6 +9,7 @@
 
 use crate::proto::amux;
 use crate::runtime::handle::RuntimeHandle;
+use crate::runtime::turn_aggregator::TurnAggregator;
 
 use super::RuntimeManager;
 
@@ -55,16 +56,30 @@ impl RuntimeManager {
         })
     }
 
-    /// True while any runtime in this workspace is currently executing a turn.
+    /// True while this runtime is executing a turn or has not yet committed
+    /// the turn-final `AGENT_REPLY`.
     ///
     /// `Active` is the normal ACP status during a turn. `event_rx == None`
     /// covers the checkout path used by HTTP/gateway/cron turn drivers; while
     /// checked out, the owner is awaiting the turn and `poll_events` must not
-    /// drain that channel.
+    /// drain that channel. A held `turn_lock` or an open aggregator turn
+    /// covers the Idle-before-commit window: the ACP status may already be
+    /// Idle while the reply is still being ingested / persisted.
+    fn runtime_has_active_turn(
+        handle: &RuntimeHandle,
+        aggregator: Option<&TurnAggregator>,
+    ) -> bool {
+        matches!(handle.status, amux::AgentStatus::Active)
+            || handle.event_rx.is_none()
+            || handle.turn_lock.try_lock().is_err()
+            || aggregator.and_then(|a| a.current_turn_id()).is_some()
+    }
+
+    /// True while any runtime in this workspace is currently executing a turn.
     pub fn workspace_has_active_turn(&self, workspace_path: &str, workspace_id: &str) -> bool {
-        self.agents.iter().any(|(_, handle)| {
+        self.agents.iter().any(|(id, handle)| {
             Self::workspace_runtime_matches(handle, workspace_path, workspace_id)
-                && (matches!(handle.status, amux::AgentStatus::Active) || handle.event_rx.is_none())
+                && Self::runtime_has_active_turn(handle, self.aggregators.get(id))
         })
     }
 
@@ -132,8 +147,9 @@ impl RuntimeManager {
     /// config refreshes therefore accumulates draining generations until the
     /// global host cap is exhausted. Idle runtimes can be reconstructed from
     /// their persisted backend session on the next message, so release those
-    /// leases before rolling the host. Active and checked-out turns remain on
-    /// their current generation and are never interrupted.
+    /// leases before rolling the host. Active, checked-out, and uncommitted
+    /// turns (open aggregator / held turn_lock) remain on their current
+    /// generation and are never interrupted.
     pub async fn stop_idle_runtimes_for_workspace(
         &mut self,
         workspace_path: &str,
@@ -142,10 +158,11 @@ impl RuntimeManager {
         let ids: Vec<String> = self
             .agents
             .iter()
-            .filter(|(_, handle)| {
+            .filter(|(id, handle)| {
                 Self::workspace_runtime_matches(handle, workspace_path, workspace_id)
                     && handle.status == amux::AgentStatus::Idle
                     && handle.event_rx.is_some()
+                    && !Self::runtime_has_active_turn(handle, self.aggregators.get(id.as_str()))
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -231,6 +248,70 @@ mod tests {
         assert_eq!(
             manager.workspace_occupancy("/tmp/missing", "ws-missing"),
             WorkspaceOccupancy::Cold
+        );
+    }
+
+    #[test]
+    fn occupancy_treats_open_aggregator_turn_as_active_even_when_idle() {
+        let mut manager = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
+        manager.add_test_workspace_runtime(
+            "idle-open-turn",
+            "/tmp/open-turn",
+            "ws-open-turn",
+            amux::AgentStatus::Idle,
+        );
+        manager.open_test_aggregator_turn("idle-open-turn");
+
+        assert_eq!(
+            manager.workspace_occupancy("/tmp/open-turn", "ws-open-turn"),
+            WorkspaceOccupancy::Active
+        );
+        assert!(manager.workspace_has_active_turn("/tmp/open-turn", "ws-open-turn"));
+    }
+
+    #[tokio::test]
+    async fn occupancy_treats_held_turn_lock_as_active_even_when_idle() {
+        let mut manager = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
+        manager.add_test_workspace_runtime(
+            "idle-locked",
+            "/tmp/locked",
+            "ws-locked",
+            amux::AgentStatus::Idle,
+        );
+        let lock = manager
+            .get_handle("idle-locked")
+            .expect("test runtime")
+            .turn_lock
+            .clone();
+        let _guard = lock.lock().await;
+
+        assert_eq!(
+            manager.workspace_occupancy("/tmp/locked", "ws-locked"),
+            WorkspaceOccupancy::Active
+        );
+        assert!(manager.workspace_has_active_turn("/tmp/locked", "ws-locked"));
+    }
+
+    #[tokio::test]
+    async fn refresh_cleanup_does_not_stop_idle_runtime_with_open_aggregator_turn() {
+        let mut manager = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
+        manager.add_test_workspace_runtime(
+            "idle-open-turn",
+            "/tmp/target",
+            "ws-target",
+            amux::AgentStatus::Idle,
+        );
+        manager.open_test_aggregator_turn("idle-open-turn");
+
+        assert_eq!(
+            manager
+                .stop_idle_runtimes_for_workspace("/tmp/target", "ws-target")
+                .await,
+            0
+        );
+        assert!(
+            manager.agent_ids().iter().any(|id| id == "idle-open-turn"),
+            "must not detach a WarmIdle runtime whose turn reply is still uncommitted"
         );
     }
 }

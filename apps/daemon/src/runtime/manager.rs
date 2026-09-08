@@ -1170,6 +1170,8 @@ impl RuntimeManager {
 
     /// Like [`send_prompt`], but stamps turn-scoped requester / reply_to onto the
     /// ACP prompt job (bound when the prompt worker starts the turn).
+    /// Occupancy is marked `Active` before dispatch so a skills refresh cannot
+    /// detach the runtime in the window while the prompt is in flight.
     pub async fn send_prompt_with_requester(
         &mut self,
         agent_id: &str,
@@ -1178,43 +1180,53 @@ impl RuntimeManager {
         requester_actor_id: Option<String>,
         reply_to_message_id: Option<String>,
     ) -> crate::error::Result<Vec<String>> {
-        let (final_text, drained_ids, drained_messages, drained_injected, drained_next_context) =
-            if let Some(handle) = self.agents.get_mut(agent_id) {
-                let drained_messages = handle.pending_silent.clone();
-                let drained_injected = handle.injected_context.clone();
-                let drained_next_context = std::mem::take(&mut handle.next_prompt_context);
-                let (injected_prefix, _) = if super::instruction_delivery::skips_buffered_inject(
-                    handle.instruction_delivery,
-                ) {
-                    (String::new(), Vec::new())
-                } else {
-                    handle.flush_injected_context()
-                };
-                let (silent_prefix, drained) = handle.flush_pending_silent();
-                let next_context_prefix = if drained_next_context.is_empty() {
-                    String::new()
-                } else {
-                    format!("{drained_next_context}\n\n")
-                };
-                let prefix = format!("{injected_prefix}{next_context_prefix}{silent_prefix}");
-                let final_text = if prefix.is_empty() {
-                    text.to_string()
-                } else {
-                    format!("{prefix}{text}")
-                };
-                (
-                    final_text,
-                    drained,
-                    drained_messages,
-                    drained_injected,
-                    drained_next_context,
-                )
+        let (
+            final_text,
+            drained_ids,
+            drained_messages,
+            drained_injected,
+            drained_next_context,
+            previous_status,
+        ) = if let Some(handle) = self.agents.get_mut(agent_id) {
+            let drained_messages = handle.pending_silent.clone();
+            let drained_injected = handle.injected_context.clone();
+            let drained_next_context = std::mem::take(&mut handle.next_prompt_context);
+            let (injected_prefix, _) = if super::instruction_delivery::skips_buffered_inject(
+                handle.instruction_delivery,
+            ) {
+                (String::new(), Vec::new())
             } else {
-                return Err(crate::error::AmuxError::Agent(format!(
-                    "agent {} not found",
-                    agent_id
-                )));
+                handle.flush_injected_context()
             };
+            let (silent_prefix, drained) = handle.flush_pending_silent();
+            let next_context_prefix = if drained_next_context.is_empty() {
+                String::new()
+            } else {
+                format!("{drained_next_context}\n\n")
+            };
+            let prefix = format!("{injected_prefix}{next_context_prefix}{silent_prefix}");
+            let final_text = if prefix.is_empty() {
+                text.to_string()
+            } else {
+                format!("{prefix}{text}")
+            };
+            let previous_status = handle.status;
+            handle.status = amux::AgentStatus::Active;
+            handle.current_prompt = text.to_string();
+            (
+                final_text,
+                drained,
+                drained_messages,
+                drained_injected,
+                drained_next_context,
+                previous_status,
+            )
+        } else {
+            return Err(crate::error::AmuxError::Agent(format!(
+                "agent {} not found",
+                agent_id
+            )));
+        };
 
         if let Err(err) = self
             .send_prompt_raw(
@@ -1227,6 +1239,7 @@ impl RuntimeManager {
             .await
         {
             if let Some(handle) = self.agents.get_mut(agent_id) {
+                handle.status = previous_status;
                 if !drained_injected.is_empty() {
                     handle.injected_context = drained_injected;
                 }
@@ -1240,10 +1253,6 @@ impl RuntimeManager {
                 }
             }
             return Err(err);
-        }
-        if let Some(handle) = self.agents.get_mut(agent_id) {
-            handle.status = amux::AgentStatus::Active;
-            handle.current_prompt = text.to_string();
         }
         Ok(drained_ids)
     }
@@ -1937,6 +1946,26 @@ impl RuntimeManager {
         h.workspace_id = workspace_id.to_string();
         h.status = status;
         self.agents.insert(runtime_id.to_string(), h);
+    }
+
+    /// Open a TurnAggregator turn for `runtime_id` without flipping handle status.
+    /// Used to prove occupancy treats an uncommitted turn as busy.
+    pub fn open_test_aggregator_turn(&mut self, runtime_id: &str) {
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&amux::AcpEvent {
+            event: Some(amux::acp_event::Event::StatusChange(
+                amux::AcpStatusChange {
+                    old_status: amux::AgentStatus::Idle as i32,
+                    new_status: amux::AgentStatus::Active as i32,
+                },
+            )),
+            model: String::new(),
+        });
+        assert!(
+            agg.current_turn_id().is_some(),
+            "Idle→Active ingest must open a turn"
+        );
+        self.aggregators.insert(runtime_id.to_string(), agg);
     }
 
     pub fn set_test_runtime_status(&mut self, runtime_id: &str, status: amux::AgentStatus) {
@@ -2837,6 +2866,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_prompt_marks_active_before_return() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("rt1");
+        assert_eq!(
+            mgr.get_handle("rt1").unwrap().status,
+            amux::AgentStatus::Starting
+        );
+        mgr.send_prompt("rt1", "hello", vec![]).await.unwrap();
+        assert_eq!(
+            mgr.get_handle("rt1").unwrap().status,
+            amux::AgentStatus::Active
+        );
+        assert_eq!(mgr.get_handle("rt1").unwrap().current_prompt, "hello");
+    }
+
+    #[tokio::test]
     async fn send_prompt_returns_err_for_missing_runtime() {
         let mut mgr = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
         let result = mgr.send_prompt("nonexistent", "hello", vec![]).await;
@@ -2860,6 +2904,11 @@ mod tests {
         assert_eq!(
             mgr.get_handle("rt1").unwrap().next_prompt_context,
             "remote ctx"
+        );
+        assert_eq!(
+            mgr.get_handle("rt1").unwrap().status,
+            amux::AgentStatus::Starting,
+            "failed send must restore the pre-dispatch status"
         );
         assert!(mgr.last_sent_to("rt1").is_none());
     }

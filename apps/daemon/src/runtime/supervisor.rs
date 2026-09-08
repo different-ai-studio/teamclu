@@ -1493,11 +1493,18 @@ impl RuntimeSupervisor {
         );
         prepare_workspace(workspace_path)?;
 
+        // Re-check occupancy under the same lock as stop. A turn can start
+        // (or a turn-final reply can still be uncommitted) between the
+        // pre-prepare snapshot and here; detaching in that window drops the
+        // AGENT_REPLY before cloud persist.
         let stopped = if evict_provider_hosts {
             self.request_workspace_host_refresh(workspace_id, workspace_path)
                 .await
         } else {
             let mut manager = self.agents.lock().await;
+            if manager.workspace_has_active_turn(&workspace_path_str, workspace_id) {
+                return Err(WorkspaceControlError::ActiveTurn(workspace_id.to_owned()));
+            }
             manager
                 .stop_runtimes_for_workspace(&workspace_path_str, workspace_id)
                 .await
@@ -2100,6 +2107,82 @@ mod tests {
             err,
             WorkspaceControlError::ActiveTurn(ref id) if id == &workspace_id
         ));
+    }
+
+    #[tokio::test]
+    async fn reload_workspace_rejects_open_aggregator_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let supervisor = RuntimeSupervisor::new(Arc::new(AsyncMutex::new(RuntimeManager::new(
+            RuntimeManager::default_launch_configs(),
+            None,
+        ))));
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.add_test_workspace_runtime(
+                "rt-finalizing",
+                &dir.path().to_string_lossy(),
+                &workspace_id,
+                amux::AgentStatus::Idle,
+            );
+            manager.open_test_aggregator_turn("rt-finalizing");
+        }
+
+        let err = supervisor
+            .reload_workspace(&workspace_id, dir.path(), false)
+            .await
+            .expect_err("reload must wait until the turn-final reply is committed");
+        assert!(matches!(
+            err,
+            WorkspaceControlError::ActiveTurn(ref id) if id == &workspace_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn skills_refresh_defers_when_aggregator_turn_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_id = refresh_watch::workspace_runtime_id(dir.path());
+        let supervisor = RuntimeSupervisor::new(Arc::new(AsyncMutex::new(RuntimeManager::new(
+            RuntimeManager::default_launch_configs(),
+            None,
+        ))));
+        {
+            let mut manager = supervisor.agents.lock().await;
+            manager.add_test_workspace_runtime(
+                "rt-finalizing",
+                &dir.path().to_string_lossy(),
+                &workspace_id,
+                amux::AgentStatus::Idle,
+            );
+            manager.open_test_aggregator_turn("rt-finalizing");
+        }
+
+        supervisor
+            .refresh_coordinator()
+            .record_change(
+                &workspace_id,
+                dir.path(),
+                refresh::RefreshChangeKind::Skills,
+                refresh::RefreshSource::FilesystemWatch,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(supervisor.auto_apply_pending_refreshes().await, 0);
+        let dto = supervisor
+            .refresh_coordinator()
+            .runtime_refresh_dto(&workspace_id)
+            .await;
+        assert_eq!(dto.status, "pending");
+        assert!(dto.auto_apply_blocked_by_active_runtime);
+        let manager = supervisor.agents.lock().await;
+        assert_eq!(
+            manager
+                .active_handles_for_workspace(&dir.path().to_string_lossy(), &workspace_id)
+                .count(),
+            1,
+            "must not detach a runtime whose turn reply is still uncommitted"
+        );
     }
 
     #[tokio::test]
