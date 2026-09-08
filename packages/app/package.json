@@ -82,7 +82,7 @@
     "mermaid": "^11.17.2",
     "mqtt": "5.15.2",
     "nanoid": "^6.0.1",
-    "pdfjs-dist": "6.3.289",
+    "pdfjs-dist": "5.4.296",
     "qrcode.react": "^4.2.0",
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
