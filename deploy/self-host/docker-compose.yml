@@ -386,6 +386,18 @@ services:
       # keeps apps on their *.fcapp.run trigger URL, which refuses to forward
       # any 3xx (ExternalRedirectForbidden).
       APPS_FC_ROUTE_DOMAIN: "${APPS_FC_ROUTE_DOMAIN:-}"
+      # Hostname of the central login service for deployed apps. Blank = the
+      # login wall is off: FC claims no hostname, and an app with
+      # auth_mode=platform is served without one. Must be a name of its own
+      # (not under APPS_PUBLIC_DOMAIN's wildcard is fine either way) with an A
+      # record pointing at this box.
+      LOGIN_DOMAIN: "${LOGIN_DOMAIN:-}"
+      # Signing key for app login sessions and one-shot codes. Blank is
+      # SUPPORTED: the key is then HKDF-derived from SUPABASE_SERVICE_ROLE_KEY,
+      # so the feature cannot be silently disabled by an unset variable the way
+      # APP_SECRETS_ENCRYPTION_KEY disabled platform auth. Set it to rotate
+      # every app session independently of the service role key.
+      APPS_AUTH_SESSION_SECRET: "${APPS_AUTH_SESSION_SECRET:-}"
       # Per-app git repos on Gitea. Blank disables repo provisioning (503
       # gitea_unavailable naming the empty variable). May be the Caddy-proxied
       # public HTTPS URL (https://${GITEA_DOMAIN}) or the in-network address
@@ -566,6 +578,12 @@ services:
       # Gitea web UI + REST API. Same never-empty rule as S3_DOMAIN — a nameless
       # block is read as global configuration and Caddy refuses to start.
       GITEA_DOMAIN: "${GITEA_DOMAIN:-gitea.localhost}"
+      # Central login service for deployed apps. Same never-empty rule again.
+      # Note the asymmetry with the `fc` service above, which treats blank as
+      # "feature off": Caddy cannot express that, so it always has a site here.
+      # A placeholder site simply proxies to an FC that does not claim the
+      # hostname, which answers 404 — harmless.
+      LOGIN_DOMAIN: "${LOGIN_DOMAIN:-login.localhost}"
       ACME_EMAIL: "${ACME_EMAIL}"
       CADDY_GLOBAL_TLS: "${CADDY_GLOBAL_TLS:-}"
       CADDY_SITE_TLS: "${CADDY_SITE_TLS:-}"

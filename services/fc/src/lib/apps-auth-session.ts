@@ -45,6 +45,19 @@ export const APP_RENEW_WINDOW_SECONDS = 24 * 60 * 60;
 export const SSO_COOKIE = "__teamclu_sso";
 export const APP_COOKIE = "__teamclu_app_session";
 
+/**
+ * Paths the app-domain gateway owns and never forwards to the app itself.
+ *
+ * They live here, next to the tickets, because BOTH sides need the exact same
+ * strings: the central login service builds redirect URLs out of them, and the
+ * gateway matches incoming requests against them. A copy on each side is a
+ * silent 404 waiting for one of the two to be edited.
+ *
+ * The `__` prefix is what keeps them out of the way of a user's own routes.
+ */
+export const APP_AUTH_CALLBACK_PATH = "/__teamclu/auth/callback";
+export const APP_AUTH_LOGOUT_PATH = "/__teamclu/auth/logout";
+
 export type SsoSessionClaims = { sub: string; email: string };
 export type AppSessionClaims = { sub: string; email: string; appId: string };
 export type AuthCodeClaims = {

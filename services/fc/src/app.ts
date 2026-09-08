@@ -8,6 +8,7 @@ import { handleSyncRequest } from "./lib/legacy-sync.js";
 import * as admin from "./lib/admin-handlers.js";
 import { httpsRedirect, isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
 import { parseAppPublicHost } from "./lib/apps-public-host.js";
+import { handleLoginRequest, isLoginHost, type LookupLoginApp } from "./lib/apps-login-service.js";
 
 export type AppDeps = {
   createRepository: (args: { accessToken: string }) => unknown;
@@ -15,6 +16,8 @@ export type AppDeps = {
   createSystemRepository?: () => unknown | Promise<unknown>;
   /** Resolves a vanity app host to its row; injected so tests need no database. */
   lookupVanityApp?: LookupVanityApp;
+  /** Resolves an app id for the central login service; same injection reason. */
+  lookupLoginApp?: LookupLoginApp;
 };
 
 function sendLegacy(_c: any, r: { statusCode: number; headers?: Record<string, string>; body: string }) {
@@ -68,6 +71,30 @@ export function createApp(deps: AppDeps): Hono {
   // Caddy sends every `*.<APPS_PUBLIC_DOMAIN>` request here (it cannot know an
   // app's Function Compute URL — the trigger hostname carries a random suffix),
   // and asks this same service whether a hostname deserves a certificate.
+  // The central login service owns one hostname outright. Registered ahead of
+  // the vanity proxy for the same reason that block sits ahead of CORS and the
+  // rate limiter: these are a visitor's page loads, not Cloud API traffic.
+  //
+  // Returning null from the handler lets the request fall through, so /healthz
+  // still answers on this hostname.
+  if (deps.lookupLoginApp) {
+    const lookupApp = deps.lookupLoginApp;
+    app.use("*", async (c, next) => {
+      if (!isLoginHost(vanityRequestHost(c))) return next();
+      // Behind Caddy the connection to this process is plain http, so the URL
+      // scheme would mark every cookie non-Secure. The forwarded header is what
+      // carries the browser's actual scheme.
+      const proto =
+        c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() ||
+        new URL(c.req.url).protocol.replace(":", "");
+      const res = await handleLoginRequest(c.req.raw, {
+        lookupApp,
+        secureCookies: proto === "https",
+      });
+      return res ?? next();
+    });
+  }
+
   if (deps.lookupVanityApp) {
     const lookup = deps.lookupVanityApp;
 

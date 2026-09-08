@@ -91,6 +91,23 @@
 	reverse_proxy gitea:3000
 }
 
+# Central login service for deployed apps.
+#
+# One hostname, owned outright by FC: it renders the login page, does the email
+# round trip, and holds the SSO cookie that lets a visitor open a second app
+# without logging in again. Apps themselves never serve any of this — what
+# crosses back to an app is a one-shot code, because a cookie set here cannot
+# be read on an app's own hostname (and once custom domains exist, that is the
+# normal case rather than the exception).
+#
+# LOGIN_DOMAIN falls back to login.localhost on a box that has not set one, for
+# the same reason S3_DOMAIN does: a nameless block is read as global
+# configuration and Caddy refuses to start.
+{$CADDY_SITE_SCHEME}{$LOGIN_DOMAIN} {
+	{$CADDY_SITE_TLS}
+	reverse_proxy fc:9000
+}
+
 # Deployed apps: <slug>-<id8>.{$APPS_DOMAIN}
 #
 # The wildcard sits one level DOWN, on its own `apps.` label, and never on the

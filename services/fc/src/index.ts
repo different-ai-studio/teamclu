@@ -188,6 +188,36 @@ export function vanityLookup() {
   return makeVanityLookup({ getServiceRoleClient: createServiceRoleClient });
 }
 
+/** `id` is a uuid column, and a non-uuid `.eq()` is a query ERROR, not an empty result. */
+const APP_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * App lookup for the central login service, wired the same way and for the same
+ * reason as {@link vanityLookup}: the login hostname is unauthenticated by
+ * nature — there is no bearer token to scope RLS with — so it reads the
+ * control-plane database with the service role, like the vanity, cron and push
+ * paths do.
+ *
+ * The uuid guard is not defensive coding. `apps.id` is a uuid column and the id
+ * here comes straight off a query string, so a malformed one makes PostgREST
+ * fail the whole query rather than return no rows — the login page would answer
+ * 500 instead of "no such app". Same shape of trap as the `id like '…%'` filter
+ * that `apps-vanity.ts` documents.
+ */
+export function loginAppLookup() {
+  return async (appId: string) => {
+    if (!APP_ID_RE.test(appId)) return null;
+    const { data, error } = await createServiceRoleClient()
+      .from("apps")
+      .select("id, slug, auth_mode")
+      .eq("id", appId)
+      .maybeSingle();
+    if (error) throw new Error(`login app lookup failed: ${error.message}`);
+    if (!data) return null;
+    return { id: data.id, slug: data.slug, authMode: data.auth_mode ?? "none" };
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Repository factories. Built lazily per request so importing this module
 // needs no environment.
@@ -258,6 +288,7 @@ const app = createApp({
   createAuthRepository: makeAuthRepoFactory(),
   createSystemRepository: makeSystemRepoFactory(),
   lookupVanityApp: vanityLookup(),
+  lookupLoginApp: loginAppLookup(),
 });
 
 const honoHandler = handle(app);

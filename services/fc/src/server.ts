@@ -5,6 +5,7 @@ import {
   makeAuthRepoFactory,
   makeSystemRepoFactory,
   vanityLookup,
+  loginAppLookup,
 } from "./index.js";
 
 const app = createApp({
@@ -16,6 +17,7 @@ const app = createApp({
   // This entry — not the FC handler — is what serves apps on their own
   // hostnames, because the reverse proxy in front of it is the self-host one.
   lookupVanityApp: vanityLookup(),
+  lookupLoginApp: loginAppLookup(),
 });
 
 const parsedPort = Number(process.env.PORT);

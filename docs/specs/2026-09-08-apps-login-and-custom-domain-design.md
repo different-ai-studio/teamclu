@@ -610,8 +610,17 @@ api/supabase/mqtt 共享）。
    `test/apps-auth-session.test.ts`，24 个用例）。验收全部达成，另加了两项设计断言：
    「失败的兑换不烧 code」（校验顺序）与「三种票据不可互换」（audience 隔离）。
    两处变异检验确认测试非假绿：去掉 `aid` 绑定 → 红；把 `jti` 标记提到校验之前 → 红。
-2. **批次 2 — 中心登录服务**：`apps-login-service.ts` + `app.ts` 按 Host 分流 + 限流。
-   验收：本地起 FC，`login.localhost` 能走完 OTP 拿到 code。
+2. ~~**批次 2 — 中心登录服务**~~ ✅ **已完成**（`src/lib/apps-login-service.ts`，24 个用例）。
+   顺带把 `LOGIN_DOMAIN` / `APPS_AUTH_SESSION_SECRET` 在 compose、`s.yaml`、`.env.example`
+   三处声明齐，并加了 Caddy 的登录站点块 —— env 少加一处会静默失效，留到批次 5 太容易漏。
+   两处变异检验：放开返回地址校验 → 红；身份改用用户输入的邮箱而非 GoTrue 的回答 → 红。
+   用真 Caddy 容器验证了配置有效，并确认 `LOGIN_DOMAIN` 留空会让 Caddy 拒绝启动
+   （`server block without any key is global configuration`）—— compose 里的
+   `login.localhost` 兜底是必需的，不是冗余。
+
+   **实现记的一条**：`services/fc` 是 `strict: false`，**没有 `strictNullChecks` 就没有
+   可辨识联合窄化** —— `if (!result.ok)` 之后访问分支独有字段会编译失败。这里改用了「所有
+   字段恒在的扁平结构」。全量测试是绿的而 typecheck 是红的，别只跑测试就下结论。
 3. **批次 3 — app 域名网关**：`apps-auth-gate.ts` + `app-auth-mode.ts` 改造 +
    `auth_audience` 迁移。验收：未登录被拦、code 换 cookie 成功、`org` 档挡住外人、
    换 app 后 cookie 失效。
