@@ -7,10 +7,11 @@ import { capabilities } from "@/lib/config/platform";
 import { isSoloBuild } from "@/lib/config/solo-build";
 import { scheduleReleaseStuckModalLayers } from "@/lib/ui/modal-layer-cleanup";
 import { appDisplayName } from "@/lib/config/build-config";
-import { buildSessionDeeplink, parseSessionDeeplink } from "@/lib/session/session-deeplink";
+import { parseSessionDeeplink } from "@/lib/session/session-deeplink";
 import { markStartup } from "@/lib/telemetry/startup-perf";
-import { BookOpen, ChevronLeft, X, PanelRightClose, Link2, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
+import { BookOpen, ChevronLeft, X, PanelRightClose, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
 import { DiagnoseSessionButton } from "@/components/chat/DiagnoseSessionButton";
+import { SessionShareButton } from "@/components/chat/SessionShareButton";
 import { useWorkspaceInit } from "@/hooks/use-workspace-init";
 import { useChannelGatewayInit } from "@/hooks/use-channel-gateway-init";
 import { useGitReposInit } from "@/hooks/use-git-repos-init";
@@ -628,22 +629,7 @@ function AppContent() {
                 />
               </button>
             )}
-            {activeSession && (
-              <button
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(buildSessionDeeplink(activeSession.id));
-                    toast.success(t("chat.shareLinkCopied", "会话链接已复制"));
-                  } catch {
-                    toast.error(t("chat.shareLinkCopyFailed", "复制失败"));
-                  }
-                }}
-                className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                title={t("chat.copyShareLink", "复制会话分享链接")}
-              >
-                <Link2 className="h-3.5 w-3.5" />
-              </button>
-            )}
+            {activeSession && <SessionShareButton sessionId={activeSession.id} />}
             {activeSession && <DiagnoseSessionButton sessionId={activeSession.id} />}
 
             {/* Panel tabs - right side of header */}

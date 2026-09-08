@@ -27,6 +27,7 @@ pub mod shared_secrets;
 pub mod shared_secrets_crypto;
 pub mod skillssh;
 pub mod system_appearance;
+pub mod system_share;
 pub mod team;
 pub mod team_secret_store;
 pub mod team_share;
