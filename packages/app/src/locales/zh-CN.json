@@ -169,6 +169,7 @@
     "skillPublishLoadingDraft": "正在读取草稿元数据…",
     "skillPublishDraftMetadataFailed": "无法读取草稿元数据：{{msg}}",
     "skillPublishDraftDiff": "与 registry 不同",
+    "skillPublishSummaryClipped": "已缩短到 200 字，否则无法发布。",
     "skillDraftRecoveryTitle": "近期草稿恢复",
     "skillDraftRecoveryBody": "丢弃的草稿会保留 7 天。可恢复后继续编辑。",
     "skillDraftRecoveryRestore": "恢复草稿",

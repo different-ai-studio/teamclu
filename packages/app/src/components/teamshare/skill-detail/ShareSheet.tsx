@@ -6,6 +6,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { cn } from '@/lib/utils'
 import { type TeamSkillItem } from '@/stores/team-share-browser'
 import { TEAM_SKILL_CATEGORIES, type TeamSkillCategory } from '@/lib/backend/cloud-api/team-skills'
+import {
+  TEAM_SKILL_SUMMARY_MAX,
+  clipTeamSkillSummary,
+  hydrateTeamSkillPublishFields,
+} from '@/lib/skills/team-skill-summary'
 
 export function ShareSheet({
   item,
@@ -41,17 +46,23 @@ export function ShareSheet({
   const [whenToUse, setWhenToUse] = React.useState(item.whenToUse ?? '')
   const [whenNotToUse, setWhenNotToUse] = React.useState(item.whenNotToUse ?? '')
   const [changelog, setChangelog] = React.useState('v1: shared from personal skill')
+  const [summaryWasClipped, setSummaryWasClipped] = React.useState(false)
 
   React.useEffect(() => {
     if (!open) return
+    const hydrated = hydrateTeamSkillPublishFields({
+      draftSummary: item.summary,
+      draftWhenToUse: item.whenToUse,
+    })
     setSlug(item.slug)
-    setSummary(item.summary ?? '')
+    setSummary(hydrated.summary)
+    setSummaryWasClipped(hydrated.summaryWasClipped)
     setCategory(
       (TEAM_SKILL_CATEGORIES.includes(item.category as TeamSkillCategory)
         ? item.category
         : 'general') as TeamSkillCategory,
     )
-    setWhenToUse(item.whenToUse ?? '')
+    setWhenToUse(hydrated.whenToUse)
     setWhenNotToUse(item.whenNotToUse ?? '')
     setChangelog('v1: shared from personal skill')
   }, [open, item])
@@ -66,7 +77,13 @@ export function ShareSheet({
   // Guidance fields are not gates. Requiring them mostly bought placeholder
   // text, which reads as guidance without being any — worse than a blank the
   // author can come back and fill in.
-  const canSubmit = slug.trim() && !slugTaken && summary.trim() && changelog.trim() && !busy
+  const canSubmit =
+    slug.trim() &&
+    !slugTaken &&
+    summary.trim() &&
+    summary.trim().length <= TEAM_SKILL_SUMMARY_MAX &&
+    changelog.trim() &&
+    !busy
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
@@ -113,13 +130,27 @@ export function ShareSheet({
           <label className="block space-y-1">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">
               {t('teamShare.skillShareSummary', 'Summary')}
+              <span className="ml-2 font-mono font-normal normal-case tracking-normal">
+                {summary.length}/{TEAM_SKILL_SUMMARY_MAX}
+              </span>
             </span>
             <input
               value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              maxLength={200}
+              onChange={(e) => {
+                setSummary(e.target.value)
+                setSummaryWasClipped(false)
+              }}
+              maxLength={TEAM_SKILL_SUMMARY_MAX}
               className="w-full rounded-[8px] border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-coral/60"
             />
+            {summaryWasClipped && (
+              <p className="text-[12px] leading-relaxed text-muted-foreground">
+                {t(
+                  'teamShare.skillPublishSummaryClipped',
+                  'Shortened to 200 characters so it can be published.',
+                )}
+              </p>
+            )}
           </label>
           <label className="block space-y-1">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">
@@ -182,7 +213,7 @@ export function ShareSheet({
             onClick={() =>
               void onSubmit({
                 slug: slug.trim(),
-                summary: summary.trim(),
+                summary: clipTeamSkillSummary(summary),
                 category,
                 whenToUse: whenToUse.trim(),
                 whenNotToUse: whenNotToUse.trim(),
