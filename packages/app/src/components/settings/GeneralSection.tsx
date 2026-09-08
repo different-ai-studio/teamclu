@@ -15,6 +15,7 @@ import {
   PanelBottom,
   TerminalSquare,
   FolderGit,
+  RefreshCw,
   Sparkles,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -37,7 +38,9 @@ import { TeamDefaultAgentCard } from './TeamDefaultAgentCard'
 import { SwitchTeamDialog } from '@/components/auth/SwitchTeamDialog'
 import { useAcpDebugStore } from '@/stores/acp-debug-store'
 import { useHeaderPreferencesStore } from '@/stores/header-preferences-store'
+import { useAutoUpdatePreferenceStore } from '@/stores/auto-update-preference-store'
 import { appStoragePrefix, buildConfig } from '@/lib/config/build-config'
+import { getFeatures } from '@/lib/config/remote-features'
 import { NOTIFICATION_LEVEL_KEY } from '@/lib/ui/notification-service'
 import { LANGUAGE_OPTIONS, getPreferredLanguage, normalizeSupportedLanguage, persistLanguage } from '@/lib/locale'
 import { changeLanguage } from '@/lib/i18n'
@@ -163,6 +166,9 @@ export const GeneralSection = React.memo(function GeneralSection() {
   const setShowChangesTab = useHeaderPreferencesStore((s) => s.setShowChangesTab)
   const showSkillsRefresh = useHeaderPreferencesStore((s) => s.showSkillsRefresh)
   const setShowSkillsRefresh = useHeaderPreferencesStore((s) => s.setShowSkillsRefresh)
+  const autoUpdateEnabled = useAutoUpdatePreferenceStore((s) => s.autoUpdateEnabled)
+  const setAutoUpdateEnabled = useAutoUpdatePreferenceStore((s) => s.setAutoUpdateEnabled)
+  const updaterAvailable = getFeatures().updater && !import.meta.env.DEV
   const [closePref, setClosePref] = React.useState<'ask' | 'tray' | 'quit'>('ask')
   React.useEffect(() => {
     if (!isTauri()) return
@@ -392,6 +398,29 @@ export const GeneralSection = React.memo(function GeneralSection() {
                 <SelectItem value="quit">{t('settings.general.closeWindowQuit', 'Quit and stop agent')}</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+        </SettingCard>
+      ) : null}
+
+      {isTauri() && updaterAvailable ? (
+        <SettingCard>
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <label className="text-[13px] font-medium flex items-center gap-2">
+                <RefreshCw className="h-4 w-4 text-muted-foreground" />
+                {t('settings.general.autoUpdate', 'Automatic updates')}
+              </label>
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  'settings.general.autoUpdateDesc',
+                  'Check for updates in the background on startup and every few hours. You can still check manually from the settings footer.',
+                )}
+              </p>
+            </div>
+            <ToggleSwitch
+              enabled={autoUpdateEnabled}
+              onChange={setAutoUpdateEnabled}
+            />
           </div>
         </SettingCard>
       ) : null}

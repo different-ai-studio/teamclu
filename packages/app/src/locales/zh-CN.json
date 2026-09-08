@@ -1530,6 +1530,8 @@
       "closeWindowTray": "最小化到托盘（保持 Agent）",
       "closeWindowQuit": "退出并停止 Agent",
       "closeWindowError": "无法更新关闭偏好",
+      "autoUpdate": "自动更新",
+      "autoUpdateDesc": "在启动时及每隔数小时后台检查更新。仍可在设置页底部手动检查。",
       "notifications": "通知",
       "notificationsDesc": "接收桌面通知",
       "mqttBroker": "MQTT Broker",

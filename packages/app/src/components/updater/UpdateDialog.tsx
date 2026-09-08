@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { getFeatures } from "@/lib/config/remote-features"
+import { useAutoUpdatePreferenceStore } from "@/stores/auto-update-preference-store"
 import { useUpdaterStore } from "@/stores/updater"
 import { useShallow } from "zustand/react/shallow"
 
@@ -117,12 +118,14 @@ export function UpdateDialogContainer() {
   )
   const [dismissed, setDismissed] = useState(false)
   const [restarting, setRestarting] = useState(false)
+  const autoUpdateEnabled = useAutoUpdatePreferenceStore((s) => s.autoUpdateEnabled)
 
-  // Check for updates on app startup (3s delay) and every 4 hours
+  // Background checks only when the user opted in (Settings → General).
   useEffect(() => {
     if (
       !getFeatures().updater
       || import.meta.env.DEV
+      || !autoUpdateEnabled
       || typeof window === "undefined"
       || !(window as unknown as { __TAURI__: unknown }).__TAURI__
     ) {
@@ -141,7 +144,7 @@ export function UpdateDialogContainer() {
       clearTimeout(timer)
       clearInterval(interval)
     }
-  }, [checkForUpdates])
+  }, [autoUpdateEnabled, checkForUpdates])
 
   // Reset dismissed state when a new check starts
   useEffect(() => {
