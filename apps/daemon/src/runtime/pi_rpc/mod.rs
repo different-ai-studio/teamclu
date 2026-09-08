@@ -1036,17 +1036,34 @@ async fn emit_frame(
 }
 
 /// Mid-turn follow-up plan — aligned with opencode_http `do_prompt`.
+///
+/// `streamingBehavior: "steer"` is always stamped on the prompt itself
+/// (`pi_prompt_body`). This plan only decides whether TeamClu should emit a
+/// fresh Idle→Active (a new turn) or fold into the one already open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PiMidTurnPromptPlan {
     emit_turn_open: bool,
-    use_steer: bool,
 }
 
 fn pi_mid_turn_prompt_plan(was_turn_active: bool) -> PiMidTurnPromptPlan {
     PiMidTurnPromptPlan {
         emit_turn_open: !was_turn_active,
-        use_steer: was_turn_active,
     }
+}
+
+/// Every pi `prompt` carries `streamingBehavior: "steer"`.
+///
+/// pi ignores the field when idle and queues via `steer()` when
+/// `isStreaming` is still true. `Route::turn_active` is cleared on
+/// `agent_end`, which is earlier than pi's `agent_settled`, so omitting the
+/// field there throws "Agent is already processing". Always steering closes
+/// that gap without changing the idle path.
+fn pi_prompt_body(message: String) -> serde_json::Value {
+    serde_json::json!({
+        "type": "prompt",
+        "message": message,
+        "streamingBehavior": "steer",
+    })
 }
 
 async fn do_prompt(
@@ -1103,15 +1120,7 @@ async fn do_prompt(
     crate::runtime::prompt_attachments::substitute_in_message(&mut message, &resolved);
     crate::runtime::prompt_attachments::append_unreferenced(&mut message, &resolved, true);
 
-    let mut prompt_body = serde_json::json!({
-        "type": "prompt",
-        "message": message,
-    });
-    // pi reads `streamingBehavior` only while a turn is streaming. Mid-turn
-    // follow-ups use `steer` (fold into the live run); idle prompts omit it.
-    if plan.use_steer {
-        prompt_body["streamingBehavior"] = serde_json::json!("steer");
-    }
+    let prompt_body = pi_prompt_body(message);
 
     let result = match ensure_session_ready(shared, session_id).await {
         Ok(proc) => {
@@ -1796,14 +1805,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mid_turn_prompt_plan_steers_without_turn_open() {
+    fn mid_turn_prompt_plan_only_gates_turn_open() {
         let idle = pi_mid_turn_prompt_plan(false);
         assert!(idle.emit_turn_open);
-        assert!(!idle.use_steer);
 
         let busy = pi_mid_turn_prompt_plan(true);
         assert!(!busy.emit_turn_open);
-        assert!(busy.use_steer);
+    }
+
+    #[test]
+    fn pi_prompt_body_always_steers() {
+        let idle = pi_prompt_body("继续".into());
+        assert_eq!(idle["type"], "prompt");
+        assert_eq!(idle["message"], "继续");
+        assert_eq!(idle["streamingBehavior"], "steer");
+
+        let mid_turn = pi_prompt_body("keep going".into());
+        assert_eq!(mid_turn["streamingBehavior"], "steer");
     }
 
     #[test]
