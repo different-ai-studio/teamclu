@@ -4,6 +4,9 @@ import type {
   AppDataRowsPage,
   AppDataRowsQuery,
   AppDataTable,
+  AppLogEntry,
+  AppLogsQuery,
+  AppLogsResult,
   AppSessionRow,
   AppGitCredential,
   AppGitHead,
@@ -245,6 +248,41 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
       await client.delete<{ ok: true }>(
         `/v1/apps/${encodeURIComponent(appId)}/data/tables/${encodeURIComponent(table)}/rows/${encodeURIComponent(rowKey)}`,
       );
+    },
+
+    async readAppLogs(appId, query: AppLogsQuery = {}): Promise<AppLogsResult | null> {
+      const params = new URLSearchParams();
+      if (query.sinceMinutes) params.set("sinceMinutes", String(query.sinceMinutes));
+      if (query.limit) params.set("limit", String(query.limit));
+      if (query.kind) params.set("kind", query.kind);
+      if (query.contains) params.set("contains", query.contains);
+      if (query.requestId) params.set("requestId", query.requestId);
+      const qs = params.toString();
+      try {
+        const page = await client.get<{
+          items: AppLogEntry[];
+          truncated: boolean;
+          from?: string | null;
+          to?: string | null;
+        }>(`/v1/apps/${encodeURIComponent(appId)}/logs${qs ? `?${qs}` : ""}`);
+        return {
+          status: "ok",
+          entries: page.items ?? [],
+          truncated: page.truncated ?? false,
+          from: page.from ?? null,
+          to: page.to ?? null,
+        };
+      } catch (e) {
+        if (!(e instanceof CloudApiError)) throw e;
+        if (e.status === 404) return null;
+        // Translated rather than thrown, as with listAppDataTables: each is a
+        // state the view explains in its own sentence.
+        if (e.code === "app_not_deployed") return { status: "not_deployed" };
+        if (e.status === 503 || e.status === 502) {
+          return { status: "unavailable", reason: e.message };
+        }
+        throw e;
+      }
     },
   };
 }

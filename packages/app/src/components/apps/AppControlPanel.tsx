@@ -38,6 +38,7 @@ import { useAppsStore } from '@/stores/apps-store'
 import { AppDataSection } from './AppDataSection'
 import { AppAuthSection } from './AppAuthSection'
 import { AppCustomDomainSection } from './AppCustomDomainSection'
+import { AppLogsSection } from './AppLogsSection'
 import type { AppMemberAccessRow, AppPermissionLevel, AppRow } from '@/lib/backend/types'
 
 const PERMISSION_LEVELS: AppPermissionLevel[] = ['view', 'prompt', 'admin']
@@ -653,6 +654,9 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
                 access list is readable only by the creator or an app admin, which
                 is exactly the tier design §6 lets edit data. */}
             <AppDataSection app={app} canEdit={canManageAccess} />
+          </Field>
+          <Field label={t('apps.logs.section', '运行日志')}>
+            <AppLogsSection app={app} />
           </Field>
           <Field label={t('apps.controlPanel.customDomain', '自定义域名')}>
             <AppCustomDomainSection app={app} />

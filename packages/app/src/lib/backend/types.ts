@@ -1158,6 +1158,43 @@ export type AppDataTablesResult =
   | { status: "not_deployed" }
   | { status: "unavailable"; reason: string };
 
+/** One line of a deployed app's output, or one of its requests. */
+export interface AppLogEntry {
+  ts: string;
+  /** `app`: printed by the application. `request`: Function Compute's own row. */
+  kind: "app" | "request";
+  level: "info" | "warn" | "error";
+  message: string;
+  requestId?: string | null;
+  instanceId?: string | null;
+  statusCode?: number | null;
+  durationMs?: number | null;
+  method?: string | null;
+  path?: string | null;
+  coldStart?: boolean | null;
+}
+
+export interface AppLogsQuery {
+  /** How far back to read. Server clamps to the retention period. */
+  sinceMinutes?: number;
+  limit?: number;
+  kind?: "app" | "request" | "all";
+  /** Case-insensitive substring on the message, applied within the window. */
+  contains?: string | null;
+  requestId?: string | null;
+}
+
+/**
+ * Same shape as {@link AppDataTablesResult} and for the same reason: an app
+ * that was never deployed, one whose deployment cannot reach a log service,
+ * and one that simply printed nothing are three different sentences, and
+ * flattening them into an empty list makes the first two read as the third.
+ */
+export type AppLogsResult =
+  | { status: "ok"; entries: AppLogEntry[]; truncated: boolean; from: string | null; to: string | null }
+  | { status: "not_deployed" }
+  | { status: "unavailable"; reason: string };
+
 type AppDataFilterOp = "eq" | "contains" | "isNull" | "notNull";
 
 export interface AppDataRowsQuery {
@@ -1258,6 +1295,14 @@ export interface AppsBackend {
   ): Promise<Record<string, unknown>>;
   /** Delete one row by key. */
   deleteAppDataRow(appId: string, table: string, rowKey: string): Promise<void>;
+
+  /**
+   * What the deployed function printed, newest first. Null on 404.
+   *
+   * Same tier as the data browser: a log line carries whatever the app decided
+   * to print, which is its users' data.
+   */
+  readAppLogs(appId: string, query?: AppLogsQuery): Promise<AppLogsResult | null>;
 }
 
 export interface ActorDirectorySyncRow {
