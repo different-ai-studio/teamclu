@@ -80,7 +80,7 @@ test("sso session round-trips", async () => {
 
 test("app session round-trips and carries the app id", async () => {
   await withEnv(signed(), async () => {
-    const { token } = await mintAppSession({
+    const { token, expiresAt } = await mintAppSession({
       sub: "user-1",
       email: "a@example.com",
       appId: "app-1",
@@ -89,6 +89,9 @@ test("app session round-trips and carries the app id", async () => {
       sub: "user-1",
       email: "a@example.com",
       appId: "app-1",
+      // Reported back so the gateway can decide on sliding renewal without
+      // decoding the token a second time.
+      expiresAt,
     });
   });
 });

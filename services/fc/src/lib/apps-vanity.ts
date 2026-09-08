@@ -23,7 +23,26 @@ export interface VanityApp {
   slug: string;
   fcEndpoint: string | null;
   fcStatus: string | null;
+  /** `apps.team_id`. The org gate resolves the app's org through it. */
+  teamId: string | null;
+  /** `apps.auth_mode`. `platform` is the only value with a login wall. */
+  authMode: string | null;
+  /** `apps.auth_audience`: `any` | `org`. Only read when authMode is platform. */
+  authAudience: string | null;
 }
+
+/**
+ * Who the gateway decided is making this request.
+ *
+ * Passed to {@link proxyToApp} rather than assembled there: the proxy has no
+ * business knowing how a visitor was authenticated, and the gate has no
+ * business writing headers.
+ */
+export type ProxyIdentity = {
+  userId: string;
+  email: string;
+  orgId: string | null;
+};
 
 export type LookupVanityApp = (host: string) => Promise<VanityApp | null>;
 
@@ -54,12 +73,15 @@ export function makeSupabaseVanityLookup(getClient: () => any): LookupVanityApp 
     if (!parsed) return null;
     const { data, error } = await getClient()
       .from("apps")
-      .select("id, slug, fc_endpoint, fc_status")
+      .select("id, slug, fc_endpoint, fc_status, team_id, auth_mode, auth_audience")
       .eq("slug", parsed.slug)
       .limit(50);
     if (error) throw new Error(`vanity app lookup failed: ${error.message}`);
     const rows: VanityApp[] = (data ?? []).map((r: any) => ({
       id: r.id, slug: r.slug, fcEndpoint: r.fc_endpoint ?? null, fcStatus: r.fc_status ?? null,
+      teamId: r.team_id ?? null,
+      authMode: r.auth_mode ?? null,
+      authAudience: r.auth_audience ?? null,
     }));
     return selectByIdPrefix(rows, parsed.idPrefix);
   };
@@ -257,6 +279,7 @@ export async function proxyToApp(
   request: Request,
   endpoint: string,
   fetchImpl: typeof fetch = fetch,
+  identity: ProxyIdentity | null = null,
 ): Promise<Response> {
   const incoming = new URL(request.url);
   const upstream = new URL(endpoint);
@@ -265,6 +288,19 @@ export async function proxyToApp(
 
   const headers = strip(request.headers);
   headers.delete("host");
+  // Drop any client-supplied identity BEFORE writing our own, and drop it
+  // unconditionally — including on apps with no login wall, where `identity`
+  // is null and nothing is written back. Skipping the delete in that branch
+  // would let anyone hand an app a forged X-Teamclu-User-Id simply by setting
+  // the header themselves.
+  headers.delete("x-teamclu-user-id");
+  headers.delete("x-teamclu-user-email");
+  headers.delete("x-teamclu-org-id");
+  if (identity) {
+    headers.set("x-teamclu-user-id", identity.userId);
+    headers.set("x-teamclu-user-email", identity.email);
+    if (identity.orgId) headers.set("x-teamclu-org-id", identity.orgId);
+  }
   headers.set("x-forwarded-host", incoming.host);
   headers.set("x-forwarded-proto", incoming.protocol.replace(":", ""));
   fillFetchMetadata(headers, incoming);

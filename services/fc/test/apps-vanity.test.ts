@@ -181,10 +181,13 @@ test("requests on the API's own host still reach the API", async () => {
   });
 });
 
+/** Auth columns are irrelevant to routing; spelled out so the row shape is whole. */
+const unauthed = { teamId: null, authMode: null, authAudience: null };
+
 test("an ambiguous id prefix serves neither app", () => {
   const rows = [
-    { id: "18e4ecad-1111", slug: "website", fcEndpoint: "https://a", fcStatus: "live" },
-    { id: "18e4ecad-2222", slug: "website", fcEndpoint: "https://b", fcStatus: "live" },
+    { id: "18e4ecad-1111", slug: "website", fcEndpoint: "https://a", fcStatus: "live", ...unauthed },
+    { id: "18e4ecad-2222", slug: "website", fcEndpoint: "https://b", fcStatus: "live", ...unauthed },
   ];
   assert.equal(selectByIdPrefix(rows, "18e4ecad"), null, "a coin flip between teams is not an answer");
   assert.equal(selectByIdPrefix(rows, "18e4ecad-1"), rows[0]);
@@ -193,9 +196,9 @@ test("an ambiguous id prefix serves neither app", () => {
 
 test("isServable requires a live status AND an endpoint", () => {
   assert.equal(isServable(null), false);
-  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "live", fcEndpoint: null }), false);
-  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "deploy_error", fcEndpoint: "https://x" }), false);
-  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "live", fcEndpoint: "https://x" }), true);
+  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "live", fcEndpoint: null, ...unauthed }), false);
+  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "deploy_error", fcEndpoint: "https://x", ...unauthed }), false);
+  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "live", fcEndpoint: "https://x", ...unauthed }), true);
 });
 
 // --- both entry points ------------------------------------------------------

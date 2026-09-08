@@ -59,7 +59,13 @@ export const APP_AUTH_CALLBACK_PATH = "/__teamclu/auth/callback";
 export const APP_AUTH_LOGOUT_PATH = "/__teamclu/auth/logout";
 
 export type SsoSessionClaims = { sub: string; email: string };
-export type AppSessionClaims = { sub: string; email: string; appId: string };
+export type AppSessionClaims = {
+  sub: string;
+  email: string;
+  appId: string;
+  /** Epoch seconds. Exposed so the gateway can decide on sliding renewal. */
+  expiresAt: number;
+};
 export type AuthCodeClaims = {
   sub: string;
   email: string;
@@ -151,7 +157,7 @@ export function mintSsoSession(
 }
 
 export function mintAppSession(
-  claims: AppSessionClaims,
+  claims: Omit<AppSessionClaims, "expiresAt">,
   ttlSeconds = APP_TTL_SECONDS,
 ): Promise<{ token: string; expiresAt: number }> {
   return mint(AUD_APP, { sub: claims.sub, email: claims.email, aid: claims.appId }, ttlSeconds);
@@ -229,6 +235,7 @@ export async function verifyAppSession(
     sub: str(payload.sub),
     email: str(payload.email),
     appId: str(payload.aid),
+    expiresAt: typeof payload.exp === "number" ? payload.exp : 0,
   };
   if (!claims.sub || !claims.email || !claims.appId) return null;
   if (!expectedAppId || claims.appId !== expectedAppId) return null;

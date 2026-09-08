@@ -113,7 +113,7 @@ function makeDeployDeps() {
       appType: string;
       fcFunctionName: string;
       ossObjectName: string;
-      platformOAuthEnv?: Record<string, string>;
+      platformAuthEnv?: Record<string, string>;
     }) => finalizeDeployImpl({ appsAdminUrl, appsAppUrl, fcOps }, a),
   };
 }
@@ -188,8 +188,8 @@ export function vanityLookup() {
   return makeVanityLookup({ getServiceRoleClient: createServiceRoleClient });
 }
 
-/** `id` is a uuid column, and a non-uuid `.eq()` is a query ERROR, not an empty result. */
-const APP_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** uuid columns: a non-uuid `.eq()` is a query ERROR, not an empty result. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * App lookup for the central login service, wired the same way and for the same
@@ -206,7 +206,7 @@ const APP_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
  */
 export function loginAppLookup() {
   return async (appId: string) => {
-    if (!APP_ID_RE.test(appId)) return null;
+    if (!UUID_RE.test(appId)) return null;
     const { data, error } = await createServiceRoleClient()
       .from("apps")
       .select("id, slug, auth_mode")
@@ -215,6 +215,66 @@ export function loginAppLookup() {
     if (error) throw new Error(`login app lookup failed: ${error.message}`);
     if (!data) return null;
     return { id: data.id, slug: data.slug, authMode: data.auth_mode ?? "none" };
+  };
+}
+
+/**
+ * Org ids for the `org` audience: the visitor's and the app's.
+ *
+ * Two reads, both with the service role for the same tokenless reason as
+ * {@link vanityLookup}. They live in one function so the gateway makes one call
+ * per request rather than two, and so the cache below covers both.
+ *
+ * `public.users.id`, NOT `auth_user_id` — that is the column `amux.current_org_id()`
+ * matches `auth.uid()` against, and two different answers to "which org is this
+ * user in" is exactly the kind of split that shows up as an access bug nobody
+ * can reproduce. `users` also lives in `public` while everything else here is
+ * in `amux`, hence the explicit schema.
+ *
+ * A visitor who signed up through an app's login page has no `public.users` row
+ * at all (that table mirrors saas-mono), so they resolve to a null org and are
+ * refused by the org audience. That is the intended meaning of "staff only".
+ *
+ * Errors are thrown, not swallowed into a null pair: a database fault must not
+ * masquerade as "this team has no organisation", which is what the gateway
+ * would then tell the operator to go and fix.
+ */
+type OrgPair = { visitorOrgId: string | null; appOrgId: string | null };
+
+const ORG_CACHE_TTL_MS = 60_000;
+const ORG_CACHE_MAX = 5_000;
+const orgPairCache = new Map<string, { value: OrgPair; expiresAt: number }>();
+
+export function appOrgsLookup() {
+  return async (userId: string, teamId: string | null): Promise<OrgPair> => {
+    const empty: OrgPair = { visitorOrgId: null, appOrgId: null };
+    if (!UUID_RE.test(userId)) return empty;
+
+    const key = `${userId}|${teamId ?? ""}`;
+    const now = Date.now();
+    const hit = orgPairCache.get(key);
+    if (hit && hit.expiresAt > now) return hit.value;
+
+    const admin = createServiceRoleClient();
+    const [visitor, team] = await Promise.all([
+      admin.schema("public").from("users").select("org_id").eq("id", userId).maybeSingle(),
+      teamId && UUID_RE.test(teamId)
+        ? admin.from("teams").select("oid").eq("id", teamId).maybeSingle()
+        : Promise.resolve({ data: null, error: null } as any),
+    ]);
+    if (visitor.error) throw new Error(`visitor org lookup failed: ${visitor.error.message}`);
+    if (team.error) throw new Error(`app org lookup failed: ${team.error.message}`);
+
+    const value: OrgPair = {
+      visitorOrgId: visitor.data?.org_id ?? null,
+      appOrgId: team.data?.oid ?? null,
+    };
+    if (orgPairCache.size >= ORG_CACHE_MAX) {
+      for (const [k, v] of orgPairCache) if (v.expiresAt <= now) orgPairCache.delete(k);
+      if (orgPairCache.size >= ORG_CACHE_MAX) orgPairCache.clear();
+    }
+    orgPairCache.set(key, { value, expiresAt: now + ORG_CACHE_TTL_MS });
+    return value;
   };
 }
 
@@ -289,6 +349,7 @@ const app = createApp({
   createSystemRepository: makeSystemRepoFactory(),
   lookupVanityApp: vanityLookup(),
   lookupLoginApp: loginAppLookup(),
+  resolveAppOrgs: appOrgsLookup(),
 });
 
 const honoHandler = handle(app);

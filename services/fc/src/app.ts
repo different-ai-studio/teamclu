@@ -9,6 +9,7 @@ import * as admin from "./lib/admin-handlers.js";
 import { httpsRedirect, isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
 import { parseAppPublicHost } from "./lib/apps-public-host.js";
 import { handleLoginRequest, isLoginHost, type LookupLoginApp } from "./lib/apps-login-service.js";
+import { applyAuthGate, type GateDeps } from "./lib/apps-auth-gate.js";
 
 export type AppDeps = {
   createRepository: (args: { accessToken: string }) => unknown;
@@ -18,7 +19,30 @@ export type AppDeps = {
   lookupVanityApp?: LookupVanityApp;
   /** Resolves an app id for the central login service; same injection reason. */
   lookupLoginApp?: LookupLoginApp;
+  /**
+   * Reads the visitor's and the app's org for the `org` audience.
+   *
+   * Absent, every `org`-gated app answers "team has no org" rather than opening
+   * — fail closed, because the alternative is serving a page that was marked as
+   * staff-only to whoever asks.
+   */
+  resolveAppOrgs?: GateDeps["resolveOrgs"];
 };
+
+/**
+ * The scheme the BROWSER used, which is not the scheme of the connection to
+ * this process: behind Caddy that hop is plain http, so trusting the request
+ * URL would mark every cookie non-Secure.
+ */
+function forwardedProto(c: { req: { header: (n: string) => string | undefined; url: string } }): string {
+  const forwarded = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim();
+  if (forwarded) return forwarded;
+  try {
+    return new URL(c.req.url).protocol.replace(":", "");
+  } catch {
+    return "http";
+  }
+}
 
 function sendLegacy(_c: any, r: { statusCode: number; headers?: Record<string, string>; body: string }) {
   return new Response(r.body, {
@@ -63,38 +87,29 @@ export function createApp(deps: AppDeps): Hono {
 
   // --- Deployed apps on their own hostnames -------------------------------
   //
-  // Registered FIRST, ahead of CORS and the rate limiter, because these
-  // requests are not Cloud API traffic at all: the response belongs to the
-  // user's app, and adding our CORS headers or counting a page load against an
-  // API budget would both be wrong.
-  //
-  // Caddy sends every `*.<APPS_PUBLIC_DOMAIN>` request here (it cannot know an
-  // app's Function Compute URL — the trigger hostname carries a random suffix),
-  // and asks this same service whether a hostname deserves a certificate.
-  // The central login service owns one hostname outright. Registered ahead of
-  // the vanity proxy for the same reason that block sits ahead of CORS and the
-  // rate limiter: these are a visitor's page loads, not Cloud API traffic.
-  //
-  // Returning null from the handler lets the request fall through, so /healthz
-  // still answers on this hostname.
+  // Both blocks below are registered FIRST, ahead of CORS and the rate limiter,
+  // because these requests are not Cloud API traffic at all: the response
+  // belongs to a visitor's browser, and adding our CORS headers or counting a
+  // page load against an API budget would both be wrong.
+
+  // The central login service owns one hostname outright: it renders the login
+  // page and holds the SSO cookie. Returning null from the handler lets the
+  // request fall through, so /healthz still answers on this hostname too.
   if (deps.lookupLoginApp) {
     const lookupApp = deps.lookupLoginApp;
     app.use("*", async (c, next) => {
       if (!isLoginHost(vanityRequestHost(c))) return next();
-      // Behind Caddy the connection to this process is plain http, so the URL
-      // scheme would mark every cookie non-Secure. The forwarded header is what
-      // carries the browser's actual scheme.
-      const proto =
-        c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() ||
-        new URL(c.req.url).protocol.replace(":", "");
       const res = await handleLoginRequest(c.req.raw, {
         lookupApp,
-        secureCookies: proto === "https",
+        secureCookies: forwardedProto(c) === "https",
       });
       return res ?? next();
     });
   }
 
+  // Caddy sends every `*.<APPS_PUBLIC_DOMAIN>` request here (it cannot know an
+  // app's Function Compute URL — the trigger hostname carries a random suffix),
+  // and asks this same service whether a hostname deserves a certificate.
   if (deps.lookupVanityApp) {
     const lookup = deps.lookupVanityApp;
 
@@ -121,7 +136,26 @@ export function createApp(deps: AppDeps): Hono {
       // still gets its 404 rather than a redirect to an HTTPS 404.
       const toHttps = httpsRedirect(c.req.raw, host!);
       if (toHttps) return toHttps;
-      return proxyToApp(c.req.raw, target.fcEndpoint);
+
+      // The login wall. It runs before the proxy so an app that requires a
+      // login cannot be reached by any request the gate has not seen — which is
+      // the whole reason the wall lives here and not in the app's own code.
+      //
+      // And AFTER the HTTPS redirect above: a session cookie must never be set
+      // on a plain-HTTP response, and the redirect is what guarantees the
+      // login round trip happens over TLS.
+      const gate = await applyAuthGate(c.req.raw, target, {
+        resolveOrgs:
+          deps.resolveAppOrgs ??
+          (async () => ({ visitorOrgId: null, appOrgId: null })),
+        secureCookies: forwardedProto(c) === "https",
+      });
+      if (gate.response) return gate.response;
+
+      const res = await proxyToApp(c.req.raw, target.fcEndpoint, fetch, gate.identity);
+      // Sliding renewal rides along on whatever the app answered.
+      if (gate.setCookie) res.headers.append("Set-Cookie", gate.setCookie);
+      return res;
     });
   }
 

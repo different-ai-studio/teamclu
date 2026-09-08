@@ -284,7 +284,7 @@ test("finalizeDeploy merges platform OAuth env into the function env", async () 
       appType: "static_web",
       fcFunctionName: "tc-app-1",
       ossObjectName: "apps/app-1/code.zip",
-      platformOAuthEnv: {
+      platformAuthEnv: {
         OAUTH_CLIENT_ID: "cid",
         OAUTH_CLIENT_SECRET: "sec",
         APP_PUBLIC_URL: "https://demo-app1.apps.example",

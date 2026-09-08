@@ -67,7 +67,7 @@ import {
 } from "./provisioning/deploy-key.js";
 import {
   applyAuthModeChange,
-  buildPlatformOAuthEnv,
+  buildPlatformAuthEnv,
   parseAuthMode,
   type AuthMode,
 } from "./provisioning/app-auth-mode.js";
@@ -3471,17 +3471,13 @@ export function createSupabaseBusinessRepository(options) {
       // Mark deploying (RLS-gated UPDATE).
       await supabase.from("apps").update({ fc_status: "deploying", updated_at: new Date().toISOString() }).eq("id", appId);
       try {
-        let platformOAuthEnv: Record<string, string> | undefined;
+        // Convenience env for the app's own code. The login wall does not
+        // depend on it: the proxy gateway enforces the wall before a request
+        // reaches the function at all, so an app that has never been redeployed
+        // is still protected the moment auth_mode flips.
+        let platformAuthEnv: Record<string, string> | undefined;
         if ((existing.auth_mode ?? "none") === "platform") {
-          const admin = await serviceRoleClient("read app secrets");
-          platformOAuthEnv = await buildPlatformOAuthEnv(
-            {
-              gotrue,
-              gotrueUnavailableReason,
-              getSecret: (kind) => getAppSecretSupabase(admin, appId, kind),
-            },
-            { appId, slug: existing.slug, oauthClientId: existing.oauth_client_id ?? null },
-          );
+          platformAuthEnv = buildPlatformAuthEnv({ appId, slug: existing.slug });
         }
         // Which database this app's data lives in is a fact decided once, at
         // the first successful finalize — not a property re-derived from the
@@ -3497,7 +3493,7 @@ export function createSupabaseBusinessRepository(options) {
           appType: existing.type,
           fcFunctionName: existing.fc_function_name,
           ossObjectName: appOssObjectName(appId),
-          platformOAuthEnv,
+          platformAuthEnv,
           // What the daemon read out of the app's own declaration. Absent for a
           // client that predates it, which is the contract every app had before.
           runtime: parseAppRuntimeSpec(input?.runtime),

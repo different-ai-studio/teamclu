@@ -1,4 +1,5 @@
-import { appPublicUrl } from "./apps-public-host.js";
+import { appOrigins } from "./apps-public-host.js";
+import { esc, page, redirect, safeNext } from "./apps-auth-page.js";
 import {
   APP_AUTH_CALLBACK_PATH,
   SSO_COOKIE,
@@ -67,19 +68,6 @@ type LoginContext = {
 };
 
 /**
- * Every origin this app is reachable on.
- *
- * Batch 4 adds the verified custom domain to this list; until then it is the
- * vanity host alone. Keeping it a list from the start is what stops the
- * redirect check from being rewritten later — the only thing that changes is
- * where the entries come from.
- */
-function allowedOrigins(app: LoginApp, env: NodeJS.ProcessEnv): string[] {
-  const vanity = appPublicUrl(app.slug, app.id, env);
-  return vanity ? [vanity] : [];
-}
-
-/**
  * Resolve where the visitor gets sent back to.
  *
  * A caller-supplied `r` must match one of this app's own origins exactly. It is
@@ -93,7 +81,7 @@ function resolveOrigin(
   raw: string | null,
   env: NodeJS.ProcessEnv,
 ): { origin: string } | { error: string } {
-  const allowed = allowedOrigins(app, env);
+  const allowed = appOrigins(app, env);
   if (allowed.length === 0) {
     return { error: "这个部署没有配置应用域名，无法完成登录。" };
   }
@@ -102,19 +90,6 @@ function resolveOrigin(
   return allowed.includes(wanted)
     ? { origin: wanted }
     : { error: "登录请求的返回地址与该应用不符。" };
-}
-
-/**
- * A path inside the app, never a way out of it.
- *
- * `//evil.example.com` is a protocol-relative URL that browsers treat as
- * another site, and a backslash is folded to `/` by several of them — so both
- * are rejected rather than escaped.
- */
-function safeNext(raw: string | null): string {
-  if (!raw || !raw.startsWith("/")) return "/";
-  if (raw.startsWith("//") || raw.includes("\\")) return "/";
-  return raw;
 }
 
 function looksLikeEmail(value: string): boolean {
@@ -224,63 +199,6 @@ async function callGotrue(
 // Pages
 // ---------------------------------------------------------------------------
 
-function esc(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-/**
- * One stylesheet for every page here. Inline because this document is served
- * from a bare hostname with no asset pipeline behind it, and a login page that
- * waits on a second request is a login page that flashes unstyled.
- */
-const PAGE_CSS = `
-:root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--ink:#15181e;--muted:#6c7688;--line:#d9dee6;--accent:#2f5d8c;--err:#973340}
-@media(prefers-color-scheme:dark){:root{--bg:#101318;--card:#171b22;--ink:#e8ebf0;--muted:#7d879a;--line:#2b323d;--accent:#7fb0dd;--err:#d98a95}}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
-background:var(--bg);color:var(--ink);
-font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
-.card{width:100%;max-width:380px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:32px 28px}
-h1{margin:0 0 6px;font-size:19px;font-weight:600;letter-spacing:-.01em}
-p.sub{margin:0 0 22px;color:var(--muted);font-size:13.5px}
-label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px}
-input{width:100%;height:40px;padding:0 12px;font:inherit;font-size:15px;color:var(--ink);
-background:var(--bg);border:1px solid var(--line);border-radius:7px}
-input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
-button{width:100%;height:40px;margin-top:16px;font:inherit;font-size:14.5px;font-weight:500;
-color:#fff;background:var(--accent);border:0;border-radius:7px;cursor:pointer}
-button:hover{filter:brightness(1.08)}
-.err{margin:0 0 16px;padding:9px 12px;border-radius:7px;font-size:13px;
-color:var(--err);border:1px solid currentColor;background:transparent}
-.foot{margin:18px 0 0;font-size:12px;color:var(--muted);text-align:center}
-.code-input{letter-spacing:.4em;font-variant-numeric:tabular-nums}
-`;
-
-function page(title: string, inner: string, status = 200): Response {
-  return new Response(
-    `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">` +
-      `<meta name="viewport" content="width=device-width,initial-scale=1">` +
-      `<title>${esc(title)}</title><style>${PAGE_CSS}</style></head>` +
-      `<body><main class="card">${inner}</main></body></html>`,
-    {
-      status,
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        // A login page must never be cached: the next visitor on a shared
-        // machine would get the previous one's form state back.
-        "Cache-Control": "no-store",
-        "Referrer-Policy": "same-origin",
-        "X-Content-Type-Options": "nosniff",
-      },
-    },
-  );
-}
-
 /** The hidden fields that carry the flow across two form posts. */
 function carried(ctx: LoginContext): string {
   return (
@@ -332,12 +250,6 @@ function noticePage(message: string, status: number): Response {
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
-
-function redirect(location: string, cookies: string[] = []): Response {
-  const headers = new Headers({ Location: location, "Cache-Control": "no-store" });
-  for (const cookie of cookies) headers.append("Set-Cookie", cookie);
-  return new Response(null, { status: 302, headers });
-}
 
 /** Hand the visitor back to the app with a code it can exchange for a session. */
 async function bounceWithCode(
@@ -501,9 +413,25 @@ export async function handleLoginRequest(
       : handleVerify(form, deps, env, secure);
   }
 
-  // A GET to a POST-only path is a stale bookmark or a back button, not an
-  // error worth a status code — send them to the start of the flow.
-  if (req.method === "GET" && (path === "/otp" || path === "/verify" || path === "/logout")) {
+  // Logout answers on GET too, and really does clear the cookie.
+  //
+  // An app's gateway hands the visitor here with a 302, which is necessarily a
+  // GET; a logout that left the SSO cookie alive would not be a logout at all,
+  // since the very next app request would be signed straight back in. Being
+  // reachable by a forged GET means a third party can log someone out — a
+  // nuisance, not a breach, and the trade every site with a /logout link makes.
+  if (req.method === "GET" && path === "/logout") {
+    const res = page(
+      "已退出",
+      `<h1>已退出</h1><p class="sub">你已从所有应用退出登录。</p>`,
+    );
+    res.headers.append("Set-Cookie", clearSessionCookie(SSO_COOKIE, secure));
+    return res;
+  }
+
+  // A GET to the other POST-only paths is a stale bookmark or a back button,
+  // not an error worth a status code — send them to the start of the flow.
+  if (req.method === "GET" && (path === "/otp" || path === "/verify")) {
     return redirect("/");
   }
 
