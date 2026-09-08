@@ -15,6 +15,7 @@ import {
   PanelBottom,
   TerminalSquare,
   FolderGit,
+  Sparkles,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn, isTauri } from '@/lib/utils'
@@ -160,6 +161,8 @@ export const GeneralSection = React.memo(function GeneralSection() {
   const setShowTerminalToggle = useHeaderPreferencesStore((s) => s.setShowTerminalToggle)
   const showChangesTab = useHeaderPreferencesStore((s) => s.showChangesTab)
   const setShowChangesTab = useHeaderPreferencesStore((s) => s.setShowChangesTab)
+  const showSkillsRefresh = useHeaderPreferencesStore((s) => s.showSkillsRefresh)
+  const setShowSkillsRefresh = useHeaderPreferencesStore((s) => s.setShowSkillsRefresh)
   const [closePref, setClosePref] = React.useState<'ask' | 'tray' | 'quit'>('ask')
   React.useEffect(() => {
     if (!isTauri()) return
@@ -477,6 +480,24 @@ export const GeneralSection = React.memo(function GeneralSection() {
               <ToggleSwitch
                 enabled={showChangesTab}
                 onChange={setShowChangesTab}
+              />
+            </div>
+          </div>
+
+          <div className="border-t pt-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-1">
+                <label className="text-[13px] font-medium flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-muted-foreground" />
+                  {t('settings.general.showSkillsRefresh', '强制刷新 Skills')}
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  {t('settings.general.showSkillsRefreshDesc', '在会话右上角显示强制刷新 Skills 的按钮。热更新异常时用来立刻重载当前工作区的 skill 目录。')}
+                </p>
+              </div>
+              <ToggleSwitch
+                enabled={showSkillsRefresh}
+                onChange={setShowSkillsRefresh}
               />
             </div>
           </div>
