@@ -104,7 +104,7 @@ export function mapDefaultAgentError(error: any) {
 // the client contract. Selecting it keeps finalizeDeploy and the data browser
 // from needing a second round trip.
 export const APP_COLUMNS =
-  "id, team_id, org_id, created_by_actor_id, name, slug, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, auth_mode, deployed_auth_mode, oauth_client_id, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
+  "id, team_id, org_id, created_by_actor_id, name, slug, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, oauth_client_id, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
 
 export function slugify(name: string): string {
   return (
@@ -141,6 +141,11 @@ export function mapApp(r: any) {
     gitCommitSha: r.git_commit_sha ?? null,
     runtime: r.runtime ?? "node",
     authMode: r.auth_mode ?? "none",
+    // Unset reads as the strict value everywhere, matching the column default:
+    // a row that predates the column must not appear more open than it is.
+    authAudience: r.auth_audience ?? "org",
+    authScope: r.auth_scope ?? "all",
+    authRules: Array.isArray(r.auth_rules) ? r.auth_rules : [],
     // Derived here, not in the client, so every client agrees on the rule.
     //
     // The OAuth env is baked in at finalizeDeploy, so an authMode change does

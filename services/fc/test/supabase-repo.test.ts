@@ -1673,13 +1673,18 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   const items = await repo.listApps({ teamId: "team-1", limit: 100 });
   assert.equal(items.length, 1);
   assert.deepEqual(Object.keys(items[0]).sort(), [
-    "authMode", "authModePendingRedeploy", "createdAt", "createdByActorId",
+    "authMode", "authAudience", "authScope", "authRules", "authModePendingRedeploy",
+    "createdAt", "createdByActorId",
     "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
     "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "name", "oauthClientId",
     "provisionStatus", "publicUrl",
     "runtime", "slug", "teamId", "type", "updatedAt", "visibility", "workspaceId",
   ].sort());
   assert.equal(items[0].authMode, "none");
+  // A row with no auth columns reads as the STRICT values, never the open ones.
+  assert.equal(items[0].authAudience, "org");
+  assert.equal(items[0].authScope, "all");
+  assert.deepEqual(items[0].authRules, []);
   assert.equal(items[0].runtime, "node");
   assert.equal(items[0].gitCommitSha, null);
   assert.equal(items[0].oauthClientId, null);

@@ -182,7 +182,7 @@ test("requests on the API's own host still reach the API", async () => {
 });
 
 /** Auth columns are irrelevant to routing; spelled out so the row shape is whole. */
-const unauthed = { teamId: null, authMode: null, authAudience: null };
+const unauthed = { teamId: null, authMode: null, authAudience: null, authScope: null, authRules: null };
 
 test("an ambiguous id prefix serves neither app", () => {
   const rows = [

@@ -68,9 +68,16 @@ import {
 import {
   applyAuthModeChange,
   buildPlatformAuthEnv,
+  parseAuthAudience,
   parseAuthMode,
   type AuthMode,
 } from "./provisioning/app-auth-mode.js";
+import {
+  parseAuthRules,
+  parseAuthScope,
+  validateAuthPathConfig,
+  type AuthScope,
+} from "./apps-auth-paths.js";
 import {
   deleteAppSecretSupabase,
   getAppSecretSupabase,
@@ -3250,6 +3257,10 @@ export function createSupabaseBusinessRepository(options) {
         fcStatus?: string;
         deployError?: string;
         authMode?: string;
+        authAudience?: string;
+        authScope?: string;
+        /** Raw from the client; parsed and validated before it is stored. */
+        authRules?: unknown;
       },
     ) {
       // RLS apps_update_if_creator blocks non-creators: the UPDATE matches zero
@@ -3257,7 +3268,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, auth_mode, oauth_client_id, oauth_app_id, team_id, created_by_actor_id",
+          "provision_status, fc_status, name, slug, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -3320,6 +3331,22 @@ export function createSupabaseBusinessRepository(options) {
           set.oauth_client_id = oauth.oauthClientId;
           set.oauth_app_id = oauth.oauthAppId;
         }
+      }
+
+      const nextAudience = parseAuthAudience(patch.authAudience);
+      if (nextAudience !== undefined) set.auth_audience = nextAudience;
+
+      // Scope and rules are validated as a PAIR, because "paths with nothing
+      // required" is only visible when both are known — and the two halves can
+      // arrive in separate PATCHes, so whichever is absent is read from the row.
+      const nextScope = parseAuthScope(patch.authScope);
+      const nextRules = patch.authRules === undefined ? undefined : parseAuthRules(patch.authRules);
+      if (nextScope !== undefined || nextRules !== undefined) {
+        const scope = nextScope ?? ((cur?.auth_scope ?? "all") as AuthScope);
+        const rules = nextRules ?? parseAuthRules(cur?.auth_rules ?? []);
+        validateAuthPathConfig(scope, rules);
+        if (nextScope !== undefined) set.auth_scope = scope;
+        if (nextRules !== undefined) set.auth_rules = rules;
       }
 
       if (typeof patch.provisionStatus === "string") {

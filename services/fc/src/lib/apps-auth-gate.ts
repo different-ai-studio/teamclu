@@ -13,6 +13,7 @@ import {
 } from "./apps-auth-session.js";
 import { esc, page, redirect, safeNext } from "./apps-auth-page.js";
 import { appOrigins } from "./apps-public-host.js";
+import { pathRequiresLogin } from "./apps-auth-paths.js";
 import type { ProxyIdentity } from "./apps-vanity.js";
 
 /**
@@ -39,6 +40,10 @@ export type GateApp = {
   authMode: string | null;
   /** `apps.auth_audience`: `any` | `org`. Unset is read as `org` (fail closed). */
   authAudience: string | null;
+  /** `apps.auth_scope`: `all` | `paths`. Anything else behaves as `all`. */
+  authScope: string | null;
+  /** `apps.auth_rules` — raw, validated on write and read leniently here. */
+  authRules: unknown;
 };
 
 export type OrgPair = {
@@ -242,50 +247,94 @@ export async function applyAuthGate(
   if (!origin) return answered(misconfigured("未配置应用域名"));
   if (!loginDomain(env)) return answered(misconfigured("未配置登录域名"));
 
+  const protectedPath = pathRequiresLogin(url.pathname, app.authScope, app.authRules);
+
   const session = await verifyAppSession(
     readCookie(req.headers.get("cookie"), APP_COOKIE) ?? "",
     app.id,
   );
+
+  // Admission is decided before it is acted on, because a public path and a
+  // protected one need the SAME answer to "may this person be named to the
+  // app" — they only differ in what happens when the answer is no.
+  const admission = session ? await admit(session, app, deps) : { ok: false, denial: "anonymous" as const, orgId: null };
+
+  if (!protectedPath) {
+    // Public path. Anyone may read it; the identity headers still ride along
+    // when — and only when — the visitor would have been admitted anyway, so
+    // `X-Teamclu-User-Id` keeps exactly one meaning everywhere it appears:
+    // this person satisfies every condition for entering this app.
+    if (!admission.ok || !session) return PROCEED_ANONYMOUS;
+    return {
+      response: null,
+      identity: { userId: session.sub, email: session.email, orgId: admission.orgId },
+      setCookie: await renewalCookie(session, app, secure),
+    };
+  }
+
   if (!session) {
     const next = safeNext(`${url.pathname}${url.search}`);
     return answered(redirect(loginUrl(app, origin, next, env)));
   }
-
-  // Unset reads as `org`, matching the column default. A row that predates the
-  // column, or a lookup that failed to select it, must not silently widen the
-  // audience to everyone with an account.
-  const audience = app.authAudience ?? "org";
-  let visitorOrgId: string | null = null;
-  if (audience === "org") {
-    const orgs = await deps.resolveOrgs(session.sub, app.teamId);
-    visitorOrgId = orgs.visitorOrgId;
-    // A team with no org cannot admit anyone under this audience — the
-    // comparison has nothing to succeed against. That is a configuration fault
-    // (R10), not a rejected visitor, and saying so is what stops an operator
-    // from hunting for a permissions bug that is not there. Saving this
-    // audience is refused up front for the same reason.
-    if (!orgs.appOrgId) return answered(misconfigured("该应用所属团队未关联组织"));
-    if (!orgs.visitorOrgId || orgs.visitorOrgId !== orgs.appOrgId) {
-      return answered(wrongOrgPage(app, origin, session.email));
-    }
+  if (admission.denial === "no_app_org") {
+    return answered(misconfigured("该应用所属团队未关联组织"));
   }
-
-  // Sliding renewal. Without it a session that expires mid-visit bounces the
-  // request to the login domain — harmless for a GET, but it turns an in-flight
-  // form POST into a GET and loses the body. Renewing while the visitor is
-  // active means that only happens to someone who was away for a week.
-  const renewal = shouldRenew(session.expiresAt)
-    ? serializeSessionCookie(
-        APP_COOKIE,
-        (await mintAppSession({ sub: session.sub, email: session.email, appId: app.id })).token,
-        APP_TTL_SECONDS,
-        secure,
-      )
-    : null;
+  if (admission.denial === "wrong_org") {
+    return answered(wrongOrgPage(app, origin, session.email));
+  }
 
   return {
     response: null,
-    identity: { userId: session.sub, email: session.email, orgId: visitorOrgId },
-    setCookie: renewal,
+    identity: { userId: session.sub, email: session.email, orgId: admission.orgId },
+    setCookie: await renewalCookie(session, app, secure),
   };
+}
+
+type Admission = {
+  ok: boolean;
+  denial: "none" | "anonymous" | "wrong_org" | "no_app_org";
+  orgId: string | null;
+};
+
+/**
+ * Whether a signed-in visitor meets this app's audience.
+ *
+ * Unset `authAudience` reads as `org`, matching the column default: a row that
+ * predates the column, or a lookup that failed to select it, must not silently
+ * widen the audience to everyone with an account.
+ */
+async function admit(
+  session: { sub: string; email: string },
+  app: GateApp,
+  deps: GateDeps,
+): Promise<Admission> {
+  if ((app.authAudience ?? "org") !== "org") {
+    return { ok: true, denial: "none", orgId: null };
+  }
+  const orgs = await deps.resolveOrgs(session.sub, app.teamId);
+  // A team with no org cannot admit anyone under this audience — the comparison
+  // has nothing to succeed against. That is a configuration fault (R10), not a
+  // rejected visitor, and saying so is what stops an operator from hunting for
+  // a permissions bug that is not there.
+  if (!orgs.appOrgId) return { ok: false, denial: "no_app_org", orgId: null };
+  if (!orgs.visitorOrgId || orgs.visitorOrgId !== orgs.appOrgId) {
+    return { ok: false, denial: "wrong_org", orgId: null };
+  }
+  return { ok: true, denial: "none", orgId: orgs.visitorOrgId };
+}
+
+/**
+ * Sliding renewal. Without it a session that expires mid-visit bounces the
+ * request to the login domain — harmless for a GET, but it turns an in-flight
+ * form POST into a GET and loses the body. Renewing while the visitor is active
+ * means that only happens to someone who was away for a week.
+ */
+async function renewalCookie(
+  session: { sub: string; email: string; expiresAt: number },
+  app: GateApp,
+  secure: boolean,
+): Promise<string | null> {
+  if (!shouldRenew(session.expiresAt)) return null;
+  const fresh = await mintAppSession({ sub: session.sub, email: session.email, appId: app.id });
+  return serializeSessionCookie(APP_COOKIE, fresh.token, APP_TTL_SECONDS, secure);
 }

@@ -29,6 +29,10 @@ export interface VanityApp {
   authMode: string | null;
   /** `apps.auth_audience`: `any` | `org`. Only read when authMode is platform. */
   authAudience: string | null;
+  /** `apps.auth_scope`: `all` | `paths`. Baseline for the path rules below. */
+  authScope: string | null;
+  /** `apps.auth_rules` — raw jsonb. The gate reads it leniently, on purpose. */
+  authRules: unknown;
 }
 
 /**
@@ -73,7 +77,9 @@ export function makeSupabaseVanityLookup(getClient: () => any): LookupVanityApp 
     if (!parsed) return null;
     const { data, error } = await getClient()
       .from("apps")
-      .select("id, slug, fc_endpoint, fc_status, team_id, auth_mode, auth_audience")
+      .select(
+        "id, slug, fc_endpoint, fc_status, team_id, auth_mode, auth_audience, auth_scope, auth_rules",
+      )
       .eq("slug", parsed.slug)
       .limit(50);
     if (error) throw new Error(`vanity app lookup failed: ${error.message}`);
@@ -82,6 +88,8 @@ export function makeSupabaseVanityLookup(getClient: () => any): LookupVanityApp 
       teamId: r.team_id ?? null,
       authMode: r.auth_mode ?? null,
       authAudience: r.auth_audience ?? null,
+      authScope: r.auth_scope ?? null,
+      authRules: r.auth_rules ?? null,
     }));
     return selectByIdPrefix(rows, parsed.idPrefix);
   };

@@ -23,6 +23,25 @@ export function parseAuthMode(raw: unknown): AuthMode | undefined {
   return v as AuthMode;
 }
 
+export const AUTH_AUDIENCES = ["any", "org"] as const;
+export type AuthAudience = (typeof AUTH_AUDIENCES)[number];
+
+/**
+ * Who may pass the wall. Orthogonal to {@link parseAuthMode}, which only says
+ * whether there is one.
+ */
+export function parseAuthAudience(raw: unknown): AuthAudience | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "string" || !AUTH_AUDIENCES.includes(raw.trim() as AuthAudience)) {
+    throw new ApiError(
+      400,
+      "validation_failed",
+      `authAudience must be one of: ${AUTH_AUDIENCES.join(", ")}`,
+    );
+  }
+  return raw.trim() as AuthAudience;
+}
+
 /**
  * The app's public address, or a 409 naming what is missing.
  *

@@ -53,6 +53,8 @@ const app = (over: Partial<GateApp> = {}): GateApp => ({
   teamId: TEAM_ID,
   authMode: "platform",
   authAudience: "any",
+  authScope: "all",
+  authRules: [],
   ...over,
 });
 
@@ -391,4 +393,102 @@ test("proxyToApp forwards the gateway's identity, overriding any forgery", async
   assert.equal(seen!.get("x-teamclu-user-id"), "real-user");
   assert.equal(seen!.get("x-teamclu-user-email"), "real@example.com");
   assert.equal(seen!.get("x-teamclu-org-id"), ORG_A);
+});
+
+// --- path-level scope (批次 3.5) ---------------------------------------------
+
+const scoped = (rules: unknown, scope = "paths") =>
+  app({ authScope: scope, authRules: rules });
+
+test("a public path is served to an anonymous visitor", async () => {
+  await withEnv({}, async () => {
+    const a = scoped([{ path: "/admin", auth: "required" }]);
+    const out = await applyAuthGate(req("/pricing"), a, deps());
+    assert.equal(out.response, null, "no redirect for a public page");
+    assert.equal(out.identity, null);
+  });
+});
+
+test("a protected path under the paths scope still demands a login", async () => {
+  await withEnv({}, async () => {
+    const a = scoped([{ path: "/admin", auth: "required" }]);
+    const out = await applyAuthGate(req("/admin/users"), a, deps());
+    assert.equal(out.response?.status, 302);
+    assert.match(out.response!.headers.get("location")!, /login\.example\.com/);
+  });
+});
+
+test("an exception can open one path under a fully walled app", async () => {
+  await withEnv({}, async () => {
+    const a = scoped([{ path: "/health", auth: "public" }], "all");
+    assert.equal((await applyAuthGate(req("/health"), a, deps())).response, null);
+    assert.equal((await applyAuthGate(req("/"), a, deps())).response?.status, 302);
+  });
+});
+
+test("a signed-in visitor is named to the app on public paths too", async () => {
+  // Otherwise a landing page cannot say "welcome back" and the visitor thinks
+  // their login was lost.
+  await withEnv({}, async () => {
+    const cookie = await sessionCookie();
+    const a = scoped([{ path: "/admin", auth: "required" }]);
+    const out = await applyAuthGate(req("/", { cookie }), a, deps());
+    assert.equal(out.response, null);
+    assert.equal(out.identity?.email, "a@example.com");
+  });
+});
+
+test("a public path names nobody when the visitor would be refused entry", async () => {
+  // X-Teamclu-User-Id must carry exactly one meaning wherever it appears:
+  // this person satisfies every condition for entering this app. Forwarding an
+  // outsider's identity on a public page would quietly break that.
+  await withEnv({}, async () => {
+    const cookie = await sessionCookie();
+    const a = app({
+      authScope: "paths",
+      authRules: [{ path: "/admin", auth: "required" }],
+      authAudience: "org",
+    });
+    const out = await applyAuthGate(
+      req("/", { cookie }),
+      a,
+      deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }) }),
+    );
+    assert.equal(out.response, null, "the page itself is public, so it is served");
+    assert.equal(out.identity, null, "but the app is not told who they are");
+  });
+});
+
+test("a misconfigured org does not take the public pages down with it", async () => {
+  await withEnv({}, async () => {
+    const cookie = await sessionCookie();
+    const a = app({
+      authScope: "paths",
+      authRules: [{ path: "/admin", auth: "required" }],
+      authAudience: "org",
+    });
+    const d = deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_A, appOrgId: null }) });
+    assert.equal((await applyAuthGate(req("/", { cookie }), a, d)).response, null);
+    // The protected path still reports the fault rather than admitting anyone.
+    assert.equal((await applyAuthGate(req("/admin", { cookie }), a, d)).response?.status, 503);
+  });
+});
+
+test("path rules cannot expose the gateway's own endpoints", async () => {
+  await withEnv({}, async () => {
+    const a = scoped([{ path: "/__teamclu", auth: "public" }]);
+    const out = await applyAuthGate(req(APP_AUTH_CALLBACK_PATH + "?code=x"), a, deps());
+    // Handled by the gateway, never proxied — a rule must not turn the callback
+    // into a route the app can answer.
+    assert.ok(out.response, "the gateway still owns this path");
+    assert.equal(out.identity, null);
+  });
+});
+
+test("an encoded traversal cannot reach a protected path through a public prefix", async () => {
+  await withEnv({}, async () => {
+    const a = scoped([{ path: "/admin", auth: "required" }]);
+    const out = await applyAuthGate(req("/pricing%2f..%2fadmin"), a, deps());
+    assert.equal(out.response?.status, 302, "unreasonable paths are protected");
+  });
 });
