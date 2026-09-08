@@ -118,7 +118,7 @@ export class SessionManager {
       newFile,
       [JSON.stringify(header), ...subset.map((e) => JSON.stringify(e))].join("\n") + "\n",
     );
-    return new SessionManager(this.cwd, newFile, subset);
+    return newFile;
   }
 }
 

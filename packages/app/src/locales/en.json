@@ -327,8 +327,6 @@
     "edit": "Edit",
     "undo": "Undo",
     "close": "Close",
-    "collapse": "Collapse",
-    "expand": "Expand",
     "back": "Back",
     "offline": "Offline",
     "done": "Done",
@@ -346,7 +344,6 @@
     "optional": "Optional",
     "saving": "Saving...",
     "restart": "Restart",
-    "restarting": "Restarting...",
     "local": "Local",
     "deleting": "Deleting...",
     "default": "Default",
@@ -525,6 +522,10 @@
   },
   "chat": {
     "diagnoseSession": "Diagnose this session",
+    "refreshSkills": "Force refresh skills",
+    "refreshSkillsApplied": "Skills refreshed",
+    "refreshSkillsPending": "A turn is running; skills will apply when it ends",
+    "refreshSkillsFailed": "Could not refresh skills",
     "sendStatus": {
       "sending": "Sending…",
       "delivered": "Delivered",
@@ -1123,6 +1124,7 @@
     "localDaemonAutomation": "Automation",
     "localDaemonAutomationAria": "Open automation tasks",
     "localDaemonRetrying": "Retrying…",
+    "localDaemonTokensThisMonth": "{{tokens}} tokens this month",
     "ideas": "Ideas"
   },
   "errors": {
@@ -1207,9 +1209,8 @@
   },
   "apps": {
     "empty": "Nothing here yet",
-    "sessionsTitle": "App sessions",
-    "selectAppHint": "Pick an app on the left to see its sessions",
     "newSession": "New session",
+    "backToList": "Back to app list",
     "noSessions": "This app has no sessions yet",
     "ready": "Ready",
     "error": "Failed",
@@ -1261,12 +1262,12 @@
     "libraryDescription": "Every app of yours and your team's. Download one to work on it here.",
     "libraryDownload": "Download",
     "libraryDownloaded": "On this machine",
+    "libraryNotHere": "Not on this machine",
     "gitHosted": "Hosted repo",
     "gitRemote": "External repo",
     "gitLocal": "This machine only",
     "librarySearch": "Search apps",
     "libraryNoMatch": "No apps match",
-    "libraryUnknownCreator": "Unknown",
     "repoLabel": "Repository URL (optional)",
     "repoPlaceholder": "https://github.com/owner/repo.git",
     "repoHint": "Fill this in and the repo is cloned as the app's code, with no template written.",
@@ -1367,6 +1368,8 @@
     "deleted": "App deleted",
     "deployErrorReason": {
       "uncommitted": "The workspace has uncommitted or unpushed changes. Commit and push, then deploy.",
+      "pushRejected": "The repo has commits this machine does not. Pull and resolve them, then deploy again.",
+      "noPackageJson": "This app has no code yet — its folder has no package.json. Ask the agent to build it, or reseed the app.",
       "installTimeout": "Dependency install timed out after 10 minutes. Check the network or the lockfile, then retry.",
       "buildTimeout": "Build timed out after 10 minutes. Check the build script, then retry.",
       "artifactTooLarge": "Build output is over the 50 MiB limit. Trim it, then retry.",
@@ -1562,18 +1565,15 @@
       "showTerminalToggle": "Terminal toggle",
       "showTerminalToggleDesc": "Show the terminal panel toggle in the conversation's top-right. The Ctrl+` shortcut always works regardless of this setting.",
       "showChangesTab": "File changes",
-      "showChangesTabDesc": "Show this session's file-changes entry in the conversation's top-right. Only appears when there is an active session."
+      "showChangesTabDesc": "Show this session's file-changes entry in the conversation's top-right. Only appears when there is an active session.",
+      "showSkillsRefresh": "Force refresh skills",
+      "showSkillsRefreshDesc": "Show a button in the conversation's top-right that reloads this workspace's skill directories. Use it when hot-reload misses a change."
     },
     "llm": {
       "refresh": "Refresh",
       "teamProviderName": "Team Model",
       "teamProviderPinned": "Built-in",
       "teamProviderDesc": "Provided and billed by your team — nothing to configure",
-      "teamTier": {
-        "default": "Standard",
-        "pro": "Advanced",
-        "max": "Flagship"
-      },
       "availableModels": "Available Models"
     },
     "piLlm": {
@@ -2628,7 +2628,7 @@
         "brokenTitle": "Folders missing SKILL.md",
         "tipsTitle": "Common fixes",
         "tipRefresh": "Click Refresh to reload the skills list from disk.",
-        "tipRestart": "Restart OpenCode after adding or editing skills.",
+        "tipRestart": "Restart the local agent after adding or editing skills.",
         "tipPaths": "Verify teamclu.json / opencode.json skills.paths point to existing directories.",
         "tipDaemon": "Ensure amuxd is running if daemon inventory is missing."
       },
@@ -2659,8 +2659,6 @@
       "searchPlaceholder": "Search skills...",
       "noMatchingSkills": "No matching skills",
       "noMatchingSkillsHint": "Try a different search term",
-      "configChanged": "Skill Permission Changed",
-      "restartToApply": "Restart OpenCode to apply the new skill permission configuration.",
       "inherent": "Built-in",
       "inherentSkills": "Built-in Skills",
       "managedByTeamClu": "Managed by TeamClu",
@@ -2674,13 +2672,6 @@
       "globalOpencode": "Global",
       "globalClaude": "Global Claude",
       "globalAgent": "Global Agent",
-      "defaultPermission": "Default Permission",
-      "defaultPermissionHint": "Controls the wildcard (*) rule for all skills without a specific override",
-      "permInherited": "Default",
-      "permissionSaveFailed": "Could not save permission. Is the daemon running?",
-      "permAllow": "Allow",
-      "permAsk": "Ask",
-      "permDeny": "Deny",
       "openLinkedRole": "Open linked role {{name}}",
       "importFromZip": "Import Skill from ZIP",
       "importZipDescription": "Upload a .zip that contains exactly one SKILL.md. The entire skill folder is copied to your skills directory. Archives without SKILL.md are rejected.",
@@ -2817,25 +2808,6 @@
       "repair": "Repair",
       "repairTitle": "Reinstall to restore the pieces this runtime is missing",
       "needsRepairHint": "Installed and current, but not usable yet — part of the runtime is missing. Repair reinstalls it."
-    },
-    "permissions": {
-      "allow": "Allow",
-      "allowDesc": "Auto-approve without prompting",
-      "allowlist": "Command Allowlist",
-      "allowlistDesc": "Commands marked as \"Always Allow\". Takes effect after agent restart.",
-      "ask": "Ask",
-      "askDesc": "Prompt for approval each time",
-      "config": "Permission Configuration",
-      "configDesc": "Configure default permission policies for agent tools",
-      "configInfo": "Permission Actions",
-      "deny": "Deny",
-      "denyDesc": "Block the action",
-      "desc": "Manage agent permissions and command allowlist",
-      "noAllowlist": "No commands have been allowlisted yet",
-      "noWorkspace": "No workspace selected. Please select a workspace first.",
-      "saveAndApply": "Save & Apply",
-      "saving": "Applying...",
-      "title": "Permission Management"
     },
     "teamSecret": {
       "storeUnreadable": "Cannot read the local secret store: {{msg}}",

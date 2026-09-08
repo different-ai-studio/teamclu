@@ -13,6 +13,9 @@ fn opencode_config_path(workspace: &Path) -> PathBuf {
 ///
 /// Returns the canonical (placeholder) file content when an overlay was
 /// installed — caller must restore it when the runtime stops.
+/// Legacy OpenCode spawn overlay — pi-only spawn no longer calls this.
+/// Kept for unit tests documenting the old secret-materialization behavior.
+#[allow(dead_code)]
 pub fn resolve_config_secret_refs(
     workspace: &Path,
     secrets: &HashMap<String, String>,

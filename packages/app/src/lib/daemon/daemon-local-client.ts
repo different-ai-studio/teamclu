@@ -597,21 +597,6 @@ interface DaemonProviderAuthRequest {
   models?: Array<{ model_id: string; model_name?: string }>
 }
 
-/** Skill-name → 'allow' | 'deny' | 'ask' */
-export type DaemonPermissionMap = Record<string, 'allow' | 'deny' | 'ask'>
-
-interface DaemonPermissionConfig {
-  skills: DaemonPermissionMap
-  tools: DaemonPermissionMap
-}
-
-export interface DaemonAllowlistRule {
-  project_id: string
-  permission: string
-  pattern: string
-  decision: 'allow' | 'deny'
-}
-
 export type DaemonApplyOutcome = 'applied_live' | 'reload_required' | 'restart_required'
 
 // ─── Providers ────────────────────────────────────────────────────────────────
@@ -768,68 +753,6 @@ export async function deleteDaemonProviderAuth(
   return result.ok ? result.data.outcome : null
 }
 
-// ─── Permissions ──────────────────────────────────────────────────────────────
-
-/**
- * Fetch the full workspace permission config (skill + tool defaults).
- */
-async function getDaemonPermissionConfig(
-  workspaceId: string,
-): Promise<DaemonPermissionConfig | null> {
-  const result = await daemonFetch<DaemonPermissionConfig>(
-    `/v1/workspaces/${workspaceId}/permissions`,
-  )
-  if (!result.ok) return null
-  return {
-    skills: result.data.skills ?? {},
-    tools: result.data.tools ?? {},
-  }
-}
-
-/**
- * Fetch the workspace permission map.
- * Returns a flat `{ bash: 'ask', read: 'allow', ... }` object for skill keys only.
- */
-export async function getDaemonPermissions(
-  workspaceId: string,
-): Promise<DaemonPermissionMap | null> {
-  const config = await getDaemonPermissionConfig(workspaceId)
-  return config?.skills ?? null
-}
-
-/** Tool-level permission defaults (e.g. `bash`, `read`) outside the skill map. */
-export async function getDaemonToolPermissions(
-  workspaceId: string,
-): Promise<DaemonPermissionMap | null> {
-  const config = await getDaemonPermissionConfig(workspaceId)
-  return config?.tools ?? null
-}
-
-/**
- * Replace the workspace skill permission map.
- * Pass `tools` to merge tool-level defaults; omitted/empty tools are left unchanged.
- */
-export async function putDaemonPermissions(
-  workspaceId: string,
-  permissions: DaemonPermissionMap,
-  tools?: DaemonPermissionMap,
-): Promise<DaemonApplyOutcome | null> {
-  const body: DaemonPermissionConfig = { skills: permissions, tools: tools ?? {} }
-  const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
-    `/v1/workspaces/${workspaceId}/permissions`,
-    { method: 'PUT', body: JSON.stringify(body) },
-  )
-  return result.ok ? result.data.outcome : null
-}
-
-/** Merge tool-level permission defaults without replacing skill permissions. */
-export async function putDaemonToolPermissions(
-  workspaceId: string,
-  tools: DaemonPermissionMap,
-): Promise<DaemonApplyOutcome | null> {
-  return putDaemonPermissions(workspaceId, {}, tools)
-}
-
 // ─── Roles & skills ───────────────────────────────────────────────────────────
 
 /** Mirrors `RolesSkillsWorkspaceState` from lib/roles/types.ts (camelCase from daemon). */
@@ -904,9 +827,16 @@ export async function putDaemonSkill(
   return result.ok ? result.data : null
 }
 
-/** Register a Skills refresh without rewriting files. Next idle apply disposes the OpenCode instance. */
-export async function notifyDaemonSkillsChanged(workspaceId: string): Promise<void> {
-  await daemonFetchData<{ ok: boolean }>(
+export interface DaemonSkillsRefreshResult {
+  ok: boolean
+  status: 'applied' | 'pending_active_turn' | string
+}
+
+/** Register a Skills refresh without rewriting files. Idle apply disposes the OpenCode instance. */
+export async function notifyDaemonSkillsChanged(
+  workspaceId: string,
+): Promise<DaemonSkillsRefreshResult> {
+  return daemonFetchData<DaemonSkillsRefreshResult>(
     `/v1/workspaces/${workspaceId}/skills/refresh`,
     { method: 'POST' },
   )
@@ -951,28 +881,6 @@ export async function deleteDaemonRole(
   const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
     `/v1/workspaces/${workspaceId}/roles/${encodeURIComponent(slug)}${query}`,
     { method: 'DELETE' },
-  )
-  return result.ok ? result.data.outcome : null
-}
-
-// ─── Allowlist ────────────────────────────────────────────────────────────────
-
-export async function getDaemonAllowlist(
-  workspaceId: string,
-): Promise<DaemonAllowlistRule[] | null> {
-  const result = await daemonFetch<DaemonAllowlistRule[]>(
-    `/v1/workspaces/${workspaceId}/permission-allowlist`,
-  )
-  return result.ok ? result.data : null
-}
-
-export async function putDaemonAllowlist(
-  workspaceId: string,
-  rules: DaemonAllowlistRule[],
-): Promise<DaemonApplyOutcome | null> {
-  const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
-    `/v1/workspaces/${workspaceId}/permission-allowlist`,
-    { method: 'PUT', body: JSON.stringify(rules) },
   )
   return result.ok ? result.data.outcome : null
 }
@@ -1107,6 +1015,15 @@ export interface BuildAppResult {
   outcome: BuildAppOutcome
   /** Why it failed, for the toast. Null unless the outcome is `failed`. */
   error: string | null
+  /**
+   * The commit the daemon actually built, when it differs from the one we
+   * asked for.
+   *
+   * A deploy publishes whatever the agent left uncommitted, which moves HEAD
+   * past the sha we read off Gitea before starting. Finalizing with the old
+   * one would record a commit that is not what is now running.
+   */
+  gitCommitSha: string | null
 }
 
 /**
@@ -1302,7 +1219,7 @@ export async function buildDaemonApp(
   input: BuildDaemonAppInput,
 ): Promise<BuildAppResult> {
   try {
-    const result = await daemonFetch<{ status: string }>('/v1/apps/build', {
+    const result = await daemonFetch<{ status: string; gitCommitSha?: string }>('/v1/apps/build', {
       method: 'POST',
       body: JSON.stringify({
         appId,
@@ -1313,16 +1230,22 @@ export async function buildDaemonApp(
         presignedPut: input.presignedPut.trim(),
       }),
     })
-    if (result.ok) return { outcome: "built", error: null }
+    if (result.ok) {
+      return {
+        outcome: "built",
+        error: null,
+        gitCommitSha: result.data?.gitCommitSha?.trim() || null,
+      }
+    }
     if (result.status === 0) {
       console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return { outcome: "unreachable", error: null }
+      return { outcome: "unreachable", error: null, gitCommitSha: null }
     }
     console.warn('[daemon-local-client] app build failed:', result.error)
-    return { outcome: "failed", error: result.error ?? null }
+    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null }
   } catch (err) {
     console.warn('[daemon-local-client] app build unavailable:', err)
-    return { outcome: "unreachable", error: null }
+    return { outcome: "unreachable", error: null, gitCommitSha: null }
   }
 }
 

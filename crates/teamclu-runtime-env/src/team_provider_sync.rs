@@ -10,14 +10,12 @@ use std::path::Path;
 use crate::mcp_resolve;
 use crate::team_provider::{self, ManagedLlmState};
 
-/// How much of `opencode.json` secret resolution should run after `provider.team`
-/// is materialized.
+/// How much of workspace `opencode.json` secret resolution should run after
+/// `provider.team` is materialized into global config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretResolveScope {
-    /// Spawn (legacy OpenCode): substitute every `${KEY}` present in `secrets`
-    /// (MCP env, provider apiKey, etc.) and install the runtime overlay.
-    FullConfig,
-    /// Reconcile: only resolve `provider.*.options.apiKey` — leave MCP placeholders.
+    /// Reconcile-style: only resolve `provider.*.options.apiKey` on workspace
+    /// disk — leave MCP placeholders untouched.
     ProviderApiKeysOnly,
     /// Pi-only spawn: strip legacy workspace `provider.team` only. Do not write
     /// resolved secrets into workspace `opencode.json` — pi reads env bindings,
@@ -27,9 +25,6 @@ pub enum SecretResolveScope {
 
 #[derive(Debug, Clone, Default)]
 pub struct TeamProviderSyncResult {
-    /// Canonical placeholder content before full runtime resolve — set only for
-    /// [`SecretResolveScope::FullConfig`] when placeholders were substituted.
-    pub opencode_json_original: Option<String>,
     pub provider_section_changed: bool,
 }
 
@@ -83,18 +78,13 @@ pub fn resolve_workspace_runtime_config(
     scope: SecretResolveScope,
 ) -> anyhow::Result<TeamProviderSyncResult> {
     team_provider::remove_legacy_workspace_team_provider(workspace)?;
-    let opencode_json_original = match scope {
-        SecretResolveScope::FullConfig => {
-            mcp_resolve::resolve_config_secret_refs(workspace, secrets)?
-        }
+    match scope {
         SecretResolveScope::ProviderApiKeysOnly => {
             mcp_resolve::resolve_provider_api_keys_on_disk(workspace, secrets)?;
-            None
         }
-        SecretResolveScope::SkipWorkspaceResolve => None,
-    };
+        SecretResolveScope::SkipWorkspaceResolve => {}
+    }
     Ok(TeamProviderSyncResult {
-        opencode_json_original,
         provider_section_changed: false,
     })
 }
@@ -247,56 +237,6 @@ mod tests {
         assert_eq!(
             reconcile_json["provider"]["team"]["models"],
             spawn_json["provider"]["team"]["models"]
-        );
-    }
-
-    #[test]
-    fn full_config_scope_materializes_team_provider_and_resolves_secrets() {
-        let (_lock, global_dir, _home) = global_config_dir();
-        let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join("opencode.json"),
-            r#"{
-  "provider": {
-    "team": { "options": { "apiKey": "${tc_gateway_token}" } }
-  },
-  "mcp": {
-    "github": { "environment": { "TOKEN": "${API_TOKEN}" } }
-  }
-}"#,
-        )
-        .unwrap();
-
-        let mut secrets = HashMap::new();
-        secrets.insert(
-            "tc_gateway_token".to_string(),
-            "tok_spawn_actor".to_string(),
-        );
-        secrets.insert("API_TOKEN".to_string(), "ghp_spawn".to_string());
-
-        sync_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), &secrets, None).unwrap();
-        resolve_workspace_runtime_config(dir.path(), &secrets, SecretResolveScope::FullConfig)
-            .unwrap();
-
-        let on_disk = read_opencode(dir.path());
-        let global = fs::read_to_string(global_config_path(&global_dir)).unwrap();
-        assert!(global.contains("tok_spawn_actor"));
-        assert!(on_disk.contains("ghp_spawn"));
-        assert!(!global.contains("${tc_gateway_token}"));
-        assert!(!on_disk.contains("${API_TOKEN}"));
-        assert!(dir.path().join(".teamclu/opencode.runtime.json").exists());
-        // The model list is pinned client-side (TEAM_MODEL_TIERS), so the
-        // cloud's `model-a` must NOT appear -- what the gateway routes each
-        // tier to is a server-side concern the client never sees.
-        let parsed: serde_json::Value = serde_json::from_str(&global).unwrap();
-        let models = parsed["provider"]["team"]["models"].as_object().unwrap();
-        assert_eq!(models.len(), 3, "exactly the three tiers");
-        for (id, label) in crate::team_provider::TEAM_MODEL_TIERS {
-            assert_eq!(models[id]["name"].as_str(), Some(label), "tier {id}");
-        }
-        assert!(
-            !models.contains_key("model-a"),
-            "cloud model list is not used"
         );
     }
 }

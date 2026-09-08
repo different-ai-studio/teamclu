@@ -184,18 +184,22 @@ async fn record_refresh(
     }
 }
 
-/// The single team-MCP file every runtime reads (Cursor `{ "mcpServers": … }`).
+/// The single team-MCP cache file (Cursor `{ "mcpServers": … }`).
 ///
-/// OpenCode cannot load this shape; [`sync_opencode_generated`] writes a sibling
-/// adapter for `OPENCODE_CONFIG` only. Other runtimes must not read that sibling.
+/// Pi and the settings UI read this directly via [`crate::config::team_mcp::scan_team_mcp`]
+/// and the spawn merge in `runtime/pi_rpc`.
 pub fn team_cloud_mcp_file(team_id: &str) -> PathBuf {
     global_team_cloud_dir(team_id).join(MCP_CACHE_FILE)
 }
 
-const OPENCODE_GENERATED_FILE: &str = "mcp.opencode.generated.json";
+/// Pre–pi-only OpenCode adapter; removed in ADR-0014. Best-effort delete only.
+const LEGACY_OPENCODE_GENERATED_FILE: &str = "mcp.opencode.generated.json";
 
-pub fn team_cloud_mcp_opencode_generated_file(team_id: &str) -> PathBuf {
-    global_team_cloud_dir(team_id).join(OPENCODE_GENERATED_FILE)
+fn remove_legacy_opencode_generated_file(team_id: &str) {
+    let path = global_team_cloud_dir(team_id).join(LEGACY_OPENCODE_GENERATED_FILE);
+    if path.is_file() {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 pub fn team_cloud_mcp_dir(team_id: &str) -> PathBuf {
@@ -253,7 +257,7 @@ fn team_mcp_write_lock(team_id: &str) -> Arc<SyncMutex<()>> {
     )
 }
 
-/// Write the Cursor SSOT and refresh the OpenCode-only generated adapter.
+/// Write the team MCP cache (`mcp.json`) and drop any legacy generated sibling.
 pub fn replace_team_mcp_cache(
     team_id: &str,
     mcp_servers: &serde_json::Value,
@@ -274,80 +278,8 @@ pub fn replace_team_mcp_cache(
     let body = serde_json::to_string_pretty(&config)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let changed = write_if_changed(&team_cloud_mcp_file(team_id), &body)?;
-    sync_opencode_generated_unlocked(team_id)?;
+    remove_legacy_opencode_generated_file(team_id);
     Ok(changed)
-}
-
-/// Always materialize `mcp.opencode.generated.json` so spawn can set
-/// `OPENCODE_CONFIG` even before the first install.
-pub fn sync_opencode_generated(team_id: &str) -> std::io::Result<bool> {
-    let lock = team_mcp_write_lock(team_id);
-    let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    sync_opencode_generated_unlocked(team_id)
-}
-
-fn sync_opencode_generated_unlocked(team_id: &str) -> std::io::Result<bool> {
-    let mut generated = serde_json::json!({
-        "$schema": "https://opencode.ai/config.json",
-        "mcp": {},
-    });
-    let global = teamclu_runtime_env::opencode_config::global_opencode_config_path();
-    if let Ok(body) = std::fs::read_to_string(&global) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            if json.is_object() {
-                generated = json;
-            }
-        }
-    }
-    let mcp = generated
-        .as_object_mut()
-        .expect("generated is object")
-        .entry("mcp")
-        .or_insert_with(|| serde_json::json!({}));
-    let mcp_map = mcp.as_object_mut().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "opencode generated mcp must be an object",
-        )
-    })?;
-    // Device servers (`~/.amuxd/mcp.json`) are already in opencode's own shape,
-    // so they go in verbatim. They are inserted before the team's so a team
-    // server of the same name still wins.
-    if let Ok(body) = std::fs::read_to_string(crate::config::device_mcp::device_mcp_file()) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            if let Some(servers) = json.get("mcp").and_then(|v| v.as_object()) {
-                for (name, raw) in servers {
-                    mcp_map.insert(name.clone(), raw.clone());
-                }
-            }
-        }
-    }
-    if let Ok(body) = std::fs::read_to_string(team_cloud_mcp_file(team_id)) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            let servers = json
-                .get("mcpServers")
-                .and_then(|v| v.as_object())
-                .or_else(|| json.get("mcp").and_then(|v| v.as_object()));
-            if let Some(servers) = servers {
-                for (name, raw) in servers {
-                    if let Ok(parsed) = serde_json::from_value::<
-                        crate::config::team_mcp::CursorMcpServer,
-                    >(raw.clone())
-                    {
-                        let converted = crate::config::team_mcp::convert_cursor_server(&parsed);
-                        if let Ok(val) = serde_json::to_value(converted) {
-                            mcp_map.insert(name.clone(), val);
-                        }
-                    } else if raw.is_object() {
-                        mcp_map.insert(name.clone(), raw.clone());
-                    }
-                }
-            }
-        }
-    }
-    let body = serde_json::to_string_pretty(&generated)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    write_if_changed(&team_cloud_mcp_opencode_generated_file(team_id), &body)
 }
 
 impl TeamCloudConfigResolver {
@@ -537,25 +469,10 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_mcp_replacements_keep_cursor_and_opencode_files_consistent() {
+    fn concurrent_mcp_replacements_keep_cache_parseable() {
         let home = tempfile::tempdir().unwrap();
         let _guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
         let team_id = "concurrent-mcp-team";
-
-        // The generated file carries the device servers as well as the team's —
-        // `sync_opencode_generated_unlocked` inserts `~/.amuxd/mcp.json`
-        // verbatim, by design. Seed one so that difference is present on every
-        // run. Left to chance it appears only when another test in this binary
-        // boots a daemon, whose `ensure_device_mcp` writes through the
-        // process-global `AMUXD_HOME` — this tempdir, while this test holds it.
-        // That is what failed on CI under load and passed everywhere else.
-        let device_file = crate::config::device_mcp::device_mcp_file();
-        std::fs::create_dir_all(device_file.parent().unwrap()).unwrap();
-        std::fs::write(
-            &device_file,
-            r#"{"mcp":{"playwright":{"type":"local","command":["npx","playwright"]}}}"#,
-        )
-        .unwrap();
 
         for round in 0..16 {
             let barrier = Arc::new(std::sync::Barrier::new(3));
@@ -578,31 +495,22 @@ mod tests {
                 worker.join().unwrap();
             }
 
-            let cursor: serde_json::Value = serde_json::from_str(
+            let cache: serde_json::Value = serde_json::from_str(
                 &std::fs::read_to_string(team_cloud_mcp_file(team_id)).unwrap(),
             )
             .unwrap();
-            let generated: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(team_cloud_mcp_opencode_generated_file(team_id)).unwrap(),
-            )
-            .unwrap();
-            let cursor_names: BTreeSet<_> = cursor["mcpServers"]
+            let names: BTreeSet<_> = cache["mcpServers"]
                 .as_object()
                 .unwrap()
                 .keys()
                 .cloned()
                 .collect();
-            let generated_names: BTreeSet<_> = generated["mcp"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .filter(|name| !crate::config::device_mcp::is_device_scoped(name))
-                .cloned()
-                .collect();
-            assert_eq!(cursor_names, generated_names);
+            assert_eq!(names.len(), 1);
             assert!(
-                generated["mcp"].get("playwright").is_some(),
-                "device servers must survive a team replacement",
+                !global_team_cloud_dir(team_id)
+                    .join(LEGACY_OPENCODE_GENERATED_FILE)
+                    .exists(),
+                "legacy generated file must not be recreated",
             );
         }
     }

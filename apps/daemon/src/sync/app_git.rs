@@ -10,7 +10,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 /// English messages the HTTP layer maps to user-facing copy.
+/// No longer raised by a deploy — [`publish_pending_work`] publishes that state
+/// instead of refusing it. Kept because the desktop still maps this text: a
+/// current client talking to an older daemon gets it, and the mapping is the
+/// only thing that turns it into something a user can act on.
 pub const ERR_DIRTY: &str = "uncommitted or unpushed changes; commit and push first";
+/// Deploy committed the workdir but could not publish it: `origin` has commits
+/// this checkout does not. Resolving that is a merge, and a deploy must not
+/// guess at one.
+pub const ERR_PUSH_REJECTED: &str =
+    "origin has commits this checkout does not; pull and resolve them, then deploy again";
 pub const ERR_SHA_NOT_ON_REMOTE: &str = "git commit not found on remote";
 pub const ERR_INVALID_SHA: &str = "gitCommitSha must be a 7–40 character hex object id";
 
@@ -154,9 +163,17 @@ impl SshEnv {
         })
     }
 
+    /// `IdentitiesOnly=yes` is load-bearing, not belt-and-braces.
+    ///
+    /// `-i` only *adds* a key to the candidates: OpenSSH still offers every
+    /// identity in the agent and the default `~/.ssh/id_*` files, and Gitea
+    /// closes the connection after `MaxAuthTries` (6). On a developer machine
+    /// with a few keys loaded, the JIT deploy key was never reached — the fetch
+    /// failed with "Too many authentication failures" and read as a bad
+    /// credential. `cli/git_ssh.rs` has always passed it; this path had not.
     pub fn git_ssh_command(&self) -> String {
         format!(
-            "ssh -i {} -o StrictHostKeyChecking=accept-new -o BatchMode=yes",
+            "ssh -i {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes",
             shell_quote(&self.key_path.to_string_lossy())
         )
     }
@@ -499,6 +516,169 @@ pub fn has_unpushed_commits(dir: &Path) -> anyhow::Result<bool> {
 }
 
 /// Refuse deploy when the checkout is dirty or has unpushed work.
+/// What the daemon and the agents it runs leave inside an app checkout that is
+/// not the app's source: per-machine runtime config and agent state.
+///
+/// Surveyed on a real machine rather than guessed — across the app checkouts
+/// there, the untracked entries are the brand meta directory, `.claude/`,
+/// `.opencode/` and `opencode.json`. Everything else that turns up untracked is
+/// the app's own files, which a deploy *should* commit.
+///
+/// Brand-aware, so a white-label build excludes its own meta directory; the
+/// legacy one is listed too because a checkout seeded before the rename still
+/// has it.
+///
+/// The brand is a parameter rather than read from the environment so the
+/// template drift test can ask for the official one without racing whatever
+/// else has the brand env set.
+pub(crate) fn runtime_exclude_entries(brand: &str) -> Vec<String> {
+    let mut entries = vec![
+        format!("{}/", teamclu_runtime_env::workspace_meta_dir_name(brand)),
+        format!("{}/", teamclu_runtime_env::LEGACY_BRAND_WORKSPACE_META_DIR),
+        teamclu_runtime_env::workspace_config_file_name(brand),
+    ];
+    // Agent-local state, not brand-scoped: whichever agent ran in this checkout
+    // wrote it, and none of it describes the app.
+    entries.extend([
+        ".claude/".to_string(),
+        ".opencode/".to_string(),
+        "opencode.json".to_string(),
+    ]);
+    entries.dedup();
+    entries
+}
+
+/// Keep `.git/info/exclude` covering the daemon's own runtime files.
+///
+/// Not `.gitignore`: that file belongs to the app, is committed, and for an
+/// imported repo is none of our business. `info/exclude` is per-checkout and
+/// untracked — exactly the right home for machine-local state, and it reaches
+/// the checkouts that already exist, which editing a template never can.
+///
+/// Best-effort by contract: a deploy that cannot write this should still
+/// deploy. Callers log and continue.
+pub fn ensure_runtime_excludes(dir: &Path) -> std::io::Result<()> {
+    const HEADER: &str = "# managed by amuxd — app runtime files, never app source";
+    let path = dir.join(".git").join("info").join("exclude");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+
+    // Replace the whole managed block rather than appending: the entries are
+    // brand-derived, so a rebrand must be able to drop the old ones.
+    let mut kept: Vec<&str> = Vec::new();
+    let mut in_block = false;
+    for line in existing.lines() {
+        if line.trim() == HEADER {
+            in_block = true;
+            continue;
+        }
+        if in_block {
+            if line.trim().is_empty() {
+                in_block = false;
+            }
+            continue;
+        }
+        kept.push(line);
+    }
+
+    let mut out = String::new();
+    for line in kept {
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !out.is_empty() && !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+    out.push_str(HEADER);
+    out.push('\n');
+    for entry in runtime_exclude_entries(&teamclu_runtime_env::brand_short_name_from_env()) {
+        out.push_str(&entry);
+        out.push('\n');
+    }
+    out.push('\n');
+
+    if out == existing {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, out)
+}
+
+/// Whether `git commit` would find an author here (repo-local or global).
+fn has_commit_identity(dir: &Path) -> bool {
+    ["user.name", "user.email"].iter().all(|key| {
+        run_git(dir, None, &["config", "--get", key])
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Commit and push whatever the workdir has pending; report the new HEAD.
+///
+/// Deploy used to refuse a workdir with uncommitted or unpushed work
+/// ([`ensure_clean_and_pushed`]), which is the state an agent leaves behind
+/// every time it edits an app and stops — so the common case was a deploy that
+/// could not run until someone went to a terminal. Publishing it is what the
+/// user would have done by hand.
+///
+/// `Ok(None)` means there was nothing to publish and the caller should build
+/// the commit it was given. `Ok(Some(sha))` means HEAD moved and *that* is the
+/// commit to build — building the caller's older sha would silently ship
+/// without the work this just committed.
+///
+/// A rejected push is [`ERR_PUSH_REJECTED`], never a merge and never a force:
+/// diverged history is the one thing here a deploy cannot decide on its own.
+pub fn publish_pending_work(
+    dir: &Path,
+    ssh: Option<&SshEnv>,
+    message: &str,
+) -> anyhow::Result<Option<String>> {
+    let dirty = has_uncommitted_changes(dir)?;
+    let ahead = has_unpushed_commits(dir)?;
+    if !dirty && !ahead {
+        return Ok(None);
+    }
+
+    // A detached HEAD cannot be pushed at all, and a previous deploy is the
+    // usual way a checkout ends up on one.
+    ensure_on_branch(dir)?;
+    if dirty {
+        // A commit needs an author. The seed path sets one, but a checkout that
+        // predates it — or was re-inited by hand — may have neither a repo-local
+        // identity nor a global fallback, and `git commit` fails on that rather
+        // than on anything to do with the deploy. Filled in only when missing:
+        // a repo where someone set their own name keeps it.
+        if !has_commit_identity(dir) {
+            set_repo_user_identity(dir, None, None)?;
+        }
+        add_all(dir)?;
+        commit_if_needed(dir, message)?;
+    }
+
+    let out = run_git(dir, ssh, &["push", "-u", "origin", "HEAD"])?;
+    if !out.status.success() {
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("non-fast-forward")
+            || lower.contains("fetch first")
+            || lower.contains("rejected")
+            || lower.contains("behind its remote")
+        {
+            anyhow::bail!("{ERR_PUSH_REJECTED}");
+        }
+        ensure_success(&out, "git push")?;
+    }
+    Ok(Some(head_sha(dir)?))
+}
+
+/// Test-only since deploy stopped gating on it: the assertion that
+/// [`publish_pending_work`] left the checkout in the state it claims to.
+#[cfg(test)]
 pub fn ensure_clean_and_pushed(dir: &Path) -> anyhow::Result<()> {
     if has_uncommitted_changes(dir)? || has_unpushed_commits(dir)? {
         anyhow::bail!("{ERR_DIRTY}");
@@ -556,6 +736,11 @@ pub fn init_commit_push(
     }
     set_remote_origin(dir, remote_url, Some(&ssh))?;
     ensure_on_branch(dir)?;
+    // Same reason as the deploy path: the seed commit is an `add -A`, and a
+    // reseed runs over a checkout the daemon has already been living in.
+    if let Err(e) = ensure_runtime_excludes(dir) {
+        tracing::warn!(app_id, error = %e, "could not write .git/info/exclude");
+    }
     add_all(dir)?;
     commit_if_needed(dir, commit_message)?;
     push_origin_head(dir, Some(&ssh))?;
@@ -714,7 +899,12 @@ mod tests {
         let out = run_git(&work, None, &["config", "--get", "ssh.variant"]).unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ssh");
         // Repo-local only: it must not leak into any other repo on the machine.
-        let out = run_git(&work, None, &["config", "--local", "--get", "core.sshCommand"]).unwrap();
+        let out = run_git(
+            &work,
+            None,
+            &["config", "--local", "--get", "core.sshCommand"],
+        )
+        .unwrap();
         assert!(out.status.success(), "core.sshCommand must be repo-local");
     }
 
@@ -723,7 +913,10 @@ mod tests {
         // amuxd ships inside an .app bundle, so its path routinely has spaces.
         // Unquoted, git splits it and reports a missing command instead.
         let quoted = shell_quote("/Applications/My App.app/Contents/MacOS/amuxd");
-        assert!(quoted.starts_with('"') && quoted.ends_with('"'), "got {quoted}");
+        assert!(
+            quoted.starts_with('"') && quoted.ends_with('"'),
+            "got {quoted}"
+        );
     }
 
     #[test]
@@ -883,6 +1076,202 @@ mod tests {
         add_all(&work).unwrap();
         commit_if_needed(&work, "local only").unwrap();
         ensure_clean_and_pushed(&work).unwrap_err();
+    }
+
+    #[test]
+    fn runtime_excludes_are_written_without_touching_what_was_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(work.join(".git").join("info")).unwrap();
+        std::fs::write(work.join(".git/info/exclude"), "# mine\nscratch/\n").unwrap();
+
+        ensure_runtime_excludes(&work).unwrap();
+        let first = std::fs::read_to_string(work.join(".git/info/exclude")).unwrap();
+        assert!(
+            first.contains("scratch/"),
+            "user lines must survive: {first}"
+        );
+        for entry in runtime_exclude_entries(&teamclu_runtime_env::brand_short_name_from_env()) {
+            assert!(first.contains(&entry), "missing {entry} in {first}");
+        }
+
+        // Idempotent: a second deploy must not stack another block.
+        ensure_runtime_excludes(&work).unwrap();
+        let second = std::fs::read_to_string(work.join(".git/info/exclude")).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn runtime_excludes_keep_an_agents_own_files_out_of_the_app_repo() {
+        // The point of the whole thing: deploy commits the workdir, so anything
+        // the daemon left in it that git can see ends up in the app's history.
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(&work).unwrap();
+        init_if_needed(&work).unwrap();
+        ensure_test_identity(&work);
+        ensure_runtime_excludes(&work).unwrap();
+
+        // Built from the helper, not spelled out: `storage_lint` scans test
+        // code too, and a quoted brand-directory literal is what it forbids.
+        let meta = teamclu_runtime_env::workspace_meta_dir_name(
+            &teamclu_runtime_env::brand_short_name_from_env(),
+        );
+        std::fs::write(work.join("index.html"), b"app source").unwrap();
+        std::fs::create_dir_all(work.join(".claude")).unwrap();
+        std::fs::write(work.join(".claude/settings.json"), b"{}").unwrap();
+        std::fs::create_dir_all(work.join(&meta)).unwrap();
+        std::fs::write(work.join(&meta).join("state.json"), b"{}").unwrap();
+        std::fs::write(work.join("opencode.json"), b"{}").unwrap();
+
+        add_all(&work).unwrap();
+        let out = run_git(&work, None, &["diff", "--cached", "--name-only"]).unwrap();
+        let staged = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            staged.contains("index.html"),
+            "app source must be staged: {staged}"
+        );
+        for runtime in [
+            ".claude/".to_string(),
+            format!("{meta}/"),
+            "opencode.json".to_string(),
+        ] {
+            assert!(
+                !staged.contains(&runtime),
+                "{runtime} must not be staged: {staged}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_ssh_command_uses_only_the_deploy_key() {
+        // `-i` alone only adds a candidate: ssh still offers every agent key
+        // and default identity first, and Gitea hangs up after MaxAuthTries.
+        let ssh = SshEnv::from_deploy_key_pem("-----BEGIN KEY-----\nx\n-----END KEY-----")
+            .expect("temp key");
+        let cmd = ssh.git_ssh_command();
+        assert!(cmd.contains("IdentitiesOnly=yes"), "{cmd}");
+        assert!(cmd.contains("-i "), "{cmd}");
+        assert!(cmd.contains("BatchMode=yes"), "{cmd}");
+    }
+
+    #[test]
+    fn publish_pending_work_commits_and_pushes_what_the_agent_left() {
+        // The state an agent leaves behind whenever it edits an app and stops.
+        // Deploy used to refuse it outright.
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(bare) = local_origin(tmp.path()) else {
+            eprintln!("git not usable; skipping");
+            return;
+        };
+        let url = bare.to_string_lossy().to_string();
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("README.md"), b"seed").unwrap();
+        init_if_needed(&work).unwrap();
+        ensure_test_identity(&work);
+        set_remote_test(&work, &url).unwrap();
+        add_all(&work).unwrap();
+        commit_if_needed(&work, "seed").unwrap();
+        push_origin_head(&work, None).unwrap();
+        let seeded = head_sha(&work).unwrap();
+
+        // Clean and pushed: nothing to do, and the caller's sha still rules.
+        fetch_origin(&work, None).unwrap();
+        assert_eq!(publish_pending_work(&work, None, "deploy").unwrap(), None);
+
+        // Uncommitted work — including a file git has never seen, which is what
+        // `.teamclu/` and friends are.
+        std::fs::write(work.join("README.md"), b"edited by the agent").unwrap();
+        std::fs::write(work.join("new-file.txt"), b"untracked").unwrap();
+        let published = publish_pending_work(&work, None, "deploy")
+            .unwrap()
+            .expect("a dirty tree must publish");
+        assert_ne!(published, seeded, "HEAD must have moved");
+        assert_eq!(published, head_sha(&work).unwrap());
+        ensure_clean_and_pushed(&work).expect("published work is clean and pushed");
+    }
+
+    #[test]
+    fn publish_pending_work_publishes_a_commit_that_was_never_pushed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(bare) = local_origin(tmp.path()) else {
+            eprintln!("git not usable; skipping");
+            return;
+        };
+        let url = bare.to_string_lossy().to_string();
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("README.md"), b"seed").unwrap();
+        init_if_needed(&work).unwrap();
+        ensure_test_identity(&work);
+        set_remote_test(&work, &url).unwrap();
+        add_all(&work).unwrap();
+        commit_if_needed(&work, "seed").unwrap();
+        push_origin_head(&work, None).unwrap();
+
+        // Committed but never pushed: clean tree, still not publishable.
+        std::fs::write(work.join("README.md"), b"local only").unwrap();
+        add_all(&work).unwrap();
+        assert!(commit_if_needed(&work, "local only").unwrap());
+        let local = head_sha(&work).unwrap();
+
+        let published = publish_pending_work(&work, None, "deploy")
+            .unwrap()
+            .expect("an unpushed commit must publish");
+        assert_eq!(
+            published, local,
+            "an existing commit is pushed, not re-made"
+        );
+        ensure_clean_and_pushed(&work).unwrap();
+    }
+
+    #[test]
+    fn publish_pending_work_refuses_a_diverged_remote() {
+        // The one case a deploy must not decide on its own: origin moved. No
+        // merge, no force — an error the user can act on.
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(bare) = local_origin(tmp.path()) else {
+            eprintln!("git not usable; skipping");
+            return;
+        };
+        let url = bare.to_string_lossy().to_string();
+
+        let seed = |dir: &Path, body: &[u8], msg: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("README.md"), body).unwrap();
+            init_if_needed(dir).unwrap();
+            ensure_test_identity(dir);
+            set_remote_test(dir, &url).unwrap();
+            add_all(dir).unwrap();
+            commit_if_needed(dir, msg).unwrap();
+        };
+
+        let work = tmp.path().join("app");
+        seed(&work, b"seed", "seed");
+        push_origin_head(&work, None).unwrap();
+
+        // Someone else pushes on top of the same branch.
+        let other = tmp.path().join("other");
+        let git = git_bin();
+        assert!(Command::new(&git)
+            .args(["clone", "-q", &url, other.to_string_lossy().as_ref()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false));
+        ensure_test_identity(&other);
+        std::fs::write(other.join("README.md"), b"theirs").unwrap();
+        add_all(&other).unwrap();
+        commit_if_needed(&other, "theirs").unwrap();
+        push_origin_head(&other, None).unwrap();
+
+        // Our checkout still has local work and no idea the remote moved.
+        std::fs::write(work.join("README.md"), b"ours").unwrap();
+        let err = publish_pending_work(&work, None, "deploy").unwrap_err();
+        assert!(
+            format!("{err}").contains(ERR_PUSH_REJECTED),
+            "expected a rejection, got: {err}"
+        );
     }
 
     #[test]

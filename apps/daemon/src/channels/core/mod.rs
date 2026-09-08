@@ -506,10 +506,21 @@ impl Core {
             .update(&handle, &outbound.text, Some(end))
             .await
             .map_err(|e| CoreError::Render(e.to_string()))?;
+
+        // Record before the file send. WeCom media goes out on a separate
+        // API that can fail after the text already landed in the chat
+        // (a reload clearing the process-global gateway holder); skipping
+        // write_reply then left the desktop session with no answer.
+        if !produced_nothing {
+            self.writer
+                .write_reply(&session.session_id, &reply, attachments)
+                .await?;
+        }
+
         let file_deliveries = if outbound.attachments.is_empty() {
             0
         } else {
-            driver
+            match driver
                 .deliver(
                     &msg.conversation,
                     msg.reply_context.as_deref(),
@@ -520,18 +531,18 @@ impl Core {
                     },
                 )
                 .await
-                .map_err(|e| CoreError::Render(e.to_string()))?;
-            1
+            {
+                Ok(_) => 1,
+                Err(e) => {
+                    tracing::warn!(
+                        session_id = %session.session_id,
+                        error = %e,
+                        "gateway: file delivery failed after the reply was recorded"
+                    );
+                    0
+                }
+            }
         };
-
-        // Nothing to record: the store rejects an empty message outright
-        // ("content is required"), so a cancelled turn used to end on an error
-        // log for a turn that did exactly what was asked of it.
-        if !produced_nothing {
-            self.writer
-                .write_reply(&session.session_id, &reply, attachments)
-                .await?;
-        }
         // The opening delivery, every intermediate edit, the final one, and
         // any file delivery.
         Ok(1 + updates + 1 + file_deliveries)

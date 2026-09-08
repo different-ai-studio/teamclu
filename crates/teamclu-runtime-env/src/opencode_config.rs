@@ -31,13 +31,10 @@ pub fn opencode_config_path(workspace: &Path) -> PathBuf {
 /// The daemon-owned config for the active team
 /// (`~/.amuxd/teams/<team>/state/opencode.json`, or the white-label equivalent).
 ///
-/// This file is amuxd's alone — it is injected into opencode via
-/// `OPENCODE_CONFIG`, which loads it as an *additional* global-scope config
-/// after the standard global chain, so it wins over the user's hand-edited
-/// `~/.config/opencode/opencode.json`. We deliberately never write to that
-/// user file: it holds their own `plugin` config, and this store's
-/// `recover_leading_object` path exists because config files here have been
-/// corrupted by partial writes before.
+/// Holds team-scoped provider rows (`provider.team`) materialized by
+/// [`crate::team_provider_sync::sync_global_team_provider`] on spawn and on
+/// provider reads. We deliberately never write to the user's hand-edited
+/// `~/.config/opencode/opencode.json`.
 pub fn global_opencode_config_path() -> PathBuf {
     let home = crate::amuxd_home_from_env();
     crate::amuxd_layout::team_state_dir(&home, &crate::amuxd_layout::active_team(&home))

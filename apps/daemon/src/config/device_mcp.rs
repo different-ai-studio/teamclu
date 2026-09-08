@@ -13,11 +13,9 @@
 //! every consumer already parses this shape for the workspace file — the device
 //! file is just a second path through the same code.
 //!
-//! Read by all three MCP consumers, same as the team file:
+//! Read by the MCP merge path on spawn and in settings:
 //! - `team_mcp::load_merged_mcp` — the settings UI's merged view
-//! - `runtime/sidecar/mcp.rs` — cursor / claude-agent / pi
-//! - `runtime/team_cloud_config::sync_opencode_generated` — opencode, via
-//!   `OPENCODE_CONFIG`
+//! - `runtime/pi_rpc` — pi, via `TEAMCLU_MCP_SERVERS`
 //!
 //! `teamclu-introspect` is deliberately NOT here: its argv carries
 //! `--workspace <abs path>`, so it is the one inherent server that is genuinely

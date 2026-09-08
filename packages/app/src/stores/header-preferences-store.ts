@@ -24,8 +24,11 @@ interface HeaderPreferencesState {
   showTerminalToggle: boolean
   /** Show the "Changes" (file diff) panel entry in the conversation header. Default false. */
   showChangesTab: boolean
+  /** Show the force-refresh-skills icon in the conversation header. Default false. */
+  showSkillsRefresh: boolean
   setShowTerminalToggle: (show: boolean) => void
   setShowChangesTab: (show: boolean) => void
+  setShowSkillsRefresh: (show: boolean) => void
 }
 
 const STORAGE_KEY = `${appStoragePrefix}-header-prefs`
@@ -36,6 +39,7 @@ function persist(state: HeaderPreferencesState) {
   saveToStorage(STORAGE_KEY, {
     showTerminalToggle: state.showTerminalToggle,
     showChangesTab: state.showChangesTab,
+    showSkillsRefresh: state.showSkillsRefresh,
   })
 }
 
@@ -44,6 +48,7 @@ export const useHeaderPreferencesStore = create<HeaderPreferencesState>((set, ge
   // fallback is already `{}`, so missing keys read as `undefined` → false.
   showTerminalToggle: persisted.showTerminalToggle ?? false,
   showChangesTab: persisted.showChangesTab ?? false,
+  showSkillsRefresh: persisted.showSkillsRefresh ?? false,
 
   setShowTerminalToggle: (show) => {
     set({ showTerminalToggle: show })
@@ -51,6 +56,10 @@ export const useHeaderPreferencesStore = create<HeaderPreferencesState>((set, ge
   },
   setShowChangesTab: (show) => {
     set({ showChangesTab: show })
+    persist(get())
+  },
+  setShowSkillsRefresh: (show) => {
+    set({ showSkillsRefresh: show })
     persist(get())
   },
 }))

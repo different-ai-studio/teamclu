@@ -126,7 +126,7 @@ pub struct HttpState {
     /// pool and TLS session cache, so per-request construction would add a
     /// full handshake to every completion.
     pub http_client: reqwest::Client,
-    /// Workspace configuration control (providers, permissions, allowlist).
+    /// Workspace configuration control (providers, MCP).
     /// `None` when the HTTP server is started without a workspace control
     /// store (e.g. in focused unit tests). Workspace routes return 404 in
     /// that case.

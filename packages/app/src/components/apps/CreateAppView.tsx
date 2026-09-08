@@ -1,18 +1,14 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { AppWindow, ChevronRight, FolderOpen, Loader2, Save } from 'lucide-react'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { useAppsStore } from '@/stores/apps-store'
+import { useCurrentTeamStore } from '@/stores/current-team'
 import { APP_TYPES, DEFAULT_APP_TYPE, IMPORTED_APP_TYPE, type AppTypeId } from '@/lib/apps/app-types'
+import { appTypeIcon } from '@/lib/apps/app-type-icon'
+import { closeCreateApp } from '@/lib/tabs/app-tabs'
 import { bindDaemonAppWorkdir, inspectDaemonDir } from '@/lib/daemon/daemon-local-client'
 import { isTauri } from '@/lib/utils'
 
@@ -71,14 +67,22 @@ const SOURCES: AppSourceMeta[] = [
   },
 ]
 
-interface CreateAppDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  teamId: string
-}
+/** Shared chrome for the two radio-card grids — source, and type. */
+const CARD = 'flex flex-col gap-0.5 rounded-[9px] border px-3 py-2.5 text-left transition-colors disabled:opacity-50'
+const CARD_ON = 'border-coral bg-coral/5'
+const CARD_OFF = 'border-border-soft bg-paper hover:bg-selected/30'
 
-export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogProps) {
+/**
+ * The create form, in the main column.
+ *
+ * It was a modal. Picking a local directory opens a native file dialog on top
+ * of it, and what it covered was column two — the list the new app is about to
+ * appear in. As a tab it can be left open while the user goes to look at
+ * something, which is the actual shape of the task.
+ */
+export function CreateAppView() {
   const { t } = useTranslation()
+  const teamId = useCurrentTeamStore((s) => s.team?.id ?? '')
   const [name, setName] = React.useState('')
   const [source, setSource] = React.useState<AppSource>('new')
   const [appType, setAppType] = React.useState<AppTypeId>(DEFAULT_APP_TYPE)
@@ -90,20 +94,8 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
-  React.useEffect(() => {
-    if (!open) {
-      setName('')
-      setSource('new')
-      setAppType(DEFAULT_APP_TYPE)
-      setVisibility('personal')
-      setGitRemoteUrl('')
-      setLocalDir('')
-      setLocalOrigin(null)
-      setPicking(false)
-      setSubmitting(false)
-      setError(null)
-    }
-  }, [open])
+  // No reset effect: closing the tab unmounts this, and reopening it mounts a
+  // fresh one. What the dialog needed a `!open` branch for, the tab gets free.
 
   const trimmed = name.trim()
   const trimmedRepo = gitRemoteUrl.trim()
@@ -177,11 +169,7 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
         await bindDaemonAppWorkdir(app.id, teamId, localDir)
         await useAppsStore.getState().refreshLocalApps(teamId)
       }
-      onOpenChange(false)
-      setName('')
-      setAppType(DEFAULT_APP_TYPE)
-      setVisibility('personal')
-      setGitRemoteUrl('')
+      closeCreateApp()
 
       // Drop the user straight into a conversation that is already underway.
       // Only once the files exist — an opening message telling the agent to
@@ -205,25 +193,22 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100vh-6rem)] w-[min(760px,calc(100vw-4rem))] max-w-none flex-col overflow-hidden border-border bg-background p-0 shadow-xl">
-        <DialogHeader className="border-b border-border-soft bg-paper px-5 py-4">
-          <div className="flex items-center gap-3 pr-8">
-            <span className="inline-flex h-7 items-center gap-1.5 rounded-[7px] border border-coral-soft bg-coral/5 px-2.5 text-[12.5px] font-semibold text-coral">
-              <AppWindow className="h-3.5 w-3.5" />
-              App
-            </span>
-            <ChevronRight className="h-4 w-4 text-faint" />
-            <DialogTitle className="text-[15px] font-bold text-foreground">
-              {t('apps.createTitle', '新建')}
-            </DialogTitle>
-          </div>
-          <DialogDescription className="sr-only">
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <div className="border-b border-border-soft bg-paper px-6 py-4">
+        <div className="mx-auto flex w-full max-w-[720px] items-center gap-3">
+          <span className="inline-flex h-7 items-center gap-1.5 rounded-[7px] border border-coral-soft bg-coral/5 px-2.5 text-[12.5px] font-semibold text-coral">
+            <AppWindow className="h-3.5 w-3.5" />
+            App
+          </span>
+          <ChevronRight className="h-4 w-4 text-faint" />
+          <h2 className="text-[15px] font-bold text-foreground">
             {t('apps.createTitle', '新建')}
-          </DialogDescription>
-        </DialogHeader>
+          </h2>
+        </div>
+      </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 py-6">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+        <div className="mx-auto flex w-full max-w-[720px] flex-col gap-5">
           <div className="flex flex-col gap-1.5">
             <label htmlFor="create-app-name" className="text-[12.5px] font-semibold text-muted-foreground">
               {t('apps.nameLabel', 'Name')}
@@ -249,7 +234,7 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
               {t('apps.sourceLabel', '代码从哪来')}
             </span>
             {/* Across, not down: three stacked cards were most of this
-                dialog's height, and they are short enough to sit side by side. */}
+                form's height, and they are short enough to sit side by side. */}
             <div className="grid grid-cols-3 gap-1.5">
               {SOURCES.map((meta) => {
                 const selected = source === meta.id
@@ -264,12 +249,7 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
                       setSource(meta.id)
                       setError(null)
                     }}
-                    className={cn(
-                      'flex flex-col gap-0.5 rounded-[9px] border px-3 py-2.5 text-left transition-colors disabled:opacity-50',
-                      selected
-                        ? 'border-coral bg-coral/5'
-                        : 'border-border-soft bg-paper hover:bg-selected/30',
-                    )}
+                    className={cn(CARD, selected ? CARD_ON : CARD_OFF)}
                   >
                     <span
                       className={cn(
@@ -356,6 +336,8 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
             <div className="grid grid-cols-3 gap-1.5">
               {APP_TYPES.map((meta) => {
                 const selected = appType === meta.id
+                // Same glyph the app will carry in every list once it exists.
+                const Icon = appTypeIcon(meta.id)
                 return (
                   <button
                     key={meta.id}
@@ -364,19 +346,15 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
                     aria-checked={selected}
                     disabled={submitting}
                     onClick={() => setAppType(meta.id)}
-                    className={cn(
-                      'flex flex-col gap-0.5 rounded-[9px] border px-3 py-2.5 text-left transition-colors disabled:opacity-50',
-                      selected
-                        ? 'border-coral bg-coral/5'
-                        : 'border-border-soft bg-paper hover:bg-selected/30',
-                    )}
+                    className={cn(CARD, selected ? CARD_ON : CARD_OFF)}
                   >
                     <span
                       className={cn(
-                        'text-[13px] font-semibold',
+                        'flex items-center gap-1.5 text-[13px] font-semibold',
                         selected ? 'text-coral' : 'text-foreground',
                       )}
                     >
+                      <Icon className="h-3.5 w-3.5 shrink-0" />
                       {t(meta.labelKey, meta.label)}
                     </span>
                     <span className="text-[12px] text-muted-foreground">
@@ -432,11 +410,13 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
             </div>
           )}
         </div>
+      </div>
 
-        <div className="border-t border-border-soft bg-paper px-5 py-3">
+      <div className="border-t border-border-soft bg-paper px-6 py-3">
+        <div className="mx-auto flex w-full max-w-[720px] items-center justify-between">
           <Button
             variant="ghost"
-            onClick={() => onOpenChange(false)}
+            onClick={() => closeCreateApp()}
             disabled={submitting}
             className="h-9 rounded-[9px]"
           >
@@ -445,13 +425,13 @@ export function CreateAppDialog({ open, onOpenChange, teamId }: CreateAppDialogP
           <Button
             onClick={() => void submit()}
             disabled={!canSubmit}
-            className="float-right h-9 rounded-[9px] bg-coral px-5 text-white hover:bg-coral/90"
+            className="h-9 rounded-[9px] bg-coral px-5 text-white hover:bg-coral/90"
           >
             {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
             {t('apps.submit', 'Create')}
           </Button>
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </div>
   )
 }

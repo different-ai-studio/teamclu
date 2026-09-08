@@ -210,34 +210,29 @@ export function NavRail() {
             className="h-px flex-1 bg-border-soft transition-colors duration-150 group-hover:bg-border"
           />
         </button>
+        {/* Scrolls rather than clips: nothing in here grows to absorb slack any
+            more (the app list that used to moved to column two), so on a short
+            window the last rows would otherwise be cut off by the rail's own
+            overflow-hidden. */}
         {moreExpanded && (
-          <div className="flex min-h-0 flex-1 flex-col gap-0.5">
-            {/* Fixed rows keep their height; only the app list below absorbs
-                the slack, and only it gives space back when the rail is short. */}
-            <div className="flex shrink-0 flex-col gap-0.5">
-              {!embedMode ? (
-                <TopEntry
-                  label={t('sidebar.ideas', 'Ideas')}
-                  icon={Lightbulb}
-                  active={filter.kind === 'ideas'}
-                  onClick={() => setFilter({ kind: 'ideas' })}
-                />
-              ) : null}
-              {!embedMode ? (
-                <TopEntry
-                  label={t('common.shortcuts', 'Shortcuts')}
-                  icon={Keyboard}
-                  active={filter.kind === 'shortcuts'}
-                  onClick={() => setFilter({ kind: 'shortcuts' })}
-                />
-              ) : null}
-              <TeamShareNavSection sections={['mcp', 'env']} />
-            </div>
-            {/*
-              Last, and collapsed until asked for: this is the only row here
-              that unfolds into a list of its own, so anywhere above it the
-              rows below would move every time it opened.
-            */}
+          <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto overflow-x-hidden">
+            {!embedMode ? (
+              <TopEntry
+                label={t('sidebar.ideas', 'Ideas')}
+                icon={Lightbulb}
+                active={filter.kind === 'ideas'}
+                onClick={() => setFilter({ kind: 'ideas' })}
+              />
+            ) : null}
+            {!embedMode ? (
+              <TopEntry
+                label={t('common.shortcuts', 'Shortcuts')}
+                icon={Keyboard}
+                active={filter.kind === 'shortcuts'}
+                onClick={() => setFilter({ kind: 'shortcuts' })}
+              />
+            ) : null}
+            <TeamShareNavSection sections={['mcp', 'env']} />
             {features.apps && <AppsNavSection />}
           </div>
         )}

@@ -41,7 +41,9 @@ import type { SessionListActivity } from '@/lib/session/session-list-activity'
 import { useSessionListActivityMap } from '@/hooks/use-session-list-activity-map'
 import { loadSessionIdsForActor } from '@/lib/session/session-by-actor'
 import { actorAvatarColor } from '@/lib/actor/actor-color'
-import { useSessionWorkspaceLabels } from '@/hooks/use-session-workspace-labels'
+import { useAppsStore } from '@/stores/apps-store'
+import { useFeatures } from '@/lib/config/remote-features'
+import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { compareSessionListByRecency } from '@/lib/session/session-list-sort'
 import { buildSessionListGlassLayoutKey } from '@/lib/ui/session-list-glass-layout-key'
 import { isScheduledSession } from '@/lib/session/session-origin'
@@ -62,6 +64,7 @@ type ListRow = {
   isPinned: boolean
   hasUnread: boolean
   source: string | null
+  appId: string | null
 }
 
 function entryToRow(entry: SessionListEntry, isPinned: boolean): ListRow {
@@ -76,6 +79,7 @@ function entryToRow(entry: SessionListEntry, isPinned: boolean): ListRow {
     isPinned,
     hasUnread: entry.has_unread,
     source: entry.source ?? null,
+    appId: entry.app_id ?? null,
   }
 }
 
@@ -268,7 +272,33 @@ export function SessionListColumn({
   // teamId is only used for cache namespacing; the supabase query is by actor_id.
   const teamIdFromList = useCurrentTeamStore((s) => s.team?.id ?? '')
   const currentMemberId = useCurrentTeamStore((s) => s.currentMember?.id ?? '')
-  const sessionWorkspaceLabels = useSessionWorkspaceLabels(teamIdFromList || null)
+  /**
+   * Apps by id, for the subline on a session that belongs to one.
+   *
+   * Loaded here rather than relied on from elsewhere. The rail's Apps entry
+   * loads the same list, but it lives inside the 更多 group, which starts
+   * collapsed — so on a fresh launch nothing had mounted it and every app
+   * session rendered with no subline until the user happened to open that
+   * group. Verified against the running app: 0 sublines collapsed, 9 the
+   * moment it was expanded.
+   */
+  const appsEnabled = useFeatures().apps
+  const appItems = useAppsStore((s) => s.items)
+  const loadApps = useAppsStore((s) => s.load)
+  const appsById = React.useMemo(
+    () => new Map(appItems.map((app) => [app.id, app])),
+    [appItems],
+  )
+  // Only when a row actually claims an app: a team with no app sessions makes
+  // no request, and the store no-ops once the team's list is in.
+  const hasAppSessions = React.useMemo(
+    () => listRows.some((row) => !!row.app_id),
+    [listRows],
+  )
+  React.useEffect(() => {
+    if (!appsEnabled || !hasAppSessions || !teamIdFromList) return
+    void loadApps(teamIdFromList)
+  }, [appsEnabled, hasAppSessions, teamIdFromList, loadApps])
   React.useEffect(() => {
     initPinnedSessionIds(teamIdFromList || null)
   }, [initPinnedSessionIds, teamIdFromList])
@@ -601,11 +631,17 @@ export function SessionListColumn({
       parts.every(
         (p) => p.actorId === currentMemberId || p.actorId === localAgentId,
       )
-    const workspaceLabel = sessionWorkspaceLabels.get(row.id)
-    // The subline used to be suppressed while the list was already filtered to
-    // one workspace. That filter has no entry point any more, so the label is
-    // never redundant.
-    const showWorkspaceSubline = !!workspaceLabel
+    /**
+     * The app this session belongs to, if any.
+     *
+     * This slot used to hold a workspace label, and for an app session that was
+     * always a uuid. The label is the workspace directory's basename, and an
+     * app's checkout is `<amuxd home>/teams/<team>/apps/<appId>` — so the
+     * basename is the app's own id. (The label's other branch, for a workspace
+     * this machine has not registered, returns the cloud workspace id: also a
+     * uuid.) Nothing about a session is better said by one.
+     */
+    const rowApp = row.appId ? appsById.get(row.appId) ?? null : null
     const actionsId = `v2-session-actions-${row.id}`
     const actionBtnClass =
       'grid h-[34px] place-items-center rounded-lg bg-black/[0.045] text-ink-2 transition-colors hover:bg-black/[0.08] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-white/[0.06] dark:hover:bg-white/10'
@@ -763,12 +799,15 @@ export function SessionListColumn({
                 )}
               </div>
 
-              {!isRenaming && showWorkspaceSubline && (
+              {!isRenaming && rowApp && (
                 <span
-                  className="w-full truncate font-mono text-[10.5px] leading-tight text-faint"
-                  data-testid="v2-session-row-workspace"
+                  className="flex w-full min-w-0 items-center gap-1 text-[11px] leading-tight text-faint"
+                  data-testid="v2-session-row-app"
                 >
-                  {workspaceLabel}
+                  {React.createElement(appTypeIcon(rowApp.type), {
+                    className: 'h-3 w-3 shrink-0',
+                  })}
+                  <span className="truncate">{rowApp.name}</span>
                 </span>
               )}
               {!isRenaming && row.lastMessagePreview && (

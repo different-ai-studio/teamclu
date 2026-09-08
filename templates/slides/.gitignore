@@ -2,3 +2,13 @@
 dist/
 node_modules/
 .DS_Store
+
+# TeamClu runtime files — written per machine by the daemon and the agents it
+# runs, never part of the app. A deploy commits the workdir, so anything here
+# that is not ignored ends up in the app's repo.
+.teamclu/
+.teamclaw/
+teamclu.json
+.claude/
+.opencode/
+opencode.json

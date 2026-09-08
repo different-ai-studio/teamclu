@@ -100,9 +100,33 @@ test("listSessions maps current actor session rpc rows", async () => {
     primaryAgentId: null,
     createdByActorId: null,
     participantCount: 0,
+    appId: null,
     createdAt: "2026-05-26T01:00:00Z",
     updatedAt: "2026-05-27T01:00:00Z",
   }]);
+});
+
+test("listSessions carries the app a session belongs to", async () => {
+  // `amux.sessions.app_id` reached the list RPC in 20260907000000. It is what
+  // lets a client tell an app's session from any other; before it, the sidebar
+  // had only the workspace label — that directory's basename, which for an
+  // app's checkout is the app's own uuid.
+  const repo = createRepo(fakeSupabase({
+    rpcData: {
+      list_current_actor_sessions: [{
+        id: "session-1",
+        team_id: "team-1",
+        title: "teamclu website",
+        mode: "collab",
+        created_at: "2026-05-26T01:00:00Z",
+        updated_at: "2026-05-27T01:00:00Z",
+        app_id: "app-9",
+      }],
+    },
+  }));
+
+  const rows = await repo.listSessions({ limit: 10, teamId: "team-1" });
+  assert.equal(rows[0].appId, "app-9");
 });
 
 test("insertMessage writes a messages row and maps response", async () => {

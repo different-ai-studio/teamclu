@@ -150,10 +150,24 @@ async function reportDeployError(set: SetState, appId: string, reason: string): 
  */
 export function mapDeployErrorReason(raw: string): string {
   const lower = raw.toLowerCase();
+  // Deploy publishes uncommitted work now, so this only fires for a daemon
+  // older than that change. Kept for exactly that reason.
   if (raw.includes("uncommitted or unpushed")) {
     return i18n.t(
       "apps.deployErrorReason.uncommitted",
       "The workspace has uncommitted or unpushed changes. Commit and push, then deploy.",
+    );
+  }
+  if (raw.includes("no package.json to build")) {
+    return i18n.t(
+      "apps.deployErrorReason.noPackageJson",
+      "This app has no code yet — its folder has no package.json. Ask the agent to build it, or reseed the app.",
+    );
+  }
+  if (raw.includes("origin has commits this checkout does not")) {
+    return i18n.t(
+      "apps.deployErrorReason.pushRejected",
+      "The repo has commits this machine does not. Pull and resolve them, then deploy again.",
     );
   }
   if (lower.includes("pnpm install timed out")) {
@@ -610,8 +624,13 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // naming the wrong host on every deploy is worse than no popup: the
       // merged row flips the row to live on its own.
       setDeployProgress(set, appId, "finalize");
+      // What the daemon built, not what we asked for. A deploy publishes work
+      // the agent left uncommitted, and HEAD then sits past the sha read off
+      // Gitea before any of this started; recording that one would name a
+      // commit the running function was not built from.
+      const builtSha = build.gitCommitSha ?? gitCommitSha;
       const finalized = await getBackend().apps.finalizeDeploy(appId, {
-        ...(gitCommitSha ? { gitCommitSha } : {}),
+        ...(builtSha ? { gitCommitSha: builtSha } : {}),
         deployToken: started.deployToken,
       });
       // The merged row carries `authModePendingRedeploy` straight from the

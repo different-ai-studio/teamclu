@@ -40,7 +40,6 @@ const DEBT: &[&str] = &[
     // `workspace_meta_dir_from_env` for the path instead of spelling it.
     "apps/daemon/src/config/skill_creation_policy.rs",
     "apps/daemon/src/config/team_skill_draft.rs",
-    "apps/daemon/src/config/workspace_control.rs",
     "apps/daemon/src/provider_config.rs",
     "apps/daemon/src/runtime/env_assembly.rs",
     "apps/daemon/src/runtime/prompt_attachments.rs",

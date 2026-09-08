@@ -327,8 +327,6 @@
     "edit": "编辑",
     "undo": "撤销",
     "close": "关闭",
-    "collapse": "收起",
-    "expand": "展开",
     "back": "返回",
     "offline": "离线",
     "done": "完成",
@@ -346,7 +344,6 @@
     "optional": "可选",
     "saving": "保存中...",
     "restart": "重启",
-    "restarting": "重启中...",
     "local": "本地",
     "deleting": "删除中...",
     "default": "默认",
@@ -525,6 +522,10 @@
   },
   "chat": {
     "diagnoseSession": "诊断此会话",
+    "refreshSkills": "强制刷新 Skills",
+    "refreshSkillsApplied": "Skills 已刷新",
+    "refreshSkillsPending": "当前会话正在运行，Skills 将在结束后生效",
+    "refreshSkillsFailed": "Skills 刷新失败",
     "sendStatus": {
       "sending": "发送中…",
       "delivered": "已送达",
@@ -1123,6 +1124,7 @@
     "localDaemonAutomation": "自动化",
     "localDaemonAutomationAria": "打开自动化任务",
     "localDaemonRetrying": "正在重试…",
+    "localDaemonTokensThisMonth": "本月消耗 {{tokens}} tokens",
     "ideas": "想法"
   },
   "errors": {
@@ -1207,9 +1209,8 @@
   },
   "apps": {
     "empty": "还没有内容",
-    "sessionsTitle": "应用会话",
-    "selectAppHint": "在左侧选择一个应用以查看会话",
     "newSession": "新建会话",
+    "backToList": "返回应用列表",
     "noSessions": "此应用还没有会话",
     "ready": "就绪",
     "error": "创建失败",
@@ -1261,12 +1262,12 @@
     "libraryDescription": "本人与团队的全部应用，可下载到本机。",
     "libraryDownload": "下载",
     "libraryDownloaded": "已在本机",
+    "libraryNotHere": "未在本机",
     "gitHosted": "托管仓库",
     "gitRemote": "外部仓库",
     "gitLocal": "仅本机",
     "librarySearch": "搜索应用",
     "libraryNoMatch": "没有匹配的应用",
-    "libraryUnknownCreator": "未知创建人",
     "repoLabel": "仓库地址（选填）",
     "repoPlaceholder": "https://github.com/owner/repo.git",
     "repoHint": "填了就把这个仓库克隆下来当作应用的代码，不再写入模板。",
@@ -1367,6 +1368,8 @@
     "deleted": "应用已删除",
     "deployErrorReason": {
       "uncommitted": "工作区有未提交或未推送的改动，请先 commit 并 push 后再部署。",
+      "pushRejected": "仓库里有本机没有的提交。请先拉取并解决冲突，然后重新部署。",
+      "noPackageJson": "这个应用还没有代码——目录里没有 package.json。让 agent 先把应用做出来，或者重新播种。",
       "installTimeout": "依赖安装超时（10 分钟），请检查网络或 lockfile 后重试。",
       "buildTimeout": "构建超时（10 分钟），请检查构建脚本后重试。",
       "artifactTooLarge": "构建产物超过 50 MiB 上限，请精简输出后重试。",
@@ -1562,18 +1565,15 @@
       "showTerminalToggle": "终端开关",
       "showTerminalToggleDesc": "在会话右上角显示终端面板开关。快捷键 Ctrl+` 始终可用，不受此设置影响。",
       "showChangesTab": "文件更改",
-      "showChangesTabDesc": "在会话右上角显示本会话的文件更改入口。仅在有活跃会话时显示。"
+      "showChangesTabDesc": "在会话右上角显示本会话的文件更改入口。仅在有活跃会话时显示。",
+      "showSkillsRefresh": "强制刷新 Skills",
+      "showSkillsRefreshDesc": "在会话右上角显示强制刷新 Skills 的按钮。热更新异常时用来立刻重载当前工作区的 skill 目录。"
     },
     "llm": {
       "refresh": "刷新",
       "teamProviderName": "团队模型",
       "teamProviderPinned": "内置",
       "teamProviderDesc": "由团队统一提供并计费，无需配置",
-      "teamTier": {
-        "default": "标准",
-        "pro": "高级",
-        "max": "旗舰"
-      },
       "availableModels": "可用模型"
     },
     "piLlm": {
@@ -2628,7 +2628,7 @@
         "brokenTitle": "缺少 SKILL.md 的文件夹",
         "tipsTitle": "常见修复方式",
         "tipRefresh": "点击刷新，从磁盘重新加载技能列表。",
-        "tipRestart": "新增或修改技能后重启 OpenCode。",
+        "tipRestart": "新增或修改技能后重启本地 agent。",
         "tipPaths": "确认 teamclu.json / opencode.json 中的 skills.paths 指向存在的目录。",
         "tipDaemon": "如果守护进程清单缺失，确认 amuxd 正在运行。"
       },
@@ -2659,8 +2659,6 @@
       "searchPlaceholder": "搜索技能...",
       "noMatchingSkills": "没有匹配的技能",
       "noMatchingSkillsHint": "试试其他搜索词",
-      "configChanged": "技能权限已更改",
-      "restartToApply": "重启 OpenCode 以应用新的技能权限配置。",
       "inherent": "内置",
       "inherentSkills": "内置技能",
       "managedByTeamClu": "由 TeamClu 管理",
@@ -2674,13 +2672,6 @@
       "globalOpencode": "全局",
       "globalClaude": "全局 Claude",
       "globalAgent": "全局 Agent",
-      "defaultPermission": "默认权限",
-      "defaultPermissionHint": "控制所有没有单独覆盖的技能的通配符（*）规则",
-      "permInherited": "默认",
-      "permissionSaveFailed": "权限没保存成功。daemon 在运行吗？",
-      "permAllow": "允许",
-      "permAsk": "询问",
-      "permDeny": "拒绝",
       "openLinkedRole": "打开关联角色 {{name}}",
       "importFromZip": "从 ZIP 导入技能",
       "importZipDescription": "上传仅包含一个 SKILL.md 的 .zip，将整份技能文件夹复制到技能目录。若没有 SKILL.md 则不会导入。",
@@ -2817,25 +2808,6 @@
       "repair": "修复",
       "repairTitle": "重新安装，补齐这个运行时缺失的部分",
       "needsRepairHint": "已安装且是最新版本，但还不能用 —— 运行时有一部分缺失。点「修复」重新安装。"
-    },
-    "permissions": {
-      "allow": "允许",
-      "allowDesc": "无需提示，自动批准",
-      "allowlist": "命令白名单",
-      "allowlistDesc": "标记为“始终允许”的命令。助手重启后生效。",
-      "ask": "询问",
-      "askDesc": "每次都提示审批",
-      "config": "权限配置",
-      "configDesc": "配置助手工具的默认权限策略",
-      "configInfo": "权限操作",
-      "deny": "拒绝",
-      "denyDesc": "阻止此操作",
-      "desc": "管理助手权限和命令白名单",
-      "noAllowlist": "尚未将任何命令加入白名单",
-      "noWorkspace": "未选择工作区。请先选择一个工作区。",
-      "saveAndApply": "保存并应用",
-      "saving": "应用中...",
-      "title": "权限管理"
     },
     "teamSecret": {
       "storeUnreadable": "无法读取本机密钥库：{{msg}}",

@@ -37,6 +37,7 @@ import {
 } from "@/lib/teamclu/runtime-rpc-timeouts";
 import { sessionFlowError, sessionFlowLog } from "@/lib/session/session-flow-log";
 import {
+  isActiveTurnRefusal,
   isCancelledRuntimeFailure,
   isTransientRuntimeNetworkFailure,
   reportRuntimeEnsureCrash,
@@ -128,12 +129,16 @@ export function notifyRuntimeStartFailures(
   }
   // Offline presence is already persistent in the selected-agent status.
   // Client-cancelled requests and daemon → Cloud API network failures are
-  // retried by the recoverable-runtime tick. Keep these in telemetry/debug,
-  // but do not duplicate expected transient states as error toasts.
+  // retried by the recoverable-runtime tick. An active-turn refusal is not a
+  // failure at all — the runtime is up and mid-turn, and `failureDescription`
+  // would put the raw daemon string ("workspace has active turn: <uuid>") under
+  // a "未启动" title for a session that is working normally. Keep these in
+  // debug logs, but do not surface expected states as error toasts.
   const toastable = failures.filter(
     (f) =>
       f.code !== "device_offline" &&
       !isCancelledRuntimeFailure(f.reason) &&
+      !isActiveTurnRefusal(f.reason) &&
       !isTransientRuntimeNetworkFailure(f.reason),
   );
   if (toastable.length === 0) return;
