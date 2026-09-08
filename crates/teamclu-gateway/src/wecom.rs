@@ -835,10 +835,9 @@ pub fn wecom_caps() -> driver::ChannelCaps {
         threading: driver::Threading::Inline,
         max_chars: 2048,
         // Ten minutes of *silence* (idle, not wall-clock from the prompt).
-        // A scrape that ran nine minutes then queried used to expire a
-        // start-to-finish 600s cap and close the WeCom stream on the last
-        // progress line, while the runtime wrote the real answer seconds
-        // later — desktop saw it, WeCom did not. Each ACP event resets this.
+        // An in-flight tool pauses that idle clock; a 30-minute hard cap in
+        // `run_turn` still ends a hung bash. Each ACP event otherwise resets
+        // this.
         turn_timeout_secs: 600,
     }
 }

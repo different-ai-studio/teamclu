@@ -660,6 +660,10 @@ Your text reply needs no tool — it is delivered on its own."
 /// side, so updates are coalesced into at most one per interval.
 const STREAM_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(700);
 
+/// Wall-clock ceiling for a gateway turn, even while a tool is in flight.
+/// Idle silence is paused for an open `ToolUse`; a hung bash still ends here.
+const GATEWAY_TURN_HARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// How much of the idle budget is left.
 ///
 /// Silence is measured from the last ACP event, not from the prompt. A WeCom
@@ -672,6 +676,34 @@ fn idle_remaining_at(
     now: std::time::Instant,
 ) -> std::time::Duration {
     idle.saturating_sub(now.saturating_duration_since(last_activity))
+}
+
+/// How long `run_turn` should wait for the next ACP event.
+///
+/// Idle silence is ignored while `pending_tools > 0` (a long bash is work, not
+/// a stall). The 30-minute hard cap always applies, from turn start.
+fn turn_wait_remaining(
+    last_activity: std::time::Instant,
+    idle: std::time::Duration,
+    pending_tools: u32,
+    turn_started: std::time::Instant,
+    now: std::time::Instant,
+) -> std::time::Duration {
+    let hard =
+        GATEWAY_TURN_HARD_TIMEOUT.saturating_sub(now.saturating_duration_since(turn_started));
+    if pending_tools > 0 {
+        hard
+    } else {
+        idle_remaining_at(last_activity, idle, now).min(hard)
+    }
+}
+
+fn pending_tools_after(pending: u32, event: &Option<crate::proto::amux::acp_event::Event>) -> u32 {
+    match event {
+        Some(crate::proto::amux::acp_event::Event::ToolUse(_)) => pending.saturating_add(1),
+        Some(crate::proto::amux::acp_event::Event::ToolResult(_)) => pending.saturating_sub(1),
+        _ => pending,
+    }
 }
 
 /// Decide what a timed-out gateway turn should return (issue #555). If the
@@ -852,8 +884,11 @@ impl AmuxdAgentHandle {
         // scrape with a tool-result at minute 9 used to expire the WeCom
         // 600s cap and close the stream on "现在查询当日数据：", while the
         // runtime kept going and wrote the real answer 15s later — desktop
-        // saw it, WeCom did not.
-        let mut last_activity = std::time::Instant::now();
+        // saw it, WeCom did not. An in-flight tool pauses idle entirely;
+        // GATEWAY_TURN_HARD_TIMEOUT (30 min from prompt) is the backstop.
+        let turn_started = std::time::Instant::now();
+        let mut last_activity = turn_started;
+        let mut pending_tools: u32 = 0;
         // On a turn-level timeout, salvage any reply text the agent already
         // produced instead of failing the whole turn (issue #555): OpenCode can
         // finish and persist its final assistant text while the ACP adapter
@@ -871,8 +906,13 @@ impl AmuxdAgentHandle {
         };
         let mut timed_out = false;
         let result: Result<String, AgentError> = loop {
-            let remaining =
-                idle_remaining_at(last_activity, turn_timeout, std::time::Instant::now());
+            let remaining = turn_wait_remaining(
+                last_activity,
+                turn_timeout,
+                pending_tools,
+                turn_started,
+                std::time::Instant::now(),
+            );
             if remaining.is_zero() {
                 timed_out = true;
                 break salvage_on_timeout(&segments, &live);
@@ -906,6 +946,7 @@ impl AmuxdAgentHandle {
                     break salvage_on_timeout(&segments, &live);
                 }
             };
+            pending_tools = pending_tools_after(pending_tools, &event.event.event);
             if let Some(crate::proto::amux::acp_event::Event::Error(err)) = &event.event.event {
                 let details = if err.details.is_empty() {
                     err.message.clone()
@@ -1860,6 +1901,19 @@ pub(crate) mod tests {
         }
     }
 
+    fn tool_result() -> amux::AcpEvent {
+        amux::AcpEvent {
+            event: Some(amux::acp_event::Event::ToolResult(amux::AcpToolResult {
+                tool_id: "t1".into(),
+                success: true,
+                summary: String::new(),
+                raw_output_json: String::new(),
+                content: vec![],
+            })),
+            model: String::new(),
+        }
+    }
+
     fn turn_end() -> amux::AcpEvent {
         amux::AcpEvent {
             event: Some(amux::acp_event::Event::StatusChange(
@@ -1943,6 +1997,43 @@ pub(crate) mod tests {
             idle_remaining_at(nine_min, idle, nine_min + idle),
             std::time::Duration::ZERO
         );
+    }
+
+    #[test]
+    fn in_flight_tool_pauses_idle_until_the_hard_cap() {
+        // A 20-minute bash emits ToolUse then silence. Idle 600s would fire at
+        // minute 10; with a tool in flight we wait on the 30-minute hard cap.
+        let t0 = std::time::Instant::now();
+        let idle = std::time::Duration::from_secs(600);
+        let twenty_min = t0 + std::time::Duration::from_secs(20 * 60);
+        assert_eq!(
+            turn_wait_remaining(t0, idle, 1, t0, twenty_min),
+            std::time::Duration::from_secs(10 * 60),
+            "in-flight tool must keep waiting until the 30-minute hard cap"
+        );
+        assert_eq!(
+            turn_wait_remaining(t0, idle, 0, t0, twenty_min),
+            std::time::Duration::ZERO,
+            "no in-flight tool: idle 600s is already gone at minute 20"
+        );
+        assert_eq!(
+            turn_wait_remaining(t0, idle, 1, t0, t0 + GATEWAY_TURN_HARD_TIMEOUT),
+            std::time::Duration::ZERO,
+            "hard cap still ends a hung tool"
+        );
+    }
+
+    #[test]
+    fn tool_use_and_result_adjust_the_in_flight_count() {
+        let use_ev = tool_use("Bash").event;
+        let result_ev = tool_result().event;
+        let output_ev = output("ok").event;
+        assert_eq!(pending_tools_after(0, &use_ev), 1);
+        assert_eq!(pending_tools_after(1, &use_ev), 2);
+        assert_eq!(pending_tools_after(2, &result_ev), 1);
+        assert_eq!(pending_tools_after(1, &result_ev), 0);
+        assert_eq!(pending_tools_after(0, &result_ev), 0);
+        assert_eq!(pending_tools_after(1, &output_ev), 1);
     }
 
     #[test]
