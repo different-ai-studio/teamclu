@@ -125,14 +125,28 @@ function loginUrl(app: GateApp, origin: string, next: string, env: NodeJS.Proces
 /**
  * The origin this app is being visited on.
  *
- * Taken from the app's registered origins rather than from the request, so the
- * value handed to the login service as `r` is one that service will also
- * recognise. Deriving it from the Host would drift the moment a scheme or a
- * port differed, and every login would fail its redirect check with a 400.
+ * Chosen FROM the app's registered origins by matching the request's host,
+ * never built from the host directly: the value is handed to the login service
+ * as `r`, and that service checks it against this same list. Deriving it from
+ * the request would drift the moment a scheme or a port differed, and every
+ * login would fail the redirect check with a 400.
+ *
+ * Matching the host matters once a custom domain exists — a visitor who
+ * arrived on it must be sent back to it, not to the vanity name, or their
+ * session cookie would land on a hostname they are not using.
  */
-function currentOrigin(app: GateApp, env: NodeJS.ProcessEnv): string | null {
+function currentOrigin(app: GateApp, env: NodeJS.ProcessEnv, host: string): string | null {
   const origins = appOrigins(app, env);
-  return origins.length > 0 ? origins[0] : null;
+  if (origins.length === 0) return null;
+  const name = host.split(":")[0].trim().toLowerCase();
+  const match = origins.find((o) => {
+    try {
+      return new URL(o).hostname === name;
+    } catch {
+      return false;
+    }
+  });
+  return match ?? origins[0];
 }
 
 /**
@@ -225,13 +239,14 @@ export async function applyAuthGate(
   const secure = deps.secureCookies ?? true;
   const url = new URL(req.url);
   const path = url.pathname;
+  const host = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || url.host;
   const needsLogin = app.authMode === "platform";
 
   // The gateway's own paths are claimed even on an app with no wall. Handing
   // them to the app would let a user's route impersonate the callback and mint
   // itself a session cookie.
   if (isGatewayPath(path)) {
-    const origin = currentOrigin(app, env);
+    const origin = currentOrigin(app, env, host);
     if (!origin) return answered(misconfigured("未配置应用域名"));
     if (path === APP_AUTH_LOGOUT_PATH) {
       return answered(handleLogout(app, origin, env, secure));
@@ -243,7 +258,7 @@ export async function applyAuthGate(
 
   if (!needsLogin) return PROCEED_ANONYMOUS;
 
-  const origin = currentOrigin(app, env);
+  const origin = currentOrigin(app, env, host);
   if (!origin) return answered(misconfigured("未配置应用域名"));
   if (!loginDomain(env)) return answered(misconfigured("未配置登录域名"));
 

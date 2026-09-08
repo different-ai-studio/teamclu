@@ -109,11 +109,24 @@ export function appPublicUrl(
  * Batch 4 appends the verified custom domain here, and nothing else changes.
  */
 export function appOrigins(
-  app: { id: string; slug: string },
+  app: {
+    id: string;
+    slug: string;
+    customDomain?: string | null;
+    customDomainVerifiedAt?: string | null;
+  },
   env: Env = process.env,
 ): string[] {
+  const out: string[] = [];
   const vanity = appPublicUrl(app.slug, app.id, env);
-  return vanity ? [vanity] : [];
+  if (vanity) out.push(vanity);
+  // An unverified domain is stored but not served, so it is not an origin the
+  // login service may return a visitor to either — the same gate that keeps a
+  // certificate from being issued for it.
+  if (app.customDomain && app.customDomainVerifiedAt) {
+    out.push(`https://${app.customDomain.toLowerCase()}`);
+  }
+  return out;
 }
 
 /**

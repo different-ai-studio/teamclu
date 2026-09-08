@@ -129,3 +129,31 @@
 	}
 	reverse_proxy fc:9000
 }
+
+# Domains an app's owner bound themselves.
+#
+# MUST BE THE LAST SITE BLOCK IN THIS FILE: a bare `:443` matches every Host
+# no other block claimed, so anything after it would never be reached.
+#
+# The address is a variable, not a literal `:443`, because with CADDY_TLS_MODE=off
+# that literal binds :443 anyway — the same trap CADDY_SITE_SCHEME exists for,
+# and the one that breaks a Podman port map of 8080->80. gen-secrets.sh points
+# it at an http:// placeholder in that mode; custom domains need on-demand TLS,
+# so they mean nothing there.
+#
+# The certificate is still gated by the global `on_demand_tls { ask }` above.
+# FC answers 200 only for a hostname that resolves to an app — a vanity name,
+# or a custom domain whose ownership has been VERIFIED — and 404 for everything
+# else, at which point Caddy declines the handshake rather than asking Let's
+# Encrypt for a certificate. Without that gate this block would be an open
+# certificate-minting endpoint for any name pointed at this box, and the rate
+# limit it would burn is per REGISTERED domain, shared with api/supabase/mqtt.
+#
+# Requests that reach FC on a hostname it does not recognise fall through to
+# the Cloud API, which answers its own 404.
+{$CADDY_CATCHALL_SITE} {
+	tls {
+		on_demand
+	}
+	reverse_proxy fc:9000
+}

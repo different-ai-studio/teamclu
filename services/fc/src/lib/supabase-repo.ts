@@ -79,6 +79,33 @@ import {
   type AuthScope,
 } from "./apps-auth-paths.js";
 import {
+  customDomainRecords,
+  makeDomainToken,
+  normalizeCustomDomain,
+  verificationTxtName,
+  verifyDomainOwnership,
+} from "./apps-custom-domain.js";
+import { invalidateVanityHost } from "./apps-vanity.js";
+
+/**
+ * The client-facing shape of an app's custom domain.
+ *
+ * The DNS records ride along on every response so a client never reconstructs
+ * them — the TXT value embeds a token it would otherwise have to remember
+ * across requests.
+ */
+function customDomainView(row: any) {
+  const domain = (row.custom_domain ?? null) as string | null;
+  return {
+    domain,
+    verified: Boolean(row.custom_domain_verified_at),
+    verifiedAt: row.custom_domain_verified_at ?? null,
+    dns: domain
+      ? customDomainRecords({ id: row.id, slug: row.slug }, domain, row.custom_domain_token ?? "")
+      : [],
+  };
+}
+import {
   deleteAppSecretSupabase,
   getAppSecretSupabase,
   putAppSecretSupabase,
@@ -3388,6 +3415,128 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (error) throw error;
       return data ? mapApp(data) : null;
+    },
+
+    /**
+     * Authorize a custom-domain write, and hand back the client that can do it.
+     *
+     * Same shape as updateApp's gate, and for the same two reasons: the caller
+     * must hold `admin` on an app they can already SEE (a row we cannot read is
+     * not one we may write with a service role), and `apps_update_if_creator`
+     * is creator-only — so an authorized admin grantee needs the service-role
+     * client or their UPDATE matches zero rows and 404s despite being allowed.
+     * That mismatch is the P0 the apps audit found on the deploy methods.
+     */
+    async authorizeCustomDomainWrite(appId: string): Promise<{ cur: any; writer: any } | null> {
+      const { data: cur } = await supabase
+        .from("apps")
+        .select(
+          "id, slug, team_id, created_by_actor_id, custom_domain, custom_domain_token, custom_domain_verified_at",
+        )
+        .eq("id", appId)
+        .maybeSingle();
+      if (!cur) return null;
+      const permission = await this.resolveAppCallerPermissionForApp({
+        id: appId,
+        team_id: cur.team_id,
+        created_by_actor_id: cur.created_by_actor_id,
+      });
+      if (permission?.level !== "admin") return null;
+      const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
+      const writer = callerIsCreator
+        ? supabase
+        : await serviceRoleClient("bind an app custom domain authorized by an admin grant");
+      return { cur, writer };
+    },
+
+    async setAppCustomDomain(appId: string, rawDomain: unknown) {
+      const gate = await this.authorizeCustomDomainWrite(appId);
+      if (!gate) return null;
+      const domain = normalizeCustomDomain(rawDomain);
+      const token = makeDomainToken();
+
+      // A new token and a cleared verification on every bind, including a
+      // re-bind of the same name: the proof is for THIS binding, and carrying
+      // an old one over would let a domain that changed hands stay verified.
+      const { data, error } = await gate.writer
+        .from("apps")
+        .update({
+          custom_domain: domain,
+          custom_domain_token: token,
+          custom_domain_verified_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", appId)
+        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .maybeSingle();
+      if (error) {
+        // 23505 is the unique index on lower(custom_domain): another app has
+        // it. Say which case it is rather than surfacing a constraint name.
+        if ((error as any).code === "23505") {
+          throw new ApiError(409, "domain_taken", `${domain} is already bound to another app`);
+        }
+        throw error;
+      }
+      if (!data) return null;
+      // The old name must stop resolving here immediately, and the new one must
+      // not be remembered as a miss from before it existed.
+      invalidateVanityHost(gate.cur.custom_domain);
+      invalidateVanityHost(domain);
+      return customDomainView(data);
+    },
+
+    async verifyAppCustomDomain(appId: string) {
+      const gate = await this.authorizeCustomDomainWrite(appId);
+      if (!gate) return null;
+      const domain = gate.cur.custom_domain as string | null;
+      const token = gate.cur.custom_domain_token as string | null;
+      if (!domain || !token) {
+        throw new ApiError(409, "no_custom_domain", "this app has no custom domain to verify");
+      }
+
+      const proven = await verifyDomainOwnership(domain, token);
+      if (!proven) {
+        // Retryable, and usually just propagation — so 409 with the record to
+        // add, not a 400 that reads like the request was malformed.
+        throw new ApiError(
+          409,
+          "dns_verification_failed",
+          `no matching TXT record at ${verificationTxtName(domain)} yet; DNS may still be propagating`,
+        );
+      }
+
+      const { data, error } = await gate.writer
+        .from("apps")
+        .update({ custom_domain_verified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq("id", appId)
+        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      // Until this drops, the hostname is cached as "not an app" from the
+      // requests made while it was still unverified.
+      invalidateVanityHost(domain);
+      return customDomainView(data);
+    },
+
+    async deleteAppCustomDomain(appId: string) {
+      const gate = await this.authorizeCustomDomainWrite(appId);
+      if (!gate) return null;
+      const { data, error } = await gate.writer
+        .from("apps")
+        .update({
+          custom_domain: null,
+          custom_domain_token: null,
+          custom_domain_verified_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", appId)
+        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      invalidateVanityHost(gate.cur.custom_domain);
+      return customDomainView(data);
     },
 
     async deployApp(appId: string, input: { gitCommitSha?: string }) {

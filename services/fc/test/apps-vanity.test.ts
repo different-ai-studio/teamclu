@@ -14,6 +14,7 @@ import { createApp } from "../src/app.js";
 import { appPublicUrl, appPublicLabel, parseAppPublicHost } from "../src/lib/apps-public-host.js";
 import {
   isServable, proxyToApp, httpsRedirect, selectByIdPrefix, makeSupabaseVanityLookup, makeVanityLookup,
+  invalidateVanityHost, __resetVanityCache,
 } from "../src/lib/apps-vanity.js";
 
 const DOMAIN = "apps.teamclu-dev.ucar.cc";
@@ -125,14 +126,19 @@ test("refuses everything that is not exactly one label under the apps domain", (
 
 // --- Caddy's on-demand TLS gate -------------------------------------------
 
-test("ask says no for hosts that are not apps, without touching the database", async () => {
+test("ask says no for a host that resolves to no app", async () => {
+  // This used to assert the lookup was never consulted — a hostname could be
+  // refused on SHAPE alone. Custom domains ended that: an arbitrary domain can
+  // only be ruled out by asking, so the gate now asks and the answer is what
+  // decides. Refusing on shape would refuse every custom domain, and no
+  // certificate would ever be issued for one.
   let called = 0;
   const app = createApp(deps(async () => { called++; return null; }));
   await withDomain(async () => {
     const res = await app.request("/internal/caddy/ask?domain=evil.example.com");
-    assert.equal(res.status, 404);
+    assert.equal(res.status, 404, "an unknown name must still get no certificate");
   });
-  assert.equal(called, 0, "a non-app hostname must be rejected on shape alone");
+  assert.equal(called, 1, "the answer comes from the lookup, not from the shape");
 });
 
 test("ask says no for a well-formed host with no app behind it", async () => {
@@ -182,7 +188,10 @@ test("requests on the API's own host still reach the API", async () => {
 });
 
 /** Auth columns are irrelevant to routing; spelled out so the row shape is whole. */
-const unauthed = { teamId: null, authMode: null, authAudience: null, authScope: null, authRules: null };
+const unauthed = {
+  teamId: null, authMode: null, authAudience: null, authScope: null, authRules: null,
+  customDomain: null, customDomainVerifiedAt: null,
+};
 
 test("an ambiguous id prefix serves neither app", () => {
   const rows = [
@@ -279,23 +288,69 @@ test("the supabase lookup surfaces a query error instead of reporting 'no such a
   );
 });
 
-test("the client is not built for a non-app host", async () => {
-  // Building eagerly would make every request that merely passes through pay
-  // for — and potentially fail on — a client that host will never use.
+test("a non-app host is asked about once, then remembered", async () => {
+  // The old contract — "a non-app host builds no client at all" — could not
+  // survive custom domains: an arbitrary hostname is indistinguishable from
+  // the API's own without a query. The cache is what keeps that from putting
+  // a database round trip in front of EVERY Cloud API request; misses are
+  // cached precisely because they are the common case.
   let srBuilt = 0;
   const lookup = makeVanityLookup({
     getServiceRoleClient: () => {
       srBuilt++;
-      return { from: () => ({ select: () => ({ eq: () => ({ limit: async () => ({ data: [], error: null }) }) }) }) };
+      return {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              limit: async () => ({ data: [], error: null }),
+              not: () => ({ limit: async () => ({ data: [], error: null }) }),
+            }),
+          }),
+        }),
+      };
     },
   });
 
   await withDomain(async () => {
+    __resetVanityCache();
     assert.equal(await lookup("api.teamclu-dev.ucar.cc"), null);
-    assert.equal(srBuilt, 0, "a non-app host must not build any client");
+    assert.equal(srBuilt, 1, "an unknown host has to be asked about once");
+
+    assert.equal(await lookup("api.teamclu-dev.ucar.cc"), null);
+    assert.equal(srBuilt, 1, "and not again while the miss is cached");
 
     assert.equal(await lookup(`ghost-18e4ecad.${DOMAIN}`), null);
-    assert.equal(srBuilt, 1, "an app host builds the service-role client");
+    assert.equal(srBuilt, 2, "a different host is its own question");
+  });
+});
+
+test("a binding change drops the cached answer immediately", async () => {
+  // Without this a newly verified domain would 404 until the miss expired,
+  // which reads as "verification did not work".
+  let calls = 0;
+  const lookup = makeVanityLookup({
+    getServiceRoleClient: () => {
+      calls++;
+      return {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              limit: async () => ({ data: [], error: null }),
+              not: () => ({ limit: async () => ({ data: [], error: null }) }),
+            }),
+          }),
+        }),
+      };
+    },
+  });
+  await withDomain(async () => {
+    __resetVanityCache();
+    await lookup("shop.example.com");
+    await lookup("shop.example.com");
+    assert.equal(calls, 1);
+    invalidateVanityHost("shop.example.com");
+    await lookup("shop.example.com");
+    assert.equal(calls, 2, "the next request must re-ask");
   });
 });
 
@@ -562,4 +617,83 @@ test("a hostname that is not an app still 404s instead of redirecting", async ()
     assert.equal(res.status, 404);
     assert.equal(res.headers.get("location"), null);
   });
+// --- custom domains (批次 4) -------------------------------------------------
+
+/**
+ * Records the filters a query applied, so a test can assert that the
+ * verification filter was actually part of the query rather than assumed.
+ */
+function customDomainClient(rows: any[]) {
+  const filters: string[] = [];
+  return {
+    filters,
+    client: {
+      from: () => ({
+        select: () => ({
+          eq: (col: string, val: string) => {
+            filters.push(`eq:${col}=${val}`);
+            return {
+              limit: async () => ({ data: rows, error: null }),
+              not: (col2: string, op: string, val2: any) => {
+                filters.push(`not:${col2} ${op} ${val2}`);
+                return { limit: async () => ({ data: rows, error: null }) };
+              },
+            };
+          },
+        }),
+      }),
+    },
+  };
+}
+
+const CUSTOM_ROW = {
+  id: "18e4ecad-1111-2222-3333-444444444444",
+  slug: "shop",
+  fc_endpoint: "https://up.example",
+  fc_status: "live",
+  team_id: "team-1",
+  auth_mode: "platform",
+  auth_audience: "any",
+  auth_scope: "all",
+  auth_rules: [],
+  custom_domain: "shop.example.com",
+  custom_domain_verified_at: "2026-09-08T00:00:00Z",
+};
+
+test("a verified custom domain resolves to its app", async () => {
+  const { client, filters } = customDomainClient([CUSTOM_ROW]);
+  const lookup = makeSupabaseVanityLookup(() => client);
+  const found = await withDomain(() => lookup("shop.example.com"));
+  assert.equal(found?.id, CUSTOM_ROW.id);
+  assert.equal(found?.customDomain, "shop.example.com");
+  assert.ok(filters.includes("eq:custom_domain=shop.example.com"));
+});
+
+test("the query refuses to consider an unverified domain", async () => {
+  // Not an optimisation. Without this filter the certificate gate would answer
+  // 200 for a name whose ownership was never proven, and Caddy would go and
+  // get a certificate for it — an open minting endpoint for anything pointed
+  // at this box, burning a rate limit shared with api/supabase/mqtt.
+  const { client, filters } = customDomainClient([CUSTOM_ROW]);
+  const lookup = makeSupabaseVanityLookup(() => client);
+  await withDomain(() => lookup("shop.example.com"));
+  assert.ok(
+    filters.some((f) => f.startsWith("not:custom_domain_verified_at")),
+    `verification filter missing; applied: ${filters.join(", ")}`,
+  );
+});
+
+test("a host carrying a port still matches the stored domain", async () => {
+  const { client, filters } = customDomainClient([CUSTOM_ROW]);
+  const lookup = makeSupabaseVanityLookup(() => client);
+  await withDomain(() => lookup("SHOP.example.com:443"));
+  assert.ok(filters.includes("eq:custom_domain=shop.example.com"));
+});
+
+test("two apps claiming one domain serve neither", async () => {
+  // The unique index makes this impossible; serving either would be a coin
+  // flip between owners, so it fails closed if it ever happens.
+  const { client } = customDomainClient([CUSTOM_ROW, { ...CUSTOM_ROW, id: "other" }]);
+  const lookup = makeSupabaseVanityLookup(() => client);
+  assert.equal(await withDomain(() => lookup("shop.example.com")), null);
 });

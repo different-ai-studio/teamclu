@@ -584,6 +584,9 @@ services:
       # A placeholder site simply proxies to an FC that does not claim the
       # hostname, which answers 404 — harmless.
       LOGIN_DOMAIN: "${LOGIN_DOMAIN:-login.localhost}"
+      # Address of the block serving apps' own custom domains. `:443` matches
+      # any Host; gen-secrets.sh overrides it when TLS is off (see Caddyfile).
+      CADDY_CATCHALL_SITE: "${CADDY_CATCHALL_SITE:-:443}"
       ACME_EMAIL: "${ACME_EMAIL}"
       CADDY_GLOBAL_TLS: "${CADDY_GLOBAL_TLS:-}"
       CADDY_SITE_TLS: "${CADDY_SITE_TLS:-}"

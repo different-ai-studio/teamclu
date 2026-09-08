@@ -492,3 +492,65 @@ test("an encoded traversal cannot reach a protected path through a public prefix
     assert.equal(out.response?.status, 302, "unreasonable paths are protected");
   });
 });
+
+// --- custom domains (批次 4) -------------------------------------------------
+
+const CUSTOM_ORIGIN = "https://shop.example.com";
+
+const onCustom = (path = "/", headers: Record<string, string> = {}) =>
+  new Request(`${CUSTOM_ORIGIN}${path}`, { headers });
+
+const boundApp = (verified = "2026-09-08T00:00:00Z") =>
+  ({
+    ...app(),
+    customDomain: "shop.example.com",
+    customDomainVerifiedAt: verified,
+  }) as any;
+
+test("a visitor on the custom domain is returned to the custom domain", async () => {
+  // Sending them back to the vanity name would land the session cookie on a
+  // hostname they are not using, and they would be asked to log in again.
+  await withEnv({}, async () => {
+    const out = await applyAuthGate(onCustom("/reports"), boundApp(), deps());
+    const location = new URL(out.response!.headers.get("location")!);
+    assert.equal(location.searchParams.get("r"), CUSTOM_ORIGIN);
+    assert.equal(location.searchParams.get("next"), "/reports");
+  });
+});
+
+test("the vanity host still returns to the vanity host", async () => {
+  await withEnv({}, async () => {
+    const out = await applyAuthGate(req("/reports"), boundApp(), deps());
+    const location = new URL(out.response!.headers.get("location")!);
+    assert.equal(location.searchParams.get("r"), ORIGIN);
+  });
+});
+
+test("an unverified domain is not an origin the gate will return to", async () => {
+  // It is not served either, so a request arriving on it should not be able to
+  // steer the login flow at it.
+  await withEnv({}, async () => {
+    const out = await applyAuthGate(onCustom("/"), boundApp(null as any), deps());
+    const location = new URL(out.response!.headers.get("location")!);
+    assert.equal(location.searchParams.get("r"), ORIGIN, "falls back to the vanity origin");
+  });
+});
+
+test("the callback on a custom domain redeems a code minted for it", async () => {
+  await withEnv({}, async () => {
+    const { token } = await mintAuthCode({
+      sub: "u-5",
+      email: "five@example.com",
+      appId: APP_ID,
+      redirect: CUSTOM_ORIGIN,
+    });
+    const out = await applyAuthGate(
+      onCustom(`${APP_AUTH_CALLBACK_PATH}?code=${encodeURIComponent(token)}&next=%2Fx`),
+      boundApp(),
+      deps(),
+    );
+    assert.equal(out.response?.status, 302);
+    assert.equal(out.response!.headers.get("location"), `${CUSTOM_ORIGIN}/x`);
+    assert.match(out.response!.headers.get("set-cookie")!, new RegExp(`^${APP_COOKIE}=`));
+  });
+});

@@ -118,19 +118,44 @@ export function createApp(deps: AppDeps): Hono {
     // instead of requesting a certificate for it.
     app.get("/internal/caddy/ask", async (c) => {
       const domain = c.req.query("domain") ?? "";
-      if (!parseAppPublicHost(domain)) return c.text("not an app host", 404);
+      if (!domain) return c.text("no domain", 404);
+      // The lookup answers for both shapes now — a vanity hostname, and a
+      // custom domain whose ownership has been VERIFIED. An unverified one
+      // resolves to nothing here, which is what keeps this from becoming an
+      // open certificate-minting endpoint for any name pointed at the box.
       const found = await lookup(domain);
       return found ? c.text("ok", 200) : c.text("no such app", 404);
     });
 
     app.use("*", async (c, next) => {
       const host = vanityRequestHost(c);
-      if (!parseAppPublicHost(host)) return next();
-      const target = await lookup(host!);
-      // A hostname whose app exists but has never deployed is a real app with
-      // nothing to serve yet — say so, rather than proxying to null.
+      if (!host) return next();
+      // Every request reaches this, including the Cloud API's own — a custom
+      // domain cannot be recognised by parsing, only by asking. The lookup
+      // caches misses for exactly that reason; see apps-vanity.ts.
+      let target;
+      try {
+        target = await lookup(host);
+      } catch (err) {
+        // A vanity-shaped host's failure is real and must surface: answering
+        // "no such app" would make a database blip look exactly like a deleted
+        // app. Any OTHER host is probably not an app at all — most are the
+        // API's own — and a lookup failure there must not take the API down
+        // with it, which is what would happen on a deployment with no Supabase
+        // configured now that this runs for every request.
+        if (parseAppPublicHost(host)) throw err;
+        return next();
+      }
+      if (!target) {
+        // A vanity-shaped hostname with no app behind it is a real 404 for
+        // that name. Anything else is simply not an app host, and belongs to
+        // the API below.
+        return parseAppPublicHost(host) ? c.text("no such app", 404) : next();
+      }
+      // An app that exists but has never deployed is a real app with nothing
+      // to serve yet — say so, rather than proxying to null.
       if (!isServable(target)) {
-        return c.text(target ? "app is not deployed yet" : "no such app", 404);
+        return c.text("app is not deployed yet", 404);
       }
       // After the lookup, so an HTTP link to a hostname that is not an app
       // still gets its 404 rather than a redirect to an HTTPS 404.
