@@ -516,6 +516,95 @@ pub fn has_unpushed_commits(dir: &Path) -> anyhow::Result<bool> {
 }
 
 /// Refuse deploy when the checkout is dirty or has unpushed work.
+/// What the daemon and the agents it runs leave inside an app checkout that is
+/// not the app's source: per-machine runtime config and agent state.
+///
+/// Surveyed on a real machine rather than guessed — across the app checkouts
+/// there, the untracked entries are the brand meta directory, `.claude/`,
+/// `.opencode/` and `opencode.json`. Everything else that turns up untracked is
+/// the app's own files, which a deploy *should* commit.
+///
+/// Brand-aware, so a white-label build excludes its own meta directory; the
+/// legacy one is listed too because a checkout seeded before the rename still
+/// has it.
+///
+/// The brand is a parameter rather than read from the environment so the
+/// template drift test can ask for the official one without racing whatever
+/// else has the brand env set.
+pub(crate) fn runtime_exclude_entries(brand: &str) -> Vec<String> {
+    let mut entries = vec![
+        format!("{}/", teamclu_runtime_env::workspace_meta_dir_name(brand)),
+        format!("{}/", teamclu_runtime_env::LEGACY_BRAND_WORKSPACE_META_DIR),
+        teamclu_runtime_env::workspace_config_file_name(brand),
+    ];
+    // Agent-local state, not brand-scoped: whichever agent ran in this checkout
+    // wrote it, and none of it describes the app.
+    entries.extend([
+        ".claude/".to_string(),
+        ".opencode/".to_string(),
+        "opencode.json".to_string(),
+    ]);
+    entries.dedup();
+    entries
+}
+
+/// Keep `.git/info/exclude` covering the daemon's own runtime files.
+///
+/// Not `.gitignore`: that file belongs to the app, is committed, and for an
+/// imported repo is none of our business. `info/exclude` is per-checkout and
+/// untracked — exactly the right home for machine-local state, and it reaches
+/// the checkouts that already exist, which editing a template never can.
+///
+/// Best-effort by contract: a deploy that cannot write this should still
+/// deploy. Callers log and continue.
+pub fn ensure_runtime_excludes(dir: &Path) -> std::io::Result<()> {
+    const HEADER: &str = "# managed by amuxd — app runtime files, never app source";
+    let path = dir.join(".git").join("info").join("exclude");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+
+    // Replace the whole managed block rather than appending: the entries are
+    // brand-derived, so a rebrand must be able to drop the old ones.
+    let mut kept: Vec<&str> = Vec::new();
+    let mut in_block = false;
+    for line in existing.lines() {
+        if line.trim() == HEADER {
+            in_block = true;
+            continue;
+        }
+        if in_block {
+            if line.trim().is_empty() {
+                in_block = false;
+            }
+            continue;
+        }
+        kept.push(line);
+    }
+
+    let mut out = String::new();
+    for line in kept {
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !out.is_empty() && !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+    out.push_str(HEADER);
+    out.push('\n');
+    for entry in runtime_exclude_entries(&teamclu_runtime_env::brand_short_name_from_env()) {
+        out.push_str(&entry);
+        out.push('\n');
+    }
+    out.push('\n');
+
+    if out == existing {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, out)
+}
+
 /// Whether `git commit` would find an author here (repo-local or global).
 fn has_commit_identity(dir: &Path) -> bool {
     ["user.name", "user.email"].iter().all(|key| {
@@ -647,6 +736,11 @@ pub fn init_commit_push(
     }
     set_remote_origin(dir, remote_url, Some(&ssh))?;
     ensure_on_branch(dir)?;
+    // Same reason as the deploy path: the seed commit is an `add -A`, and a
+    // reseed runs over a checkout the daemon has already been living in.
+    if let Err(e) = ensure_runtime_excludes(dir) {
+        tracing::warn!(app_id, error = %e, "could not write .git/info/exclude");
+    }
     add_all(dir)?;
     commit_if_needed(dir, commit_message)?;
     push_origin_head(dir, Some(&ssh))?;
@@ -805,7 +899,12 @@ mod tests {
         let out = run_git(&work, None, &["config", "--get", "ssh.variant"]).unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ssh");
         // Repo-local only: it must not leak into any other repo on the machine.
-        let out = run_git(&work, None, &["config", "--local", "--get", "core.sshCommand"]).unwrap();
+        let out = run_git(
+            &work,
+            None,
+            &["config", "--local", "--get", "core.sshCommand"],
+        )
+        .unwrap();
         assert!(out.status.success(), "core.sshCommand must be repo-local");
     }
 
@@ -814,7 +913,10 @@ mod tests {
         // amuxd ships inside an .app bundle, so its path routinely has spaces.
         // Unquoted, git splits it and reports a missing command instead.
         let quoted = shell_quote("/Applications/My App.app/Contents/MacOS/amuxd");
-        assert!(quoted.starts_with('"') && quoted.ends_with('"'), "got {quoted}");
+        assert!(
+            quoted.starts_with('"') && quoted.ends_with('"'),
+            "got {quoted}"
+        );
     }
 
     #[test]
@@ -974,6 +1076,71 @@ mod tests {
         add_all(&work).unwrap();
         commit_if_needed(&work, "local only").unwrap();
         ensure_clean_and_pushed(&work).unwrap_err();
+    }
+
+    #[test]
+    fn runtime_excludes_are_written_without_touching_what_was_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(work.join(".git").join("info")).unwrap();
+        std::fs::write(work.join(".git/info/exclude"), "# mine\nscratch/\n").unwrap();
+
+        ensure_runtime_excludes(&work).unwrap();
+        let first = std::fs::read_to_string(work.join(".git/info/exclude")).unwrap();
+        assert!(
+            first.contains("scratch/"),
+            "user lines must survive: {first}"
+        );
+        for entry in runtime_exclude_entries(&teamclu_runtime_env::brand_short_name_from_env()) {
+            assert!(first.contains(&entry), "missing {entry} in {first}");
+        }
+
+        // Idempotent: a second deploy must not stack another block.
+        ensure_runtime_excludes(&work).unwrap();
+        let second = std::fs::read_to_string(work.join(".git/info/exclude")).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn runtime_excludes_keep_an_agents_own_files_out_of_the_app_repo() {
+        // The point of the whole thing: deploy commits the workdir, so anything
+        // the daemon left in it that git can see ends up in the app's history.
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(&work).unwrap();
+        init_if_needed(&work).unwrap();
+        ensure_test_identity(&work);
+        ensure_runtime_excludes(&work).unwrap();
+
+        // Built from the helper, not spelled out: `storage_lint` scans test
+        // code too, and a quoted brand-directory literal is what it forbids.
+        let meta = teamclu_runtime_env::workspace_meta_dir_name(
+            &teamclu_runtime_env::brand_short_name_from_env(),
+        );
+        std::fs::write(work.join("index.html"), b"app source").unwrap();
+        std::fs::create_dir_all(work.join(".claude")).unwrap();
+        std::fs::write(work.join(".claude/settings.json"), b"{}").unwrap();
+        std::fs::create_dir_all(work.join(&meta)).unwrap();
+        std::fs::write(work.join(&meta).join("state.json"), b"{}").unwrap();
+        std::fs::write(work.join("opencode.json"), b"{}").unwrap();
+
+        add_all(&work).unwrap();
+        let out = run_git(&work, None, &["diff", "--cached", "--name-only"]).unwrap();
+        let staged = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            staged.contains("index.html"),
+            "app source must be staged: {staged}"
+        );
+        for runtime in [
+            ".claude/".to_string(),
+            format!("{meta}/"),
+            "opencode.json".to_string(),
+        ] {
+            assert!(
+                !staged.contains(&runtime),
+                "{runtime} must not be staged: {staged}"
+            );
+        }
     }
 
     #[test]

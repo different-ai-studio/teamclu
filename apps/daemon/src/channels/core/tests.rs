@@ -187,6 +187,8 @@ struct FakeDriver {
     updates: Mutex<Vec<(String, bool)>>,
     /// How each update reported the turn's state — `None` while streaming.
     ends: Mutex<Vec<Option<TurnEnd>>>,
+    /// When set, `deliver` fails if the outbound message carries files.
+    fail_attachment_deliver: bool,
 }
 
 #[async_trait]
@@ -220,6 +222,12 @@ impl ChannelDriver for FakeDriver {
         reply_context: Option<&str>,
         msg: &OutboundMessage,
     ) -> Result<DeliveryId, DriverError> {
+        if self.fail_attachment_deliver && !msg.attachments.is_empty() {
+            return Err(DriverError::Transport(
+                "WeCom gateway is not running. Start the WeCom gateway before sending media."
+                    .into(),
+            ));
+        }
         self.delivered
             .lock()
             .unwrap()
@@ -564,6 +572,31 @@ fn attaching_fixture(
         },
         writer,
     )
+}
+
+#[tokio::test]
+async fn a_streamed_reply_is_written_even_when_the_file_delivery_fails() {
+    // WeCom: the stream finish already sent the text; uploading the attached
+    // file then looked up a process-global gateway holder that a reload had
+    // cleared. Failing that send used to skip write_reply, so the desktop
+    // session never got the answer the chat already showed.
+    let (core, writer) = attaching_fixture("u-att-fail", "hello.txt", "created /tmp/hello.txt");
+    let d = FakeDriver {
+        caps: Some(IM),
+        fail_attachment_deliver: true,
+        ..Default::default()
+    };
+
+    let outcome = core
+        .handle(&d, inbound_from("u-att-fail", "create hello.txt"))
+        .await
+        .expect("the session reply must not depend on the file send");
+
+    assert!(matches!(outcome, Outcome::Handled { .. }));
+    assert_eq!(
+        writer.replies.lock().unwrap().as_slice(),
+        ["created /tmp/hello.txt"]
+    );
 }
 
 #[tokio::test]

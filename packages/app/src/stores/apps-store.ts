@@ -158,6 +158,12 @@ export function mapDeployErrorReason(raw: string): string {
       "The workspace has uncommitted or unpushed changes. Commit and push, then deploy.",
     );
   }
+  if (raw.includes("no package.json to build")) {
+    return i18n.t(
+      "apps.deployErrorReason.noPackageJson",
+      "This app has no code yet — its folder has no package.json. Ask the agent to build it, or reseed the app.",
+    );
+  }
   if (raw.includes("origin has commits this checkout does not")) {
     return i18n.t(
       "apps.deployErrorReason.pushRejected",
