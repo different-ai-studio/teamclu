@@ -90,8 +90,6 @@ type ExtensionContext = {
   };
 };
 type ExtensionAPI = {
-  getSessionName?(): string | undefined;
-  setSessionName?(name: string, source?: string): void;
   on(
     event: "tool_call",
     handler: (
@@ -1241,11 +1239,11 @@ function registerQuestionTool(pi: ExtensionAPI, ownTools: Set<string>): void {
 // ---------------------------------------------------------------------------
 // Fire-and-forget on `before_agent_start`: capture model / setTitle while
 // ctx is active, then `complete()` without awaiting so the first turn is
-// not blocked. Only `ui.setTitle` runs after the hook — never async
-// `pi.getSessionName` / `setSessionName` (stale ctx). Sync hook may still
-// read `getSessionName()` to skip sessions pi already named. A sidecar file
-// `<pi-session-file>-teamclu-title` sidecar is written only after a successful
-// setTitle so host restarts skip re-generation and LLM failures can retry.
+// not blocked. Never touch `pi.getSessionName` / `setSessionName` — those
+// go through the process-wide ExtensionRuntime, which any session
+// dispose() marks stale. Skip only via the sidecar
+// `<pi-session-file>-teamclu-title` (written after a successful setTitle)
+// so host restarts skip re-generation and LLM failures can retry.
 
 const SESSION_TITLE_MAX_LEN = 80;
 const SESSION_TITLE_MAX_INPUT = 2000;
@@ -1312,8 +1310,6 @@ type SessionTitleJob = {
   model: unknown;
   registry: ExtensionContext["modelRegistry"];
   setTitle?: (title: string) => void;
-  /** Snapshot from sync `getSessionName()` in the hook — do not re-read pi async. */
-  hadSessionNameAtStart: boolean;
 };
 
 function stripMentionsForSessionTitle(content: string): string {
@@ -1477,7 +1473,6 @@ async function llmSessionTitle(ctx: TitleLlmCtx, prompt: string): Promise<string
 }
 
 function startSessionTitle(
-  pi: ExtensionAPI,
   event: { prompt?: string },
   ctx: ExtensionContext,
 ): void {
@@ -1485,7 +1480,6 @@ function startSessionTitle(
   if (!sessionId) return;
   if (hasSessionTitleMarker(sessionId)) return;
   if (titleInFlightSessionIds.has(sessionId)) return;
-  if (String(pi.getSessionName?.() ?? "").trim()) return;
 
   const raw = String(event.prompt ?? "");
   if (isCronJobPrompt(raw)) return;
@@ -1511,7 +1505,6 @@ function startSessionTitle(
     model,
     registry,
     setTitle: ui.setTitle?.bind(ui),
-    hadSessionNameAtStart: false,
   }).finally(() => {
     titleInFlightSessionIds.delete(sessionId);
   });
@@ -1526,7 +1519,7 @@ async function applySessionTitle(job: SessionTitleJob): Promise<void> {
   } catch (e) {
     console.error(`[teamclu] session title LLM failed: ${e}`);
   }
-  if (!title || job.hadSessionNameAtStart) return;
+  if (!title) return;
 
   try {
     job.setTitle?.(title);
@@ -1561,7 +1554,7 @@ export default async function (pi: ExtensionAPI) {
 
   // -- Permission gate -------------------------------------------------------
   pi.on("before_agent_start", async (event, ctx) => {
-    startSessionTitle(pi, event, ctx);
+    startSessionTitle(event, ctx);
 
     const original = String(event.systemPrompt ?? "").trim();
     let base = original;
