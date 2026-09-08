@@ -53,14 +53,23 @@ export function pickMostRecentSession(rows: AppSessionRow[]): AppSessionRow | nu
  * The opening message sent on the app's behalf, built from the name the user
  * typed plus a fixed per-type prompt.
  *
- * Each one points the agent at `AGENTS.md` first — that file is where the
- * template records the build contract it must not break — and asks for a plan
+ * A templated app is pointed at `AGENTS.md` first — that file is where the
+ * template records the build contract it must not break — and asked for a plan
  * before edits, so the first thing the user sees is a proposal rather than a
  * pile of files.
+ *
+ * An imported one has no template and therefore no `AGENTS.md`, so it is asked
+ * to read what is already there and then ask what the user wants done with it.
  */
 export function firstPromptForApp(app: Pick<AppRow, 'name' | 'type'>): string {
   const name = app.name.trim()
   switch (resolveAppType(app.type).id) {
+    // Deliberately silent about AGENTS.md: that file comes from a starter
+    // template, and an imported repo — or a folder someone pointed us at — has
+    // none. The code itself is the brief here, and what to do with it is the
+    // user's to say, not ours to assume.
+    case 'imported':
+      return `这是一个已有的项目：${name}\n\n先把代码读一遍，弄清楚它是做什么的、怎么组织的，然后把你的理解讲给我听，并问我下一步的计划。`
     case 'static_web':
       return `我要做一个静态网页：${name}\n\n先读一下 AGENTS.md 了解这个项目的结构和约束，然后告诉我你打算做成什么样（有哪些页面、大致的结构和风格），我确认后你再动手改 public/ 下的文件。`
     case 'slides':

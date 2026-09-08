@@ -56,9 +56,19 @@ interface AppsState {
     /** Optional repo to import — the app is cloned from it instead of seeded
      *  with a starter template. */
     gitRemoteUrl?: string | null;
-    /** The code is a checkout already on this machine: no repo is provisioned
-     *  and no template is written. Set by the "browse a local directory" path. */
+    /** The code is a checkout already on this machine WITH a remote of its own:
+     *  no repo is provisioned and no template is written. */
     localOnly?: boolean;
+    /**
+     * Absolute path to a folder the user picked that has no remote to record —
+     * not a repo at all, or a repo nobody ever pushed.
+     *
+     * The app gets a Gitea repo like any other (so it can deploy a commit), but
+     * the daemon publishes this directory as it stands instead of writing a
+     * starter template over it. Bound before the seed runs, because the seed
+     * resolves the app's workdir from that binding.
+     */
+    adoptLocalDir?: string | null;
   }) => Promise<AppRow>;
   /** Re-ask the daemon which apps are on this machine. */
   refreshLocalApps: (teamId?: string | null) => Promise<void>;
@@ -277,7 +287,7 @@ function mapCloudDeployError(e: unknown): string {
  * A clone that fails is the one case worth interrupting the user for: they
  * typed the URL, and the app is empty until they fix it.
  */
-async function runSeed(set: SetState, app: AppRow): Promise<void> {
+async function runSeed(set: SetState, app: AppRow, adoptExisting = false): Promise<void> {
   let deployKeyPem: string | null = null;
   let deployKeyId: number | null = null;
   // Keyed on how the repo is authenticated, not on the status the row happens
@@ -314,6 +324,7 @@ async function runSeed(set: SetState, app: AppRow): Promise<void> {
       app.type,
       app.gitRemoteUrl,
       deployKeyPem,
+      adoptExisting,
     );
   } catch (e) {
     console.warn("app seed kick failed (non-fatal)", e);
@@ -490,8 +501,26 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     }
   },
   create: async (input) => {
-    const row = await getBackend().apps.createApp(input);
+    const { adoptLocalDir, ...createInput } = input;
+    const row = await getBackend().apps.createApp(createInput);
     set((s) => ({ items: [row, ...s.items] }));
+    // Point the daemon at the user's folder BEFORE seeding. The seed resolves
+    // the app's workdir from this override, so binding afterwards would have
+    // it publish an empty default directory and leave the folder the user
+    // actually picked unattached.
+    if (adoptLocalDir?.trim()) {
+      try {
+        const { bindDaemonAppWorkdir } = await import("@/lib/daemon/daemon-local-client");
+        await bindDaemonAppWorkdir(row.id, input.teamId, adoptLocalDir.trim());
+      } catch (e) {
+        await patchStatus(set, row.id, "error");
+        await toastError(
+          "无法使用这个目录",
+          e instanceof Error ? e.message : String(e),
+        );
+        return get().items.find((a) => a.id === row.id) ?? row;
+      }
+    }
     // A local checkout is already on disk and comes back `ready`; seeding it
     // would write the starter template over the user's own files. The guard is
     // the status rather than the flag so an app that somehow arrives `ready` by
@@ -501,7 +530,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // daemon, which writes its own embedded template. Non-fatal — a daemon
       // that is down (unreachable) leaves the row `pending` so the user can
       // reseed.
-      await runSeed(set, row);
+      await runSeed(set, row, !!adoptLocalDir?.trim());
     }
     await get().refreshLocalApps(input.teamId);
     // Return the row as it stands AFTER seeding — the caller decides what to do
@@ -631,6 +660,10 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       const builtSha = build.gitCommitSha ?? gitCommitSha;
       const finalized = await getBackend().apps.finalizeDeploy(appId, {
         ...(builtSha ? { gitCommitSha: builtSha } : {}),
+        // How the app says it starts. The control plane used to assume one
+        // answer for every app; this is the app's own, read off its
+        // declaration by the daemon that just built it.
+        ...(build.runtime ? { runtime: build.runtime } : {}),
         deployToken: started.deployToken,
       });
       // The merged row carries `authModePendingRedeploy` straight from the

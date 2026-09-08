@@ -5,6 +5,7 @@
 
 use crate::process_util::CommandNoWindow;
 use crate::sync::app_git::{self, SshEnv};
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -275,9 +276,100 @@ pub fn prepare_git_build(
     Ok(None)
 }
 
+/// What an app declares about how it is built and run.
+///
+/// Every field was a constant until an app turned up that builds to `dist/` and
+/// starts `node dist/index.js`: the deploy failed on a missing `.output/`, and
+/// the only place the real contract was written down was a template file the
+/// agent had already rewritten to describe its own code. A declaration in the
+/// repo is something an app can satisfy without us guessing.
+///
+/// Absent or unparseable means the defaults, which are exactly what every app
+/// deployed before this got — so nothing that works today needs the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppRuntimeManifest {
+    /// Directory to package, relative to the workdir.
+    pub output: String,
+    /// Interpreter family. The deployment maps this to a runtime layer and a
+    /// binary; an unknown value is the control plane's to reject, not the
+    /// daemon's — it is the side that knows which layers exist.
+    pub runtime: String,
+    /// Entry path inside the packaged directory.
+    pub entry: String,
+    /// Port the app listens on.
+    pub port: u16,
+}
+
+impl Default for AppRuntimeManifest {
+    fn default() -> Self {
+        Self {
+            output: ".output".to_string(),
+            runtime: "node".to_string(),
+            entry: "server/index.mjs".to_string(),
+            port: 9000,
+        }
+    }
+}
+
+/// The declaration file, at the app's root. Named for the brand's config file
+/// so it sits beside the app's other TeamClu-owned config rather than inventing
+/// a second convention.
+const MANIFEST_FILE: &str = "teamclu.app.json";
+
+/// Read the app's declaration, falling back to the built-in contract.
+///
+/// A malformed file is a warning, not a failure: the defaults still describe a
+/// deployable app, and refusing to build because a hint file has a typo would
+/// be a worse trade than deploying what the app actually produced.
+pub fn read_runtime_manifest(workdir: &Path) -> AppRuntimeManifest {
+    let path = workdir.join(MANIFEST_FILE);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return AppRuntimeManifest::default();
+    };
+    match serde_json::from_str::<PartialManifest>(&text) {
+        Ok(partial) => partial.resolve(),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "ignoring unreadable app manifest");
+            AppRuntimeManifest::default()
+        }
+    }
+}
+
+/// Every field optional, so a file that names only what it changes is valid.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PartialManifest {
+    output: Option<String>,
+    runtime: Option<String>,
+    entry: Option<String>,
+    port: Option<u16>,
+}
+
+impl PartialManifest {
+    fn resolve(self) -> AppRuntimeManifest {
+        let d = AppRuntimeManifest::default();
+        let pick = |v: Option<String>, fallback: String| {
+            v.map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(fallback)
+        };
+        AppRuntimeManifest {
+            output: pick(self.output, d.output),
+            runtime: pick(self.runtime, d.runtime),
+            entry: pick(self.entry, d.entry),
+            port: self.port.filter(|p| *p > 0).unwrap_or(d.port),
+        }
+    }
+}
+
 /// A finished build: the artifact, and the commit it was made from.
 pub struct BuildOutput {
     pub bytes: Vec<u8>,
+    /// What the app declared about how it is run. Reported so the control plane
+    /// can start the function the way the app expects instead of the one way it
+    /// used to assume.
+    pub manifest: AppRuntimeManifest,
     /// Set only when the deploy published pending work and so built a commit
     /// the caller did not know about. The caller must finalize with this one:
     /// recording the sha it started with would name a commit that is not what
@@ -312,9 +404,13 @@ pub fn build_artifact(
         ERR_BUILD_TIMEOUT,
     )?;
 
-    let output_dir = workdir.join(".output");
+    let manifest = read_runtime_manifest(workdir);
+    let output_dir = workdir.join(&manifest.output);
     if !output_dir.is_dir() || !output_dir_has_files(&output_dir) {
-        anyhow::bail!("{ERR_OUTPUT_MISSING}");
+        // Name what was looked for. The message used to say only ".output/",
+        // which is unhelpful precisely when an app builds somewhere else — the
+        // case this whole manifest exists for.
+        anyhow::bail!("{ERR_OUTPUT_MISSING}: {}", manifest.output);
     }
 
     let bytes = zip_dir(&output_dir)?;
@@ -327,6 +423,7 @@ pub fn build_artifact(
     Ok(BuildOutput {
         bytes,
         git_commit_sha,
+        manifest,
     })
 }
 
@@ -389,6 +486,57 @@ mod tests {
             "",
         );
         assert_eq!(msg, ERR_LOCKFILE_MISMATCH);
+    }
+
+    #[test]
+    fn an_app_with_no_manifest_gets_the_built_in_contract() {
+        // The file is optional on purpose: every app deployed before it existed
+        // must keep deploying with no change.
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            read_runtime_manifest(tmp.path()),
+            AppRuntimeManifest::default()
+        );
+    }
+
+    #[test]
+    fn a_manifest_names_only_what_it_changes() {
+        // The failure this was written for: an app that builds to `dist/` and
+        // starts `dist/index.js`. It should not have to restate the port.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            r#"{"output":"dist","entry":"index.js"}"#,
+        )
+        .unwrap();
+
+        let m = read_runtime_manifest(tmp.path());
+        assert_eq!(m.output, "dist");
+        assert_eq!(m.entry, "index.js");
+        assert_eq!(m.runtime, "node", "unstated fields keep the default");
+        assert_eq!(m.port, 9000);
+    }
+
+    #[test]
+    fn a_broken_manifest_does_not_stop_a_deploy() {
+        // Defaults still describe a deployable app. Refusing to build because a
+        // hint file has a typo is a worse trade than building what the app
+        // actually produced.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(MANIFEST_FILE), "{not json").unwrap();
+        assert_eq!(
+            read_runtime_manifest(tmp.path()),
+            AppRuntimeManifest::default()
+        );
+
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            r#"{"output":"  ","port":0}"#,
+        )
+        .unwrap();
+        let m = read_runtime_manifest(tmp.path());
+        assert_eq!(m.output, ".output", "an empty value is not a value");
+        assert_eq!(m.port, 9000);
     }
 
     #[test]

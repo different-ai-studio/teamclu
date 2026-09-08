@@ -970,6 +970,14 @@ export async function seedDaemonApp(
   appType: string,
   gitRemoteUrl?: string | null,
   deployKeyPem?: string | null,
+  /**
+   * Publish the app's directory as it already is, with no starter template.
+   *
+   * For an app created from a folder the user picked: the daemon owns the
+   * decision of what to commit there, and writing a template over their files
+   * is the one thing that must not happen.
+   */
+  adoptExisting?: boolean,
 ): Promise<SeedAppResult> {
   try {
     const result = await daemonFetch<{ status: string; workdir?: string }>('/v1/apps/seed', {
@@ -981,6 +989,7 @@ export async function seedDaemonApp(
         appType,
         ...(gitRemoteUrl?.trim() ? { gitRemoteUrl: gitRemoteUrl.trim() } : {}),
         ...(deployKeyPem?.trim() ? { deployKeyPem: deployKeyPem.trim() } : {}),
+        ...(adoptExisting ? { adoptExisting: true } : {}),
         ...resolveSeedGitUserIdentity(),
       }),
     })
@@ -1024,6 +1033,12 @@ export interface BuildAppResult {
    * one would record a commit that is not what is now running.
    */
   gitCommitSha: string | null
+  /**
+   * What the app declared about how it starts (`teamclu.app.json`), resolved by
+   * the daemon against the built-in contract. Handed to finalize so the
+   * function is started the way the app expects.
+   */
+  runtime: { runtime: string; entry: string; port: number } | null
 }
 
 /**
@@ -1219,7 +1234,11 @@ export async function buildDaemonApp(
   input: BuildDaemonAppInput,
 ): Promise<BuildAppResult> {
   try {
-    const result = await daemonFetch<{ status: string; gitCommitSha?: string }>('/v1/apps/build', {
+    const result = await daemonFetch<{
+      status: string
+      gitCommitSha?: string
+      manifest?: { runtime?: string; entry?: string; port?: number }
+    }>('/v1/apps/build', {
       method: 'POST',
       body: JSON.stringify({
         appId,
@@ -1231,21 +1250,26 @@ export async function buildDaemonApp(
       }),
     })
     if (result.ok) {
+      const m = result.data?.manifest
       return {
         outcome: "built",
         error: null,
         gitCommitSha: result.data?.gitCommitSha?.trim() || null,
+        runtime:
+          m?.runtime && m.entry && m.port
+            ? { runtime: m.runtime, entry: m.entry, port: m.port }
+            : null,
       }
     }
     if (result.status === 0) {
       console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return { outcome: "unreachable", error: null, gitCommitSha: null }
+      return { outcome: "unreachable", error: null, gitCommitSha: null, runtime: null }
     }
     console.warn('[daemon-local-client] app build failed:', result.error)
-    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null }
+    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null, runtime: null }
   } catch (err) {
     console.warn('[daemon-local-client] app build unavailable:', err)
-    return { outcome: "unreachable", error: null, gitCommitSha: null }
+    return { outcome: "unreachable", error: null, gitCommitSha: null, runtime: null }
   }
 }
 

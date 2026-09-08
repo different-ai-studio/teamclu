@@ -1129,7 +1129,15 @@ export interface AppsBackend {
   deployApp(appId: string, input: { gitCommitSha?: string }): Promise<DeployAppResult>;
   /** Finalize FC deploy after the artifact is uploaded: points the function at
    *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */
-  finalizeDeploy(appId: string, input: { gitCommitSha?: string; deployToken: string }): Promise<AppRow>;
+  finalizeDeploy(
+    appId: string,
+    input: {
+      gitCommitSha?: string;
+      deployToken: string;
+      /** The app's declared start contract, from `teamclu.app.json`. */
+      runtime?: { runtime: string; entry: string; port: number };
+    },
+  ): Promise<AppRow>;
   /** Mint a JIT Gitea deploy key for git push (creator only). Returns null on
    *  404, and for an app that is not Gitea-managed. */
   getGitCredential(appId: string): Promise<AppGitCredential | null>;
