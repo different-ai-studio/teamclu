@@ -39,12 +39,20 @@
 // renewed certificate lands. Note its `Cert` field is the full chain as one
 // string; `CertChain` is a list of metadata dicts and is NOT a PEM.
 //
+// FC TAKES RSA ONLY. An ECC certificate — which is what `acme.sh --issue`
+// produces by default — is rejected with `'private key' has to be in PEM
+// format`, a message that says nothing about the actual problem and survives
+// converting the key to PKCS#8. Issue with `--keylength 2048`. Verified: the
+// same domain, chain and key failed as ECC and succeeded as RSA, and every
+// certificate already bound on this account is RSA.
+//
 // Dry run by default: it prints what would change and touches nothing.
 
 import { execFileSync } from "node:child_process";
+import { X509Certificate } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import FcClient from "@alicloud/fc20230330";
+import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
 
 function parseArgs(argv) {
@@ -127,13 +135,37 @@ function certFromCas(certId, profileName) {
   if (!d.Cert || !d.Key) {
     die(`CAS certificate ${certId} has no Cert/Key — is it an uploaded certificate?`);
   }
-  return { certificate: d.Cert, privateKey: d.Key, name: d.Name, endDate: d.EndDate, sans: d.Sans };
+  // Only the material and the name: the SANs and expiry are read back out of
+  // the PEM, so that a local file and a CAS certificate go through the same check.
+  return { certificate: d.Cert, privateKey: d.Key, name: d.Name };
 }
 
 /** Summarise a PEM chain without shelling out to openssl. */
 function describeCert(pem) {
   const blocks = (pem.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
   return `${blocks} certificate block(s), ${pem.length} bytes`;
+}
+
+/**
+ * Read the leaf's SANs and expiry straight out of the PEM.
+ *
+ * The SAN check below is the whole point of this script, so it must not depend
+ * on where the material came from: CAS reports SANs as a field, a local PEM does
+ * not, and trusting only the former would leave `--cert/--key` — the path used
+ * right after issuing a certificate, when a mix-up is most likely — unguarded.
+ */
+function inspectPem(pem) {
+  const leaf = new X509Certificate(pem);
+  const sans = (leaf.subjectAltName ?? "")
+    .split(",")
+    .map((s) => s.trim().replace(/^DNS:/, ""))
+    .filter(Boolean);
+  return {
+    sans,
+    endDate: leaf.validTo,
+    subject: leaf.subject,
+    keyType: leaf.publicKey.asymmetricKeyType,
+  };
 }
 
 async function main() {
@@ -147,27 +179,50 @@ async function main() {
   let material;
   if (args.fromCas) {
     material = certFromCas(args.fromCas, args.profile);
-    console.log(`CAS certificate ${args.fromCas}: ${material.name} — SANs ${material.sans}, expires ${material.endDate}`);
+    console.log(`CAS certificate ${args.fromCas}: ${material.name}`);
   } else if (args.cert && args.key) {
     material = {
       certificate: fs.readFileSync(args.cert, "utf8"),
       privateKey: fs.readFileSync(args.key, "utf8"),
-      name: path.basename(args.cert),
     };
   } else {
     die("give either --from-cas <certId>, or both --cert <file> and --key <file>");
   }
 
+  // Read the PEM rather than trusting the metadata: CAS reports SANs, a local
+  // file does not, and the check has to hold either way.
+  const leaf = inspectPem(material.certificate);
+  console.log(`certificate: ${leaf.subject.replace(/\n/g, " ")} — SANs ${leaf.sans.join(", ")}, expires ${leaf.endDate}`);
+
   // A wildcard covers exactly one label. `*.mx5.cn` does NOT match
   // `app.apps.mx5.cn`, and binding it here would leave every app failing its
   // handshake with a certificate that looks present and correct.
   const wanted = args.domain.startsWith("*.") ? args.domain : `*.${args.domain}`;
-  if (material.sans && !String(material.sans).split(/[,\s]+/).includes(wanted)) {
+  if (!leaf.sans.includes(wanted)) {
     die(
-      `certificate does not cover ${wanted} (SANs: ${material.sans}). ` +
+      `certificate does not cover ${wanted} (SANs: ${leaf.sans.join(", ") || "none"}). ` +
         "A wildcard matches one label only, so a *.<parent> certificate cannot serve this zone.",
     );
   }
+
+  // Caught here rather than at the API, which answers an ECC certificate with
+  // `'private key' has to be in PEM format` — a message that sends you off
+  // converting key encodings, which does not help because the encoding was
+  // never the problem.
+  if (leaf.keyType !== "rsa") {
+    die(
+      `FC accepts RSA certificates only; this one is ${leaf.keyType ?? "of an unknown type"}. ` +
+        "Reissue with `acme.sh --issue --keylength 2048` (an already-validated " +
+        "authorization is reused, so DNS does not have to be touched again).",
+    );
+  }
+
+  // Named for what it is and when it dies, because this is a PEM snapshot that
+  // nothing renews: the FC console listing is where someone will go looking to
+  // find out whether it is still current.
+  material.name =
+    material.name ||
+    `${wanted.replace(/^\*\./, "").replace(/\./g, "-")}-${new Date(leaf.endDate).toISOString().slice(0, 10)}`;
 
   const { accessKeyId, accessKeySecret } = credentials(args.profile);
   const client = new FcClient.default(new Config({
@@ -212,7 +267,12 @@ async function main() {
     return;
   }
 
-  await client.updateCustomDomain(args.domain, { body });
+  // The SDK validates its own request models, so a plain object is rejected
+  // with `request.validate is not a function`.
+  await client.updateCustomDomain(
+    args.domain,
+    new $fc.UpdateCustomDomainRequest({ body: new $fc.UpdateCustomDomainInput(body) }),
+  );
   const after = (await client.getCustomDomain(args.domain))?.body ?? {};
   console.log(
     `\nDone. ${args.domain}: protocol=${after.protocol}, ` +
