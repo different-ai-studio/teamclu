@@ -100,12 +100,51 @@ export interface FcOpsConfig {
   region: string;
   /** When set, every app function create/update joins this VPC. */
   vpc?: AppsFcVpcConfig;
+  /**
+   * Where the function's own output goes. Omitted (the state every app was in
+   * until 2026-09) means Function Compute keeps NO logs at all: not in the
+   * console, not through any API, so "why does my app 500" has no answer.
+   *
+   * A getter, not a value: the destination has to exist before a function may
+   * point at it, and the caller only learns whether it does when it tries to
+   * create it. Returning undefined after that failed is what keeps a missing
+   * SLS permission from turning every deploy into a hard failure.
+   */
+  logs?: () => { project: string; logstore: string } | undefined;
 }
 export interface EnsureFunctionArgs {
   ossObjectName: string;
   env: Record<string, string>;
   /** What the app declared about how it is started. Absent → the built-in Node contract. */
   runtime?: AppRuntimeSpec;
+}
+
+/**
+ * Log delivery for an app function.
+ *
+ * `enableRequestMetrics` is what produces the one-row-per-request stream with
+ * status code and duration — the half of "logs" that answers whether a request
+ * arrived at all, which the app's own output cannot.
+ *
+ * Delivery does NOT need the function to carry a role: the live function that
+ * had logs on before this existed has `role: ""`, and the account's
+ * `AliyunServiceRoleForFC` is what writes. So this stays safe on a deployment
+ * whose `ROLE_ARN` is empty, which is the documented shape.
+ */
+function functionLogInput(logs: { project: string; logstore: string } | undefined) {
+  if (!logs) return {};
+  return {
+    logConfig: new $fc.LogConfig({
+      project: logs.project,
+      logstore: logs.logstore,
+      enableRequestMetrics: true,
+      enableInstanceMetrics: true,
+      // How FC decides where one multi-line log entry ends. `DefaultRegex` is
+      // what the console configures; `None` makes every line its own entry and
+      // shreds stack traces.
+      logBeginRule: "DefaultRegex",
+    }),
+  };
 }
 
 function functionNetworkInput(vpc: AppsFcVpcConfig | undefined) {
@@ -212,6 +251,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
             customRuntimeConfig: startCommand(args.runtime),
             code: codeLocation(args.ossObjectName),
             ...functionNetworkInput(cfg.vpc),
+            ...functionLogInput(cfg.logs?.()),
           }),
         }));
       } else {
@@ -227,7 +267,10 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       //
       // VPC config is re-sent for the same reason: a function created before
       // APPS_FC_VPC_* was wired would keep an empty vpcConfig through every
-      // redeploy and time out against an internal RDS host forever.
+      // redeploy and time out against an internal RDS host forever. And the log
+      // config for the same reason again — the nine functions deployed before
+      // it existed have no logs, and a code-only update would leave them with
+      // none no matter how many times their owner redeployed.
       await client.updateFunction(functionName, new $fc.UpdateFunctionRequest({
         body: new $fc.UpdateFunctionInput({
           environmentVariables: args.env,
@@ -235,6 +278,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
           customRuntimeConfig: startCommand(args.runtime),
           code: codeLocation(args.ossObjectName),
           ...functionNetworkInput(cfg.vpc),
+          ...functionLogInput(cfg.logs?.()),
         }),
       }));
     },

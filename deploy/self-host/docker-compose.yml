@@ -375,6 +375,15 @@ services:
       # Defaults to https://oss-<APPS_REGION>.aliyuncs.com; override only for a
       # VPC/internal OSS endpoint.
       APPS_OSS_ENDPOINT: "${APPS_OSS_ENDPOINT:-}"
+      # Where deployed apps send their logs (Alibaba SLS, same account as the
+      # profile above). Both optional: the project defaults to
+      # `teamclu-apps-<accountId>` and the logstore to `app-logs`, and the
+      # deploy creates them if the key is allowed to. Set the project to point
+      # at one that already exists instead — e.g. the `serverless-<region>-…`
+      # project the FC console generates. Deploys still work with no logs if
+      # neither can be created; the app just has nothing to read afterwards.
+      APPS_SLS_PROJECT: "${APPS_SLS_PROJECT:-}"
+      APPS_SLS_LOGSTORE: "${APPS_SLS_LOGSTORE:-}"
       # Parent domain for per-app vanity hostnames
       # (<slug>-<id8>.<this>). Blank = feature off: apps keep their raw
       # Function Compute trigger URL and Caddy never asks about a certificate.

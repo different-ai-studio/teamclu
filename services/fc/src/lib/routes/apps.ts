@@ -115,6 +115,22 @@ export function registerApps(router) {
     return { body: out };
   });
 
+  // The deployed function's own output. Read-only and scoped to one app by the
+  // repository, which names the function from the app row — the caller never
+  // gets to say which function's logs it wants.
+  router.get("/v1/apps/:appId/logs", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.getAppLogs(appId, {
+      sinceMinutes: ctx.query.get("sinceMinutes"),
+      limit: ctx.query.get("limit"),
+      kind: ctx.query.get("kind"),
+      contains: ctx.query.get("contains"),
+      requestId: ctx.query.get("requestId"),
+    });
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
   router.get("/v1/apps/:appId/git-head", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const out = await ctx.repository.getAppGitHead(appId);

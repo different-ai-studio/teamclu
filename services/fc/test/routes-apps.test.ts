@@ -252,6 +252,47 @@ test("DELETE /v1/apps/:id 404s when repo returns false", async () => {
   );
 });
 
+// --- App logs route ---------------------------------------------------------
+
+test("GET /v1/apps/:id/logs forwards the query and 404s on null", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/logs")[2];
+  let seen: any;
+  const res = await handler({
+    params: { appId: "app-1" },
+    query: new URLSearchParams(
+      "sinceMinutes=120&limit=50&kind=all&contains=user_sessions&requestId=req-A",
+    ),
+    repository: {
+      getAppLogs: async (appId: string, query: any) => {
+        seen = { appId, query };
+        return { items: [], truncated: false };
+      },
+    },
+  });
+  assert.deepEqual(res.body, { items: [], truncated: false });
+  assert.equal(seen.appId, "app-1");
+  assert.deepEqual(seen.query, {
+    sinceMinutes: "120",
+    limit: "50",
+    kind: "all",
+    contains: "user_sessions",
+    requestId: "req-A",
+  });
+
+  // Null is "you cannot see this app", which must be indistinguishable from it
+  // not existing — the same contract the data browser routes hold to.
+  await assert.rejects(
+    () => handler({
+      params: { appId: "x" },
+      query: new URLSearchParams(""),
+      repository: { getAppLogs: async () => null },
+    }),
+    (e: any) => e?.statusCode === 404,
+  );
+});
+
 // --- App data browser routes ------------------------------------------------
 
 test("GET /v1/apps/:id/data/tables forwards the app id and 404s on null", async () => {

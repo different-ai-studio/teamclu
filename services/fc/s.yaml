@@ -97,6 +97,10 @@ resources:
         APPS_OSS_BUCKET: ${env('APPS_OSS_BUCKET', '')}
         APPS_REGION: ${env('APPS_REGION', '')}
         APPS_OSS_ENDPOINT: ${env('APPS_OSS_ENDPOINT', '')}
+        # Log destination for deployed apps. Blank → derived from the account
+        # id (`teamclu-apps-<accountId>` / `app-logs`) and created on deploy.
+        APPS_SLS_PROJECT: ${env('APPS_SLS_PROJECT', '')}
+        APPS_SLS_LOGSTORE: ${env('APPS_SLS_LOGSTORE', '')}
         # Parent domain for per-app vanity hostnames. Only self-host has the
         # reverse proxy that terminates them, so this is normally blank here —
         # declared so the two targets stay in step (deploy-env-parity.test.ts).
