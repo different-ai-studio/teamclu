@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { SquarePen, SlidersHorizontal, List, MoreHorizontal, Settings, Loader2, LifeBuoy } from 'lucide-react'
+import { SquarePen, SlidersHorizontal, List, MoreHorizontal, Settings, Loader2, LifeBuoy, Download } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -20,6 +20,10 @@ import { useUIStore } from '@/stores/ui'
 import { useDiagnosticsStore } from '@/stores/diagnostics-store'
 import { useSessionSelectionStore } from '@/stores/session-selection-store'
 import { toast } from 'sonner'
+import {
+  exportTranscriptErrorMessage,
+  savePiTranscript,
+} from '@/lib/session/pi-transcript-export'
 
 export function NarrowChatHeader() {
   const { t } = useTranslation()
@@ -136,6 +140,24 @@ export function NarrowChatHeader() {
                   <Settings className="mr-2 h-4 w-4" />
                   {t('navigation.settings', 'Settings')}
                 </DropdownMenuItem>
+                {activeSessionId ? (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setMoreOpen(false)
+                      void savePiTranscript(activeSessionId)
+                        .then((dest) => {
+                          if (!dest) return
+                          toast.success(t('chat.exportTranscriptSaved', '会话记录已保存'))
+                        })
+                        .catch((err) => {
+                          toast.error(exportTranscriptErrorMessage(err))
+                        })
+                    }}
+                  >
+                    <Download className="mr-2 h-4 w-4" />
+                    {t('chat.exportTranscript', '导出完整会话记录')}
+                  </DropdownMenuItem>
+                ) : null}
                 {activeSessionId ? (
                   <DropdownMenuItem
                     onSelect={() => {

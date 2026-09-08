@@ -2,6 +2,7 @@ mod capabilities;
 mod channels;
 mod config;
 mod cron;
+mod daemon_http;
 mod daemon_sock;
 mod desktop_api;
 mod env_vars;
@@ -457,6 +458,31 @@ fn tool_definitions() -> Value {
                     }
                 }
             }
+        },
+        {
+            "name": "export_pi_transcript",
+            "description": "Export the complete pi session transcript (what the model actually saw: messages, tool calls, results) for analysis. Talks to local amuxd — the desktop app does not need to be running. Writes a JSON file under the workspace and returns the path; Read that file. Do not paste the whole transcript into chat. Omit session_id to use the current TeamClu session. Secrets are redacted by default.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Cloud session UUID. Optional — omit to export the current TeamClu session."
+                    },
+                    "workspace_id": {
+                        "type": "string",
+                        "description": "Optional daemon workspace id when the session has more than one pi binding. Omit to export every local binding."
+                    },
+                    "sanitize": {
+                        "type": "boolean",
+                        "description": "Redact JWTs, API keys, and huge inline blobs. Defaults to true."
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Optional workspace-relative or absolute path for the JSON file. Must stay inside the workspace. Defaults to .teamclu/exports/pi-transcript-<session_id>.json."
+                    }
+                }
+            }
         }
     ])
 }
@@ -648,6 +674,15 @@ async fn handle_request(
                 },
                 "archive_session" => {
                     match session::archive(workspace, api_port, &arguments).await {
+                        Ok(v) => {
+                            let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+                            tool_ok(&text)
+                        }
+                        Err(e) => tool_err(&e),
+                    }
+                }
+                "export_pi_transcript" => {
+                    match session::export_pi_transcript(workspace, &arguments).await {
                         Ok(v) => {
                             let text = serde_json::to_string_pretty(&v).unwrap_or_default();
                             tool_ok(&text)

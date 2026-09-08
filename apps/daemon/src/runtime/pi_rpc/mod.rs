@@ -42,6 +42,7 @@ pub mod auth;
 pub mod client;
 mod events;
 pub mod process;
+pub mod transcript;
 pub mod translate;
 
 use process::{PiProcess, PiProcessPool, PiSessionMode, PoolKey, SpawnEnv};

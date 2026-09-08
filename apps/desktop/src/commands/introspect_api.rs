@@ -10,7 +10,6 @@
 //   POST /mcp-put           — replace workspace MCP map (daemon)
 //   POST /session-archive   — archive a cloud session (PATCH archivedAt)
 //   POST /session-participants — list/add/remove a session's participants
-//   POST /session-export    — export session messages as opencode-compatible JSON
 //
 // Served by axum. STR-10: this used to be a raw `TcpStream` with hand-rolled
 // request parsing — a fixed 64 KiB header read, a `\r\n\r\n` scan, a
@@ -275,7 +274,6 @@ fn router(app: AppHandle, token: Arc<str>) -> Router {
         .route("/team-sync-all", post_route!(handle_team_sync_all))
         .route("/env-var-set", post_route!(handle_env_var_set))
         .route("/env-var-delete", post_route!(handle_env_var_delete))
-        .route("/session-export", post_route!(handle_session_export))
         .route("/channel-set", post_route!(handle_channel_set))
         .route("/mcp-get", post_route!(handle_mcp_get))
         .route("/mcp-put", post_route!(handle_mcp_put))
@@ -461,13 +459,6 @@ async fn handle_cron_run(app: &AppHandle, body: &[u8]) -> Result<String, String>
     });
 
     Ok(format!(r#"{{"ok":true,"job_id":"{}"}}"#, job_id))
-}
-
-async fn handle_session_export(app: &AppHandle, body: &[u8]) -> Result<String, String> {
-    let req: super::session_export::SessionExportRequest =
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?;
-    let cache_state = app.state::<crate::local_cache::commands::LocalCacheState>();
-    super::session_export::export_session_handler(&cache_state, req).await
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -21,6 +21,7 @@ use super::live_events;
 use super::live_ingest;
 use super::observ::request_id_layer;
 use super::pi_auth;
+use super::pi_transcript;
 use super::rpc;
 use super::sessions;
 use super::setup;
@@ -180,6 +181,10 @@ pub fn build(state: HttpState) -> Router {
         // (one `auth.json` per machine), but a wholly separate surface: those
         // routes proxy opencode's serve API, and pi's credentials are only
         // reachable through the pi SDK.
+        .route(
+            "/v1/pi/transcripts/:session_id",
+            get(pi_transcript::get_transcript),
+        )
         .route("/v1/pi/providers", get(pi_auth::list_providers))
         .route("/v1/pi/providers/refresh", post(pi_auth::refresh_providers))
         .route(

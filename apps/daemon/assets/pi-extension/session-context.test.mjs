@@ -14,6 +14,7 @@ async function injectForPiTool(toolName, params, ctx, deps = {}) {
     "get_session_deeplink",
     "manage_participants",
     "archive_session",
+    "export_pi_transcript",
   ]);
   const base = toolName.split("/").pop()?.trim() ?? toolName;
   if (!SESSION_SCOPED.has(base)) {

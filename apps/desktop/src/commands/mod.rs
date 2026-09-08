@@ -21,7 +21,6 @@ pub mod oauth_loopback;
 pub mod obsidian;
 pub mod oss_sync;
 pub mod server_config;
-pub mod session_export;
 pub mod setup;
 pub mod shared_secrets;
 pub mod shared_secrets_crypto;

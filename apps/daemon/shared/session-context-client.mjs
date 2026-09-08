@@ -8,6 +8,7 @@ const SESSION_SCOPED_TOOL_LIST = [
   "get_session_deeplink",
   "manage_participants",
   "archive_session",
+  "export_pi_transcript",
 ];
 
 const SESSION_SCOPED_TOOLS = new Set(SESSION_SCOPED_TOOL_LIST);
