@@ -22,7 +22,7 @@ test("normalizeSessionScopedToolName handles slash and mcp__ forms", () => {
 });
 
 test("normalizeSessionScopedToolName accepts every managed introspect alias and format", () => {
-  const tools = ["get_session_deeplink", "manage_participants", "archive_session"];
+  const tools = ["get_session_deeplink", "manage_participants", "archive_session", "export_pi_transcript"];
   const servers = ["teamclu-introspect", "teamclaw-introspect"];
   for (const tool of tools) {
     for (const server of servers) {
@@ -87,6 +87,8 @@ test("normalizeSessionScopedToolName rejects similar but non-managed OpenCode id
 test("isSessionScopedTool recognizes namespaced MCP tool ids", () => {
   assert.equal(isSessionScopedTool("mcp__teamclu-introspect__manage_participants"), true);
   assert.equal(isSessionScopedTool("teamclu-introspect_get_session_deeplink"), true);
+  assert.equal(isSessionScopedTool("export_pi_transcript"), true);
+  assert.equal(isSessionScopedTool("teamclu-introspect_export_pi_transcript"), true);
   assert.equal(isSessionScopedTool("browser_click"), false);
 });
 

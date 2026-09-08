@@ -523,6 +523,12 @@
   },
   "chat": {
     "diagnoseSession": "诊断此会话",
+    "exportTranscript": "导出完整会话记录",
+    "exportTranscriptSaved": "会话记录已保存",
+    "exportTranscriptFailed": "导出失败",
+    "exportTranscriptNotFound": "此会话没有本机完整记录。需要在这台机器上跑过。",
+    "exportTranscriptNotPi": "此会话不是 pi 后端会话。",
+    "exportTranscriptNoDaemon": "amuxd 未连接。请重启 TeamClu 后再试。",
     "refreshSkills": "强制刷新 Skills",
     "refreshSkillsApplied": "Skills 已刷新",
     "refreshSkillsPending": "当前会话正在运行，Skills 将在结束后生效",

@@ -14,14 +14,11 @@ pub const SESSION_SCOPED_MCP_TOOLS: &[&str] = &[
     "get_session_deeplink",
     "manage_participants",
     "archive_session",
+    "export_pi_transcript",
 ];
 
 pub fn is_session_scoped_mcp_tool(name: &str) -> bool {
-    let base = name
-        .rsplit('/')
-        .next()
-        .unwrap_or(name)
-        .trim();
+    let base = name.rsplit('/').next().unwrap_or(name).trim();
     SESSION_SCOPED_MCP_TOOLS.contains(&base)
 }
 

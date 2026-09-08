@@ -156,6 +156,7 @@ const SESSION_SCOPED_TOOLS = new Set([
   "get_session_deeplink",
   "manage_participants",
   "archive_session",
+  "export_pi_transcript",
 ]);
 
 function normalizeSessionScopedToolName(name: string): string {

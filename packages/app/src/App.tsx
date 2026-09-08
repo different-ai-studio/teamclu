@@ -11,6 +11,7 @@ import { buildSessionDeeplink, parseSessionDeeplink } from "@/lib/session/sessio
 import { markStartup } from "@/lib/telemetry/startup-perf";
 import { BookOpen, ChevronLeft, X, PanelRightClose, Link2, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
 import { DiagnoseSessionButton } from "@/components/chat/DiagnoseSessionButton";
+import { ExportPiTranscriptButton } from "@/components/chat/ExportPiTranscriptButton";
 import { RefreshSkillsHeaderButton } from "@/components/chat/RefreshSkillsHeaderButton";
 import { useWorkspaceInit } from "@/hooks/use-workspace-init";
 import { useChannelGatewayInit } from "@/hooks/use-channel-gateway-init";
@@ -646,6 +647,7 @@ function AppContent() {
                 <Link2 className="h-3.5 w-3.5" />
               </button>
             )}
+            {activeSession && <ExportPiTranscriptButton sessionId={activeSession.id} />}
             {activeSession && <DiagnoseSessionButton sessionId={activeSession.id} />}
 
             {/* Panel tabs - right side of header */}

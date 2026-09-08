@@ -523,6 +523,12 @@
   },
   "chat": {
     "diagnoseSession": "Diagnose this session",
+    "exportTranscript": "Export session transcript",
+    "exportTranscriptSaved": "Transcript saved",
+    "exportTranscriptFailed": "Could not export the transcript",
+    "exportTranscriptNotFound": "No local pi transcript for this session. It must have run on this machine.",
+    "exportTranscriptNotPi": "This session is not a pi backend session.",
+    "exportTranscriptNoDaemon": "amuxd is not connected. Restart TeamClu and try again.",
     "refreshSkills": "Force refresh skills",
     "refreshSkillsApplied": "Skills refreshed",
     "refreshSkillsPending": "A turn is running; skills will apply when it ends",
