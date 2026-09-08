@@ -366,3 +366,107 @@ test("proxy does not follow the app's redirects on its behalf", async () => {
   assert.equal(res.status, 302);
   assert.equal(res.headers.get("location"), "/login");
 });
+
+// --- Sec-Fetch-Site, the header the browser withholds over plain HTTP -------
+
+/** Proxies one request and returns the headers the upstream would have seen. */
+async function forwardedHeaders(req: Request, endpoint = "http://website-18e4ecad.fc-apps.example"): Promise<Headers> {
+  let seen = new Headers();
+  const fake = (async (_u: any, init: any) => {
+    seen = new Headers(init.headers);
+    return new Response("ok", { status: 200 });
+  }) as unknown as typeof fetch;
+  await proxyToApp(req, endpoint, fake);
+  return seen;
+}
+
+test("a same-origin request is marked as one, because the app cannot tell", async () => {
+  // The whole reason this exists: the app derives its own origin from the Host
+  // it receives, which is the upstream FC name — never the vanity name in
+  // Origin. TanStack Start's CSRF guard compares the two and answers a bare
+  // `403 Forbidden`, which is what the first app on a vanity host hit on every
+  // server function it has.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { origin: `https://website-18e4ecad.${DOMAIN}` },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "same-origin");
+  assert.equal(headers.get("origin"), `https://website-18e4ecad.${DOMAIN}`, "Origin passes through untouched");
+});
+
+test("a same-origin GET is recognised from its Referer alone", async () => {
+  // A same-origin GET carries no Origin at all, so Referer is the only thing
+  // naming the page it came from. Reading only Origin would leave every GET
+  // server function refused.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    headers: { referer: `https://website-18e4ecad.${DOMAIN}/todos?filter=open` },
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "same-origin");
+});
+
+test("the scheme does not decide it, because TLS terminates before this hop", async () => {
+  // The client spoke HTTPS; this proxy sees HTTP. Comparing full origins would
+  // call the app's own page cross-site the moment apps get a certificate.
+  const headers = await forwardedHeaders(new Request(`http://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { origin: `https://website-18e4ecad.${DOMAIN}` },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "same-origin");
+});
+
+test("a request from another site is marked cross-site, so the app still refuses it", async () => {
+  // The CSRF guarantee has to survive this: filling the header in must not
+  // become a way to hand any origin a same-origin label.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { origin: "https://evil.example" },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "cross-site");
+});
+
+test("another app on the same apps domain is cross-site too", async () => {
+  // Sibling vanity hosts share a registered domain, so a `same-site` answer
+  // would be defensible and wrong: each host is a different team's app.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { origin: `https://other-99999999.${DOMAIN}` },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "cross-site");
+});
+
+test("a browser that sent its own Sec-Fetch-Site keeps it", async () => {
+  // Over HTTPS the browser answers for itself, and it can tell same-site from
+  // cross-site. Overwriting that would replace a precise answer with a coarser
+  // one — and would let a request relabel itself if it ever could set the header.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { "sec-fetch-site": "same-site", origin: `https://website-18e4ecad.${DOMAIN}` },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "same-site");
+});
+
+test("a request naming no page at all is left alone", async () => {
+  // curl, a health check, a webhook. Nothing here says where it came from, and
+  // inventing `same-origin` for it would disable the app's CSRF check outright.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), null);
+});
+
+test("an opaque origin is not treated as same-origin", async () => {
+  // A sandboxed iframe posts `Origin: null`. It parses as no host, and a
+  // header that names no site cannot be answered with `same-origin`.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { origin: "null" },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), null);
+});
