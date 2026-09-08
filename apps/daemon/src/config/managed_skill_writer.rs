@@ -19,8 +19,10 @@ use super::roles_skills::is_inherent_skill;
 const GLOBAL_SKILLS_REL: &str = ".agents/skills";
 pub(crate) const SKILL_MD: &str = "SKILL.md";
 pub(crate) const MAX_PACK_FILES: usize = 500;
-pub(crate) const MAX_SINGLE_FILE_BYTES: usize = 1024 * 1024;
-pub(crate) const MAX_PACK_TOTAL_BYTES: usize = 5 * 1024 * 1024;
+/// Publish/write cap: 0.5 MiB per file. Distinct from the get_draft JSON budget.
+pub(crate) const MAX_SINGLE_FILE_BYTES: usize = 512 * 1024;
+/// Publish/write cap: 2.5 MiB pack total.
+pub(crate) const MAX_PACK_TOTAL_BYTES: usize = 2560 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +98,8 @@ pub struct CreatePackRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdatePackRequest {
     pub slug: String,
+    /// Full SKILL.md. Empty/omitted on `update_draft` keeps the existing file.
+    #[serde(default)]
     pub content: String,
     #[serde(default)]
     pub files: Vec<PackFileInput>,
@@ -647,12 +651,20 @@ pub fn update_pack(
             format!("invalid slug {:?}", req.slug),
         ));
     }
-    validate_strict_frontmatter(&req.content, &req.slug)?;
-    if req.content.len() > MAX_SINGLE_FILE_BYTES {
+    if req.content.is_empty() && req.files.is_empty() && req.delete_files.is_empty() {
         return Err(ManagedSkillError::new(
-            ManagedSkillErrorCode::SkillPackTooLarge,
-            "SKILL.md exceeds size limit",
+            ManagedSkillErrorCode::InvalidSkillFilePath,
+            "update requires at least one of content, files, or deleteFiles",
         ));
+    }
+    if !req.content.is_empty() {
+        validate_strict_frontmatter(&req.content, &req.slug)?;
+        if req.content.len() > MAX_SINGLE_FILE_BYTES {
+            return Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::SkillPackTooLarge,
+                "SKILL.md exceeds size limit",
+            ));
+        }
     }
 
     let mut patch_files = Vec::new();
@@ -710,7 +722,9 @@ pub fn update_pack(
 
     let temp = TempPackGuard::new(skills_root.join(format!(".teamclu-update-{}", Uuid::new_v4())));
     copy_pack_tree(&target, temp.path())?;
-    fs::write(temp.path().join(SKILL_MD), req.content.as_bytes()).map_err(io_managed)?;
+    if !req.content.is_empty() {
+        fs::write(temp.path().join(SKILL_MD), req.content.as_bytes()).map_err(io_managed)?;
+    }
     apply_patch_files(temp.path(), &patch_files)?;
     apply_delete_files(temp.path(), &req.delete_files)?;
     verify_final_skill_md(temp.path(), &req.slug)?;
@@ -1413,5 +1427,51 @@ mod tests {
         let root = home.path().join(".agents/skills/trim");
         assert!(!root.join("assets/base-0.bin").exists());
         assert!(root.join("assets/extra-0.bin").exists());
+    }
+
+    #[test]
+    fn update_can_patch_sidecar_without_rewriting_skill_md() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        create_pack(
+            ws.path(),
+            home.path(),
+            &CreatePackRequest {
+                slug: "keep-md".into(),
+                content: "---\nname: keep-md\ndescription: Keep.\n---\n\n# Keep\n".into(),
+                files: vec![PackFileInput {
+                    path: "notes.md".into(),
+                    content: "v1\n".into(),
+                    encoding: None,
+                }],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        update_pack(
+            ws.path(),
+            home.path(),
+            &UpdatePackRequest {
+                slug: "keep-md".into(),
+                content: String::new(),
+                files: vec![PackFileInput {
+                    path: "notes.md".into(),
+                    content: "v2\n".into(),
+                    encoding: None,
+                }],
+                expected_digest: None,
+                delete_files: vec![],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let root = home.path().join(".agents/skills/keep-md");
+        assert!(fs::read_to_string(root.join("SKILL.md"))
+            .unwrap()
+            .contains("# Keep"));
+        assert_eq!(fs::read_to_string(root.join("notes.md")).unwrap(), "v2\n");
     }
 }

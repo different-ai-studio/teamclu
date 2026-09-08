@@ -295,6 +295,10 @@ pub fn build(state: HttpState) -> Router {
             get(team_sync::get_team_skill_draft_handler)
                 .put(team_sync::update_team_skill_draft_handler),
         )
+        .route(
+            "/v1/team/skills/:slug/draft/file",
+            get(team_sync::read_team_skill_draft_file_handler),
+        )
         // Pull team MCP / team env from Cloud API into the daemon cache now
         // (desktop calls this after a successful env-secret write/delete).
         .route(
