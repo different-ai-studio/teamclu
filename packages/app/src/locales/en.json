@@ -169,6 +169,7 @@
     "skillPublishLoadingDraft": "Reading draft metadata…",
     "skillPublishDraftMetadataFailed": "Could not read draft metadata: {{msg}}",
     "skillPublishDraftDiff": "differs from registry",
+    "skillPublishSummaryClipped": "Shortened to 200 characters so it can be published.",
     "skillDraftRecoveryTitle": "Recent draft recoveries",
     "skillDraftRecoveryBody": "Discarded drafts are kept for 7 days. Restore one to pick up where you left off.",
     "skillDraftRecoveryRestore": "Restore draft",
@@ -522,6 +523,16 @@
   },
   "chat": {
     "diagnoseSession": "Diagnose this session",
+    "exportTranscript": "Export session transcript",
+    "exportTranscriptSaved": "Transcript saved",
+    "exportTranscriptFailed": "Could not export the transcript",
+    "exportTranscriptNotFound": "No local pi transcript for this session. It must have run on this machine.",
+    "exportTranscriptNotPi": "This session is not a pi backend session.",
+    "exportTranscriptNoDaemon": "amuxd is not connected. Restart TeamClu and try again.",
+    "refreshSkills": "Force refresh skills",
+    "refreshSkillsApplied": "Skills refreshed",
+    "refreshSkillsPending": "A turn is running; skills will apply when it ends",
+    "refreshSkillsFailed": "Could not refresh skills",
     "sendStatus": {
       "sending": "Sending…",
       "delivered": "Delivered",
@@ -1529,6 +1540,8 @@
       "closeWindowTray": "Minimize to tray (keep agent)",
       "closeWindowQuit": "Quit and stop agent",
       "closeWindowError": "Could not update close preference",
+      "autoUpdate": "Automatic updates",
+      "autoUpdateDesc": "Check for updates in the background on startup and every few hours. You can still check manually from the settings footer.",
       "notifications": "Notifications",
       "notificationsDesc": "Receive desktop notifications",
       "mqttBroker": "MQTT broker",
@@ -1562,7 +1575,9 @@
       "showTerminalToggle": "Terminal toggle",
       "showTerminalToggleDesc": "Show the terminal panel toggle in the conversation's top-right. The Ctrl+` shortcut always works regardless of this setting.",
       "showChangesTab": "File changes",
-      "showChangesTabDesc": "Show this session's file-changes entry in the conversation's top-right. Only appears when there is an active session."
+      "showChangesTabDesc": "Show this session's file-changes entry in the conversation's top-right. Only appears when there is an active session.",
+      "showSkillsRefresh": "Force refresh skills",
+      "showSkillsRefreshDesc": "Show a button in the conversation's top-right that reloads this workspace's skill directories. Use it when hot-reload misses a change."
     },
     "llm": {
       "refresh": "Refresh",

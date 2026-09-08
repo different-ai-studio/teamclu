@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 /** Mirrors `backendSessionIdFromContext` in teamclu.ts */
 function backendSessionIdFromContext(ctx) {
@@ -12,6 +14,7 @@ async function injectForPiTool(toolName, params, ctx, deps = {}) {
     "get_session_deeplink",
     "manage_participants",
     "archive_session",
+    "export_pi_transcript",
   ]);
   const base = toolName.split("/").pop()?.trim() ?? toolName;
   if (!SESSION_SCOPED.has(base)) {
@@ -426,7 +429,7 @@ async function llmSessionTitle(ctx, prompt) {
   return text;
 }
 
-async function maybeGenerateSessionTitle(pi, event, ctx, deps = {}) {
+async function maybeGenerateSessionTitle(event, ctx, deps = {}) {
   const sessionId = backendSessionIdFromContext(ctx);
   if (!sessionId) return;
   const titleMarkers = deps.titleMarkers ?? new Map();
@@ -435,7 +438,6 @@ async function maybeGenerateSessionTitle(pi, event, ctx, deps = {}) {
   const inFlight = deps.inFlight ?? new Set();
   if (hasMarker(sessionId)) return;
   if (inFlight.has(sessionId)) return;
-  if (String(pi.getSessionName?.() ?? "").trim()) return;
 
   const raw = String(event.prompt ?? "");
   if (isCronJobPrompt(raw)) return;
@@ -449,7 +451,6 @@ async function maybeGenerateSessionTitle(pi, event, ctx, deps = {}) {
     model: ctx.model,
     registry: ctx.modelRegistry,
     setTitle: ui.setTitle?.bind(ui),
-    hadSessionNameAtStart: false,
     llmTitle: deps.llmTitle,
   };
 
@@ -463,7 +464,7 @@ async function maybeGenerateSessionTitle(pi, event, ctx, deps = {}) {
       } catch {
         title = "";
       }
-      if (!title || job.hadSessionNameAtStart) return;
+      if (!title) return;
       job.setTitle?.(title);
       writeMarker(sessionId, title);
     } finally {
@@ -503,10 +504,8 @@ test("session title treats cron run tokens as cron, not chat tokens", () => {
 test("session title does not run for cron job prompts", async () => {
   let llmCalled = false;
   const titleMarkers = new Map();
-  const pi = { getSessionName: () => "" };
   const ctx = { ui: { sessionId: "pi:/tmp/cron.json", setTitle() {} } };
   await maybeGenerateSessionTitle(
-    pi,
     {
       prompt:
         "[SYSTEM] Reply token for this run: tok\nPass it as `reply_token`\n\nnightly sync",
@@ -548,7 +547,6 @@ test("session title strips silent context wrappers", () => {
 test("session title sends unwrapped user text to the LLM", async () => {
   const seen = [];
   const titles = [];
-  const pi = { getSessionName: () => "" };
   const ctx = {
     ui: {
       sessionId: "pi:/tmp/wrap.json",
@@ -561,7 +559,7 @@ test("session title sends unwrapped user text to the LLM", async () => {
     "",
     "帮我查一下深圳美食",
   ].join("\n");
-  await maybeGenerateSessionTitle(pi, { prompt: wrapped }, ctx, {
+  await maybeGenerateSessionTitle({ prompt: wrapped }, ctx, {
     llmTitle: async (_ctx, prompt) => {
       seen.push(prompt);
       return "深圳美食推荐";
@@ -733,14 +731,13 @@ test("session title fire-and-forget does not wait for the LLM", async () => {
       release = resolve;
     });
   const pending = [];
-  const pi = { getSessionName: () => "" };
   const ctx = {
     ui: {
       sessionId: "pi:/tmp/defer.json",
       setTitle: (title) => titles.push(title),
     },
   };
-  await maybeGenerateSessionTitle(pi, { prompt: "帮我查一下深圳美食" }, ctx, {
+  await maybeGenerateSessionTitle({ prompt: "帮我查一下深圳美食" }, ctx, {
     fireAndForget: true,
     pending,
     llmTitle,
@@ -753,14 +750,13 @@ test("session title fire-and-forget does not wait for the LLM", async () => {
 
 test("session title uses LLM result and setTitle", async () => {
   const titles = [];
-  const pi = { getSessionName: () => "" };
   const ctx = {
     ui: {
       sessionId: "pi:/tmp/a.json",
       setTitle: (title) => titles.push(title),
     },
   };
-  await maybeGenerateSessionTitle(pi, { prompt: "帮我写一份发布计划" }, ctx, {
+  await maybeGenerateSessionTitle({ prompt: "帮我写一份发布计划" }, ctx, {
     llmTitle: async () => '"Launch Plan"',
   });
   assert.deepEqual(titles, ["Launch Plan"]);
@@ -768,14 +764,13 @@ test("session title uses LLM result and setTitle", async () => {
 
 test("session title does not set a title when LLM returns nothing", async () => {
   const titles = [];
-  const pi = { getSessionName: () => "" };
   const ctx = {
     ui: {
       sessionId: "pi:/tmp/b.json",
       setTitle: (title) => titles.push(title),
     },
   };
-  await maybeGenerateSessionTitle(pi, { prompt: "帮我查一下深圳美食" }, ctx, {
+  await maybeGenerateSessionTitle({ prompt: "帮我查一下深圳美食" }, ctx, {
     llmTitle: async () => "",
   });
   assert.deepEqual(titles, []);
@@ -784,7 +779,6 @@ test("session title does not set a title when LLM returns nothing", async () => 
 test("session title does not run twice for the same session", async () => {
   let calls = 0;
   const titleMarkers = new Map();
-  const pi = { getSessionName: () => "" };
   const ctx = { ui: { sessionId: "pi:/tmp/c.json", setTitle() {} } };
   const deps = {
     titleMarkers,
@@ -793,23 +787,32 @@ test("session title does not run twice for the same session", async () => {
       return "Once";
     },
   };
-  await maybeGenerateSessionTitle(pi, { prompt: "hello" }, ctx, deps);
-  await maybeGenerateSessionTitle(pi, { prompt: "hello again" }, ctx, deps);
+  await maybeGenerateSessionTitle({ prompt: "hello" }, ctx, deps);
+  await maybeGenerateSessionTitle({ prompt: "hello again" }, ctx, deps);
   assert.equal(calls, 1);
   assert.equal(titleMarkers.get("pi:/tmp/c.json"), "Once");
 });
 
-test("session title skips when pi already has a session name", async () => {
-  let llmCalled = false;
-  const pi = { getSessionName: () => "Already Named", setSessionName() {} };
-  const ctx = { ui: { sessionId: "pi:/tmp/d.json", setTitle() {} } };
-  await maybeGenerateSessionTitle(pi, { prompt: "hello" }, ctx, {
-    llmTitle: async () => {
-      llmCalled = true;
-      return "Nope";
+test("session title source never calls pi.getSessionName or setSessionName", () => {
+  const src = fs.readFileSync(fileURLToPath(new URL("./teamclu.ts", import.meta.url)), "utf8");
+  assert.doesNotMatch(src, /pi\.getSessionName\s*\??\s*\(/);
+  assert.doesNotMatch(src, /pi\.setSessionName\s*\??\s*\(/);
+});
+
+test("session title still runs when a session already has a pi name", async () => {
+  // Skip is sidecar-only. Reading pi.getSessionName() hits the shared
+  // ExtensionRuntime, which any session dispose() marks stale.
+  const titles = [];
+  const ctx = {
+    ui: {
+      sessionId: "pi:/tmp/d.json",
+      setTitle: (title) => titles.push(title),
     },
+  };
+  await maybeGenerateSessionTitle({ prompt: "hello" }, ctx, {
+    llmTitle: async () => "From Prompt",
   });
-  assert.equal(llmCalled, false);
+  assert.deepEqual(titles, ["From Prompt"]);
 });
 
 test("before_agent_start strips pi self-documentation for anthropic provider", async () => {

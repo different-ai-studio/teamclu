@@ -25,6 +25,7 @@ describe("header-preferences-store", () => {
     useHeaderPreferencesStore.setState({
       showTerminalToggle: false,
       showChangesTab: false,
+      showSkillsRefresh: false,
     });
   });
 
@@ -32,6 +33,7 @@ describe("header-preferences-store", () => {
     const s = useHeaderPreferencesStore.getState();
     expect(s.showTerminalToggle).toBe(false);
     expect(s.showChangesTab).toBe(false);
+    expect(s.showSkillsRefresh).toBe(false);
   });
 
   test("setShowTerminalToggle flips state and persists to localStorage", () => {
@@ -41,6 +43,7 @@ describe("header-preferences-store", () => {
     expect(loaded).toEqual({
       showTerminalToggle: true,
       showChangesTab: false,
+      showSkillsRefresh: false,
     });
   });
 
@@ -51,6 +54,7 @@ describe("header-preferences-store", () => {
     expect(loaded).toEqual({
       showTerminalToggle: false,
       showChangesTab: true,
+      showSkillsRefresh: false,
     });
   });
 
@@ -61,16 +65,30 @@ describe("header-preferences-store", () => {
     const s = useHeaderPreferencesStore.getState();
     expect(s.showTerminalToggle).toBe(false);
     expect(s.showChangesTab).toBe(true);
+    expect(s.showSkillsRefresh).toBe(false);
+  });
+
+  test("setShowSkillsRefresh flips state and persists to localStorage", () => {
+    useHeaderPreferencesStore.getState().setShowSkillsRefresh(true);
+    expect(useHeaderPreferencesStore.getState().showSkillsRefresh).toBe(true);
+    const loaded = loadFromStorage(STORAGE_KEY, null);
+    expect(loaded).toEqual({
+      showTerminalToggle: false,
+      showChangesTab: false,
+      showSkillsRefresh: true,
+    });
   });
 
   test("storage helpers round-trip the persisted shape the store writes", () => {
     saveToStorage(STORAGE_KEY, {
       showTerminalToggle: true,
       showChangesTab: true,
+      showSkillsRefresh: true,
     });
     expect(loadFromStorage(STORAGE_KEY, null)).toEqual({
       showTerminalToggle: true,
       showChangesTab: true,
+      showSkillsRefresh: true,
     });
   });
 
@@ -81,8 +99,10 @@ describe("header-preferences-store", () => {
     const loaded = loadFromStorage<Partial<{
       showTerminalToggle: boolean;
       showChangesTab: boolean;
+      showSkillsRefresh: boolean;
     }>>(STORAGE_KEY, {});
     expect(loaded.showTerminalToggle ?? false).toBe(true);
     expect(loaded.showChangesTab ?? false).toBe(false);
+    expect(loaded.showSkillsRefresh ?? false).toBe(false);
   });
 });

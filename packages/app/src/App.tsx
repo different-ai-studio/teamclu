@@ -12,6 +12,8 @@ import { markStartup } from "@/lib/telemetry/startup-perf";
 import { BookOpen, ChevronLeft, X, PanelRightClose, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
 import { DiagnoseSessionButton } from "@/components/chat/DiagnoseSessionButton";
 import { SessionShareButton } from "@/components/chat/SessionShareButton";
+import { ExportPiTranscriptButton } from "@/components/chat/ExportPiTranscriptButton";
+import { RefreshSkillsHeaderButton } from "@/components/chat/RefreshSkillsHeaderButton";
 import { useWorkspaceInit } from "@/hooks/use-workspace-init";
 import { useChannelGatewayInit } from "@/hooks/use-channel-gateway-init";
 import { useGitReposInit } from "@/hooks/use-git-repos-init";
@@ -184,6 +186,7 @@ function AppContent() {
   // conditions below. Defaults hidden; users enable per-icon in Settings →
   // General → "会话头部图标". See stores/header-preferences-store.ts.
   const showTerminalToggle = useHeaderPreferencesStore((s) => s.showTerminalToggle);
+  const showSkillsRefresh = useHeaderPreferencesStore((s) => s.showSkillsRefresh);
   const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
   const hasActiveFileTab = !!useTabsStore(selectActiveTab);
   const hasHiddenTabs = useTabsStore(selectHasHiddenTabs);
@@ -630,6 +633,7 @@ function AppContent() {
               </button>
             )}
             {activeSession && <SessionShareButton sessionId={activeSession.id} />}
+            {activeSession && <ExportPiTranscriptButton sessionId={activeSession.id} />}
             {activeSession && <DiagnoseSessionButton sessionId={activeSession.id} />}
 
             {/* Panel tabs - right side of header */}
@@ -661,6 +665,9 @@ function AppContent() {
                   folder — which a terminal, unlike a tree, then keeps. */}
               {capabilities.workspace && sessionWorkspacePath && showTerminalToggle && (
                 <TerminalToggleButton workspacePath={sessionWorkspacePath} />
+              )}
+              {capabilities.workspace && sessionWorkspacePath && showSkillsRefresh && (
+                <RefreshSkillsHeaderButton workspacePath={sessionWorkspacePath} />
               )}
               {activeSession && hasCurrentSession && (
                 <SessionThreadsHeaderButton sessionId={activeSession.id} />

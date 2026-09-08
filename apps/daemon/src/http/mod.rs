@@ -38,6 +38,7 @@ pub mod live_events;
 pub mod live_ingest;
 pub mod observ;
 pub mod pi_auth;
+pub mod pi_transcript;
 pub mod rpc;
 pub mod runtime_adapter;
 pub mod runtime_context;

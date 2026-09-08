@@ -834,10 +834,11 @@ pub fn wecom_caps() -> driver::ChannelCaps {
         interactive: true,
         threading: driver::Threading::Inline,
         max_chars: 2048,
-        // Ten minutes. A chat bot that searches, reads files and writes an
-        // answer routinely runs past the old two-minute cap — and when it did,
-        // the sender got "timed out, please retry" for a turn that was working
-        // fine, while the runtime kept going and starved the next message.
+        // Ten minutes of *silence* (idle, not wall-clock from the prompt).
+        // A scrape that ran nine minutes then queried used to expire a
+        // start-to-finish 600s cap and close the WeCom stream on the last
+        // progress line, while the runtime wrote the real answer seconds
+        // later — desktop saw it, WeCom did not. Each ACP event resets this.
         turn_timeout_secs: 600,
     }
 }
@@ -1162,37 +1163,69 @@ impl driver::ChannelDriver for WeComDriver {
         };
 
         // WeCom has no delete/recall API, so this bubble is permanent once
-        // opened. Close it on a marker that stays true forever rather than on
-        // the last progress frame, which would leave "正在思考…" hanging above
-        // an answer that finished long ago. The answer itself then goes out as
-        // `markdown` — the only way WeCom renders fences and lists, since
-        // `stream` content is plain text.
+        // opened. The finish=true `content` *is* what the user keeps — official
+        // docs put the answer there. Closing on "✅ 已完成" and sending the
+        // body via `aibot_send_msg` left only the marker: WeCom often drops a
+        // proactive send that follows a stream on the same callback (already
+        // observed for template_card).
         //
         // A turn that ended with nothing to show closes on "cancelled": saying
         // "done" after the user typed `/stop` reports that the thing they
         // stopped finished anyway.
-        let closing = match end {
-            driver::TurnEnd::Answered => PROGRESS_DONE,
-            driver::TurnEnd::NoAnswer => PROGRESS_CANCELLED,
-        };
-        let _ = pacer.send(closing, true).await;
-        self.pacers.lock().await.remove(&id.0);
-        if text.trim().is_empty() {
-            return Ok(());
+        let closing = stream_finish_content(end, text);
+        if let Err(e) = pacer.send(&closing, true).await {
+            // Last resort: the stream frame did not leave. A proactive
+            // markdown may still land — it is how commands reply without a
+            // stream — but it is the path that was failing in the common case.
+            if text.trim().is_empty() {
+                self.pacers.lock().await.remove(&id.0);
+                return Err(driver::DriverError::Transport(e));
+            }
+            eprintln!("[WeCom] stream finish failed ({e}); falling back to markdown send");
+            self.gateway
+                .send_chat_message(&chatid, chat_type, text)
+                .await
+                .map_err(driver::DriverError::Transport)?;
         }
-        self.gateway
-            .send_chat_message(&chatid, chat_type, text)
-            .await
-            .map_err(driver::DriverError::Transport)
+        self.pacers.lock().await.remove(&id.0);
+        Ok(())
     }
 }
 
 /// What the progress bubble says while a turn runs.
 const PROGRESS_OPENING: &str = "💭 正在思考…";
-/// …and once it is done, so the bubble does not sit there implying it still is.
+/// Fallback when an answered turn produced nothing showable.
 const PROGRESS_DONE: &str = "✅ 已完成";
 /// …or once it was stopped, which is a different thing from finishing.
 const PROGRESS_CANCELLED: &str = "⏹️ 已取消";
+/// WeCom `stream.content` / markdown cap, in UTF-8 bytes.
+const WECOM_CONTENT_MAX_BYTES: usize = 20480;
+
+/// The `finish=true` stream body. This is the bubble WeCom keeps.
+fn stream_finish_content(end: driver::TurnEnd, text: &str) -> String {
+    match end {
+        driver::TurnEnd::NoAnswer => PROGRESS_CANCELLED.to_string(),
+        driver::TurnEnd::Answered => {
+            let body = text.trim();
+            if body.is_empty() {
+                PROGRESS_DONE.to_string()
+            } else {
+                truncate_wecom_content(body)
+            }
+        }
+    }
+}
+
+fn truncate_wecom_content(text: &str) -> String {
+    if text.len() <= WECOM_CONTENT_MAX_BYTES {
+        return text.to_string();
+    }
+    let mut end = WECOM_CONTENT_MAX_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
 
 /// How much of the newest line rides along in the progress frame.
 const PROGRESS_LINE_CHARS: usize = 40;
@@ -2748,6 +2781,52 @@ mod progress_line_tests {
         // telling.
         assert_ne!(PROGRESS_DONE, PROGRESS_CANCELLED);
         assert!(PROGRESS_CANCELLED.contains("已取消"));
+    }
+
+    #[test]
+    fn an_answered_turn_closes_the_stream_on_the_reply_not_a_done_marker() {
+        // WeCom's finish=true content *is* the bubble the user keeps. Closing
+        // on "✅ 已完成" and sending the answer via aibot_send_msg left only
+        // the marker — the follow-up markdown often never arrives (same class
+        // of miss as template_card after a stream). Official docs put the
+        // answer in the finish frame.
+        let reply = "广州今日多云，建议带伞。";
+        let closing = stream_finish_content(driver::TurnEnd::Answered, reply);
+        assert!(
+            closing.contains(reply),
+            "finish frame must carry the answer: {closing}"
+        );
+        assert!(
+            !closing.eq(PROGRESS_DONE),
+            "a done marker with no body is what the user saw"
+        );
+    }
+
+    #[test]
+    fn an_empty_answered_turn_still_closes_on_done() {
+        assert_eq!(
+            stream_finish_content(driver::TurnEnd::Answered, "  \n"),
+            PROGRESS_DONE
+        );
+    }
+
+    #[test]
+    fn a_cancelled_turn_closes_on_cancelled_even_if_text_lingers() {
+        assert_eq!(
+            stream_finish_content(driver::TurnEnd::NoAnswer, "half an answer"),
+            PROGRESS_CANCELLED
+        );
+    }
+
+    #[test]
+    fn an_oversized_reply_is_cut_on_a_char_boundary() {
+        // WeCom rejects stream.content over 20480 bytes. Slicing mid-char
+        // would panic; cutting at a boundary keeps the send valid.
+        let reply = "中".repeat(WECOM_CONTENT_MAX_BYTES);
+        let closing = stream_finish_content(driver::TurnEnd::Answered, &reply);
+        assert!(closing.len() <= WECOM_CONTENT_MAX_BYTES);
+        assert!(closing.is_char_boundary(closing.len()));
+        assert!(!closing.is_empty());
     }
 
     #[test]

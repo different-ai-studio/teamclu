@@ -209,8 +209,9 @@ export function PromptInput({
   //
   // Subscribe on whether a handler exists, not on its identity: the drop handler
   // below reads `onFilesChangeRef.current`, so a caller that passes a fresh
-  // closure each render would otherwise tear down and re-register three Tauri
-  // listeners on every parent render — which is what turned the teardown race
+  // closure each render (ChatPanel does) would otherwise tear down and
+  // re-register three Tauri listeners on every parent render — which is what
+  // made OS image drops silently stop working, and turned the teardown race
   // handled by `track` into the app's largest error group rather than a rarity.
   const hasFilesChangeHandler = Boolean(onFilesChange)
   React.useEffect(() => {

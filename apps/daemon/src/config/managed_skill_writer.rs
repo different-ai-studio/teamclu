@@ -18,9 +18,9 @@ use super::roles_skills::is_inherent_skill;
 
 const GLOBAL_SKILLS_REL: &str = ".agents/skills";
 pub(crate) const SKILL_MD: &str = "SKILL.md";
-const MAX_PACK_FILES: usize = 500;
-const MAX_SINGLE_FILE_BYTES: usize = 1024 * 1024;
-const MAX_PACK_TOTAL_BYTES: usize = 5 * 1024 * 1024;
+pub(crate) const MAX_PACK_FILES: usize = 500;
+pub(crate) const MAX_SINGLE_FILE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_PACK_TOTAL_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

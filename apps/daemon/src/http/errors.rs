@@ -107,7 +107,6 @@ impl HttpError {
         Self::new(ErrorCode::Forbidden, detail)
     }
 
-    #[allow(dead_code)]
     pub fn not_found(detail: impl Into<String>) -> Self {
         Self::new(ErrorCode::NotFound, detail)
     }

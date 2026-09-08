@@ -660,6 +660,20 @@ Your text reply needs no tool — it is delivered on its own."
 /// side, so updates are coalesced into at most one per interval.
 const STREAM_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(700);
 
+/// How much of the idle budget is left.
+///
+/// Silence is measured from the last ACP event, not from the prompt. A WeCom
+/// scrape that ran nine minutes and then queried would expire a wall-clock
+/// 10-minute cap while still working; an idle budget resets on every event
+/// and only fires after the channel's patience of actual quiet.
+fn idle_remaining_at(
+    last_activity: std::time::Instant,
+    idle: std::time::Duration,
+    now: std::time::Instant,
+) -> std::time::Duration {
+    idle.saturating_sub(now.saturating_duration_since(last_activity))
+}
+
 /// Decide what a timed-out gateway turn should return (issue #555). If the
 /// agent already produced reply text, hand it back as the turn result rather
 /// than failing — OpenCode may have finished while the ACP adapter never sent
@@ -834,7 +848,12 @@ impl AmuxdAgentHandle {
         let mut last_update = std::time::Instant::now();
         let mut sent_update = String::new();
 
-        let deadline = std::time::Instant::now() + turn_timeout;
+        // Idle, not wall-clock: each ACP event resets the budget. A 10-minute
+        // scrape with a tool-result at minute 9 used to expire the WeCom
+        // 600s cap and close the stream on "现在查询当日数据：", while the
+        // runtime kept going and wrote the real answer 15s later — desktop
+        // saw it, WeCom did not.
+        let mut last_activity = std::time::Instant::now();
         // On a turn-level timeout, salvage any reply text the agent already
         // produced instead of failing the whole turn (issue #555): OpenCode can
         // finish and persist its final assistant text while the ACP adapter
@@ -852,14 +871,18 @@ impl AmuxdAgentHandle {
         };
         let mut timed_out = false;
         let result: Result<String, AgentError> = loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let remaining =
+                idle_remaining_at(last_activity, turn_timeout, std::time::Instant::now());
             if remaining.is_zero() {
                 timed_out = true;
                 break salvage_on_timeout(&segments, &live);
             }
             let next = tokio::time::timeout(remaining, event_rx.recv()).await;
             let event = match next {
-                Ok(Some(ev)) => ev,
+                Ok(Some(ev)) => {
+                    last_activity = std::time::Instant::now();
+                    ev
+                }
                 Ok(None) => {
                     // The agent detached mid-turn (event channel closed) before
                     // any Active→Idle. If it had already produced reply text,
@@ -878,7 +901,10 @@ impl AmuxdAgentHandle {
                         )),
                     };
                 }
-                Err(_) => break salvage_on_timeout(&segments, &live),
+                Err(_) => {
+                    timed_out = true;
+                    break salvage_on_timeout(&segments, &live);
+                }
             };
             if let Some(crate::proto::amux::acp_event::Event::Error(err)) = &event.event.event {
                 let details = if err.details.is_empty() {
@@ -1892,6 +1918,31 @@ pub(crate) mod tests {
         let segments = segments_from(&[tool_use("Bash"), turn_end()]);
         assert!(segments.is_empty());
         assert_eq!(compose_reply(&segments, ""), "");
+    }
+
+    #[test]
+    fn idle_budget_resets_from_the_last_event_not_the_prompt() {
+        // The GMV scrape: prompt at t0, tool still running at t=9min, query
+        // events at t=9min. A wall-clock 10-minute cap would expire ~15s
+        // before the real answer; idle remaining from the last event is the
+        // full 10 minutes again.
+        let t0 = std::time::Instant::now();
+        let idle = std::time::Duration::from_secs(600);
+        let nine_min = t0 + std::time::Duration::from_secs(9 * 60);
+        assert_eq!(
+            idle_remaining_at(nine_min, idle, nine_min),
+            idle,
+            "a just-received event restores the full silence budget"
+        );
+        assert_eq!(
+            idle_remaining_at(t0, idle, nine_min),
+            std::time::Duration::from_secs(60),
+            "silence from the prompt would have only a minute left — that is the old bug"
+        );
+        assert_eq!(
+            idle_remaining_at(nine_min, idle, nine_min + idle),
+            std::time::Duration::ZERO
+        );
     }
 
     #[test]

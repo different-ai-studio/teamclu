@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::{json, Value};
 use teamclu_runtime_env::{
@@ -120,6 +120,132 @@ pub async fn archive(workspace: &str, api_port: u16, arguments: &Value) -> Resul
     crate::desktop_api::post(api_port, "/session-archive", &body).await
 }
 
+pub(crate) fn default_transcript_output_path(workspace: &Path, session_id: &str) -> PathBuf {
+    teamclu_runtime_env::workspace_meta_write_path_from_env(
+        workspace,
+        format!("exports/pi-transcript-{session_id}.json"),
+    )
+}
+
+/// Keep skill-chosen output inside the workspace. `..` is rejected before any
+/// write so a prompt cannot walk out to `/etc` or a sibling checkout.
+pub(crate) fn fence_output_path(workspace: &Path, output_path: &Path) -> Result<PathBuf, String> {
+    if output_path.as_os_str().is_empty() {
+        return Err("output_path is empty".to_string());
+    }
+    if output_path
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err("output_path must not contain '..'".to_string());
+    }
+    let candidate = if output_path.is_absolute() {
+        output_path.to_path_buf()
+    } else {
+        workspace.join(output_path)
+    };
+    let workspace_norm = normalize_lex(workspace);
+    let candidate_norm = normalize_lex(&candidate);
+    if candidate_norm == workspace_norm {
+        return Err("output_path must be a file inside the workspace".to_string());
+    }
+    if !candidate_norm.starts_with(&workspace_norm) {
+        return Err("output_path must be inside the workspace".to_string());
+    }
+    Ok(candidate)
+}
+
+fn normalize_lex(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let _ = out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn transcript_entry_count(bundle: &Value) -> (usize, usize) {
+    let transcripts = bundle.get("transcripts").and_then(Value::as_array);
+    let transcript_count = transcripts.map(Vec::len).unwrap_or(0);
+    let entry_count = transcripts
+        .map(|items| {
+            items
+                .iter()
+                .map(|t| t.get("entry_count").and_then(Value::as_u64).unwrap_or(0) as usize)
+                .sum()
+        })
+        .unwrap_or(0);
+    (transcript_count, entry_count)
+}
+
+/// Fetch the on-disk pi JSONL via amuxd and write it under the workspace.
+///
+/// The JSON is not returned inline: a long transcript would blow the MCP
+/// context. Skills should `Read` the file at `path`.
+pub async fn export_pi_transcript(workspace: &str, arguments: &Value) -> Result<Value, String> {
+    let session_id = resolve_session_id(workspace, arguments)?;
+    let ws = Path::new(workspace);
+    let sanitize = arguments
+        .get("sanitize")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let workspace_id = arguments
+        .get("workspace_id")
+        .or_else(|| arguments.get("workspaceId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let mut path = format!(
+        "/v1/pi/transcripts/{}?sanitize={}",
+        crate::daemon_http::urlencode(&session_id),
+        if sanitize { "true" } else { "false" }
+    );
+    if let Some(wid) = workspace_id {
+        path.push_str("&workspaceId=");
+        path.push_str(&crate::daemon_http::urlencode(wid));
+    }
+
+    let bundle =
+        crate::daemon_http::request(reqwest::Method::GET, &path, &["sessions:read"], None).await?;
+
+    let dest = match arguments
+        .get("output_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(p) => fence_output_path(ws, Path::new(p))?,
+        None => default_transcript_output_path(ws, &session_id),
+    };
+    let dest = fence_output_path(ws, &dest)?;
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create export directory: {e}"))?;
+    }
+    let pretty = serde_json::to_vec_pretty(&bundle)
+        .map_err(|e| format!("failed to serialize transcript: {e}"))?;
+    std::fs::write(&dest, pretty).map_err(|e| format!("failed to write transcript: {e}"))?;
+
+    let (transcript_count, entry_count) = transcript_entry_count(&bundle);
+    Ok(json!({
+        "teamclu_session_id": session_id,
+        "path": dest.to_string_lossy(),
+        "exported_at": bundle.get("exported_at"),
+        "source": bundle.get("source"),
+        "transcript_count": transcript_count,
+        "entry_count": entry_count,
+        "sanitized": sanitize,
+        "hint": "Read the JSON file at path. Do not paste the whole transcript into the chat.",
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +352,43 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("Invalid session_id"));
+    }
+
+    #[tokio::test]
+    async fn export_pi_transcript_rejects_invalid_uuid_without_network() {
+        let err = export_pi_transcript("/ws", &json!({ "session_id": "not-a-uuid" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Invalid session_id"));
+    }
+
+    #[test]
+    fn default_transcript_path_sits_under_workspace_meta_exports() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = default_transcript_output_path(dir.path(), UUID);
+        assert!(path.starts_with(dir.path()));
+        let as_str = path.to_string_lossy();
+        assert!(as_str.contains("exports"));
+        assert!(as_str.ends_with(&format!("pi-transcript-{UUID}.json")));
+    }
+
+    #[test]
+    fn fence_output_path_accepts_relative_and_absolute_inside_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let rel = fence_output_path(dir.path(), Path::new("out.json")).unwrap();
+        assert_eq!(rel, dir.path().join("out.json"));
+        let abs = fence_output_path(dir.path(), &dir.path().join("nested/a.json")).unwrap();
+        assert_eq!(abs, dir.path().join("nested/a.json"));
+    }
+
+    #[test]
+    fn fence_output_path_rejects_parent_dir_and_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = fence_output_path(dir.path(), Path::new("../escape.json")).unwrap_err();
+        assert!(err.contains(".."));
+        let err = fence_output_path(dir.path(), Path::new("/tmp/outside.json")).unwrap_err();
+        assert!(err.contains("inside the workspace"));
+        let err = fence_output_path(dir.path(), dir.path()).unwrap_err();
+        assert!(err.contains("file inside the workspace"));
     }
 }

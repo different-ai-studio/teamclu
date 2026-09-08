@@ -169,6 +169,7 @@
     "skillPublishLoadingDraft": "正在读取草稿元数据…",
     "skillPublishDraftMetadataFailed": "无法读取草稿元数据：{{msg}}",
     "skillPublishDraftDiff": "与 registry 不同",
+    "skillPublishSummaryClipped": "已缩短到 200 字，否则无法发布。",
     "skillDraftRecoveryTitle": "近期草稿恢复",
     "skillDraftRecoveryBody": "丢弃的草稿会保留 7 天。可恢复后继续编辑。",
     "skillDraftRecoveryRestore": "恢复草稿",
@@ -522,6 +523,16 @@
   },
   "chat": {
     "diagnoseSession": "诊断此会话",
+    "exportTranscript": "导出完整会话记录",
+    "exportTranscriptSaved": "会话记录已保存",
+    "exportTranscriptFailed": "导出失败",
+    "exportTranscriptNotFound": "此会话没有本机完整记录。需要在这台机器上跑过。",
+    "exportTranscriptNotPi": "此会话不是 pi 后端会话。",
+    "exportTranscriptNoDaemon": "amuxd 未连接。请重启 TeamClu 后再试。",
+    "refreshSkills": "强制刷新 Skills",
+    "refreshSkillsApplied": "Skills 已刷新",
+    "refreshSkillsPending": "当前会话正在运行，Skills 将在结束后生效",
+    "refreshSkillsFailed": "Skills 刷新失败",
     "sendStatus": {
       "sending": "发送中…",
       "delivered": "已送达",
@@ -1529,6 +1540,8 @@
       "closeWindowTray": "最小化到托盘（保持 Agent）",
       "closeWindowQuit": "退出并停止 Agent",
       "closeWindowError": "无法更新关闭偏好",
+      "autoUpdate": "自动更新",
+      "autoUpdateDesc": "在启动时及每隔数小时后台检查更新。仍可在设置页底部手动检查。",
       "notifications": "通知",
       "notificationsDesc": "接收桌面通知",
       "mqttBroker": "MQTT Broker",
@@ -1562,7 +1575,9 @@
       "showTerminalToggle": "终端开关",
       "showTerminalToggleDesc": "在会话右上角显示终端面板开关。快捷键 Ctrl+` 始终可用，不受此设置影响。",
       "showChangesTab": "文件更改",
-      "showChangesTabDesc": "在会话右上角显示本会话的文件更改入口。仅在有活跃会话时显示。"
+      "showChangesTabDesc": "在会话右上角显示本会话的文件更改入口。仅在有活跃会话时显示。",
+      "showSkillsRefresh": "强制刷新 Skills",
+      "showSkillsRefreshDesc": "在会话右上角显示强制刷新 Skills 的按钮。热更新异常时用来立刻重载当前工作区的 skill 目录。"
     },
     "llm": {
       "refresh": "刷新",

@@ -22,7 +22,6 @@ pub mod opencode_paths;
 pub mod process_util;
 pub mod proto;
 pub mod sentry_utils;
-mod session_export;
 mod telemetry;
 mod terminal;
 #[cfg(test)]
