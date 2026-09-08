@@ -75,6 +75,12 @@ services:
     image: caddy:2
     restart: unless-stopped
     command: ["caddy", "file-server", "-r", "/templates", "--listen", ":80"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1/magic-link.html"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     volumes:
       - ./email-templates:/templates:ro
 
@@ -88,7 +94,7 @@ services:
       analytics:
         condition: service_healthy
       templates-server:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -210,6 +216,8 @@ services:
       GOTRUE_MAILER_SUBJECTS_EMAIL_CHANGE: ${MAILER_SUBJECTS_EMAIL_CHANGE:-您的验证码：{{ .Token }}}
       GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://templates-server/confirmation.html
       GOTRUE_MAILER_SUBJECTS_CONFIRMATION: ${MAILER_SUBJECTS_CONFIRMATION:-您的验证码：{{ .Token }}}
+      GOTRUE_MAILER_TEMPLATES_RECOVERY: http://templates-server/recovery.html
+      GOTRUE_MAILER_SUBJECTS_RECOVERY: ${MAILER_SUBJECTS_RECOVERY:-您的验证码：{{ .Token }}}
 
       GOTRUE_EXTERNAL_PHONE_ENABLED: ${ENABLE_PHONE_SIGNUP}
       GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
