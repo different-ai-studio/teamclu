@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
 use serde::Serialize;
-use teamclu_skillpack::{
-    inspect, read_origin, DirtyState, ORIGIN_DIR, SOURCE_TEAM, SkillOrigin,
-};
+use teamclu_skillpack::{inspect, read_origin, DirtyState, SkillOrigin, ORIGIN_DIR, SOURCE_TEAM};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -21,8 +19,8 @@ use crate::runtime::team_skills::team_cloud_skills_dir;
 use super::managed_skill_writer::{
     apply_delete_files, apply_patch_files, copy_pack_tree, pack_digest, publish_temp_dir,
     reject_symlink, validate_pack_tree_limits, verify_final_skill_md, ManagedSkillError,
-    ManagedSkillErrorCode, RuntimeActivation, TempPackGuard, UpdatePackRequest,
-    SKILL_MD,
+    ManagedSkillErrorCode, RuntimeActivation, TempPackGuard, UpdatePackRequest, MAX_PACK_FILES,
+    MAX_PACK_TOTAL_BYTES, MAX_SINGLE_FILE_BYTES, SKILL_MD,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -63,10 +61,19 @@ pub fn effective_team_skill_dir(
 #[serde(rename_all = "camelCase")]
 pub struct DraftPackFile {
     pub path: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub content: String,
     /// `utf8` (default) or `base64` for non-text assets.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding: Option<String>,
+    /// Present when `content` was withheld so the tool result stays inside
+    /// the write-path pack limits (`too_large` or `too_many`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub omitted: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +88,9 @@ pub struct TeamSkillDraftView {
     pub content: String,
     pub files: Vec<DraftPackFile>,
     pub source: String,
+    /// Publish/update_draft will reject this working copy when non-empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -155,17 +165,42 @@ fn compute_state_for_team(
     compute_state(origin, dirty, latest_version)
 }
 
-fn read_skill_md(target: &Path) -> Result<String, ManagedSkillError> {
-    fs::read_to_string(target.join(SKILL_MD)).map_err(io_err)
+fn read_skill_md(target: &Path) -> Result<(String, Option<String>), ManagedSkillError> {
+    let path = target.join(SKILL_MD);
+    let len = fs::metadata(&path).map_err(io_err)?.len();
+    if len as usize > MAX_SINGLE_FILE_BYTES {
+        return Ok((
+            String::new(),
+            Some(format!(
+                "SKILL.md exceeds size limit ({len} bytes > {MAX_SINGLE_FILE_BYTES}); publish will be rejected. Read it at {} with the read tool",
+                path.display()
+            )),
+        ));
+    }
+    Ok((fs::read_to_string(path).map_err(io_err)?, None))
 }
 
-fn list_pack_files(target: &Path) -> Result<Vec<DraftPackFile>, ManagedSkillError> {
-    let mut out = Vec::new();
-    for entry in WalkDir::new(target)
-        .follow_links(false)
-        .into_iter()
-        .flatten()
-    {
+struct ListedPackFile {
+    rel: String,
+    abs: PathBuf,
+    size: u64,
+}
+
+fn omitted_pack_file(rel: String, abs: &Path, size: u64, reason: &'static str) -> DraftPackFile {
+    DraftPackFile {
+        path: rel,
+        content: String::new(),
+        encoding: None,
+        omitted: Some(reason.into()),
+        size: Some(size),
+        hint: Some(format!("read it at {} with the read tool", abs.display())),
+    }
+}
+
+fn collect_pack_file_entries(target: &Path) -> Result<Vec<ListedPackFile>, ManagedSkillError> {
+    let mut files = Vec::new();
+    for entry in WalkDir::new(target).follow_links(false) {
+        let entry = entry.map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
         if !entry.file_type().is_file() {
             continue;
         }
@@ -180,22 +215,66 @@ fn list_pack_files(target: &Path) -> Result<Vec<DraftPackFile>, ManagedSkillErro
         if rel_str.starts_with(&format!("{ORIGIN_DIR}/")) {
             continue;
         }
-        let bytes = fs::read(entry.path()).map_err(io_err)?;
-        let (content, encoding) = match String::from_utf8(bytes.clone()) {
+        let size = fs::metadata(entry.path()).map_err(io_err)?.len();
+        files.push(ListedPackFile {
+            rel: rel_str,
+            abs: entry.path().to_path_buf(),
+            size,
+        });
+    }
+    files.sort_by(|a, b| a.rel.cmp(&b.rel));
+    Ok(files)
+}
+
+fn list_pack_files(target: &Path) -> Result<(Vec<DraftPackFile>, Vec<String>), ManagedSkillError> {
+    let entries = collect_pack_file_entries(target)?;
+    let skill_md_len = fs::metadata(target.join(SKILL_MD))
+        .map(|m| m.len() as usize)
+        .unwrap_or(0);
+    let mut total_bytes = skill_md_len.min(MAX_SINGLE_FILE_BYTES);
+    let max_sidecars = MAX_PACK_FILES.saturating_sub(1);
+    let mut warnings = Vec::new();
+    let listed = if entries.len() > max_sidecars {
+        warnings.push(format!(
+            "{} additional files were not listed (pack exceeds file count limit)",
+            entries.len() - max_sidecars
+        ));
+        &entries[..max_sidecars]
+    } else {
+        &entries[..]
+    };
+
+    let mut out = Vec::with_capacity(listed.len());
+    for entry in listed {
+        let size = entry.size as usize;
+        if size > MAX_SINGLE_FILE_BYTES || total_bytes.saturating_add(size) > MAX_PACK_TOTAL_BYTES {
+            out.push(omitted_pack_file(
+                entry.rel.clone(),
+                &entry.abs,
+                entry.size,
+                "too_large",
+            ));
+            continue;
+        }
+        let bytes = fs::read(&entry.abs).map_err(io_err)?;
+        total_bytes = total_bytes.saturating_add(bytes.len());
+        let (content, encoding) = match String::from_utf8(bytes) {
             Ok(text) => (text, None),
-            Err(_) => (
-                base64::engine::general_purpose::STANDARD.encode(bytes),
+            Err(err) => (
+                base64::engine::general_purpose::STANDARD.encode(err.into_bytes()),
                 Some("base64".to_string()),
             ),
         };
         out.push(DraftPackFile {
-            path: rel_str,
+            path: entry.rel.clone(),
             content,
             encoding,
+            omitted: None,
+            size: Some(entry.size),
+            hint: None,
         });
     }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(out)
+    Ok((out, warnings))
 }
 
 fn ensure_writable_team_pack(
@@ -280,6 +359,7 @@ pub fn get_team_skill_draft(
             content: String::new(),
             files: Vec::new(),
             source: source.as_str().into(),
+            warnings: Vec::new(),
         });
     }
 
@@ -302,6 +382,7 @@ pub fn get_team_skill_draft(
             content: String::new(),
             files: Vec::new(),
             source: source.as_str().into(),
+            warnings: Vec::new(),
         });
     }
 
@@ -311,8 +392,14 @@ pub fn get_team_skill_draft(
         .transpose()?
         .unwrap_or(0);
     let digest = pack_digest(&target)?;
-    let content = read_skill_md(&target)?;
-    let files = list_pack_files(&target)?;
+    let (content, skill_warning) = read_skill_md(&target)?;
+    let (files, mut warnings) = list_pack_files(&target)?;
+    if let Some(warning) = skill_warning {
+        warnings.push(warning);
+    }
+    if let Err(err) = validate_pack_tree_limits(&target) {
+        warnings.push(format!("this draft cannot be published: {}", err.message));
+    }
 
     Ok(TeamSkillDraftView {
         slug: slug.to_string(),
@@ -323,6 +410,7 @@ pub fn get_team_skill_draft(
         content,
         files,
         source: source.as_str().into(),
+        warnings,
     })
 }
 
@@ -361,9 +449,9 @@ pub fn update_team_skill_draft(
         ));
     }
 
-    let parent = target
-        .parent()
-        .ok_or_else(|| ManagedSkillError::new(ManagedSkillErrorCode::SkillWriteFailed, "no parent"))?;
+    let parent = target.parent().ok_or_else(|| {
+        ManagedSkillError::new(ManagedSkillErrorCode::SkillWriteFailed, "no parent")
+    })?;
     let temp = TempPackGuard::new(parent.join(format!(".teamclu-draft-{}", Uuid::new_v4())));
     copy_pack_tree(&target, temp.path())?;
     fs::write(temp.path().join(SKILL_MD), req.content.as_bytes()).map_err(io_err)?;
@@ -394,12 +482,7 @@ pub fn update_team_skill_draft(
     } else {
         1
     };
-    let dirty = inspect(
-        &target,
-        read_origin(&target)
-            .and_then(|o| o.files)
-            .as_ref(),
-    );
+    let dirty = inspect(&target, read_origin(&target).and_then(|o| o.files).as_ref());
     let state = compute_state_for_team(
         read_origin(&target).as_ref(),
         &dirty,
@@ -418,8 +501,10 @@ pub fn update_team_skill_draft(
 
 #[cfg(test)]
 mod tests {
+    use super::super::managed_skill_writer::{
+        ManagedSkillErrorCode, UpdatePackRequest, MAX_SINGLE_FILE_BYTES,
+    };
     use super::*;
-    use super::super::managed_skill_writer::{ManagedSkillErrorCode, UpdatePackRequest};
     use teamclu_skillpack::{write_origin, ORIGIN_VERSION};
 
     fn write_skill(dir: &Path, body: &str) {
@@ -466,10 +551,7 @@ mod tests {
         let hosted = team_cloud_skills_dir(team).join(slug);
         let member = home.path().join(".agents/skills").join(slug);
         write_skill(&hosted, "---\nname: say-hello\ndescription: Hosted.\n---\n");
-        write_skill(
-            &member,
-            "---\nname: say-hello\ndescription: Member.\n---\n",
-        );
+        write_skill(&member, "---\nname: say-hello\ndescription: Member.\n---\n");
 
         let (path, source) = effective_team_skill_dir(team, slug, home.path());
         assert_eq!(source, EffectiveSkillSource::Member);
@@ -535,6 +617,56 @@ mod tests {
             .expect("binary asset listed");
         assert_eq!(asset.encoding.as_deref(), Some("base64"));
         assert!(!asset.content.is_empty());
+        assert_eq!(asset.omitted, None);
+    }
+
+    #[test]
+    fn get_draft_omits_sidecar_over_single_file_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let team = "team-big";
+        let slug = "issue-investigator";
+        let skill = home.join(".agents/skills").join(slug);
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: issue-investigator\ndescription: Demo\n---\n\n# Demo\n",
+        )
+        .unwrap();
+        let dump_size = MAX_SINGLE_FILE_BYTES + 1;
+        fs::write(skill.join("dump.txt"), vec![b'x'; dump_size]).unwrap();
+        fs::write(skill.join("notes.md"), "# keep me\n").unwrap();
+        stamp_team_origin(&skill, slug, team, 1, true);
+
+        let view = get_team_skill_draft(home, team, &row(slug, 1, true)).unwrap();
+        let notes = view
+            .files
+            .iter()
+            .find(|f| f.path == "notes.md")
+            .expect("small sidecar listed");
+        assert_eq!(notes.omitted, None);
+        assert!(notes.content.contains("keep me"));
+        let dump = view
+            .files
+            .iter()
+            .find(|f| f.path == "dump.txt")
+            .expect("oversized sidecar listed");
+        assert!(
+            dump.content.is_empty(),
+            "get_draft must not inline files over {MAX_SINGLE_FILE_BYTES} bytes"
+        );
+        assert_eq!(dump.omitted.as_deref(), Some("too_large"));
+        assert_eq!(dump.size, Some(dump_size as u64));
+        let hint = dump.hint.as_deref().unwrap_or_default();
+        assert!(
+            hint.contains("dump.txt"),
+            "hint should point at the file: {hint}"
+        );
+        assert!(
+            view.warnings.iter().any(|w| w.contains("dump.txt")),
+            "expected a publish-will-fail warning, got {:?}",
+            view.warnings
+        );
     }
 
     #[test]
