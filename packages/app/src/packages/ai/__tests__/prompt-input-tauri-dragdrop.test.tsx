@@ -13,6 +13,10 @@
  *   - zero times leaks: a listener registered after cleanup already ran stays
  *     attached for the lifetime of the window and fires into a dead closure.
  *
+ * A parent that passes a fresh `onFilesChange` each render (ChatPanel does)
+ * must not tear the subscription down — otherwise the drop listener never
+ * stays attached and OS image drops silently do nothing.
+ *
  * The mock `listen` hands out promises this file resolves by hand, which is what
  * makes each interleaving deterministic rather than a race.
  */
@@ -52,6 +56,7 @@ vi.mock('@/packages/ai/prompt-input-types', () => ({}))
 vi.mock('@/packages/ai/prompt-input-insert-hooks', () => ({
   useInsertMentionHook: () => vi.fn(),
   useInsertFileMentionHook: () => vi.fn(),
+  useInsertPageLinkHook: () => vi.fn(),
   useInsertSkillMentionHook: () => vi.fn(),
 }))
 
@@ -203,7 +208,8 @@ describe('PromptInput tauri drag-drop teardown', () => {
 
     // A new closure identity must not tear the subscription down: the drop
     // handler reads the ref, so re-registering only churns Tauri listeners and
-    // widens the teardown window this file exists to close.
+    // drops OS file drops on the floor while ChatPanel re-renders, and widens
+    // the teardown window this file exists to close.
     rerender(React.createElement(PromptInput, { onFilesChange: () => {} }, null))
     await flush()
 

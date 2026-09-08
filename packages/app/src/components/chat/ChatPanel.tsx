@@ -949,13 +949,13 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
 
   // ── File handling ─────────────────────────────────────────────────────
 
-  const appendPendingFiles = (files: File[]) => {
+  const appendPendingFiles = React.useCallback((files: File[]) => {
     setPendingFiles((prev) => [...prev, ...files]);
-  };
+  }, []);
 
-  const removePendingFile = (index: number) => {
+  const removePendingFile = React.useCallback((index: number) => {
     setPendingFiles((prev) => prev.filter((_, i) => i !== index));
-  };
+  }, []);
 
   // ── Submit handler ────────────────────────────────────────────────────
 
