@@ -314,16 +314,29 @@ export type BackfillResult = { scanned: number; granted: number; vanished: numbe
  * Safe to re-run: the per-team idempotency key means a second pass grants
  * nothing. Safe to run while serving, too — each team is its own transaction,
  * so a large backfill never holds a long lock.
+ *
+ * `onlyTeamIds` narrows the sweep. Production leaves it unset — covering every
+ * team is the entire point. Tests set it, because the suites run as parallel
+ * processes against one database: an unscoped sweep credits whatever teams the
+ * *other* suites happen to have uncredited at that instant, landing a grant in
+ * the middle of their arithmetic. That is not hypothetical, it broke main —
+ * `e2e.test.ts` resets a team to 1000 and refunds 5000 expecting -4000, and a
+ * concurrent unscoped backfill of 777 made it -3223.
  */
 export async function backfillSignupGrants(
   sql: Sql,
   amountCredits: number = SIGNUP_GRANT_CREDITS,
+  onlyTeamIds?: readonly string[],
 ): Promise<BackfillResult> {
   // Through a security-definer function: amux.teams carries RLS, and a plain
   // select returns zero rows for the gateway's role -- a backfill that grants
   // nothing and exits 0, right before enforcement is switched on.
-  const teams = await sql<{ team_id: string }[]>`
-    select team_id from amux.ai_gateway_teams_missing_signup_grant()`;
+  const teams = onlyTeamIds
+    ? await sql<{ team_id: string }[]>`
+        select team_id from amux.ai_gateway_teams_missing_signup_grant()
+        where team_id = any(${onlyTeamIds as string[]}::uuid[])`
+    : await sql<{ team_id: string }[]>`
+        select team_id from amux.ai_gateway_teams_missing_signup_grant()`;
   let granted = 0;
   let vanished = 0;
   for (const t of teams) {
