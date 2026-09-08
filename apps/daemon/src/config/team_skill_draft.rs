@@ -7,8 +7,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use base64::Engine as _;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use teamclu_skillpack::{inspect, read_origin, DirtyState, SkillOrigin, ORIGIN_DIR, SOURCE_TEAM};
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -17,11 +17,16 @@ use crate::backend::TeamSkillRow;
 use crate::runtime::team_skills::team_cloud_skills_dir;
 
 use super::managed_skill_writer::{
-    apply_delete_files, apply_patch_files, copy_pack_tree, pack_digest, publish_temp_dir,
-    reject_symlink, validate_pack_tree_limits, verify_final_skill_md, ManagedSkillError,
-    ManagedSkillErrorCode, RuntimeActivation, TempPackGuard, UpdatePackRequest, MAX_PACK_FILES,
-    MAX_PACK_TOTAL_BYTES, MAX_SINGLE_FILE_BYTES, SKILL_MD,
+    apply_delete_files, apply_patch_files, copy_pack_tree, normalize_pack_rel_path, pack_digest,
+    publish_temp_dir, reject_symlink, validate_pack_tree_limits, verify_final_skill_md,
+    ManagedSkillError, ManagedSkillErrorCode, RuntimeActivation, TempPackGuard, UpdatePackRequest,
+    MAX_PACK_FILES, MAX_SINGLE_FILE_BYTES, SKILL_MD,
 };
+
+/// Serialized `get_draft` JSON must stay inside this budget (model context).
+pub(crate) const GET_DRAFT_MAX_JSON_BYTES: usize = 64 * 1024;
+pub(crate) const READ_DRAFT_FILE_DEFAULT_BYTES: usize = 16 * 1024;
+pub(crate) const READ_DRAFT_FILE_MAX_BYTES: usize = 32 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -61,13 +66,13 @@ pub fn effective_team_skill_dir(
 #[serde(rename_all = "camelCase")]
 pub struct DraftPackFile {
     pub path: String,
+    /// Sidecar bodies are never inlined on `get_draft`. Use `read_draft_file`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub content: String,
-    /// `utf8` (default) or `base64` for non-text assets.
+    /// `utf8` (default) or `base64` for non-text assets — only on `read_draft_file`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding: Option<String>,
-    /// Present when `content` was withheld so the tool result stays inside
-    /// the write-path pack limits (`too_large` or `too_many`).
+    /// Present when this file cannot be published (`too_large` / `too_many`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub omitted: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -88,7 +93,32 @@ pub struct TeamSkillDraftView {
     pub content: String,
     pub files: Vec<DraftPackFile>,
     pub source: String,
+    pub file_count: usize,
+    pub total_bytes: u64,
+    /// True when SKILL.md or file listing was dropped to stay under the JSON budget.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
     /// Publish/update_draft will reject this working copy when non-empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftFileRead {
+    pub path: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub content: String,
+    pub size: u64,
+    pub offset: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<u64>,
+    pub complete: bool,
+    pub digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub omitted: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -165,6 +195,33 @@ fn compute_state_for_team(
     compute_state(origin, dirty, latest_version)
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn empty_draft_view(
+    slug: &str,
+    base_version: i64,
+    latest_version: i64,
+    state: String,
+    source: String,
+) -> TeamSkillDraftView {
+    TeamSkillDraftView {
+        slug: slug.to_string(),
+        base_version,
+        latest_version,
+        state,
+        digest: String::new(),
+        content: String::new(),
+        files: Vec::new(),
+        source,
+        file_count: 0,
+        total_bytes: 0,
+        truncated: false,
+        warnings: Vec::new(),
+    }
+}
+
 fn read_skill_md(target: &Path) -> Result<(String, Option<String>), ManagedSkillError> {
     let path = target.join(SKILL_MD);
     let len = fs::metadata(&path).map_err(io_err)?.len();
@@ -172,8 +229,15 @@ fn read_skill_md(target: &Path) -> Result<(String, Option<String>), ManagedSkill
         return Ok((
             String::new(),
             Some(format!(
-                "SKILL.md exceeds size limit ({len} bytes > {MAX_SINGLE_FILE_BYTES}); publish will be rejected. Read it at {} with the read tool",
-                path.display()
+                "SKILL.md exceeds size limit ({len} bytes > {MAX_SINGLE_FILE_BYTES}); publish will be rejected. Use read_draft_file with path {SKILL_MD}"
+            )),
+        ));
+    }
+    if len as usize > GET_DRAFT_MAX_JSON_BYTES {
+        return Ok((
+            String::new(),
+            Some(format!(
+                "SKILL.md omitted from get_draft ({len} bytes > response budget); use read_draft_file with path {SKILL_MD}"
             )),
         ));
     }
@@ -182,19 +246,7 @@ fn read_skill_md(target: &Path) -> Result<(String, Option<String>), ManagedSkill
 
 struct ListedPackFile {
     rel: String,
-    abs: PathBuf,
     size: u64,
-}
-
-fn omitted_pack_file(rel: String, abs: &Path, size: u64, reason: &'static str) -> DraftPackFile {
-    DraftPackFile {
-        path: rel,
-        content: String::new(),
-        encoding: None,
-        omitted: Some(reason.into()),
-        size: Some(size),
-        hint: Some(format!("read it at {} with the read tool", abs.display())),
-    }
 }
 
 fn collect_pack_file_entries(target: &Path) -> Result<Vec<ListedPackFile>, ManagedSkillError> {
@@ -216,65 +268,99 @@ fn collect_pack_file_entries(target: &Path) -> Result<Vec<ListedPackFile>, Manag
             continue;
         }
         let size = fs::metadata(entry.path()).map_err(io_err)?.len();
-        files.push(ListedPackFile {
-            rel: rel_str,
-            abs: entry.path().to_path_buf(),
-            size,
-        });
+        files.push(ListedPackFile { rel: rel_str, size });
     }
     files.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(files)
 }
 
-fn list_pack_files(target: &Path) -> Result<(Vec<DraftPackFile>, Vec<String>), ManagedSkillError> {
+fn list_pack_files(
+    target: &Path,
+) -> Result<(Vec<DraftPackFile>, Vec<String>, u64), ManagedSkillError> {
     let entries = collect_pack_file_entries(target)?;
-    let skill_md_len = fs::metadata(target.join(SKILL_MD))
-        .map(|m| m.len() as usize)
-        .unwrap_or(0);
-    let mut total_bytes = skill_md_len.min(MAX_SINGLE_FILE_BYTES);
-    let max_sidecars = MAX_PACK_FILES.saturating_sub(1);
     let mut warnings = Vec::new();
-    let listed = if entries.len() > max_sidecars {
+    let total_sidecar_bytes: u64 = entries.iter().map(|e| e.size).sum();
+    if entries.len() + 1 > MAX_PACK_FILES {
         warnings.push(format!(
-            "{} additional files were not listed (pack exceeds file count limit)",
-            entries.len() - max_sidecars
+            "pack has {} files (limit {MAX_PACK_FILES}); publish will be rejected",
+            entries.len() + 1
         ));
-        &entries[..max_sidecars]
-    } else {
-        &entries[..]
-    };
+    }
 
-    let mut out = Vec::with_capacity(listed.len());
-    for entry in listed {
-        let size = entry.size as usize;
-        if size > MAX_SINGLE_FILE_BYTES || total_bytes.saturating_add(size) > MAX_PACK_TOTAL_BYTES {
-            out.push(omitted_pack_file(
-                entry.rel.clone(),
-                &entry.abs,
-                entry.size,
-                "too_large",
-            ));
-            continue;
-        }
-        let bytes = fs::read(&entry.abs).map_err(io_err)?;
-        total_bytes = total_bytes.saturating_add(bytes.len());
-        let (content, encoding) = match String::from_utf8(bytes) {
-            Ok(text) => (text, None),
-            Err(err) => (
-                base64::engine::general_purpose::STANDARD.encode(err.into_bytes()),
-                Some("base64".to_string()),
-            ),
-        };
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let too_large = entry.size as usize > MAX_SINGLE_FILE_BYTES;
         out.push(DraftPackFile {
             path: entry.rel.clone(),
-            content,
-            encoding,
-            omitted: None,
+            content: String::new(),
+            encoding: None,
+            omitted: too_large.then(|| "too_large".into()),
             size: Some(entry.size),
-            hint: None,
+            hint: too_large.then(|| {
+                format!(
+                    "use read_draft_file with path {} (publish will reject this file)",
+                    entry.rel
+                )
+            }),
         });
     }
-    Ok((out, warnings))
+    Ok((out, warnings, total_sidecar_bytes))
+}
+
+fn serialized_draft_len(view: &TeamSkillDraftView) -> usize {
+    serde_json::to_vec(view)
+        .map(|v| v.len())
+        .unwrap_or(usize::MAX)
+}
+
+fn fit_draft_view(mut view: TeamSkillDraftView) -> TeamSkillDraftView {
+    if serialized_draft_len(&view) <= GET_DRAFT_MAX_JSON_BYTES {
+        return view;
+    }
+    view.truncated = true;
+    if !view.content.is_empty() {
+        let len = view.content.len();
+        view.content.clear();
+        view.warnings.push(format!(
+            "SKILL.md omitted from get_draft ({len} bytes > response budget); use read_draft_file with path {SKILL_MD}"
+        ));
+        if serialized_draft_len(&view) <= GET_DRAFT_MAX_JSON_BYTES {
+            return view;
+        }
+    }
+    let mut dropped = 0usize;
+    while serialized_draft_len(&view) > GET_DRAFT_MAX_JSON_BYTES && !view.files.is_empty() {
+        view.files.pop();
+        dropped += 1;
+    }
+    if dropped > 0 {
+        let msg = format!(
+            "{dropped} file listing entries omitted to stay under get_draft response budget; use read_draft_file with a specific path"
+        );
+        if let Some(last) = view
+            .warnings
+            .iter_mut()
+            .find(|w| w.contains("file listing entries omitted"))
+        {
+            *last = msg;
+        } else {
+            view.warnings.push(msg);
+        }
+        while serialized_draft_len(&view) > GET_DRAFT_MAX_JSON_BYTES && !view.files.is_empty() {
+            view.files.pop();
+            dropped += 1;
+            if let Some(last) = view
+                .warnings
+                .iter_mut()
+                .find(|w| w.contains("file listing entries omitted"))
+            {
+                *last = format!(
+                    "{dropped} file listing entries omitted to stay under get_draft response budget; use read_draft_file with a specific path"
+                );
+            }
+        }
+    }
+    view
 }
 
 fn ensure_writable_team_pack(
@@ -350,17 +436,13 @@ pub fn get_team_skill_draft(
     };
 
     if !target.is_dir() {
-        return Ok(TeamSkillDraftView {
-            slug: slug.to_string(),
-            base_version: 0,
+        return Ok(empty_draft_view(
+            slug,
+            0,
             latest_version,
-            state: "missing".into(),
-            digest: String::new(),
-            content: String::new(),
-            files: Vec::new(),
-            source: source.as_str().into(),
-            warnings: Vec::new(),
-        });
+            "missing".into(),
+            source.as_str().into(),
+        ));
     }
 
     reject_symlink(&target)?;
@@ -370,20 +452,16 @@ pub fn get_team_skill_draft(
     let state = compute_state_for_team(origin.as_ref(), &dirty, latest_version, team_id);
 
     if state == "missing" || state == "foreign" {
-        return Ok(TeamSkillDraftView {
-            slug: slug.to_string(),
-            base_version: origin
+        return Ok(empty_draft_view(
+            slug,
+            origin
                 .as_ref()
                 .and_then(|o| o.installed_version.parse().ok())
                 .unwrap_or(0),
             latest_version,
             state,
-            digest: String::new(),
-            content: String::new(),
-            files: Vec::new(),
-            source: source.as_str().into(),
-            warnings: Vec::new(),
-        });
+            source.as_str().into(),
+        ));
     }
 
     let base_version = origin
@@ -393,15 +471,23 @@ pub fn get_team_skill_draft(
         .unwrap_or(0);
     let digest = pack_digest(&target)?;
     let (content, skill_warning) = read_skill_md(&target)?;
-    let (files, mut warnings) = list_pack_files(&target)?;
+    let truncated_skill = skill_warning
+        .as_ref()
+        .is_some_and(|w| w.contains("response budget"));
+    let (files, mut warnings, sidecar_bytes) = list_pack_files(&target)?;
     if let Some(warning) = skill_warning {
         warnings.push(warning);
     }
     if let Err(err) = validate_pack_tree_limits(&target) {
         warnings.push(format!("this draft cannot be published: {}", err.message));
     }
+    let skill_md_len = fs::metadata(target.join(SKILL_MD))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let file_count = files.len() + 1;
+    let total_bytes = skill_md_len.saturating_add(sidecar_bytes);
 
-    Ok(TeamSkillDraftView {
+    Ok(fit_draft_view(TeamSkillDraftView {
         slug: slug.to_string(),
         base_version,
         latest_version,
@@ -410,8 +496,11 @@ pub fn get_team_skill_draft(
         content,
         files,
         source: source.as_str().into(),
+        file_count,
+        total_bytes,
+        truncated: truncated_skill,
         warnings,
-    })
+    }))
 }
 
 pub fn update_team_skill_draft(
@@ -449,12 +538,21 @@ pub fn update_team_skill_draft(
         ));
     }
 
+    if req.content.is_empty() && req.files.is_empty() && req.delete_files.is_empty() {
+        return Err(ManagedSkillError::new(
+            ManagedSkillErrorCode::InvalidSkillFilePath,
+            "update_draft requires at least one of content, files, or deleteFiles",
+        ));
+    }
+
     let parent = target.parent().ok_or_else(|| {
         ManagedSkillError::new(ManagedSkillErrorCode::SkillWriteFailed, "no parent")
     })?;
     let temp = TempPackGuard::new(parent.join(format!(".teamclu-draft-{}", Uuid::new_v4())));
     copy_pack_tree(&target, temp.path())?;
-    fs::write(temp.path().join(SKILL_MD), req.content.as_bytes()).map_err(io_err)?;
+    if !req.content.is_empty() {
+        fs::write(temp.path().join(SKILL_MD), req.content.as_bytes()).map_err(io_err)?;
+    }
 
     let mut patch_files = Vec::new();
     for file in &req.files {
@@ -499,10 +597,140 @@ pub fn update_team_skill_draft(
     })
 }
 
+fn normalize_draft_read_path(raw: &str) -> Result<PathBuf, ManagedSkillError> {
+    let trimmed = raw.trim();
+    if trimmed == SKILL_MD {
+        return Ok(PathBuf::from(SKILL_MD));
+    }
+    let rel = normalize_pack_rel_path(trimmed)?;
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    if rel_str == ORIGIN_DIR || rel_str.starts_with(&format!("{ORIGIN_DIR}/")) {
+        return Err(ManagedSkillError::new(
+            ManagedSkillErrorCode::InvalidSkillFilePath,
+            "origin metadata is not readable via read_draft_file",
+        ));
+    }
+    Ok(rel)
+}
+
+fn utf8_chunk(bytes: &[u8], offset: usize, limit: usize) -> (String, usize, bool) {
+    if offset >= bytes.len() {
+        return (String::new(), bytes.len(), true);
+    }
+    let mut start = offset;
+    while start < bytes.len() && (bytes[start] & 0xc0) == 0x80 {
+        start += 1;
+    }
+    if start >= bytes.len() {
+        return (String::new(), bytes.len(), true);
+    }
+    let mut end = start.saturating_add(limit).min(bytes.len());
+    if end < bytes.len() {
+        while end > start && (bytes[end] & 0xc0) == 0x80 {
+            end -= 1;
+        }
+    }
+    if end == start && start < bytes.len() {
+        end = start + 1;
+        while end < bytes.len() && (bytes[end] & 0xc0) == 0x80 {
+            end += 1;
+        }
+    }
+    let chunk = bytes[start..end].to_vec();
+    let content = String::from_utf8(chunk).unwrap_or_default();
+    (content, end, end >= bytes.len())
+}
+
+pub fn read_team_skill_draft_file(
+    home: &Path,
+    team_id: &str,
+    row: &TeamSkillRow,
+    path: &str,
+    offset: u64,
+    limit: Option<usize>,
+) -> Result<DraftFileRead, ManagedSkillError> {
+    let slug = row.slug.as_str();
+    if !row.installed {
+        return Err(ManagedSkillError::new(
+            ManagedSkillErrorCode::SkillNotFound,
+            format!("team skill {slug} is not installed for this agent"),
+        ));
+    }
+    let (target, _) = effective_team_skill_dir(team_id, slug, home);
+    if !target.is_dir() {
+        return Err(ManagedSkillError::new(
+            ManagedSkillErrorCode::SkillNotFound,
+            format!("team skill {slug} working copy is missing"),
+        ));
+    }
+    reject_symlink(&target)?;
+    let origin = read_origin(&target).ok_or_else(|| {
+        ManagedSkillError::new(
+            ManagedSkillErrorCode::SkillNotFound,
+            format!("team skill {slug} has no install record"),
+        )
+    })?;
+    if origin.registry != SOURCE_TEAM || belongs_to_another_team(&origin, team_id) {
+        return Err(ManagedSkillError::new(
+            ManagedSkillErrorCode::InvalidSkillFilePath,
+            format!("skill {slug} is not this team's working copy"),
+        ));
+    }
+
+    let rel = normalize_draft_read_path(path)?;
+    let abs = target.join(&rel);
+    reject_symlink(&abs)?;
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    if !abs.is_file() {
+        return Err(ManagedSkillError::new(
+            ManagedSkillErrorCode::SkillNotFound,
+            format!("file {rel_str} not found in draft"),
+        ));
+    }
+    let bytes = fs::read(&abs).map_err(io_err)?;
+    let digest = sha256_hex(&bytes);
+    let size = bytes.len() as u64;
+    let limit = limit
+        .filter(|n| *n > 0)
+        .unwrap_or(READ_DRAFT_FILE_DEFAULT_BYTES)
+        .min(READ_DRAFT_FILE_MAX_BYTES);
+    let offset = offset as usize;
+
+    match std::str::from_utf8(&bytes) {
+        Ok(_) => {
+            let (content, end, complete) = utf8_chunk(&bytes, offset, limit);
+            Ok(DraftFileRead {
+                path: rel_str,
+                content,
+                size,
+                offset: offset as u64,
+                next_offset: (!complete).then_some(end as u64),
+                complete,
+                digest,
+                encoding: None,
+                omitted: None,
+                warnings: Vec::new(),
+            })
+        }
+        Err(_) => Ok(DraftFileRead {
+            path: rel_str,
+            content: String::new(),
+            size,
+            offset: 0,
+            next_offset: None,
+            complete: true,
+            digest,
+            encoding: Some("binary".into()),
+            omitted: Some("binary".into()),
+            warnings: vec!["binary files are not inlined; inspect them on disk".into()],
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::managed_skill_writer::{
-        ManagedSkillErrorCode, UpdatePackRequest, MAX_SINGLE_FILE_BYTES,
+        ManagedSkillErrorCode, PackFileInput, UpdatePackRequest, MAX_SINGLE_FILE_BYTES,
     };
     use super::*;
     use teamclu_skillpack::{write_origin, ORIGIN_VERSION};
@@ -594,7 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn get_draft_returns_binary_files_as_base64() {
+    fn get_draft_lists_sidecars_without_bodies() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let team = "team-bin";
@@ -607,21 +835,37 @@ mod tests {
         )
         .unwrap();
         fs::write(skill.join("logo.png"), [0x89, 0x50, 0x4e, 0x47]).unwrap();
+        fs::write(skill.join("notes.md"), "# keep me\n").unwrap();
         stamp_team_origin(&skill, slug, team, 1, true);
 
         let view = get_team_skill_draft(home, team, &row(slug, 1, true)).unwrap();
+        assert!(view.content.contains("# Demo"));
+        assert_eq!(view.file_count, 3);
+        let encoded = serde_json::to_vec(&view).unwrap();
+        assert!(
+            encoded.len() <= GET_DRAFT_MAX_JSON_BYTES,
+            "get_draft JSON was {} bytes",
+            encoded.len()
+        );
         let asset = view
             .files
             .iter()
             .find(|f| f.path == "logo.png")
             .expect("binary asset listed");
-        assert_eq!(asset.encoding.as_deref(), Some("base64"));
-        assert!(!asset.content.is_empty());
-        assert_eq!(asset.omitted, None);
+        assert!(asset.content.is_empty());
+        assert_eq!(asset.encoding, None);
+        assert_eq!(asset.size, Some(4));
+        let notes = view
+            .files
+            .iter()
+            .find(|f| f.path == "notes.md")
+            .expect("text sidecar listed");
+        assert!(notes.content.is_empty());
+        assert!(!notes.content.contains("keep me"));
     }
 
     #[test]
-    fn get_draft_omits_sidecar_over_single_file_limit() {
+    fn get_draft_never_inlines_sidecar_bodies() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let team = "team-big";
@@ -633,39 +877,156 @@ mod tests {
             "---\nname: issue-investigator\ndescription: Demo\n---\n\n# Demo\n",
         )
         .unwrap();
-        let dump_size = MAX_SINGLE_FILE_BYTES + 1;
+        let dump_size = 3 * 1024 * 1024;
+        assert!(dump_size > MAX_SINGLE_FILE_BYTES);
         fs::write(skill.join("dump.txt"), vec![b'x'; dump_size]).unwrap();
-        fs::write(skill.join("notes.md"), "# keep me\n").unwrap();
+        for i in 0..3 {
+            fs::write(skill.join(format!("chunk-{i}.txt")), vec![b'y'; 400_000]).unwrap();
+        }
         stamp_team_origin(&skill, slug, team, 1, true);
 
         let view = get_team_skill_draft(home, team, &row(slug, 1, true)).unwrap();
-        let notes = view
-            .files
-            .iter()
-            .find(|f| f.path == "notes.md")
-            .expect("small sidecar listed");
-        assert_eq!(notes.omitted, None);
-        assert!(notes.content.contains("keep me"));
+        assert!(
+            view.files.iter().all(|f| f.content.is_empty()),
+            "get_draft must not inline sidecar bodies"
+        );
         let dump = view
             .files
             .iter()
             .find(|f| f.path == "dump.txt")
             .expect("oversized sidecar listed");
-        assert!(
-            dump.content.is_empty(),
-            "get_draft must not inline files over {MAX_SINGLE_FILE_BYTES} bytes"
-        );
         assert_eq!(dump.omitted.as_deref(), Some("too_large"));
         assert_eq!(dump.size, Some(dump_size as u64));
-        let hint = dump.hint.as_deref().unwrap_or_default();
         assert!(
-            hint.contains("dump.txt"),
-            "hint should point at the file: {hint}"
-        );
-        assert!(
-            view.warnings.iter().any(|w| w.contains("dump.txt")),
+            view.warnings
+                .iter()
+                .any(|w| w.contains("dump.txt") || w.contains("cannot be published")),
             "expected a publish-will-fail warning, got {:?}",
             view.warnings
+        );
+        let encoded = serde_json::to_vec(&view).unwrap();
+        assert!(encoded.len() <= GET_DRAFT_MAX_JSON_BYTES);
+    }
+
+    #[test]
+    fn get_draft_omits_skill_md_when_json_budget_exceeded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let team = "team-budget";
+        let slug = "fat-skill";
+        let skill = home.join(".agents/skills").join(slug);
+        fs::create_dir_all(&skill).unwrap();
+        let mut skill_md = String::from("---\nname: fat-skill\ndescription: Demo 中文\n---\n\n");
+        skill_md.push_str(&"字".repeat(40_000));
+        fs::write(skill.join("SKILL.md"), &skill_md).unwrap();
+        stamp_team_origin(&skill, slug, team, 1, true);
+
+        let view = get_team_skill_draft(home, team, &row(slug, 1, true)).unwrap();
+        assert!(
+            view.content.is_empty(),
+            "oversized SKILL.md must not be inlined"
+        );
+        assert!(view.truncated);
+        assert!(
+            view.warnings
+                .iter()
+                .any(|w| w.contains("read_draft_file") && w.contains("SKILL.md")),
+            "expected read_draft_file hint, got {:?}",
+            view.warnings
+        );
+        let encoded = serde_json::to_vec(&view).unwrap();
+        assert!(encoded.len() <= GET_DRAFT_MAX_JSON_BYTES);
+        let read = read_team_skill_draft_file(home, team, &row(slug, 1, true), "SKILL.md", 0, None)
+            .unwrap();
+        assert!(read.content.contains("name: fat-skill"));
+        assert!(!read.complete);
+        assert!(read.content.len() <= READ_DRAFT_FILE_DEFAULT_BYTES);
+        assert!(read.content.is_char_boundary(read.content.len()));
+    }
+
+    #[test]
+    fn read_draft_file_chunks_utf8_and_skips_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let team = "team-read";
+        let slug = "chunked";
+        let skill = home.join(".agents/skills").join(slug);
+        fs::create_dir_all(skill.join("scripts")).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: chunked\ndescription: Demo\n---\n\n# Demo\n",
+        )
+        .unwrap();
+        let body = "é".repeat(20_000);
+        fs::write(skill.join("scripts/run.py"), &body).unwrap();
+        fs::write(skill.join("logo.png"), [0x89, 0x50, 0x4e, 0x47, 0x0d]).unwrap();
+        stamp_team_origin(&skill, slug, team, 1, true);
+
+        let first =
+            read_team_skill_draft_file(home, team, &row(slug, 1, true), "scripts/run.py", 0, None)
+                .unwrap();
+        assert_eq!(first.offset, 0);
+        assert!(!first.complete);
+        assert_eq!(
+            first.next_offset,
+            Some(READ_DRAFT_FILE_DEFAULT_BYTES as u64)
+        );
+        assert!(first.content.is_char_boundary(first.content.len()));
+
+        let second = read_team_skill_draft_file(
+            home,
+            team,
+            &row(slug, 1, true),
+            "scripts/run.py",
+            first.next_offset.unwrap(),
+            Some(READ_DRAFT_FILE_MAX_BYTES + 8),
+        )
+        .unwrap();
+        assert!(second.content.len() <= READ_DRAFT_FILE_MAX_BYTES);
+        assert!(second.complete);
+
+        let bin = read_team_skill_draft_file(home, team, &row(slug, 1, true), "logo.png", 0, None)
+            .unwrap();
+        assert!(bin.content.is_empty());
+        assert_eq!(bin.omitted.as_deref(), Some("binary"));
+        assert_eq!(bin.encoding.as_deref(), Some("binary"));
+    }
+
+    #[test]
+    fn update_draft_can_patch_sidecar_without_skill_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let team = "team-patch";
+        let slug = "patch-one";
+        let skill = home.join(".agents/skills").join(slug);
+        fs::create_dir_all(skill.join("scripts")).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: patch-one\ndescription: One\n---\n\n# One\n",
+        )
+        .unwrap();
+        fs::write(skill.join("scripts/run.py"), "print(1)\n").unwrap();
+        stamp_team_origin(&skill, slug, team, 1, true);
+        let digest = pack_digest(&skill).unwrap();
+
+        let req = UpdatePackRequest {
+            slug: slug.into(),
+            content: String::new(),
+            files: vec![PackFileInput {
+                path: "scripts/run.py".into(),
+                content: "print(2)\n".into(),
+                encoding: None,
+            }],
+            expected_digest: Some(digest),
+            delete_files: vec![],
+        };
+        update_team_skill_draft(home, team, &row(slug, 1, true), &req).unwrap();
+        assert!(fs::read_to_string(skill.join("SKILL.md"))
+            .unwrap()
+            .contains("# One"));
+        assert_eq!(
+            fs::read_to_string(skill.join("scripts/run.py")).unwrap(),
+            "print(2)\n"
         );
     }
 
@@ -693,5 +1054,49 @@ mod tests {
         };
         let err = update_team_skill_draft(home, team, &row(slug, 1, true), &req).unwrap_err();
         assert_eq!(err.code, ManagedSkillErrorCode::SkillChanged);
+    }
+
+    #[test]
+    fn update_pack_request_deserializes_without_content() {
+        let req: UpdatePackRequest = serde_json::from_value(serde_json::json!({
+            "slug": "demo",
+            "files": [{ "path": "notes.md", "content": "hi" }],
+            "expectedDigest": "sha256:abc"
+        }))
+        .unwrap();
+        assert!(req.content.is_empty());
+        assert_eq!(req.files.len(), 1);
+        assert_eq!(req.expected_digest.as_deref(), Some("sha256:abc"));
+    }
+
+    #[test]
+    fn read_draft_file_rejects_missing_and_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let team = "team-read";
+        let slug = "guarded";
+        let skill = home.join(".agents/skills").join(slug);
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: guarded\ndescription: Demo\n---\n\n# Demo\n",
+        )
+        .unwrap();
+        stamp_team_origin(&skill, slug, team, 1, true);
+
+        let missing = read_team_skill_draft_file(home, team, &row(slug, 1, true), "nope.md", 0, None)
+            .unwrap_err();
+        assert_eq!(missing.code, ManagedSkillErrorCode::SkillNotFound);
+
+        let origin = read_team_skill_draft_file(
+            home,
+            team,
+            &row(slug, 1, true),
+            ".clawhub/origin.json",
+            0,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(origin.code, ManagedSkillErrorCode::InvalidSkillFilePath);
     }
 }

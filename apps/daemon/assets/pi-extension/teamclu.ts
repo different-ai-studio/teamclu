@@ -610,29 +610,52 @@ class McpBridge {
   }
 }
 
+/** Last-resort cap so any MCP tool that inlines too much still cannot blow
+ *  the model context. Introspect get_draft stays under 64 KiB; this fuse is
+ *  128 KiB and replaces the payload with a structured envelope — never a
+ *  sliced JSON string. */
+const MAX_TOOL_RESULT_BYTES = 128 * 1024;
+
+function budgetExceededEnvelope(originalBytes: number): string {
+  return JSON.stringify({
+    truncated: true,
+    reason: "response_budget_exceeded",
+    originalBytes,
+    hint: "Use a narrower query or read_draft_file with a specific path",
+  });
+}
+
+function capToolText(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= MAX_TOOL_RESULT_BYTES) return text;
+  return budgetExceededEnvelope(bytes.length);
+}
+
 /** MCP tool result → pi tool result content. */
 function toPiContent(result: any): PiToolContent[] {
   const out: PiToolContent[] = [];
   for (const part of Array.isArray(result?.content) ? result.content : []) {
     if (!part || typeof part !== "object") continue;
     if (part.type === "text" && typeof part.text === "string") {
-      out.push({ type: "text", text: part.text });
+      out.push({ type: "text", text: capToolText(part.text) });
     } else if (part.type === "image" && typeof part.data === "string") {
       // pi accepts image content in tool results and normalizes oversized ones
       // (`normalizeToolResultImages`, which names MCP bridges as a source).
       // Stringifying these — what this bridge used to do — turned a screenshot
-      // into a wall of base64 JSON.
+      // into a wall of base64 JSON. Do not cap image payloads here.
       out.push({ type: "image", data: part.data, mimeType: part.mimeType || "image/png" });
     } else if (part.type === "resource" && typeof part.resource?.text === "string") {
-      out.push({ type: "text", text: part.resource.text });
+      out.push({ type: "text", text: capToolText(part.resource.text) });
     } else {
-      out.push({ type: "text", text: JSON.stringify(part) });
+      out.push({ type: "text", text: capToolText(JSON.stringify(part)) });
     }
   }
   if (out.length === 0 && result?.structuredContent !== undefined) {
-    out.push({ type: "text", text: JSON.stringify(result.structuredContent) });
+    out.push({ type: "text", text: capToolText(JSON.stringify(result.structuredContent)) });
   }
-  if (out.length === 0) out.push({ type: "text", text: JSON.stringify(result ?? null) });
+  if (out.length === 0) {
+    out.push({ type: "text", text: capToolText(JSON.stringify(result ?? null)) });
+  }
   return out;
 }
 
