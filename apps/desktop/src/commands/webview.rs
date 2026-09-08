@@ -315,6 +315,51 @@ async fn ensure_http_host_resolvable_async(url: &tauri::Url) -> Result<(), Strin
     }
 }
 
+/// Timeout for the pre-flight probe. Long enough for a cold TLS handshake to a
+/// distant origin, short enough that a dead host does not stall the click that
+/// opened the tab.
+const WEBVIEW_PREFLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Reject an http(s) URL the platform webview cannot actually open.
+///
+/// `ensure_http_host_resolvable` (issue #617) only asks DNS. That is necessary
+/// but not sufficient: a host that resolves, accepts TCP and completes a TLS
+/// handshake can still be unusable — an Alibaba Function Compute custom domain
+/// with no certificate for the name answers with its own `*.fc.aliyuncs.com`
+/// cert, which fails hostname verification. Handing that to WKWebView wedged
+/// the AppKit main thread exactly as an unresolvable host does: the app's log
+/// stopped dead after "[Webview] Created successfully", with the 15-second cron
+/// tick never firing again.
+///
+/// So the gate is "can a normal HTTP client complete a request to this origin",
+/// not "does the name resolve". Any status code is fine — a 404 or a 405 to our
+/// HEAD is a working origin. Only transport failures (connect refused, TLS or
+/// certificate rejection, timeout) reject.
+///
+/// What this does NOT cover: a page that loads and then navigates itself to a
+/// broken URL. Closing that needs the webview to stop blocking the main thread
+/// at all, which is upstream in wry/WKWebView.
+async fn ensure_http_url_reachable_async(url: &tauri::Url) -> Result<(), String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Ok(());
+    }
+    ensure_http_host_resolvable_async(url).await?;
+
+    let client = reqwest::Client::builder()
+        .timeout(WEBVIEW_PREFLIGHT_TIMEOUT)
+        .connect_timeout(WEBVIEW_PREFLIGHT_TIMEOUT)
+        .user_agent(WEBVIEW_UA)
+        .build()
+        .map_err(|e| format!("preflight client unavailable: {e}"))?;
+
+    let host = url.host_str().unwrap_or("?").to_string();
+    match client.head(url.clone()).send().await {
+        Ok(_) => Ok(()),
+        Err(err) if err.is_status() => Ok(()),
+        Err(err) => Err(format!("Host '{host}' is not reachable: {err}")),
+    }
+}
+
 /// Build a documentStart script that seeds a supabase-js session into the
 /// page's localStorage so it is already authenticated when its bundle runs.
 /// `session_json` is the already-serialized supabase session object; it is
@@ -519,9 +564,10 @@ pub async fn webview_create(
         .parse::<tauri::Url>()
         .map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
 
-    // Fail closed before add_child: unresolvable External URLs can freeze the
-    // AppKit main thread (issue #617).
-    ensure_http_host_resolvable_async(&parsed_url).await?;
+    // Fail closed before add_child: an External URL the platform webview cannot
+    // open freezes the AppKit main thread (issue #617). Resolvable is not
+    // enough — a certificate that does not match the name wedges it too.
+    ensure_http_url_reachable_async(&parsed_url).await?;
 
     log::info!(
         "[Webview] Creating '{}' in parent '{}' url={} pos=({},{}) size={}x{}",
@@ -839,7 +885,7 @@ pub async fn webview_navigate(
             .parse::<tauri::Url>()
             .map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
         // Same guard as webview_create — navigate to a bad host can freeze too.
-        ensure_http_host_resolvable_async(&parsed).await?;
+        ensure_http_url_reachable_async(&parsed).await?;
         log::info!("[Webview] Navigating '{}' to {}", label, url);
         webview
             .navigate(parsed)
@@ -1186,6 +1232,33 @@ mod tests {
     fn ensure_http_host_resolvable_skips_non_http_schemes() {
         let url: tauri::Url = "data:text/plain,hi".parse().expect("url");
         assert!(ensure_http_host_resolvable(&url).is_ok());
+    }
+
+    /// A host whose certificate does not cover the name completes DNS, TCP and
+    /// the TLS handshake, so the #617 DNS gate waves it through — and WKWebView
+    /// then wedged the AppKit main thread. `wrong.host.badssl.com` serves a
+    /// valid certificate for a different name, which is exactly that shape.
+    #[tokio::test]
+    async fn ensure_http_url_reachable_rejects_a_certificate_that_does_not_match() {
+        let url: tauri::Url = "https://wrong.host.badssl.com/".parse().expect("url");
+        // The DNS-only gate is happy with it — that is the gap being closed.
+        assert!(ensure_http_host_resolvable(&url).is_ok());
+        let err = ensure_http_url_reachable_async(&url)
+            .await
+            .expect_err("certificate name mismatch must be refused");
+        assert!(err.contains("not reachable"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn ensure_http_url_reachable_allows_a_working_origin() {
+        let url: tauri::Url = "https://example.com/".parse().expect("url");
+        assert!(ensure_http_url_reachable_async(&url).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn ensure_http_url_reachable_skips_non_http_schemes() {
+        let url: tauri::Url = "about:blank".parse().expect("url");
+        assert!(ensure_http_url_reachable_async(&url).await.is_ok());
     }
 
     #[test]
